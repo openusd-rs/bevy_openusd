@@ -41,9 +41,13 @@ use crate::mesh::{
     mesh_from_usd_subset_with_skin, mesh_from_usd_with_skin, mesh_plane, mesh_sphere,
     skin_attrs_from_binding,
 };
+use crate::physics_attach::{
+    PendingPhysics, StageMeta, attach_physics_to_prim, populate_articulation_joints,
+    read_stage_meta, resolve_pending_physics,
+};
 use crate::prim_ref::{
     UsdBlendShapeBinding, UsdDisplayName, UsdJoint, UsdKind, UsdLocalExtent, UsdPrimRef,
-    UsdProcedural, UsdSkelAnimDriver, UsdSkelRoot, UsdSpatialAudio,
+    UsdProcedural, UsdPurpose, UsdSkelAnimDriver, UsdSkelRoot, UsdSpatialAudio,
 };
 use usd_schemas::lux as ulux;
 use usd_schemas::shade as ushade;
@@ -95,6 +99,7 @@ pub fn stage_to_scene(
         point_scale,
         skel_animations,
     );
+    ctx.stage_meta = read_stage_meta(stage);
 
     let root_transform = root_basis_transform(stage);
     let root_name = stage
@@ -115,7 +120,7 @@ pub fn stage_to_scene(
     // `/Scene/Foo` still surfaces `/root` at the top level of the composed
     // stage) from being re-spawned alongside the main tree. Greenhouse
     // loses ~17 ghost subtrees at origin this way.
-    let roots_to_walk: Vec<Path> = if let Some(default) = stage.default_prim() {
+    let mut roots_to_walk: Vec<Path> = if let Some(default) = stage.default_prim() {
         match Path::abs_root().append_path(default.as_str()) {
             Ok(p) if matches!(stage.spec_type(p.clone()), Ok(Some(SpecType::Prim))) => vec![p],
             _ => stage
@@ -134,9 +139,45 @@ pub fn stage_to_scene(
             .collect()
     };
 
+    // Isaac Sim convention: PhysicsScene + PhysicsCollisionGroup live as
+    // root-level peers of the defaultPrim (e.g. Agilebot puts
+    // `/physicsScene` next to `/GBT_C5A`). The defaultPrim-only walk
+    // would silently drop them — losing gravity and collision
+    // grouping. Append any root prim that authors physics opinions and
+    // isn't already in the walk list.
+    if stage.default_prim().is_some() {
+        let already: std::collections::HashSet<String> = roots_to_walk
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect();
+        for name in stage.root_prims().unwrap_or_default() {
+            let Ok(p) = Path::abs_root().append_path(name.as_str()) else {
+                continue;
+            };
+            if already.contains(p.as_str()) {
+                continue;
+            }
+            if is_root_physics_prim(stage, &p) {
+                roots_to_walk.push(p);
+            }
+        }
+    }
+
     for path in roots_to_walk {
         spawn_prim_subtree(stage, &path, scene_root, &mut world, &mut ctx);
     }
+
+    // Physics post-pass: every prim entity now exists, so we can resolve
+    // joint body0/body1, collision-group members, filtered-pair targets,
+    // and collider material bindings to real Entity references. After
+    // that, walk each ArticulationRoot's subtree to populate its joint
+    // list (the adapter handles tree-vs-loop classification).
+    let stage_meta = ctx.stage_meta;
+    let _ = stage_meta;
+    let pending = std::mem::take(&mut ctx.pending_physics);
+    let prim_paths = std::mem::take(&mut ctx.prim_paths);
+    resolve_pending_physics(&mut world, &pending, &prim_paths);
+    populate_articulation_joints(&mut world, &pending.articulation_roots);
 
     let tally = ctx.lights;
     let instance_stats = InstanceStats {
@@ -241,6 +282,19 @@ pub(crate) struct BuildCtx<'lc, 'a> {
     pub skinned_failed: usize,
     pub skinned_no_cache: usize,
     pub blendshape_attached: usize,
+    /// USD prim path → spawned entity. Populated by `spawn_prim_subtree`
+    /// for every prim that gets an entity. Used by the physics post-pass
+    /// to resolve joint body0/body1 and collision-group member rels.
+    pub prim_paths: HashMap<String, Entity>,
+    /// Stage-level unit-conversion factors and basis rotation. Read from
+    /// the pseudo-root once at the start of `stage_to_scene`; used by
+    /// every physics marker emission to land SI values on the
+    /// components.
+    pub stage_meta: StageMeta,
+    /// Joint / collision-group / filtered-pair / collider-material
+    /// relationships awaiting resolution. Drained by
+    /// `resolve_pending_physics` after the main walk completes.
+    pub pending_physics: PendingPhysics,
 }
 
 /// Cached per-Skeleton state. Holds the full joint metadata so that
@@ -342,6 +396,9 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
             skinned_failed: 0,
             skinned_no_cache: 0,
             blendshape_attached: 0,
+            prim_paths: HashMap::new(),
+            stage_meta: StageMeta::default(),
+            pending_physics: PendingPhysics::default(),
         }
     }
 
@@ -561,9 +618,17 @@ fn spawn_prim_subtree(
     if !matches!(stage.spec_type(path.clone()), Ok(Some(SpecType::Prim))) {
         return;
     }
-    if !passes_purpose_filter(stage, path) {
-        return;
-    }
+    // Read purpose up front; we no longer SKIP proxy/guide prims (the
+    // production-standard pattern authors collision meshes as `proxy`,
+    // and dropping them silently lost both geometry AND PhysicsCollisionAPI
+    // opinions). Instead we spawn the entity, attach a `UsdPurpose`
+    // component when authored, and default proxy/guide to
+    // `Visibility::Hidden` so the meshes still feed physics without
+    // visually doubling up.
+    let purpose = ugeom::read_purpose(stage, path)
+        .ok()
+        .map(|s| UsdPurpose::from_token(&s))
+        .unwrap_or(UsdPurpose::Default);
 
     let leaf = path.name().unwrap_or("").to_string();
     let transform = read_prim_transform(stage, path);
@@ -627,11 +692,13 @@ fn spawn_prim_subtree(
         return;
     }
 
-    // Visibility honours `UsdGeomImageable.visibility`. `invisible`
-    // propagates through `Visibility::Hidden` — Bevy inherits through
-    // the hierarchy so descendants disappear too.
+    // Visibility honours `UsdGeomImageable.visibility` first; failing
+    // that, derive from `purpose` (proxy/guide default to Hidden so
+    // collision-only meshes don't visually overlap their render
+    // counterparts).
     let visibility = match ugeom::read_visibility(stage, path).ok() {
         Some(ugeom::VisibilityState::Invisible) => Visibility::Hidden,
+        _ if purpose.hidden_by_default() => Visibility::Hidden,
         _ => Visibility::default(),
     };
 
@@ -644,6 +711,18 @@ fn spawn_prim_subtree(
             ChildOf(parent),
         ))
         .id();
+
+    // Register prim path → entity for the physics post-pass (joint
+    // body resolution, collision-group members, filtered pairs,
+    // material binding).
+    ctx.prim_paths.insert(path.as_str().to_string(), entity);
+
+    // Authored UsdGeomImageable.purpose — attach when non-default so
+    // adapters and viewer overlays can distinguish render-only,
+    // proxy (collision-typical), and guide prims.
+    if purpose != UsdPurpose::Default {
+        world.entity_mut(entity).insert(purpose);
+    }
 
     // UsdModelAPI.kind — attach the component only when authored so
     // the Tree panel can show the kind column without everyone
@@ -696,6 +775,25 @@ fn spawn_prim_subtree(
 
     attach_geometry(stage, path, entity, world, ctx);
     attach_light(stage, path, entity, parent, world, ctx);
+
+    // UsdPhysics — attach backend-neutral marker components for any
+    // PhysicsScene / RigidBodyAPI / MassAPI / CollisionAPI /
+    // PhysicsMaterialAPI / ArticulationRootAPI / FilteredPairsAPI /
+    // Physics*Joint / PhysicsCollisionGroup opinions on this prim.
+    // Body0/body1 + collision-group members + filtered-pair targets +
+    // collider material binding land as `None` here and get resolved
+    // in `stage_to_scene`'s post-pass once every prim entity exists.
+    {
+        let stage_meta = ctx.stage_meta;
+        attach_physics_to_prim(
+            stage,
+            path,
+            entity,
+            world,
+            &mut ctx.pending_physics,
+            &stage_meta,
+        );
+    }
 
     // Scene-instancing descriptor capture (M28). If we're recording a
     // prototype, snapshot this entity's replayable components. If the
@@ -1778,6 +1876,32 @@ fn find_first_typed_descendant(stage: &Stage, root: &Path, target_type: &str) ->
         }
     }
     None
+}
+
+/// `true` when `prim` is the kind of root-level prim that authors
+/// physics opinions and should be walked even when the loader is
+/// rooted at `defaultPrim` (Isaac Sim assets put `PhysicsScene` /
+/// `PhysicsCollisionGroup` here as peers of the robot subtree).
+///
+/// Recognises:
+/// - `typeName == PhysicsScene` / `PhysicsCollisionGroup` /
+///   `PhysicsRigidBody*Joint` and friends
+/// - `apiSchemas` containing any `Physics*API` (RigidBody, Mass,
+///   Collision, ArticulationRoot, FilteredPairs, Material)
+///
+/// Plain definition-library Scopes (`/visuals`, `/meshes`, `/Render`)
+/// fall through and aren't double-walked.
+fn is_root_physics_prim(stage: &Stage, prim: &Path) -> bool {
+    let type_name: String = stage
+        .field::<String>(prim.clone(), "typeName")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if type_name.starts_with("Physics") {
+        return true;
+    }
+    let api = usd_schemas::physics::read_api_schemas(stage, prim).unwrap_or_default();
+    api.iter().any(|s| s.starts_with("Physics"))
 }
 
 /// Check `purpose` on `prim`; skip `"proxy"` / `"guide"` for M2. M6 lifts

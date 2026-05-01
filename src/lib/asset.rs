@@ -103,6 +103,16 @@ pub struct UsdAsset {
     /// Decoded `Physics*Joint` prims. Authored frames + limits already
     /// resolved — downstream physics backends can consume directly.
     pub joints: Vec<usd_schemas::physics::ReadJoint>,
+    /// `PhysicsArticulationRootAPI` prim paths (Phase 3).
+    pub articulation_root_prims: Vec<String>,
+    /// Prim paths bearing `PhysicsMaterialAPI` (typically `Material` prims).
+    pub physics_material_prims: Vec<String>,
+    /// `PhysicsCollisionGroup` prim paths.
+    pub collision_group_prims: Vec<String>,
+    /// Prim paths bearing `PhysicsFilteredPairsAPI`.
+    pub filtered_pairs_prims: Vec<String>,
+    /// Prim paths bearing `PhysicsCollisionAPI`.
+    pub collider_prims: Vec<String>,
     /// Authored `custom` attributes + `customData` + `assetInfo` per
     /// prim (M24). Keyed by prim path; prims with NO user-authored
     /// metadata stay out of the map entirely.
@@ -356,21 +366,32 @@ impl AssetLoader for UsdLoader {
             search.push(parent);
         }
 
+        // The `settings.variant_selections` list drives composition.
+        // Bevy strips the label from `load_context.path()` before
+        // invoking the loader (the base path is what the loader
+        // sees), so we can't read the label here — but the consumer
+        // is expected to put the same selections into the path label
+        // *and* `settings.variant_selections` (see [`variant_label`]).
+        // The label only matters at the asset-cache layer (so two
+        // variant requests produce two distinct cached handles); the
+        // loader uses settings as the source of truth.
+        let effective_variants = settings.variant_selections.clone();
+
         // Session layer: if the caller authored variant overrides, write
         // them out as a tiny USDA file with `over` specs carrying
         // `variants = { ... }` metadata, then hand the path to the
         // StageBuilder. Composition puts session opinions ahead of
         // everything else, so the override wins over whatever the stage
         // authored itself.
-        let session_layer_path = if !settings.variant_selections.is_empty() {
-            let text = author_variant_session_layer(&settings.variant_selections);
+        let session_layer_path = if !effective_variants.is_empty() {
+            let text = author_variant_session_layer(&effective_variants);
             let session_tmp =
-                tempfile_session(&tmp_dir, fs_path, &settings.variant_selections, &text);
+                tempfile_session(&tmp_dir, fs_path, &effective_variants, &text);
             std::fs::write(&session_tmp, &text)?;
             bevy::log::info!(
                 "usd: wrote {} variant selection(s) to session layer {}",
-                settings.variant_selections.len(),
-                session_tmp.display()
+                effective_variants.len(),
+                session_tmp.display(),
             );
             Some(session_tmp)
         } else {
@@ -430,7 +451,7 @@ impl AssetLoader for UsdLoader {
             read_stage_timeline(&stage);
         let (skeletons, skel_roots, skel_bindings) = collect_skel(&stage);
         let (render_settings, render_products, render_vars) = collect_render(&stage);
-        let (rigid_body_prims, physics_scene_prims, joints) = collect_physics(&stage);
+        let physics_summary = collect_physics(&stage);
         let custom_attrs = collect_custom_attrs(&stage);
         let custom_layer_data = usd_schemas::geom::read_custom_layer_data(&stage)
             .ok()
@@ -560,11 +581,25 @@ impl AssetLoader for UsdLoader {
             light_tally.spot,
             light_tally.dome,
         );
-        let scene_handle = load_context.add_labeled_asset("Scene".into(), scene);
+        // The Scene's labeled-asset key has to be unique per variant
+        // selection or different variant loads will clobber each
+        // other's scenes (Bevy stores labeled sub-assets at the same
+        // `path#label` AssetIndex, so two loads emitting `Scene` for
+        // the same path overwrite — every consumer holding a stale
+        // `Handle<Scene>` then sees the latest variant's content).
+        // Default variant keeps the unsuffixed `"Scene"` for
+        // backwards compatibility with consumers that load
+        // `path.usda#Scene` directly.
+        let scene_label = if effective_variants.is_empty() {
+            "Scene".to_string()
+        } else {
+            format!("Scene:{}", variant_label(&effective_variants))
+        };
+        let scene_handle = load_context.add_labeled_asset(scene_label, scene);
 
         let _ = std::fs::remove_file(&tmp);
 
-        Ok(UsdAsset {
+        let usd_asset = UsdAsset {
             scene: scene_handle,
             default_prim,
             layer_count,
@@ -586,15 +621,38 @@ impl AssetLoader for UsdLoader {
             render_settings,
             render_products,
             render_vars,
-            rigid_body_prims,
-            physics_scene_prims,
-            joints,
+            rigid_body_prims: physics_summary.rigid_body_prims,
+            physics_scene_prims: physics_summary.physics_scene_prims,
+            joints: physics_summary.joints,
+            articulation_root_prims: physics_summary.articulation_root_prims,
+            physics_material_prims: physics_summary.physics_material_prims,
+            collision_group_prims: physics_summary.collision_group_prims,
+            filtered_pairs_prims: physics_summary.filtered_pairs_prims,
+            collider_prims: physics_summary.collider_prims,
             custom_attrs,
             custom_layer_data,
             subdivision_prims,
             light_linking_prims,
             clip_sets,
-        })
+        };
+
+        // If the caller supplied any `variant_selections`, Bevy's
+        // path-only handle cache would otherwise collapse multiple
+        // variant requests onto a single handle (the last load
+        // wins, every consumer flips to the new content). To dodge
+        // that, the consumer should call `load_with_settings` with
+        // an asset path whose *label* equals
+        // [`variant_label`]`(&settings.variant_selections)`. Bevy
+        // will then look up that exact label in our output below;
+        // emitting a labeled sub-asset under the same key gives
+        // each variant request its own cached `Handle<UsdAsset>`
+        // pointing at the right composed content.
+        if !effective_variants.is_empty() {
+            let label = variant_label(&effective_variants);
+            load_context.add_labeled_asset(label, usd_asset.clone());
+        }
+
+        Ok(usd_asset)
     }
 
     fn extensions(&self) -> &[&str] {
@@ -964,37 +1022,45 @@ fn collect_custom_attrs(
 /// recognised `Physics*Joint`. The plugin doesn't simulate — these
 /// surfaces let downstream physics backends consume authored data
 /// without rewalking the stage themselves.
-fn collect_physics(
-    stage: &openusd::Stage,
-) -> (
-    Vec<String>,
-    Vec<String>,
-    Vec<usd_schemas::physics::ReadJoint>,
-) {
-    use openusd::sdf::Path;
-    let mut rigid = Vec::new();
-    let mut scenes = Vec::new();
-    let mut joints = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if matches!(
-            usd_schemas::physics::read_is_physics_scene(stage, path),
-            Ok(true)
-        ) {
-            scenes.push(path.as_str().to_string());
-            return;
-        }
-        if let Ok(Some(j)) = usd_schemas::physics::read_joint(stage, path) {
+struct PhysicsSummary {
+    rigid_body_prims: Vec<String>,
+    physics_scene_prims: Vec<String>,
+    joints: Vec<usd_schemas::physics::ReadJoint>,
+    articulation_root_prims: Vec<String>,
+    physics_material_prims: Vec<String>,
+    collision_group_prims: Vec<String>,
+    filtered_pairs_prims: Vec<String>,
+    collider_prims: Vec<String>,
+}
+
+/// Single top-of-stage sweep that classifies every physics-bearing
+/// prim and decodes joint specs. Used by the loader to populate
+/// `UsdAsset` summary lists for the viewer info panel; the actual ECS
+/// projection happens in `physics_attach::attach_physics_to_prim`.
+fn collect_physics(stage: &openusd::Stage) -> PhysicsSummary {
+    use usd_schemas::physics as ph;
+    let prims = ph::find_physics_prims(stage).unwrap_or_default();
+
+    let mut joints = Vec::with_capacity(prims.joints.len());
+    for path_str in &prims.joints {
+        let Ok(p) = openusd::sdf::path(path_str) else {
+            continue;
+        };
+        if let Ok(Some(j)) = ph::read_joint(stage, &p) {
             joints.push(j);
-            return;
         }
-        if matches!(
-            usd_schemas::physics::read_has_rigid_body(stage, path),
-            Ok(true)
-        ) {
-            rigid.push(path.as_str().to_string());
-        }
-    });
-    (rigid, scenes, joints)
+    }
+
+    PhysicsSummary {
+        rigid_body_prims: prims.rigid_bodies,
+        physics_scene_prims: prims.scenes,
+        joints,
+        articulation_root_prims: prims.articulation_roots,
+        physics_material_prims: prims.materials,
+        collision_group_prims: prims.collision_groups,
+        filtered_pairs_prims: prims.filtered_pairs,
+        collider_prims: prims.colliders,
+    }
 }
 
 /// Walk the stage and collect every `UsdRender.*` prim into three
@@ -1246,4 +1312,53 @@ fn tempfile_in(dir: &Path, asset_path: &Path, ext: &str) -> PathBuf {
     let mut out = dir.to_path_buf();
     out.push(format!(".bevy_openusd_tmp_{hash:016x}.{ext}"));
     out
+}
+
+/// Build a deterministic asset-path label encoding a list of variant
+/// selections. Combine with a USD path to produce a unique
+/// `Handle<UsdAsset>` per variant set:
+///
+/// ```ignore
+/// let path = format!("{}#{}", "machines/bale.usda", variant_label(&variants));
+/// let handle: Handle<UsdAsset> = asset_server.load_with_settings(path,
+///     move |s: &mut UsdLoaderSettings| { s.variant_selections = variants.clone(); }
+/// );
+/// ```
+///
+/// The label syntax is `variants:prim_path@set_name=option`, joined
+/// with `,` for multiple selections. The loader parses the same
+/// format on the way in (see [`parse_variant_label`]), so passing the
+/// label alone (without `settings.variant_selections`) is enough —
+/// the path-encoded selection survives Bevy's caching.
+pub fn variant_label(variants: &[VariantSelection]) -> String {
+    if variants.is_empty() {
+        return String::new();
+    }
+    let mut parts = Vec::with_capacity(variants.len());
+    for v in variants {
+        parts.push(format!("{}@{}={}", v.prim_path, v.set_name, v.option));
+    }
+    format!("variants:{}", parts.join(","))
+}
+
+/// Inverse of [`variant_label`]. Returns `None` if the label doesn't
+/// have the `variants:` prefix or any individual entry is malformed
+/// (in that case no variants are applied at all — the loader falls
+/// back to whatever's in `settings.variant_selections`).
+pub fn parse_variant_label(label: &str) -> Option<Vec<VariantSelection>> {
+    let body = label.strip_prefix("variants:")?;
+    if body.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    for part in body.split(',') {
+        let (prim_path, rest) = part.split_once('@')?;
+        let (set_name, option) = rest.split_once('=')?;
+        out.push(VariantSelection {
+            prim_path: prim_path.to_string(),
+            set_name: set_name.to_string(),
+            option: option.to_string(),
+        });
+    }
+    Some(out)
 }

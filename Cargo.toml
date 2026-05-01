@@ -7,12 +7,12 @@ resolver = "2"
 members = ["crates/usd_schemas"]
 exclude = ["xtra"]
 
-# Use our local openusd-rs checkout while the typed-timeSamples PR
-# (https://github.com/mxpv/openusd/pull/59) is in review. Drop this
-# block once the fix lands upstream and the dep above can pick it
-# up directly.
+# Override the git-pulled `openusd` with a locally-patched clone of the
+# same revision. The patch is one fix to the USDC quaternion reader to
+# match Pixar's `GfQuat` memory layout (see `xtra/openusd-rs-patched`).
+# Slated to be upstreamed.
 [patch."https://github.com/mxpv/openusd"]
-openusd = { path = "xtra/openusd-rs" }
+openusd = { path = "xtra/openusd-rs-patched" }
 
 [package]
 name = "bevy_openusd"
@@ -123,6 +123,9 @@ bevy_egui = { version = "0.39", default-features = false, features = [
 ] }
 # Glass-themed editor UI kit (ribbons, floating panels, widgets, tokens).
 bevy_frost = { git = "https://github.com/bresilla/bevy_frost", package = "bevy_frost" }
+# Reusable 3D-scene gizmos: axis triads + joint-shaped primitives
+# (revolute arc, prismatic segment, spherical cone, distance envelope).
+bevy_glacial = { git = "https://github.com/bresilla/bevy_glacial", branch = "main" }
 
 # `build.rs` bakes a sample USDZ (USDA + procedural PNG) into
 # `assets/external/` so `cargo run -- usdz_sample.usdz` always has

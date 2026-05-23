@@ -99,6 +99,18 @@ pub fn load_texture(
     None
 }
 
+/// Cheap, quiet texture probe for heuristic callers.
+///
+/// `load_texture` deliberately warns on a miss because an authored USD texture
+/// path failing to resolve is usually actionable. Name-based recovery code,
+/// however, tries optional convention guesses like
+/// `Material_AO.png`/`Material_Roughness.png`; those misses are expected and
+/// should not look like broken authored materials in the log.
+pub fn can_resolve_texture(ctx: &mut BuildCtx<'_, '_>, raw_path: &str) -> bool {
+    let clean = raw_path.strip_prefix("./").unwrap_or(raw_path).to_string();
+    lookup_embedded(ctx.embedded, &clean).is_some() || locate_on_filesystem(ctx, &clean).is_some()
+}
+
 /// Composite separately-authored roughness + metallic textures into
 /// the single packed RGBA image Bevy's `StandardMaterial` consumes
 /// (glTF convention: R unused, G = roughness, B = metallic, A = 1.0).
@@ -118,8 +130,14 @@ pub fn load_metallic_roughness_packed(
     rough_path: &str,
     metal_path: &str,
 ) -> Option<Handle<Image>> {
-    let rough_clean = rough_path.strip_prefix("./").unwrap_or(rough_path).to_string();
-    let metal_clean = metal_path.strip_prefix("./").unwrap_or(metal_path).to_string();
+    let rough_clean = rough_path
+        .strip_prefix("./")
+        .unwrap_or(rough_path)
+        .to_string();
+    let metal_clean = metal_path
+        .strip_prefix("./")
+        .unwrap_or(metal_path)
+        .to_string();
 
     let cache_key = format!("MetalRoughPacked:r={rough_clean}|m={metal_clean}");
     if let Some(h) = ctx.embedded_textures.get(&cache_key) {
@@ -199,12 +217,16 @@ fn pack_metal_rough(rough_bytes: &[u8], metal_bytes: &[u8]) -> Option<Image> {
         (rw.max(mw), rh.max(mh))
     };
     let rough_rgba = if rough.dimensions() != (w, h) {
-        rough.resize_exact(w, h, image::imageops::FilterType::Triangle).to_rgba8()
+        rough
+            .resize_exact(w, h, image::imageops::FilterType::Triangle)
+            .to_rgba8()
     } else {
         rough.to_rgba8()
     };
     let metal_rgba = if metal.dimensions() != (w, h) {
-        metal.resize_exact(w, h, image::imageops::FilterType::Triangle).to_rgba8()
+        metal
+            .resize_exact(w, h, image::imageops::FilterType::Triangle)
+            .to_rgba8()
     } else {
         metal.to_rgba8()
     };

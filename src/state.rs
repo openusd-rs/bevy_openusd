@@ -135,13 +135,24 @@ impl LoaderTuning {
     pub fn to_variant_selections(&self) -> Vec<usd_bevy::VariantSelection> {
         self.variants
             .iter()
-            .map(|((prim_path, set_name), option)| usd_bevy::VariantSelection {
-                prim_path: prim_path.clone(),
-                set_name: set_name.clone(),
-                option: option.clone(),
-            })
+            .map(
+                |((prim_path, set_name), option)| usd_bevy::VariantSelection {
+                    prim_path: prim_path.clone(),
+                    set_name: set_name.clone(),
+                    option: option.clone(),
+                },
+            )
             .collect()
     }
+}
+
+/// One-frame request to switch the active `UsdSkelAnimation` clip without
+/// rebuilding the USD stage. The heavy variant reload path is still used for
+/// real geometry/material variants; animation clips only swap data inside the
+/// live `UsdSkelAnimDriver` components.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct PendingAnimationClip {
+    pub name: Option<String>,
 }
 
 /// Curve / point rendering defaults. Not a Resource on its own — lives

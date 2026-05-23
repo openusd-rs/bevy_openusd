@@ -32,8 +32,6 @@ use usd_schema::geom as ugeom;
 use usd_schema::xform as uxf;
 
 use crate::curves::{curves_mesh, hermite_to_read_curves, nurbs_to_read_curves, points_mesh};
-use crate::nurbs_patch::nurbs_patch_to_bevy_mesh;
-use crate::tetmesh::tetmesh_to_bevy_mesh;
 use crate::light::{Tally as LightTally, spawn_light};
 use crate::material::{add_material_labeled, default_material, standard_material_from_usd};
 use crate::mesh::{
@@ -41,6 +39,7 @@ use crate::mesh::{
     mesh_from_usd_subset_with_skin, mesh_from_usd_with_skin, mesh_plane, mesh_sphere,
     skin_attrs_from_binding,
 };
+use crate::nurbs_patch::nurbs_patch_to_bevy_mesh;
 use crate::physics_attach::{
     PendingPhysics, StageMeta, attach_physics_to_prim, populate_articulation_joints,
     read_stage_meta, resolve_pending_physics,
@@ -49,6 +48,8 @@ use crate::prim_ref::{
     UsdBlendShapeBinding, UsdDisplayName, UsdJoint, UsdKind, UsdLocalExtent, UsdPrimRef,
     UsdProcedural, UsdPurpose, UsdSkelAnimDriver, UsdSkelRoot, UsdSpatialAudio,
 };
+use crate::tetmesh::tetmesh_to_bevy_mesh;
+use crate::texture::{TextureChannel, can_resolve_texture, load_texture};
 use usd_schema::lux as ulux;
 use usd_schema::shade as ushade;
 use usd_schema::skel as uskel;
@@ -421,10 +422,7 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
     /// shared default; `true` allocates a distinct
     /// `Material:Default-doubleSided` variant. Kept cached under a
     /// synthetic label so repeat meshes share.
-    fn default_material_ds(
-        &mut self,
-        double_sided: bool,
-    ) -> bevy::asset::Handle<StandardMaterial> {
+    fn default_material_ds(&mut self, double_sided: bool) -> bevy::asset::Handle<StandardMaterial> {
         if !double_sided {
             return self.default_material();
         }
@@ -466,7 +464,11 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
             perceptual_roughness: 0.8,
             metallic: 0.0,
             double_sided,
-            cull_mode: if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) },
+            cull_mode: if double_sided {
+                None
+            } else {
+                Some(bevy::render::render_resource::Face::Back)
+            },
             ..Default::default()
         };
         let handle = self.lc.add_labeled_asset(label.clone(), mat);
@@ -552,10 +554,21 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
         if let Some(h) = self.material_cache.get(&key) {
             return h.clone();
         }
-        let mut bevy_mat = match ushade::read_preview_material(stage, material_prim)
+        let debug_materials = std::env::var("BEVY_OPENUSD_DEBUG_MATERIALS")
             .ok()
-            .flatten()
-        {
+            .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
+            .unwrap_or(false);
+        let read_material = ushade::read_preview_material(stage, material_prim)
+            .ok()
+            .flatten();
+        if debug_materials {
+            bevy::log::info!(
+                "material: {} -> {:?}",
+                material_prim.as_str(),
+                read_material
+            );
+        }
+        let mut bevy_mat = match read_material.as_ref() {
             Some(read) => standard_material_from_usd(self, &read),
             None => {
                 // Material prim exists but isn't a UsdPreviewSurface
@@ -592,6 +605,17 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
                 mat
             }
         };
+        if let Some(read) = read_material.as_ref() {
+            apply_name_guessed_textures(self, material_prim, read, &mut bevy_mat);
+        }
+        if mdl_emission_explicitly_disabled(stage, material_prim) {
+            // OmniPBR authors its default emissive colour/intensity even when
+            // `enable_emission = false`. If we translate that default as a
+            // real Bevy emissive term the material glows white and the albedo
+            // texture only shows up as vague grey detail.
+            bevy_mat.emissive = bevy::color::LinearRgba::rgb(0.0, 0.0, 0.0);
+            bevy_mat.emissive_texture = None;
+        }
         if double_sided {
             bevy_mat.double_sided = true;
             bevy_mat.cull_mode = None;
@@ -605,6 +629,110 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
         self.material_cache.insert(key, handle.clone());
         handle
     }
+}
+
+fn mdl_emission_explicitly_disabled(stage: &Stage, material_prim: &Path) -> bool {
+    for child_name in stage
+        .prim_children(material_prim.clone())
+        .unwrap_or_default()
+    {
+        let Ok(shader) = material_prim.append_path(child_name.as_str()) else {
+            continue;
+        };
+        let is_shader = stage
+            .field::<String>(shader.clone(), "typeName")
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("Shader");
+        if !is_shader {
+            continue;
+        }
+        if read_bool_input(stage, &shader, "inputs:enable_emission") == Some(false) {
+            return true;
+        }
+    }
+    false
+}
+
+fn read_bool_input(stage: &Stage, prim: &Path, attr_name: &str) -> Option<bool> {
+    use openusd::sdf::Value;
+
+    let attr = prim.append_property(attr_name).ok()?;
+    match stage.field::<Value>(attr, "default").ok().flatten()? {
+        Value::Bool(v) => Some(v),
+        _ => None,
+    }
+}
+
+/// Some Omniverse-converted assets (including the cow wrapper here)
+/// have a perfectly normal MDL material but the lightweight composed
+/// field reader misses the stronger texture asset opinions, leaving
+/// only the constant grey fallback. When that happens, recover the
+/// common exporter naming convention from the material name:
+/// `MaterialName_BaseColor.png`, `MaterialName_Normal.png`, etc.
+fn apply_name_guessed_textures(
+    ctx: &mut BuildCtx<'_, '_>,
+    material_prim: &Path,
+    read: &ushade::ReadPreviewMaterial,
+    mat: &mut StandardMaterial,
+) {
+    let Some(name) = material_prim.as_str().rsplit('/').next() else {
+        return;
+    };
+    if mat.base_color_texture.is_none() && read.diffuse_texture.is_none() {
+        mat.base_color_texture = guess_texture(
+            ctx,
+            name,
+            &["BaseColor", "Base_Color", "Albedo", "Diffuse", "diffuse"],
+            TextureChannel::Srgb,
+        );
+    }
+    if mat.normal_map_texture.is_none() && read.normal_texture.is_none() {
+        mat.normal_map_texture = guess_texture(
+            ctx,
+            name,
+            &["Normal", "NormalGL", "normal"],
+            TextureChannel::Linear,
+        );
+    }
+    if mat.metallic_roughness_texture.is_none()
+        && read.roughness_texture.is_none()
+        && read.metallic_texture.is_none()
+    {
+        mat.metallic_roughness_texture = guess_texture(
+            ctx,
+            name,
+            &["Roughness", "roughness"],
+            TextureChannel::Linear,
+        );
+    }
+    if mat.occlusion_texture.is_none() && read.occlusion_texture.is_none() {
+        mat.occlusion_texture =
+            guess_texture(ctx, name, &["AO", "Occlusion"], TextureChannel::Linear);
+    }
+}
+
+fn guess_texture(
+    ctx: &mut BuildCtx<'_, '_>,
+    material_name: &str,
+    suffixes: &[&str],
+    channel: TextureChannel,
+) -> Option<bevy::asset::Handle<bevy::image::Image>> {
+    const EXTS: &[&str] = &["png", "jpg", "jpeg", "tga"];
+    for suffix in suffixes {
+        for ext in EXTS {
+            let candidate = format!("{material_name}_{suffix}.{ext}");
+            if !can_resolve_texture(ctx, &candidate) {
+                continue;
+            }
+            if let Some(handle) = load_texture(ctx, &candidate, channel) {
+                bevy::log::info!("material: guessed texture {candidate:?} for {material_name}");
+                return Some(handle);
+            }
+        }
+    }
+    None
 }
 
 /// Recursively spawn one entity per prim, linked via [`ChildOf`].
@@ -650,7 +778,10 @@ fn spawn_prim_subtree(
     //      full walk.
     let mut replay_ctx: Option<ReplayCtx> = None;
     let is_instanceable = matches!(
-        stage.field::<bool>(path.clone(), "instanceable").ok().flatten(),
+        stage
+            .field::<bool>(path.clone(), "instanceable")
+            .ok()
+            .flatten(),
         Some(true)
     );
     if is_instanceable {
@@ -763,7 +894,6 @@ fn spawn_prim_subtree(
         });
     }
 
-
     // UsdSkel: when this prim is a SkelRoot, resolve its Skeleton +
     // animationSource and spawn one Bevy entity per joint, parented
     // per the joint topology with the authored restTransforms as
@@ -820,9 +950,7 @@ fn spawn_prim_subtree(
             // Peek the Mesh3d + MeshMaterial3d handles that
             // attach_geometry just inserted (if any).
             let entity_ref = world.entity(entity);
-            let mesh_handle = entity_ref
-                .get::<Mesh3d>()
-                .map(|m| m.0.clone());
+            let mesh_handle = entity_ref.get::<Mesh3d>().map(|m| m.0.clone());
             let material_handle = entity_ref
                 .get::<MeshMaterial3d<StandardMaterial>>()
                 .map(|m| m.0.clone());
@@ -1045,7 +1173,10 @@ fn attach_skel_root(
         .and_then(|p| Path::new(p).ok())
         .or_else(|| find_first_typed_descendant(stage, path, "Skeleton"));
     let Some(skel_path) = skel_prim_path else {
-        bevy::log::warn!("skel: no Skeleton resolvable for SkelRoot {}", path.as_str());
+        bevy::log::warn!(
+            "skel: no Skeleton resolvable for SkelRoot {}",
+            path.as_str()
+        );
         return;
     };
     let Some(mut skel) = uskel::read_skeleton(stage, &skel_path).ok().flatten() else {
@@ -1070,9 +1201,14 @@ fn attach_skel_root(
         skel_path.as_str()
     );
 
+    let resolved_animation_source = root
+        .animation_source
+        .clone()
+        .or_else(|| direct_rel_first_target(stage, &skel_path, "skel:animationSource"));
+
     world.entity_mut(entity).insert(UsdSkelRoot {
         skeleton_path: skel.path.clone(),
-        animation_source_path: root.animation_source.clone().unwrap_or_default(),
+        animation_source_path: resolved_animation_source.clone().unwrap_or_default(),
     });
 
     let parents = skel.joint_parent_indices();
@@ -1100,7 +1236,10 @@ fn attach_skel_root(
                 return true; // try next pass
             };
             let local = transform_from_mat4_row_major(
-                skel.rest_transforms.get(i).copied().unwrap_or(IDENTITY_MAT4),
+                skel.rest_transforms
+                    .get(i)
+                    .copied()
+                    .unwrap_or(IDENTITY_MAT4),
             );
             let je = world
                 .spawn((
@@ -1170,10 +1309,13 @@ fn attach_skel_root(
     // convenience), build a UsdSkelAnimDriver so the per-frame system
     // can write joint transforms.
     if let Some(joint_entities) = joint_entities_for_anim {
-        let anim_lookup_key = root
-            .animation_source
+        let anim_lookup_key = resolved_animation_source
             .as_deref()
-            .and_then(|p| p.rsplit_once('/').map(|(_, n)| n.to_string()).or_else(|| Some(p.to_string())))
+            .and_then(|p| {
+                p.rsplit_once('/')
+                    .map(|(_, n)| n.to_string())
+                    .or_else(|| Some(p.to_string()))
+            })
             .or_else(|| {
                 // Fall back to the only sidecar entry — most users
                 // only side-load one animation file.
@@ -1194,35 +1336,34 @@ fn attach_skel_root(
         // that brings the real data in via prim-targeted reference
         // — sidecar text-scrape would see the empty wrapper prim
         // and clobber walk.usd's real entry under the same name.
-        let from_stage: Option<usd_schema::skel_anim_text::ReadSkelAnimText> = root
-            .animation_source
-            .as_deref()
-            .and_then(|p| Path::new(p).ok())
-            .and_then(|p| uskel::read_skel_animation_stage(stage, &p).ok().flatten())
-            .or_else(|| {
-                // Implicit binding: USD allows authoring the
-                // SkelAnimation as a CHILD of the Skeleton instead
-                // of a `skel:animationSource` rel target. Apple's
-                // hummingbird (and many AR Quick Look samples) use
-                // this form. Scan the Skeleton's children.
-                find_first_typed_descendant(stage, &skel_path, "SkelAnimation")
-                    .and_then(|p| uskel::read_skel_animation_stage(stage, &p).ok().flatten())
-            })
-            // Treat empty stage reads (no joints / no time samples)
-            // as "no animation here" so the sidecar fallback gets a
-            // chance.
-            .filter(|a| {
-                !a.joints.is_empty()
-                    || !a.translations.is_empty()
-                    || !a.rotations.is_empty()
-                    || !a.scales.is_empty()
-                    || !a.blend_shape_weights.is_empty()
-            });
-        let from_sidecar: Option<usd_schema::skel_anim_text::ReadSkelAnimText> =
-            anim_lookup_key
+        let from_stage: Option<usd_schema::skel_anim_text::ReadSkelAnimText> =
+            resolved_animation_source
                 .as_deref()
-                .and_then(|k| ctx.skel_animations.get(k))
-                .cloned();
+                .and_then(|p| Path::new(p).ok())
+                .and_then(|p| uskel::read_skel_animation_stage(stage, &p).ok().flatten())
+                .or_else(|| {
+                    // Implicit binding: USD allows authoring the
+                    // SkelAnimation as a CHILD of the Skeleton instead
+                    // of a `skel:animationSource` rel target. Apple's
+                    // hummingbird (and many AR Quick Look samples) use
+                    // this form. Scan the Skeleton's children.
+                    find_first_typed_descendant(stage, &skel_path, "SkelAnimation")
+                        .and_then(|p| uskel::read_skel_animation_stage(stage, &p).ok().flatten())
+                })
+                // Treat empty stage reads (no joints / no time samples)
+                // as "no animation here" so the sidecar fallback gets a
+                // chance.
+                .filter(|a| {
+                    !a.joints.is_empty()
+                        || !a.translations.is_empty()
+                        || !a.rotations.is_empty()
+                        || !a.scales.is_empty()
+                        || !a.blend_shape_weights.is_empty()
+                });
+        let from_sidecar: Option<usd_schema::skel_anim_text::ReadSkelAnimText> = anim_lookup_key
+            .as_deref()
+            .and_then(|k| ctx.skel_animations.get(k))
+            .cloned();
         let resolved_anim = from_stage.or(from_sidecar);
         if let Some(ref anim) = resolved_anim {
             // Remap animation joints → skeleton joint entities.
@@ -1246,11 +1387,8 @@ fn attach_skel_root(
                 .iter()
                 .map(|(t, v)| (t.0, v.clone()))
                 .collect();
-            let scales: Vec<(f64, Vec<[f32; 3]>)> = anim
-                .scales
-                .iter()
-                .map(|(t, v)| (t.0, v.clone()))
-                .collect();
+            let scales: Vec<(f64, Vec<[f32; 3]>)> =
+                anim.scales.iter().map(|(t, v)| (t.0, v.clone())).collect();
             let mapped = anim_to_skel.iter().filter(|e| e.is_some()).count();
             let bs_weights: Vec<(f64, Vec<f32>)> = anim
                 .blend_shape_weights
@@ -1288,6 +1426,9 @@ fn attach_skel_root(
                 );
             }
             world.entity_mut(entity).insert(UsdSkelAnimDriver {
+                anim_name: anim.prim_name.clone(),
+                skeleton_joints: skel.joints.clone(),
+                skeleton_joint_entities: joint_entities.iter().map(|e| Some(*e)).collect(),
                 joint_entities: anim_to_skel,
                 translations,
                 rotations,
@@ -1342,9 +1483,9 @@ fn build_subset_skinned_mesh(
                 .iter()
                 .position(|p| p == jname)
                 .or_else(|| {
-                    info.joint_paths.iter().position(|p| {
-                        p.rsplit_once('/').map(|(_, n)| n).unwrap_or(p) == jname
-                    })
+                    info.joint_paths
+                        .iter()
+                        .position(|p| p.rsplit_once('/').map(|(_, n)| n).unwrap_or(p) == jname)
                 });
             match pos {
                 Some(idx) => {
@@ -1638,7 +1779,9 @@ fn effective_skin_pretransform(stage: &Stage, mesh_path: &Path) -> bevy::math::M
 
 fn read_geom_bind_transform(stage: &Stage, prim: &Path) -> Option<bevy::math::Mat4> {
     use openusd::sdf::Value;
-    let attr = prim.append_property("primvars:skel:geomBindTransform").ok()?;
+    let attr = prim
+        .append_property("primvars:skel:geomBindTransform")
+        .ok()?;
     let v = stage.field::<Value>(attr, "default").ok().flatten()?;
     match v {
         Value::Matrix4d(m) => {
@@ -1674,9 +1817,84 @@ fn inherited_skel_path(stage: &Stage, mesh_path: &Path) -> Option<String> {
     }
 }
 
+/// Resolve a mesh's authored `skel:skeleton` relationship to the
+/// composed Skeleton path we cached while walking the stage.
+///
+/// Some referenced USDs expose primvars through composition but leave
+/// relationship target paths in the referenced layer's original
+/// namespace (for example `/RootNode/RigRoot/Skeleton`) even though
+/// the composed prim lives under the reference site
+/// (`/Cow_F/RigRoot/Skeleton`). Try exact match first, then remap the
+/// first path component to the mesh's composed root, then fall back to
+/// an unambiguous suffix match.
+fn resolve_skel_cache_entry(
+    ctx: &BuildCtx<'_, '_>,
+    stage: &Stage,
+    mesh_path: &Path,
+    binding: &uskel::ReadSkelBinding,
+) -> (Option<String>, Option<SkelInfo>) {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(p) = binding.skeleton.clone() {
+        candidates.push(p);
+    }
+    if let Some(p) = inherited_skel_path(stage, mesh_path)
+        && !candidates.iter().any(|existing| existing == &p)
+    {
+        candidates.push(p);
+    }
+
+    for candidate in &candidates {
+        if let Some((resolved, info)) = resolve_skel_cache_key(ctx, mesh_path, candidate) {
+            return (Some(resolved), Some(info));
+        }
+    }
+
+    (candidates.into_iter().next(), None)
+}
+
+fn resolve_skel_cache_key(
+    ctx: &BuildCtx<'_, '_>,
+    mesh_path: &Path,
+    candidate: &str,
+) -> Option<(String, SkelInfo)> {
+    if let Some(info) = ctx.skel_cache.get(candidate).cloned() {
+        return Some((candidate.to_string(), info));
+    }
+
+    if let Some(remapped) = remap_target_to_mesh_root(candidate, mesh_path)
+        && let Some(info) = ctx.skel_cache.get(&remapped).cloned()
+    {
+        return Some((remapped, info));
+    }
+
+    let tail = candidate.trim_start_matches('/').split_once('/')?.1;
+    let suffix = format!("/{tail}");
+    let mut matches = ctx
+        .skel_cache
+        .iter()
+        .filter(|(key, _)| key.ends_with(&suffix));
+    let first = matches.next()?;
+    if matches.next().is_none() {
+        return Some((first.0.clone(), first.1.clone()));
+    }
+    None
+}
+
+fn remap_target_to_mesh_root(candidate: &str, mesh_path: &Path) -> Option<String> {
+    let candidate = candidate.strip_prefix('/')?;
+    let (_, tail) = candidate.split_once('/')?;
+    let mesh = mesh_path.as_str().strip_prefix('/')?;
+    let mesh_root = mesh.split('/').next()?;
+    Some(format!("/{mesh_root}/{tail}"))
+}
+
 fn direct_skel_rel(stage: &Stage, prim: &Path) -> Option<String> {
+    direct_rel_first_target(stage, prim, "skel:skeleton")
+}
+
+fn direct_rel_first_target(stage: &Stage, prim: &Path, rel_name: &str) -> Option<String> {
     use openusd::sdf::Value;
-    let rel = prim.append_property("skel:skeleton").ok()?;
+    let rel = prim.append_property(rel_name).ok()?;
     let raw = stage.field::<Value>(rel, "targetPaths").ok().flatten()?;
     let paths = match raw {
         Value::PathListOp(op) => op.flatten(),
@@ -1813,9 +2031,11 @@ fn augment_skeleton_from_anim(
     }
 
     let added = new_joints.len() as i64 - skel.joints.len() as i64;
-    let reordered =
-        new_joints.iter().zip(skel.joints.iter()).any(|(a, b)| a != b)
-            || new_joints.len() != skel.joints.len();
+    let reordered = new_joints
+        .iter()
+        .zip(skel.joints.iter())
+        .any(|(a, b)| a != b)
+        || new_joints.len() != skel.joints.len();
     skel.joints = new_joints;
     skel.bind_transforms = new_bind;
     skel.rest_transforms = new_rest;
@@ -1996,13 +2216,15 @@ fn attach_geometry(
                 }
                 b
             };
-            let cache_key = match &binding {
-                None => mesh_content_hash(&read),
-                Some(b) => format!(
-                    "{}_skin_{}",
-                    mesh_content_hash(&read),
-                    skel_binding_hash(b)
-                ),
+            let (skel_target, skel_info) = match &binding {
+                Some(b) => resolve_skel_cache_entry(ctx, stage, path, b),
+                None => (None, None),
+            };
+            let cache_key = match (&binding, &skel_info) {
+                (Some(b), Some(_)) => {
+                    format!("{}_skin_{}", mesh_content_hash(&read), skel_binding_hash(b))
+                }
+                _ => mesh_content_hash(&read),
             };
             // Blendshape names referenced by this mesh (bound via
             // SkelBindingAPI). Folded into the cache key + sets the
@@ -2020,19 +2242,11 @@ fn attach_geometry(
             let mesh_handle = if let Some(h) = ctx.mesh_cache.get(&cache_key) {
                 h.clone()
             } else {
-                let mut bevy_mesh = match &binding {
-                    Some(b) => {
+                let mut bevy_mesh = match (&binding, &skel_info) {
+                    (Some(b), Some(info)) => {
                         // Resolve target Skeleton's joint count so we
                         // can clamp out-of-range indices.
-                        let target_skel = b
-                            .skeleton
-                            .clone()
-                            .or_else(|| inherited_skel_path(stage, path));
-                        let max_joints = target_skel
-                            .as_deref()
-                            .and_then(|t| ctx.skel_cache.get(t))
-                            .map(|info| info.joint_entities.len() as u16)
-                            .unwrap_or(0);
+                        let max_joints = info.joint_entities.len() as u16;
                         let skin = skin_attrs_from_binding(b, read.points.len(), max_joints);
                         // Compose the mesh-local-to-skel-world
                         // pretransform: parent xform chain + the
@@ -2063,18 +2277,12 @@ fn attach_geometry(
                         }
                         mesh_from_usd_with_skin(&read_for_skin, &skin)
                     }
-                    None => mesh_from_usd(&read),
+                    _ => mesh_from_usd(&read),
                 };
                 // Bake blend-shape morph targets onto the mesh.
                 if let Some(b) = &binding {
                     if !b.blend_shape_targets.is_empty() {
-                        let _ = bake_blend_shapes_into_mesh(
-                            stage,
-                            b,
-                            &read,
-                            &mut bevy_mesh,
-                            ctx,
-                        );
+                        let _ = bake_blend_shapes_into_mesh(stage, b, &read, &mut bevy_mesh, ctx);
                     }
                 }
                 let handle = ctx.add_mesh_labeled(format!("Mesh:{cache_key}"), bevy_mesh);
@@ -2085,22 +2293,16 @@ fn attach_geometry(
             // cached skel — looks up the joint entities + inverse
             // bindposes built when the SkelRoot ancestor was walked.
             if let Some(b) = &binding {
-                let skel_target = b
-                    .skeleton
-                    .clone()
-                    .or_else(|| inherited_skel_path(stage, path));
-                if let Some(t) = skel_target.as_deref()
-                    && let Some(info) = ctx.skel_cache.get(t).cloned()
-                {
+                if let Some(info) = skel_info.clone() {
                     if let Some((joints, ibps_handle)) =
                         build_subset_skinned_mesh(&info, b, &mut ctx.lc, path)
                     {
-                        world.entity_mut(entity).insert(
-                            bevy::mesh::skinning::SkinnedMesh {
+                        world
+                            .entity_mut(entity)
+                            .insert(bevy::mesh::skinning::SkinnedMesh {
                                 inverse_bindposes: ibps_handle,
                                 joints,
-                            },
-                        );
+                            });
                         ctx.skinned_attached += 1;
                     } else {
                         ctx.skinned_failed += 1;
@@ -2112,7 +2314,7 @@ fn attach_geometry(
                 } else {
                     ctx.skinned_no_cache += 1;
                     bevy::log::warn!(
-                        "skel: skin attrs baked but no skel cache for {} (target={:?})",
+                        "skel: skin attrs ignored because no skel cache resolved for {} (target={:?})",
                         path.as_str(),
                         skel_target
                     );
@@ -2136,18 +2338,12 @@ fn attach_geometry(
                     // without parallel skel:blendShapes tokens).
                     let max_w = bevy::mesh::morph::MAX_MORPH_WEIGHTS;
                     let take = b.blend_shape_targets.len().min(max_w);
-                    let mut names: Vec<String> = b
-                        .blend_shapes
-                        .iter()
-                        .take(take)
-                        .cloned()
-                        .collect();
+                    let mut names: Vec<String> =
+                        b.blend_shapes.iter().take(take).cloned().collect();
                     while names.len() < take {
                         names.push(String::new());
                     }
-                    if let Ok(mw) =
-                        bevy::mesh::morph::MeshMorphWeights::new(vec![0.0_f32; take])
-                    {
+                    if let Ok(mw) = bevy::mesh::morph::MeshMorphWeights::new(vec![0.0_f32; take]) {
                         world
                             .entity_mut(entity)
                             .insert(mw)
@@ -2267,10 +2463,7 @@ fn attach_geometry(
         }
         "NurbsPatch" => {
             let Some(read) = ugeom::read_nurbs_patch(stage, path).ok().flatten() else {
-                bevy::log::debug!(
-                    "nurbs_patch: {} missing required attrs",
-                    path.as_str()
-                );
+                bevy::log::debug!("nurbs_patch: {} missing required attrs", path.as_str());
                 return;
             };
             let mesh = nurbs_patch_to_bevy_mesh(&read);
@@ -2307,8 +2500,7 @@ fn attach_geometry(
             // existing tube builder.
             let read = hermite_to_read_curves(&hermite);
             let mesh = curves_mesh(&read, ctx.curve_default_radius, ctx.curve_ring_segments);
-            let handle =
-                ctx.add_mesh_labeled(format!("HermiteCurves:{}", path.as_str()), mesh);
+            let handle = ctx.add_mesh_labeled(format!("HermiteCurves:{}", path.as_str()), mesh);
             let mat = ctx.default_material();
             world
                 .entity_mut(entity)
@@ -2412,14 +2604,18 @@ fn spawn_mesh_with_subsets(
     } else {
         uskel::read_skel_binding(stage, mesh_path).ok().flatten()
     };
-    let skel_target = skel_binding.as_ref().and_then(|b| {
-        b.skeleton
-            .clone()
-            .or_else(|| inherited_skel_path(stage, mesh_path))
-    });
-    let skel_info = skel_target
-        .as_deref()
-        .and_then(|t| ctx.skel_cache.get(t).cloned());
+    let (skel_target, skel_info) = match &skel_binding {
+        Some(b) => resolve_skel_cache_entry(ctx, stage, mesh_path, b),
+        None => (None, None),
+    };
+    if skel_binding.is_some() && skel_info.is_none() {
+        ctx.skinned_no_cache += 1;
+        bevy::log::warn!(
+            "skel: skin attrs ignored because no skel cache resolved for {} (target={:?})",
+            mesh_path.as_str(),
+            skel_target
+        );
+    }
     // Pre-applied transform (parent xform chain × geomBindTransform)
     // is baked into the mesh's POINTS so skinning math sees them in
     // the same space the inverse-bindposes were captured in.
@@ -2432,9 +2628,10 @@ fn spawn_mesh_with_subsets(
         .as_ref()
         .map(|info| info.joint_entities.len() as u16)
         .unwrap_or(0);
-    let skin_attrs = skel_binding.as_ref().map(|b| {
-        skin_attrs_from_binding(b, read.points.len(), max_joints)
-    });
+    let skin_attrs = skel_binding
+        .as_ref()
+        .filter(|_| skel_info.is_some())
+        .map(|b| skin_attrs_from_binding(b, read.points.len(), max_joints));
 
     // Apply pretransform once to a working ReadMesh — every subset
     // shares the same point buffer.
@@ -2493,11 +2690,21 @@ fn spawn_mesh_with_subsets(
             ),
             None => mesh_from_usd_subset(read, Some(&subset.indices)),
         };
-        let label = format!("Mesh:{}:subset{subset_ix}:{}", mesh_path.as_str(), subset.name);
+        let label = format!(
+            "Mesh:{}:subset{subset_ix}:{}",
+            mesh_path.as_str(),
+            subset.name
+        );
         let mesh_handle = ctx.add_mesh_labeled(label, mesh);
-        let binding = subset.material_binding.clone().or_else(|| parent_binding.clone());
+        let binding = subset
+            .material_binding
+            .clone()
+            .or_else(|| parent_binding.clone());
         let mat = match binding {
-            Some(mat_prim) => ctx.material_for(stage, &mat_prim, read.double_sided),
+            Some(mat_prim) => {
+                let mat_prim = resolve_material_prim(stage, mesh_path, &mat_prim);
+                ctx.material_for(stage, &mat_prim, read.double_sided)
+            }
             None if read.display_color.is_some() => {
                 ctx.vertex_color_modulated_material_ds(read.double_sided)
             }
@@ -2525,17 +2732,18 @@ fn spawn_mesh_with_subsets(
         .collect();
     if !residual.is_empty() {
         let mesh = match skin_attrs.as_ref() {
-            Some(skin) => mesh_from_usd_subset_with_skin(
-                read_for_skin.as_ref(),
-                Some(&residual),
-                Some(skin),
-            ),
+            Some(skin) => {
+                mesh_from_usd_subset_with_skin(read_for_skin.as_ref(), Some(&residual), Some(skin))
+            }
             None => mesh_from_usd_subset(read, Some(&residual)),
         };
         let label = format!("Mesh:{}:residual", mesh_path.as_str());
         let mesh_handle = ctx.add_mesh_labeled(label, mesh);
         let mat = match parent_binding {
-            Some(mat_prim) => ctx.material_for(stage, &mat_prim, read.double_sided),
+            Some(mat_prim) => {
+                let mat_prim = resolve_material_prim(stage, mesh_path, &mat_prim);
+                ctx.material_for(stage, &mat_prim, read.double_sided)
+            }
             None if read.display_color.is_some() => {
                 ctx.vertex_color_modulated_material_ds(read.double_sided)
             }
@@ -2655,10 +2863,8 @@ fn replay_prototype(
         }
         let parent_rel = d.parent_relative_path.clone().unwrap_or_default();
         let parent_entity = *by_rel.get(&parent_rel).unwrap_or(&instance_root);
-        let instance_prim_ref = UsdPrimRef::new(format!(
-            "{}{}",
-            rc.instance_prim_path, d.relative_path
-        ));
+        let instance_prim_ref =
+            UsdPrimRef::new(format!("{}{}", rc.instance_prim_path, d.relative_path));
         let mut e = world.spawn((
             Name::new(d.leaf_name.clone()),
             d.relative_transform,
@@ -2690,14 +2896,7 @@ fn replay_prototype(
 fn is_replayable_type(type_name: Option<&str>) -> bool {
     matches!(
         type_name.unwrap_or(""),
-        "" | "Xform"
-            | "Scope"
-            | "Mesh"
-            | "Cube"
-            | "Sphere"
-            | "Cylinder"
-            | "Capsule"
-            | "Plane"
+        "" | "Xform" | "Scope" | "Mesh" | "Cube" | "Sphere" | "Cylinder" | "Capsule" | "Plane"
     )
 }
 
@@ -2986,8 +3185,12 @@ fn mesh_is_y_up(read: &ugeom::ReadMesh) -> bool {
     let mut mx = [f32::NEG_INFINITY; 3];
     for p in &read.points {
         for i in 0..3 {
-            if p[i] < mn[i] { mn[i] = p[i]; }
-            if p[i] > mx[i] { mx[i] = p[i]; }
+            if p[i] < mn[i] {
+                mn[i] = p[i];
+            }
+            if p[i] > mx[i] {
+                mx[i] = p[i];
+            }
         }
     }
     let dy = mx[1] - mn[1];
@@ -3035,7 +3238,10 @@ fn resolve_material(
     ctx: &mut BuildCtx<'_, '_>,
 ) -> bevy::asset::Handle<StandardMaterial> {
     match ushade::read_material_binding(stage, prim).ok().flatten() {
-        Some(mat_prim) => ctx.material_for(stage, &mat_prim, false),
+        Some(mat_prim) => {
+            let mat_prim = resolve_material_prim(stage, prim, &mat_prim);
+            ctx.material_for(stage, &mat_prim, false)
+        }
         None => ctx.default_material(),
     }
 }
@@ -3054,7 +3260,10 @@ fn resolve_material_with_display_color(
     double_sided: bool,
 ) -> bevy::asset::Handle<StandardMaterial> {
     match ushade::read_material_binding(stage, prim).ok().flatten() {
-        Some(mat_prim) => ctx.material_for(stage, &mat_prim, double_sided),
+        Some(mat_prim) => {
+            let mat_prim = resolve_material_prim(stage, prim, &mat_prim);
+            ctx.material_for(stage, &mat_prim, double_sided)
+        }
         None if has_display_color => ctx.vertex_color_modulated_material_ds(double_sided),
         // No material binding, no displayColor → neutral gray.
         //
@@ -3069,6 +3278,64 @@ fn resolve_material_with_display_color(
         // a uniform fallback here is fine.
         None => ctx.default_material_ds(double_sided),
     }
+}
+
+/// Resolve a referenced-layer material binding into the composed stage.
+/// Some assets keep rel targets such as `/RootNode/Looks/Foo` after the
+/// referenced content is mounted at `/Cow_F`; remap the first path segment
+/// to the bound mesh's composed root before falling back to a placeholder
+/// material.
+fn resolve_material_prim(stage: &Stage, bound_prim: &Path, material_prim: &Path) -> Path {
+    // Prefer the material under the composed asset root when a reference
+    // left its relationship target in the source layer's namespace
+    // (`/RootNode/...` mounted as `/Cow_F/...`). The source prim can
+    // still exist as a ghost in the composed stage, but it often lacks
+    // stronger wrapper opinions such as texture overrides.
+    if let Some(remapped) = remap_target_to_mesh_root(material_prim.as_str(), bound_prim)
+        .and_then(|s| Path::new(&s).ok())
+        && remapped != *material_prim
+        && prim_type_is(stage, &remapped, "Material")
+    {
+        return remapped;
+    }
+
+    if prim_type_is(stage, material_prim, "Material") {
+        return material_prim.clone();
+    }
+
+    let Some(tail) = material_prim
+        .as_str()
+        .trim_start_matches('/')
+        .split_once('/')
+        .map(|(_, tail)| format!("/{tail}"))
+    else {
+        return material_prim.clone();
+    };
+    let mut found: Option<Path> = None;
+    let mut ambiguous = false;
+    let _ = stage.traverse(|path: &Path| {
+        if !ambiguous && path.as_str().ends_with(&tail) && prim_type_is(stage, path, "Material") {
+            if found.is_some() {
+                ambiguous = true;
+            } else {
+                found = Some(path.clone());
+            }
+        }
+    });
+    if !ambiguous {
+        found.unwrap_or_else(|| material_prim.clone())
+    } else {
+        material_prim.clone()
+    }
+}
+
+fn prim_type_is(stage: &Stage, prim: &Path, expected: &str) -> bool {
+    stage
+        .field::<String>(prim.clone(), "typeName")
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some(expected)
 }
 
 /// True when the authored `primvars:displayColor` carries at least
@@ -3087,7 +3354,9 @@ fn display_color_is_useful(cs: &[[f32; 3]]) -> bool {
     //   1. Any value far from white → real shading info.
     //   2. Variation between values (e.g. per-vertex gradient) →
     //      real shading info even if the average is near-white.
-    let near_white = |c: &[f32; 3]| (c[0] - 1.0).abs() < 0.02 && (c[1] - 1.0).abs() < 0.02 && (c[2] - 1.0).abs() < 0.02;
+    let near_white = |c: &[f32; 3]| {
+        (c[0] - 1.0).abs() < 0.02 && (c[1] - 1.0).abs() < 0.02 && (c[2] - 1.0).abs() < 0.02
+    };
     let any_non_white = cs.iter().any(|c| !near_white(c));
     if any_non_white {
         return true;

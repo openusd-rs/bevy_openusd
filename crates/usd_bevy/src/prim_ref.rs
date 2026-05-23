@@ -72,6 +72,16 @@ pub struct UsdBlendShapeBinding {
 #[derive(Component, Reflect, Clone, Default)]
 #[reflect(Component, Default)]
 pub struct UsdSkelAnimDriver {
+    /// Current clip name, usually the `SkelAnimation` prim name.
+    pub anim_name: String,
+    /// Skeleton joint paths in skeleton order. Stored so the viewer can swap
+    /// animation clips live without rebuilding the whole USD stage.
+    pub skeleton_joints: Vec<String>,
+    /// Skeleton joint entities in skeleton order. `joint_entities` below is
+    /// derived from this per active clip because different clips may author
+    /// channels in a different order.
+    #[entities]
+    pub skeleton_joint_entities: Vec<Option<bevy::ecs::entity::Entity>>,
     /// One entry per animation channel (i.e. animation's `joints`
     /// array length). `None` when the animation references a joint
     /// the bound Skeleton doesn't have. `#[entities]` tells the
@@ -248,10 +258,7 @@ pub struct UsdCustomAttrs {
 impl UsdCustomAttrs {
     /// Raw by-name lookup on the flat attribute list.
     pub fn get(&self, name: &str) -> Option<&usd_schema::geom::CustomAttrValue> {
-        self.entries
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v)
+        self.entries.iter().find(|(n, _)| n == name).map(|(_, v)| v)
     }
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty() && self.custom_data.is_empty() && self.asset_info.is_empty()
@@ -293,9 +300,9 @@ impl UsdCustomAttrs {
         &'a self,
         prefix: &'a str,
     ) -> impl Iterator<Item = (&'a str, &'a usd_schema::geom::CustomAttrValue)> + 'a {
-        self.entries.iter().filter_map(move |(name, val)| {
-            name.strip_prefix(prefix).map(|short| (short, val))
-        })
+        self.entries
+            .iter()
+            .filter_map(move |(name, val)| name.strip_prefix(prefix).map(|short| (short, val)))
     }
 
     /// Raw prefix iteration (keeps the full name).
@@ -303,6 +310,8 @@ impl UsdCustomAttrs {
         &'a self,
         prefix: &'a str,
     ) -> impl Iterator<Item = &'a (String, usd_schema::geom::CustomAttrValue)> + 'a {
-        self.entries.iter().filter(move |(n, _)| n.starts_with(prefix))
+        self.entries
+            .iter()
+            .filter(move |(n, _)| n.starts_with(prefix))
     }
 }

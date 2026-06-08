@@ -1138,6 +1138,7 @@ fn draw_variants_panel(
     open: Res<RibbonOpen>,
     placement: Res<RibbonPlacement>,
     accent: Res<AccentColor>,
+    stage: Option<Res<crate::StageHandle>>,
     usd_assets: Res<Assets<UsdAsset>>,
     mut loader_tuning: ResMut<LoaderTuning>,
     mut pending_anim: ResMut<PendingAnimationClip>,
@@ -1163,7 +1164,7 @@ fn draw_variants_panel(
         accent_col,
         |pane| {
             pane.section("variants_animation", "Animation clips", true, |ui| {
-                let asset = usd_assets.iter().next().map(|(_, a)| a);
+                let asset = stage.as_ref().and_then(|stage| usd_assets.get(&stage.0));
                 let Some(asset) = asset else {
                     sub_caption(ui, "(no stage loaded yet)");
                     return;
@@ -1232,18 +1233,38 @@ fn draw_variants_panel(
                 let _ = changed;
             });
             pane.section("variants_all", "Variant sets", true, |ui| {
-                let asset = usd_assets.iter().next().map(|(_, a)| a);
+                let asset = stage.as_ref().and_then(|stage| usd_assets.get(&stage.0));
                 match asset {
-                    Some(asset) if !asset.variants.is_empty() => {
+                    Some(asset)
+                        if asset
+                            .variants
+                            .values()
+                            .any(|sets| sets.iter().any(|set| set.name != "anim")) =>
+                    {
+                        let variant_prim_count = asset
+                            .variants
+                            .values()
+                            .filter(|sets| sets.iter().any(|set| set.name != "anim"))
+                            .count();
                         sub_caption(
                             ui,
-                            &format!("{} prims author variant sets", asset.variants.len()),
+                            &format!(
+                                "{variant_prim_count} prims author non-animation variant sets"
+                            ),
                         );
                         ui.add_space(style::space::BLOCK);
 
                         let mut changed = false;
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            let mut entries: Vec<_> = asset.variants.iter().collect();
+                            let mut entries: Vec<_> = asset
+                                .variants
+                                .iter()
+                                .filter_map(|(prim_path, sets)| {
+                                    let variant_sets: Vec<_> =
+                                        sets.iter().filter(|set| set.name != "anim").collect();
+                                    (!variant_sets.is_empty()).then_some((prim_path, variant_sets))
+                                })
+                                .collect();
                             entries.sort_by(|a, b| a.0.cmp(b.0));
                             for (prim_path, sets) in entries {
                                 nested_section(
@@ -1289,11 +1310,7 @@ fn draw_variants_panel(
                                                         loader_tuning
                                                             .variants
                                                             .insert(key.clone(), picked.clone());
-                                                        if set.name == "anim" {
-                                                            pending_anim.name = Some(picked);
-                                                        } else {
-                                                            changed = true;
-                                                        }
+                                                        changed = true;
                                                     }
                                                 }
                                             });
@@ -1305,14 +1322,7 @@ fn draw_variants_panel(
                                                         .clicked()
                                                     {
                                                         loader_tuning.variants.remove(&key);
-                                                        if set.name == "anim" {
-                                                            if !authored.is_empty() {
-                                                                pending_anim.name =
-                                                                    Some(authored.to_string());
-                                                            }
-                                                        } else {
-                                                            changed = true;
-                                                        }
+                                                        changed = true;
                                                     }
                                                 });
                                             }
@@ -1326,7 +1336,7 @@ fn draw_variants_panel(
                         }
                     }
                     Some(_) => {
-                        sub_caption(ui, "Stage authors no variant sets.");
+                        sub_caption(ui, "Stage authors no non-animation variant sets.");
                     }
                     None => {
                         sub_caption(ui, "(no stage loaded yet)");
@@ -1569,7 +1579,7 @@ fn draw_materials_panel(
     open: Res<RibbonOpen>,
     placement: Res<RibbonPlacement>,
     accent: Res<AccentColor>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    materials: Res<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
     // Only entities tagged with `UsdPrimRef` came from the loaded
     // USD asset — restrict the panel to those so it doesn't list
@@ -1622,7 +1632,10 @@ fn draw_materials_panel(
                 &format!("{} material(s)", entries.len()),
                 true,
                 |ui| {
-                    sub_caption(ui, "Edits update every mesh bound to that material.");
+                    sub_caption(
+                        ui,
+                        "Read-only. Materials use the USD/default values; this panel does not tint colors or override metallic/roughness.",
+                    );
                 },
             );
             for (id, label) in &entries {
@@ -1639,40 +1652,19 @@ fn draw_materials_panel(
                     Box::leak(short.into_boxed_str()),
                     false,
                     |ui| {
-                        let Some(mat) = materials.get_mut(*id) else {
+                        let Some(mat) = materials.get(*id) else {
                             return;
                         };
                         ui.label(egui::RichText::new(label).small().monospace());
                         ui.add_space(style::space::BLOCK);
-                        // Base colour. Bevy's StandardMaterial.base_color
-                        // is in linear sRGB; egui's color picker thinks
-                        // gamma-corrected sRGB. Round-trip through linear
-                        // so what the user sees in the picker matches
-                        // what gets stored.
-                        let linear = mat.base_color.to_linear();
-                        let mut rgb = [linear.red, linear.green, linear.blue];
-                        ui.horizontal(|ui| {
-                            ui.label("Base color:");
-                            if ui.color_edit_button_rgb(&mut rgb).changed() {
-                                mat.base_color = Color::LinearRgba(LinearRgba {
-                                    red: rgb[0],
-                                    green: rgb[1],
-                                    blue: rgb[2],
-                                    alpha: linear.alpha,
-                                });
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Roughness:");
-                            ui.add(
-                                egui::Slider::new(&mut mat.perceptual_roughness, 0.0..=1.0)
-                                    .step_by(0.01),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Metallic:");
-                            ui.add(egui::Slider::new(&mut mat.metallic, 0.0..=1.0).step_by(0.01));
-                        });
+                        let texture_state = if mat.base_color_texture.is_some() {
+                            "textured"
+                        } else {
+                            "constant color"
+                        };
+                        readout_row(ui, "Albedo", texture_state);
+                        readout_row(ui, "Roughness", "USD/default");
+                        readout_row(ui, "Metallic", "USD/default");
                     },
                 );
             }

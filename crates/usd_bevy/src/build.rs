@@ -81,6 +81,7 @@ pub fn stage_to_scene(
     lc: &mut LoadContext<'_>,
     embedded: &HashMap<String, Vec<u8>>,
     search_paths: &[std::path::PathBuf],
+    material_diffuse_overrides: &HashMap<String, String>,
     kind_collapse: bool,
     light_intensity_scale: f32,
     curve_default_radius: f32,
@@ -93,6 +94,7 @@ pub fn stage_to_scene(
         lc,
         embedded,
         search_paths,
+        material_diffuse_overrides,
         kind_collapse,
         light_intensity_scale,
         curve_default_radius,
@@ -211,6 +213,12 @@ pub(crate) struct BuildCtx<'lc, 'a> {
     /// Filesystem dirs the texture loader probes for relative asset paths
     /// that Bevy's AssetServer can't find via the asset root alone.
     pub search_paths: &'a [std::path::PathBuf],
+    /// Material prim path → diffuse texture override derived from loader-side
+    /// variant selections. This is intentionally outside USD composition:
+    /// `openusd-rs` currently exposes the cow coat wrapper's variant set in
+    /// metadata, but still returns the referenced layer's original material
+    /// asset opinion when asked for the composed attribute value.
+    pub material_diffuse_overrides: &'a HashMap<String, String>,
     /// When `true`, kind-tagged subtrees flatten their intermediate Xforms.
     pub kind_collapse: bool,
     /// Scalar applied to every UsdLux light's brightness.
@@ -363,6 +371,7 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
         lc: &'a mut LoadContext<'lc>,
         embedded: &'a HashMap<String, Vec<u8>>,
         search_paths: &'a [std::path::PathBuf],
+        material_diffuse_overrides: &'a HashMap<String, String>,
         kind_collapse: bool,
         light_intensity_scale: f32,
         curve_default_radius: f32,
@@ -374,6 +383,7 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
             lc,
             embedded,
             search_paths,
+            material_diffuse_overrides,
             kind_collapse,
             light_intensity_scale,
             curve_default_radius,
@@ -605,6 +615,16 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
                 mat
             }
         };
+        if let Some(texture_path) = self.material_diffuse_overrides.get(material_prim.as_str())
+            && let Some(handle) = load_texture(self, texture_path, TextureChannel::Srgb)
+        {
+            bevy::log::info!(
+                "material: variant override diffuse texture {:?} for {}",
+                texture_path,
+                material_prim.as_str()
+            );
+            bevy_mat.base_color_texture = Some(handle);
+        }
         if let Some(read) = read_material.as_ref() {
             apply_name_guessed_textures(self, material_prim, read, &mut bevy_mat);
         }

@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use bevy::asset::{Handle, RenderAssetUsages};
-use bevy::image::{Image, ImageLoaderSettings, ImageSampler, ImageType};
+use bevy::image::{Image, ImageAddressMode, ImageSampler, ImageSamplerDescriptor, ImageType};
 
 use crate::build::BuildCtx;
 
@@ -257,7 +257,7 @@ fn pack_metal_rough(rough_bytes: &[u8], metal_bytes: &[u8]) -> Option<Image> {
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::default(),
     );
-    img.sampler = ImageSampler::Default;
+    img.sampler = usd_texture_sampler();
     Some(img)
 }
 
@@ -283,7 +283,7 @@ fn decode_and_register(
         ImageType::Extension(ext),
         default_compressed_formats(),
         is_srgb,
-        ImageSampler::Default,
+        usd_texture_sampler(),
         RenderAssetUsages::default(),
     ) {
         Ok(img) => {
@@ -297,6 +297,14 @@ fn decode_and_register(
             None
         }
     }
+}
+
+fn usd_texture_sampler() -> ImageSampler {
+    ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        ..Default::default()
+    })
 }
 
 /// Find a texture on disk. Tries the obvious direct join first; on miss,

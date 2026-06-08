@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/usd_schema",
     "crates/usd_rapier",
     "crates/usd_bevy",
 ]
@@ -25,10 +24,9 @@ path = "src/main.rs"
 # components, Rapier physics adapter. Single dep brings in everything
 # needed to load a USD into a Bevy app.
 usd_bevy = { path = "crates/usd_bevy" }
-# Pure-Rust USD readers/writers — the viewer reads camera projection
-# and anim track data directly off the loaded `Stage` without going
-# through Bevy components.
-usd_schema = { path = "crates/usd_schema" }
+# Pure-Rust USD — the viewer reads camera projection and anim track
+# data directly off the loaded `Stage` via openusd's typed views.
+openusd = { git = "https://github.com/mxpv/openusd", rev = "750af7e5fff62b46a8107ce92217ed849d3f4fe1", features = ["geom", "lux", "media", "proc", "render", "shade", "skel", "ui", "physics"] }
 # Direct Rapier dep for the viewer's static-ground collider authoring;
 # `usd_bevy::physics::PhysicsWorld` exposes the Rapier sets we mutate.
 rapier3d-f64 = "0.32"

@@ -572,11 +572,14 @@ impl AssetLoader for UsdLoader {
             }
         }
 
+        let material_diffuse_overrides =
+            material_diffuse_overrides_for_variants(&effective_variants);
         let (scene, light_tally, instance_stats) = build::stage_to_scene(
             &stage,
             load_context,
             &embedded,
             &search,
+            &material_diffuse_overrides,
             settings.kind_collapse,
             settings.light_intensity_scale,
             settings.curve_default_radius,
@@ -1205,6 +1208,36 @@ fn synthesize_anim_variant_set(
             options,
         });
     }
+}
+
+/// Loader-side material overrides for wrapper-authored coat variants.
+///
+/// The USD session layer still records the actual variant selection so the
+/// UI/cache/metadata path stays generic. This extra map only covers the
+/// texture handoff for assets like `Cow_F_coats.usda`: Pixar USD composes the
+/// selected variant correctly, but the current `openusd-rs` field reader still
+/// reports the referenced base material's original `*_BaseColor.png`.
+fn material_diffuse_overrides_for_variants(
+    selections: &[VariantSelection],
+) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for sel in selections {
+        if sel.set_name != "coat" || sel.option == "original" || sel.option.contains('/') {
+            continue;
+        }
+        let prim_path = sel.prim_path.trim_end_matches('/');
+        let Some(name) = prim_path.rsplit('/').next().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        out.insert(
+            format!("{prim_path}/Looks/{name}"),
+            format!(
+                "Cow_FBX_PNG/{name}/Textures/{name}_BaseColor_{}.png",
+                sel.option
+            ),
+        );
+    }
+    out
 }
 
 /// Walk the composed stage and collect every `UsdGeom.Camera` prim. The

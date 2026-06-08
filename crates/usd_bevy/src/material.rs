@@ -34,10 +34,15 @@ pub fn standard_material_from_usd(
     ctx: &mut BuildCtx<'_, '_>,
     read: &ReadPreviewMaterial,
 ) -> StandardMaterial {
+    // Pixar's UsdPreviewSurface defaults (metallic=0, roughness=0.5) translate
+    // into Bevy's PBR as a semi-glossy plastic surface — too shiny / reflective
+    // for unlit-style or DCC-imported assets where the author expects a
+    // flat-shaded read. Default to max metallic + max roughness so the base
+    // colour shows through cleanly; authored opinions still override below.
     let mut mat = StandardMaterial {
         base_color: Color::linear_rgb(0.8, 0.8, 0.8),
-        perceptual_roughness: 0.5,
-        metallic: 0.0,
+        perceptual_roughness: 1.0,
+        metallic: 1.0,
         ..Default::default()
     };
 
@@ -61,8 +66,20 @@ pub fn standard_material_from_usd(
     // USD-authored `sourceColorSpace` token — we trust the M3 convention
     // that diffuse/emissive are sRGB and the rest are linear. (M3.1 can
     // read `inputs:sourceColorSpace` directly if authoring gets sloppy.)
+    //
+    // Bevy's StandardMaterial multiplies texture samples by the scalar
+    // `base_color` / `metallic` / `perceptual_roughness` values. Leaving
+    // those at the USD-side defaults (grey 0.8, metallic 0, roughness 0.5)
+    // would darken / zero out textured materials. When a texture is bound
+    // and the matching scalar wasn't authored, reset the factor to unity
+    // (1.0 / WHITE) so the texture passes through unchanged.
     if let Some(path) = read.diffuse_texture.as_deref() {
         mat.base_color_texture = load_texture(ctx, path, TextureChannel::Srgb);
+        if read.diffuse_color.is_none() {
+            // base_color multiplies the sampled texture — use WHITE so
+            // texture colours pass through unchanged.
+            mat.base_color = Color::WHITE;
+        }
     }
     if let Some(path) = read.normal_texture.as_deref() {
         mat.normal_map_texture = load_texture(ctx, path, TextureChannel::Linear);
@@ -74,17 +91,16 @@ pub fn standard_material_from_usd(
         mat.emissive_texture = load_texture(ctx, path, TextureChannel::Srgb);
     }
     // Roughness + metallic bind to the same combined texture slot.
-    // UsdPreviewSurface allows them separate; Bevy's `StandardMaterial`
-    // packs roughness (G) + metallic (B) into `metallic_roughness_texture`.
-    // When only one is authored, Bevy still samples from the texture's
-    // matching channel — we just hand the same image to both expectations.
-    // metallic + roughness packing. Bevy's `metallic_roughness_texture`
-    // expects a SINGLE RGBA texture with G = roughness, B = metallic
-    // (glTF spec). USD authors them as TWO independent texture assets.
-    // When both are authored, composite into one packed image so neither
-    // side gets dropped. When only one is authored, fall through to the
-    // "shove the single channel into the slot" cheap path — Bevy will
-    // sample the right channel at shade time.
+    // Bevy's `metallic_roughness_texture` expects a SINGLE RGBA texture
+    // with G = roughness, B = metallic (glTF spec). USD authors them as
+    // TWO independent texture assets. When both are authored, composite
+    // into one packed image so neither side gets dropped. When only one
+    // is authored, hand the single image to the slot — Bevy will sample
+    // the right channel at shade time.
+    //
+    // Both factors already start at 1.0 (the unity multiplier Bevy
+    // applies to sampled texture values), so we just bind the textures
+    // and let the data pass through unmodified.
     match (
         read.metallic_texture.as_deref(),
         read.roughness_texture.as_deref(),

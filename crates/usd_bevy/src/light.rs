@@ -24,7 +24,7 @@ use bevy::color::{Color, LinearRgba};
 use bevy::ecs::entity::Entity;
 use bevy::ecs::world::World;
 use bevy::light::{DirectionalLight, PointLight, SpotLight};
-use usd_schema::lux::{
+use crate::read::lux::{
     LightCommon, ReadCylinderLight, ReadDiskLight, ReadDistantLight, ReadLight, ReadRectLight,
     ReadSphereLight,
 };

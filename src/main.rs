@@ -1288,10 +1288,10 @@ fn draw_selected_prim_highlight(
     }
 }
 
-/// Wipe stale `.bevy_openusd_variant_<hash>.usda` copies left in the
-/// asset root by prior viewer runs. Fires once at startup before
-/// `load_stage` queues the initial load, so the subsequent fresh
-/// copies are the only ones on disk.
+/// Wipe stale `.bevy_openusd_variant_<hash>.usda` copies and variant session
+/// layers left in the asset root by prior viewer runs. Fires once at startup
+/// before `load_stage` queues the initial load, so subsequent fresh files are
+/// the only ones on disk.
 fn sweep_variant_tempfiles(requested: Res<RequestedAsset>) {
     sweep_variant_tempfiles_in_root(&requested.root);
 }
@@ -1305,7 +1305,8 @@ fn sweep_variant_tempfiles_in_root(root: &std::path::Path) {
         let Some(name) = name_os.to_str() else {
             continue;
         };
-        if name.starts_with(".bevy_openusd_variant_") {
+        if name.starts_with(".bevy_openusd_variant_") || name.starts_with(".bevy_openusd_session_")
+        {
             let _ = std::fs::remove_file(entry.path());
         }
     }

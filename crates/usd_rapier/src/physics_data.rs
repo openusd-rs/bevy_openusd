@@ -73,6 +73,7 @@ pub struct ReadJoint {
 
 use openusd::gf;
 use openusd::schemas::physics::{
+    DriveAPI, LimitAPI,
     CollisionAPI, CollisionGroup, DistanceJoint, FilteredPairsAPI, FixedJoint, Joint, JointBase, MassAPI, MaterialAPI,
     MeshCollisionAPI, PrismaticJoint, RevoluteJoint, Scene, SphericalJoint,
 };
@@ -277,7 +278,7 @@ fn joint_common<J: JointBase>(v: &J, path: &Path, kind: JointKind) -> ReadJoint 
 
 pub fn read_joint(stage: &Stage, path: &Path) -> anyhow::Result<Option<ReadJoint>> {
     let ty = stage.prim_at(path.clone()).type_name()?.unwrap_or_default();
-    Ok(match ty.as_str() {
+    let mut joint = match ty.as_str() {
         "PhysicsRevoluteJoint" => RevoluteJoint::get(stage, path.clone())?.map(|v| {
             let mut j = joint_common(&v, path, JointKind::Revolute);
             j.axis = atoken(v.axis_attr());
@@ -307,8 +308,52 @@ pub fn read_joint(stage: &Stage, path: &Path) -> anyhow::Result<Option<ReadJoint
         }),
         "PhysicsFixedJoint" => FixedJoint::get(stage, path.clone())?.map(|v| joint_common(&v, path, JointKind::Fixed)),
         "PhysicsJoint" => Joint::get(stage, path.clone())?.map(|v| joint_common(&v, path, JointKind::Generic)),
-        _ => None,
-    })
+        _ => return Ok(None),
+    };
+    if let Some(j) = joint.as_mut() {
+        j.limits = read_joint_limits(stage, path);
+        j.drives = read_joint_drives(stage, path);
+    }
+    Ok(joint)
+}
+
+/// Per-DOF `PhysicsLimitAPI` entries applied to a joint (multi-apply).
+fn read_joint_limits(stage: &Stage, path: &Path) -> Vec<ReadLimit> {
+    LimitAPI::get_all(stage, path.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|l| {
+            let dof = Dof::from_token(l.name())?;
+            Some(ReadLimit {
+                dof,
+                low: af32(l.low_attr()).unwrap_or(f32::NEG_INFINITY),
+                high: af32(l.high_attr()).unwrap_or(f32::INFINITY),
+            })
+        })
+        .collect()
+}
+
+/// Per-DOF `PhysicsDriveAPI` entries applied to a joint (multi-apply).
+fn read_joint_drives(stage: &Stage, path: &Path) -> Vec<ReadDrive> {
+    DriveAPI::get_all(stage, path.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|d| {
+            let dof = Dof::from_token(d.name())?;
+            let drive_type = atoken(d.type_attr())
+                .and_then(|t| DriveType::from_token(&t))
+                .unwrap_or(DriveType::Force);
+            Some(ReadDrive {
+                dof,
+                drive_type,
+                target_position: af32(d.target_position_attr()),
+                target_velocity: af32(d.target_velocity_attr()),
+                stiffness: af32(d.stiffness_attr()).unwrap_or(0.0),
+                damping: af32(d.damping_attr()).unwrap_or(0.0),
+                max_force: af32(d.max_force_attr()),
+            })
+        })
+        .collect()
 }
 
 /// Walk the stage and bucket every physics prim by role (typed prims by

@@ -5,7 +5,7 @@ use bevy::asset::{AssetServer, Assets, LoadState};
 use bevy::ecs::hierarchy::Children;
 use bevy::prelude::*;
 use bevy::scene::{Scene, SceneRoot};
-use bevy_openusd::{UsdAsset, UsdPlugin, UsdPrimRef};
+use usd_bevy::{UsdAsset, UsdPlugin, UsdPrimRef};
 use std::collections::HashMap;
 
 fn build_test_app() -> App {

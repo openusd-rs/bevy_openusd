@@ -1,6 +1,6 @@
 //! NURBS curves integration test: assert that
-//! `usd_schema::geom::read_nurbs_curves` decodes the fixture, that
-//! the De Boor sampler in `bevy_openusd::curves::nurbs_to_read_curves`
+//! `usd_bevy::read::geom::read_nurbs_curves` decodes the fixture, that
+//! the De Boor sampler in `usd_bevy::curves::nurbs_to_read_curves`
 //! produces a polyline whose endpoints match the first / last CVs
 //! (end-clamped property), and that the loader spawns one entity
 //! per NurbsCurves prim with a Mesh3d + Material attached.
@@ -10,7 +10,7 @@ use bevy::mesh::{Mesh, Mesh3d};
 use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::scene::{Scene, SceneRoot};
-use bevy_openusd::{UsdAsset, UsdPlugin, UsdPrimRef};
+use usd_bevy::{UsdAsset, UsdPlugin, UsdPrimRef};
 
 fn build_test_app() -> App {
     let mut app = App::new();
@@ -62,9 +62,9 @@ fn spawn_scene_root(app: &mut App, handle: &Handle<UsdAsset>) {
 
 #[test]
 fn de_boor_endpoints_match_clamped_cvs() {
-    use usd_schema::geom::read_nurbs_curves;
+    use usd_bevy::read::geom::read_nurbs_curves;
 
-    let stage = openusd::Stage::open("tests/stages/nurbs_curves.usda").expect("stage should open");
+    let stage = openusd::usd::Stage::open("tests/stages/nurbs_curves.usda").expect("stage should open");
 
     let nurbs = read_nurbs_curves(
         &stage,
@@ -82,7 +82,7 @@ fn de_boor_endpoints_match_clamped_cvs() {
         nurbs.ranges,
     );
 
-    let read = bevy_openusd::curves::nurbs_to_read_curves(&nurbs);
+    let read = usd_bevy::curves::nurbs_to_read_curves(&nurbs);
     println!(
         "  sampled vertex_counts={:?} (first sample {:?}, last {:?})",
         read.vertex_counts,

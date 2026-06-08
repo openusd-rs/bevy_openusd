@@ -8,12 +8,12 @@ fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
         "/home/bresilla/data/code/other/bevy_openusd/assets/external/hummingbird.usdz".to_string()
     });
-    let stage = openusd::Stage::open(&path).unwrap();
+    let stage = openusd::usd::Stage::open(&path).unwrap();
 
     println!("=== SKELETON STRUCTURE ===");
     let skel_path = Path::new("/hummingbird_anim_hover_idle_long/hummingbird_rig/hummingbird_skinned_mesh/hummingbird_bind/root_1").unwrap();
 
-    if let Ok(Some(s)) = usd_schema::skel::read_skeleton(&stage, &skel_path) {
+    if let Ok(Some(s)) = usd_bevy::read::skel::read_skeleton(&stage, &skel_path) {
         println!("Skeleton at {}", skel_path.as_str());
         println!("  Joint count: {}", s.joints.len());
         println!("  Bind transforms: {}", s.bind_transforms.len());
@@ -35,15 +35,15 @@ fn main() {
     println!("\n=== MESH BINDINGS ===");
 
     // List all meshes and their skel bindings
-    fn walk_meshes(stage: &openusd::Stage, prim: &Path) {
+    fn walk_meshes(stage: &openusd::usd::Stage, prim: &Path) {
         let tn: String = stage
-            .field::<String>(prim.clone(), "typeName")
+            .metadata::<String>(prim.clone(), "typeName")
             .ok()
             .flatten()
             .unwrap_or_default();
 
         if tn == "Mesh" {
-            if let Ok(Some(b)) = usd_schema::skel::read_skel_binding(stage, prim) {
+            if let Ok(Some(b)) = usd_bevy::read::skel::read_skel_binding(stage, prim) {
                 let max_idx = b.joint_indices.iter().max().copied().unwrap_or(0);
                 let min_idx = b.joint_indices.iter().min().copied().unwrap_or(0);
 
@@ -79,11 +79,12 @@ fn main() {
                     let gbind_attr = prim
                         .append_property("primvars:skel:geomBindTransform")
                         .unwrap();
-                    let gbind_val = stage.field::<Value>(gbind_attr, "default").ok().flatten();
+                    let gbind_val = stage.metadata::<Value>(gbind_attr, "default").ok().flatten();
                     if let Some(val) = gbind_val {
                         match val {
                             Value::Matrix4d(m) => {
                                 let m_f32: [f32; 16] = m
+                                    .0
                                     .iter()
                                     .map(|&x| x as f32)
                                     .collect::<Vec<_>>()
@@ -107,7 +108,7 @@ fn main() {
             }
         }
 
-        for child in stage.prim_children(prim.clone()).unwrap_or_default() {
+        for child in stage.prim_at(prim.clone()).child_names().unwrap_or_default() {
             if let Ok(child_path) = prim.append_path(child.as_str()) {
                 walk_meshes(stage, &child_path);
             }
@@ -128,7 +129,7 @@ fn main() {
 
     // Probe joints attribute
     if let Ok(jattr) = anim_path.append_property("joints") {
-        if let Ok(Some(v)) = stage.field::<Value>(jattr, "default") {
+        if let Ok(Some(v)) = stage.metadata::<Value>(jattr, "default") {
             match v {
                 Value::TokenVec(tokens) | Value::StringVec(tokens) => {
                     println!("  joints.default: {} entries", tokens.len());
@@ -141,7 +142,7 @@ fn main() {
 
     // Check translations timeSamples
     if let Ok(tattr) = anim_path.append_property("translations") {
-        match stage.field::<Value>(tattr.clone(), "timeSamples") {
+        match stage.metadata::<Value>(tattr.clone(), "timeSamples") {
             Ok(Some(Value::Vec3fVec(vals))) => {
                 println!(
                     "  translations.timeSamples: {} vector3f values (1 keyframe = {} vals / joint_count)",
@@ -151,7 +152,7 @@ fn main() {
             }
             _ => {
                 // Try timeSampleIndices
-                if let Ok(Some(indices)) = stage.field::<Value>(tattr, "timeSampleIndices") {
+                if let Ok(Some(indices)) = stage.metadata::<Value>(tattr, "timeSampleIndices") {
                     println!("  translations: has timeSampleIndices {:?}", indices);
                 } else {
                     println!("  translations: no timeSamples found");
@@ -162,7 +163,7 @@ fn main() {
 
     // Check rotations timeSamples
     if let Ok(rattr) = anim_path.append_property("rotations") {
-        match stage.field::<Value>(rattr.clone(), "timeSamples") {
+        match stage.metadata::<Value>(rattr.clone(), "timeSamples") {
             Ok(Some(Value::QuatfVec(vals))) => {
                 println!("  rotations.timeSamples: {} quatf values", vals.len());
             }
@@ -186,7 +187,7 @@ fn main() {
     let mut cur = body_path.clone();
     loop {
         if let Ok(jattr) = cur.append_property("skel:joints") {
-            if let Ok(Some(v)) = stage.field::<Value>(jattr, "default") {
+            if let Ok(Some(v)) = stage.metadata::<Value>(jattr, "default") {
                 match v {
                     Value::TokenVec(tokens) | Value::StringVec(tokens) => {
                         println!("  {} → skel:joints: {} entries", cur.as_str(), tokens.len());
@@ -209,7 +210,7 @@ fn main() {
 
     println!("\n=== SKEL ROOT REFERENCE ===");
     let skelroot = Path::new("/hummingbird_anim_hover_idle_long").unwrap();
-    if let Ok(Some(r)) = usd_schema::skel::read_skel_root(&stage, &skelroot) {
+    if let Ok(Some(r)) = usd_bevy::read::skel::read_skel_root(&stage, &skelroot) {
         println!("SkelRoot at {}", skelroot.as_str());
         println!("  skeleton: {:?}", r.skeleton);
         println!("  animation_source: {:?}", r.animation_source);

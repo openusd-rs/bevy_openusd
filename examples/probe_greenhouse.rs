@@ -47,8 +47,7 @@ fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
         "/home/bresilla/data/code/other/isaacsim-greenhouse/blender/Exports/export.usdc".into()
     });
-    let stage = openusd::Stage::builder()
-        .on_error(|_| Ok(()))
+    let stage = openusd::usd::Stage::builder()
         .open(&path)
         .unwrap();
 
@@ -78,7 +77,7 @@ fn main() {
     {
         let root = Path::abs_root();
         for k in ["upAxis", "metersPerUnit", "defaultPrim"] {
-            if let Ok(Some(v)) = stage.field::<Value>(root.clone(), k) {
+            if let Ok(Some(v)) = stage.metadata::<Value>(root.clone(), k) {
                 println!("  {} = {}", k, brief(&v));
             }
         }
@@ -87,11 +86,11 @@ fn main() {
 
     let mut groups: BTreeMap<String, (usize, [f32; 3], [f32; 3])> = BTreeMap::new();
     fn walk_groups(
-        stage: &openusd::Stage,
+        stage: &openusd::usd::Stage,
         prim: &Path,
         groups: &mut BTreeMap<String, (usize, [f32; 3], [f32; 3])>,
     ) {
-        let type_name: Option<String> = stage.field(prim.clone(), "typeName").ok().flatten();
+        let type_name: Option<String> = stage.metadata(prim.clone(), "typeName").ok().flatten();
         if type_name.as_deref() == Some("Mesh") {
             let name_str = prim.name().unwrap_or("").to_string();
             let prefix: String = name_str
@@ -107,10 +106,10 @@ fn main() {
             let mut mn = [f32::INFINITY; 3];
             let mut mx = [f32::NEG_INFINITY; 3];
             if let Ok(ap) = prim.append_property("extent") {
-                if let Ok(Some(Value::Vec3fVec(ext))) = stage.field::<Value>(ap, "default") {
+                if let Ok(Some(Value::Vec3fVec(ext))) = stage.metadata::<Value>(ap, "default") {
                     if ext.len() == 2 {
-                        mn = ext[0];
-                        mx = ext[1];
+                        mn = ext[0].into();
+                        mx = ext[1].into();
                     }
                 }
             }
@@ -128,7 +127,7 @@ fn main() {
                 }
             }
         }
-        if let Ok(children) = stage.prim_children(prim.clone()) {
+        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
             for c in children {
                 if let Ok(child_path) = prim.append_path(c.as_str()) {
                     walk_groups(stage, &child_path, groups);
@@ -150,31 +149,31 @@ fn main() {
 
     // Walk the GreenMaterial subtree to see how the green leaves are bound.
     println!("\n== GreenMaterial subtree ==");
-    fn dump_subtree(stage: &openusd::Stage, prim: &Path, depth: usize) {
+    fn dump_subtree(stage: &openusd::usd::Stage, prim: &Path, depth: usize) {
         let indent = "  ".repeat(depth);
-        let type_name: Option<String> = stage.field(prim.clone(), "typeName").ok().flatten();
+        let type_name: Option<String> = stage.metadata(prim.clone(), "typeName").ok().flatten();
         println!(
             "{}{} ({})",
             indent,
             prim.as_str(),
             type_name.as_deref().unwrap_or("?")
         );
-        if let Ok(props) = stage.prim_properties(prim.clone()) {
+        if let Ok(props) = stage.prim_at(prim.clone()).property_names() {
             for prop in props {
                 let prop_str: &str = prop.as_str();
                 let Ok(attr) = prim.append_property(prop_str) else {
                     continue;
                 };
-                if let Ok(Some(v)) = stage.field::<Value>(attr.clone(), "default") {
+                if let Ok(Some(v)) = stage.metadata::<Value>(attr.clone(), "default") {
                     println!("{}  .{}: {}", indent, prop_str, brief(&v));
-                } else if let Ok(Some(v)) = stage.field::<Value>(attr.clone(), "connectionPaths") {
+                } else if let Ok(Some(v)) = stage.metadata::<Value>(attr.clone(), "connectionPaths") {
                     println!("{}  .{} <- {:?}", indent, prop_str, v);
-                } else if let Ok(Some(v)) = stage.field::<Value>(attr.clone(), "targetPaths") {
+                } else if let Ok(Some(v)) = stage.metadata::<Value>(attr.clone(), "targetPaths") {
                     println!("{}  .{} -> {:?}", indent, prop_str, v);
                 }
             }
         }
-        if let Ok(children) = stage.prim_children(prim.clone()) {
+        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
             for c in children {
                 if let Ok(child) = prim.append_path(c.as_str()) {
                     dump_subtree(stage, &child, depth + 1);
@@ -194,14 +193,14 @@ fn main() {
         "/root/Rachis_main_spline_0_21/Rachis_main_spline_0_21_curve",
     ] {
         let prim = Path::new(sample).unwrap();
-        let bind = usd_schema::shade::read_material_binding(&stage, &prim);
+        let bind = usd_bevy::read::shade::read_material_binding(&stage, &prim);
         match &bind {
             Ok(Some(p)) => println!("  {} -> binding={}", sample, p.as_str()),
             Ok(None) => println!("  {} -> binding=None", sample),
             Err(e) => println!("  {} -> binding ERR {}", sample, e),
         }
         if let Ok(Some(mat_path)) = bind {
-            match usd_schema::shade::read_preview_material(&stage, &mat_path) {
+            match usd_bevy::read::shade::read_preview_material(&stage, &mat_path) {
                 Ok(Some(mat)) => println!(
                     "        diffuse={:?} opacity={:?} roughness={:?} metallic={:?} diffuse_tex={:?} normal_tex={:?}",
                     mat.diffuse_color,
@@ -217,14 +216,14 @@ fn main() {
         }
     }
 
-    println!("\n== usd_schema::geom::read_mesh on plant prims ==");
+    println!("\n== usd_bevy::read::geom::read_mesh on plant prims ==");
     for sample in [
         "/root/Block_1_001/SM_RockwoolBlock",
         "/root/Rachis_main_spline_0_21/Rachis_main_spline_0_21_curve",
         "/root/Rachis_main_spline_0_21/Rachis_branch_spline_0_21_11/Rachis_branch_spline_0_21_11",
     ] {
         let prim = Path::new(sample).unwrap();
-        match usd_schema::geom::read_mesh(&stage, &prim) {
+        match usd_bevy::read::geom::read_mesh(&stage, &prim) {
             Ok(Some(rm)) => println!(
                 "  {}: points={} face_counts={} indices={} subsets={} normals={}",
                 sample,
@@ -275,11 +274,11 @@ fn main() {
                 continue;
             };
             let mut shown = false;
-            if let Ok(Some(v)) = stage.field::<Value>(attr.clone(), "default") {
+            if let Ok(Some(v)) = stage.metadata::<Value>(attr.clone(), "default") {
                 println!("  .{}: {}", p, brief(&v));
                 shown = true;
             }
-            if let Ok(Some(v)) = stage.field::<Value>(attr.clone(), "connectionPaths") {
+            if let Ok(Some(v)) = stage.metadata::<Value>(attr.clone(), "connectionPaths") {
                 println!("  .{} <- {:?}", p, v);
                 shown = true;
             }
@@ -290,22 +289,22 @@ fn main() {
     }
 
     println!("\n== Walk /root visibility/purpose ==");
-    fn walk_vis(stage: &openusd::Stage, prim: &Path, depth: usize) {
+    fn walk_vis(stage: &openusd::usd::Stage, prim: &Path, depth: usize) {
         if depth > 2 {
             return;
         }
         let indent = "  ".repeat(depth);
-        let type_name: Option<String> = stage.field(prim.clone(), "typeName").ok().flatten();
+        let type_name: Option<String> = stage.metadata(prim.clone(), "typeName").ok().flatten();
         let vis = prim
             .append_property("visibility")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
         let pur = prim
             .append_property("purpose")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
         let inst = stage
-            .field::<bool>(prim.clone(), "instanceable")
+            .metadata::<bool>(prim.clone(), "instanceable")
             .ok()
             .flatten();
         if vis.is_some() || pur.is_some() || inst.is_some() {
@@ -319,7 +318,7 @@ fn main() {
                 inst,
             );
         }
-        if let Ok(children) = stage.prim_children(prim.clone()) {
+        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
             for c in children {
                 if let Ok(child) = prim.append_path(c.as_str()) {
                     walk_vis(stage, &child, depth + 1);
@@ -338,15 +337,15 @@ fn main() {
     ] {
         println!("=== {} ===", sample);
         let prim = Path::new(sample).unwrap();
-        let type_name: Option<String> = stage.field(prim.clone(), "typeName").ok().flatten();
+        let type_name: Option<String> = stage.metadata(prim.clone(), "typeName").ok().flatten();
         println!("typeName: {:?}", type_name);
         for p in probes {
             let Ok(attr) = prim.append_property(p) else {
                 continue;
             };
-            if let Ok(Some(v)) = stage.field::<Value>(attr.clone(), "default") {
+            if let Ok(Some(v)) = stage.metadata::<Value>(attr.clone(), "default") {
                 println!("  .{}: {}", p, brief(&v));
-            } else if let Ok(Some(v)) = stage.field::<Value>(attr.clone(), "targetPaths") {
+            } else if let Ok(Some(v)) = stage.metadata::<Value>(attr.clone(), "targetPaths") {
                 println!("  .{} -> {:?}", p, v);
             }
         }

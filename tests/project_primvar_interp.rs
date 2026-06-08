@@ -4,11 +4,11 @@
 //! with the expected per-vertex stride/values.
 
 use openusd::sdf::Path;
-use usd_schema::geom::{Interpolation, read_mesh};
+use usd_bevy::read::geom::{Interpolation, read_mesh};
 
 #[test]
 fn reads_all_five_primvar_interpolations() {
-    let stage = openusd::Stage::open("tests/stages/primvar_interp.usda").expect("fixture parses");
+    let stage = openusd::usd::Stage::open("tests/stages/primvar_interp.usda").expect("fixture parses");
 
     // Check each authored mode round-trips through ReadMesh.
     let cases = [
@@ -51,7 +51,7 @@ fn loader_materialises_all_five_into_bevy_mesh_colors() {
 
     // Run the same USDA through `mesh_from_usd` (no Bevy asset
     // infrastructure needed — pure function).
-    let stage = openusd::Stage::open("tests/stages/primvar_interp.usda").expect("fixture parses");
+    let stage = openusd::usd::Stage::open("tests/stages/primvar_interp.usda").expect("fixture parses");
 
     // Constant: same colour on every vertex.
     {
@@ -142,7 +142,7 @@ fn read_attr_color4(mesh: &bevy::mesh::Mesh) -> Vec<[f32; 4]> {
 
 // `mesh_from_usd` is a private module path normally, but we re-export
 // just enough via `bevy_openusd` to exercise it in tests. If/when
-// `bevy_openusd::mesh` becomes public, this shim goes away.
-fn bevy_openusd_mesh_from_usd(read: &usd_schema::geom::ReadMesh) -> bevy::mesh::Mesh {
-    bevy_openusd::mesh_from_usd(read)
+// `usd_bevy::mesh` becomes public, this shim goes away.
+fn bevy_openusd_mesh_from_usd(read: &usd_bevy::read::geom::ReadMesh) -> bevy::mesh::Mesh {
+    usd_bevy::mesh_from_usd(read)
 }

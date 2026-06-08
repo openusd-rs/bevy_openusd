@@ -2,9 +2,9 @@
 //! `light:filters` relationships round-trip into `LightCommon`.
 
 use openusd::sdf::Path;
-use usd_schema::lux::{ReadLight, read_light};
+use usd_bevy::read::lux::{ReadLight, read_light};
 
-fn common_of(l: &ReadLight) -> &usd_schema::lux::LightCommon {
+fn common_of(l: &ReadLight) -> &usd_bevy::read::lux::LightCommon {
     match l {
         ReadLight::Distant(d) => &d.common,
         ReadLight::Sphere(s) => &s.common,
@@ -17,7 +17,7 @@ fn common_of(l: &ReadLight) -> &usd_schema::lux::LightCommon {
 
 #[test]
 fn reads_light_linking_rels() {
-    let stage = openusd::Stage::open("tests/stages/light_linking.usda").expect("fixture parses");
+    let stage = openusd::usd::Stage::open("tests/stages/light_linking.usda").expect("fixture parses");
 
     let key = read_light(&stage, &Path::new("/World/KeyLight").unwrap())
         .unwrap()

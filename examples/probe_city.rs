@@ -8,13 +8,13 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "assets/PointInstancedMedCity/PointInstancedMedCity.usd".to_string());
-    let stage = openusd::Stage::open(&path).unwrap();
+    let stage = openusd::usd::Stage::open(&path).unwrap();
     let up = stage
-        .field::<String>(Path::abs_root(), "upAxis")
+        .metadata::<String>(Path::abs_root(), "upAxis")
         .ok()
         .flatten();
     let mpu = stage
-        .field::<Value>(Path::abs_root(), "metersPerUnit")
+        .metadata::<Value>(Path::abs_root(), "metersPerUnit")
         .ok()
         .flatten();
     println!("ROOT upAxis={up:?} metersPerUnit={mpu:?}");
@@ -25,7 +25,7 @@ fn main() {
     // Exercise the schema readers directly so we see what our fallback
     // produces, not just what's in the raw default field.
     let inst_path = Path::new("/MediterraneanHills/Buildings").unwrap();
-    match usd_schema::geom::read_point_instancer(&stage, &inst_path) {
+    match usd_bevy::read::geom::read_point_instancer(&stage, &inst_path) {
         Ok(Some(d)) => println!(
             "read_point_instancer OK: positions={} protoIndices={} prototypes={}",
             d.positions.len(),
@@ -40,11 +40,11 @@ fn main() {
             "/MediterraneanHills/Buildings/Prototypes/prototype_{pi}"
         ))
         .unwrap();
-        let children = stage.prim_children(proto.clone()).unwrap_or_default();
+        let children = stage.prim_at(proto.clone()).child_names().unwrap_or_default();
         print!("prototype_{pi}: children={children:?}");
         for ch in &children {
             if let Ok(child_path) = proto.append_path(ch.as_str()) {
-                if let Ok(Some(m)) = usd_schema::geom::read_mesh(&stage, &child_path) {
+                if let Ok(Some(m)) = usd_bevy::read::geom::read_mesh(&stage, &child_path) {
                     print!(
                         " {ch}=(p{},f{})",
                         m.points.len(),
@@ -52,7 +52,7 @@ fn main() {
                     );
                 } else {
                     let tn: String = stage
-                        .field::<String>(child_path.clone(), "typeName")
+                        .metadata::<String>(child_path.clone(), "typeName")
                         .ok()
                         .flatten()
                         .unwrap_or_default();
@@ -62,7 +62,7 @@ fn main() {
         }
         println!();
     }
-    if let Ok(Some(d)) = usd_schema::geom::read_point_instancer(&stage, &inst_path) {
+    if let Ok(Some(d)) = usd_bevy::read::geom::read_point_instancer(&stage, &inst_path) {
         let mut counts = std::collections::BTreeMap::<i32, usize>::new();
         for p in &d.proto_indices {
             *counts.entry(*p).or_insert(0) += 1;
@@ -104,7 +104,7 @@ fn main() {
     // Dump raw type variants of the timeSampled attrs.
     for attr in ["positions", "orientations", "scales"] {
         let ap = inst_path.append_property(attr).unwrap();
-        if let Ok(Some(Value::TimeSamples(ts))) = stage.field::<Value>(ap, "timeSamples") {
+        if let Ok(Some(Value::TimeSamples(ts))) = stage.metadata::<Value>(ap, "timeSamples") {
             if let Some((_, v)) = ts.first() {
                 let kind = match v {
                     Value::Vec3fVec(a) => format!("Vec3fVec(n={})", a.len()),
@@ -116,7 +116,7 @@ fn main() {
                         a.len(),
                         a.iter()
                             .take(3)
-                            .map(|q| [q[0].to_f32(), q[1].to_f32(), q[2].to_f32(), q[3].to_f32()])
+                            .map(|q| [q.w.to_f32(), q.x.to_f32(), q.y.to_f32(), q.z.to_f32()])
                             .collect::<Vec<_>>()
                     ),
                     Value::QuatdVec(a) => format!("QuatdVec(n={})", a.len()),
@@ -128,7 +128,7 @@ fn main() {
     }
     let mesh_path =
         Path::new("/MediterraneanHills/Buildings/Prototypes/prototype_0/mesh_0").unwrap();
-    if let Ok(Some(m)) = usd_schema::geom::read_mesh(&stage, &mesh_path) {
+    if let Ok(Some(m)) = usd_bevy::read::geom::read_mesh(&stage, &mesh_path) {
         let mut mn = [f32::INFINITY; 3];
         let mut mx = [f32::NEG_INFINITY; 3];
         for p in &m.points {
@@ -147,7 +147,7 @@ fn main() {
         );
     }
     let mp = mesh_path.append_property("normals").unwrap();
-    if let Ok(Some(Value::TimeSamples(ts))) = stage.field::<Value>(mp, "timeSamples") {
+    if let Ok(Some(Value::TimeSamples(ts))) = stage.metadata::<Value>(mp, "timeSamples") {
         if let Some((_, v)) = ts.first() {
             let kind = match v {
                 Value::Vec3fVec(a) => format!("Vec3fVec(n={})", a.len()),
@@ -186,7 +186,7 @@ fn main() {
             "xformOpOrder",
         ] {
             let ap = prim.append_property(attr).unwrap();
-            match stage.field::<Value>(ap.clone(), "default") {
+            match stage.metadata::<Value>(ap.clone(), "default") {
                 Ok(Some(v)) => {
                     let preview = match &v {
                         Value::FloatVec(a) => format!("FloatVec(len={})", a.len()),
@@ -205,7 +205,7 @@ fn main() {
                 Err(e) => println!("  {attr} ERROR: {e}"),
             }
             // Also try timeSamples for animated attrs.
-            match stage.field::<Value>(ap.clone(), "timeSamples") {
+            match stage.metadata::<Value>(ap.clone(), "timeSamples") {
                 Ok(Some(_)) => println!("  {attr} has timeSamples"),
                 _ => {}
             }

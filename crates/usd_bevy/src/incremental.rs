@@ -23,7 +23,7 @@ use bevy::prelude::*;
 
 use crate::asset::{VariantSelection, author_variant_session_layer};
 use crate::prim_ref::UsdPrimRef;
-use crate::read::shade as ushade;
+use crate::read::{geom as ugeom, shade as ushade};
 use crate::texture::AssetServerTextures;
 
 /// The loaded stage's source layer + current variant selections, so the
@@ -55,6 +55,16 @@ pub struct VariantReloadFallback(pub bool);
 #[derive(Resource, Default)]
 struct MaterialVariantCache(HashMap<(String, String, String), Vec<(String, Handle<StandardMaterial>)>>);
 
+/// Per-mesh USD point counts of the currently-loaded geometry, cached per
+/// source. Used to detect a variant that *changes geometry* (point count
+/// differs) so it falls back to a full reload instead of swapping a material
+/// onto a stale mesh.
+#[derive(Resource, Default)]
+struct BaseMeshPoints {
+    points: HashMap<String, usize>,
+    source: Option<PathBuf>,
+}
+
 /// Registers the incremental-update resources + system.
 /// Every `(prim, set, option)` to precompute in the background after a load,
 /// so the user's first click on any option is already cached → instant. The
@@ -73,6 +83,7 @@ impl Plugin for IncrementalPlugin {
             .init_resource::<VariantReloadFallback>()
             .init_resource::<WarmVariantsQueue>()
             .init_resource::<MaterialVariantCache>()
+            .init_resource::<BaseMeshPoints>()
             .add_systems(Update, (apply_variant_switch, warm_variant_cache));
     }
 }
@@ -89,11 +100,14 @@ fn apply_variant_switch(
     mut cache: ResMut<MaterialVariantCache>,
     asset_server: Res<AssetServer>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut base: ResMut<BaseMeshPoints>,
     mut q: MeshMatQuery,
 ) {
     if pending.queue.is_empty() {
         return;
     }
+    let live = live_meshes(&q);
+    ensure_base(&source, &mut base, &live);
     for (prim, set, option) in std::mem::take(&mut pending.queue) {
         let key = (prim.clone(), set.clone(), option.clone());
         if let Some(per_mesh) = cache.0.get(&key).cloned() {
@@ -101,8 +115,7 @@ fn apply_variant_switch(
             info!("variant: instant swap {prim} {set}={option}");
             continue;
         }
-        let live = live_meshes(&q);
-        match compute_option(&source, &prim, &set, &option, &live, &mut materials, &asset_server) {
+        match compute_option(&source, &prim, &set, &option, &live, &base.points, &mut materials, &asset_server) {
             Some(per_mesh) => {
                 reassign(&mut q, &per_mesh);
                 info!("variant: computed + swapped {prim} {set}={option} ({} meshes)", per_mesh.len());
@@ -124,6 +137,7 @@ fn warm_variant_cache(
     mut cache: ResMut<MaterialVariantCache>,
     asset_server: Res<AssetServer>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut base: ResMut<BaseMeshPoints>,
     q: Query<&UsdPrimRef>,
 ) {
     // One recompose per frame keeps the warm-up off the visible thread budget.
@@ -135,8 +149,28 @@ fn warm_variant_cache(
         return;
     }
     let live: Vec<String> = q.iter().map(|pref| pref.path.clone()).collect();
-    if let Some(per_mesh) = compute_option(&source, &prim, &set, &option, &live, &mut materials, &asset_server) {
+    ensure_base(&source, &mut base, &live);
+    if let Some(per_mesh) = compute_option(&source, &prim, &set, &option, &live, &base.points, &mut materials, &asset_server) {
         cache.0.insert(key, per_mesh);
+    }
+}
+
+/// Recompute the base geometry point-counts when the source changes.
+fn ensure_base(source: &LoadedStageSource, base: &mut BaseMeshPoints, mesh_paths: &[String]) {
+    if base.source.as_ref() == Some(&source.source) {
+        return;
+    }
+    base.points.clear();
+    base.source = Some(source.source.clone());
+    let Some(stage) = open_stage(source, &source.base_variants) else {
+        return;
+    };
+    for path in mesh_paths {
+        if let Ok(ppath) = openusd::sdf::path(path)
+            && let Ok(Some(rm)) = ugeom::read_mesh(&stage, &ppath)
+        {
+            base.points.insert(path.clone(), rm.points.len());
+        }
     }
 }
 
@@ -153,6 +187,7 @@ fn compute_option(
     set: &str,
     option: &str,
     mesh_paths: &[String],
+    base_points: &HashMap<String, usize>,
     materials: &mut Assets<StandardMaterial>,
     asset_server: &AssetServer,
 ) -> Option<Vec<(String, Handle<StandardMaterial>)>> {
@@ -170,6 +205,15 @@ fn compute_option(
         let Ok(ppath) = openusd::sdf::path(path) else {
             continue;
         };
+        // Geometry guard: if this option's mesh has a different point count
+        // than the loaded geometry, the variant changes topology — bail to a
+        // full reload rather than swap a material onto a stale mesh.
+        if let Some(&base_n) = base_points.get(path)
+            && let Ok(Some(rm)) = ugeom::read_mesh(&stage, &ppath)
+            && rm.points.len() != base_n
+        {
+            return None;
+        }
         let Ok(Some(mat_prim)) = ushade::read_material_binding(&stage, &ppath) else {
             continue;
         };
@@ -206,7 +250,12 @@ fn open_with_variant(source: &LoadedStageSource, prim: &str, set: &str, option: 
         set_name: set.to_string(),
         option: option.to_string(),
     });
-    let text = author_variant_session_layer(&sels);
+    open_stage(source, &sels)
+}
+
+/// Recompose the source layer with `sels` applied via a session layer.
+fn open_stage(source: &LoadedStageSource, sels: &[VariantSelection]) -> Option<openusd::usd::Stage> {
+    let text = author_variant_session_layer(sels);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hasher);
     source.source.hash(&mut hasher);

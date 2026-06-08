@@ -15,7 +15,7 @@ use bevy::mesh::Mesh;
 use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::scene::{Scene, SceneRoot};
-use bevy_openusd::{UsdAsset, UsdPlugin};
+use usd_bevy::{UsdAsset, UsdPlugin};
 use zip::write::SimpleFileOptions;
 
 /// A 1×1 red PNG encoded on the fly via the `image` crate. Keeping this
@@ -161,7 +161,7 @@ fn loads_usdz_with_embedded_texture() {
 
     // There should be exactly one geom prim (the Cube), and its
     // StandardMaterial should carry a base_color_texture.
-    use bevy_openusd::UsdPrimRef;
+    use usd_bevy::UsdPrimRef;
     let world = app.world_mut();
     let mut mat_for_prim = std::collections::HashMap::new();
     for (prim, mat) in world

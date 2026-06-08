@@ -24,6 +24,7 @@ path = "src/main.rs"
 # components, Rapier physics adapter. Single dep brings in everything
 # needed to load a USD into a Bevy app.
 usd_bevy = { path = "crates/usd_bevy" }
+usd_rapier = { path = "crates/usd_rapier" }
 # Pure-Rust USD — the viewer reads camera projection and anim track
 # data directly off the loaded `Stage` via openusd's typed views.
 openusd = { git = "https://github.com/bresilla/openusd", rev = "43abaf1fad6aea34c76b53bc1c89f12dcad7835b", features = ["geom", "lux", "media", "proc", "render", "shade", "skel", "ui", "physics"] }
@@ -77,10 +78,14 @@ bevy_egui = { version = "0.39", default-features = false, features = [
     "default_fonts",
     "render",
 ] }
-# Glass-themed editor UI kit (ribbons, floating panels, widgets, tokens).
-bevy_frost = { git = "https://github.com/bresilla/bevy_frost", branch = "develop", package = "bevy_frost" }
-# Reusable 3D-scene gizmos (axis triads + joint primitives).
-bevy_glacial = { git = "https://github.com/bresilla/bevy_glacial", branch = "main" }
+# Glass-themed editor UI kit (ribbons, panes, pods, widgets, theme) —
+# the evolution of bevy_frost. Local path during co-development; swap
+# to `git = "https://github.com/bresilla/mara"` once pushed/stable.
+bevy_mara = { path = "../mara/mara/plugin/bevy" }
+mara_core = { path = "../mara/crates/core" }
+# Reusable 3D-scene gizmos (axis triads + joint primitives). Pinned to
+# the same rev bevy_mara uses so cargo doesn't pull two copies.
+bevy_glacial = { git = "https://github.com/bresilla/bevy_glacial", rev = "d7bc6d3" }
 
 # `build.rs` bakes a sample USDZ (USDA + procedural PNG) into
 # `assets/external/` so `cargo run -- usdz_sample.usdz` always has
@@ -88,3 +93,8 @@ bevy_glacial = { git = "https://github.com/bresilla/bevy_glacial", branch = "mai
 [build-dependencies]
 zip = { version = "8", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+# Used by tests/project_usdz.rs to author a USDZ + verify embedded textures.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+image = "0.25"

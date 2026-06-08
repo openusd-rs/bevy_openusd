@@ -10,7 +10,7 @@ use bevy::mesh::{Mesh, Mesh3d};
 use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::scene::{Scene, SceneRoot};
-use bevy_openusd::{
+use usd_bevy::{
     UsdArticulationRoot, UsdAsset, UsdJointKind, UsdPhysicsJoint, UsdPlugin, UsdPrimRef,
     UsdRigidBody,
 };

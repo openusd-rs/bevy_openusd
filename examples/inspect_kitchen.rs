@@ -1,5 +1,5 @@
 //! One-shot diagnostic: open a Pixar Kitchen_set binary geom file
-//! directly via `openusd::Stage` and dump every prim's authored
+//! directly via `openusd::usd::Stage` and dump every prim's authored
 //! `xformOpOrder` + the raw value of each op. Helps determine
 //! whether composition issues are due to mixed-op orderings or
 //! `xformOp:transform` matrices that decompose surprisingly.
@@ -10,19 +10,19 @@ fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
         "assets/Kitchen_set/assets/FramePicture/FramePicture.geom.usd".to_string()
     });
-    let stage = openusd::Stage::open(&path).unwrap();
+    let stage = openusd::usd::Stage::open(&path).unwrap();
 
-    fn walk(stage: &openusd::Stage, prim: &Path, depth: usize) {
+    fn walk(stage: &openusd::usd::Stage, prim: &Path, depth: usize) {
         let indent = "  ".repeat(depth);
         let type_name: Option<String> = stage
-            .field::<String>(prim.clone(), "typeName")
+            .metadata::<String>(prim.clone(), "typeName")
             .ok()
             .flatten();
         // xformOpOrder
         let order_attr = prim.append_property("xformOpOrder").ok();
         let order: Option<Vec<String>> = order_attr.and_then(|a| {
             stage
-                .field::<Value>(a, "default")
+                .metadata::<Value>(a, "default")
                 .ok()
                 .flatten()
                 .and_then(|v| match v {
@@ -51,20 +51,20 @@ fn main() {
             "material:binding",
         ] {
             if let Ok(ap) = prim.append_property(probe) {
-                if let Ok(Some(v)) = stage.field::<Value>(ap.clone(), "default") {
+                if let Ok(Some(v)) = stage.metadata::<Value>(ap.clone(), "default") {
                     println!("{}    PROBE .{}: {:?}", indent, probe, v);
                 }
-                if let Ok(Some(v)) = stage.field::<Value>(ap.clone(), "connectionPaths") {
+                if let Ok(Some(v)) = stage.metadata::<Value>(ap.clone(), "connectionPaths") {
                     println!("{}    PROBE .{}.conn: {:?}", indent, probe, v);
                 }
-                if let Ok(Some(v)) = stage.field::<Value>(ap, "targetPaths") {
+                if let Ok(Some(v)) = stage.metadata::<Value>(ap, "targetPaths") {
                     println!("{}    PROBE .{}.targets: {:?}", indent, probe, v);
                 }
             }
         }
         // Dump every authored property name + a short signature of its
         // default value so we can see materials, primvars, shaders.
-        match stage.prim_properties(prim.clone()) {
+        match stage.prim_at(prim.clone()).property_names() {
             Ok(props) => {
                 println!("{}  properties ({}):", indent, props.len());
                 for prop_name in props {
@@ -72,7 +72,7 @@ fn main() {
                     let Ok(attr) = prim.append_property(prop_str) else {
                         continue;
                     };
-                    if let Ok(Some(v)) = stage.field::<Value>(attr, "default") {
+                    if let Ok(Some(v)) = stage.metadata::<Value>(attr, "default") {
                         let sig = match v {
                             Value::Vec3f(_) | Value::Vec3d(_) => "vec3".to_string(),
                             Value::Float(x) => format!("f={x}"),
@@ -96,7 +96,7 @@ fn main() {
             Err(e) => println!("{}  (props err: {})", indent, e),
         }
         // Recurse into children
-        if let Ok(children) = stage.prim_children(prim.clone()) {
+        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
             for c in children {
                 if let Ok(child_path) = prim.append_path(c.as_str()) {
                     walk(stage, &child_path, depth + 1);
@@ -107,22 +107,22 @@ fn main() {
     walk(&stage, &Path::abs_root(), 0);
 
     // Try `read_preview_material` on every Material we find.
-    fn walk_mats(stage: &openusd::Stage, prim: &Path) {
+    fn walk_mats(stage: &openusd::usd::Stage, prim: &Path) {
         if stage
-            .field::<String>(prim.clone(), "typeName")
+            .metadata::<String>(prim.clone(), "typeName")
             .ok()
             .flatten()
             .as_deref()
             == Some("Material")
         {
             println!("\n=== read_preview_material on {} ===", prim.as_str());
-            match usd_schema::shade::read_preview_material(stage, prim) {
+            match usd_bevy::read::shade::read_preview_material(stage, prim) {
                 Ok(Some(m)) => println!("  decoded: {:#?}", m),
                 Ok(None) => println!("  decoded: None (unrecognised shader)"),
                 Err(e) => println!("  err: {e}"),
             }
         }
-        if let Ok(children) = stage.prim_children(prim.clone()) {
+        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
             for c in children {
                 if let Ok(cp) = prim.append_path(c.as_str()) {
                     walk_mats(stage, &cp);

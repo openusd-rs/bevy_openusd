@@ -800,10 +800,10 @@ pub fn read_custom_data(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Cus
     Ok(dict_from_value(stage.prim_at(prim.clone()).custom_data()?))
 }
 
-/// `assetInfo` introspection. openusd exposes no generic prim-metadata
-/// reader yet, so this currently returns `None` (the field is not surfaced).
-pub fn read_asset_info(_stage: &Stage, _prim: &Path) -> anyhow::Result<Option<CustomDict>> {
-    Ok(None)
+/// `assetInfo` dictionary on a prim (package-management metadata). Read via
+/// the fork's public `Stage::metadata` accessor.
+pub fn read_asset_info(stage: &Stage, prim: &Path) -> anyhow::Result<Option<CustomDict>> {
+    Ok(dict_from_value(stage.metadata::<Value>(prim.clone(), "assetInfo")?))
 }
 
 pub fn read_custom_layer_data(stage: &Stage) -> anyhow::Result<Option<CustomDict>> {

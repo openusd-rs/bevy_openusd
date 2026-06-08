@@ -7,7 +7,7 @@ use bevy::mesh::{Mesh, Mesh3d};
 use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::scene::{Scene, SceneRoot};
-use bevy_openusd::{UsdAsset, UsdCollider, UsdPhysicsMaterial, UsdPlugin, UsdPrimRef};
+use usd_bevy::{UsdAsset, UsdCollider, UsdPhysicsMaterial, UsdPlugin, UsdPrimRef};
 
 fn build_test_app() -> App {
     let mut app = App::new();

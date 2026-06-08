@@ -138,10 +138,6 @@ pub struct UsdAsset {
     /// compose clip layers yet; this surfaces the authoring so
     /// downstream tools can honour it manually.
     pub clip_sets: std::collections::HashMap<String, Vec<crate::read::clips::ReadClipSet>>,
-    /// Material-affecting variant sets with per-option prebuilt material
-    /// handles. Lets the viewer switch texture/material variants by swapping
-    /// `MeshMaterial3d` live, with no scene rebuild.
-    pub material_variants: Vec<build::MaterialVariantSet>,
 }
 
 /// One authored `UsdGeom.Camera` with its prim path + decoded params.
@@ -322,10 +318,6 @@ impl AssetLoader for UsdLoader {
 
         let asset_path = load_context.path();
         let fs_path: &Path = asset_path.path();
-        // Owned copy of the source path: used by the variant-preload closure
-        // below so it doesn't keep `load_context.path()` borrowed across the
-        // loader's later `&mut load_context` calls.
-        let fs_path_owned = fs_path.to_path_buf();
         let ext_hint = fs_path
             .extension()
             .and_then(|e| e.to_str())
@@ -603,14 +595,6 @@ impl AssetLoader for UsdLoader {
         };
         let scene_handle = load_context.add_labeled_asset(scene_label, scene);
 
-        // Material-variant preload is disabled: eagerly re-composing the stage
-        // per variant option (and rebuilding every material + texture each
-        // time) made load pathologically slow for scenes with many texture
-        // options. Left empty so variant switches fall back to the normal
-        // path; a lazy (first-switch) resolver is the proper fix.
-        let _ = &fs_path_owned;
-        let material_variants: Vec<build::MaterialVariantSet> = Vec::new();
-
         let _ = std::fs::remove_file(&tmp);
 
         let usd_asset = UsdAsset {
@@ -648,7 +632,6 @@ impl AssetLoader for UsdLoader {
             subdivision_prims,
             light_linking_prims,
             clip_sets,
-            material_variants,
         };
 
         // If the caller supplied any `variant_selections`, Bevy's

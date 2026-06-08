@@ -4,7 +4,7 @@
 
 use bevy::asset::{AssetServer, Assets, LoadState};
 use bevy::prelude::*;
-use bevy_openusd::{UsdAsset, UsdPlugin};
+use usd_bevy::{UsdAsset, UsdPlugin};
 
 #[derive(Resource)]
 struct Stage(Handle<UsdAsset>);

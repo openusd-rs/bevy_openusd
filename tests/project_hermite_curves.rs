@@ -1,7 +1,7 @@
 //! HermiteCurves integration test: assert that
-//! `usd_schema::geom::read_hermite_curves` decodes the fixture, that
+//! `usd_bevy::read::geom::read_hermite_curves` decodes the fixture, that
 //! the cubic-Hermite sampler in
-//! `bevy_openusd::curves::hermite_to_read_curves` matches each authored
+//! `usd_bevy::curves::hermite_to_read_curves` matches each authored
 //! CV exactly at segment endpoints (h00(0)=h01(1)=1, all other basis
 //! functions vanish), and that the loader spawns one entity per
 //! HermiteCurves prim with a Mesh3d + Material attached.
@@ -11,7 +11,7 @@ use bevy::mesh::{Mesh, Mesh3d};
 use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::scene::{Scene, SceneRoot};
-use bevy_openusd::{UsdAsset, UsdPlugin, UsdPrimRef};
+use usd_bevy::{UsdAsset, UsdPlugin, UsdPrimRef};
 
 fn build_test_app() -> App {
     let mut app = App::new();
@@ -63,9 +63,9 @@ fn spawn_scene_root(app: &mut App, handle: &Handle<UsdAsset>) {
 
 #[test]
 fn hermite_sampler_matches_cv_endpoints() {
-    use usd_schema::geom::read_hermite_curves;
+    use usd_bevy::read::geom::read_hermite_curves;
     let stage =
-        openusd::Stage::open("tests/stages/hermite_curves.usda").expect("stage should open");
+        openusd::usd::Stage::open("tests/stages/hermite_curves.usda").expect("stage should open");
     let h = read_hermite_curves(
         &stage,
         &openusd::sdf::Path::new("/World/Bend").expect("valid path"),
@@ -78,7 +78,7 @@ fn hermite_sampler_matches_cv_endpoints() {
         h.points, h.tangents
     );
 
-    let read = bevy_openusd::curves::hermite_to_read_curves(&h);
+    let read = usd_bevy::curves::hermite_to_read_curves(&h);
     let total = read.points.len();
     println!(
         "  sampled vertex_counts={:?} total={total} first={:?} last={:?}",

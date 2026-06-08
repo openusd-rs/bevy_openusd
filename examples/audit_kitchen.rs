@@ -1,5 +1,5 @@
 //! Walk every `.usd*` file under a directory tree, open each as a
-//! standalone `openusd::Stage`, and tally what's authored. Goal:
+//! standalone `openusd::usd::Stage`, and tally what's authored. Goal:
 //! find every prim type, every property name, every shader id, and
 //! every relationship name that the bevy_openusd loader silently
 //! drops. That tells us where the Kitchen_set "still grey" surface
@@ -44,9 +44,9 @@ fn value_signature(v: &Value) -> String {
     }
 }
 
-fn walk_prim(stage: &openusd::Stage, prim: &SdfPath, t: &mut Tally) {
+fn walk_prim(stage: &openusd::usd::Stage, prim: &SdfPath, t: &mut Tally) {
     let type_name: Option<String> = stage
-        .field::<String>(prim.clone(), "typeName")
+        .metadata::<String>(prim.clone(), "typeName")
         .ok()
         .flatten();
     if let Some(tn) = &type_name {
@@ -54,7 +54,7 @@ fn walk_prim(stage: &openusd::Stage, prim: &SdfPath, t: &mut Tally) {
     }
 
     // apiSchemas list-op
-    if let Ok(Some(v)) = stage.field::<Value>(prim.clone(), "apiSchemas") {
+    if let Ok(Some(v)) = stage.metadata::<Value>(prim.clone(), "apiSchemas") {
         if let Value::TokenListOp(op) = v {
             for s in op
                 .prepended_items
@@ -69,7 +69,7 @@ fn walk_prim(stage: &openusd::Stage, prim: &SdfPath, t: &mut Tally) {
 
     // Properties via `prim_properties`. Some binary files don't
     // expose this — silently skip those.
-    if let Ok(props) = stage.prim_properties(prim.clone()) {
+    if let Ok(props) = stage.prim_at(prim.clone()).property_names() {
         for prop_name in props {
             *t.property_names
                 .entry(prop_name.as_str().to_string())
@@ -99,7 +99,7 @@ fn walk_prim(stage: &openusd::Stage, prim: &SdfPath, t: &mut Tally) {
         "faceVertexIndices",
     ] {
         if let Ok(ap) = prim.append_property(probe) {
-            if let Ok(Some(v)) = stage.field::<Value>(ap, "default") {
+            if let Ok(Some(v)) = stage.metadata::<Value>(ap, "default") {
                 let key = format!("(probe) {probe}: {}", value_signature(&v));
                 *t.property_names.entry(key).or_insert(0) += 1;
 
@@ -138,7 +138,7 @@ fn walk_prim(stage: &openusd::Stage, prim: &SdfPath, t: &mut Tally) {
     // Shader info:id
     if type_name.as_deref() == Some("Shader") {
         if let Ok(attr) = prim.append_property("info:id") {
-            if let Ok(Some(v)) = stage.field::<Value>(attr, "default") {
+            if let Ok(Some(v)) = stage.metadata::<Value>(attr, "default") {
                 if let Value::Token(s) | Value::String(s) = v {
                     *t.shader_ids.entry(s).or_insert(0) += 1;
                 }
@@ -153,14 +153,14 @@ fn walk_prim(stage: &openusd::Stage, prim: &SdfPath, t: &mut Tally) {
         for out in ["outputs:surface", "outputs:mtlx:surface"] {
             if let Ok(attr) = prim.append_property(out) {
                 if let Ok(Some(Value::PathListOp(op))) =
-                    stage.field::<Value>(attr, "connectionPaths")
+                    stage.metadata::<Value>(attr, "connectionPaths")
                 {
                     if let Some(target) = op.flatten().into_iter().next() {
                         // target is a property path; chase to its prim
                         // and grab info:id.
                         let shader_prim = target.prim_path();
                         if let Ok(id_attr) = shader_prim.append_property("info:id") {
-                            if let Ok(Some(v)) = stage.field::<Value>(id_attr, "default") {
+                            if let Ok(Some(v)) = stage.metadata::<Value>(id_attr, "default") {
                                 if let Value::Token(s) | Value::String(s) = v {
                                     found = s;
                                     break;
@@ -175,7 +175,7 @@ fn walk_prim(stage: &openusd::Stage, prim: &SdfPath, t: &mut Tally) {
     }
 
     // Recurse
-    if let Ok(children) = stage.prim_children(prim.clone()) {
+    if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
         for c in children {
             if let Ok(child_path) = prim.append_path(c.as_str()) {
                 walk_prim(stage, &child_path, t);
@@ -201,7 +201,7 @@ fn walk_dir(dir: &std::path::Path, t: &mut Tally) {
             if matches!(ext.as_str(), "usd" | "usda" | "usdc" | "usdz") {
                 t.files_walked += 1;
                 if let Some(p_str) = p.to_str()
-                    && let Ok(stage) = openusd::Stage::open(p_str)
+                    && let Ok(stage) = openusd::usd::Stage::open(p_str)
                 {
                     walk_prim(&stage, &SdfPath::abs_root(), t);
                 }
@@ -251,7 +251,7 @@ fn main() {
     println!("\n=== Composed-stage probe ===");
     let composed = std::path::Path::new(&root).join("Kitchen_set.usd");
     if let Some(s) = composed.to_str() {
-        if let Ok(stage) = openusd::Stage::open(s) {
+        if let Ok(stage) = openusd::usd::Stage::open(s) {
             let probes = [
                 "/Kitchen_set/Arch_grp/Kitchen_1/Geom/Cabinets/Body/pCube251",
                 "/Kitchen_set/Props_grp/West_grp/WestWall_grp/FramePictureD_1/Geom/FramePicture",
@@ -265,9 +265,9 @@ fn main() {
                     continue;
                 };
                 let type_name: Option<String> =
-                    stage.field::<String>(p.clone(), "typeName").ok().flatten();
+                    stage.metadata::<String>(p.clone(), "typeName").ok().flatten();
                 println!("  {path_str}: typeName={:?}", type_name);
-                if let Ok(children) = stage.prim_children(p.clone()) {
+                if let Ok(children) = stage.prim_at(p.clone()).child_names() {
                     println!(
                         "    children: {:?}",
                         children.iter().take(8).collect::<Vec<_>>()
@@ -282,7 +282,7 @@ fn main() {
                     "faceVertexCounts",
                 ] {
                     if let Ok(ap) = p.append_property(attr) {
-                        if let Ok(Some(v)) = stage.field::<Value>(ap, "default") {
+                        if let Ok(Some(v)) = stage.metadata::<Value>(ap, "default") {
                             println!("    .{attr}: {:?}", v);
                         }
                     }

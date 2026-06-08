@@ -130,13 +130,15 @@ pub fn attach_physics_to_prim(
             .map(|d| meta.basis_rotation * Vec3::from_array(d))
             .unwrap_or(Vec3::NEG_Y);
         // Per UsdPhysicsScene spec, `physics:gravityMagnitude` is in
-        // scene units / s². But virtually every authored scene writes
-        // `9.81` meaning Earth gravity in m/s² regardless of
-        // `metersPerUnit`. Multiplying by metersPerUnit on a
-        // `metersPerUnit=0.01` scene (Scout V2, Isaac Sim assets)
-        // turns 9.81 into 0.0981 m/s² and the whole sim falls in
-        // slow-motion. Treat the authored value as already in m/s².
-        let mag = scene.gravity_magnitude.unwrap_or(9.81);
+        // scene units / s², so scale by `metersPerUnit` to land in SI
+        // (m/s²) — e.g. 981 cm/s² on a metersPerUnit=0.01 stage → 9.81.
+        // Caveat: scenes that sloppily author `9.81` regardless of
+        // metersPerUnit will then simulate slow (0.0981 m/s²); author
+        // gravity in scene units. A missing value defaults to Earth SI.
+        let mag = scene
+            .gravity_magnitude
+            .map(|m| m * meta.meters_per_unit)
+            .unwrap_or(9.81);
         world.entity_mut(entity).insert(UsdPhysicsScene {
             gravity_direction: dir.normalize_or_zero(),
             gravity_magnitude: mag,

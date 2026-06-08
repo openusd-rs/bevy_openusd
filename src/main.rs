@@ -34,7 +34,7 @@ use crate::camera::{ArcballCamera, ArcballCameraPlugin};
 use crate::keyboard::ViewerKeyboardPlugin;
 use crate::overlays::{OverlaysPlugin, SceneExtent};
 use crate::state::{
-    CameraBookmarks, CameraMount, FlyTo, LoadRequest, LoaderTuning, PendingAnimationClip, PendingMaterialVariant,
+    CameraBookmarks, CameraMount, FlyTo, LoadRequest, LoaderTuning, PendingAnimationClip,
     ReloadRequest, SelectedPrim, StageInfo, UsdStageTime,
 };
 use crate::ui::{RIB_TREE, RIBBON_LEFT, ViewerUiPlugin};
@@ -137,7 +137,6 @@ fn main() {
         .init_resource::<CameraMount>()
         .init_resource::<LoaderTuning>()
         .init_resource::<PendingAnimationClip>()
-        .init_resource::<PendingMaterialVariant>()
         .init_resource::<UsdStageTime>()
         .init_resource::<CameraBookmarks>()
         .add_systems(Startup, open_default_panel)
@@ -179,7 +178,6 @@ fn main() {
             ),
         )
         .add_systems(Update, apply_live_animation_clip)
-        .add_systems(Update, apply_live_material_variant)
         .add_systems(Update, (sync_loaded_stage_source, variant_reload_fallback, warm_variants_on_load));
     let hide_meshes = std::env::var("BEVY_OPENUSD_HIDE_MESHES")
         .ok()
@@ -1511,48 +1509,6 @@ fn evaluate_animated_prims(
 ///
 /// Skips the eval when no driver is present (no animation loaded), so
 /// the cost on non-animated scenes is one `Query::iter()` per frame.
-fn apply_live_material_variant(
-    mut pending: ResMut<PendingMaterialVariant>,
-    stage: Option<Res<StageHandle>>,
-    assets: Res<Assets<usd_bevy::UsdAsset>>,
-    mut q: Query<(
-        &usd_bevy::prim_ref::UsdPrimRef,
-        &mut bevy::pbr::MeshMaterial3d<bevy::pbr::StandardMaterial>,
-    )>,
-) {
-    if pending.queue.is_empty() {
-        return;
-    }
-    let Some(stage) = stage else {
-        return;
-    };
-    let Some(asset) = assets.get(&stage.0) else {
-        return;
-    };
-    for (prim_path, set_name, option) in std::mem::take(&mut pending.queue) {
-        let Some(mv) = asset
-            .material_variants
-            .iter()
-            .find(|m| m.prim_path == prim_path && m.set_name == set_name)
-        else {
-            warn!("material variant: {set_name} on {prim_path} not preloaded; ignoring");
-            continue;
-        };
-        let mut applied = 0usize;
-        for (mesh_prim, opts) in &mv.per_mesh {
-            let Some(handle) = opts.get(&option) else {
-                continue;
-            };
-            for (pref, mut mat) in q.iter_mut() {
-                if &pref.path == mesh_prim {
-                    mat.0 = handle.clone();
-                    applied += 1;
-                }
-            }
-        }
-        info!("material variant: live-swapped {prim_path} {set_name}={option} on {applied} mesh(es)");
-    }
-}
 
 /// Keep `LoadedStageSource` in sync with the requested asset + variant
 /// selections so the incremental updater can recompose on a variant switch.

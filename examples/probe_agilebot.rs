@@ -3,9 +3,9 @@
 //! authors physics opinions, and any unresolved references that
 //! would cause "scattered" rendering.
 
-use openusd::Stage;
+use openusd::usd::Stage;
 use openusd::sdf::{Path, SpecType, Value};
-use usd_schema::physics as ph;
+use usd_rapier::physics_data as ph;
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
@@ -13,24 +13,20 @@ fn main() {
     });
     println!("# Loading: {path}");
     let stage = Stage::builder()
-        .on_error(|e| {
-            eprintln!("(soft error) {e}");
-            Ok(())
-        })
         .open(&path)
         .expect("open stage");
 
     // Stage metadata
     let up_axis = stage
-        .field::<String>(Path::abs_root(), "upAxis")
+        .metadata::<String>(Path::abs_root(), "upAxis")
         .ok()
         .flatten();
     let mpu = stage
-        .field::<Value>(Path::abs_root(), "metersPerUnit")
+        .metadata::<Value>(Path::abs_root(), "metersPerUnit")
         .ok()
         .flatten();
     let kpu = stage
-        .field::<Value>(Path::abs_root(), "kilogramsPerUnit")
+        .metadata::<Value>(Path::abs_root(), "kilogramsPerUnit")
         .ok()
         .flatten();
     let default_prim = stage.default_prim();
@@ -48,24 +44,24 @@ fn main() {
     let mut with_orient = 0usize;
     let mut at_origin = 0usize;
     stage
-        .traverse(|p: &Path| {
-            if matches!(stage.spec_type(p.clone()), Ok(Some(SpecType::Prim))) {
+        .traverse(openusd::usd::PrimPredicate::default(), |p: &Path| {
+            if stage.prim_at(p.clone()).is_defined().unwrap_or(false) {
                 total += 1;
                 let tn: String = stage
-                    .field::<String>(p.clone(), "typeName")
+                    .metadata::<String>(p.clone(), "typeName")
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| "(no typeName)".into());
                 *by_type.entry(tn.clone()).or_insert(0) += 1;
-                if let Ok(Some(_)) = stage.field::<Value>(p.clone(), "xformOpOrder") {
+                if let Ok(Some(_)) = stage.metadata::<Value>(p.clone(), "xformOpOrder") {
                     with_xform_ops += 1;
                 }
                 if let Ok(attr_p) = p.append_property("xformOp:translate") {
-                    if let Ok(Some(v)) = stage.field::<Value>(attr_p, "default") {
+                    if let Ok(Some(v)) = stage.metadata::<Value>(attr_p, "default") {
                         with_translate += 1;
                         let zeroish = match v {
-                            Value::Vec3d(a) => a.iter().all(|x| x.abs() < 1e-9),
-                            Value::Vec3f(a) => a.iter().all(|x| x.abs() < 1e-9),
+                            Value::Vec3d(a) => [a.x, a.y, a.z].iter().all(|x| x.abs() < 1e-9),
+                            Value::Vec3f(a) => [a.x, a.y, a.z].iter().all(|x| (*x as f64).abs() < 1e-9),
                             _ => false,
                         };
                         if zeroish {
@@ -74,7 +70,7 @@ fn main() {
                     }
                 }
                 if let Ok(attr_p) = p.append_property("xformOp:orient") {
-                    if let Ok(Some(_)) = stage.field::<Value>(attr_p, "default") {
+                    if let Ok(Some(_)) = stage.metadata::<Value>(attr_p, "default") {
                         with_orient += 1;
                     }
                 }
@@ -93,8 +89,8 @@ fn main() {
     println!("\n# Mesh prims (path · authored xformOpOrder · authored translate):");
     let mut mesh_paths = Vec::new();
     stage
-        .traverse(|p: &Path| {
-            if let Ok(Some(t)) = stage.field::<String>(p.clone(), "typeName")
+        .traverse(openusd::usd::PrimPredicate::default(), |p: &Path| {
+            if let Ok(Some(t)) = stage.metadata::<String>(p.clone(), "typeName")
                 && t == "Mesh"
             {
                 mesh_paths.push(p.as_str().to_string());
@@ -106,13 +102,13 @@ fn main() {
         let order = p
             .append_property("xformOpOrder")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
         let tr = p
             .append_property("xformOp:translate")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
         // Try our actual reader
-        let computed = usd_schema::xform::read_transform(&stage, &p).ok().flatten();
+        let computed = usd_bevy::read::xform::read_transform(&stage, &p).ok().flatten();
         println!(
             "  {mp}\n    order = {order:?}\n    translate = {tr:?}\n    computed = {computed:?}"
         );
@@ -140,16 +136,16 @@ fn main() {
         let order = p
             .append_property("xformOpOrder")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
         let tr = p
             .append_property("xformOp:translate")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
         let or = p
             .append_property("xformOp:orient")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
-        let computed = usd_schema::xform::read_transform(&stage, &p).ok().flatten();
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
+        let computed = usd_bevy::read::xform::read_transform(&stage, &p).ok().flatten();
         println!("  {link}");
         println!("    order={order:?}");
         println!("    translate={tr:?}");
@@ -179,7 +175,7 @@ fn main() {
         let purpose = p
             .append_property("purpose")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
         println!("  {path_str:<55} purpose = {purpose:?}");
     }
 
@@ -194,7 +190,7 @@ fn main() {
         let pts = p
             .append_property("points")
             .ok()
-            .and_then(|a| stage.field::<Value>(a, "default").ok().flatten());
+            .and_then(|a| stage.metadata::<Value>(a, "default").ok().flatten());
         let count = match &pts {
             Some(Value::Vec3fVec(v)) => v.len(),
             Some(Value::Vec3dVec(v)) => v.len(),
@@ -216,12 +212,12 @@ fn main() {
         "propertyChildren",
         "apiSchemas",
     ] {
-        let raw = stage.field::<Value>(link1.clone(), field).ok().flatten();
+        let raw = stage.metadata::<Value>(link1.clone(), field).ok().flatten();
         println!("  field {field:<20} = {raw:?}");
     }
     // Also try reading xformOpOrder as a PROPERTY (with its own default value).
     if let Ok(prop) = link1.append_property("xformOpOrder") {
-        let raw = stage.field::<Value>(prop, "default").ok().flatten();
+        let raw = stage.metadata::<Value>(prop, "default").ok().flatten();
         println!("  prop  xformOpOrder.default = {raw:?}");
     }
 

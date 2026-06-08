@@ -5,7 +5,7 @@ use bevy::asset::{AssetServer, Assets, LoadState};
 use bevy::mesh::{Mesh, Mesh3d, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::scene::{Scene, SceneRoot};
-use bevy_openusd::{UsdAsset, UsdPlugin, UsdPrimRef};
+use usd_bevy::{UsdAsset, UsdPlugin, UsdPrimRef};
 
 fn build_test_app() -> App {
     let mut app = App::new();

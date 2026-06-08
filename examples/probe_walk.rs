@@ -3,14 +3,12 @@
 //! parser can't open. Prints joint/timeline counts and a few sample
 //! values so we can spot-check the parsing.
 
-use std::path::Path;
 
 fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "assets/UsdSkelExamples/HumanFemale/HumanFemale.walk.usd".to_string());
-    let text = std::fs::read_to_string(Path::new(&path)).expect("read .usda text");
-    let anims = usd_schema::skel_anim_text::scan_skel_animations(&text);
+    let anims = scan_animations(&path);
     println!("scanned {} SkelAnimation prim(s)", anims.len());
     for a in &anims {
         println!(
@@ -76,4 +74,19 @@ fn main() {
             }
         }
     }
+}
+
+/// Open a `.usd(a)` and collect its `UsdSkelAnimation` prims. (Replaces the
+/// old text-scrape scanner: openusd's parser now reads tuple time-samples.)
+fn scan_animations(path: &str) -> Vec<usd_bevy::read::skel_anim_text::ReadSkelAnimText> {
+    let Ok(stage) = openusd::usd::Stage::open(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |p| {
+        if let Ok(Some(a)) = usd_bevy::read::skel::read_skel_animation_stage(&stage, p) {
+            out.push(a);
+        }
+    });
+    out
 }

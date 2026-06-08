@@ -1,16 +1,16 @@
 //! MaterialX-rich integration test: graph traversal beyond
 //! standard_surface and UsdPreviewSurface. Asserts that
-//! `usd_schema::shade::read_preview_material` follows connections
+//! `usd_bevy::read::shade::read_preview_material` follows connections
 //! through `ND_image_*`, `ND_normalmap`, `ND_multiply_*`, and
 //! `ND_constant_*` to reach the texture / scalar at the leaf.
 
 use openusd::sdf::Path;
-use usd_schema::shade::read_preview_material;
+use usd_bevy::read::shade::read_preview_material;
 
 #[test]
 fn rich_network_resolves_textures_and_constants() {
     let stage =
-        openusd::Stage::open("tests/stages/materialx_rich.usda").expect("stage should open");
+        openusd::usd::Stage::open("tests/stages/materialx_rich.usda").expect("stage should open");
 
     let m = read_preview_material(
         &stage,

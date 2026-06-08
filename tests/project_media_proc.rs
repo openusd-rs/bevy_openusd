@@ -1,6 +1,6 @@
 //! UsdMedia.SpatialAudio + UsdProc integration test. Asserts that
-//! `usd_schema::media::read_spatial_audio` and
-//! `usd_schema::proc::read_procedural` decode their fixtures, and
+//! `usd_bevy::read::media::read_spatial_audio` and
+//! `usd_bevy::read::proc::read_procedural` decode their fixtures, and
 //! that the loader attaches `UsdSpatialAudio` / `UsdProcedural`
 //! components to the right entities (and only the right entities).
 
@@ -9,7 +9,7 @@ use bevy::mesh::{Mesh, Mesh3d};
 use bevy::pbr::MeshMaterial3d;
 use bevy::prelude::*;
 use bevy::scene::{Scene, SceneRoot};
-use bevy_openusd::{UsdAsset, UsdPlugin, UsdPrimRef, UsdProcedural, UsdSpatialAudio};
+use usd_bevy::{UsdAsset, UsdPlugin, UsdPrimRef, UsdProcedural, UsdSpatialAudio};
 
 fn build_test_app() -> App {
     let mut app = App::new();
@@ -61,9 +61,9 @@ fn spawn_scene_root(app: &mut App, handle: &Handle<UsdAsset>) {
 
 #[test]
 fn schema_readers_decode_authored_attrs() {
-    let stage = openusd::Stage::open("tests/stages/media_proc.usda").expect("stage should open");
+    let stage = openusd::usd::Stage::open("tests/stages/media_proc.usda").expect("stage should open");
 
-    let bell = usd_schema::media::read_spatial_audio(
+    let bell = usd_bevy::read::media::read_spatial_audio(
         &stage,
         &openusd::sdf::Path::new("/World/Bell").expect("valid path"),
     )
@@ -75,14 +75,14 @@ fn schema_readers_decode_authored_attrs() {
     assert_eq!(bell.playback_mode.as_deref(), Some("loopFromStart"));
     assert_eq!(bell.gain, Some(0.8));
 
-    let plain = usd_schema::media::read_spatial_audio(
+    let plain = usd_bevy::read::media::read_spatial_audio(
         &stage,
         &openusd::sdf::Path::new("/World/Plain").expect("valid path"),
     )
     .expect("read ok");
     assert!(plain.is_none());
 
-    let forest = usd_schema::proc::read_procedural(
+    let forest = usd_bevy::read::proc::read_procedural(
         &stage,
         &openusd::sdf::Path::new("/World/Forest").expect("valid path"),
     )

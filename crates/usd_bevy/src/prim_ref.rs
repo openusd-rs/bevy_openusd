@@ -197,15 +197,17 @@ impl UsdPurpose {
     /// USD's `purpose` model lets one prim subtree carry both a "render"
     /// (for offline rendering) and a "proxy" (lightweight stand-in)
     /// version of the same geometry. A typical interactive viewer picks
-    /// one. We show **both** `Default` and `Render` (and `Proxy` for
-    /// physics) — the only purpose hidden by default is `Guide`,
-    /// which is reserved for editor-only annotations.
+    /// one. We show **both** `Default` and `Render` — these are the
+    /// visual buckets. `proxy` (a lightweight collision stand-in) and
+    /// `guide` (editor-only annotation) default to hidden so they don't
+    /// visually double up their render counterparts; physics still reads
+    /// the proxy geometry, it just isn't drawn.
     ///
     /// Some Isaac Sim assets (AgileX Scout, …) author visual meshes
     /// as `purpose=render`; hiding that bucket would render them
     /// invisible.
     pub fn hidden_by_default(self) -> bool {
-        matches!(self, UsdPurpose::Guide)
+        matches!(self, UsdPurpose::Guide | UsdPurpose::Proxy)
     }
 }
 

@@ -171,7 +171,7 @@ pub fn evaluate_animated_prims(
         return;
     }
     let tc = clock.current_time_code();
-    use usd_schema::anim::eval_scalar_track;
+    use crate::read::anim::eval_scalar_track;
 
     for (prim_ref, mut tr) in prims.iter_mut() {
         // Multi-USD: walk every loaded asset to find this prim's

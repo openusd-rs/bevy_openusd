@@ -12,7 +12,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, Meshable, PrimitiveTopology, VertexAttributeValues};
-use usd_schema::geom::{Axis, Interpolation, MeshPrimvar, Orientation, ReadCylinder, ReadMesh};
+use crate::read::geom::{Axis, Interpolation, MeshPrimvar, Orientation, ReadCylinder, ReadMesh};
 
 /// Per-USD-point skinning data, normalised to Bevy's fixed 4-influences-
 /// per-vertex layout. Built from a `ReadSkelBinding` via
@@ -34,7 +34,7 @@ pub struct SkinAttrs {
 /// than 4 influences per vertex, top-4 by weight are kept and
 /// renormalised to sum to 1.
 pub fn skin_attrs_from_binding(
-    binding: &usd_schema::skel::ReadSkelBinding,
+    binding: &crate::read::skel::ReadSkelBinding,
     vertex_count: usize,
     max_joint_count: u16,
 ) -> SkinAttrs {
@@ -92,7 +92,7 @@ pub fn skin_attrs_from_binding(
     SkinAttrs { indices, weights }
 }
 
-/// Convert a `usd_schema::geom::ReadMesh` into a Bevy mesh.
+/// Convert a `crate::read::geom::ReadMesh` into a Bevy mesh.
 ///
 /// Steps:
 /// 1. Triangulate each face by fan (works for triangles and convex quads;
@@ -170,7 +170,7 @@ pub fn mesh_from_usd_subset_with_skin(
             let mut wgt = Vec::with_capacity(p.len());
             for face_verts in &read.face_vertex_counts {
                 let n = *face_verts as usize;
-                let mut consumed = 0usize;
+                let consumed = 0usize;
                 let _ = n;
                 let _ = consumed; // silence unused if loop empty
                 for k in 0..(*face_verts as usize) {

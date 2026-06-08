@@ -246,18 +246,18 @@ pub struct UsdCustomAttrs {
     /// Flat `(name, value)` list of authored `custom` attributes.
     /// Names are whatever the author wrote (`userProperties:max_speed`,
     /// `arena:tint`, `my_custom_thing`, …).
-    pub entries: Vec<(String, usd_schema::geom::CustomAttrValue)>,
+    pub entries: Vec<(String, crate::read::geom::CustomAttrValue)>,
     /// Authored `customData = { ... }` dictionary on the prim itself.
     /// Empty when the prim didn't author one.
-    pub custom_data: usd_schema::geom::CustomDict,
+    pub custom_data: crate::read::geom::CustomDict,
     /// Authored `assetInfo = { ... }` dictionary — identity metadata
     /// package-management tools stamp onto a prim.
-    pub asset_info: usd_schema::geom::CustomDict,
+    pub asset_info: crate::read::geom::CustomDict,
 }
 
 impl UsdCustomAttrs {
     /// Raw by-name lookup on the flat attribute list.
-    pub fn get(&self, name: &str) -> Option<&usd_schema::geom::CustomAttrValue> {
+    pub fn get(&self, name: &str) -> Option<&crate::read::geom::CustomAttrValue> {
         self.entries.iter().find(|(n, _)| n == name).map(|(_, v)| v)
     }
     pub fn is_empty(&self) -> bool {
@@ -287,7 +287,7 @@ impl UsdCustomAttrs {
     pub fn get_vec4(&self, name: &str) -> Option<[f32; 4]> {
         self.get(name)?.as_vec4()
     }
-    pub fn get_dict(&self, name: &str) -> Option<&usd_schema::geom::CustomDict> {
+    pub fn get_dict(&self, name: &str) -> Option<&crate::read::geom::CustomDict> {
         self.get(name)?.as_dict()
     }
 
@@ -299,7 +299,7 @@ impl UsdCustomAttrs {
     pub fn namespaced<'a>(
         &'a self,
         prefix: &'a str,
-    ) -> impl Iterator<Item = (&'a str, &'a usd_schema::geom::CustomAttrValue)> + 'a {
+    ) -> impl Iterator<Item = (&'a str, &'a crate::read::geom::CustomAttrValue)> + 'a {
         self.entries
             .iter()
             .filter_map(move |(name, val)| name.strip_prefix(prefix).map(|short| (short, val)))
@@ -309,7 +309,7 @@ impl UsdCustomAttrs {
     pub fn iter_prefix<'a>(
         &'a self,
         prefix: &'a str,
-    ) -> impl Iterator<Item = &'a (String, usd_schema::geom::CustomAttrValue)> + 'a {
+    ) -> impl Iterator<Item = &'a (String, crate::read::geom::CustomAttrValue)> + 'a {
         self.entries
             .iter()
             .filter(move |(n, _)| n.starts_with(prefix))

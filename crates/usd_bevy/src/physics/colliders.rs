@@ -8,7 +8,7 @@ use crate::markers::{
 use bevy::math::DVec3;
 use bevy::mesh::Mesh3d;
 use bevy::prelude::*;
-use openusd::physics::CollisionApprox;
+use usd_rapier::physics_data::CollisionApprox;
 use rapier3d_f64::geometry::{Group, InteractionGroups, InteractionTestMode};
 use rapier3d_f64::math::Pose;
 use usd_rapier::colliders::{ColliderOpinion, ShapeInput, build_collider};

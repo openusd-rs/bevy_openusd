@@ -7,7 +7,7 @@
 
 pub mod anim;
 mod asset;
-mod read;
+pub mod read;
 mod build;
 pub mod curves;
 mod light;

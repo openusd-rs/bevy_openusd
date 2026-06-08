@@ -1,6 +1,6 @@
 //! UsdPreviewSurface → `bevy::pbr::StandardMaterial`.
 //!
-//! `usd_schema::shade::read_preview_material` extracts the authored inputs
+//! `crate::read::shade::read_preview_material` extracts the authored inputs
 //! from the Material prim + its surface Shader; this module turns those
 //! inputs into a fully-textured Bevy material. Textures are resolved via
 //! [`crate::texture::load_texture`] so colour space is correct per channel.
@@ -20,7 +20,7 @@
 use bevy::asset::{Handle, LoadContext};
 use bevy::color::{Color, LinearRgba};
 use bevy::pbr::StandardMaterial;
-use usd_schema::shade::ReadPreviewMaterial;
+use crate::read::shade::ReadPreviewMaterial;
 
 use crate::build::BuildCtx;
 use crate::texture::{TextureChannel, load_texture};

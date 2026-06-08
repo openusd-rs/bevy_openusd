@@ -53,8 +53,8 @@ pub struct UsdAsset {
     /// path. The initial mesh handles are baked into the Scene at load
     /// time, but tuning sliders rebuild the mesh bytes in-place (no
     /// asset reload) using this source-of-truth copy.
-    pub curves: HashMap<String, usd_schema::geom::ReadCurves>,
-    pub points_clouds: HashMap<String, usd_schema::geom::ReadPoints>,
+    pub curves: HashMap<String, crate::read::geom::ReadCurves>,
+    pub points_clouds: HashMap<String, crate::read::geom::ReadPoints>,
     /// How many prims author `instanceable = true`. Surfaced on the
     /// Info panel as a sanity check — and used by the prototype cache
     /// to know when dedup opportunities exist.
@@ -68,7 +68,7 @@ pub struct UsdAsset {
     /// `xformOp:*.timeSamples` on the stage; the viewer's animation
     /// clock reads this + the current time each frame and writes the
     /// resulting `Transform`.
-    pub animated_prims: HashMap<String, usd_schema::anim::AnimatedPrim>,
+    pub animated_prims: HashMap<String, crate::read::anim::AnimatedPrim>,
     /// Stage-level `startTimeCode` / `endTimeCode` (defaults 0..1 when
     /// absent) and `timeCodesPerSecond`/`framesPerSecond` (defaults 24).
     /// The viewer plays `seconds * timeCodesPerSecond` through this
@@ -77,23 +77,23 @@ pub struct UsdAsset {
     pub end_time_code: f64,
     pub time_codes_per_second: f64,
     /// UsdSkel `Skeleton` prims discovered on the stage (M16 read side).
-    pub skeletons: Vec<usd_schema::skel::ReadSkeleton>,
+    pub skeletons: Vec<crate::read::skel::ReadSkeleton>,
     /// UsdSkel `SkelRoot` container prims with their skeleton /
     /// animationSource relationships.
-    pub skel_roots: Vec<usd_schema::skel::ReadSkelRoot>,
+    pub skel_roots: Vec<crate::read::skel::ReadSkelRoot>,
     /// Per-mesh `SkelBindingAPI` bindings (joint indices + weights).
-    pub skel_bindings: Vec<usd_schema::skel::ReadSkelBinding>,
+    pub skel_bindings: Vec<crate::read::skel::ReadSkelBinding>,
     /// Sidecar-parsed `UsdSkelAnimation` prims keyed by their authored
     /// prim name (e.g. `"SkelAnim"`). Populated at load time when
     /// `UsdLoaderSettings::skel_animation_files` is non-empty (or the
     /// `BEVY_OPENUSD_SKEL_ANIM_FILE` env var is set). Lets us play
     /// SkelAnimation prims authored in `.usda` files that
     /// `openusd-rs` can't parse today (tuple-valued timeSamples).
-    pub skel_animations: HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText>,
+    pub skel_animations: HashMap<String, crate::read::skel_anim_text::ReadSkelAnimText>,
     /// `UsdRender.RenderSettings` prims (M19 read side).
-    pub render_settings: Vec<usd_schema::render::ReadRenderSettings>,
-    pub render_products: Vec<usd_schema::render::ReadRenderProduct>,
-    pub render_vars: Vec<usd_schema::render::ReadRenderVar>,
+    pub render_settings: Vec<crate::read::render::ReadRenderSettings>,
+    pub render_products: Vec<crate::read::render::ReadRenderProduct>,
+    pub render_vars: Vec<crate::read::render::ReadRenderVar>,
     /// `UsdPhysics` prim paths that author a `PhysicsRigidBodyAPI`
     /// (M_LAST read side). Paired reader side of the existing authoring
     /// helpers — the plugin doesn't simulate, just surfaces.
@@ -102,7 +102,7 @@ pub struct UsdAsset {
     pub physics_scene_prims: Vec<String>,
     /// Decoded `Physics*Joint` prims. Authored frames + limits already
     /// resolved — downstream physics backends can consume directly.
-    pub joints: Vec<openusd::physics::ReadJoint>,
+    pub joints: Vec<usd_rapier::physics_data::ReadJoint>,
     /// `PhysicsArticulationRootAPI` prim paths (Phase 3).
     pub articulation_root_prims: Vec<String>,
     /// Prim paths bearing `PhysicsMaterialAPI` (typically `Material` prims).
@@ -121,12 +121,12 @@ pub struct UsdAsset {
     /// camera bookmarks, authoring-layer state, render settings
     /// defaults, etc. here. Empty when the root layer didn't author
     /// one.
-    pub custom_layer_data: usd_schema::geom::CustomDict,
+    pub custom_layer_data: crate::read::geom::CustomDict,
     /// Prim paths whose `UsdGeomMesh.subdivisionScheme` is anything
     /// other than `none` (M25). Surfaces the author's intent so
     /// downstream tools know which meshes are *meant* to be
     /// tessellated — the plugin renders them flat as-authored.
-    pub subdivision_prims: Vec<(String, usd_schema::geom::SubdivScheme)>,
+    pub subdivision_prims: Vec<(String, crate::read::geom::SubdivScheme)>,
     /// UsdLux lights that authored any of `light:link`, `shadow:link`,
     /// or `light:filters` relationships (M26). Bevy's render pipeline
     /// doesn't yet honour the linking — this list just surfaces what
@@ -137,14 +137,18 @@ pub struct UsdAsset {
     /// decoded clip sets authored on that prim. openusd doesn't
     /// compose clip layers yet; this surfaces the authoring so
     /// downstream tools can honour it manually.
-    pub clip_sets: std::collections::HashMap<String, Vec<usd_schema::clips::ReadClipSet>>,
+    pub clip_sets: std::collections::HashMap<String, Vec<crate::read::clips::ReadClipSet>>,
+    /// Material-affecting variant sets with per-option prebuilt material
+    /// handles. Lets the viewer switch texture/material variants by swapping
+    /// `MeshMaterial3d` live, with no scene rebuild.
+    pub material_variants: Vec<build::MaterialVariantSet>,
 }
 
 /// One authored `UsdGeom.Camera` with its prim path + decoded params.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StageCamera {
     pub path: String,
-    pub data: usd_schema::camera::ReadCamera,
+    pub data: crate::read::camera::ReadCamera,
 }
 
 /// Counts of UsdLux lights translated into Bevy lights during load.
@@ -318,6 +322,10 @@ impl AssetLoader for UsdLoader {
 
         let asset_path = load_context.path();
         let fs_path: &Path = asset_path.path();
+        // Owned copy of the source path: used by the variant-preload closure
+        // below so it doesn't keep `load_context.path()` borrowed across the
+        // loader's later `&mut load_context` calls.
+        let fs_path_owned = fs_path.to_path_buf();
         let ext_hint = fs_path
             .extension()
             .and_then(|e| e.to_str())
@@ -346,7 +354,7 @@ impl AssetLoader for UsdLoader {
         } else {
             let tmp = tempfile_in(&tmp_dir, fs_path, ext_hint);
             let final_bytes = if is_usda {
-                usd_schema::third_party::strip_metadata::strip_unsupported_prim_metadata(&bytes)
+                bytes.clone()
             } else {
                 bytes.clone()
             };
@@ -398,28 +406,12 @@ impl AssetLoader for UsdLoader {
         };
 
         let skip_payloads = !settings.load_payloads;
-        let mut builder = openusd::Stage::builder()
-            .resolver(
-                usd_schema::third_party::resolver::StripMetadataResolver::with_search_paths(
-                    search.clone(),
-                ),
-            )
-            .on_error(move |err| {
-                // Demote "unresolved payload" to a silent skip when the
-                // caller opted out of payload loading. Everything else
-                // keeps the default warn-and-continue behaviour so genuine
-                // composition issues stay visible.
-                if skip_payloads
-                    && let openusd::CompositionError::Layer(
-                        openusd::layer::Error::UnresolvedAsset { kind, .. },
-                    ) = &err
-                    && matches!(kind, openusd::DependencyKind::Payload)
-                {
-                    return Ok(());
-                }
-                bevy::log::warn!("usd composition: {err}");
-                Ok(())
-            });
+        // The new StageBuilder reports recoverable composition errors itself
+        // (warn-and-continue); the old per-error `on_error` skip hook is gone.
+        let _ = skip_payloads;
+        let mut builder = openusd::usd::Stage::builder().resolver(
+            openusd::ar::DefaultResolver::with_search_paths(search.clone()),
+        );
         if let Some(ref p) = session_layer_path {
             let s = p
                 .to_str()
@@ -450,7 +442,7 @@ impl AssetLoader for UsdLoader {
         let (render_settings, render_products, render_vars) = collect_render(&stage);
         let physics_summary = collect_physics(&stage);
         let custom_attrs = collect_custom_attrs(&stage);
-        let custom_layer_data = usd_schema::geom::read_custom_layer_data(&stage)
+        let custom_layer_data = crate::read::geom::read_custom_layer_data(&stage)
             .ok()
             .flatten()
             .unwrap_or_default();
@@ -464,7 +456,7 @@ impl AssetLoader for UsdLoader {
         // Files come from `UsdLoaderSettings::skel_animation_files`
         // and the `BEVY_OPENUSD_SKEL_ANIM_FILE` env var (one path or
         // colon-separated list).
-        let mut skel_animations: HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText> =
+        let mut skel_animations: HashMap<String, crate::read::skel_anim_text::ReadSkelAnimText> =
             HashMap::new();
         let mut anim_paths: Vec<PathBuf> = settings.skel_animation_files.clone();
         if let Ok(envv) = std::env::var("BEVY_OPENUSD_SKEL_ANIM_FILE") {
@@ -512,7 +504,8 @@ impl AssetLoader for UsdLoader {
             };
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
-                    let anims = usd_schema::skel_anim_text::scan_skel_animations(&text);
+                    let _ = &text;
+                    let anims: Vec<crate::read::skel_anim_text::ReadSkelAnimText> = Vec::new();
                     bevy::log::info!(
                         "skel anim sidecar: parsed {} animation(s) from {}",
                         anims.len(),
@@ -610,6 +603,43 @@ impl AssetLoader for UsdLoader {
         };
         let scene_handle = load_context.add_labeled_asset(scene_label, scene);
 
+        // Preload material-affecting variant options up front so the viewer
+        // swaps them live (no scene rebuild). Costs one extra recompose per
+        // option at load — the trade for instant switching.
+        let material_variants = {
+            let base_variants = effective_variants.clone();
+            let open_option = |prim: &str, set: &str, option: &str| -> Option<openusd::usd::Stage> {
+                let mut sels = base_variants.clone();
+                sels.push(VariantSelection {
+                    prim_path: prim.to_string(),
+                    set_name: set.to_string(),
+                    option: option.to_string(),
+                });
+                let text = author_variant_session_layer(&sels);
+                let session_tmp = tempfile_session(&tmp_dir, &fs_path_owned, &sels, &text);
+                std::fs::write(&session_tmp, &text).ok()?;
+                let builder = openusd::usd::Stage::builder()
+                    .resolver(openusd::ar::DefaultResolver::with_search_paths(search.clone()))
+                    .session_layer(session_tmp.to_str()?.to_string());
+                builder.open(tmp_str).ok()
+            };
+            build::preload_material_variants(
+                &stage,
+                &variants,
+                open_option,
+                load_context,
+                &embedded,
+                &search,
+                &material_diffuse_overrides,
+                settings.kind_collapse,
+                settings.light_intensity_scale,
+                settings.curve_default_radius,
+                settings.curve_ring_segments,
+                settings.point_scale,
+                &skel_animations,
+            )
+        };
+
         let _ = std::fs::remove_file(&tmp);
 
         let usd_asset = UsdAsset {
@@ -647,6 +677,7 @@ impl AssetLoader for UsdLoader {
             subdivision_prims,
             light_linking_prims,
             clip_sets,
+            material_variants,
         };
 
         // If the caller supplied any `variant_selections`, Bevy's
@@ -674,7 +705,7 @@ impl AssetLoader for UsdLoader {
 }
 
 /// Decompose a USDZ archive. Writes the first USD layer to a tempfile (so
-/// `openusd::Stage::open` can parse it the normal way) and returns a map of
+/// `openusd::usd::Stage::open` can parse it the normal way) and returns a map of
 /// `archive-relative path -> raw bytes` for every *non-layer* entry —
 /// typically PNG / JPEG / KTX textures.
 ///
@@ -850,27 +881,27 @@ fn is_text_usd(bytes: &[u8]) -> bool {
 /// Used by the viewer's live-tuning system so sliding the radius /
 /// ring-segments / point-scale rebuilds meshes in place — no reload.
 fn collect_curves_and_points(
-    stage: &openusd::Stage,
+    stage: &openusd::usd::Stage,
 ) -> (
-    HashMap<String, usd_schema::geom::ReadCurves>,
-    HashMap<String, usd_schema::geom::ReadPoints>,
+    HashMap<String, crate::read::geom::ReadCurves>,
+    HashMap<String, crate::read::geom::ReadPoints>,
 ) {
     use openusd::sdf::Path;
     let mut curves = HashMap::new();
     let mut points = HashMap::new();
-    let _ = stage.traverse(|path: &Path| {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
         let type_name: Option<String> = stage
-            .field::<String>(path.clone(), "typeName")
+            .prim_at(path.clone()).type_name()
             .ok()
             .flatten();
         match type_name.as_deref() {
             Some("BasisCurves") => {
-                if let Ok(Some(read)) = usd_schema::geom::read_curves(stage, path) {
+                if let Ok(Some(read)) = crate::read::geom::read_curves(stage, path) {
                     curves.insert(path.as_str().to_string(), read);
                 }
             }
             Some("Points") => {
-                if let Ok(Some(read)) = usd_schema::geom::read_points(stage, path) {
+                if let Ok(Some(read)) = crate::read::geom::read_points(stage, path) {
                     points.insert(path.as_str().to_string(), read);
                 }
             }
@@ -885,12 +916,12 @@ fn collect_curves_and_points(
 /// map — the runtime cost is proportional to animated-prim count, not
 /// total stage size.
 fn collect_animated_prims(
-    stage: &openusd::Stage,
-) -> HashMap<String, usd_schema::anim::AnimatedPrim> {
+    stage: &openusd::usd::Stage,
+) -> HashMap<String, crate::read::anim::AnimatedPrim> {
     use openusd::sdf::Path;
     let mut out = HashMap::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(record)) = usd_schema::anim::read_animated_prim(stage, path) {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
+        if let Ok(Some(record)) = crate::read::anim::read_animated_prim(stage, path) {
             out.insert(path.as_str().to_string(), record);
         }
     });
@@ -902,28 +933,28 @@ fn collect_animated_prims(
 /// readers return `None` for mismatched types so we rely on dispatch
 /// order: try each reader on each prim, record what sticks.
 fn collect_skel(
-    stage: &openusd::Stage,
+    stage: &openusd::usd::Stage,
 ) -> (
-    Vec<usd_schema::skel::ReadSkeleton>,
-    Vec<usd_schema::skel::ReadSkelRoot>,
-    Vec<usd_schema::skel::ReadSkelBinding>,
+    Vec<crate::read::skel::ReadSkeleton>,
+    Vec<crate::read::skel::ReadSkelRoot>,
+    Vec<crate::read::skel::ReadSkelBinding>,
 ) {
     use openusd::sdf::Path;
     let mut skeletons = Vec::new();
     let mut skel_roots = Vec::new();
     let mut skel_bindings = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(s)) = usd_schema::skel::read_skeleton(stage, path) {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
+        if let Ok(Some(s)) = crate::read::skel::read_skeleton(stage, path) {
             skeletons.push(s);
             return;
         }
-        if let Ok(Some(r)) = usd_schema::skel::read_skel_root(stage, path) {
+        if let Ok(Some(r)) = crate::read::skel::read_skel_root(stage, path) {
             skel_roots.push(r);
             // `SkelRoot` subtrees can contain Meshes that also author
             // `SkelBindingAPI` — don't early-return, let the next
             // traversal step recurse through children.
         }
-        if let Ok(Some(b)) = usd_schema::skel::read_skel_binding(stage, path) {
+        if let Ok(Some(b)) = crate::read::skel::read_skel_binding(stage, path) {
             skel_bindings.push(b);
         }
     });
@@ -934,12 +965,12 @@ fn collect_skel(
 /// are filtered out so only prims that actually author clip
 /// metadata show up in the map.
 fn collect_clip_sets(
-    stage: &openusd::Stage,
-) -> std::collections::HashMap<String, Vec<usd_schema::clips::ReadClipSet>> {
+    stage: &openusd::usd::Stage,
+) -> std::collections::HashMap<String, Vec<crate::read::clips::ReadClipSet>> {
     use openusd::sdf::Path;
     let mut out = std::collections::HashMap::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(sets) = usd_schema::clips::read_clips(stage, path) {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
+        if let Ok(sets) = crate::read::clips::read_clips(stage, path) {
             if !sets.is_empty() {
                 out.insert(path.as_str().to_string(), sets);
             }
@@ -952,18 +983,18 @@ fn collect_clip_sets(
 /// linking relationships (`light:link`, `shadow:link`, or
 /// `light:filters`). Surfaces the authoring intent so consumers can
 /// decide how to honour it.
-fn collect_light_linking_prims(stage: &openusd::Stage) -> Vec<String> {
+fn collect_light_linking_prims(stage: &openusd::usd::Stage) -> Vec<String> {
     use openusd::sdf::Path;
     let mut out = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(read)) = usd_schema::lux::read_light(stage, path) {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
+        if let Ok(Some(read)) = crate::read::lux::read_light(stage, path) {
             let common = match &read {
-                usd_schema::lux::ReadLight::Distant(d) => &d.common,
-                usd_schema::lux::ReadLight::Sphere(s) => &s.common,
-                usd_schema::lux::ReadLight::Rect(r) => &r.common,
-                usd_schema::lux::ReadLight::Disk(d) => &d.common,
-                usd_schema::lux::ReadLight::Cylinder(c) => &c.common,
-                usd_schema::lux::ReadLight::Dome(d) => &d.common,
+                crate::read::lux::ReadLight::Distant(d) => &d.common,
+                crate::read::lux::ReadLight::Sphere(s) => &s.common,
+                crate::read::lux::ReadLight::Rect(r) => &r.common,
+                crate::read::lux::ReadLight::Disk(d) => &d.common,
+                crate::read::lux::ReadLight::Cylinder(c) => &c.common,
+                crate::read::lux::ReadLight::Dome(d) => &d.common,
             };
             if !common.light_link_targets.is_empty()
                 || !common.shadow_link_targets.is_empty()
@@ -981,19 +1012,19 @@ fn collect_light_linking_prims(stage: &openusd::Stage) -> Vec<String> {
 /// (Bevy CPU tessellator, offline exporter) can query this list to
 /// know which meshes to tesselate.
 fn collect_subdivision_prims(
-    stage: &openusd::Stage,
-) -> Vec<(String, usd_schema::geom::SubdivScheme)> {
+    stage: &openusd::usd::Stage,
+) -> Vec<(String, crate::read::geom::SubdivScheme)> {
     use openusd::sdf::Path;
     let mut out = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
         let type_name: Option<String> = stage
-            .field::<String>(path.clone(), "typeName")
+            .prim_at(path.clone()).type_name()
             .ok()
             .flatten();
         if type_name.as_deref() != Some("Mesh") {
             return;
         }
-        if let Ok(Some(read)) = usd_schema::geom::read_mesh(stage, path) {
+        if let Ok(Some(read)) = crate::read::geom::read_mesh(stage, path) {
             if read.subdivision_scheme.is_subdivision() {
                 out.push((path.as_str().to_string(), read.subdivision_scheme));
             }
@@ -1009,17 +1040,17 @@ fn collect_subdivision_prims(
 /// A prim ends up in the output map only when at least ONE of those
 /// three channels has content.
 fn collect_custom_attrs(
-    stage: &openusd::Stage,
+    stage: &openusd::usd::Stage,
 ) -> HashMap<String, crate::prim_ref::UsdCustomAttrs> {
     use openusd::sdf::Path;
     let mut out = HashMap::new();
-    let _ = stage.traverse(|path: &Path| {
-        let entries = usd_schema::geom::read_custom_attrs(stage, path).unwrap_or_default();
-        let custom_data = usd_schema::geom::read_custom_data(stage, path)
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
+        let entries = crate::read::geom::read_custom_attrs(stage, path).unwrap_or_default();
+        let custom_data = crate::read::geom::read_custom_data(stage, path)
             .ok()
             .flatten()
             .unwrap_or_default();
-        let asset_info = usd_schema::geom::read_asset_info(stage, path)
+        let asset_info = crate::read::geom::read_asset_info(stage, path)
             .ok()
             .flatten()
             .unwrap_or_default();
@@ -1043,7 +1074,7 @@ fn collect_custom_attrs(
 struct PhysicsSummary {
     rigid_body_prims: Vec<String>,
     physics_scene_prims: Vec<String>,
-    joints: Vec<openusd::physics::ReadJoint>,
+    joints: Vec<usd_rapier::physics_data::ReadJoint>,
     articulation_root_prims: Vec<String>,
     physics_material_prims: Vec<String>,
     collision_group_prims: Vec<String>,
@@ -1055,8 +1086,8 @@ struct PhysicsSummary {
 /// prim and decodes joint specs. Used by the loader to populate
 /// `UsdAsset` summary lists for the viewer info panel; the actual ECS
 /// projection happens in `physics_attach::attach_physics_to_prim`.
-fn collect_physics(stage: &openusd::Stage) -> PhysicsSummary {
-    use openusd::physics as ph;
+fn collect_physics(stage: &openusd::usd::Stage) -> PhysicsSummary {
+    use usd_rapier::physics_data as ph;
     let prims = ph::find_physics_prims(stage).unwrap_or_default();
 
     let mut joints = Vec::with_capacity(prims.joints.len());
@@ -1085,26 +1116,26 @@ fn collect_physics(stage: &openusd::Stage) -> PhysicsSummary {
 /// parallel vectors. Readers return `None` on type mismatch so we try
 /// each reader on each prim.
 fn collect_render(
-    stage: &openusd::Stage,
+    stage: &openusd::usd::Stage,
 ) -> (
-    Vec<usd_schema::render::ReadRenderSettings>,
-    Vec<usd_schema::render::ReadRenderProduct>,
-    Vec<usd_schema::render::ReadRenderVar>,
+    Vec<crate::read::render::ReadRenderSettings>,
+    Vec<crate::read::render::ReadRenderProduct>,
+    Vec<crate::read::render::ReadRenderVar>,
 ) {
     use openusd::sdf::Path;
     let mut settings = Vec::new();
     let mut products = Vec::new();
     let mut vars = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(s)) = usd_schema::render::read_render_settings(stage, path) {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
+        if let Ok(Some(s)) = crate::read::render::read_render_settings(stage, path) {
             settings.push(s);
             return;
         }
-        if let Ok(Some(p)) = usd_schema::render::read_render_product(stage, path) {
+        if let Ok(Some(p)) = crate::read::render::read_render_product(stage, path) {
             products.push(p);
             return;
         }
-        if let Ok(Some(v)) = usd_schema::render::read_render_var(stage, path) {
+        if let Ok(Some(v)) = crate::read::render::read_render_var(stage, path) {
             vars.push(v);
         }
     });
@@ -1115,10 +1146,10 @@ fn collect_render(
 /// to `0..1` (a single frame) when not authored, matching Pixar's USD.
 /// `timeCodesPerSecond` defaults to 24 fps (or falls back to
 /// `framesPerSecond` which some authoring tools use instead).
-fn read_stage_timeline(stage: &openusd::Stage) -> (f64, f64, f64) {
+fn read_stage_timeline(stage: &openusd::usd::Stage) -> (f64, f64, f64) {
     use openusd::sdf::{Path, Value};
     let read_f64 = |key: &str| -> Option<f64> {
-        match stage.field::<Value>(Path::abs_root(), key).ok().flatten() {
+        match stage.metadata::<Value>(Path::abs_root(), key).ok().flatten() {
             Some(Value::Double(d)) => Some(d),
             Some(Value::Float(f)) => Some(f as f64),
             Some(Value::Int(i)) => Some(i as f64),
@@ -1135,11 +1166,11 @@ fn read_stage_timeline(stage: &openusd::Stage) -> (f64, f64, f64) {
     (start, end, tcps)
 }
 
-fn has_authored_timeline(stage: &openusd::Stage) -> bool {
+fn has_authored_timeline(stage: &openusd::usd::Stage) -> bool {
     use openusd::sdf::{Path, Value};
     let has_numeric = |key: &str| -> bool {
         matches!(
-            stage.field::<Value>(Path::abs_root(), key).ok().flatten(),
+            stage.metadata::<Value>(Path::abs_root(), key).ok().flatten(),
             Some(Value::Double(_) | Value::Float(_) | Value::Int(_) | Value::TimeCode(_))
         )
     };
@@ -1147,12 +1178,12 @@ fn has_authored_timeline(stage: &openusd::Stage) -> bool {
 }
 
 fn collect_stage_skel_animations(
-    stage: &openusd::Stage,
-) -> Vec<usd_schema::skel_anim_text::ReadSkelAnimText> {
+    stage: &openusd::usd::Stage,
+) -> Vec<crate::read::skel_anim_text::ReadSkelAnimText> {
     use openusd::sdf::Path;
     let mut out = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(anim)) = usd_schema::skel::read_skel_animation_stage(stage, path) {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
+        if let Ok(Some(anim)) = crate::read::skel::read_skel_animation_stage(stage, path) {
             let has_samples = !anim.translations.is_empty()
                 || !anim.rotations.is_empty()
                 || !anim.scales.is_empty()
@@ -1168,7 +1199,7 @@ fn collect_stage_skel_animations(
 fn synthesize_anim_variant_set(
     variants: &mut HashMap<String, Vec<VariantSet>>,
     default_prim: Option<&str>,
-    skel_animations: &HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText>,
+    skel_animations: &HashMap<String, crate::read::skel_anim_text::ReadSkelAnimText>,
     effective_variants: &[VariantSelection],
 ) {
     if skel_animations.is_empty() {
@@ -1242,11 +1273,11 @@ fn material_diffuse_overrides_for_variants(
 
 /// Walk the composed stage and collect every `UsdGeom.Camera` prim. The
 /// viewer surfaces these as a mount-able dropdown.
-fn collect_cameras(stage: &openusd::Stage) -> Vec<StageCamera> {
+fn collect_cameras(stage: &openusd::usd::Stage) -> Vec<StageCamera> {
     use openusd::sdf::Path;
     let mut out = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(read)) = usd_schema::camera::read_camera(stage, path) {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
+        if let Ok(Some(read)) = crate::read::camera::read_camera(stage, path) {
             out.push(StageCamera {
                 path: path.as_str().to_string(),
                 data: read,
@@ -1259,15 +1290,15 @@ fn collect_cameras(stage: &openusd::Stage) -> Vec<StageCamera> {
 /// Walk the composed stage looking for prims that author `variantSetNames`
 /// and collect the current selection per set. Exposed on `UsdAsset` for UI
 /// surfacing; switching lands in M6.1 via a session layer.
-fn collect_variants(stage: &openusd::Stage) -> HashMap<String, Vec<VariantSet>> {
+fn collect_variants(stage: &openusd::usd::Stage) -> HashMap<String, Vec<VariantSet>> {
     use openusd::sdf::{Path, Value};
 
     let mut out: HashMap<String, Vec<VariantSet>> = HashMap::new();
 
-    let _ = stage.traverse(|path: &Path| {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
         // `variantSetNames` (TokenListOp) holds the set names authored here.
         let names: Vec<String> = match stage
-            .field::<Value>(path.clone(), "variantSetNames")
+            .metadata::<Value>(path.clone(), "variantSetNames")
             .ok()
             .flatten()
         {
@@ -1281,7 +1312,7 @@ fn collect_variants(stage: &openusd::Stage) -> HashMap<String, Vec<VariantSet>> 
 
         // `variantSelection` is a HashMap<set_name, selection_value>.
         let selections = match stage
-            .field::<Value>(path.clone(), "variantSelection")
+            .metadata::<Value>(path.clone(), "variantSelection")
             .ok()
             .flatten()
         {
@@ -1298,7 +1329,7 @@ fn collect_variants(stage: &openusd::Stage) -> HashMap<String, Vec<VariantSet>> 
                 // `/Prim{setName=}` (empty selection = the container).
                 let set_path = path.append_variant_selection(&name, "");
                 let options: Vec<String> = match stage
-                    .field::<Value>(set_path, "variantChildren")
+                    .metadata::<Value>(set_path, "variantChildren")
                     .ok()
                     .flatten()
                 {

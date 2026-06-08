@@ -4,6 +4,7 @@
 
 pub mod anim;
 pub mod camera;
+pub mod clips;
 pub mod geom;
 pub mod lux;
 pub mod media;
@@ -14,3 +15,4 @@ pub mod skel;
 pub mod skel_anim_text;
 pub mod ui;
 pub mod util;
+pub mod xform;

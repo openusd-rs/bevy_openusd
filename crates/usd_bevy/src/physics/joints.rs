@@ -3,7 +3,7 @@
 
 use crate::markers::{UsdArticulationRoot, UsdDof, UsdDriveType, UsdJointKind, UsdPhysicsJoint};
 use bevy::prelude::*;
-use openusd::physics::{Dof, JointKind, ReadDrive, ReadJoint, ReadLimit};
+use usd_rapier::physics_data::{Dof, DriveType, JointKind, ReadDrive, ReadJoint, ReadLimit};
 use rapier3d_f64::prelude::*;
 use usd_rapier::joints::build_and_insert_joint;
 
@@ -164,9 +164,9 @@ fn dof_to_openusd(d: UsdDof) -> Dof {
     }
 }
 
-fn drive_type_to_openusd(t: UsdDriveType) -> openusd::physics::DriveType {
+fn drive_type_to_openusd(t: UsdDriveType) -> DriveType {
     match t {
-        UsdDriveType::Acceleration => openusd::physics::DriveType::Acceleration,
-        UsdDriveType::Force => openusd::physics::DriveType::Force,
+        UsdDriveType::Acceleration => DriveType::Acceleration,
+        UsdDriveType::Force => DriveType::Force,
     }
 }

@@ -21,7 +21,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use std::collections::HashMap;
-use usd_schema::geom::ReadTetMesh;
+use crate::read::geom::ReadTetMesh;
 
 /// Build a `TriangleList` mesh from a `ReadTetMesh`. Uses the cached
 /// `surface_face_vertex_indices` when authored, otherwise computes

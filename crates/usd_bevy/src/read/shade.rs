@@ -104,7 +104,7 @@ fn resolve_surface_shader(stage: &Stage, material: &Path) -> anyhow::Result<Opti
     }
     // Fallback: scan child Shader prims and infer the dialect.
     for child in stage.prim_at(material.clone()).child_names().unwrap_or_default() {
-        let shader = material.append_path(&child)?;
+        let shader = material.append_path(child.as_str())?;
         if stage.prim_at(shader.clone()).type_name()?.as_deref() != Some("Shader") {
             continue;
         }

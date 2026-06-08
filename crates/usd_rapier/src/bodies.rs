@@ -19,7 +19,7 @@ use glam::{DQuat, DVec3};
 use rapier3d_f64::prelude::*;
 
 /// Authored rigid-body opinion ready for Rapier insertion. A subset
-/// of `openusd::physics::ReadRigidBody` plus per-body decoded mass.
+/// of `openusd::schemas::physics::ReadRigidBody` plus per-body decoded mass.
 pub struct RigidBodyOpinion {
     pub kinematic: bool,
     pub enabled: bool,

@@ -1150,7 +1150,7 @@ fn follow_mounted_camera(
     // defaults tend to be too narrow for scene scale, so size from the
     // authored aperture.
     use bevy::camera::{OrthographicProjection, PerspectiveProjection, Projection};
-    use usd_schema::camera::Projection as UsdProj;
+    use usd_bevy::read::camera::Projection as UsdProj;
     match cam_data.projection.unwrap_or(UsdProj::Perspective) {
         UsdProj::Perspective => {
             let fov = cam_data
@@ -1424,7 +1424,7 @@ fn evaluate_animated_prims(
         return;
     }
     let tc = clock.current_time_code();
-    use usd_schema::anim::eval_scalar_track;
+    use usd_bevy::read::anim::eval_scalar_track;
 
     for (prim_ref, mut tr) in prims.iter_mut() {
         let Some(record) = asset.animated_prims.get(&prim_ref.path) else {
@@ -1552,7 +1552,7 @@ fn apply_live_animation_clip(
     }
 }
 
-fn detect_quat_xyzw_order(anim: &usd_schema::skel_anim_text::ReadSkelAnimText) -> bool {
+fn detect_quat_xyzw_order(anim: &usd_bevy::read::skel_anim_text::ReadSkelAnimText) -> bool {
     let mut sum_abs_first = 0.0f32;
     let mut sum_abs_last = 0.0f32;
     let mut samples = 0usize;
@@ -1566,7 +1566,7 @@ fn detect_quat_xyzw_order(anim: &usd_schema::skel_anim_text::ReadSkelAnimText) -
     samples > 0 && sum_abs_last > sum_abs_first
 }
 
-fn skel_anim_time_range(anim: &usd_schema::skel_anim_text::ReadSkelAnimText) -> Option<(f64, f64)> {
+fn skel_anim_time_range(anim: &usd_bevy::read::skel_anim_text::ReadSkelAnimText) -> Option<(f64, f64)> {
     let mut start = f64::INFINITY;
     let mut end = f64::NEG_INFINITY;
     for t in anim

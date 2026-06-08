@@ -1,6 +1,6 @@
 //! Backend-neutral UsdPhysics marker components.
 //!
-//! The projection layer translates `usd_schema::physics::*` data into
+//! The projection layer translates `crate::read::physics::*` data into
 //! these components, one per affected prim entity. Adapter crates
 //! (`bevy_openusd_rapier`, future `bevy_openusd_avian`) read them and
 //! insert their engine's components in turn — `bevy_openusd` itself
@@ -86,7 +86,7 @@ pub struct UsdMass {
 // ── Collider ────────────────────────────────────────────────────────────
 
 /// Collision-approximation token authored on `PhysicsMeshCollisionAPI`.
-/// Mirrors `usd_schema::physics::CollisionApprox`. Preserved verbatim;
+/// Mirrors `crate::read::physics::CollisionApprox`. Preserved verbatim;
 /// adapters apply per-engine fallbacks (see module-level docs).
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[reflect(Default)]

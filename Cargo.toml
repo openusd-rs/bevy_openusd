@@ -26,7 +26,7 @@ path = "src/main.rs"
 usd_bevy = { path = "crates/usd_bevy" }
 # Pure-Rust USD — the viewer reads camera projection and anim track
 # data directly off the loaded `Stage` via openusd's typed views.
-openusd = { git = "https://github.com/mxpv/openusd", rev = "750af7e5fff62b46a8107ce92217ed849d3f4fe1", features = ["geom", "lux", "media", "proc", "render", "shade", "skel", "ui", "physics"] }
+openusd = { git = "https://github.com/bresilla/openusd", rev = "43abaf1fad6aea34c76b53bc1c89f12dcad7835b", features = ["geom", "lux", "media", "proc", "render", "shade", "skel", "ui", "physics"] }
 # Direct Rapier dep for the viewer's static-ground collider authoring;
 # `usd_bevy::physics::PhysicsWorld` exposes the Rapier sets we mutate.
 rapier3d-f64 = "0.32"

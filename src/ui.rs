@@ -1539,7 +1539,7 @@ fn draw_cameras_panel(
                         let name = cam.path.rsplit('/').next().unwrap_or(&cam.path);
                         let focal = cam.data.focal_length_mm.unwrap_or(50.0);
                         let proj = match cam.data.projection {
-                            Some(usd_schema::camera::Projection::Orthographic) => "ortho",
+                            Some(usd_bevy::read::camera::Projection::Orthographic) => "ortho",
                             _ => "persp",
                         };
                         let label = format!("📷  {name}");

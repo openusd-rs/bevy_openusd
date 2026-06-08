@@ -4046,11 +4046,13 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openusd"
-version = "0.3.0"
-source = "git+https://github.com/mxpv/openusd?rev=fe92b73224c611831be244afac9cf7654b5ef51e#fe92b73224c611831be244afac9cf7654b5ef51e"
+version = "0.4.0"
+source = "git+https://github.com/bresilla/openusd?rev=43abaf1fad6aea34c76b53bc1c89f12dcad7835b#43abaf1fad6aea34c76b53bc1c89f12dcad7835b"
 dependencies = [
  "anyhow",
+ "bitflags 2.11.1",
  "bytemuck",
+ "derive_more",
  "half",
  "logos",
  "lz4_flex",
@@ -5523,7 +5525,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "usd_rapier",
- "usd_schema",
  "zip",
 ]
 
@@ -5536,16 +5537,6 @@ dependencies = [
  "log",
  "openusd",
  "rapier3d-f64",
- "usd_schema",
-]
-
-[[package]]
-name = "usd_schema"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "glam 0.30.10",
- "openusd",
 ]
 
 [[package]]
@@ -5558,10 +5549,10 @@ dependencies = [
  "bevy_frost",
  "bevy_glacial",
  "image",
+ "openusd",
  "rapier3d-f64",
  "rfd",
  "usd_bevy",
- "usd_schema",
  "zip",
 ]
 

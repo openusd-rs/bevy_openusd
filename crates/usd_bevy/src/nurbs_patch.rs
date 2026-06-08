@@ -22,7 +22,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-use usd_schema::geom::ReadNurbsPatch;
+use crate::read::geom::ReadNurbsPatch;
 
 use crate::curves::eval_nurbs_de_boor;
 

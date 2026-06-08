@@ -17,7 +17,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-use usd_schema::geom::{
+use crate::read::geom::{
     CurveBasis, CurveType, CurveWrap, ReadCurves, ReadHermiteCurves, ReadNurbsCurves, ReadPoints,
 };
 

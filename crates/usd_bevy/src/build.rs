@@ -1,6 +1,6 @@
 //! Stage → Scene projection.
 //!
-//! Walks a composed [`openusd::Stage`] depth-first and builds a Bevy
+//! Walks a composed [`openusd::usd::Stage`] depth-first and builds a Bevy
 //! [`Scene`] — one entity per `SpecType::Prim`, linked via `ChildOf`. Geom
 //! prims (`Mesh` / `Cube` / `Sphere` / `Cylinder` / `Capsule`) get a
 //! `Mesh3d` + `MeshMaterial3d` with a default flat-gray `StandardMaterial`.
@@ -26,10 +26,10 @@ use bevy::pbr::{MeshMaterial3d, StandardMaterial};
 use bevy::prelude::Visibility;
 use bevy::scene::Scene;
 use bevy::transform::components::Transform;
-use openusd::Stage;
-use openusd::sdf::{Path, SpecType};
-use usd_schema::geom as ugeom;
-use usd_schema::xform as uxf;
+use openusd::usd::Stage;
+use openusd::sdf::Path;
+use crate::read::geom as ugeom;
+use crate::read::xform as uxf;
 
 use crate::curves::{curves_mesh, hermite_to_read_curves, nurbs_to_read_curves, points_mesh};
 use crate::light::{Tally as LightTally, spawn_light};
@@ -50,9 +50,9 @@ use crate::prim_ref::{
 };
 use crate::tetmesh::tetmesh_to_bevy_mesh;
 use crate::texture::{TextureChannel, can_resolve_texture, load_texture};
-use usd_schema::lux as ulux;
-use usd_schema::shade as ushade;
-use usd_schema::skel as uskel;
+use crate::read::lux as ulux;
+use crate::read::shade as ushade;
+use crate::read::skel as uskel;
 
 /// Walks `stage` and produces a standalone [`Scene`] plus labeled sub-assets
 /// for every generated `Mesh` / `StandardMaterial`.
@@ -87,7 +87,7 @@ pub fn stage_to_scene(
     curve_default_radius: f32,
     curve_ring_segments: u32,
     point_scale: f32,
-    skel_animations: &HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText>,
+    skel_animations: &HashMap<String, crate::read::skel_anim_text::ReadSkelAnimText>,
 ) -> (Scene, LightTally, InstanceStats) {
     let mut world = World::new();
     let mut ctx = BuildCtx::new(
@@ -125,7 +125,7 @@ pub fn stage_to_scene(
     // loses ~17 ghost subtrees at origin this way.
     let mut roots_to_walk: Vec<Path> = if let Some(default) = stage.default_prim() {
         match Path::abs_root().append_path(default.as_str()) {
-            Ok(p) if matches!(stage.spec_type(p.clone()), Ok(Some(SpecType::Prim))) => vec![p],
+            Ok(p) if stage.prim_at(p.clone()).is_defined().unwrap_or(false) => vec![p],
             _ => stage
                 .root_prims()
                 .unwrap_or_default()
@@ -282,7 +282,7 @@ pub(crate) struct BuildCtx<'lc, 'a> {
     /// SkelAnimation's authored prim name. The build walker looks
     /// them up by SkelRoot's animationSource leaf when it spawns a
     /// SkelRoot.
-    pub skel_animations: &'a HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText>,
+    pub skel_animations: &'a HashMap<String, crate::read::skel_anim_text::ReadSkelAnimText>,
     /// Diagnostics — how many skinned meshes did we attach
     /// `SkinnedMesh` to vs fail / skip cache. Logged at the end of
     /// stage_to_scene to make "X% of meshes skinned" visible.
@@ -377,7 +377,7 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
         curve_default_radius: f32,
         curve_ring_segments: u32,
         point_scale: f32,
-        skel_animations: &'a HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText>,
+        skel_animations: &'a HashMap<String, crate::read::skel_anim_text::ReadSkelAnimText>,
     ) -> Self {
         Self {
             lc,
@@ -555,11 +555,12 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
         stage: &Stage,
         material_prim: &Path,
         double_sided: bool,
+        label_suffix: &str,
     ) -> bevy::asset::Handle<StandardMaterial> {
         let key = if double_sided {
-            format!("{}#doubleSided", material_prim.as_str())
+            format!("{}#doubleSided{label_suffix}", material_prim.as_str())
         } else {
-            material_prim.as_str().to_string()
+            format!("{}{label_suffix}", material_prim.as_str())
         };
         if let Some(h) = self.material_cache.get(&key) {
             return h.clone();
@@ -641,9 +642,9 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
             bevy_mat.cull_mode = None;
         }
         let label = if double_sided {
-            format!("{}-doubleSided", material_prim.as_str())
+            format!("{}-doubleSided{label_suffix}", material_prim.as_str())
         } else {
-            material_prim.as_str().to_string()
+            format!("{}{label_suffix}", material_prim.as_str())
         };
         let handle = add_material_labeled(self.lc, &label, bevy_mat);
         self.material_cache.insert(key, handle.clone());
@@ -653,14 +654,14 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
 
 fn mdl_emission_explicitly_disabled(stage: &Stage, material_prim: &Path) -> bool {
     for child_name in stage
-        .prim_children(material_prim.clone())
+        .prim_at(material_prim.clone()).child_names()
         .unwrap_or_default()
     {
         let Ok(shader) = material_prim.append_path(child_name.as_str()) else {
             continue;
         };
         let is_shader = stage
-            .field::<String>(shader.clone(), "typeName")
+            .prim_at(shader.clone()).type_name()
             .ok()
             .flatten()
             .as_deref()
@@ -679,7 +680,7 @@ fn read_bool_input(stage: &Stage, prim: &Path, attr_name: &str) -> Option<bool> 
     use openusd::sdf::Value;
 
     let attr = prim.append_property(attr_name).ok()?;
-    match stage.field::<Value>(attr, "default").ok().flatten()? {
+    match crate::read::util::default_at(stage, &attr).ok().flatten()? {
         Value::Bool(v) => Some(v),
         _ => None,
     }
@@ -763,7 +764,7 @@ fn spawn_prim_subtree(
     world: &mut World,
     ctx: &mut BuildCtx<'_, '_>,
 ) {
-    if !matches!(stage.spec_type(path.clone()), Ok(Some(SpecType::Prim))) {
+    if !stage.prim_at(path.clone()).is_defined().unwrap_or(false) {
         return;
     }
     // Read purpose up front; we no longer SKIP proxy/guide prims (the
@@ -799,7 +800,7 @@ fn spawn_prim_subtree(
     let mut replay_ctx: Option<ReplayCtx> = None;
     let is_instanceable = matches!(
         stage
-            .field::<bool>(path.clone(), "instanceable")
+            .metadata::<bool>(path.clone(), "instanceable")
             .ok()
             .flatten(),
         Some(true)
@@ -886,7 +887,7 @@ fn spawn_prim_subtree(
     // viewer's tree row prefers over the prim's leaf name. Only
     // attached when authored so the tree falls back to the leaf for
     // unannotated prims.
-    if let Ok(Some(name)) = usd_schema::ui::read_display_name(stage, path)
+    if let Ok(Some(name)) = crate::read::ui::read_display_name(stage, path)
         && !name.is_empty()
     {
         world.entity_mut(entity).insert(UsdDisplayName(name));
@@ -895,7 +896,7 @@ fn spawn_prim_subtree(
     // UsdMediaSpatialAudio — read-side only. The component carries
     // the authored playback metadata; a future bevy_audio backend can
     // pick it up to spawn an actual audio source.
-    if let Ok(Some(sa)) = usd_schema::media::read_spatial_audio(stage, path) {
+    if let Ok(Some(sa)) = crate::read::media::read_spatial_audio(stage, path) {
         world.entity_mut(entity).insert(UsdSpatialAudio {
             file_path: sa.file_path,
             aural_mode: sa.aural_mode,
@@ -907,7 +908,7 @@ fn spawn_prim_subtree(
     // UsdProcGenerativeProcedural (and subclasses) — surface the
     // procedural-type marker. We can't execute the procedural without
     // its engine, but the viewer can at least flag the prim.
-    if let Ok(Some(p)) = usd_schema::proc::read_procedural(stage, path) {
+    if let Ok(Some(p)) = crate::read::proc::read_procedural(stage, path) {
         world.entity_mut(entity).insert(UsdProcedural {
             procedural_type: p.procedural_type,
             procedural_system: p.procedural_system,
@@ -1013,7 +1014,7 @@ fn spawn_prim_subtree(
         return;
     }
 
-    for child_name in stage.prim_children(path.clone()).unwrap_or_default() {
+    for child_name in stage.prim_at(path.clone()).child_names().unwrap_or_default() {
         let Ok(child_path) = path.append_path(child_name.as_str()) else {
             continue;
         };
@@ -1046,7 +1047,7 @@ fn spawn_prim_subtree(
 /// boundaries typically land.
 fn kind_is_collapsible(stage: &Stage, path: &Path) -> bool {
     stage
-        .field::<String>(path.clone(), "kind")
+        .prim_at(path.clone()).kind()
         .ok()
         .flatten()
         .map(|k| matches!(k.as_str(), "component" | "subcomponent"))
@@ -1064,7 +1065,7 @@ fn collect_geoms_for_collapse(
     depth: u32,
     out: &mut Vec<(Path, Transform)>,
 ) {
-    if !matches!(stage.spec_type(path.clone()), Ok(Some(SpecType::Prim))) {
+    if !stage.prim_at(path.clone()).is_defined().unwrap_or(false) {
         return;
     }
     if !passes_purpose_filter(stage, path) {
@@ -1084,7 +1085,7 @@ fn collect_geoms_for_collapse(
         out.push((path.clone(), accumulated));
     }
 
-    for child_name in stage.prim_children(path.clone()).unwrap_or_default() {
+    for child_name in stage.prim_at(path.clone()).child_names().unwrap_or_default() {
         let Ok(child_path) = path.append_path(child_name.as_str()) else {
             continue;
         };
@@ -1096,7 +1097,7 @@ fn collect_geoms_for_collapse(
 fn prim_has_geometry(stage: &Stage, path: &Path) -> bool {
     matches!(
         stage
-            .field::<String>(path.clone(), "typeName")
+            .prim_at(path.clone()).type_name()
             .ok()
             .flatten()
             .as_deref(),
@@ -1356,7 +1357,7 @@ fn attach_skel_root(
         // that brings the real data in via prim-targeted reference
         // — sidecar text-scrape would see the empty wrapper prim
         // and clobber walk.usd's real entry under the same name.
-        let from_stage: Option<usd_schema::skel_anim_text::ReadSkelAnimText> =
+        let from_stage: Option<crate::read::skel_anim_text::ReadSkelAnimText> =
             resolved_animation_source
                 .as_deref()
                 .and_then(|p| Path::new(p).ok())
@@ -1380,7 +1381,7 @@ fn attach_skel_root(
                         || !a.scales.is_empty()
                         || !a.blend_shape_weights.is_empty()
                 });
-        let from_sidecar: Option<usd_schema::skel_anim_text::ReadSkelAnimText> = anim_lookup_key
+        let from_sidecar: Option<crate::read::skel_anim_text::ReadSkelAnimText> = anim_lookup_key
             .as_deref()
             .and_then(|k| ctx.skel_animations.get(k))
             .cloned();
@@ -1553,7 +1554,7 @@ fn blend_shapes_from_ghost_twin(
     // under the ghost twin. e.g.
     // `/Skel/Geometry/HumanFemale/Geom/.../Body_sbdv`
     // → tail starts at `/HumanFemale/Geom/.../Body_sbdv`.
-    let mut parts: Vec<&str> = composed_str.split('/').filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = composed_str.split('/').filter(|s| !s.is_empty()).collect();
     if parts.len() < 3 {
         return None;
     }
@@ -1586,7 +1587,7 @@ fn blend_shapes_from_ghost_twin(
                 Err(_) => continue,
             };
             // Only proceed if this prim actually exists.
-            if !matches!(stage.spec_type(candidate.clone()), Ok(Some(SpecType::Prim))) {
+            if !stage.prim_at(candidate.clone()).is_defined().unwrap_or(false) {
                 continue;
             }
             if let Ok(Some(b)) = uskel::read_skel_binding(stage, &candidate) {
@@ -1802,7 +1803,7 @@ fn read_geom_bind_transform(stage: &Stage, prim: &Path) -> Option<bevy::math::Ma
     let attr = prim
         .append_property("primvars:skel:geomBindTransform")
         .ok()?;
-    let v = stage.field::<Value>(attr, "default").ok().flatten()?;
+    let v = crate::read::util::default_at(stage, &attr).ok().flatten()?;
     match v {
         Value::Matrix4d(m) => {
             let arr: [f32; 16] = std::array::from_fn(|i| m[i] as f32);
@@ -1915,7 +1916,7 @@ fn direct_skel_rel(stage: &Stage, prim: &Path) -> Option<String> {
 fn direct_rel_first_target(stage: &Stage, prim: &Path, rel_name: &str) -> Option<String> {
     use openusd::sdf::Value;
     let rel = prim.append_property(rel_name).ok()?;
-    let raw = stage.field::<Value>(rel, "targetPaths").ok().flatten()?;
+    let raw = stage.metadata::<Value>(rel, "targetPaths").ok().flatten()?;
     let paths = match raw {
         Value::PathListOp(op) => op.flatten(),
         Value::PathVec(v) => v,
@@ -1966,7 +1967,7 @@ fn skel_binding_hash(b: &uskel::ReadSkelBinding) -> String {
 /// since rest = anim.first when anim is authoritative).
 fn augment_skeleton_from_anim(
     skel: &mut uskel::ReadSkeleton,
-    anims: &HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText>,
+    anims: &HashMap<String, crate::read::skel_anim_text::ReadSkelAnimText>,
 ) {
     let Some(anim) = anims.values().next() else {
         return;
@@ -2104,7 +2105,7 @@ const IDENTITY_MAT4: [f32; 16] = [
 /// `attach_skel_root` to find the Skeleton when the SkelRoot's
 /// `skel:skeleton` rel is unauthored.
 fn find_first_typed_descendant(stage: &Stage, root: &Path, target_type: &str) -> Option<Path> {
-    for child_name in stage.prim_children(root.clone()).unwrap_or_default() {
+    for child_name in stage.prim_at(root.clone()).child_names().unwrap_or_default() {
         let Ok(child_path) = root.append_path(child_name.as_str()) else {
             continue;
         };
@@ -2133,14 +2134,14 @@ fn find_first_typed_descendant(stage: &Stage, root: &Path, target_type: &str) ->
 /// fall through and aren't double-walked.
 fn is_root_physics_prim(stage: &Stage, prim: &Path) -> bool {
     let type_name: String = stage
-        .field::<String>(prim.clone(), "typeName")
+        .prim_at(prim.clone()).type_name()
         .ok()
         .flatten()
         .unwrap_or_default();
     if type_name.starts_with("Physics") {
         return true;
     }
-    let api = stage.api_schemas(prim).unwrap_or_default();
+    let api = stage.prim_at(prim.clone()).api_schemas().unwrap_or_default();
     api.iter().any(|s| s.starts_with("Physics"))
 }
 
@@ -2167,7 +2168,7 @@ fn attach_geometry(
     ctx: &mut BuildCtx<'_, '_>,
 ) {
     let type_name: Option<String> = stage
-        .field::<String>(path.clone(), "typeName")
+        .prim_at(path.clone()).type_name()
         .ok()
         .flatten();
     let Some(type_name) = type_name else {
@@ -2723,7 +2724,7 @@ fn spawn_mesh_with_subsets(
         let mat = match binding {
             Some(mat_prim) => {
                 let mat_prim = resolve_material_prim(stage, mesh_path, &mat_prim);
-                ctx.material_for(stage, &mat_prim, read.double_sided)
+                ctx.material_for(stage, &mat_prim, read.double_sided, "")
             }
             None if read.display_color.is_some() => {
                 ctx.vertex_color_modulated_material_ds(read.double_sided)
@@ -2762,7 +2763,7 @@ fn spawn_mesh_with_subsets(
         let mat = match parent_binding {
             Some(mat_prim) => {
                 let mat_prim = resolve_material_prim(stage, mesh_path, &mat_prim);
-                ctx.material_for(stage, &mat_prim, read.double_sided)
+                ctx.material_for(stage, &mat_prim, read.double_sided, "")
             }
             None if read.display_color.is_some() => {
                 ctx.vertex_color_modulated_material_ds(read.double_sided)
@@ -2795,7 +2796,7 @@ fn prototype_fingerprint(stage: &Stage, path: &Path) -> String {
     let mut h = DefaultHasher::new();
     // Root's typeName only (skip leaf name — that's site-specific).
     let root_type = stage
-        .field::<String>(path.clone(), "typeName")
+        .prim_at(path.clone()).type_name()
         .ok()
         .flatten()
         .unwrap_or_default();
@@ -2803,7 +2804,7 @@ fn prototype_fingerprint(stage: &Stage, path: &Path) -> String {
 
     fn fold_descendants(stage: &Stage, path: &Path, h: &mut DefaultHasher) {
         let mut children: Vec<String> = stage
-            .prim_children(path.clone())
+            .prim_at(path.clone()).child_names()
             .unwrap_or_default()
             .into_iter()
             .map(|n| n.to_string())
@@ -2815,7 +2816,7 @@ fn prototype_fingerprint(stage: &Stage, path: &Path) -> String {
             };
             name.hash(h);
             let type_name = stage
-                .field::<String>(child.clone(), "typeName")
+                .prim_at(child.clone()).type_name()
                 .ok()
                 .flatten()
                 .unwrap_or_default();
@@ -2922,7 +2923,7 @@ fn is_replayable_type(type_name: Option<&str>) -> bool {
 
 fn type_name_of(stage: &Stage, prim: &Path) -> Option<String> {
     stage
-        .field::<String>(prim.clone(), "typeName")
+        .prim_at(prim.clone()).type_name()
         .ok()
         .flatten()
 }
@@ -3069,7 +3070,7 @@ fn resolve_mesh_and_material(
     bevy::asset::Handle<StandardMaterial>,
 )> {
     let type_name: String = stage
-        .field::<String>(proto_path.clone(), "typeName")
+        .prim_at(proto_path.clone()).type_name()
         .ok()
         .flatten()
         .unwrap_or_default();
@@ -3184,7 +3185,7 @@ fn resolve_mesh_and_material(
 fn stage_is_z_up(stage: &Stage) -> bool {
     matches!(
         stage
-            .field::<String>(Path::abs_root(), "upAxis")
+            .metadata::<String>(Path::abs_root(), "upAxis")
             .ok()
             .flatten()
             .as_deref(),
@@ -3226,12 +3227,12 @@ fn mesh_is_y_up(read: &ugeom::ReadMesh) -> bool {
 /// pathway to resolve `prototypes` rels that point at Xform wrappers
 /// rather than direct Mesh prims.
 fn first_renderable_descendant(stage: &Stage, root: &Path) -> Option<Path> {
-    for child_name in stage.prim_children(root.clone()).unwrap_or_default() {
+    for child_name in stage.prim_at(root.clone()).child_names().unwrap_or_default() {
         let Ok(child_path) = root.append_path(child_name.as_str()) else {
             continue;
         };
         let tn: String = stage
-            .field::<String>(child_path.clone(), "typeName")
+            .prim_at(child_path.clone()).type_name()
             .ok()
             .flatten()
             .unwrap_or_default();
@@ -3260,7 +3261,7 @@ fn resolve_material(
     match ushade::read_material_binding(stage, prim).ok().flatten() {
         Some(mat_prim) => {
             let mat_prim = resolve_material_prim(stage, prim, &mat_prim);
-            ctx.material_for(stage, &mat_prim, false)
+            ctx.material_for(stage, &mat_prim, false, "")
         }
         None => ctx.default_material(),
     }
@@ -3282,7 +3283,7 @@ fn resolve_material_with_display_color(
     match ushade::read_material_binding(stage, prim).ok().flatten() {
         Some(mat_prim) => {
             let mat_prim = resolve_material_prim(stage, prim, &mat_prim);
-            ctx.material_for(stage, &mat_prim, double_sided)
+            ctx.material_for(stage, &mat_prim, double_sided, "")
         }
         None if has_display_color => ctx.vertex_color_modulated_material_ds(double_sided),
         // No material binding, no displayColor → neutral gray.
@@ -3333,7 +3334,7 @@ fn resolve_material_prim(stage: &Stage, bound_prim: &Path, material_prim: &Path)
     };
     let mut found: Option<Path> = None;
     let mut ambiguous = false;
-    let _ = stage.traverse(|path: &Path| {
+    let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
         if !ambiguous && path.as_str().ends_with(&tail) && prim_type_is(stage, path, "Material") {
             if found.is_some() {
                 ambiguous = true;
@@ -3351,7 +3352,7 @@ fn resolve_material_prim(stage: &Stage, bound_prim: &Path, material_prim: &Path)
 
 fn prim_type_is(stage: &Stage, prim: &Path, expected: &str) -> bool {
     stage
-        .field::<String>(prim.clone(), "typeName")
+        .prim_at(prim.clone()).type_name()
         .ok()
         .flatten()
         .as_deref()
@@ -3447,7 +3448,7 @@ fn read_prim_transform(stage: &Stage, path: &Path) -> Transform {
 /// transform that takes USD-native coordinates into Bevy (Y-up, metres).
 fn root_basis_transform(stage: &Stage) -> Transform {
     let up_axis = stage
-        .field::<String>(Path::abs_root(), "upAxis")
+        .metadata::<String>(Path::abs_root(), "upAxis")
         .ok()
         .flatten();
 
@@ -3461,7 +3462,7 @@ fn root_basis_transform(stage: &Stage) -> Transform {
     // reading it as 1.0 makes a 5 m kitchen render as 500 m and the
     // camera frames a "scattered" wasteland of distant props.
     let authored_mpu = stage
-        .field::<openusd::sdf::Value>(Path::abs_root(), "metersPerUnit")
+        .metadata::<openusd::sdf::Value>(Path::abs_root(), "metersPerUnit")
         .ok()
         .flatten()
         .and_then(|v| match v {
@@ -3497,4 +3498,97 @@ fn root_basis_transform(stage: &Stage) -> Transform {
             ..Default::default()
         }
     }
+}
+
+// ── Material-variant preload (instant texture/material-variant switching) ──
+//
+// Composes the stage once per variant option, builds each mesh's bound
+// material per option, and keeps only the meshes whose material actually
+// differs across options (`ReadPreviewMaterial` compared). The viewer then
+// swaps `MeshMaterial3d` on those entities live — no scene rebuild.
+
+/// A material-affecting variant set with per-affected-mesh, per-option
+/// prebuilt `StandardMaterial` handles.
+#[derive(Debug, Clone)]
+pub struct MaterialVariantSet {
+    pub prim_path: String,
+    pub set_name: String,
+    pub current: String,
+    /// `(mesh prim path, option -> material handle)`, only for meshes whose
+    /// bound material changes across this set's options.
+    pub per_mesh: Vec<(String, HashMap<String, bevy::asset::Handle<StandardMaterial>>)>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn preload_material_variants(
+    base_stage: &Stage,
+    variants: &HashMap<String, Vec<crate::asset::VariantSet>>,
+    mut open_option: impl FnMut(&str, &str, &str) -> Option<Stage>,
+    lc: &mut LoadContext<'_>,
+    embedded: &HashMap<String, Vec<u8>>,
+    search_paths: &[std::path::PathBuf],
+    material_diffuse_overrides: &HashMap<String, String>,
+    kind_collapse: bool,
+    light_intensity_scale: f32,
+    curve_default_radius: f32,
+    curve_ring_segments: u32,
+    point_scale: f32,
+    skel_animations: &HashMap<String, crate::read::skel_anim_text::ReadSkelAnimText>,
+) -> Vec<MaterialVariantSet> {
+    let mut mesh_prims: Vec<String> = Vec::new();
+    let _ = base_stage.traverse(openusd::usd::PrimPredicate::default(), |p| {
+        if base_stage.prim_at(p.clone()).type_name().ok().flatten().as_deref() == Some("Mesh") {
+            mesh_prims.push(p.as_str().to_string());
+        }
+    });
+
+    let mut out = Vec::new();
+    for (prim_path, sets) in variants {
+        for set in sets {
+            if set.options.len() < 2 {
+                continue;
+            }
+            type Entry = (String, bevy::asset::Handle<StandardMaterial>, Option<crate::read::shade::ReadPreviewMaterial>);
+            let mut per_mesh: HashMap<String, Vec<Entry>> = HashMap::new();
+            for option in &set.options {
+                let Some(opt_stage) = open_option(prim_path, &set.name, option) else {
+                    continue;
+                };
+                let mut ctx = BuildCtx::new(
+                    lc, embedded, search_paths, material_diffuse_overrides, kind_collapse,
+                    light_intensity_scale, curve_default_radius, curve_ring_segments, point_scale, skel_animations,
+                );
+                let suffix = format!("@{}={}", set.name, option);
+                for mp in &mesh_prims {
+                    let Ok(mpath) = openusd::sdf::path(mp) else { continue };
+                    let Some(matp) = ushade::read_material_binding(&opt_stage, &mpath).ok().flatten() else {
+                        continue;
+                    };
+                    let read = ushade::read_preview_material(&opt_stage, &matp).ok().flatten();
+                    let handle = ctx.material_for(&opt_stage, &matp, false, &suffix);
+                    per_mesh.entry(mp.clone()).or_default().push((option.clone(), handle, read));
+                }
+            }
+            let mut set_out = MaterialVariantSet {
+                prim_path: prim_path.clone(),
+                set_name: set.name.clone(),
+                current: set.selection.clone().unwrap_or_default(),
+                per_mesh: Vec::new(),
+            };
+            for (mesh, entries) in per_mesh {
+                if entries.len() < 2 {
+                    continue;
+                }
+                let differs = entries.windows(2).any(|w| w[0].2 != w[1].2);
+                if differs {
+                    let opts = entries.into_iter().map(|(o, h, _)| (o, h)).collect();
+                    set_out.per_mesh.push((mesh, opts));
+                }
+            }
+            if !set_out.per_mesh.is_empty() {
+                out.push(set_out);
+            }
+        }
+    }
+    out
 }

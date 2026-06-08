@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 use glam::DVec3;
-use openusd::physics::CollisionApprox;
+use openusd::schemas::physics::CollisionApprox;
 use rapier3d_f64::prelude::*;
 
 /// Authored shape inputs. The mesh case carries vertices + optional

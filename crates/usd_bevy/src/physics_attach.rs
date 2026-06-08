@@ -15,11 +15,11 @@ use bevy::ecs::entity::Entity;
 use bevy::ecs::hierarchy::Children;
 use bevy::ecs::world::World;
 use bevy::math::{Quat, Vec3};
-use openusd::Stage;
+use openusd::usd::Stage;
 use openusd::sdf::{Path, Value};
 
 use crate::markers::*;
-use openusd::physics as ph;
+use usd_rapier::physics_data as ph;
 
 /// Stage-level conversion factors. Read once at the start of
 /// `stage_to_scene` and threaded through every per-prim attachment.
@@ -47,13 +47,13 @@ impl Default for StageMeta {
 /// Collected from the pseudo-root before the main walk.
 pub fn read_stage_meta(stage: &Stage) -> StageMeta {
     let up_axis = stage
-        .field::<String>(Path::abs_root(), "upAxis")
+        .metadata::<String>(Path::abs_root(), "upAxis")
         .ok()
         .flatten();
     // Match `root_basis_transform`'s default-fallback chain so unit
     // conversion stays consistent with the scene-root scale.
     let authored_mpu = stage
-        .field::<Value>(Path::abs_root(), "metersPerUnit")
+        .metadata::<Value>(Path::abs_root(), "metersPerUnit")
         .ok()
         .flatten()
         .and_then(|v| match v {
@@ -69,7 +69,7 @@ pub fn read_stage_meta(stage: &Stage) -> StageMeta {
         .or(authored_mpu)
         .unwrap_or(0.01);
     let kilograms_per_unit = stage
-        .field::<Value>(Path::abs_root(), "kilogramsPerUnit")
+        .metadata::<Value>(Path::abs_root(), "kilogramsPerUnit")
         .ok()
         .flatten()
         .and_then(|v| match v {
@@ -144,7 +144,7 @@ pub fn attach_physics_to_prim(
     }
 
     // Most other schemas piggyback on apiSchemas — read once.
-    let api_schemas = stage.api_schemas(path).unwrap_or_default();
+    let api_schemas = stage.prim_at(path.clone()).api_schemas().unwrap_or_default();
 
     // RigidBodyAPI
     if api_schemas.iter().any(|s| s == "PhysicsRigidBodyAPI") {
@@ -512,7 +512,7 @@ fn collider_shape_from_prim(stage: &Stage, path: &Path, _meta: &StageMeta) -> Us
     // `metersPerUnit=0.01` × scene-root scale `0.01` × shape `0.01`
     // collapsed every collider to millimetre size).
     let type_name = stage
-        .field::<String>(path.clone(), "typeName")
+        .metadata::<String>(path.clone(), "typeName")
         .ok()
         .flatten()
         .unwrap_or_default();
@@ -567,7 +567,7 @@ fn collider_shape_from_prim(stage: &Stage, path: &Path, _meta: &StageMeta) -> Us
 /// `collider_shape_from_prim` to recognise Xform-with-CollisionAPI as
 /// a mesh collider when the actual geometry sits one level deeper.
 fn has_mesh_descendant(stage: &Stage, root: &Path) -> bool {
-    let Ok(children) = stage.prim_children(root.clone()) else {
+    let Ok(children) = stage.prim_at(root.clone()).child_names() else {
         return false;
     };
     for child_name in children {
@@ -575,7 +575,7 @@ fn has_mesh_descendant(stage: &Stage, root: &Path) -> bool {
             continue;
         };
         let type_name = stage
-            .field::<String>(child_path.clone(), "typeName")
+            .metadata::<String>(child_path.clone(), "typeName")
             .ok()
             .flatten()
             .unwrap_or_default();
@@ -601,7 +601,7 @@ fn capsule_axis(stage: &Stage, path: &Path) -> Vec3 {
 
 fn read_attr(stage: &Stage, prim: &Path, name: &str) -> Option<Value> {
     let attr = prim.append_property(name).ok()?;
-    stage.field::<Value>(attr, "default").ok().flatten()
+    stage.metadata::<Value>(attr, "default").ok().flatten()
 }
 
 fn read_bool(stage: &Stage, prim: &Path, name: &str) -> Option<bool> {
@@ -621,8 +621,8 @@ fn read_double(stage: &Stage, prim: &Path, name: &str) -> Option<f64> {
 
 fn read_vec3f(stage: &Stage, prim: &Path, name: &str) -> Option<[f32; 3]> {
     match read_attr(stage, prim, name)? {
-        Value::Vec3f(v) => Some(v),
-        Value::Vec3d(v) => Some([v[0] as f32, v[1] as f32, v[2] as f32]),
+        Value::Vec3f(v) => Some([v.x, v.y, v.z]),
+        Value::Vec3d(v) => Some([v.x as f32, v.y as f32, v.z as f32]),
         _ => None,
     }
 }
@@ -636,7 +636,7 @@ fn read_token_attr(stage: &Stage, prim: &Path, name: &str) -> Option<String> {
 
 fn read_rel_first(stage: &Stage, prim: &Path, rel_name: &str) -> Option<String> {
     let rel = prim.append_property(rel_name).ok()?;
-    let raw = stage.field::<Value>(rel, "targetPaths").ok().flatten()?;
+    let raw = stage.metadata::<Value>(rel, "targetPaths").ok().flatten()?;
     let paths = match raw {
         Value::PathListOp(op) => op.flatten(),
         Value::PathVec(v) => v,

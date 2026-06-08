@@ -1,6 +1,6 @@
 //! UsdLux → Bevy lights.
 //!
-//! Translates `usd_schema::lux::ReadLight` variants into Bevy's
+//! Translates `crate::read::lux::ReadLight` variants into Bevy's
 //! `DirectionalLight` / `PointLight` / `SpotLight` bundles. Omniverse
 //! scenes that were dark before M9 (we dropped every light on the floor)
 //! now pick up the authored lighting.

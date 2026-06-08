@@ -155,6 +155,13 @@ pub struct PendingAnimationClip {
     pub name: Option<String>,
 }
 
+/// Queued material-variant switches applied live by `apply_live_material_variant`
+/// — no scene rebuild. Each entry is `(prim_path, set_name, option)`.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct PendingMaterialVariant {
+    pub queue: Vec<(String, String, String)>,
+}
+
 /// Curve / point rendering defaults. Not a Resource on its own — lives
 /// inside [`LoaderTuning`]. Split so the rebuild-tuned-meshes system
 /// can diff a lightweight `Copy` key without cloning the variant map.

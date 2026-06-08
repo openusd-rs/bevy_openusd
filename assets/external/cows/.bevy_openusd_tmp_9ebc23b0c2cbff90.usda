@@ -1,0 +1,80 @@
+#usda 1.0
+(
+    defaultPrim = "Cow_F"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Cow_F" (
+    prepend references = @Cow_F.usd@</Cow_F>
+    variants = {
+        string coat = "original"
+    }
+    prepend variantSets = "coat"
+)
+{
+    variantSet "coat" = {
+        "original" {
+        }
+
+        "blackwhite" {
+            over "Looks"
+            {
+                over "Cow_F"
+                {
+                    over "Cow_F"
+                    {
+                        asset inputs:diffuse_texture = @Cow_FBX_PNG/Cow_F/Textures/Cow_F_BaseColor_blackwhite.png@ (
+                            colorSpace = "auto"
+                        )
+                    }
+                }
+            }
+        }
+
+        "jersey" {
+            over "Looks"
+            {
+                over "Cow_F"
+                {
+                    over "Cow_F"
+                    {
+                        asset inputs:diffuse_texture = @Cow_FBX_PNG/Cow_F/Textures/Cow_F_BaseColor_jersey.png@ (
+                            colorSpace = "auto"
+                        )
+                    }
+                }
+            }
+        }
+
+        "darkbrown" {
+            over "Looks"
+            {
+                over "Cow_F"
+                {
+                    over "Cow_F"
+                    {
+                        asset inputs:diffuse_texture = @Cow_FBX_PNG/Cow_F/Textures/Cow_F_BaseColor_darkbrown.png@ (
+                            colorSpace = "auto"
+                        )
+                    }
+                }
+            }
+        }
+
+        "grey" {
+            over "Looks"
+            {
+                over "Cow_F"
+                {
+                    over "Cow_F"
+                    {
+                        asset inputs:diffuse_texture = @Cow_FBX_PNG/Cow_F/Textures/Cow_F_BaseColor_grey.png@ (
+                            colorSpace = "auto"
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

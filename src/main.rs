@@ -34,7 +34,7 @@ use crate::camera::{ArcballCamera, ArcballCameraPlugin};
 use crate::keyboard::ViewerKeyboardPlugin;
 use crate::overlays::{OverlaysPlugin, SceneExtent};
 use crate::state::{
-    CameraBookmarks, CameraMount, FlyTo, LoadRequest, LoaderTuning, PendingAnimationClip,
+    CameraBookmarks, CameraMount, FlyTo, LoadRequest, LoaderTuning, PendingAnimationClip, PendingMaterialVariant,
     ReloadRequest, SelectedPrim, StageInfo, UsdStageTime,
 };
 use crate::ui::{RIB_TREE, RIBBON_LEFT, ViewerUiPlugin};
@@ -71,6 +71,9 @@ fn main() {
             })
             .set(bevy::asset::AssetPlugin {
                 file_path: asset_root.to_string_lossy().into_owned(),
+                // Allow loading absolute paths outside the asset root so Browse
+                // can open a file in any directory in-place (no process relaunch).
+                unapproved_path_mode: bevy::asset::UnapprovedPathMode::Allow,
                 ..Default::default()
             })
             .set(bevy::log::LogPlugin {
@@ -119,6 +122,7 @@ fn main() {
         .ok()
         .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
         .unwrap_or(false);
+    app.add_plugins(usd_bevy::incremental::IncrementalPlugin);
     app.add_plugins(usd_bevy::physics::RapierAdapterPlugin)
         .insert_resource(usd_bevy::physics::PhysicsActive(physics_initially_active))
         .add_systems(Startup, spawn_physics_ground)
@@ -133,6 +137,7 @@ fn main() {
         .init_resource::<CameraMount>()
         .init_resource::<LoaderTuning>()
         .init_resource::<PendingAnimationClip>()
+        .init_resource::<PendingMaterialVariant>()
         .init_resource::<UsdStageTime>()
         .init_resource::<CameraBookmarks>()
         .add_systems(Startup, open_default_panel)
@@ -173,7 +178,9 @@ fn main() {
                 sync_ground_grid_visibility,
             ),
         )
-        .add_systems(Update, apply_live_animation_clip);
+        .add_systems(Update, apply_live_animation_clip)
+        .add_systems(Update, apply_live_material_variant)
+        .add_systems(Update, (sync_loaded_stage_source, variant_reload_fallback, warm_variants_on_load));
     let hide_meshes = std::env::var("BEVY_OPENUSD_HIDE_MESHES")
         .ok()
         .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
@@ -920,8 +927,12 @@ fn handle_usd_hot_reload(
             variant_selections.len()
         );
         let handle: Handle<UsdAsset> = asset_server.load_with_settings::<UsdAsset, _>(
-            // Relative asset name so Bevy's asset-root gate accepts it.
-            variant_basename.clone(),
+            // Absolute path to the variant-keyed copy. The copy sits next to
+            // the source (which may be outside the startup asset root), so load
+            // it by absolute path — `AssetPlugin.unapproved_path_mode = Allow`
+            // permits that. (A bare basename would resolve against the fixed
+            // asset root and miss when the source is in a subdir.)
+            variant_fs_path.to_string_lossy().into_owned(),
             move |s: &mut UsdLoaderSettings| {
                 s.search_paths = search.clone();
                 s.kind_collapse = kind_collapse;
@@ -1022,34 +1033,69 @@ fn spawn_when_ready(
 /// `argv[1]` in `resolve_requested_asset`, sets the AssetPlugin's
 /// `file_path` to the picked file's parent before the App is built,
 /// and loads cleanly.
-fn apply_load_request(mut req: ResMut<LoadRequest>) {
+/// Browse → load the picked USD **in place**: despawn the current scene,
+/// re-point `RequestedAsset` at the new (absolute) path, and re-run the asset
+/// load. No process relaunch — `AssetPlugin.unapproved_path_mode = Allow` lets
+/// the AssetServer read an absolute path outside the startup asset root.
+#[allow(clippy::too_many_arguments)]
+fn apply_load_request(
+    mut req: ResMut<LoadRequest>,
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut requested: ResMut<RequestedAsset>,
+    mut spawned: ResMut<Spawned>,
+    mut info: ResMut<StageInfo>,
+    tuning: Res<LoaderTuning>,
+    scene_roots: Query<Entity, With<SceneRoot>>,
+) {
     let Some(new_path) = req.path.take() else {
         return;
     };
-
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            error!("Browse: cannot resolve current_exe to re-launch: {e}");
-            return;
-        }
+    let abs = if new_path.is_absolute() {
+        new_path
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(&new_path))
+            .unwrap_or(new_path)
     };
+    let root = abs
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| requested.root.clone());
+    let name = abs.to_string_lossy().into_owned();
+    info!("Browse: loading {} in place", abs.display());
 
-    info!(
-        "Browse: re-launching {} with {}",
-        exe.display(),
-        new_path.display()
-    );
-
-    match std::process::Command::new(&exe).arg(&new_path).spawn() {
-        Ok(_) => {
-            // New viewer is up; exit cleanly so we don't sit alongside it.
-            std::process::exit(0);
-        }
-        Err(e) => {
-            error!("Browse: failed to spawn new viewer process: {e}");
-        }
+    // Tear down the current scene; `spawn_when_ready` rebuilds from the new
+    // asset once it finishes loading.
+    for entity in &scene_roots {
+        commands.entity(entity).despawn();
     }
+
+    requested.name = name.clone();
+    requested.root = root.clone();
+    info.path = name.clone();
+
+    let search = vec![root];
+    let kind_collapse = std::env::var("BEVY_OPENUSD_KIND_COLLAPSE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
+        .unwrap_or(false);
+    let curve_radius = tuning.curves.default_radius;
+    let curve_rings = tuning.curves.ring_segments;
+    let point_scale = tuning.curves.point_scale;
+    let variant_selections = tuning.to_variant_selections();
+    let handle: Handle<UsdAsset> = asset_server.load_with_settings::<UsdAsset, _>(
+        name,
+        move |s: &mut UsdLoaderSettings| {
+            s.search_paths = search.clone();
+            s.kind_collapse = kind_collapse;
+            s.curve_default_radius = curve_radius;
+            s.curve_ring_segments = curve_rings;
+            s.point_scale = point_scale;
+            s.variant_selections = variant_selections.clone();
+        },
+    );
+    commands.insert_resource(StageHandle(handle));
+    spawned.0 = false;
 }
 
 /// Lerp the arcball's focus + distance toward the last-requested
@@ -1465,6 +1511,115 @@ fn evaluate_animated_prims(
 ///
 /// Skips the eval when no driver is present (no animation loaded), so
 /// the cost on non-animated scenes is one `Query::iter()` per frame.
+fn apply_live_material_variant(
+    mut pending: ResMut<PendingMaterialVariant>,
+    stage: Option<Res<StageHandle>>,
+    assets: Res<Assets<usd_bevy::UsdAsset>>,
+    mut q: Query<(
+        &usd_bevy::prim_ref::UsdPrimRef,
+        &mut bevy::pbr::MeshMaterial3d<bevy::pbr::StandardMaterial>,
+    )>,
+) {
+    if pending.queue.is_empty() {
+        return;
+    }
+    let Some(stage) = stage else {
+        return;
+    };
+    let Some(asset) = assets.get(&stage.0) else {
+        return;
+    };
+    for (prim_path, set_name, option) in std::mem::take(&mut pending.queue) {
+        let Some(mv) = asset
+            .material_variants
+            .iter()
+            .find(|m| m.prim_path == prim_path && m.set_name == set_name)
+        else {
+            warn!("material variant: {set_name} on {prim_path} not preloaded; ignoring");
+            continue;
+        };
+        let mut applied = 0usize;
+        for (mesh_prim, opts) in &mv.per_mesh {
+            let Some(handle) = opts.get(&option) else {
+                continue;
+            };
+            for (pref, mut mat) in q.iter_mut() {
+                if &pref.path == mesh_prim {
+                    mat.0 = handle.clone();
+                    applied += 1;
+                }
+            }
+        }
+        info!("material variant: live-swapped {prim_path} {set_name}={option} on {applied} mesh(es)");
+    }
+}
+
+/// Keep `LoadedStageSource` in sync with the requested asset + variant
+/// selections so the incremental updater can recompose on a variant switch.
+/// When a stage finishes loading, queue every variant option for background
+/// warm-up so the first click on any option is already cached → instant.
+fn warm_variants_on_load(
+    stage: Option<Res<StageHandle>>,
+    assets: Res<Assets<UsdAsset>>,
+    spawned: Res<Spawned>,
+    mut warm: ResMut<usd_bevy::incremental::WarmVariantsQueue>,
+    mut last: Local<Option<bevy::asset::AssetId<UsdAsset>>>,
+) {
+    if !spawned.0 {
+        return;
+    }
+    let Some(stage) = stage else {
+        return;
+    };
+    let id = stage.0.id();
+    if *last == Some(id) {
+        return;
+    }
+    let Some(asset) = assets.get(&stage.0) else {
+        return;
+    };
+    *last = Some(id);
+    warm.queue.clear();
+    for (prim, sets) in &asset.variants {
+        for set in sets {
+            if set.name == "anim" {
+                continue; // animation sets switch via their own live path
+            }
+            for option in &set.options {
+                warm.queue.push((prim.clone(), set.name.clone(), option.clone()));
+            }
+        }
+    }
+    info!("variant warm-up: queued {} options for background precompute", warm.queue.len());
+}
+
+fn sync_loaded_stage_source(
+    requested: Res<RequestedAsset>,
+    tuning: Res<LoaderTuning>,
+    mut src: ResMut<usd_bevy::incremental::LoadedStageSource>,
+) {
+    if !requested.is_changed() && !tuning.is_changed() {
+        return;
+    }
+    let name = std::path::PathBuf::from(&requested.name);
+    src.source = if name.is_absolute() { name } else { requested.root.join(&name) };
+    src.root = requested.root.clone();
+    src.base_variants = tuning.to_variant_selections();
+}
+
+/// When an incremental variant switch can't be done in place (geometry
+/// changed), fall back to a full reload. `loader_tuning.variants` already
+/// holds the picked selection, so the reload composes the right variant.
+fn variant_reload_fallback(
+    mut fallback: ResMut<usd_bevy::incremental::VariantReloadFallback>,
+    mut reload: ResMut<ReloadRequest>,
+) {
+    if fallback.0 {
+        fallback.0 = false;
+        reload.requested = true;
+    }
+}
+
 fn apply_live_animation_clip(
     mut pending: ResMut<PendingAnimationClip>,
     stage: Option<Res<StageHandle>>,

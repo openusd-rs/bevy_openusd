@@ -10,6 +10,7 @@ mod asset;
 pub mod read;
 mod build;
 pub mod curves;
+pub mod incremental;
 mod light;
 pub mod markers;
 mod material;

@@ -49,7 +49,7 @@ use crate::prim_ref::{
     UsdProcedural, UsdPurpose, UsdSkelAnimDriver, UsdSkelRoot, UsdSpatialAudio,
 };
 use crate::tetmesh::tetmesh_to_bevy_mesh;
-use crate::texture::{TextureChannel, can_resolve_texture, load_texture};
+use crate::texture::TextureChannel;
 use crate::read::lux as ulux;
 use crate::read::shade as ushade;
 use crate::read::skel as uskel;
@@ -565,82 +565,12 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
         if let Some(h) = self.material_cache.get(&key) {
             return h.clone();
         }
-        let debug_materials = std::env::var("BEVY_OPENUSD_DEBUG_MATERIALS")
-            .ok()
-            .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
-            .unwrap_or(false);
-        let read_material = ushade::read_preview_material(stage, material_prim)
-            .ok()
-            .flatten();
-        if debug_materials {
-            bevy::log::info!(
-                "material: {} -> {:?}",
-                material_prim.as_str(),
-                read_material
-            );
-        }
-        let mut bevy_mat = match read_material.as_ref() {
-            Some(read) => standard_material_from_usd(self, &read),
-            None => {
-                // Material prim exists but isn't a UsdPreviewSurface
-                // (or `outputs:surface` isn't wired). Pixar's
-                // Kitchen_set authors these — empty Material prims as
-                // a binding placeholder for the host application's
-                // shading library. Hash the material's prim path so
-                // each placeholder gets its own colour and the scene
-                // doesn't collapse to flat grey.
-                let mut mat = crate::material::default_material();
-                let path_str = material_prim.as_str();
-                let lower = path_str.to_ascii_lowercase();
-                // Name-based glass heuristic: Omniverse / Isaac scenes
-                // bind MDL materials like `Clear_Glass` or `Frosted_Glass`
-                // that we can't parse (MDL is a separate shading
-                // language). Without this the greenhouse renders its
-                // panes as opaque coloured squares. Detect by name and
-                // synthesise a translucent fallback so the structure
-                // looks right at a glance — proper MDL parsing is M9.
-                let looks_like_glass = lower.contains("glass")
-                    || lower.contains("acrylic")
-                    || lower.contains("transparent");
-                if looks_like_glass {
-                    use bevy::render::alpha::AlphaMode;
-                    mat.base_color = bevy::color::Color::srgba(0.85, 0.92, 0.95, 0.18);
-                    mat.alpha_mode = AlphaMode::Blend;
-                    mat.metallic = 0.0;
-                    mat.perceptual_roughness = 0.05;
-                    mat.reflectance = 0.7;
-                } else {
-                    let (r, g, b) = hash_path_to_rgb(path_str);
-                    mat.base_color = bevy::color::Color::srgb(r, g, b);
-                }
-                mat
-            }
-        };
-        if let Some(texture_path) = self.material_diffuse_overrides.get(material_prim.as_str())
-            && let Some(handle) = load_texture(self, texture_path, TextureChannel::Srgb)
-        {
-            bevy::log::info!(
-                "material: variant override diffuse texture {:?} for {}",
-                texture_path,
-                material_prim.as_str()
-            );
-            bevy_mat.base_color_texture = Some(handle);
-        }
-        if let Some(read) = read_material.as_ref() {
-            apply_name_guessed_textures(self, material_prim, read, &mut bevy_mat);
-        }
-        if mdl_emission_explicitly_disabled(stage, material_prim) {
-            // OmniPBR authors its default emissive colour/intensity even when
-            // `enable_emission = false`. If we translate that default as a
-            // real Bevy emissive term the material glows white and the albedo
-            // texture only shows up as vague grey detail.
-            bevy_mat.emissive = bevy::color::LinearRgba::rgb(0.0, 0.0, 0.0);
-            bevy_mat.emissive_texture = None;
-        }
-        if double_sided {
-            bevy_mat.double_sided = true;
-            bevy_mat.cull_mode = None;
-        }
+        let diffuse_override = self
+            .material_diffuse_overrides
+            .get(material_prim.as_str())
+            .cloned();
+        let bevy_mat =
+            build_material_inner(stage, material_prim, double_sided, self, diffuse_override.as_deref());
         let label = if double_sided {
             format!("{}-doubleSided{label_suffix}", material_prim.as_str())
         } else {
@@ -650,6 +580,61 @@ impl<'lc, 'a> BuildCtx<'lc, 'a> {
         self.material_cache.insert(key, handle.clone());
         handle
     }
+}
+
+/// Build a `StandardMaterial` from a USD material prim through any
+/// [`TextureSource`](crate::texture::TextureSource) — the loader's
+/// `LoadContext` at bake time, or the live `AssetServer` for incremental
+/// updates. Includes name-guessed textures, the glass heuristic, the MDL
+/// emission fix and the diffuse override, so both paths produce identical
+/// materials.
+pub(crate) fn build_material_inner(
+    stage: &Stage,
+    material_prim: &Path,
+    double_sided: bool,
+    tex: &mut impl crate::texture::TextureSource,
+    diffuse_override: Option<&str>,
+) -> StandardMaterial {
+    let read_material = ushade::read_preview_material(stage, material_prim).ok().flatten();
+    let mut bevy_mat = match read_material.as_ref() {
+        Some(read) => standard_material_from_usd(tex, read),
+        None => {
+            let mut mat = crate::material::default_material();
+            let path_str = material_prim.as_str();
+            let lower = path_str.to_ascii_lowercase();
+            let looks_like_glass =
+                lower.contains("glass") || lower.contains("acrylic") || lower.contains("transparent");
+            if looks_like_glass {
+                use bevy::render::alpha::AlphaMode;
+                mat.base_color = bevy::color::Color::srgba(0.85, 0.92, 0.95, 0.18);
+                mat.alpha_mode = AlphaMode::Blend;
+                mat.metallic = 0.0;
+                mat.perceptual_roughness = 0.05;
+                mat.reflectance = 0.7;
+            } else {
+                let (r, g, b) = hash_path_to_rgb(path_str);
+                mat.base_color = bevy::color::Color::srgb(r, g, b);
+            }
+            mat
+        }
+    };
+    if let Some(texture_path) = diffuse_override
+        && let Some(handle) = tex.load(texture_path, TextureChannel::Srgb)
+    {
+        bevy_mat.base_color_texture = Some(handle);
+    }
+    if let Some(read) = read_material.as_ref() {
+        apply_name_guessed_textures(tex, material_prim, read, &mut bevy_mat);
+    }
+    if mdl_emission_explicitly_disabled(stage, material_prim) {
+        bevy_mat.emissive = bevy::color::LinearRgba::rgb(0.0, 0.0, 0.0);
+        bevy_mat.emissive_texture = None;
+    }
+    if double_sided {
+        bevy_mat.double_sided = true;
+        bevy_mat.cull_mode = None;
+    }
+    bevy_mat
 }
 
 fn mdl_emission_explicitly_disabled(stage: &Stage, material_prim: &Path) -> bool {
@@ -693,7 +678,7 @@ fn read_bool_input(stage: &Stage, prim: &Path, attr_name: &str) -> Option<bool> 
 /// common exporter naming convention from the material name:
 /// `MaterialName_BaseColor.png`, `MaterialName_Normal.png`, etc.
 fn apply_name_guessed_textures(
-    ctx: &mut BuildCtx<'_, '_>,
+    tex: &mut impl crate::texture::TextureSource,
     material_prim: &Path,
     read: &ushade::ReadPreviewMaterial,
     mat: &mut StandardMaterial,
@@ -703,7 +688,7 @@ fn apply_name_guessed_textures(
     };
     if mat.base_color_texture.is_none() && read.diffuse_texture.is_none() {
         mat.base_color_texture = guess_texture(
-            ctx,
+            tex,
             name,
             &["BaseColor", "Base_Color", "Albedo", "Diffuse", "diffuse"],
             TextureChannel::Srgb,
@@ -711,7 +696,7 @@ fn apply_name_guessed_textures(
     }
     if mat.normal_map_texture.is_none() && read.normal_texture.is_none() {
         mat.normal_map_texture = guess_texture(
-            ctx,
+            tex,
             name,
             &["Normal", "NormalGL", "normal"],
             TextureChannel::Linear,
@@ -722,7 +707,7 @@ fn apply_name_guessed_textures(
         && read.metallic_texture.is_none()
     {
         mat.metallic_roughness_texture = guess_texture(
-            ctx,
+            tex,
             name,
             &["Roughness", "roughness"],
             TextureChannel::Linear,
@@ -730,12 +715,12 @@ fn apply_name_guessed_textures(
     }
     if mat.occlusion_texture.is_none() && read.occlusion_texture.is_none() {
         mat.occlusion_texture =
-            guess_texture(ctx, name, &["AO", "Occlusion"], TextureChannel::Linear);
+            guess_texture(tex, name, &["AO", "Occlusion"], TextureChannel::Linear);
     }
 }
 
 fn guess_texture(
-    ctx: &mut BuildCtx<'_, '_>,
+    tex: &mut impl crate::texture::TextureSource,
     material_name: &str,
     suffixes: &[&str],
     channel: TextureChannel,
@@ -744,10 +729,10 @@ fn guess_texture(
     for suffix in suffixes {
         for ext in EXTS {
             let candidate = format!("{material_name}_{suffix}.{ext}");
-            if !can_resolve_texture(ctx, &candidate) {
+            if !tex.can_resolve(&candidate) {
                 continue;
             }
-            if let Some(handle) = load_texture(ctx, &candidate, channel) {
+            if let Some(handle) = tex.load(&candidate, channel) {
                 bevy::log::info!("material: guessed texture {candidate:?} for {material_name}");
                 return Some(handle);
             }
@@ -3519,7 +3504,7 @@ pub struct MaterialVariantSet {
     pub per_mesh: Vec<(String, HashMap<String, bevy::asset::Handle<StandardMaterial>>)>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn preload_material_variants(
     base_stage: &Stage,
     variants: &HashMap<String, Vec<crate::asset::VariantSet>>,
@@ -3548,7 +3533,8 @@ pub(crate) fn preload_material_variants(
             if set.options.len() < 2 {
                 continue;
             }
-            type Entry = (String, bevy::asset::Handle<StandardMaterial>, Option<crate::read::shade::ReadPreviewMaterial>);
+            // (option, material handle, material-for-diff, mesh point count)
+            type Entry = (String, bevy::asset::Handle<StandardMaterial>, Option<crate::read::shade::ReadPreviewMaterial>, usize);
             let mut per_mesh: HashMap<String, Vec<Entry>> = HashMap::new();
             for option in &set.options {
                 let Some(opt_stage) = open_option(prim_path, &set.name, option) else {
@@ -3566,7 +3552,8 @@ pub(crate) fn preload_material_variants(
                     };
                     let read = ushade::read_preview_material(&opt_stage, &matp).ok().flatten();
                     let handle = ctx.material_for(&opt_stage, &matp, false, &suffix);
-                    per_mesh.entry(mp.clone()).or_default().push((option.clone(), handle, read));
+                    let pts = ugeom::read_mesh(&opt_stage, &mpath).ok().flatten().map(|m| m.points.len()).unwrap_or(0);
+                    per_mesh.entry(mp.clone()).or_default().push((option.clone(), handle, read, pts));
                 }
             }
             let mut set_out = MaterialVariantSet {
@@ -3575,14 +3562,22 @@ pub(crate) fn preload_material_variants(
                 current: set.selection.clone().unwrap_or_default(),
                 per_mesh: Vec::new(),
             };
-            for (mesh, entries) in per_mesh {
-                if entries.len() < 2 {
-                    continue;
-                }
-                let differs = entries.windows(2).any(|w| w[0].2 != w[1].2);
-                if differs {
-                    let opts = entries.into_iter().map(|(o, h, _)| (o, h)).collect();
-                    set_out.per_mesh.push((mesh, opts));
+            // If any mesh's topology changes across options, this set is a
+            // geometry variant (not a pure material swap) — leave it on the
+            // heavy reload path rather than swapping stale meshes' materials.
+            let geometry_stable = per_mesh
+                .values()
+                .all(|entries| entries.windows(2).all(|w| w[0].3 == w[1].3));
+            if geometry_stable {
+                for (mesh, entries) in per_mesh {
+                    if entries.len() < 2 {
+                        continue;
+                    }
+                    let differs = entries.windows(2).any(|w| w[0].2 != w[1].2);
+                    if differs {
+                        let opts = entries.into_iter().map(|(o, h, _, _)| (o, h)).collect();
+                        set_out.per_mesh.push((mesh, opts));
+                    }
                 }
             }
             if !set_out.per_mesh.is_empty() {

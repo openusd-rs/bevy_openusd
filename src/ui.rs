@@ -1142,6 +1142,7 @@ fn draw_variants_panel(
     usd_assets: Res<Assets<UsdAsset>>,
     mut loader_tuning: ResMut<LoaderTuning>,
     mut pending_anim: ResMut<PendingAnimationClip>,
+    mut pending_variant_switch: ResMut<usd_bevy::incremental::PendingVariantSwitch>,
     mut reload: ResMut<ReloadRequest>,
 ) {
     if !is_panel_open(&open, RIB_VARIANTS) {
@@ -1310,7 +1311,15 @@ fn draw_variants_panel(
                                                         loader_tuning
                                                             .variants
                                                             .insert(key.clone(), picked.clone());
-                                                        changed = true;
+                                                        // Apply the switch incrementally (live
+                                                        // material swap, no scene rebuild). The
+                                                        // updater itself falls back to a full
+                                                        // reload if the variant changes geometry.
+                                                        pending_variant_switch.queue.push((
+                                                            prim_path.clone(),
+                                                            set.name.clone(),
+                                                            picked,
+                                                        ));
                                                     }
                                                 }
                                             });

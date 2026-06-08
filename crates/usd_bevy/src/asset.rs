@@ -603,42 +603,13 @@ impl AssetLoader for UsdLoader {
         };
         let scene_handle = load_context.add_labeled_asset(scene_label, scene);
 
-        // Preload material-affecting variant options up front so the viewer
-        // swaps them live (no scene rebuild). Costs one extra recompose per
-        // option at load — the trade for instant switching.
-        let material_variants = {
-            let base_variants = effective_variants.clone();
-            let open_option = |prim: &str, set: &str, option: &str| -> Option<openusd::usd::Stage> {
-                let mut sels = base_variants.clone();
-                sels.push(VariantSelection {
-                    prim_path: prim.to_string(),
-                    set_name: set.to_string(),
-                    option: option.to_string(),
-                });
-                let text = author_variant_session_layer(&sels);
-                let session_tmp = tempfile_session(&tmp_dir, &fs_path_owned, &sels, &text);
-                std::fs::write(&session_tmp, &text).ok()?;
-                let builder = openusd::usd::Stage::builder()
-                    .resolver(openusd::ar::DefaultResolver::with_search_paths(search.clone()))
-                    .session_layer(session_tmp.to_str()?.to_string());
-                builder.open(tmp_str).ok()
-            };
-            build::preload_material_variants(
-                &stage,
-                &variants,
-                open_option,
-                load_context,
-                &embedded,
-                &search,
-                &material_diffuse_overrides,
-                settings.kind_collapse,
-                settings.light_intensity_scale,
-                settings.curve_default_radius,
-                settings.curve_ring_segments,
-                settings.point_scale,
-                &skel_animations,
-            )
-        };
+        // Material-variant preload is disabled: eagerly re-composing the stage
+        // per variant option (and rebuilding every material + texture each
+        // time) made load pathologically slow for scenes with many texture
+        // options. Left empty so variant switches fall back to the normal
+        // path; a lazy (first-switch) resolver is the proper fix.
+        let _ = &fs_path_owned;
+        let material_variants: Vec<build::MaterialVariantSet> = Vec::new();
 
         let _ = std::fs::remove_file(&tmp);
 

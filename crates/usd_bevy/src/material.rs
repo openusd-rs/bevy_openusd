@@ -22,8 +22,7 @@ use bevy::color::{Color, LinearRgba};
 use bevy::pbr::StandardMaterial;
 use crate::read::shade::ReadPreviewMaterial;
 
-use crate::build::BuildCtx;
-use crate::texture::{TextureChannel, load_texture};
+use crate::texture::{TextureChannel, TextureSource};
 
 /// Build a Bevy `StandardMaterial` from a decoded UsdPreviewSurface.
 ///
@@ -31,7 +30,7 @@ use crate::texture::{TextureChannel, load_texture};
 /// asset; the returned `StandardMaterial` is then registered separately by
 /// the caller via `lc.add_labeled_asset`.
 pub fn standard_material_from_usd(
-    ctx: &mut BuildCtx<'_, '_>,
+    tex: &mut impl TextureSource,
     read: &ReadPreviewMaterial,
 ) -> StandardMaterial {
     // Pixar's UsdPreviewSurface defaults (metallic=0, roughness=0.5) translate
@@ -74,7 +73,7 @@ pub fn standard_material_from_usd(
     // and the matching scalar wasn't authored, reset the factor to unity
     // (1.0 / WHITE) so the texture passes through unchanged.
     if let Some(path) = read.diffuse_texture.as_deref() {
-        mat.base_color_texture = load_texture(ctx, path, TextureChannel::Srgb);
+        mat.base_color_texture = tex.load(path, TextureChannel::Srgb);
         if read.diffuse_color.is_none() {
             // base_color multiplies the sampled texture — use WHITE so
             // texture colours pass through unchanged.
@@ -82,13 +81,13 @@ pub fn standard_material_from_usd(
         }
     }
     if let Some(path) = read.normal_texture.as_deref() {
-        mat.normal_map_texture = load_texture(ctx, path, TextureChannel::Linear);
+        mat.normal_map_texture = tex.load(path, TextureChannel::Linear);
     }
     if let Some(path) = read.occlusion_texture.as_deref() {
-        mat.occlusion_texture = load_texture(ctx, path, TextureChannel::Linear);
+        mat.occlusion_texture = tex.load(path, TextureChannel::Linear);
     }
     if let Some(path) = read.emissive_texture.as_deref() {
-        mat.emissive_texture = load_texture(ctx, path, TextureChannel::Srgb);
+        mat.emissive_texture = tex.load(path, TextureChannel::Srgb);
     }
     // Roughness + metallic bind to the same combined texture slot.
     // Bevy's `metallic_roughness_texture` expects a SINGLE RGBA texture
@@ -107,10 +106,10 @@ pub fn standard_material_from_usd(
     ) {
         (Some(m_path), Some(r_path)) if m_path != r_path => {
             mat.metallic_roughness_texture =
-                crate::texture::load_metallic_roughness_packed(ctx, r_path, m_path);
+                tex.load_packed(r_path, m_path);
         }
         (Some(path), _) | (_, Some(path)) => {
-            mat.metallic_roughness_texture = load_texture(ctx, path, TextureChannel::Linear);
+            mat.metallic_roughness_texture = tex.load(path, TextureChannel::Linear);
         }
         (None, None) => {}
     }

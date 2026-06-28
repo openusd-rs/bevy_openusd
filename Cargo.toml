@@ -23,6 +23,12 @@ openusd = { git = "https://github.com/mxpv/openusd", rev = "06d619d47ad0fb0d9174
 
 # mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
 mara = { path = "../mara/mara", default-features = false, features = ["window", "bevy"] }
+# Native "Open USD…" file picker.
+rfd = "0.15"
+# Detailed, filterable tracing to stderr (the embedded Bevy app has no
+# LogPlugin, so without this the app's logs go nowhere).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Bevy 0.19 (needs Rust 1.95+) — the embedded viewport renders the USD scene
 # offscreen into a mara-provided render target.
@@ -44,3 +50,8 @@ bevy = { version = "0.19", default-features = false, features = [
 eframe = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
 wgpu = { version = "29", default-features = false, features = ["vulkan"] }
 egui-wgpu = { version = "0.34", default-features = false, features = ["winit"] }
+
+# Use the local openusd checkout (carries the USDZ `.usd`-layer content-sniff
+# fix, so Kitchen_set.usdz and friends load). Drop once the fix is upstream.
+[patch."https://github.com/mxpv/openusd"]
+openusd = { path = "../openusd" }

@@ -210,18 +210,24 @@ fn patch_prim(world: &mut World, stage: &Stage, entity: Entity, prim: &str) {
 /// `Mesh3d`/`MeshMaterial3d`. No-op when the render `Assets` aren't present
 /// (headless) or the prim has no mesh. (Real material binding lands when the
 /// material reader is ported into `live`.)
-fn attach_mesh(world: &mut World, stage: &Stage, entity: Entity, prim: &str) {
+/// Returns `true` if a `Mesh3d` was attached.
+fn attach_mesh(world: &mut World, stage: &Stage, entity: Entity, prim: &str) -> bool {
     let Some(p) = openusd::sdf::path(prim).ok() else {
-        return;
+        return false;
     };
     let Ok(Some(read)) = crate::read::geom::read_mesh(stage, &p) else {
-        return;
+        return false;
     };
     if world.get_resource::<Assets<Mesh>>().is_none()
         || world.get_resource::<Assets<StandardMaterial>>().is_none()
     {
-        return;
+        bevy::log::warn!(
+            target: "usd_bevy::live",
+            "{prim}: has a mesh but render Assets are absent — not attached"
+        );
+        return false;
     }
+    bevy::log::trace!(target: "usd_bevy::live", "{prim}: mesh {} points -> Mesh3d", read.points.len());
     let mesh = crate::mesh::mesh_from_usd(&read);
     let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
     let material = world
@@ -230,6 +236,7 @@ fn attach_mesh(world: &mut World, stage: &Stage, entity: Entity, prim: &str) {
     world
         .entity_mut(entity)
         .insert((Mesh3d(mesh_handle), MeshMaterial3d(material)));
+    true
 }
 
 /// The prim path owning a (possibly property) path: `/Foo.bar` → `/Foo`.
@@ -242,6 +249,8 @@ fn prim_of(path: &str) -> &str {
 /// empty world — call once on load.
 pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
     let stage = &live.stage;
+    let mut prim_count = 0usize;
+    let mut mesh_count = 0usize;
     let _ = stage.traverse(
         openusd::usd::PrimPredicate::default(),
         |path: &openusd::sdf::Path| {
@@ -256,8 +265,15 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
                 ))
                 .id();
             map.insert(path.as_str().to_string(), entity);
-            attach_mesh(world, stage, entity, path.as_str());
+            prim_count += 1;
+            if attach_mesh(world, stage, entity, path.as_str()) {
+                mesh_count += 1;
+            }
         },
+    );
+    bevy::log::info!(
+        target: "usd_bevy::live",
+        "projected {prim_count} prims, {mesh_count} meshes"
     );
     // Projecting authored the initial read; clear so the first sync starts clean.
     let _ = live.drain_changes();
@@ -507,6 +523,20 @@ impl TransformHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kitchen_set.usdz's root layer is `Kitchen_set.usd`, so this exercises
+    /// the openusd USDZ `.usd`-layer content-sniff fix (without it the stage
+    /// won't even open). NOTE: its geometry is behind references to other
+    /// files *inside* the usdz, which openusd doesn't resolve yet — so the
+    /// composed stage is structure-only (0 meshes). See OPENUSD_ISSUE.md.
+    #[test]
+    fn loads_kitchen_usdz() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/external/Kitchen_set.usdz");
+        let stage = Stage::open(path).expect("Kitchen_set.usdz should open");
+        let mut prims = 0usize;
+        let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |_| prims += 1);
+        assert!(prims > 100, "kitchen root layer should compose, got {prims}");
+    }
     use openusd::sdf::Value;
 
     fn tx(stage: &Stage, prim: &str) -> Option<Vec3> {

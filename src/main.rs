@@ -21,13 +21,85 @@ use mara_core::widget::{TreeBody, TreeIconKind, TreeIconSlot};
 use mara_core::{RibbonAvoidance, WorkspaceStack};
 
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 use openusd::usd::Stage;
 use usd_bevy::UsdPlugin;
-use usd_bevy::live::{LiveStage, LiveStagePlugin};
+use usd_bevy::live::{LiveStage, LiveStagePlugin, PrimEntities};
+
+/// Everything (trace + panics + backtraces) is mirrored here so a hard crash
+/// is still recoverable after the window dies.
+const LOG_FILE: &str = "/tmp/usdview.log";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
+    install_panic_logger();
+    tracing::info!(target: "usdview", "usdview starting — full log at {LOG_FILE}");
     mara::window::run::<UsdApp>()
+}
+
+/// Tracing to BOTH stderr and [`LOG_FILE`]. The embedded Bevy app has no
+/// `LogPlugin`, so without this the logs go nowhere; the file copy survives a
+/// crash that eats stderr. Override the filter with `RUST_LOG`.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+    let _ = std::fs::write(LOG_FILE, ""); // truncate per run
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn,usdview=trace,usd_bevy=trace,openusd=info"));
+    let to_file = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(LOG_FILE)
+            .unwrap_or_else(|_| std::fs::File::create("/dev/null").unwrap())
+    };
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_ansi(false)
+        .with_writer(std::io::stderr.and(to_file))
+        .try_init();
+}
+
+/// Capture panics (message + full backtrace) to the log file and stderr —
+/// otherwise a panic inside the embedded app vanishes with the window.
+fn install_panic_logger() {
+    unsafe {
+        if std::env::var_os("RUST_BACKTRACE").is_none() {
+            std::env::set_var("RUST_BACKTRACE", "full");
+        }
+    }
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let msg = format!("\n==== usdview PANIC ====\n{info}\n{backtrace}\n");
+        tracing::error!(target: "usdview", "PANIC: {info}");
+        eprint!("{msg}");
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(LOG_FILE) {
+            let _ = f.write_all(msg.as_bytes());
+        }
+        prev(info);
+    }));
+}
+
+/// Open a stage + collect its prims, returning a human-readable status line
+/// (logged at info/error too).
+fn open_stage(path: &str) -> (Option<Stage>, Vec<PrimRow>, String) {
+    match Stage::open(path) {
+        Ok(stage) => {
+            let prims = collect_prims(&stage);
+            let status = format!("loaded {} prims — {path}", prims.len());
+            tracing::info!(target: "usdview", "{status}");
+            (Some(stage), prims, status)
+        }
+        Err(e) => {
+            let status = format!("FAILED to open {path}: {e:#}");
+            tracing::error!(target: "usdview", "{status}");
+            (None, Vec::new(), status)
+        }
+    }
 }
 
 // ─── Ribbon / pane ids ──────────────────────────────────────────────
@@ -36,6 +108,11 @@ const RIBBON_LEFT: &str = "usd_ribbon_left";
 const PANE_OUTLINER: &str = "usd_pane_outliner";
 const PANE_PROPERTIES: &str = "usd_pane_properties";
 const ACTION_SAVE: &str = "usd_action_save";
+const ACTION_OPEN: &str = "usd_action_open";
+
+/// Shared path slot: the egui Open action pushes a file here; a Bevy system
+/// (`poll_reload`) picks it up and swaps the live stage.
+type LoadSlot = Arc<Mutex<Option<String>>>;
 
 fn ribbon_action(id: &'static str) -> RibbonAction {
     RibbonAction::Command(MaraId::new(id))
@@ -57,19 +134,30 @@ struct UsdApp {
     stage: Option<Stage>,
     prims: Vec<PrimRow>,
     selected: Option<String>,
+    /// Last load result, shown in the Outliner.
+    status: String,
+    /// A file path chosen this frame, applied at the top of the next.
+    pending_open: Option<String>,
+    /// Shared with the embedded Bevy app so it reloads the viewport.
+    load_queue: LoadSlot,
 }
 
 impl WindowApp for UsdApp {
     fn new(ctx: CreationContext<'_>) -> Self {
-        let path = std::env::args().nth(1);
+        // Initial file: `USD_FILE` env var, else argv[1], else none.
+        let path = std::env::var("USD_FILE").ok().or_else(|| std::env::args().nth(1));
         let viewport_path = path.clone();
+        let load_queue: LoadSlot = Arc::new(Mutex::new(None));
+        let queue = load_queue.clone();
         let bevy_view = mara_bevy::MaraBevyViewport::with_render_state_and_content(
             ctx.render_state,
-            move |app: &mut App| configure_usd_app(app, viewport_path.clone()),
+            move |app: &mut App| configure_usd_app(app, viewport_path.clone(), queue.clone()),
         );
 
-        let stage = path.as_deref().and_then(|p| Stage::open(p).ok());
-        let prims = stage.as_ref().map(collect_prims).unwrap_or_default();
+        let (stage, prims, status) = match path.as_deref() {
+            Some(p) => open_stage(p),
+            None => (None, Vec::new(), "no file — use Open USD…".to_string()),
+        };
 
         Self {
             bevy_view,
@@ -77,16 +165,32 @@ impl WindowApp for UsdApp {
             stage,
             prims,
             selected: None,
+            status,
+            pending_open: None,
+            load_queue,
         }
     }
 
     fn update(&mut self, host: &mut MaraHostCtx<'_>) {
+        // Apply a file-open chosen last frame: reload the read-side stage for
+        // the panes, and signal the embedded viewport to reload too.
+        if let Some(path) = self.pending_open.take() {
+            let (stage, prims, status) = open_stage(&path);
+            self.stage = stage;
+            self.prims = prims;
+            self.status = status;
+            self.selected = None;
+            *self.load_queue.lock().unwrap() = Some(path);
+        }
+
         let Self {
             bevy_view,
             workspace,
             stage,
             prims,
             selected,
+            status,
+            ..
         } = self;
         // Apply the mara theme every frame (without this the panes/ribbons
         // render with raw-egui defaults).
@@ -112,7 +216,7 @@ impl WindowApp for UsdApp {
                 PaneAnchor::LeftRail(RailZone::Start),
                 |body| {
                     let mut selected = selected.borrow_mut();
-                    outliner_pane(body, prims, &mut **selected, accent);
+                    outliner_pane(body, prims, &mut **selected, status.as_str(), accent);
                 },
             )
             .pane(
@@ -126,11 +230,18 @@ impl WindowApp for UsdApp {
                 },
             )
             .action(
+                ACTION_OPEN,
+                "folder",
+                "Open USD…",
+                ribbon_action(ACTION_OPEN),
+            )
+            .action(
                 ACTION_SAVE,
                 "document",
                 "Save stage",
                 ribbon_action(ACTION_SAVE),
             );
+        let mut picked: Option<String> = None;
         for click in host.show_ribbon_rail(rail, accent) {
             if click.action == ribbon_action(ACTION_SAVE) {
                 if let Some(stage) = stage.as_ref() {
@@ -139,7 +250,19 @@ impl WindowApp for UsdApp {
                         Err(e) => error!("save failed: {e:#}"),
                     }
                 }
+            } else if click.action == ribbon_action(ACTION_OPEN) {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("USD", &["usd", "usda", "usdc", "usdz"])
+                    .pick_file()
+                {
+                    picked = Some(file.to_string_lossy().into_owned());
+                }
             }
+        }
+        // Release the borrow of `self.selected` before touching `self` again.
+        drop(selected);
+        if let Some(p) = picked {
+            self.pending_open = Some(p);
         }
     }
 }
@@ -178,8 +301,11 @@ fn build_usd_tree(prims: &[PrimRow]) -> (Vec<UsdNode>, Vec<usize>) {
             children: Vec::new(),
         })
         .collect();
-    let index: std::collections::HashMap<&str, usize> =
-        prims.iter().enumerate().map(|(i, p)| (p.path.as_str(), i)).collect();
+    let index: std::collections::HashMap<&str, usize> = prims
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.path.as_str(), i))
+        .collect();
     let mut roots = Vec::new();
     for (i, p) in prims.iter().enumerate() {
         let parent = &p.path[..p.path.rfind('/').unwrap_or(0)];
@@ -195,8 +321,17 @@ fn outliner_pane(
     body: &mut PaneBody,
     prims: &[PrimRow],
     selected: &mut Option<String>,
+    status: &str,
     accent: MaraColor32,
 ) {
+    // Load status (shows failures like "FAILED to open … unsupported .usd").
+    body.add_normal(
+        "usd.status",
+        "Status",
+        "list",
+        vec![Pod::new(MaraId::new(("usd.outliner", "status"))).with_readout("file", status)],
+    );
+
     let tree_root = MaraId::new(("usd.outliner", "tree_root"));
     let sel_key = tree_root.with("selected");
     // Selection from last frame (the tree writes it during render).
@@ -223,7 +358,11 @@ fn outliner_pane(
                 }),
             Pod::new(MaraId::new(("usd.outliner", "scene", 2usize))).with_readout(
                 "selected",
-                if sel.is_empty() { "—".to_string() } else { sel },
+                if sel.is_empty() {
+                    "—".to_string()
+                } else {
+                    sel
+                },
             ),
         ],
     );
@@ -241,7 +380,17 @@ fn usd_tree(
     let mut selected = tree.temp_string(sel_key).unwrap_or_default();
     let mut clicked: Option<String> = None;
     for &r in roots {
-        walk_usd_tree(tree, root_id, nodes, r, 0, &selected, accent, filter, &mut clicked);
+        walk_usd_tree(
+            tree,
+            root_id,
+            nodes,
+            r,
+            0,
+            &selected,
+            accent,
+            filter,
+            &mut clicked,
+        );
     }
     if let Some(p) = clicked {
         selected = p;
@@ -289,7 +438,17 @@ fn walk_usd_tree(
     tree.set_persisted_bool(eye_key, eye_on);
     if is_branch && expanded {
         for &c in &node.children {
-            walk_usd_tree(tree, root_id, nodes, c, depth + 1, selected, accent, filter, clicked);
+            walk_usd_tree(
+                tree,
+                root_id,
+                nodes,
+                c,
+                depth + 1,
+                selected,
+                accent,
+                filter,
+                clicked,
+            );
         }
     }
 }
@@ -303,7 +462,9 @@ fn usd_tree_passes(nodes: &[UsdNode], i: usize, filter: &str) -> bool {
     if node.name.to_lowercase().contains(filter) || node.path.to_lowercase().contains(filter) {
         return true;
     }
-    node.children.iter().any(|&c| usd_tree_passes(nodes, c, filter))
+    node.children
+        .iter()
+        .any(|&c| usd_tree_passes(nodes, c, filter))
 }
 
 fn properties_pane(body: &mut PaneBody, stage: &Option<Stage>, selected: &Option<String>) {
@@ -329,7 +490,11 @@ fn properties_pane(body: &mut PaneBody, stage: &Option<Stage>, selected: &Option
 #[derive(Resource, Clone)]
 struct UsdArg(Option<String>);
 
-fn configure_usd_app(app: &mut App, path: Option<String>) {
+/// The shared load slot, as a Bevy resource the reload system reads.
+#[derive(Resource, Clone)]
+struct LoadQueue(LoadSlot);
+
+fn configure_usd_app(app: &mut App, path: Option<String>, load_queue: LoadSlot) {
     // The mara viewport already adds GroundGridPlugin + the core/render
     // plugins; we add only our own and configure the grid resource.
     app.add_plugins((UsdPlugin, LiveStagePlugin))
@@ -340,12 +505,47 @@ fn configure_usd_app(app: &mut App, path: Option<String>) {
         })
         .insert_resource(ClearColor(Color::srgb_u8(12, 14, 18)))
         .insert_resource(UsdArg(path))
+        .insert_resource(LoadQueue(load_queue))
         .add_systems(
             Startup,
             setup_camera.after(mara_bevy::BevyViewportSet::SetupTarget),
         )
         .add_systems(Startup, open_usd)
-        .add_systems(Update, mara_bevy::apply_viewport_camera_input_system);
+        .add_systems(Update, mara_bevy::apply_viewport_camera_input_system)
+        .add_systems(Update, poll_reload);
+}
+
+/// Pick up a path pushed by the egui "Open" action, despawn the current scene,
+/// and install a fresh `LiveStage` (which `LiveStagePlugin` then reprojects).
+fn poll_reload(world: &mut World) {
+    let path = world
+        .resource::<LoadQueue>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    let Some(path) = path else {
+        return;
+    };
+
+    world.remove_non_send::<LiveStage>();
+    let entities: Vec<Entity> = world
+        .resource::<PrimEntities>()
+        .iter()
+        .map(|(_, e)| e)
+        .collect();
+    for entity in entities {
+        world.despawn(entity);
+    }
+    *world.resource_mut::<PrimEntities>() = PrimEntities::default();
+
+    match Stage::open(&path) {
+        Ok(stage) => {
+            info!("reloaded USD stage: {path}");
+            world.insert_non_send(LiveStage::new(stage));
+        }
+        Err(e) => error!("failed to reload {path}: {e:#}"),
+    }
 }
 
 fn setup_camera(

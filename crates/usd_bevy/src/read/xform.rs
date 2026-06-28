@@ -26,7 +26,11 @@ pub fn read_transform(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Trans
     let order: Vec<String> = match raw {
         Value::TokenVec(v) => v.into_iter().map(|t| t.as_str().to_string()).collect(),
         Value::StringVec(v) => v,
-        Value::TokenListOp(op) => op.flatten().into_iter().map(|t| t.as_str().to_string()).collect(),
+        Value::TokenListOp(op) => op
+            .flatten()
+            .into_iter()
+            .map(|t| t.as_str().to_string())
+            .collect(),
         _ => return Ok(None),
     };
 
@@ -58,7 +62,9 @@ fn build_op_matrix(stage: &Stage, prim: &Path, op_token: &str) -> anyhow::Result
     let kind = kind.split(':').next().unwrap_or(kind);
 
     let m = match kind {
-        "translate" => Mat4::from_translation(Vec3::from(value_to_vec3f(&raw).unwrap_or([0.0, 0.0, 0.0]))),
+        "translate" => {
+            Mat4::from_translation(Vec3::from(value_to_vec3f(&raw).unwrap_or([0.0, 0.0, 0.0])))
+        }
         "scale" => Mat4::from_scale(Vec3::from(value_to_vec3f(&raw).unwrap_or([1.0, 1.0, 1.0]))),
         "orient" => {
             let q = value_to_quat_wxyz(&raw).unwrap_or([1.0, 0.0, 0.0, 0.0]);

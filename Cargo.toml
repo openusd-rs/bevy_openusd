@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/usd_rapier",
-    "crates/usd_bevy",
-]
+members = ["crates/usd_bevy"]
 exclude = ["xtra"]
 
 [package]
@@ -11,36 +8,28 @@ name = "usdview"
 version = "0.0.1"
 edition = "2024"
 license = "MIT"
-description = "Interactive viewer for OpenUSD scenes — built on bevy + the usd_bevy plugin."
+description = "Live OpenUSD editor — mara UI host embedding a Bevy viewport."
 repository = "https://github.com/bresilla/bevy_openusd"
-build = "build.rs"
 
 [[bin]]
 name = "usdview"
 path = "src/main.rs"
 
 [dependencies]
-# The Bevy USD plugin: asset loader, scene projection, marker
-# components, Rapier physics adapter. Single dep brings in everything
-# needed to load a USD into a Bevy app.
+# The live USD editor: stage projection, sync, authoring, persistence.
 usd_bevy = { path = "crates/usd_bevy" }
-usd_rapier = { path = "crates/usd_rapier" }
-# Pure-Rust USD — the viewer reads camera projection and anim track
-# data directly off the loaded `Stage` via openusd's typed views.
-openusd = { git = "https://github.com/mxpv/openusd", rev = "06d619d47ad0fb0d9174c376c41e9d339f4c3290", features = ["geom", "lux", "media", "proc", "render", "shade", "skel", "ui", "physics"] }
-# Direct Rapier dep for the viewer's static-ground collider authoring;
-# `usd_bevy::physics::PhysicsWorld` exposes the Rapier sets we mutate.
-rapier3d-f64 = "0.32"
+# Pure-Rust USD — the viewer opens the live `Stage` directly.
+openusd = { git = "https://github.com/mxpv/openusd", rev = "06d619d47ad0fb0d9174c376c41e9d339f4c3290", features = ["geom", "shade"] }
 
-bevy = { version = "0.18", default-features = false, features = [
+# mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
+mara = { path = "../mara/mara", default-features = false, features = ["window", "bevy"] }
+
+# Bevy 0.19 (needs Rust 1.95+) — the embedded viewport renders the USD scene
+# offscreen into a mara-provided render target.
+bevy = { version = "0.19", default-features = false, features = [
     "std",
-    "async_executor",
-    "multi_threaded",
     "bevy_asset",
-    "bevy_state",
     "bevy_log",
-    "bevy_window",
-    "bevy_winit",
     "bevy_render",
     "bevy_core_pipeline",
     "bevy_pbr",
@@ -48,53 +37,10 @@ bevy = { version = "0.18", default-features = false, features = [
     "bevy_mesh",
     "bevy_camera",
     "bevy_image",
-    "bevy_scene",
-    "bevy_gizmos",
-    "bevy_gizmos_render",
-    "bevy_post_process",
-    "morph",
-    "default_font",
-    "tonemapping_luts",
-    "smaa_luts",
-    "png",
-    "jpeg",
-    "bmp",
-    "tga",
-    "hdr",
-    "webp",
-    "tiff",
-    "ktx2",
-    "zstd_rust",
-    "x11",
-    "wayland",
     "reflect_auto_register",
 ] }
 
-anyhow = "1"
-# Native file-picker dialog for the "Browse USD…" button.
-rfd = "0.15"
-# VS-Code-style egui chrome.
-bevy_egui = { version = "0.39", default-features = false, features = [
-    "default_fonts",
-    "render",
-] }
-# Glass-themed editor UI kit (ribbons, panes, pods, widgets, theme) —
-# the evolution of bevy_frost. Local path during co-development; swap
-# to `git = "https://github.com/bresilla/mara"` once pushed/stable.
-bevy_mara = { path = "../mara/mara/plugin/bevy" }
-mara_core = { path = "../mara/crates/core" }
-# Reusable 3D-scene gizmos (axis triads + joint primitives). Pinned to
-# the same rev bevy_mara uses so cargo doesn't pull two copies.
-bevy_glacial = { git = "https://github.com/bresilla/bevy_glacial", rev = "d7bc6d3" }
-
-# `build.rs` bakes a sample USDZ (USDA + procedural PNG) into
-# `assets/external/` so `cargo run -- usdz_sample.usdz` always has
-# something real to show.
-[build-dependencies]
-zip = { version = "8", default-features = false, features = ["deflate"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-[dev-dependencies]
-# Used by tests/project_usdz.rs to author a USDZ + verify embedded textures.
-zip = { version = "8", default-features = false, features = ["deflate"] }
-image = "0.25"
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
+wgpu = { version = "29", default-features = false, features = ["vulkan"] }
+egui-wgpu = { version = "0.34", default-features = false, features = ["winit"] }

@@ -37,7 +37,10 @@ pub fn read_material_binding(stage: &Stage, prim: &Path) -> anyhow::Result<Optio
 }
 
 /// Read a `Material` prim and return its decoded surface inputs.
-pub fn read_preview_material(stage: &Stage, material: &Path) -> anyhow::Result<Option<ReadPreviewMaterial>> {
+pub fn read_preview_material(
+    stage: &Stage,
+    material: &Path,
+) -> anyhow::Result<Option<ReadPreviewMaterial>> {
     let Some((shader, dialect)) = resolve_surface_shader(stage, material)? else {
         return Ok(None);
     };
@@ -45,14 +48,19 @@ pub fn read_preview_material(stage: &Stage, material: &Path) -> anyhow::Result<O
     let shader_id = read_token_or_string(stage, &shader, "info:id")?;
     let mdl_subid = read_token_or_string(stage, &shader, "info:mdl:sourceAsset:subIdentifier")?;
     let mdl_source = read_asset_path(stage, &shader, "info:mdl:sourceAsset")?;
-    let mdl_basename = mdl_source
-        .as_deref()
-        .and_then(|p| std::path::Path::new(p).file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()));
+    let mdl_basename = mdl_source.as_deref().and_then(|p| {
+        std::path::Path::new(p)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+    });
     let mdl_id = mdl_subid.as_deref().or(mdl_basename.as_deref());
 
     let channels: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = match dialect {
         SurfaceDialect::Mdl => match mdl_id {
-            Some("OmniSurface") | Some("OmniSurfaceLite") | Some("OmniSurfaceBase") => OMNISURFACE_CHANNELS,
+            Some("OmniSurface") | Some("OmniSurfaceLite") | Some("OmniSurfaceBase") => {
+                OMNISURFACE_CHANNELS
+            }
             _ => OMNIPBR_CHANNELS,
         },
         SurfaceDialect::MaterialX => match shader_id.as_deref() {
@@ -60,9 +68,15 @@ pub fn read_preview_material(stage: &Stage, material: &Path) -> anyhow::Result<O
             _ => PREVIEW_CHANNELS,
         },
         SurfaceDialect::Preview => match shader_id.as_deref() {
-            Some("UsdPreviewSurface") | Some("ND_UsdPreviewSurface_surfaceshader") | None => PREVIEW_CHANNELS,
-            Some("OmniPBR") | Some("OmniPBR_Opacity") | Some("OmniPBR_ClearCoat") => OMNIPBR_CHANNELS,
-            Some("OmniSurface") | Some("OmniSurfaceLite") | Some("OmniSurfaceBase") => OMNISURFACE_CHANNELS,
+            Some("UsdPreviewSurface") | Some("ND_UsdPreviewSurface_surfaceshader") | None => {
+                PREVIEW_CHANNELS
+            }
+            Some("OmniPBR") | Some("OmniPBR_Opacity") | Some("OmniPBR_ClearCoat") => {
+                OMNIPBR_CHANNELS
+            }
+            Some("OmniSurface") | Some("OmniSurfaceLite") | Some("OmniSurfaceBase") => {
+                OMNISURFACE_CHANNELS
+            }
             Some("ND_standard_surface_surfaceshader") => MATERIALX_STD_SURFACE_CHANNELS,
             _ => return Ok(None),
         },
@@ -90,7 +104,10 @@ enum SurfaceDialect {
     Mdl,
 }
 
-fn resolve_surface_shader(stage: &Stage, material: &Path) -> anyhow::Result<Option<(Path, SurfaceDialect)>> {
+fn resolve_surface_shader(
+    stage: &Stage,
+    material: &Path,
+) -> anyhow::Result<Option<(Path, SurfaceDialect)>> {
     let outputs = [
         ("outputs:surface", SurfaceDialect::Preview),
         ("outputs:mtlx:surface", SurfaceDialect::MaterialX),
@@ -103,7 +120,11 @@ fn resolve_surface_shader(stage: &Stage, material: &Path) -> anyhow::Result<Opti
         }
     }
     // Fallback: scan child Shader prims and infer the dialect.
-    for child in stage.prim(material.clone()).child_names().unwrap_or_default() {
+    for child in stage
+        .prim(material.clone())
+        .child_names()
+        .unwrap_or_default()
+    {
         let shader = material.append_path(child.as_str())?;
         if stage.prim(shader.clone()).type_name()?.as_deref() != Some("Shader") {
             continue;
@@ -124,7 +145,10 @@ fn resolve_surface_shader(stage: &Stage, material: &Path) -> anyhow::Result<Opti
         ) {
             return Ok(Some((shader, SurfaceDialect::Preview)));
         }
-        if matches!(shader_id.as_deref(), Some("ND_standard_surface_surfaceshader")) {
+        if matches!(
+            shader_id.as_deref(),
+            Some("ND_standard_surface_surfaceshader")
+        ) {
             return Ok(Some((shader, SurfaceDialect::MaterialX)));
         }
     }
@@ -197,50 +221,165 @@ fn set_opacity_mtlx_c(o: &mut ReadPreviewMaterial, c: [f32; 3]) {
 }
 
 const PREVIEW_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &[
-    ("diffuseColor", set_diffuse_c, set_diffuse_s, set_diffuse_tex),
+    (
+        "diffuseColor",
+        set_diffuse_c,
+        set_diffuse_s,
+        set_diffuse_tex,
+    ),
     ("opacity", set_opacity_c, set_opacity_s, set_opacity_tex),
-    ("opacityThreshold", set_opacity_threshold_c, set_opacity_threshold_s, set_opacity_threshold_tex),
+    (
+        "opacityThreshold",
+        set_opacity_threshold_c,
+        set_opacity_threshold_s,
+        set_opacity_threshold_tex,
+    ),
     ("roughness", set_rough_c, set_rough_s, set_rough_tex),
     ("metallic", set_metal_c, set_metal_s, set_metal_tex),
-    ("emissiveColor", set_emissive_c, set_emissive_s, set_emissive_tex),
+    (
+        "emissiveColor",
+        set_emissive_c,
+        set_emissive_s,
+        set_emissive_tex,
+    ),
     ("ior", set_ior_c, set_ior_s, set_ior_tex),
     ("normal", set_normal_c, set_normal_s, set_normal_tex),
-    ("occlusion", set_occlusion_c, set_occlusion_s, set_occlusion_tex),
+    (
+        "occlusion",
+        set_occlusion_c,
+        set_occlusion_s,
+        set_occlusion_tex,
+    ),
 ];
 
 const MATERIALX_STD_SURFACE_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &[
     ("base_color", set_diffuse_c, set_diffuse_s, set_diffuse_tex),
     ("metalness", set_metal_c, set_metal_s, set_metal_tex),
-    ("specular_roughness", set_rough_c, set_rough_s, set_rough_tex),
-    ("emission_color", set_emissive_c, set_emissive_s, set_emissive_tex),
-    ("opacity", set_opacity_mtlx_c, set_opacity_s, set_opacity_tex),
+    (
+        "specular_roughness",
+        set_rough_c,
+        set_rough_s,
+        set_rough_tex,
+    ),
+    (
+        "emission_color",
+        set_emissive_c,
+        set_emissive_s,
+        set_emissive_tex,
+    ),
+    (
+        "opacity",
+        set_opacity_mtlx_c,
+        set_opacity_s,
+        set_opacity_tex,
+    ),
     ("normal", set_normal_c, set_normal_s, set_normal_tex),
 ];
 
 const OMNIPBR_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &[
-    ("diffuse_color_constant", set_diffuse_c, set_diffuse_s, set_diffuse_tex),
-    ("diffuse_texture", set_diffuse_c, set_diffuse_s, set_diffuse_tex),
-    ("reflection_roughness_constant", set_rough_c, set_rough_s, set_rough_tex),
-    ("reflectionroughness_texture", set_rough_c, set_rough_s, set_rough_tex),
+    (
+        "diffuse_color_constant",
+        set_diffuse_c,
+        set_diffuse_s,
+        set_diffuse_tex,
+    ),
+    (
+        "diffuse_texture",
+        set_diffuse_c,
+        set_diffuse_s,
+        set_diffuse_tex,
+    ),
+    (
+        "reflection_roughness_constant",
+        set_rough_c,
+        set_rough_s,
+        set_rough_tex,
+    ),
+    (
+        "reflectionroughness_texture",
+        set_rough_c,
+        set_rough_s,
+        set_rough_tex,
+    ),
     ("metallic_constant", set_metal_c, set_metal_s, set_metal_tex),
     ("metallic_texture", set_metal_c, set_metal_s, set_metal_tex),
-    ("emissive_color", set_emissive_c, set_emissive_s, set_emissive_tex),
-    ("emissive_color_texture", set_emissive_c, set_emissive_s, set_emissive_tex),
-    ("opacity_constant", set_opacity_c, set_opacity_s, set_opacity_tex),
-    ("opacity_texture", set_opacity_c, set_opacity_s, set_opacity_tex),
-    ("normalmap_texture", set_normal_c, set_normal_s, set_normal_tex),
+    (
+        "emissive_color",
+        set_emissive_c,
+        set_emissive_s,
+        set_emissive_tex,
+    ),
+    (
+        "emissive_color_texture",
+        set_emissive_c,
+        set_emissive_s,
+        set_emissive_tex,
+    ),
+    (
+        "opacity_constant",
+        set_opacity_c,
+        set_opacity_s,
+        set_opacity_tex,
+    ),
+    (
+        "opacity_texture",
+        set_opacity_c,
+        set_opacity_s,
+        set_opacity_tex,
+    ),
+    (
+        "normalmap_texture",
+        set_normal_c,
+        set_normal_s,
+        set_normal_tex,
+    ),
 ];
 
 const OMNISURFACE_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &[
-    ("diffuse_reflection_color", set_diffuse_c, set_diffuse_s, set_diffuse_tex),
-    ("diffuse_reflection_color_image", set_diffuse_c, set_diffuse_s, set_diffuse_tex),
-    ("geometry_normal_image", set_normal_c, set_normal_s, set_normal_tex),
-    ("geometry_opacity_image", set_opacity_c, set_opacity_s, set_opacity_tex),
-    ("geometry_opacity", set_opacity_c, set_opacity_s, set_opacity_tex),
+    (
+        "diffuse_reflection_color",
+        set_diffuse_c,
+        set_diffuse_s,
+        set_diffuse_tex,
+    ),
+    (
+        "diffuse_reflection_color_image",
+        set_diffuse_c,
+        set_diffuse_s,
+        set_diffuse_tex,
+    ),
+    (
+        "geometry_normal_image",
+        set_normal_c,
+        set_normal_s,
+        set_normal_tex,
+    ),
+    (
+        "geometry_opacity_image",
+        set_opacity_c,
+        set_opacity_s,
+        set_opacity_tex,
+    ),
+    (
+        "geometry_opacity",
+        set_opacity_c,
+        set_opacity_s,
+        set_opacity_tex,
+    ),
     ("roughness", set_rough_c, set_rough_s, set_rough_tex),
     ("metalness", set_metal_c, set_metal_s, set_metal_tex),
-    ("emission_color", set_emissive_c, set_emissive_s, set_emissive_tex),
-    ("emission_color_image", set_emissive_c, set_emissive_s, set_emissive_tex),
+    (
+        "emission_color",
+        set_emissive_c,
+        set_emissive_s,
+        set_emissive_tex,
+    ),
+    (
+        "emission_color_image",
+        set_emissive_c,
+        set_emissive_s,
+        set_emissive_tex,
+    ),
 ];
 
 #[derive(Debug)]
@@ -265,7 +404,10 @@ fn resolve_channel(
     resolve_attr_chain(stage, &sh_path)
 }
 
-fn resolve_attr_chain(stage: &Stage, attr_path: &Path) -> anyhow::Result<(Option<ResolvedValue>, Option<String>)> {
+fn resolve_attr_chain(
+    stage: &Stage,
+    attr_path: &Path,
+) -> anyhow::Result<(Option<ResolvedValue>, Option<String>)> {
     let mut cur = attr_path.clone();
     for _ in 0..16 {
         if let Some(next) = connections_at(stage, &cur)?.into_iter().next() {
@@ -323,7 +465,9 @@ fn shader_kind(stage: &Stage, prim: &Path) -> anyhow::Result<ShaderKind> {
         Some("ND_normalmap") => ShaderKind::NormalMap,
         Some(s) if s.starts_with("ND_constant_") => ShaderKind::Constant,
         Some(s) if s.starts_with("ND_multiply_") => ShaderKind::Multiply,
-        Some(s) if s.starts_with("ND_add_") || s.starts_with("ND_subtract_") => ShaderKind::AddOrSubtract,
+        Some(s) if s.starts_with("ND_add_") || s.starts_with("ND_subtract_") => {
+            ShaderKind::AddOrSubtract
+        }
         Some(s) if s.starts_with("ND_mix_") => ShaderKind::Mix,
         _ => ShaderKind::Unknown,
     })

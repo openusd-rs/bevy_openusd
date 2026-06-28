@@ -35,7 +35,11 @@ pub fn read_double(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Opt
 
 /// A `double`, `float`, or `timecode` scalar as `f64`. (openusd decodes
 /// `timecode` into a `Double`, so the two collapse here.)
-pub fn read_double_or_timecode(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<f64>> {
+pub fn read_double_or_timecode(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<f64>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::Double(v)) => Some(v),
         Some(Value::Float(v)) => Some(v as f64),
@@ -59,7 +63,11 @@ pub fn read_bool(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Optio
 }
 
 /// A `token` or `string` scalar.
-pub fn read_token_or_string(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<String>> {
+pub fn read_token_or_string(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<String>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::Token(s)) => Some(s.as_str().to_string()),
         Some(Value::String(s)) => Some(s),
@@ -162,7 +170,11 @@ pub fn read_quatf_vec(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<
 }
 
 /// Like [`read_int_vec`] but distinguishes "unauthored" (`None`) from "empty".
-pub fn read_int_vec_opt(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<i32>>> {
+pub fn read_int_vec_opt(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Vec<i32>>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::IntVec(v)) => Some(v),
         Some(Value::Int64Vec(v)) => Some(v.into_iter().map(|i| i as i32).collect()),
@@ -171,7 +183,11 @@ pub fn read_int_vec_opt(stage: &Stage, prim: &Path, name: &str) -> anyhow::Resul
 }
 
 /// Like [`read_float_vec`] but distinguishes "unauthored" (`None`) from "empty".
-pub fn read_float_vec_opt(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<f32>>> {
+pub fn read_float_vec_opt(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Vec<f32>>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::FloatVec(v)) => Some(v),
         Some(Value::DoubleVec(v)) => Some(v.into_iter().map(|d| d as f32).collect()),
@@ -197,27 +213,53 @@ pub fn read_mat4f_vec(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<
 }
 
 /// `i32`-valued attribute *metadata* field (e.g. primvar `elementSize`).
-pub fn read_int_metadata(stage: &Stage, prim: &Path, attr: &str, key: &str) -> anyhow::Result<Option<i32>> {
-    Ok(match stage.prim(prim.clone()).attribute(attr).get_metadata::<Value>(key)? {
-        Some(Value::Int(n)) => Some(n),
-        Some(Value::Int64(n)) => Some(n as i32),
-        _ => None,
-    })
+pub fn read_int_metadata(
+    stage: &Stage,
+    prim: &Path,
+    attr: &str,
+    key: &str,
+) -> anyhow::Result<Option<i32>> {
+    Ok(
+        match stage
+            .prim(prim.clone())
+            .attribute(attr)
+            .get_metadata::<Value>(key)?
+        {
+            Some(Value::Int(n)) => Some(n),
+            Some(Value::Int64(n)) => Some(n as i32),
+            _ => None,
+        },
+    )
 }
 
 /// Composed `timeSamples` for an attribute, as `(time, value)` pairs.
-pub fn read_time_samples(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Vec<(f64, Value)>> {
-    Ok(stage.prim(prim.clone()).attribute(name).time_samples()?.unwrap_or_default())
+pub fn read_time_samples(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Vec<(f64, Value)>> {
+    Ok(stage
+        .prim(prim.clone())
+        .attribute(name)
+        .time_samples()?
+        .unwrap_or_default())
 }
 
 /// Composed relationship target paths (as strings), in authored order.
 pub fn read_rel_targets(stage: &Stage, prim: &Path, rel_name: &str) -> anyhow::Result<Vec<String>> {
     let targets = stage.prim(prim.clone()).relationship(rel_name).targets()?;
-    Ok(targets.into_iter().map(|p| p.as_str().to_string()).collect())
+    Ok(targets
+        .into_iter()
+        .map(|p| p.as_str().to_string())
+        .collect())
 }
 
 /// The first composed relationship target (strongest), if any.
-pub fn read_rel_first_target(stage: &Stage, prim: &Path, rel_name: &str) -> anyhow::Result<Option<String>> {
+pub fn read_rel_first_target(
+    stage: &Stage,
+    prim: &Path,
+    rel_name: &str,
+) -> anyhow::Result<Option<String>> {
     Ok(read_rel_targets(stage, prim, rel_name)?.into_iter().next())
 }
 

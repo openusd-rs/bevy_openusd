@@ -104,7 +104,11 @@ pub fn read_mesh(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadMesh>>
     };
 
     let normals = read_primvar_vec3f(stage, prim, "normals")?;
-    let uvs = read_primvar_vec2f(stage, prim, "primvars:st")?.or(read_primvar_vec2f(stage, prim, "primvars:st0")?);
+    let uvs = read_primvar_vec2f(stage, prim, "primvars:st")?.or(read_primvar_vec2f(
+        stage,
+        prim,
+        "primvars:st0",
+    )?);
     let orientation = match read_token(stage, prim, "orientation")?.as_deref() {
         Some("leftHanded") => Orientation::LeftHanded,
         _ => Orientation::RightHanded,
@@ -147,7 +151,8 @@ fn read_material_subsets(stage: &Stage, mesh_prim: &Path) -> anyhow::Result<Vec<
         if read_token(stage, &child_path, "familyName")?.as_deref() != Some("materialBind") {
             continue;
         }
-        if matches!(read_token(stage, &child_path, "elementType")?.as_deref(), Some(e) if e != "face") {
+        if matches!(read_token(stage, &child_path, "elementType")?.as_deref(), Some(e) if e != "face")
+        {
             continue;
         }
         out.push(ReadSubset {
@@ -201,8 +206,15 @@ pub fn read_cylinder(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadCy
     let Some(height) = read_double(stage, prim, "height")? else {
         return Ok(None);
     };
-    let axis = read_token(stage, prim, "axis")?.as_deref().and_then(Axis::parse).unwrap_or(Axis::Z);
-    Ok(Some(ReadCylinder { radius, height, axis }))
+    let axis = read_token(stage, prim, "axis")?
+        .as_deref()
+        .and_then(Axis::parse)
+        .unwrap_or(Axis::Z);
+    Ok(Some(ReadCylinder {
+        radius,
+        height,
+        axis,
+    }))
 }
 
 pub fn read_capsule(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadCylinder>> {
@@ -224,7 +236,10 @@ pub struct ReadPointInstancer {
     pub proto_indices: Vec<i32>,
 }
 
-pub fn read_point_instancer(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadPointInstancer>> {
+pub fn read_point_instancer(
+    stage: &Stage,
+    prim: &Path,
+) -> anyhow::Result<Option<ReadPointInstancer>> {
     let Some(positions) = read_vec3f_array(stage, prim, "positions")? else {
         return Ok(None);
     };
@@ -321,9 +336,18 @@ pub fn read_curves(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadCurv
     let Some(vertex_counts) = read_int_array(stage, prim, "curveVertexCounts")? else {
         return Ok(None);
     };
-    let curve_type = read_token(stage, prim, "type")?.as_deref().and_then(CurveType::parse).unwrap_or(CurveType::Linear);
-    let basis = read_token(stage, prim, "basis")?.as_deref().and_then(CurveBasis::parse).unwrap_or(CurveBasis::Bezier);
-    let wrap = read_token(stage, prim, "wrap")?.as_deref().and_then(CurveWrap::parse).unwrap_or(CurveWrap::Nonperiodic);
+    let curve_type = read_token(stage, prim, "type")?
+        .as_deref()
+        .and_then(CurveType::parse)
+        .unwrap_or(CurveType::Linear);
+    let basis = read_token(stage, prim, "basis")?
+        .as_deref()
+        .and_then(CurveBasis::parse)
+        .unwrap_or(CurveBasis::Bezier);
+    let wrap = read_token(stage, prim, "wrap")?
+        .as_deref()
+        .and_then(CurveWrap::parse)
+        .unwrap_or(CurveWrap::Nonperiodic);
     Ok(Some(ReadCurves {
         points,
         vertex_counts,
@@ -355,7 +379,8 @@ pub fn read_nurbs_curves(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Re
     let Some(curve_vertex_counts) = read_int_array(stage, prim, "curveVertexCounts")? else {
         return Ok(None);
     };
-    let order = read_int_array(stage, prim, "order")?.unwrap_or_else(|| curve_vertex_counts.iter().map(|_| 4).collect());
+    let order = read_int_array(stage, prim, "order")?
+        .unwrap_or_else(|| curve_vertex_counts.iter().map(|_| 4).collect());
     let knots = read_double_array(stage, prim, "knots")?.unwrap_or_default();
     let ranges = read_vec2d_array(stage, prim, "ranges")?.unwrap_or_else(|| {
         let mut out = Vec::with_capacity(curve_vertex_counts.len());
@@ -410,8 +435,10 @@ pub fn read_nurbs_patch(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Rea
     let v_order = read_int_scalar(stage, prim, "vOrder")?.unwrap_or(4);
     let u_knots = read_double_array(stage, prim, "uKnots")?.unwrap_or_default();
     let v_knots = read_double_array(stage, prim, "vKnots")?.unwrap_or_default();
-    let u_range = read_vec2d_scalar(stage, prim, "uRange")?.unwrap_or_else(|| inner_span(&u_knots, u_vertex_count, u_order));
-    let v_range = read_vec2d_scalar(stage, prim, "vRange")?.unwrap_or_else(|| inner_span(&v_knots, v_vertex_count, v_order));
+    let u_range = read_vec2d_scalar(stage, prim, "uRange")?
+        .unwrap_or_else(|| inner_span(&u_knots, u_vertex_count, u_order));
+    let v_range = read_vec2d_scalar(stage, prim, "vRange")?
+        .unwrap_or_else(|| inner_span(&v_knots, v_vertex_count, v_order));
     Ok(Some(ReadNurbsPatch {
         points,
         u_vertex_count,
@@ -472,7 +499,10 @@ pub struct ReadHermiteCurves {
     pub display_color: Option<Vec<[f32; 3]>>,
 }
 
-pub fn read_hermite_curves(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadHermiteCurves>> {
+pub fn read_hermite_curves(
+    stage: &Stage,
+    prim: &Path,
+) -> anyhow::Result<Option<ReadHermiteCurves>> {
     let Some(points) = read_vec3f_array(stage, prim, "points")? else {
         return Ok(None);
     };
@@ -540,7 +570,10 @@ pub fn read_visibility(stage: &Stage, prim: &Path) -> anyhow::Result<VisibilityS
 }
 
 pub fn read_kind(stage: &Stage, prim: &Path) -> anyhow::Result<Option<String>> {
-    Ok(stage.prim(prim.clone()).kind()?.map(|t| t.as_str().to_string()))
+    Ok(stage
+        .prim(prim.clone())
+        .kind()?
+        .map(|t| t.as_str().to_string()))
 }
 
 // ── Custom data ─────────────────────────────────────────────────────────
@@ -648,7 +681,9 @@ impl CustomAttrValue {
     pub fn as_vec4(&self) -> Option<[f32; 4]> {
         match self {
             Self::Vec4f(a) | Self::Quatf(a) => Some(*a),
-            Self::Vec4d(a) | Self::Quatd(a) => Some([a[0] as f32, a[1] as f32, a[2] as f32, a[3] as f32]),
+            Self::Vec4d(a) | Self::Quatd(a) => {
+                Some([a[0] as f32, a[1] as f32, a[2] as f32, a[3] as f32])
+            }
             Self::Vec4i(a) => Some([a[0] as f32, a[1] as f32, a[2] as f32, a[3] as f32]),
             _ => None,
         }
@@ -704,11 +739,17 @@ impl CustomDict {
 }
 
 /// Read every authored `custom` attribute on `prim`.
-pub fn read_custom_attrs(stage: &Stage, prim: &Path) -> anyhow::Result<Vec<(String, CustomAttrValue)>> {
+pub fn read_custom_attrs(
+    stage: &Stage,
+    prim: &Path,
+) -> anyhow::Result<Vec<(String, CustomAttrValue)>> {
     let mut out = Vec::new();
     for name in stage.prim(prim.clone()).property_names()? {
         let attr = stage.prim(prim.clone()).attribute(&name);
-        let is_custom = matches!(attr.get_metadata::<bool>("custom").ok().flatten(), Some(true));
+        let is_custom = matches!(
+            attr.get_metadata::<bool>("custom").ok().flatten(),
+            Some(true)
+        );
         if !is_custom {
             continue;
         }
@@ -743,11 +784,21 @@ fn value_to_custom(v: Value) -> CustomAttrValue {
         Value::Vec3f(a) => C::Vec3f([a.x, a.y, a.z]),
         Value::Vec3d(a) => C::Vec3d([a.x, a.y, a.z]),
         Value::Vec3i(a) => C::Vec3i([a.x, a.y, a.z]),
-        Value::Vec4h(a) => C::Vec4f([f32::from(a.x), f32::from(a.y), f32::from(a.z), f32::from(a.w)]),
+        Value::Vec4h(a) => C::Vec4f([
+            f32::from(a.x),
+            f32::from(a.y),
+            f32::from(a.z),
+            f32::from(a.w),
+        ]),
         Value::Vec4f(a) => C::Vec4f([a.x, a.y, a.z, a.w]),
         Value::Vec4d(a) => C::Vec4d([a.x, a.y, a.z, a.w]),
         Value::Vec4i(a) => C::Vec4i([a.x, a.y, a.z, a.w]),
-        Value::Quath(q) => C::Quatf([f32::from(q.w), f32::from(q.x), f32::from(q.y), f32::from(q.z)]),
+        Value::Quath(q) => C::Quatf([
+            f32::from(q.w),
+            f32::from(q.x),
+            f32::from(q.y),
+            f32::from(q.z),
+        ]),
         Value::Quatf(q) => C::Quatf([q.w, q.x, q.y, q.z]),
         Value::Quatd(q) => C::Quatd([q.w, q.x, q.y, q.z]),
         Value::Matrix4d(m) => C::Matrix4d(m.0),
@@ -761,7 +812,9 @@ fn value_to_custom(v: Value) -> CustomAttrValue {
         Value::FloatVec(v) => C::FloatArray(v),
         Value::DoubleVec(v) => C::DoubleArray(v),
         Value::StringVec(v) => C::StringArray(v),
-        Value::TokenVec(v) => C::TokenArray(v.into_iter().map(|t| t.as_str().to_string()).collect()),
+        Value::TokenVec(v) => {
+            C::TokenArray(v.into_iter().map(|t| t.as_str().to_string()).collect())
+        }
         Value::PathVec(v) => C::PathArray(v.into_iter().map(|p| p.as_str().to_string()).collect()),
         Value::Vec2fVec(v) => C::Vec2fArray(v.into_iter().map(|a| [a.x, a.y]).collect()),
         Value::Vec2dVec(v) => C::Vec2dArray(v.into_iter().map(|a| [a.x, a.y]).collect()),
@@ -772,16 +825,21 @@ fn value_to_custom(v: Value) -> CustomAttrValue {
         Value::QuatfVec(v) => C::QuatfArray(v.into_iter().map(|q| [q.w, q.x, q.y, q.z]).collect()),
         Value::Matrix4dVec(v) => C::Matrix4dArray(v.into_iter().map(|m| m.0).collect()),
         Value::Dictionary(dict) => C::Dict(dict_from_value_map(dict)),
-        Value::TimeSamples(samples) => {
-            C::TimeSamples(samples.into_iter().map(|(t, v)| (t, Box::new(value_to_custom(v)))).collect())
-        }
+        Value::TimeSamples(samples) => C::TimeSamples(
+            samples
+                .into_iter()
+                .map(|(t, v)| (t, Box::new(value_to_custom(v))))
+                .collect(),
+        ),
         other => C::Other(format!("{other:?}")),
     }
 }
 
 fn dict_from_value_map(map: std::collections::HashMap<String, Value>) -> CustomDict {
-    let mut entries: Vec<(String, CustomAttrValue)> =
-        map.into_iter().map(|(k, v)| (k, value_to_custom(v))).collect();
+    let mut entries: Vec<(String, CustomAttrValue)> = map
+        .into_iter()
+        .map(|(k, v)| (k, value_to_custom(v)))
+        .collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     CustomDict { entries }
 }
@@ -823,7 +881,12 @@ fn attr_default(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option
             return Ok(Some(v));
         }
     }
-    Ok(attr.time_samples()?.unwrap_or_default().into_iter().next().map(|(_, v)| v))
+    Ok(attr
+        .time_samples()?
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .map(|(_, v)| v))
 }
 
 fn is_empty_array_value(v: &Value) -> bool {
@@ -911,12 +974,18 @@ fn read_int64_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Op
     })
 }
 
-fn read_quat_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<[f32; 4]>>> {
+fn read_quat_array(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Vec<[f32; 4]>>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::QuatfVec(v)) => Some(v.into_iter().map(|q| [q.w, q.x, q.y, q.z]).collect()),
-        Some(Value::QuatdVec(v)) => {
-            Some(v.into_iter().map(|q| [q.w as f32, q.x as f32, q.y as f32, q.z as f32]).collect())
-        }
+        Some(Value::QuatdVec(v)) => Some(
+            v.into_iter()
+                .map(|q| [q.w as f32, q.x as f32, q.y as f32, q.z as f32])
+                .collect(),
+        ),
         _ => None,
     })
 }
@@ -929,7 +998,11 @@ fn read_vec2d_scalar(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<O
     })
 }
 
-fn read_vec2d_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<[f64; 2]>>> {
+fn read_vec2d_array(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Vec<[f64; 2]>>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::Vec2dVec(v)) => Some(v.into_iter().map(|a| [a.x, a.y]).collect()),
         Some(Value::Vec2fVec(v)) => Some(v.into_iter().map(|a| [a.x as f64, a.y as f64]).collect()),
@@ -937,15 +1010,27 @@ fn read_vec2d_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Op
     })
 }
 
-fn read_vec3f_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<[f32; 3]>>> {
+fn read_vec3f_array(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Vec<[f32; 3]>>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::Vec3fVec(v)) => Some(v.into_iter().map(|a| [a.x, a.y, a.z]).collect()),
-        Some(Value::Vec3dVec(v)) => Some(v.into_iter().map(|a| [a.x as f32, a.y as f32, a.z as f32]).collect()),
+        Some(Value::Vec3dVec(v)) => Some(
+            v.into_iter()
+                .map(|a| [a.x as f32, a.y as f32, a.z as f32])
+                .collect(),
+        ),
         _ => None,
     })
 }
 
-fn read_vec2f_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<[f32; 2]>>> {
+fn read_vec2f_array(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Vec<[f32; 2]>>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::Vec2fVec(v)) => Some(v.into_iter().map(|a| [a.x, a.y]).collect()),
         Some(Value::Vec2dVec(v)) => Some(v.into_iter().map(|a| [a.x as f32, a.y as f32]).collect()),
@@ -953,8 +1038,15 @@ fn read_vec2f_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Op
     })
 }
 
-fn read_primvar_interpolation(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Interpolation>> {
-    let raw = stage.prim(prim.clone()).attribute(name).get_metadata::<Value>("interpolation")?;
+fn read_primvar_interpolation(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<Interpolation>> {
+    let raw = stage
+        .prim(prim.clone())
+        .attribute(name)
+        .get_metadata::<Value>("interpolation")?;
     if let Some(s) = raw.and_then(|v| match v {
         Value::Token(t) => Some(t.as_str().to_string()),
         Value::String(s) => Some(s),
@@ -965,38 +1057,55 @@ fn read_primvar_interpolation(stage: &Stage, prim: &Path, name: &str) -> anyhow:
         }
     }
     let fallback_name = format!("{name}:interpolation");
-    Ok(read_token(stage, prim, &fallback_name)?.as_deref().and_then(Interpolation::parse))
+    Ok(read_token(stage, prim, &fallback_name)?
+        .as_deref()
+        .and_then(Interpolation::parse))
 }
 
-fn read_primvar_vec3f(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<MeshPrimvar<[f32; 3]>>> {
+fn read_primvar_vec3f(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<MeshPrimvar<[f32; 3]>>> {
     let Some(values) = read_vec3f_array(stage, prim, name)? else {
         return Ok(None);
     };
     Ok(Some(MeshPrimvar {
         values,
-        interpolation: read_primvar_interpolation(stage, prim, name)?.unwrap_or(Interpolation::Vertex),
+        interpolation: read_primvar_interpolation(stage, prim, name)?
+            .unwrap_or(Interpolation::Vertex),
         indices: read_int_array(stage, prim, &format!("{name}:indices"))?.unwrap_or_default(),
     }))
 }
 
-fn read_primvar_float(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<MeshPrimvar<f32>>> {
+fn read_primvar_float(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<MeshPrimvar<f32>>> {
     let Some(values) = read_float_array(stage, prim, name)? else {
         return Ok(None);
     };
     Ok(Some(MeshPrimvar {
         values,
-        interpolation: read_primvar_interpolation(stage, prim, name)?.unwrap_or(Interpolation::Vertex),
+        interpolation: read_primvar_interpolation(stage, prim, name)?
+            .unwrap_or(Interpolation::Vertex),
         indices: read_int_array(stage, prim, &format!("{name}:indices"))?.unwrap_or_default(),
     }))
 }
 
-fn read_primvar_vec2f(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<MeshPrimvar<[f32; 2]>>> {
+fn read_primvar_vec2f(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+) -> anyhow::Result<Option<MeshPrimvar<[f32; 2]>>> {
     let Some(values) = read_vec2f_array(stage, prim, name)? else {
         return Ok(None);
     };
     Ok(Some(MeshPrimvar {
         values,
-        interpolation: read_primvar_interpolation(stage, prim, name)?.unwrap_or(Interpolation::FaceVarying),
+        interpolation: read_primvar_interpolation(stage, prim, name)?
+            .unwrap_or(Interpolation::FaceVarying),
         indices: read_int_array(stage, prim, &format!("{name}:indices"))?.unwrap_or_default(),
     }))
 }

@@ -94,8 +94,190 @@ pub fn save_stage_as(stage: &Stage, filename: &str) -> Result<()> {
 pub fn prim_exists(stage: &Stage, path: &str) -> bool {
     openusd::sdf::path(path)
         .ok()
-        .map(|p| stage.prim(p).type_name().map(|t| t.is_some()).unwrap_or(false))
+        .map(|p| {
+            stage
+                .prim(p)
+                .type_name()
+                .map(|t| t.is_some())
+                .unwrap_or(false)
+        })
         .unwrap_or(false)
+}
+
+// ─── Undo / redo over authoring ops (RETHINK §13) ───────────────────
+//
+// Each user action is a typed [`Op`]; the history captures its inverse
+// *before* applying (reading the prior state), so undo replays the inverse
+// and redo replays the forward op. Both go through the live stage and
+// commit, so undo/redo reproject like any other edit.
+
+/// `(parent, name)` split of an absolute prim path.
+fn split_path(p: &str) -> (&str, &str) {
+    match p.rfind('/') {
+        Some(0) => ("/", &p[1..]),
+        Some(i) => (&p[..i], &p[i + 1..]),
+        None => ("", p),
+    }
+}
+
+#[derive(Clone)]
+enum Op {
+    Define {
+        path: String,
+        type_name: String,
+    },
+    Remove {
+        path: String,
+    },
+    SetAttr {
+        prim: String,
+        name: String,
+        type_name: String,
+        value: Option<Value>,
+    },
+    RenameTo {
+        path: String,
+        new_name: String,
+    },
+    ReparentTo {
+        path: String,
+        new_parent: String,
+    },
+}
+
+impl Op {
+    fn apply(&self, stage: &Stage) -> Result<()> {
+        match self {
+            Op::Define { path, type_name } => define_prim(stage, path, type_name),
+            Op::Remove { path } => remove_prim(stage, path).map(|_| ()),
+            Op::SetAttr {
+                prim,
+                name,
+                type_name,
+                value,
+            } => match value {
+                Some(v) => set_attribute(stage, prim, name, type_name, v.clone()),
+                None => clear_attribute(stage, prim, name).map(|_| ()),
+            },
+            Op::RenameTo { path, new_name } => rename_prim(stage, path, new_name),
+            Op::ReparentTo { path, new_parent } => reparent_prim(stage, path, new_parent),
+        }
+    }
+}
+
+/// Undo/redo stack over the authoring ops.
+#[derive(Default)]
+pub struct EditHistory {
+    undo: Vec<(Op, Op)>, // (forward, inverse)
+    redo: Vec<(Op, Op)>,
+}
+
+impl EditHistory {
+    fn record(&mut self, stage: &Stage, forward: Op, inverse: Op) -> Result<()> {
+        forward.apply(stage)?;
+        self.undo.push((forward, inverse));
+        self.redo.clear();
+        Ok(())
+    }
+
+    pub fn define(&mut self, stage: &Stage, path: &str, type_name: &str) -> Result<()> {
+        let fwd = Op::Define {
+            path: path.into(),
+            type_name: type_name.into(),
+        };
+        let inv = Op::Remove { path: path.into() };
+        self.record(stage, fwd, inv)
+    }
+
+    pub fn set_attr(
+        &mut self,
+        stage: &Stage,
+        prim: &str,
+        name: &str,
+        type_name: &str,
+        value: Value,
+    ) -> Result<()> {
+        let old = stage
+            .prim(openusd::sdf::path(prim)?)
+            .attribute(name)
+            .get::<Value>()
+            .ok()
+            .flatten();
+        let fwd = Op::SetAttr {
+            prim: prim.into(),
+            name: name.into(),
+            type_name: type_name.into(),
+            value: Some(value),
+        };
+        let inv = Op::SetAttr {
+            prim: prim.into(),
+            name: name.into(),
+            type_name: type_name.into(),
+            value: old,
+        };
+        self.record(stage, fwd, inv)
+    }
+
+    pub fn rename(&mut self, stage: &Stage, path: &str, new_name: &str) -> Result<()> {
+        let (parent, old_name) = split_path(path);
+        let new_path = if parent == "/" {
+            format!("/{new_name}")
+        } else {
+            format!("{parent}/{new_name}")
+        };
+        let fwd = Op::RenameTo {
+            path: path.into(),
+            new_name: new_name.into(),
+        };
+        let inv = Op::RenameTo {
+            path: new_path,
+            new_name: old_name.into(),
+        };
+        self.record(stage, fwd, inv)
+    }
+
+    pub fn reparent(&mut self, stage: &Stage, path: &str, new_parent: &str) -> Result<()> {
+        let (old_parent, name) = split_path(path);
+        let new_path = if new_parent == "/" {
+            format!("/{name}")
+        } else {
+            format!("{new_parent}/{name}")
+        };
+        let fwd = Op::ReparentTo {
+            path: path.into(),
+            new_parent: new_parent.into(),
+        };
+        let inv = Op::ReparentTo {
+            path: new_path,
+            new_parent: old_parent.into(),
+        };
+        self.record(stage, fwd, inv)
+    }
+
+    pub fn undo(&mut self, stage: &Stage) -> Result<bool> {
+        let Some((fwd, inv)) = self.undo.pop() else {
+            return Ok(false);
+        };
+        inv.apply(stage)?;
+        self.redo.push((fwd, inv));
+        Ok(true)
+    }
+
+    pub fn redo(&mut self, stage: &Stage) -> Result<bool> {
+        let Some((fwd, inv)) = self.redo.pop() else {
+            return Ok(false);
+        };
+        fwd.apply(stage)?;
+        self.undo.push((fwd, inv));
+        Ok(true)
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -104,7 +286,11 @@ mod tests {
 
     fn stage_with(root: &str) -> Stage {
         let stage = Stage::builder().in_memory("authoring_test.usda").unwrap();
-        stage.define_prim(root).unwrap().set_type_name("Xform").unwrap();
+        stage
+            .define_prim(root)
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
         stage
     }
 
@@ -113,12 +299,20 @@ mod tests {
         let stage = stage_with("/World");
         define_prim(&stage, "/World/Box", "Cube").unwrap();
         assert_eq!(
-            stage.prim(openusd::sdf::path("/World/Box").unwrap()).type_name().unwrap().as_deref(),
+            stage
+                .prim(openusd::sdf::path("/World/Box").unwrap())
+                .type_name()
+                .unwrap()
+                .as_deref(),
             Some("Cube")
         );
         assert!(remove_prim(&stage, "/World/Box").unwrap());
         assert!(
-            stage.prim(openusd::sdf::path("/World/Box").unwrap()).type_name().unwrap().is_none(),
+            stage
+                .prim(openusd::sdf::path("/World/Box").unwrap())
+                .type_name()
+                .unwrap()
+                .is_none(),
             "removed prim is gone"
         );
     }
@@ -132,17 +326,29 @@ mod tests {
 
         rename_prim(&stage, "/World/A", "Renamed").unwrap();
         assert!(
-            stage.prim(openusd::sdf::path("/World/Renamed").unwrap()).type_name().unwrap().is_some(),
+            stage
+                .prim(openusd::sdf::path("/World/Renamed").unwrap())
+                .type_name()
+                .unwrap()
+                .is_some(),
             "rename created /World/Renamed"
         );
         assert!(
-            stage.prim(openusd::sdf::path("/World/A").unwrap()).type_name().unwrap().is_none(),
+            stage
+                .prim(openusd::sdf::path("/World/A").unwrap())
+                .type_name()
+                .unwrap()
+                .is_none(),
             "old /World/A is gone"
         );
 
         reparent_prim(&stage, "/World/Renamed/Child", "/World/B").unwrap();
         assert!(
-            stage.prim(openusd::sdf::path("/World/B/Child").unwrap()).type_name().unwrap().is_some(),
+            stage
+                .prim(openusd::sdf::path("/World/B/Child").unwrap())
+                .type_name()
+                .unwrap()
+                .is_some(),
             "child reparented under /World/B"
         );
     }
@@ -160,14 +366,63 @@ mod tests {
     }
 
     #[test]
+    fn edit_history_undo_redo() {
+        let stage = stage_with("/World");
+        let mut hist = EditHistory::default();
+
+        // Define → undo removes → redo re-creates.
+        hist.define(&stage, "/World/Box", "Cube").unwrap();
+        assert!(prim_exists(&stage, "/World/Box"));
+        assert!(hist.undo(&stage).unwrap());
+        assert!(!prim_exists(&stage, "/World/Box"), "undo removed the prim");
+        assert!(hist.redo(&stage).unwrap());
+        assert!(prim_exists(&stage, "/World/Box"), "redo re-created it");
+
+        // SetAttr captures the prior value for undo.
+        hist.set_attr(&stage, "/World/Box", "size", "double", Value::Double(1.0))
+            .unwrap();
+        hist.set_attr(&stage, "/World/Box", "size", "double", Value::Double(9.0))
+            .unwrap();
+        let read = |s: &Stage| {
+            s.prim(openusd::sdf::path("/World/Box").unwrap())
+                .attribute("size")
+                .get::<Value>()
+                .unwrap()
+        };
+        assert!(matches!(read(&stage), Some(Value::Double(d)) if (d - 9.0).abs() < 1e-9));
+        hist.undo(&stage).unwrap();
+        assert!(
+            matches!(read(&stage), Some(Value::Double(d)) if (d - 1.0).abs() < 1e-9),
+            "undo → prior value"
+        );
+
+        // Rename → undo restores the original name.
+        hist.rename(&stage, "/World/Box", "Crate").unwrap();
+        assert!(prim_exists(&stage, "/World/Crate"));
+        hist.undo(&stage).unwrap();
+        assert!(prim_exists(&stage, "/World/Box"), "undo restored the name");
+        assert!(!prim_exists(&stage, "/World/Crate"));
+    }
+
+    #[test]
     fn persistence_export_and_reopen() {
         let stage = stage_with("/World");
         define_prim(&stage, "/World/Saved", "Sphere").unwrap();
-        set_attribute(&stage, "/World/Saved", "radius", "double", Value::Double(3.0)).unwrap();
+        set_attribute(
+            &stage,
+            "/World/Saved",
+            "radius",
+            "double",
+            Value::Double(3.0),
+        )
+        .unwrap();
 
         // String export mentions the authored prim.
         let usda = export_stage_string(&stage).unwrap();
-        assert!(usda.contains("Saved"), "export should contain the prim, got:\n{usda}");
+        assert!(
+            usda.contains("Saved"),
+            "export should contain the prim, got:\n{usda}"
+        );
 
         // File export round-trips through a fresh open.
         let path = std::env::temp_dir().join("usd_bevy_persist_test.usda");

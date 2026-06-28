@@ -9,88 +9,10 @@
 //! Orientation (`"leftHanded"` flips winding) and missing-normal fallback
 //! (`compute_smooth_normals`) are handled here.
 
+use crate::read::geom::{Axis, Interpolation, MeshPrimvar, Orientation, ReadCylinder, ReadMesh};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, Meshable, PrimitiveTopology, VertexAttributeValues};
-use crate::read::geom::{Axis, Interpolation, MeshPrimvar, Orientation, ReadCylinder, ReadMesh};
-
-/// Per-USD-point skinning data, normalised to Bevy's fixed 4-influences-
-/// per-vertex layout. Built from a `ReadSkelBinding` via
-/// [`skin_attrs_from_binding`]; passed into [`mesh_from_usd_subset`]
-/// so the right per-corner copy lands in the emitted mesh.
-#[derive(Debug, Clone)]
-pub struct SkinAttrs {
-    /// Joint index per influence — 4 per USD point.
-    pub indices: Vec<[u16; 4]>,
-    /// Skin weight per influence — 4 per USD point. Renormalised to
-    /// sum to 1 after top-4 truncation.
-    pub weights: Vec<[f32; 4]>,
-}
-
-/// Convert a USD `SkelBindingAPI` (variable elementSize jointIndices /
-/// jointWeights flat array) into Bevy-shaped 4-wide skin attributes
-/// keyed per USD point. `vertex_count` should match `read.points.len()`
-/// — i.e. the unexpanded vertex count. When the binding authors more
-/// than 4 influences per vertex, top-4 by weight are kept and
-/// renormalised to sum to 1.
-pub fn skin_attrs_from_binding(
-    binding: &crate::read::skel::ReadSkelBinding,
-    vertex_count: usize,
-    max_joint_count: u16,
-) -> SkinAttrs {
-    let n = binding.elements_per_vertex.max(1) as usize;
-    let mut indices = vec![[0u16; 4]; vertex_count];
-    let mut weights = vec![[0f32; 4]; vertex_count];
-    for v in 0..vertex_count {
-        let base = v * n;
-        // Top-4 by weight, AFTER filtering out indices that exceed
-        // the Skeleton's joint count. Pixar's HumanFemale authors
-        // 109-joint binding indices against a composed Skeleton that
-        // our 66-joint reference resolves — variants/composition we
-        // can't yet flatten introduce the gap. Out-of-range indices
-        // referencing unbound `SkinnedMesh.joints` slots produce
-        // wild distortion ("elongated brush"). Zeroing the weight
-        // collapses the vertex onto its remaining valid influences;
-        // when none remain we fall back to the Skeleton root (joint
-        // 0) so the vertex at least stays attached to the rig.
-        let mut entries: Vec<(u16, f32)> = (0..n)
-            .filter_map(|k| {
-                let idx = binding
-                    .joint_indices
-                    .get(base + k)
-                    .copied()
-                    .unwrap_or(0)
-                    .max(0) as u16;
-                let w = binding.joint_weights.get(base + k).copied().unwrap_or(0.0);
-                if idx < max_joint_count {
-                    Some((idx, w.max(0.0)))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let take = entries.len().min(4);
-        let mut sum = 0.0f32;
-        for k in 0..take {
-            indices[v][k] = entries[k].0;
-            weights[v][k] = entries[k].1;
-            sum += weights[v][k];
-        }
-        if sum > 0.0 {
-            for k in 0..4 {
-                weights[v][k] /= sum;
-            }
-        } else {
-            // Pin to root joint at full weight when every authored
-            // influence was out-of-range. Vertex tracks the rig's
-            // origin instead of flying off to infinity.
-            indices[v] = [0, 0, 0, 0];
-            weights[v] = [1.0, 0.0, 0.0, 0.0];
-        }
-    }
-    SkinAttrs { indices, weights }
-}
 
 /// Convert a `crate::read::geom::ReadMesh` into a Bevy mesh.
 ///
@@ -102,35 +24,13 @@ pub fn skin_attrs_from_binding(
 /// 3. Fall back to `compute_smooth_normals` when normals aren't authored.
 /// 4. Flip index winding when `orientation == LeftHanded`.
 pub fn mesh_from_usd(read: &ReadMesh) -> Mesh {
-    mesh_from_usd_subset_with_skin(read, None, None)
-}
-
-/// Same as [`mesh_from_usd`] but bakes the supplied skin attributes
-/// into `ATTRIBUTE_JOINT_INDEX` / `ATTRIBUTE_JOINT_WEIGHT` so the result
-/// can be used with Bevy's `SkinnedMesh` component.
-pub fn mesh_from_usd_with_skin(read: &ReadMesh, skin: &SkinAttrs) -> Mesh {
-    mesh_from_usd_subset_with_skin(read, None, Some(skin))
+    mesh_from_usd_subset(read, None)
 }
 
 /// Same as [`mesh_from_usd`] but emits only the faces in `face_subset` when
-/// provided. Used to split a `UsdGeom.Mesh` into one Bevy mesh per
-/// `GeomSubset` so each subset can carry its own material binding.
-///
-/// `face_subset = None` emits every face.
+/// provided (`None` = every face). Used to split a `UsdGeom.Mesh` into one
+/// Bevy mesh per `GeomSubset` so each subset can carry its own material.
 pub fn mesh_from_usd_subset(read: &ReadMesh, face_subset: Option<&[i32]>) -> Mesh {
-    mesh_from_usd_subset_with_skin(read, face_subset, None)
-}
-
-/// Variant of [`mesh_from_usd_subset`] that also bakes per-vertex
-/// skinning data into the resulting mesh. `skin` carries one
-/// `[u16; 4]` / `[f32; 4]` pair per USD point (i.e. unexpanded), so
-/// the indexed and expanded paths can each look up the right slot via
-/// the same `point_ix` they use for positions.
-pub fn mesh_from_usd_subset_with_skin(
-    read: &ReadMesh,
-    face_subset: Option<&[i32]>,
-    skin: Option<&SkinAttrs>,
-) -> Mesh {
     // Face-Varying or Uniform (per-face) primvars break the indexed
     // point-sharing optimisation — vertex-indexed output can't represent
     // a per-face or per-corner value when a vertex is shared between
@@ -160,49 +60,10 @@ pub fn mesh_from_usd_subset_with_skin(
             .map(|p| non_indexed(p.interpolation))
             .unwrap_or(false);
 
-    let (positions, normals, uvs, colors, indices, skin_per_vertex) = if expand {
-        let (p, n, u, c, i) = build_expanded(read, face_subset);
-        // Expanded path: each corner is its own vertex, expand
-        // per-USD-point skin data along the face_vertex_indices map
-        // exactly like positions are expanded.
-        let skin_v = skin.map(|s| {
-            let mut idx = Vec::with_capacity(p.len());
-            let mut wgt = Vec::with_capacity(p.len());
-            for face_verts in &read.face_vertex_counts {
-                let n = *face_verts as usize;
-                let consumed = 0usize;
-                let _ = n;
-                let _ = consumed; // silence unused if loop empty
-                for k in 0..(*face_verts as usize) {
-                    let _ = k;
-                }
-            }
-            // Simpler: iterate corners in the same order build_expanded did
-            let mut corner_ix = 0usize;
-            for face_verts in &read.face_vertex_counts {
-                for k in 0..(*face_verts as usize) {
-                    let point_ix = read.face_vertex_indices[corner_ix + k] as usize;
-                    idx.push(s.indices.get(point_ix).copied().unwrap_or([0u16; 4]));
-                    wgt.push(s.weights.get(point_ix).copied().unwrap_or([0.0f32; 4]));
-                }
-                corner_ix += *face_verts as usize;
-            }
-            (idx, wgt)
-        });
-        (p, n, u, c, i, skin_v)
+    let (positions, normals, uvs, colors, indices) = if expand {
+        build_expanded(read, face_subset)
     } else {
-        let (p, n, u, c, i) = build_indexed(read, face_subset);
-        // Indexed path: positions correspond 1:1 with USD points.
-        let skin_v = skin.map(|s| {
-            let mut idx = vec![[0u16; 4]; p.len()];
-            let mut wgt = vec![[0.0f32; 4]; p.len()];
-            for v in 0..p.len() {
-                idx[v] = s.indices.get(v).copied().unwrap_or([0u16; 4]);
-                wgt[v] = s.weights.get(v).copied().unwrap_or([0.0f32; 4]);
-            }
-            (idx, wgt)
-        });
-        (p, n, u, c, i, skin_v)
+        build_indexed(read, face_subset)
     };
 
     let mut mesh = Mesh::new(
@@ -219,16 +80,6 @@ pub fn mesh_from_usd_subset_with_skin(
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     if let Some(cs) = colors {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, cs);
-    }
-    if let Some((joint_idx, joint_wgt)) = skin_per_vertex {
-        // Bevy 0.18 expects Uint16x4 for joint indices and Float32x4
-        // for joint weights. There's no `From<Vec<[u16; 4]>>` for
-        // VertexAttributeValues so we construct the variant directly.
-        mesh.insert_attribute(
-            Mesh::ATTRIBUTE_JOINT_INDEX,
-            VertexAttributeValues::Uint16x4(joint_idx),
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, joint_wgt);
     }
     // Indices first so `compute_smooth_normals` has a topology to
     // average across — it requires an indexed mesh to find adjacent

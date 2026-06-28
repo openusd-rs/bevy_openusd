@@ -422,7 +422,7 @@ impl AssetLoader for UsdLoader {
             UsdLoaderError::Stage(msg)
         })?;
 
-        let default_prim = stage.default_prim();
+        let default_prim = stage.default_prim().map(|t| t.as_str().to_string());
         let layer_count = stage.layer_count();
         let mut variants = collect_variants(&stage);
         let cameras = collect_cameras(&stage);
@@ -845,9 +845,9 @@ fn collect_curves_and_points(
     let mut points = HashMap::new();
     let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
         let type_name: Option<String> = stage
-            .prim_at(path.clone()).type_name()
+            .prim(path.clone()).type_name()
             .ok()
-            .flatten();
+            .flatten().map(|t| t.as_str().to_string());
         match type_name.as_deref() {
             Some("BasisCurves") => {
                 if let Ok(Some(read)) = crate::read::geom::read_curves(stage, path) {
@@ -972,9 +972,9 @@ fn collect_subdivision_prims(
     let mut out = Vec::new();
     let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
         let type_name: Option<String> = stage
-            .prim_at(path.clone()).type_name()
+            .prim(path.clone()).type_name()
             .ok()
-            .flatten();
+            .flatten().map(|t| t.as_str().to_string());
         if type_name.as_deref() != Some("Mesh") {
             return;
         }
@@ -1103,11 +1103,11 @@ fn collect_render(
 fn read_stage_timeline(stage: &openusd::usd::Stage) -> (f64, f64, f64) {
     use openusd::sdf::{Path, Value};
     let read_f64 = |key: &str| -> Option<f64> {
-        match stage.metadata::<Value>(Path::abs_root(), key).ok().flatten() {
+        match stage.stage_metadata(key).ok().flatten() {
             Some(Value::Double(d)) => Some(d),
             Some(Value::Float(f)) => Some(f as f64),
             Some(Value::Int(i)) => Some(i as f64),
-            Some(Value::TimeCode(d)) => Some(d),
+            Some(Value::TimeCode(d)) => Some(d.0),
             _ => None,
         }
     };
@@ -1124,7 +1124,7 @@ fn has_authored_timeline(stage: &openusd::usd::Stage) -> bool {
     use openusd::sdf::{Path, Value};
     let has_numeric = |key: &str| -> bool {
         matches!(
-            stage.metadata::<Value>(Path::abs_root(), key).ok().flatten(),
+            stage.stage_metadata(key).ok().flatten(),
             Some(Value::Double(_) | Value::Float(_) | Value::Int(_) | Value::TimeCode(_))
         )
     };
@@ -1245,59 +1245,33 @@ fn collect_cameras(stage: &openusd::usd::Stage) -> Vec<StageCamera> {
 /// and collect the current selection per set. Exposed on `UsdAsset` for UI
 /// surfacing; switching lands in M6.1 via a session layer.
 fn collect_variants(stage: &openusd::usd::Stage) -> HashMap<String, Vec<VariantSet>> {
-    use openusd::sdf::{Path, Value};
+    use openusd::sdf::Path;
 
     let mut out: HashMap<String, Vec<VariantSet>> = HashMap::new();
 
     let _ = stage.traverse(openusd::usd::PrimPredicate::default(), |path: &Path| {
-        // `variantSetNames` (TokenListOp) holds the set names authored here.
-        let names: Vec<String> = match stage
-            .metadata::<Value>(path.clone(), "variantSetNames")
-            .ok()
-            .flatten()
-        {
-            Some(Value::TokenListOp(op)) => op.flatten(),
-            Some(Value::TokenVec(v)) => v,
-            _ => return,
-        };
-        if names.is_empty() {
+        // Upstream openusd exposes only the *current* selections via
+        // `VariantSets::get_all_variant_selections`. The per-set option
+        // lists (`variantChildren`) and the raw `variantSetNames`/
+        // `variantSelection` metadata no longer have a public accessor.
+        // TODO: restore option enumeration once openusd surfaces it — the
+        // variant-pick dropdown needs the choices, not just the selection.
+        let sels = stage
+            .prim(path.clone())
+            .variant_sets()
+            .get_all_variant_selections()
+            .unwrap_or_default();
+        if sels.is_empty() {
             return;
         }
-
-        // `variantSelection` is a HashMap<set_name, selection_value>.
-        let selections = match stage
-            .metadata::<Value>(path.clone(), "variantSelection")
-            .ok()
-            .flatten()
-        {
-            Some(Value::VariantSelectionMap(m)) => m,
-            _ => Default::default(),
-        };
-
-        let sets: Vec<VariantSet> = names
+        let sets: Vec<VariantSet> = sels
             .into_iter()
-            .map(|name| {
-                let selection = selections.get(&name).cloned();
-                // Enumerate this set's variant options. They're stored as
-                // `variantChildren` (TokenVec) on the variant-set path
-                // `/Prim{setName=}` (empty selection = the container).
-                let set_path = path.append_variant_selection(&name, "");
-                let options: Vec<String> = match stage
-                    .metadata::<Value>(set_path, "variantChildren")
-                    .ok()
-                    .flatten()
-                {
-                    Some(Value::TokenVec(v)) => v,
-                    _ => Vec::new(),
-                };
-                VariantSet {
-                    name,
-                    selection,
-                    options,
-                }
+            .map(|(name, selection)| VariantSet {
+                name,
+                selection: (!selection.is_empty()).then_some(selection),
+                options: Vec::new(),
             })
             .collect();
-
         if !sets.is_empty() {
             out.insert(path.as_str().to_string(), sets);
         }

@@ -64,7 +64,7 @@ fn main() {
         }
         // Dump every authored property name + a short signature of its
         // default value so we can see materials, primvars, shaders.
-        match stage.prim_at(prim.clone()).property_names() {
+        match stage.prim(prim.clone()).property_names() {
             Ok(props) => {
                 println!("{}  properties ({}):", indent, props.len());
                 for prop_name in props {
@@ -96,7 +96,7 @@ fn main() {
             Err(e) => println!("{}  (props err: {})", indent, e),
         }
         // Recurse into children
-        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
+        if let Ok(children) = stage.prim(prim.clone()).child_names() {
             for c in children {
                 if let Ok(child_path) = prim.append_path(c.as_str()) {
                     walk(stage, &child_path, depth + 1);
@@ -122,7 +122,7 @@ fn main() {
                 Err(e) => println!("  err: {e}"),
             }
         }
-        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
+        if let Ok(children) = stage.prim(prim.clone()).child_names() {
             for c in children {
                 if let Ok(cp) = prim.append_path(c.as_str()) {
                     walk_mats(stage, &cp);

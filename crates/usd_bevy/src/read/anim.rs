@@ -29,8 +29,12 @@ impl InterpMode {
 /// Read the `interpolation` metadata on a time-sampled attribute. Defaults
 /// to `Linear` when unauthored.
 pub fn read_interp_mode(stage: &Stage, prim: &Path, prop: &str) -> anyhow::Result<InterpMode> {
-    let raw = stage.prim_at(prim.clone()).attribute(prop).get_metadata::<Value>("interpolation")?;
-    if let Some(Value::Token(s)) | Some(Value::String(s)) = raw {
+    let raw = stage.prim(prim.clone()).attribute(prop).get_metadata::<Value>("interpolation")?;
+    if let Some(s) = raw.and_then(|v| match v {
+        Value::Token(t) => Some(t.as_str().to_string()),
+        Value::String(s) => Some(s),
+        _ => None,
+    }) {
         if let Some(m) = InterpMode::parse(&s) {
             return Ok(m);
         }

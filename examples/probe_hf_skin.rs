@@ -11,7 +11,7 @@ fn main() {
 
     println!("=== /Skel/Rig/Skel skeleton ===");
     let skel = Path::new("/Skel/Rig/Skel").unwrap();
-    println!("  spec_type = {:?}", stage.prim_at(skel.clone()).specifier());
+    println!("  spec_type = {:?}", stage.prim(skel.clone()).specifier());
     println!(
         "  typeName = {:?}",
         stage
@@ -118,7 +118,7 @@ fn walk(stage: &openusd::usd::Stage, prim: &Path, depth: usize) {
     } else if !tn.is_empty() {
         println!("{pad}{tn}: {}", prim.as_str());
     }
-    for child in stage.prim_at(prim.clone()).child_names().unwrap_or_default() {
+    for child in stage.prim(prim.clone()).child_names().unwrap_or_default() {
         if let Ok(c) = prim.append_path(child.as_str()) {
             walk(stage, &c, depth + 1);
         }

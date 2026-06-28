@@ -12,6 +12,7 @@
 //! Keyboard: T I O ? toggle panels · G X P toggle overlays.
 
 mod camera;
+mod joint_gizmos;
 mod keyboard;
 mod log_panel;
 mod overlays;
@@ -106,7 +107,7 @@ fn main() {
     // The frost demo defaults to neutral gray; we override with a
     // saturated blue so highlighted ribbon icons / section
     // separators / hover states pop against the world.
-    .insert_resource(bevy_frost::prelude::AccentColor(
+    .insert_resource(mara_core::style::AccentColor(
         bevy_egui::egui::Color32::from_rgb(0x4A, 0x90, 0xE2),
     ))
     .add_plugins(ViewerUiPlugin)
@@ -208,7 +209,7 @@ fn main() {
 ///   rooted at its parent dir so sublayers resolve.
 /// Open the prim-tree panel on startup so the viewer has something
 /// populated to show — same default as the old `LeftTab::Tree`.
-fn open_default_panel(mut ribbon: ResMut<bevy_frost::RibbonOpen>) {
+fn open_default_panel(mut ribbon: ResMut<mara_core::ribbon::RibbonOpen>) {
     ribbon.toggle(RIBBON_LEFT, RIB_TREE);
 }
 

@@ -45,7 +45,7 @@ fn main() {
     let mut at_origin = 0usize;
     stage
         .traverse(openusd::usd::PrimPredicate::default(), |p: &Path| {
-            if stage.prim_at(p.clone()).is_defined().unwrap_or(false) {
+            if stage.prim(p.clone()).is_defined().unwrap_or(false) {
                 total += 1;
                 let tn: String = stage
                     .metadata::<String>(p.clone(), "typeName")

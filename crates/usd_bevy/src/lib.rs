@@ -6,11 +6,13 @@
 //! - the Rapier physics adapter (`physics::*` — wraps `usd_rapier`).
 
 pub mod anim;
+pub mod authoring;
 mod asset;
 pub mod read;
 mod build;
 pub mod curves;
 pub mod incremental;
+pub mod live;
 mod light;
 pub mod markers;
 mod material;

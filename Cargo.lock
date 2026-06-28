@@ -866,21 +866,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy_frost"
-version = "0.0.1"
-source = "git+https://github.com/bresilla/bevy_frost?branch=develop#65787bdfbefa994f375cd6ddca926f09b9a8d25b"
-dependencies = [
- "bevy",
- "bevy_egui",
- "corekit",
- "egui",
- "egui-scale",
- "mimalloc",
- "slab",
- "smallvec",
-]
-
-[[package]]
 name = "bevy_gizmos"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -938,7 +923,7 @@ dependencies = [
 [[package]]
 name = "bevy_glacial"
 version = "0.0.1"
-source = "git+https://github.com/bresilla/bevy_glacial?branch=main#3db71a9c39f974d673ca10c99bf8eb0885a2cb4e"
+source = "git+https://github.com/bresilla/bevy_glacial?rev=d7bc6d3#d7bc6d37b52050c760f90e8a4171cb7966901aea"
 dependencies = [
  "ahash",
  "bevy",
@@ -1111,6 +1096,22 @@ dependencies = [
  "quote",
  "syn",
  "toml_edit 0.23.10+spec-1.0.0",
+]
+
+[[package]]
+name = "bevy_mara"
+version = "0.3.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "bevy_glacial",
+ "crossbeam-channel",
+ "egui",
+ "mara_bevy",
+ "mara_core",
+ "mara_graph",
+ "pollster",
+ "wgpu",
 ]
 
 [[package]]
@@ -2007,17 +2008,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "corekit"
-version = "0.0.1"
-source = "git+https://github.com/bresilla/bevy_frost?branch=develop#65787bdfbefa994f375cd6ddca926f09b9a8d25b"
-dependencies = [
- "bevy",
- "egui",
- "iconflow",
- "pastel",
-]
-
-[[package]]
 name = "cosmic-text"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2308,6 +2298,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7964ad2697e2b2df7157e5a0104c812c3773172c2a7b7dea95b57d9b5fd285f"
 dependencies = [
  "egui",
+]
+
+[[package]]
+name = "egui-wgpu"
+version = "0.33.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e4d209971c84b2352a06174abdba701af1e552ce56b144d96f2bd50a3c91236"
+dependencies = [
+ "ahash",
+ "bytemuck",
+ "document-features",
+ "egui",
+ "epaint 0.33.3",
+ "log",
+ "profiling",
+ "thiserror 2.0.18",
+ "type-map",
+ "web-time",
+ "wgpu",
 ]
 
 [[package]]
@@ -3527,15 +3536,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
-name = "libmimalloc-sys"
-version = "0.1.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1eacfa31c33ec25e873c136ba5669f00f9866d0688bea7be4d3f7e43067df6"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "libredox"
 version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3652,6 +3652,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "mara_bevy"
+version = "0.3.0"
+dependencies = [
+ "bevy",
+ "bevy_glacial",
+ "crossbeam-channel",
+ "egui",
+ "egui-wgpu",
+ "mara_core",
+ "wgpu",
+]
+
+[[package]]
+name = "mara_code"
+version = "0.3.0"
+dependencies = [
+ "egui",
+]
+
+[[package]]
+name = "mara_core"
+version = "0.3.0"
+dependencies = [
+ "bevy",
+ "egui",
+ "iconflow",
+ "mara_code",
+ "mara_graph",
+ "pastel",
+]
+
+[[package]]
+name = "mara_graph"
+version = "0.3.0"
+dependencies = [
+ "egui",
+ "egui-scale",
+ "egui-wgpu",
+ "slab",
+ "smallvec",
+ "wgpu",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3717,15 +3761,6 @@ dependencies = [
  "log",
  "objc",
  "paste",
-]
-
-[[package]]
-name = "mimalloc"
-version = "0.1.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3627c4272df786b9260cabaa46aec1d59c93ede723d4c3ef646c503816b0640"
-dependencies = [
- "libmimalloc-sys",
 ]
 
 [[package]]
@@ -4313,8 +4348,8 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openusd"
-version = "0.4.0"
-source = "git+https://github.com/bresilla/openusd?rev=43abaf1fad6aea34c76b53bc1c89f12dcad7835b#43abaf1fad6aea34c76b53bc1c89f12dcad7835b"
+version = "0.5.0"
+source = "git+https://github.com/mxpv/openusd?rev=06d619d47ad0fb0d9174c376c41e9d339f4c3290#06d619d47ad0fb0d9174c376c41e9d339f4c3290"
 dependencies = [
  "anyhow",
  "bitflags 2.11.1",
@@ -5305,6 +5340,9 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "slotmap"
@@ -5783,6 +5821,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
+name = "type-map"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb30dbbd9036155e74adad6812e9898d03ec374946234fbcebd5dfc7b9187b90"
+dependencies = [
+ "rustc-hash 2.1.2",
+]
+
+[[package]]
 name = "typed-path"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5913,9 +5960,10 @@ dependencies = [
  "anyhow",
  "bevy",
  "bevy_egui",
- "bevy_frost",
  "bevy_glacial",
+ "bevy_mara",
  "image",
+ "mara_core",
  "openusd",
  "rapier3d-f64",
  "rfd",

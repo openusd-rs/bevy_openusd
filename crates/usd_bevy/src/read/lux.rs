@@ -88,7 +88,7 @@ pub fn is_light_type(type_name: &str) -> bool {
 }
 
 pub fn read_light(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadLight>> {
-    let Some(type_name) = stage.prim_at(prim.clone()).type_name()? else {
+    let Some(type_name) = stage.prim(prim.clone()).type_name()? else {
         return Ok(None);
     };
     Ok(match type_name.as_str() {

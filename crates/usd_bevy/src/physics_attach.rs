@@ -47,13 +47,13 @@ impl Default for StageMeta {
 /// Collected from the pseudo-root before the main walk.
 pub fn read_stage_meta(stage: &Stage) -> StageMeta {
     let up_axis = stage
-        .metadata::<String>(Path::abs_root(), "upAxis")
+        .stage_metadata("upAxis").map(|o| o.map(|v| v.as_str().map(String::from)).flatten())
         .ok()
         .flatten();
     // Match `root_basis_transform`'s default-fallback chain so unit
     // conversion stays consistent with the scene-root scale.
     let authored_mpu = stage
-        .metadata::<Value>(Path::abs_root(), "metersPerUnit")
+        .stage_metadata("metersPerUnit")
         .ok()
         .flatten()
         .and_then(|v| match v {
@@ -69,7 +69,7 @@ pub fn read_stage_meta(stage: &Stage) -> StageMeta {
         .or(authored_mpu)
         .unwrap_or(0.01);
     let kilograms_per_unit = stage
-        .metadata::<Value>(Path::abs_root(), "kilogramsPerUnit")
+        .stage_metadata("kilogramsPerUnit")
         .ok()
         .flatten()
         .and_then(|v| match v {
@@ -146,7 +146,7 @@ pub fn attach_physics_to_prim(
     }
 
     // Most other schemas piggyback on apiSchemas — read once.
-    let api_schemas = stage.prim_at(path.clone()).api_schemas().unwrap_or_default();
+    let api_schemas = stage.prim(path.clone()).api_schemas().unwrap_or_default();
 
     // RigidBodyAPI
     if api_schemas.iter().any(|s| s == "PhysicsRigidBodyAPI") {
@@ -514,9 +514,10 @@ fn collider_shape_from_prim(stage: &Stage, path: &Path, _meta: &StageMeta) -> Us
     // `metersPerUnit=0.01` × scene-root scale `0.01` × shape `0.01`
     // collapsed every collider to millimetre size).
     let type_name = stage
-        .metadata::<String>(path.clone(), "typeName")
+        .prim(path.clone()).type_name()
         .ok()
         .flatten()
+        .map(|t| t.as_str().to_string())
         .unwrap_or_default();
     match type_name.as_str() {
         "Cube" => {
@@ -569,7 +570,7 @@ fn collider_shape_from_prim(stage: &Stage, path: &Path, _meta: &StageMeta) -> Us
 /// `collider_shape_from_prim` to recognise Xform-with-CollisionAPI as
 /// a mesh collider when the actual geometry sits one level deeper.
 fn has_mesh_descendant(stage: &Stage, root: &Path) -> bool {
-    let Ok(children) = stage.prim_at(root.clone()).child_names() else {
+    let Ok(children) = stage.prim(root.clone()).child_names() else {
         return false;
     };
     for child_name in children {
@@ -577,9 +578,10 @@ fn has_mesh_descendant(stage: &Stage, root: &Path) -> bool {
             continue;
         };
         let type_name = stage
-            .metadata::<String>(child_path.clone(), "typeName")
+            .prim(child_path.clone()).type_name()
             .ok()
             .flatten()
+            .map(|t| t.as_str().to_string())
             .unwrap_or_default();
         if type_name == "Mesh" {
             return true;
@@ -603,7 +605,7 @@ fn capsule_axis(stage: &Stage, path: &Path) -> Vec3 {
 
 fn read_attr(stage: &Stage, prim: &Path, name: &str) -> Option<Value> {
     let attr = prim.append_property(name).ok()?;
-    stage.metadata::<Value>(attr, "default").ok().flatten()
+    stage.attribute(attr).get::<Value>().ok().flatten()
 }
 
 fn read_bool(stage: &Stage, prim: &Path, name: &str) -> Option<bool> {
@@ -631,18 +633,18 @@ fn read_vec3f(stage: &Stage, prim: &Path, name: &str) -> Option<[f32; 3]> {
 
 fn read_token_attr(stage: &Stage, prim: &Path, name: &str) -> Option<String> {
     match read_attr(stage, prim, name)? {
-        Value::Token(s) | Value::String(s) => Some(s),
+        Value::Token(s) => Some(s.as_str().to_string()),
+        Value::String(s) => Some(s),
         _ => None,
     }
 }
 
 fn read_rel_first(stage: &Stage, prim: &Path, rel_name: &str) -> Option<String> {
     let rel = prim.append_property(rel_name).ok()?;
-    let raw = stage.metadata::<Value>(rel, "targetPaths").ok().flatten()?;
-    let paths = match raw {
-        Value::PathListOp(op) => op.flatten(),
-        Value::PathVec(v) => v,
-        _ => return None,
+    let paths = stage.relationship(rel).targets().ok()?;
+    let paths = match Some(paths) {
+        Some(v) => v,
+        None => return None,
     };
     paths.into_iter().next().map(|p| p.as_str().to_string())
 }

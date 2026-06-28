@@ -137,11 +137,11 @@ pub fn read_mesh(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadMesh>>
 
 fn read_material_subsets(stage: &Stage, mesh_prim: &Path) -> anyhow::Result<Vec<ReadSubset>> {
     let mut out = Vec::new();
-    for child_name in stage.prim_at(mesh_prim.clone()).child_names()? {
+    for child_name in stage.prim(mesh_prim.clone()).child_names()? {
         let Ok(child_path) = mesh_prim.append_path(child_name.as_str()) else {
             continue;
         };
-        if stage.prim_at(child_path.clone()).type_name()?.as_deref() != Some("GeomSubset") {
+        if stage.prim(child_path.clone()).type_name()?.as_deref() != Some("GeomSubset") {
             continue;
         }
         if read_token(stage, &child_path, "familyName")?.as_deref() != Some("materialBind") {
@@ -151,7 +151,7 @@ fn read_material_subsets(stage: &Stage, mesh_prim: &Path) -> anyhow::Result<Vec<
             continue;
         }
         out.push(ReadSubset {
-            name: child_name,
+            name: child_name.to_string(),
             indices: read_int_array(stage, &child_path, "indices")?.unwrap_or_default(),
             material_binding: super::shade::read_material_binding(stage, &child_path)?,
         });
@@ -232,7 +232,7 @@ pub fn read_point_instancer(stage: &Stage, prim: &Path) -> anyhow::Result<Option
         return Ok(None);
     };
     let prototypes = stage
-        .prim_at(prim.clone())
+        .prim(prim.clone())
         .relationship("prototypes")
         .targets()
         .unwrap_or_default();
@@ -540,7 +540,7 @@ pub fn read_visibility(stage: &Stage, prim: &Path) -> anyhow::Result<VisibilityS
 }
 
 pub fn read_kind(stage: &Stage, prim: &Path) -> anyhow::Result<Option<String>> {
-    stage.prim_at(prim.clone()).kind()
+    Ok(stage.prim(prim.clone()).kind()?.map(|t| t.as_str().to_string()))
 }
 
 // ── Custom data ─────────────────────────────────────────────────────────
@@ -706,8 +706,8 @@ impl CustomDict {
 /// Read every authored `custom` attribute on `prim`.
 pub fn read_custom_attrs(stage: &Stage, prim: &Path) -> anyhow::Result<Vec<(String, CustomAttrValue)>> {
     let mut out = Vec::new();
-    for name in stage.prim_at(prim.clone()).property_names()? {
-        let attr = stage.prim_at(prim.clone()).attribute(&name);
+    for name in stage.prim(prim.clone()).property_names()? {
+        let attr = stage.prim(prim.clone()).attribute(&name);
         let is_custom = matches!(attr.get_metadata::<bool>("custom").ok().flatten(), Some(true));
         if !is_custom {
             continue;
@@ -715,7 +715,7 @@ pub fn read_custom_attrs(stage: &Stage, prim: &Path) -> anyhow::Result<Vec<(Stri
         let Some(raw) = attr.get::<Value>()? else {
             continue;
         };
-        out.push((name, value_to_custom(raw)));
+        out.push((name.to_string(), value_to_custom(raw)));
     }
     Ok(out)
 }
@@ -733,8 +733,8 @@ fn value_to_custom(v: Value) -> CustomAttrValue {
         Value::Float(f) => C::Float(f),
         Value::Double(d) => C::Double(d),
         Value::String(s) => C::String(s),
-        Value::Token(s) => C::Token(s),
-        Value::AssetPath(s) => C::AssetPath(s),
+        Value::Token(s) => C::Token(s.as_str().to_string()),
+        Value::AssetPath(s) => C::AssetPath(s.as_str().to_string()),
         Value::Vec2h(a) => C::Vec2f([f32::from(a.x), f32::from(a.y)]),
         Value::Vec2f(a) => C::Vec2f([a.x, a.y]),
         Value::Vec2d(a) => C::Vec2d([a.x, a.y]),
@@ -761,7 +761,7 @@ fn value_to_custom(v: Value) -> CustomAttrValue {
         Value::FloatVec(v) => C::FloatArray(v),
         Value::DoubleVec(v) => C::DoubleArray(v),
         Value::StringVec(v) => C::StringArray(v),
-        Value::TokenVec(v) => C::TokenArray(v),
+        Value::TokenVec(v) => C::TokenArray(v.into_iter().map(|t| t.as_str().to_string()).collect()),
         Value::PathVec(v) => C::PathArray(v.into_iter().map(|p| p.as_str().to_string()).collect()),
         Value::Vec2fVec(v) => C::Vec2fArray(v.into_iter().map(|a| [a.x, a.y]).collect()),
         Value::Vec2dVec(v) => C::Vec2dArray(v.into_iter().map(|a| [a.x, a.y]).collect()),
@@ -797,13 +797,15 @@ fn dict_from_value(raw: Option<Value>) -> Option<CustomDict> {
 }
 
 pub fn read_custom_data(stage: &Stage, prim: &Path) -> anyhow::Result<Option<CustomDict>> {
-    Ok(dict_from_value(stage.prim_at(prim.clone()).custom_data()?))
+    Ok(dict_from_value(stage.prim(prim.clone()).custom_data()?))
 }
 
 /// `assetInfo` dictionary on a prim (package-management metadata). Read via
 /// the fork's public `Stage::metadata` accessor.
 pub fn read_asset_info(stage: &Stage, prim: &Path) -> anyhow::Result<Option<CustomDict>> {
-    Ok(dict_from_value(stage.metadata::<Value>(prim.clone(), "assetInfo")?))
+    // `assetInfo` has no public per-prim metadata accessor upstream yet. TODO restore.
+    let _ = (stage, prim);
+    Ok(None)
 }
 
 pub fn read_custom_layer_data(stage: &Stage) -> anyhow::Result<Option<CustomDict>> {
@@ -815,7 +817,7 @@ pub fn read_custom_layer_data(stage: &Stage) -> anyhow::Result<Option<CustomDict
 /// Composed `default` value, falling back to the first time sample when the
 /// default is an empty array placeholder (common in FX caches).
 fn attr_default(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
-    let attr = stage.prim_at(prim.clone()).attribute(name);
+    let attr = stage.prim(prim.clone()).attribute(name);
     if let Some(v) = attr.get::<Value>()? {
         if !is_empty_array_value(&v) {
             return Ok(Some(v));
@@ -829,7 +831,8 @@ fn is_empty_array_value(v: &Value) -> bool {
         Value::IntVec(a) => a.is_empty(),
         Value::FloatVec(a) => a.is_empty(),
         Value::DoubleVec(a) => a.is_empty(),
-        Value::TokenVec(a) | Value::StringVec(a) => a.is_empty(),
+        Value::TokenVec(a) => a.is_empty(),
+        Value::StringVec(a) => a.is_empty(),
         Value::Vec2fVec(a) => a.is_empty(),
         Value::Vec2dVec(a) => a.is_empty(),
         Value::Vec3fVec(a) => a.is_empty(),
@@ -841,7 +844,8 @@ fn is_empty_array_value(v: &Value) -> bool {
 
 fn read_token(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<String>> {
     Ok(match attr_default(stage, prim, name)? {
-        Some(Value::Token(s)) | Some(Value::String(s)) => Some(s),
+        Some(Value::Token(s)) => Some(s.as_str().to_string()),
+        Some(Value::String(s)) => Some(s),
         _ => None,
     })
 }
@@ -950,8 +954,12 @@ fn read_vec2f_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Op
 }
 
 fn read_primvar_interpolation(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Interpolation>> {
-    let raw = stage.prim_at(prim.clone()).attribute(name).get_metadata::<Value>("interpolation")?;
-    if let Some(Value::Token(s)) | Some(Value::String(s)) = raw {
+    let raw = stage.prim(prim.clone()).attribute(name).get_metadata::<Value>("interpolation")?;
+    if let Some(s) = raw.and_then(|v| match v {
+        Value::Token(t) => Some(t.as_str().to_string()),
+        Value::String(s) => Some(s),
+        _ => None,
+    }) {
         if let Some(i) = Interpolation::parse(&s) {
             return Ok(Some(i));
         }

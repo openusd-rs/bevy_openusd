@@ -103,9 +103,9 @@ fn resolve_surface_shader(stage: &Stage, material: &Path) -> anyhow::Result<Opti
         }
     }
     // Fallback: scan child Shader prims and infer the dialect.
-    for child in stage.prim_at(material.clone()).child_names().unwrap_or_default() {
+    for child in stage.prim(material.clone()).child_names().unwrap_or_default() {
         let shader = material.append_path(child.as_str())?;
-        if stage.prim_at(shader.clone()).type_name()?.as_deref() != Some("Shader") {
+        if stage.prim(shader.clone()).type_name()?.as_deref() != Some("Shader") {
             continue;
         }
         let shader_id = read_token_or_string(stage, &shader, "info:id")?;
@@ -295,8 +295,10 @@ fn resolve_attr_chain(stage: &Stage, attr_path: &Path) -> anyhow::Result<(Option
             }
         }
         let default = default_at(stage, &cur)?;
-        if let Some(Value::AssetPath(s) | Value::String(s)) = default.clone() {
-            return Ok((None, Some(s)));
+        match default.clone() {
+            Some(Value::AssetPath(s)) => return Ok((None, Some(s.as_str().to_string()))),
+            Some(Value::String(s)) => return Ok((None, Some(s))),
+            _ => {}
         }
         return Ok((default.and_then(value_to_preview), None));
     }

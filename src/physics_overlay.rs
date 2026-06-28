@@ -25,7 +25,7 @@ use bevy::color::palettes::tailwind;
 use bevy::gizmos::config::{GizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
 use bevy::reflect::Reflect;
-use bevy_glacial::joint_gizmos::{
+use crate::joint_gizmos::{
     draw_cone_wireframe, draw_distance_envelope, draw_prismatic_limit_segment,
     draw_revolute_limit_arc,
 };

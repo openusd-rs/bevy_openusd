@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
-use bevy_frost::RibbonOpen;
+use mara_core::ribbon::RibbonOpen;
 
 use crate::overlays::DisplayToggles;
 use crate::state::ReloadRequest;

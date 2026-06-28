@@ -40,7 +40,7 @@ fn main() {
             "/MediterraneanHills/Buildings/Prototypes/prototype_{pi}"
         ))
         .unwrap();
-        let children = stage.prim_at(proto.clone()).child_names().unwrap_or_default();
+        let children = stage.prim(proto.clone()).child_names().unwrap_or_default();
         print!("prototype_{pi}: children={children:?}");
         for ch in &children {
             if let Ok(child_path) = proto.append_path(ch.as_str()) {

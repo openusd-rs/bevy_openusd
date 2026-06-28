@@ -128,7 +128,7 @@ fn main() {
                 );
             }
         }
-        for child in stage.prim_at(prim.clone()).child_names().unwrap_or_default() {
+        for child in stage.prim(prim.clone()).child_names().unwrap_or_default() {
             if let Ok(child_path) = prim.append_path(child.as_str()) {
                 walk(stage, &child_path);
             }
@@ -204,7 +204,7 @@ fn main() {
                 );
             }
         }
-        for child in stage.prim_at(prim.clone()).child_names().unwrap_or_default() {
+        for child in stage.prim(prim.clone()).child_names().unwrap_or_default() {
             if let Ok(c) = prim.append_path(child.as_str()) {
                 walk_skin(stage, &c, count_skinned, count_with_subsets);
             }
@@ -243,7 +243,7 @@ fn main() {
                 if tn == "Skeleton" {
                     return usd_bevy::read::skel::read_skeleton(stage, p).ok().flatten();
                 }
-                for c in stage.prim_at(p.clone()).child_names().unwrap_or_default() {
+                for c in stage.prim(p.clone()).child_names().unwrap_or_default() {
                     if let Ok(cp) = p.append_path(c.as_str()) {
                         if let Some(s) = find_skel(stage, &cp) {
                             return Some(s);
@@ -484,7 +484,7 @@ fn main() {
         if tn == "Skeleton" {
             return usd_bevy::read::skel::read_skeleton(stage, p).ok().flatten();
         }
-        for c in stage.prim_at(p.clone()).child_names().unwrap_or_default() {
+        for c in stage.prim(p.clone()).child_names().unwrap_or_default() {
             if let Ok(cp) = p.append_path(c.as_str()) {
                 if let Some(s) = find_first_skel(stage, &cp) {
                     return Some(s);
@@ -596,7 +596,7 @@ fn main() {
                 }
             }
         }
-        for c in stage.prim_at(prim.clone()).child_names().unwrap_or_default() {
+        for c in stage.prim(prim.clone()).child_names().unwrap_or_default() {
             if let Ok(cp) = prim.append_path(c.as_str()) {
                 probe_bs(
                     stage,
@@ -692,7 +692,7 @@ fn main() {
                 .unwrap_or(0);
             out.push((prim.clone(), binding, pts));
         }
-        for c in stage.prim_at(prim.clone()).child_names().unwrap_or_default() {
+        for c in stage.prim(prim.clone()).child_names().unwrap_or_default() {
             if let Ok(cp) = prim.append_path(c.as_str()) {
                 census(stage, &cp, out);
             }

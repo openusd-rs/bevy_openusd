@@ -204,8 +204,8 @@ pub fn read_collision_shape(stage: &Stage, path: &Path) -> anyhow::Result<Option
     let approximation = MeshCollisionAPI::get(stage, path.clone())?
         .and_then(|m| atoken(m.approximation_attr()))
         .and_then(|t| approx_from_token(&t));
-    let physics_material_path = rel_first(stage.prim_at(path.clone()).relationship("material:binding:physics"))
-        .or_else(|| rel_first(stage.prim_at(path.clone()).relationship("material:binding")));
+    let physics_material_path = rel_first(stage.prim(path.clone()).relationship("material:binding:physics"))
+        .or_else(|| rel_first(stage.prim(path.clone()).relationship("material:binding")));
     Ok(Some(ReadCollisionShape {
         approximation,
         physics_material_path,
@@ -277,7 +277,7 @@ fn joint_common<J: JointBase>(v: &J, path: &Path, kind: JointKind) -> ReadJoint 
 }
 
 pub fn read_joint(stage: &Stage, path: &Path) -> anyhow::Result<Option<ReadJoint>> {
-    let ty = stage.prim_at(path.clone()).type_name()?.unwrap_or_default();
+    let ty = stage.prim(path.clone()).type_name()?.unwrap_or_default();
     let mut joint = match ty.as_str() {
         "PhysicsRevoluteJoint" => RevoluteJoint::get(stage, path.clone())?.map(|v| {
             let mut j = joint_common(&v, path, JointKind::Revolute);
@@ -362,7 +362,7 @@ pub fn find_physics_prims(stage: &Stage) -> anyhow::Result<PhysicsPrims> {
     use std::cell::RefCell;
     let out = RefCell::new(PhysicsPrims::default());
     stage.traverse(PrimPredicate::default(), |path| {
-        let prim = stage.prim_at(path.clone());
+        let prim = stage.prim(path.clone());
         let ty = prim.type_name().ok().flatten().unwrap_or_default();
         let apis = prim.api_schemas().unwrap_or_default();
         let s = path.as_str().to_string();

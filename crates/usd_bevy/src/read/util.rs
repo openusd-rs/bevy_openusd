@@ -12,7 +12,7 @@ use openusd::usd::Stage;
 
 /// Raw composed `default` value of attribute `name` on `prim`.
 fn attr_default(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
-    stage.prim_at(prim.clone()).attribute(name).get::<Value>()
+    stage.prim(prim.clone()).attribute(name).get::<Value>()
 }
 
 pub fn read_f32(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<f32>> {
@@ -61,7 +61,8 @@ pub fn read_bool(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Optio
 /// A `token` or `string` scalar.
 pub fn read_token_or_string(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<String>> {
     Ok(match attr_default(stage, prim, name)? {
-        Some(Value::Token(s)) | Some(Value::String(s)) => Some(s),
+        Some(Value::Token(s)) => Some(s.as_str().to_string()),
+        Some(Value::String(s)) => Some(s),
         _ => None,
     })
 }
@@ -69,7 +70,9 @@ pub fn read_token_or_string(stage: &Stage, prim: &Path, name: &str) -> anyhow::R
 /// An `asset`, `string`, or `token` scalar (asset path or plain text).
 pub fn read_asset_path(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<String>> {
     Ok(match attr_default(stage, prim, name)? {
-        Some(Value::AssetPath(s)) | Some(Value::String(s)) | Some(Value::Token(s)) => Some(s),
+        Some(Value::AssetPath(s)) => Some(s.as_str().to_string()),
+        Some(Value::String(s)) => Some(s),
+        Some(Value::Token(s)) => Some(s.as_str().to_string()),
         _ => None,
     })
 }
@@ -100,7 +103,8 @@ pub fn read_vec2i(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Opti
 
 pub fn read_token_vec(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Vec<String>> {
     Ok(match attr_default(stage, prim, name)? {
-        Some(Value::TokenVec(v)) | Some(Value::StringVec(v)) => v,
+        Some(Value::TokenVec(v)) => v.into_iter().map(|t| t.as_str().to_string()).collect(),
+        Some(Value::StringVec(v)) => v,
         _ => Vec::new(),
     })
 }
@@ -194,7 +198,7 @@ pub fn read_mat4f_vec(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<
 
 /// `i32`-valued attribute *metadata* field (e.g. primvar `elementSize`).
 pub fn read_int_metadata(stage: &Stage, prim: &Path, attr: &str, key: &str) -> anyhow::Result<Option<i32>> {
-    Ok(match stage.prim_at(prim.clone()).attribute(attr).get_metadata::<Value>(key)? {
+    Ok(match stage.prim(prim.clone()).attribute(attr).get_metadata::<Value>(key)? {
         Some(Value::Int(n)) => Some(n),
         Some(Value::Int64(n)) => Some(n as i32),
         _ => None,
@@ -203,12 +207,12 @@ pub fn read_int_metadata(stage: &Stage, prim: &Path, attr: &str, key: &str) -> a
 
 /// Composed `timeSamples` for an attribute, as `(time, value)` pairs.
 pub fn read_time_samples(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Vec<(f64, Value)>> {
-    Ok(stage.prim_at(prim.clone()).attribute(name).time_samples()?.unwrap_or_default())
+    Ok(stage.prim(prim.clone()).attribute(name).time_samples()?.unwrap_or_default())
 }
 
 /// Composed relationship target paths (as strings), in authored order.
 pub fn read_rel_targets(stage: &Stage, prim: &Path, rel_name: &str) -> anyhow::Result<Vec<String>> {
-    let targets = stage.prim_at(prim.clone()).relationship(rel_name).targets()?;
+    let targets = stage.prim(prim.clone()).relationship(rel_name).targets()?;
     Ok(targets.into_iter().map(|p| p.as_str().to_string()).collect())
 }
 
@@ -224,7 +228,7 @@ pub fn connections_at(stage: &Stage, attr_path: &Path) -> anyhow::Result<Vec<Pat
     let Some((prim, name)) = attr_path.split_property() else {
         return Ok(Vec::new());
     };
-    stage.prim_at(prim).attribute(name).connections()
+    stage.prim(prim).attribute(name).connections()
 }
 
 /// Composed relationship target paths at property path `rel_path`.
@@ -232,7 +236,7 @@ pub fn targets_at(stage: &Stage, rel_path: &Path) -> anyhow::Result<Vec<Path>> {
     let Some((prim, name)) = rel_path.split_property() else {
         return Ok(Vec::new());
     };
-    stage.prim_at(prim).relationship(name).targets()
+    stage.prim(prim).relationship(name).targets()
 }
 
 /// Raw composed `default` value of the attribute at property path `attr_path`.
@@ -240,5 +244,5 @@ pub fn default_at(stage: &Stage, attr_path: &Path) -> anyhow::Result<Option<Valu
     let Some((prim, name)) = attr_path.split_property() else {
         return Ok(None);
     };
-    stage.prim_at(prim).attribute(name).get::<Value>()
+    stage.prim(prim).attribute(name).get::<Value>()
 }

@@ -14,7 +14,7 @@ pub struct Transform3 {
 }
 
 fn attr_value(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
-    stage.prim_at(prim.clone()).attribute(name).get::<Value>()
+    stage.prim(prim.clone()).attribute(name).get::<Value>()
 }
 
 /// Read `xformOpOrder` and compose every listed op into a single 4×4, then
@@ -24,8 +24,9 @@ pub fn read_transform(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Trans
         return Ok(None);
     };
     let order: Vec<String> = match raw {
-        Value::TokenVec(v) | Value::StringVec(v) => v,
-        Value::TokenListOp(op) => op.flatten(),
+        Value::TokenVec(v) => v.into_iter().map(|t| t.as_str().to_string()).collect(),
+        Value::StringVec(v) => v,
+        Value::TokenListOp(op) => op.flatten().into_iter().map(|t| t.as_str().to_string()).collect(),
         _ => return Ok(None),
     };
 

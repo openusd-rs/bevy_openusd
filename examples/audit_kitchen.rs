@@ -69,7 +69,7 @@ fn walk_prim(stage: &openusd::usd::Stage, prim: &SdfPath, t: &mut Tally) {
 
     // Properties via `prim_properties`. Some binary files don't
     // expose this — silently skip those.
-    if let Ok(props) = stage.prim_at(prim.clone()).property_names() {
+    if let Ok(props) = stage.prim(prim.clone()).property_names() {
         for prop_name in props {
             *t.property_names
                 .entry(prop_name.as_str().to_string())
@@ -175,7 +175,7 @@ fn walk_prim(stage: &openusd::usd::Stage, prim: &SdfPath, t: &mut Tally) {
     }
 
     // Recurse
-    if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
+    if let Ok(children) = stage.prim(prim.clone()).child_names() {
         for c in children {
             if let Ok(child_path) = prim.append_path(c.as_str()) {
                 walk_prim(stage, &child_path, t);
@@ -267,7 +267,7 @@ fn main() {
                 let type_name: Option<String> =
                     stage.metadata::<String>(p.clone(), "typeName").ok().flatten();
                 println!("  {path_str}: typeName={:?}", type_name);
-                if let Ok(children) = stage.prim_at(p.clone()).child_names() {
+                if let Ok(children) = stage.prim(p.clone()).child_names() {
                     println!(
                         "    children: {:?}",
                         children.iter().take(8).collect::<Vec<_>>()

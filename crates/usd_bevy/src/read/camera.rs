@@ -48,7 +48,7 @@ pub fn is_camera_type(type_name: &str) -> bool {
 }
 
 pub fn read_camera(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadCamera>> {
-    if stage.prim_at(prim.clone()).type_name()?.as_deref() != Some("Camera") {
+    if stage.prim(prim.clone()).type_name()?.as_deref() != Some("Camera") {
         return Ok(None);
     }
 

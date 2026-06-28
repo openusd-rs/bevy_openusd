@@ -68,7 +68,7 @@ impl ReadSkeleton {
 }
 
 fn type_name(stage: &Stage, prim: &Path) -> anyhow::Result<String> {
-    Ok(stage.prim_at(prim.clone()).type_name()?.unwrap_or_default())
+    Ok(stage.prim(prim.clone()).type_name()?.map(|t| t.as_str().to_string()).unwrap_or_default())
 }
 
 pub fn read_skeleton(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadSkeleton>> {

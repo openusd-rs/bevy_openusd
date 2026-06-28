@@ -108,7 +108,7 @@ fn main() {
             }
         }
 
-        for child in stage.prim_at(prim.clone()).child_names().unwrap_or_default() {
+        for child in stage.prim(prim.clone()).child_names().unwrap_or_default() {
             if let Ok(child_path) = prim.append_path(child.as_str()) {
                 walk_meshes(stage, &child_path);
             }

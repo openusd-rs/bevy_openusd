@@ -107,6 +107,7 @@ pub fn stage_to_scene(
     let root_transform = root_basis_transform(stage);
     let root_name = stage
         .default_prim()
+        .map(|t| t.as_str().to_string())
         .unwrap_or_else(|| "UsdRoot".to_string());
 
     let scene_root = world
@@ -125,7 +126,7 @@ pub fn stage_to_scene(
     // loses ~17 ghost subtrees at origin this way.
     let mut roots_to_walk: Vec<Path> = if let Some(default) = stage.default_prim() {
         match Path::abs_root().append_path(default.as_str()) {
-            Ok(p) if stage.prim_at(p.clone()).is_defined().unwrap_or(false) => vec![p],
+            Ok(p) if stage.prim(p.clone()).is_defined().unwrap_or(false) => vec![p],
             _ => stage
                 .root_prims()
                 .unwrap_or_default()
@@ -639,16 +640,16 @@ pub(crate) fn build_material_inner(
 
 fn mdl_emission_explicitly_disabled(stage: &Stage, material_prim: &Path) -> bool {
     for child_name in stage
-        .prim_at(material_prim.clone()).child_names()
+        .prim(material_prim.clone()).child_names()
         .unwrap_or_default()
     {
         let Ok(shader) = material_prim.append_path(child_name.as_str()) else {
             continue;
         };
         let is_shader = stage
-            .prim_at(shader.clone()).type_name()
+            .prim(shader.clone()).type_name()
             .ok()
-            .flatten()
+            .flatten().map(|t| t.as_str().to_string())
             .as_deref()
             == Some("Shader");
         if !is_shader {
@@ -749,7 +750,7 @@ fn spawn_prim_subtree(
     world: &mut World,
     ctx: &mut BuildCtx<'_, '_>,
 ) {
-    if !stage.prim_at(path.clone()).is_defined().unwrap_or(false) {
+    if !stage.prim(path.clone()).is_defined().unwrap_or(false) {
         return;
     }
     // Read purpose up front; we no longer SKIP proxy/guide prims (the
@@ -783,13 +784,7 @@ fn spawn_prim_subtree(
     //      recording is poisoned and future matches fall back to a
     //      full walk.
     let mut replay_ctx: Option<ReplayCtx> = None;
-    let is_instanceable = matches!(
-        stage
-            .metadata::<bool>(path.clone(), "instanceable")
-            .ok()
-            .flatten(),
-        Some(true)
-    );
+    let is_instanceable = matches!(stage.prim(path.clone()).is_instanceable().ok(), Some(true));
     if is_instanceable {
         ctx.instance_prim_count += 1;
         let fp = prototype_fingerprint(stage, path);
@@ -999,7 +994,7 @@ fn spawn_prim_subtree(
         return;
     }
 
-    for child_name in stage.prim_at(path.clone()).child_names().unwrap_or_default() {
+    for child_name in stage.prim(path.clone()).child_names().unwrap_or_default() {
         let Ok(child_path) = path.append_path(child_name.as_str()) else {
             continue;
         };
@@ -1032,7 +1027,7 @@ fn spawn_prim_subtree(
 /// boundaries typically land.
 fn kind_is_collapsible(stage: &Stage, path: &Path) -> bool {
     stage
-        .prim_at(path.clone()).kind()
+        .prim(path.clone()).kind()
         .ok()
         .flatten()
         .map(|k| matches!(k.as_str(), "component" | "subcomponent"))
@@ -1050,7 +1045,7 @@ fn collect_geoms_for_collapse(
     depth: u32,
     out: &mut Vec<(Path, Transform)>,
 ) {
-    if !stage.prim_at(path.clone()).is_defined().unwrap_or(false) {
+    if !stage.prim(path.clone()).is_defined().unwrap_or(false) {
         return;
     }
     if !passes_purpose_filter(stage, path) {
@@ -1070,7 +1065,7 @@ fn collect_geoms_for_collapse(
         out.push((path.clone(), accumulated));
     }
 
-    for child_name in stage.prim_at(path.clone()).child_names().unwrap_or_default() {
+    for child_name in stage.prim(path.clone()).child_names().unwrap_or_default() {
         let Ok(child_path) = path.append_path(child_name.as_str()) else {
             continue;
         };
@@ -1082,9 +1077,9 @@ fn collect_geoms_for_collapse(
 fn prim_has_geometry(stage: &Stage, path: &Path) -> bool {
     matches!(
         stage
-            .prim_at(path.clone()).type_name()
+            .prim(path.clone()).type_name()
             .ok()
-            .flatten()
+            .flatten().map(|t| t.as_str().to_string())
             .as_deref(),
         Some("Mesh" | "Cube" | "Sphere" | "Cylinder" | "Capsule" | "Plane")
     )
@@ -1572,7 +1567,7 @@ fn blend_shapes_from_ghost_twin(
                 Err(_) => continue,
             };
             // Only proceed if this prim actually exists.
-            if !stage.prim_at(candidate.clone()).is_defined().unwrap_or(false) {
+            if !stage.prim(candidate.clone()).is_defined().unwrap_or(false) {
                 continue;
             }
             if let Ok(Some(b)) = uskel::read_skel_binding(stage, &candidate) {
@@ -1901,12 +1896,7 @@ fn direct_skel_rel(stage: &Stage, prim: &Path) -> Option<String> {
 fn direct_rel_first_target(stage: &Stage, prim: &Path, rel_name: &str) -> Option<String> {
     use openusd::sdf::Value;
     let rel = prim.append_property(rel_name).ok()?;
-    let raw = stage.metadata::<Value>(rel, "targetPaths").ok().flatten()?;
-    let paths = match raw {
-        Value::PathListOp(op) => op.flatten(),
-        Value::PathVec(v) => v,
-        _ => return None,
-    };
+    let paths = stage.relationship(rel).targets().ok()?;
     paths.into_iter().next().map(|p| p.as_str().to_string())
 }
 
@@ -2090,7 +2080,7 @@ const IDENTITY_MAT4: [f32; 16] = [
 /// `attach_skel_root` to find the Skeleton when the SkelRoot's
 /// `skel:skeleton` rel is unauthored.
 fn find_first_typed_descendant(stage: &Stage, root: &Path, target_type: &str) -> Option<Path> {
-    for child_name in stage.prim_at(root.clone()).child_names().unwrap_or_default() {
+    for child_name in stage.prim(root.clone()).child_names().unwrap_or_default() {
         let Ok(child_path) = root.append_path(child_name.as_str()) else {
             continue;
         };
@@ -2119,14 +2109,14 @@ fn find_first_typed_descendant(stage: &Stage, root: &Path, target_type: &str) ->
 /// fall through and aren't double-walked.
 fn is_root_physics_prim(stage: &Stage, prim: &Path) -> bool {
     let type_name: String = stage
-        .prim_at(prim.clone()).type_name()
+        .prim(prim.clone()).type_name()
         .ok()
-        .flatten()
+        .flatten().map(|t| t.as_str().to_string())
         .unwrap_or_default();
     if type_name.starts_with("Physics") {
         return true;
     }
-    let api = stage.prim_at(prim.clone()).api_schemas().unwrap_or_default();
+    let api = stage.prim(prim.clone()).api_schemas().unwrap_or_default();
     api.iter().any(|s| s.starts_with("Physics"))
 }
 
@@ -2153,9 +2143,9 @@ fn attach_geometry(
     ctx: &mut BuildCtx<'_, '_>,
 ) {
     let type_name: Option<String> = stage
-        .prim_at(path.clone()).type_name()
+        .prim(path.clone()).type_name()
         .ok()
-        .flatten();
+        .flatten().map(|t| t.as_str().to_string());
     let Some(type_name) = type_name else {
         return;
     };
@@ -2781,15 +2771,15 @@ fn prototype_fingerprint(stage: &Stage, path: &Path) -> String {
     let mut h = DefaultHasher::new();
     // Root's typeName only (skip leaf name — that's site-specific).
     let root_type = stage
-        .prim_at(path.clone()).type_name()
+        .prim(path.clone()).type_name()
         .ok()
-        .flatten()
+        .flatten().map(|t| t.as_str().to_string())
         .unwrap_or_default();
     root_type.hash(&mut h);
 
     fn fold_descendants(stage: &Stage, path: &Path, h: &mut DefaultHasher) {
         let mut children: Vec<String> = stage
-            .prim_at(path.clone()).child_names()
+            .prim(path.clone()).child_names()
             .unwrap_or_default()
             .into_iter()
             .map(|n| n.to_string())
@@ -2801,9 +2791,9 @@ fn prototype_fingerprint(stage: &Stage, path: &Path) -> String {
             };
             name.hash(h);
             let type_name = stage
-                .prim_at(child.clone()).type_name()
+                .prim(child.clone()).type_name()
                 .ok()
-                .flatten()
+                .flatten().map(|t| t.as_str().to_string())
                 .unwrap_or_default();
             type_name.hash(h);
             if type_name == "Mesh" {
@@ -2908,9 +2898,9 @@ fn is_replayable_type(type_name: Option<&str>) -> bool {
 
 fn type_name_of(stage: &Stage, prim: &Path) -> Option<String> {
     stage
-        .prim_at(prim.clone()).type_name()
+        .prim(prim.clone()).type_name()
         .ok()
-        .flatten()
+        .flatten().map(|t| t.as_str().to_string())
 }
 
 /// Hash a decoded UsdGeom.Mesh down to a short string suitable for use as a
@@ -3055,9 +3045,9 @@ fn resolve_mesh_and_material(
     bevy::asset::Handle<StandardMaterial>,
 )> {
     let type_name: String = stage
-        .prim_at(proto_path.clone()).type_name()
+        .prim(proto_path.clone()).type_name()
         .ok()
-        .flatten()
+        .flatten().map(|t| t.as_str().to_string())
         .unwrap_or_default();
     // Pixar's PointInstancedMedCity (and most production-instancer
     // assets) author each `prototypes` target as an Xform group with
@@ -3170,9 +3160,10 @@ fn resolve_mesh_and_material(
 fn stage_is_z_up(stage: &Stage) -> bool {
     matches!(
         stage
-            .metadata::<String>(Path::abs_root(), "upAxis")
+            .stage_metadata("upAxis")
             .ok()
             .flatten()
+            .and_then(|v| v.as_str().map(String::from))
             .as_deref(),
         Some("Z")
     )
@@ -3212,14 +3203,14 @@ fn mesh_is_y_up(read: &ugeom::ReadMesh) -> bool {
 /// pathway to resolve `prototypes` rels that point at Xform wrappers
 /// rather than direct Mesh prims.
 fn first_renderable_descendant(stage: &Stage, root: &Path) -> Option<Path> {
-    for child_name in stage.prim_at(root.clone()).child_names().unwrap_or_default() {
+    for child_name in stage.prim(root.clone()).child_names().unwrap_or_default() {
         let Ok(child_path) = root.append_path(child_name.as_str()) else {
             continue;
         };
         let tn: String = stage
-            .prim_at(child_path.clone()).type_name()
+            .prim(child_path.clone()).type_name()
             .ok()
-            .flatten()
+            .flatten().map(|t| t.as_str().to_string())
             .unwrap_or_default();
         if matches!(
             tn.as_str(),
@@ -3337,9 +3328,9 @@ fn resolve_material_prim(stage: &Stage, bound_prim: &Path, material_prim: &Path)
 
 fn prim_type_is(stage: &Stage, prim: &Path, expected: &str) -> bool {
     stage
-        .prim_at(prim.clone()).type_name()
+        .prim(prim.clone()).type_name()
         .ok()
-        .flatten()
+        .flatten().map(|t| t.as_str().to_string())
         .as_deref()
         == Some(expected)
 }
@@ -3433,9 +3424,10 @@ fn read_prim_transform(stage: &Stage, path: &Path) -> Transform {
 /// transform that takes USD-native coordinates into Bevy (Y-up, metres).
 fn root_basis_transform(stage: &Stage) -> Transform {
     let up_axis = stage
-        .metadata::<String>(Path::abs_root(), "upAxis")
+        .stage_metadata("upAxis")
         .ok()
-        .flatten();
+        .flatten()
+        .and_then(|v| v.as_str().map(String::from));
 
     // Real-world `.usda` files author `metersPerUnit = 1` as an integer; USD
     // doesn't insist on the trailing `.0`. Accept any numeric variant
@@ -3447,7 +3439,7 @@ fn root_basis_transform(stage: &Stage) -> Transform {
     // reading it as 1.0 makes a 5 m kitchen render as 500 m and the
     // camera frames a "scattered" wasteland of distant props.
     let authored_mpu = stage
-        .metadata::<openusd::sdf::Value>(Path::abs_root(), "metersPerUnit")
+        .stage_metadata("metersPerUnit")
         .ok()
         .flatten()
         .and_then(|v| match v {

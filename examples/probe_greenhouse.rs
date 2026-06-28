@@ -127,7 +127,7 @@ fn main() {
                 }
             }
         }
-        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
+        if let Ok(children) = stage.prim(prim.clone()).child_names() {
             for c in children {
                 if let Ok(child_path) = prim.append_path(c.as_str()) {
                     walk_groups(stage, &child_path, groups);
@@ -158,7 +158,7 @@ fn main() {
             prim.as_str(),
             type_name.as_deref().unwrap_or("?")
         );
-        if let Ok(props) = stage.prim_at(prim.clone()).property_names() {
+        if let Ok(props) = stage.prim(prim.clone()).property_names() {
             for prop in props {
                 let prop_str: &str = prop.as_str();
                 let Ok(attr) = prim.append_property(prop_str) else {
@@ -173,7 +173,7 @@ fn main() {
                 }
             }
         }
-        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
+        if let Ok(children) = stage.prim(prim.clone()).child_names() {
             for c in children {
                 if let Ok(child) = prim.append_path(c.as_str()) {
                     dump_subtree(stage, &child, depth + 1);
@@ -318,7 +318,7 @@ fn main() {
                 inst,
             );
         }
-        if let Ok(children) = stage.prim_at(prim.clone()).child_names() {
+        if let Ok(children) = stage.prim(prim.clone()).child_names() {
             for c in children {
                 if let Ok(child) = prim.append_path(c.as_str()) {
                     walk_vis(stage, &child, depth + 1);

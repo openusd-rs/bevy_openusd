@@ -227,6 +227,10 @@ USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='ass
 Each row should have matching shapes and endpoint heights. Tessellation remains
 eight samples per segment rather than adaptive or exact-limit rendering.
 
+`assets/periodic_bezier.usda` compares a three-control-point periodic Bezier
+with an explicitly closed four-point nonperiodic equivalent. Both render the
+same cubic loop, not the triangular control hull.
+
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
 flat normals independently of authored normals. Capture without shadow maps:

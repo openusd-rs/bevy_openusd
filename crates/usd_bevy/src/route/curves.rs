@@ -111,7 +111,7 @@ fn eval(cvs: [[f32; 3]; 4], w: [f32; 4]) -> [f32; 3] {
 /// output position + line-index buffers.
 fn tessellate_cubic(cv: &[[f32; 3]], basis: Basis, periodic: bool, out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>) {
     let n = cv.len();
-    if n < 4 {
+    if n < 4 && !(periodic && n >= 3) {
         // Not enough CVs for a cubic segment; fall back to a polyline.
         emit_polyline(cv, periodic, out, idx);
         return;
@@ -247,6 +247,20 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn three_point_periodic_bezier_matches_explicit_closure() {
+        let source = crate::UsdSource::new("periodic-bezier.usda", include_bytes!("../../../../assets/periodic_bezier.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let periodic = openusd::sdf::path("/Periodic").unwrap();
+        let explicit = openusd::sdf::path("/Explicit").unwrap();
+        let actual = line_geometry(&RouteCtx::new(&stage, &periodic)).unwrap();
+        assert_eq!(actual, line_geometry(&RouteCtx::new(&stage, &explicit)).unwrap());
+        assert_eq!(actual.0.len(), CUBIC_STEPS + 1);
+        assert_eq!(actual.1.len(), CUBIC_STEPS * 2);
+        assert_eq!(actual.0.first(), actual.0.last());
+        assert!(Vec3::from(actual.0[CUBIC_STEPS / 2]).distance(Vec3::new(0.,0.5,0.)) < 1e-6);
+    }
 
     #[test]
     fn pinned_cubics_match_explicit_phantom_points() {

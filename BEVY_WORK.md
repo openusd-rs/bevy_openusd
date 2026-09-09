@@ -25,6 +25,19 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Fixed the three-control-point periodic cubic path: wrapping supplies the fourth
+Bezier control point instead of falling back to a triangular polyline. Added
+`assets/periodic_bezier.usda` and a regression comparing its sampled positions
+and indices exactly against an explicitly closed four-point nonperiodic curve,
+including endpoint closure and the analytic midpoint.
+
+Inspected `target/periodic-bezier.png`: the periodic and explicit curves produce
+matching closed eight-segment loops. Their visible faceting is the existing
+fixed tessellation limit, not the discarded triangular control hull. Full tests
+pass (348); gate logs are `/tmp/usd-short-periodic-{tests,check,build}.log`.
+Adaptive tessellation, strict malformed-topology handling and the broader
+acceptance checklist remain open.
+
 Completed point-cloud display-primvar validation after the fixture correction in
 ba65438. All 347 tests, check-all, build and whitespace checks pass
 (`/tmp/usd-point-colors-final-{tests,check,build}.log`). The regression checks

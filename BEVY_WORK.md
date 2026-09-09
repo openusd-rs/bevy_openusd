@@ -25,6 +25,20 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Completed point-cloud display-primvar validation after the fixture correction in
+ba65438. All 347 tests, check-all, build and whitespace checks pass
+(`/tmp/usd-point-colors-final-{tests,check,build}.log`). The regression checks
+independent clocks, inherited constant and local indexed vertex/varying RGBA,
+parent edits, local override/clear, stable identity/runtime child and alpha mode.
+
+Inspected `target/point-colors-fixed-{0,10}.png` and tightly packed GPU pixels.
+At y=360, x=391/515 change from RGB(88,40,47) to (50,144,47), matching translucent
+red to opaque green. x=764 changes (81,82,53) to (29,41,92); x=888 changes
+(27,43,119) to (108,108,56), matching the independently indexed yellow/blue swap.
+These are antialiased, composited one-pixel points, not direct material values.
+README/SUPPORT now describe point-color support. Curve display primvars, widths,
+bound-material fidelity and the full project acceptance checklist remain open.
+
 User-requested checkpoint committed as 788e3e5
 (`feat(bevy):expand USD integration and viewer`), unsigned and title-only.
 The pending point-color regression and GPU capture exposed invalid USDA syntax:

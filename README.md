@@ -198,6 +198,13 @@ the line splits into two disjoint segments at time 10. Both routes follow each
 scene root's clock. Unbound geometry uses an unlit point/line preview; USD widths
 and full curve surface shading are not represented.
 
+Point clouds project constant/inherited and indexed vertex/varying display color
+and opacity through the same RGBA expansion as mesh vertices. The unbound
+material selects alpha blending when needed without multiplying opacity twice.
+`assets/point_colors.usda` exercises independent color/opacity sources: the left
+pair changes from translucent red to opaque green; the right pair swaps yellow
+and blue while retaining its per-point opacity. Points remain one-pixel marks.
+
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:
 

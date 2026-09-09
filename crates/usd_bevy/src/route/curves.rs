@@ -46,13 +46,44 @@ fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
     let basis = read_token(curves.basis_attr(), "bezier", ctx.time);
     if kind == "cubic" && !matches!(basis.as_str(), "bezier" | "bspline" | "catmullRom") { return Err(format!("unsupported cubic basis {basis}")); }
     let stride = if basis == "bezier" { 3 } else { 1 };
-    for (curve,count) in counts.into_iter().enumerate() {
+    let mut varying_count = 0usize;
+    for (curve,count) in counts.iter().copied().enumerate() {
         if count == 0 { continue; }
         let valid = if kind == "linear" { count >= 2 }
             else if wrap == "periodic" { count >= 3 && count % stride == 0 }
             else if wrap == "pinned" && basis != "bezier" { count >= 2 }
             else { count >= 4 && (count - 4) % stride == 0 };
         if !valid { return Err(format!("unsupported {kind}/{basis}/{wrap} layout: curve {curve} has {count} control points")); }
+        let varying = if kind == "linear" { count }
+            else if wrap == "periodic" { count / stride }
+            else if wrap == "pinned" && basis != "bezier" { count }
+            else { (count - 4) / stride + 2 };
+        varying_count = varying_count.checked_add(varying).ok_or("varying sample count overflow")?;
+    }
+    if let Some(color) = crate::read::geom::read_primvar_vec3f(ctx.stage, ctx.path, "primvars:displayColor", ctx.time).map_err(|error| error.to_string())? {
+        validate_curve_primvar(&color, counts.len(), points.len(), varying_count, "displayColor")?;
+        if color.values.iter().flatten().any(|value| !value.is_finite()) { return Err("non-finite displayColor".into()); }
+    }
+    if let Some(opacity) = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time).map_err(|error| error.to_string())? {
+        validate_curve_primvar(&opacity, counts.len(), points.len(), varying_count, "displayOpacity")?;
+        if opacity.values.iter().any(|value| !value.is_finite()) { return Err("non-finite displayOpacity".into()); }
+    }
+    Ok(())
+}
+
+fn validate_curve_primvar<T>(value: &MeshPrimvar<T>, curves: usize, points: usize, varying: usize, name: &str) -> Result<(), String> {
+    let expected = match value.interpolation {
+        Interpolation::Constant => 1,
+        Interpolation::Uniform => curves,
+        Interpolation::Vertex => points,
+        Interpolation::Varying => varying,
+        Interpolation::FaceVarying => return Err(format!("unsupported faceVarying {name}")),
+    };
+    if value.values.len() == 1 && value.indices.is_empty() { return Ok(()); }
+    let actual = if value.indices.is_empty() { value.values.len() } else { value.indices.len() };
+    if actual != expected { return Err(format!("{name} has {actual} samples; expected {expected}")); }
+    if value.indices.iter().any(|index| usize::try_from(*index).map_or(true, |index| index >= value.values.len())) {
+        return Err(format!("{name} index outside its value array"));
     }
     Ok(())
 }
@@ -370,6 +401,62 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn curve_primvar_cardinality_and_indices_are_validated() {
+        for (interpolation, count) in [(Interpolation::Constant,1), (Interpolation::Uniform,2), (Interpolation::Vertex,8), (Interpolation::Varying,4)] {
+            let mut value = MeshPrimvar { values: vec![0.5;count], interpolation, indices: Vec::new() };
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_ok());
+            value.values = vec![0.5,0.75];
+            value.indices = vec![1;count];
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_ok());
+            value.indices[0] = -1;
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_err());
+            value.indices[0] = 2;
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_err());
+            value.indices = vec![0;count+1];
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_err());
+            value.values = vec![0.5];
+            value.indices.clear();
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_ok());
+        }
+        let value = MeshPrimvar { values: vec![1.], interpolation: Interpolation::FaceVarying, indices: Vec::new() };
+        assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_err());
+    }
+
+    #[test]
+    fn invalid_curve_display_arrays_suppress_and_recover() {
+        let source = crate::UsdSource::new("gradients.usda", include_bytes!("../../../../assets/curve_gradients.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let mut app = App::new();
+        app.add_plugins(crate::live::LiveStagePlugin);
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        app.world_mut().insert_non_send(LiveStage::new(stage.clone()));
+        app.world_mut().run_schedule(Update);
+        let entity = app.world().resource::<PrimEntities>().entity("/Vertex").unwrap();
+        let child = app.world_mut().spawn(ChildOf(entity)).id();
+        let indices = stage.attribute("/Vertex.primvars:displayColor:indices").unwrap();
+        for invalid in [vec![0,1], vec![-1;8], vec![4;8]] {
+            indices.clone().set(Value::IntVec(invalid)).unwrap();
+            app.world_mut().run_schedule(Update);
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+            assert!(app.world().get::<UsdCurveError>(entity).unwrap().0.contains("displayColor"));
+            indices.clone().set(Value::IntVec(vec![0,1,1,2,2,3,3,0])).unwrap();
+            app.world_mut().run_schedule(Update);
+            assert!(app.world().get::<Mesh3d>(entity).is_some());
+            assert!(app.world().get::<UsdCurveError>(entity).is_none());
+        }
+        stage.attribute("/Vertex.primvars:displayOpacity").unwrap().set(Value::FloatVec(vec![f32::NAN;4])).unwrap();
+        app.world_mut().run_schedule(Update);
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        assert_eq!(app.world().get::<UsdCurveError>(entity).unwrap().0, "non-finite displayOpacity");
+        stage.attribute("/Vertex.primvars:displayOpacity").unwrap().set(Value::FloatVec(vec![1.;4])).unwrap();
+        app.world_mut().run_schedule(Update);
+        assert!(app.world().get::<Mesh3d>(entity).is_some());
+        assert!(app.world().get::<UsdCurveError>(entity).is_none());
+        assert_eq!(app.world().resource::<PrimEntities>().entity("/Vertex"), Some(entity));
+        assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
+    }
 
     #[test]
     fn curve_layout_validation_rejects_unused_controls_and_unknown_tokens() {

@@ -223,9 +223,11 @@ example exits with an error instead of saving a partial scene. Missing counts
 still infer one curve. Unknown type/basis/wrap tokens and unsupported segment
 layouts report errors; nonperiodic Bezier requires `4 + 3n` control points,
 periodic Bezier `3n`, and pinned Bspline/Catmull-Rom at least two. Periodic cubic
-counts below three are not supported. Primvar-cardinality validation remains
-incomplete. `assets/invalid_curves.usda` and `assets/invalid_curve_layout.usda`
-are negative capture fixtures.
+counts below three are not supported. Display primvars validate interpolation
+cardinality, index bounds and finite authored values; single unindexed values
+retain their broadcast behavior. `assets/invalid_curves.usda`,
+`assets/invalid_curve_layout.usda` and `assets/invalid_curve_colors.usda` are
+negative capture fixtures. Width and normal primvar validation remains open.
 
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:

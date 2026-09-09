@@ -25,6 +25,22 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Curve display primvars now validate sample cardinality by interpolation, negative
+and out-of-range indices, unsupported faceVarying interpolation and non-finite
+authored color/opacity values. Constant/uniform/vertex/varying use their distinct
+sample counts, including cubic segment-boundary varying counts and periodic
+wrap. Single unindexed values retain the existing broadcast behavior. Invalid
+data reports UsdCurveError instead of silently substituting fallback colors.
+
+Tests cover interpolation cardinalities, valid indexed palettes, malformed index
+arrays, broadcast, non-finite opacity and live recovery preserving entity/runtime
+children. All 357 tests, check-all, build and whitespace checks pass
+(`/tmp/usd-curve-primvar-validation-{tests,check,build}.log`). Negative GPU fixture
+`assets/invalid_curve_colors.usda` exits with `displayColor has 2 samples; expected
+4` and writes no PNG (`/tmp/usd-invalid-curve-colors-capture.log`). Width/normal
+primvars, output budgets, finite interpolated color arithmetic and broader
+reference fidelity remain open. This supersedes the display-cardinality gap.
+
 Curve validation now rejects unknown type/wrap/cubic-basis tokens and unsupported
 segment layouts instead of dropping unused control points. Nonperiodic Bezier
 requires 4+3n controls; periodic Bezier requires 3n with at least three controls;

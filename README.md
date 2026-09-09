@@ -228,6 +228,9 @@ cardinality, index bounds and finite authored values; single unindexed values
 retain their broadcast behavior. `assets/invalid_curves.usda`,
 `assets/invalid_curve_layout.usda` and `assets/invalid_curve_colors.usda` are
 negative capture fixtures. Width and normal primvar validation remains open.
+Curve color/opacity interpolation uses f64 intermediates. Generated values that
+cannot be represented as finite f32 RGBA report `UsdCurveError` before upload;
+the renderer does not receive NaN or infinity from this path.
 Curve projection also rejects output above 1,000,000 vertices or 2,000,000 line
 indices per prim before allocating tessellation buffers. These limits include
 all curves in the prim and use checked arithmetic. They do not bound source

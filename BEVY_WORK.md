@@ -25,6 +25,21 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Curve color/opacity interpolation now uses f64 scalar/vector intermediates and
+f64 basis weights. Generated RGBA is checked after conversion to f32; overflow
+reports UsdCurveError and suppresses geometry before GPU upload. A regression
+keeps pinned all-f32::MAX color controls finite, rejects true Catmull-Rom
+overshoot beyond f32 range and verifies recovery after correction. Geometry
+positions remain f32 with their existing finite-output guard.
+
+All 360 tests, check-all, build and whitespace checks pass
+(`/tmp/usd-curve-color-finite-{tests,check,build}.log`). Inspected the repeated GPU
+gradient capture `target/curve-gradients-finite.png`; raw RGB comparison against
+the earlier capture finds zero changed pixels out of 921,600 at tolerance zero
+(`/tmp/usd-curve-color-finite-compare.log`). This verifies preservation of that
+fixture, not general reference parity or performance of widened interpolation.
+Widths, adaptive tessellation and broader acceptance remain open.
+
 Curve validation now preflights total tessellated output across each prim's
 curves, with checked arithmetic and inclusive limits of 1,000,000 vertices and
 2,000,000 line indices. It derives linear/cubic, periodic/pinned segment counts

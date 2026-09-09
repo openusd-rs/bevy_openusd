@@ -214,6 +214,8 @@ vertex/varying values. Single unindexed values also broadcast.
 `assets/curve_colors.usda` compares inherited animated style with uniform styles.
 `assets/curve_gradients.usda` places indexed vertex gradients above varying
 gradients on identical Bezier geometry, with independent varying opacity.
+Unbound curve materials choose blending from generated vertex alpha, including
+cubic undershoot, rather than from the authored control values alone.
 
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:

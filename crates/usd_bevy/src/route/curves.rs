@@ -300,6 +300,7 @@ impl PrimRoute for CurvesRoute {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             return;
         };
+        let translucent = colors.as_ref().is_some_and(|colors| colors.iter().any(|color| color[3].is_finite() && color[3] < 1.));
         let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, points);
         if let Some(colors) = colors { mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors); }
@@ -307,6 +308,7 @@ impl PrimRoute for CurvesRoute {
         let mesh_handle = super::cache::intern_mesh(world, mesh);
         let mut material = super::material::default_material(ctx);
         material.unlit = true;
+        material.alpha_mode = if translucent { AlphaMode::Blend } else { AlphaMode::Opaque };
         let material = super::cache::intern_material(world, material);
         if let Ok(mut e) = world.get_entity_mut(entity) {
             e.insert((Mesh3d(mesh_handle), MeshMaterial3d(material), super::geom::GeometryOwner::Curves));
@@ -320,6 +322,34 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn curve_blending_tracks_generated_opacity_and_recovers() {
+        let source = crate::UsdSource::new("opacity.usda", br#"#usda 1.0
+def BasisCurves "Curve" {
+    uniform token type = "cubic"
+    uniform token basis = "catmullRom"
+    int[] curveVertexCounts = [4]
+    point3f[] points = [(-2,0,0), (-1,0,0), (1,0,0), (2,0,0)]
+    float[] primvars:displayOpacity (interpolation = "vertex")
+    float[] primvars:displayOpacity.timeSamples = {0: [2,1,1,2], 10: [1,1,1,1]}
+}
+"#.as_slice()).unwrap();
+        let mut app = App::new();
+        app.add_plugins(crate::live::LiveStagePlugin);
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        app.world_mut().insert_non_send(LiveStage::new(source.open_stage().unwrap()));
+        for time in [0.,10.,0.] {
+            app.world_mut().resource_mut::<super::super::StageTime>().current = time;
+            app.world_mut().run_schedule(Update);
+            let entity = app.world().resource::<PrimEntities>().entity("/Curve").unwrap();
+            let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colors") };
+            assert_eq!(colors[CUBIC_STEPS/2][3], if time == 0. { 0.875 } else { 1. });
+            let material = app.world().resource::<Assets<StandardMaterial>>().get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+            assert_eq!(material.alpha_mode, if time == 0. { AlphaMode::Blend } else { AlphaMode::Opaque });
+        }
+    }
 
     #[test]
     fn indexed_curve_gradients_keep_vertex_and_varying_offsets_distinct() {

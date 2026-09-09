@@ -25,6 +25,17 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Curve fallback materials now choose alpha mode from generated vertex colors,
+not only authored opacity controls. Added a defensive Catmull-Rom regression:
+controls [2,1,1,2] produce midpoint alpha 0.875 and require blending; resampling
+to [1,1,1,1] restores opaque mode and scrubbing back restores blending. The test
+uses out-of-range authored opacity deliberately; this is not a claim that such
+inputs conform to USD's opacity range or a new input-clamping policy.
+The change applies to unbound fallback materials, not bound shader behavior.
+All 353 tests, check-all, build and whitespace checks pass. Validation logs:
+`/tmp/usd-curve-alpha-{tests,check,build}.log`. No new rendered
+acceptance was performed for this defensive case; broader fidelity remains open.
+
 Extended curve display color/opacity to indexed vertex and varying interpolation.
 CurveSampling tracks independent control-point and varying offsets per batch:
 cubic vertex values use basis weights and pinned phantom endpoint expansion;

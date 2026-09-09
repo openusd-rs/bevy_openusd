@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Extended curve display color/opacity to indexed vertex and varying interpolation.
+CurveSampling tracks independent control-point and varying offsets per batch:
+cubic vertex values use basis weights and pinned phantom endpoint expansion;
+varying values interpolate between segment samples with per-curve periodic wrap.
+Linear curves address per-point values. Constant/uniform/single-value handling
+remains supported. Missing/invalid indices use the channel fallback.
+
+Tests distinguish indexed vertex/varying gradients across two Bezier curves,
+assert analytic midpoint colors and independent varying opacity, compare vertex
+sampling against geometric tessellation across all cubic bases and wraps, and
+verify indexed periodic varying closure with nonzero batch offsets. Inspected
+`target/curve-gradients.png`: upper vertex curves pass through green/yellow,
+lower varying curves interpolate red/purple/blue, with matching geometry and
+opacity fades. All 352 tests pass; verification logs are
+`/tmp/usd-curve-gradients-{tests,check,build}.log`.
+
+Widths, adaptive tessellation, malformed topology diagnostics, broader animated
+multi-instance gradient image acceptance and full reference-render parity remain
+open. This supersedes the preceding vertex/varying display-primvar limitation.
+
 Curves now project inherited/local constant and indexed uniform display color
 and opacity, broadcasting each curve's sample over its generated vertices.
 Single unindexed values also broadcast. The geometry builder returns optional

@@ -195,9 +195,11 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<
     let mut out: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let color = crate::read::geom::read_primvar_vec3f(ctx.stage, ctx.path, "primvars:displayColor", ctx.time).ok().flatten();
+    let color = color.map(|value| MeshPrimvar { values: value.values.into_iter().map(Vec3::from).collect(), interpolation: value.interpolation, indices: value.indices });
     let opacity = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time).ok().flatten();
     let mut colors = (color.is_some() || opacity.is_some()).then(Vec::new);
     let mut cursor = 0usize;
+    let mut varying_offset = 0usize;
     for (curve, c) in counts.into_iter().enumerate() {
         let n = c.max(0) as usize;
         let end = (cursor + n).min(points.len());
@@ -210,25 +212,74 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<
         } else {
             emit_polyline(cv, periodic, &mut out, &mut indices);
         }
+        let pinned = wrap == "pinned" && basis != Basis::Bezier;
+        let cubic = is_cubic && (cv.len() >= 4 || (periodic && cv.len() >= 3) || (pinned && cv.len() >= 2));
+        let samples = out.len() - first;
+        let segments = if cubic { samples.saturating_sub(1) / CUBIC_STEPS } else { 0 };
+        let layout = CurveSampling { curve, point_offset: cursor, varying_offset, count: cv.len(), segments, basis, cubic, periodic, pinned };
         if let Some(colors) = &mut colors {
-            let rgb = color.as_ref().and_then(|value| curve_value(value, curve)).unwrap_or([1.;3]);
-            let alpha = opacity.as_ref().and_then(|value| curve_value(value, curve)).unwrap_or(1.);
-            colors.extend(std::iter::repeat_n([rgb[0], rgb[1], rgb[2], alpha], out.len() - first));
+            for sample in 0..samples {
+                let rgb = color.as_ref().map(|value| layout.sample(value, sample, Vec3::ONE)).unwrap_or(Vec3::ONE);
+                let alpha = opacity.as_ref().map(|value| layout.sample(value, sample, 1.)).unwrap_or(1.);
+                colors.push([rgb.x, rgb.y, rgb.z, alpha]);
+            }
         }
+        varying_offset += if cubic { segments + usize::from(!periodic) } else { cv.len() };
         cursor = end;
     }
     Some((out, indices, colors))
 }
 
-fn curve_value<T: Copy>(value: &MeshPrimvar<T>, curve: usize) -> Option<T> {
-    let slot = match value.interpolation {
-        Interpolation::Constant => 0,
-        Interpolation::Uniform => curve,
-        _ if value.values.len() == 1 && value.indices.is_empty() => 0,
-        _ => return None,
-    };
-    let index = if value.indices.is_empty() { slot } else { usize::try_from(*value.indices.get(slot)?).ok()? };
-    value.values.get(index).copied()
+struct CurveSampling {
+    curve: usize,
+    point_offset: usize,
+    varying_offset: usize,
+    count: usize,
+    segments: usize,
+    basis: Basis,
+    cubic: bool,
+    periodic: bool,
+    pinned: bool,
+}
+
+impl CurveSampling {
+    fn sample<T>(&self, value: &MeshPrimvar<T>, sample: usize, fallback: T) -> T
+    where T: Copy + std::ops::Add<Output=T> + std::ops::Sub<Output=T> + std::ops::Mul<f32, Output=T> {
+        let lookup = |slot: usize| {
+            let index = if value.indices.is_empty() { Some(slot) }
+                else { value.indices.get(slot).and_then(|index| usize::try_from(*index).ok()) };
+            index.and_then(|index| value.values.get(index)).copied().unwrap_or(fallback)
+        };
+        if value.values.len() == 1 && value.indices.is_empty() { return value.values[0]; }
+        match value.interpolation {
+            Interpolation::Constant => return lookup(0),
+            Interpolation::Uniform => return lookup(self.curve),
+            Interpolation::FaceVarying => return fallback,
+            _ => {}
+        }
+        if !self.cubic {
+            let offset = if value.interpolation == Interpolation::Vertex { self.point_offset } else { self.varying_offset };
+            return lookup(offset + sample);
+        }
+        let segment = (sample / CUBIC_STEPS).min(self.segments - 1);
+        let t = (sample - segment * CUBIC_STEPS) as f32 / CUBIC_STEPS as f32;
+        if value.interpolation == Interpolation::Varying {
+            let next = if self.periodic { (segment + 1) % self.segments } else { segment + 1 };
+            return lookup(self.varying_offset + segment) * (1. - t) + lookup(self.varying_offset + next) * t;
+        }
+        let control = |index: usize| {
+            if self.periodic { return lookup(self.point_offset + index % self.count); }
+            if self.pinned {
+                if index == 0 { return lookup(self.point_offset) * 2. - lookup(self.point_offset + 1); }
+                if index == self.count + 1 { return lookup(self.point_offset + self.count - 1) * 2. - lookup(self.point_offset + self.count - 2); }
+                return lookup(self.point_offset + index - 1);
+            }
+            lookup(self.point_offset + index)
+        };
+        let weights = self.basis.weights(t);
+        let base = segment * self.basis.vstep();
+        control(base) * weights[0] + control(base + 1) * weights[1] + control(base + 2) * weights[2] + control(base + 3) * weights[3]
+    }
 }
 
 impl PrimRoute for CurvesRoute {
@@ -269,6 +320,58 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn indexed_curve_gradients_keep_vertex_and_varying_offsets_distinct() {
+        let source = crate::UsdSource::new("gradients.usda", include_bytes!("../../../../assets/curve_gradients.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        for (name, midpoints) in [("Vertex", [[0.125,0.75,0.125], [0.875,0.75,0.125]]), ("Varying", [[0.5,0.,0.5];2])] {
+            let path = openusd::sdf::path(&format!("/{name}")).unwrap();
+            let (positions, _, colors) = line_geometry(&RouteCtx::new(&stage, &path)).unwrap();
+            let colors = colors.unwrap();
+            assert_eq!(colors.len(), positions.len());
+            assert_eq!(colors.len(), 2 * (CUBIC_STEPS + 1));
+            for curve in 0..2 {
+                let base = curve * (CUBIC_STEPS + 1);
+                let actual = colors[base + CUBIC_STEPS / 2];
+                assert!(Vec3::new(actual[0],actual[1],actual[2]).abs_diff_eq(Vec3::from(midpoints[curve]), 1e-6));
+                assert!((actual[3] - 0.6).abs() < 1e-6);
+                assert_eq!(colors[base], if curve == 0 { [1.,0.,0.,0.2] } else { [0.,0.,1.,1.] });
+                assert_eq!(colors[base + CUBIC_STEPS], if curve == 0 { [0.,0.,1.,1.] } else { [1.,0.,0.,0.2] });
+            }
+        }
+    }
+
+    #[test]
+    fn vertex_curve_sampling_matches_geometry_for_all_cubic_wraps() {
+        let controls = [[0.,0.,0.], [1.,2.,0.], [2.,1.,0.], [3.,0.,0.], [4.,1.,0.], [5.,0.,0.]];
+        for basis in [Basis::Bezier, Basis::Bspline, Basis::CatmullRom] {
+            for (periodic,pinned,count) in [(false,false,4), (true,false,6), (true,false,3), (false,true,2), (false,true,4)] {
+                if pinned && basis == Basis::Bezier { continue; }
+                let cv = &controls[..count];
+                let mut positions = Vec::new();
+                let mut indices = Vec::new();
+                if pinned { tessellate_pinned(cv, basis, &mut positions, &mut indices); }
+                else { tessellate_cubic(cv, basis, periodic, &mut positions, &mut indices); }
+                let value = MeshPrimvar { values: cv.iter().copied().map(Vec3::from).collect(), interpolation: Interpolation::Vertex, indices: Vec::new() };
+                let layout = CurveSampling { curve: 0, point_offset: 0, varying_offset: 0, count, segments: (positions.len()-1)/CUBIC_STEPS, basis, cubic: true, periodic, pinned };
+                for (sample, expected) in positions.into_iter().enumerate() {
+                    assert!(layout.sample(&value, sample, Vec3::ONE).abs_diff_eq(Vec3::from(expected), 1e-5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn varying_periodic_samples_wrap_within_their_batch() {
+        let value = MeshPrimvar { values: vec![99., 0., 1., 2.], interpolation: Interpolation::Varying, indices: vec![0,3,2,1] };
+        let layout = CurveSampling { curve: 1, point_offset: 7, varying_offset: 1, count: 3, segments: 3, basis: Basis::Bspline, cubic: true, periodic: true, pinned: false };
+        assert_eq!(layout.sample(&value, 0, -1.), 2.);
+        assert_eq!(layout.sample(&value, CUBIC_STEPS, -1.), 1.);
+        assert_eq!(layout.sample(&value, 2*CUBIC_STEPS, -1.), 0.);
+        assert_eq!(layout.sample(&value, 3*CUBIC_STEPS, -1.), 2.);
+        assert_eq!(layout.sample(&value, 2*CUBIC_STEPS+CUBIC_STEPS/2, -1.), 1.);
+    }
 
     #[test]
     fn curve_display_colors_sample_and_reconcile_parent_edits() {

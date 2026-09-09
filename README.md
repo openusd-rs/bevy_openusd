@@ -205,11 +205,15 @@ material selects alpha blending when needed without multiplying opacity twice.
 pair changes from translucent red to opaque green; the right pair swaps yellow
 and blue while retaining its per-point opacity. Points remain one-pixel marks.
 
-Curves project constant/inherited and indexed `uniform` display color/opacity,
-broadcasting each curve's sample across its tessellated vertices. Single unindexed
-values also broadcast. `assets/curve_colors.usda` compares inherited animated
-style on two lines with independent uniform styles on two cubic curves.
-Multi-value vertex/varying curve primvars are not yet interpolated.
+Curves project constant/inherited and indexed `uniform`, `vertex` and `varying`
+display color/opacity. Uniform samples broadcast per curve; cubic vertex values
+use the geometric basis, while varying values interpolate linearly between
+segment boundaries. Periodic interpolation wraps within each curve; pinned
+vertex interpolation expands the endpoint values. Linear curves use per-point
+vertex/varying values. Single unindexed values also broadcast.
+`assets/curve_colors.usda` compares inherited animated style with uniform styles.
+`assets/curve_gradients.usda` places indexed vertex gradients above varying
+gradients on identical Bezier geometry, with independent varying opacity.
 
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:

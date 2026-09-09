@@ -220,8 +220,12 @@ Curve projection rejects negative/mismatched counts and non-finite input or
 tessellated positions. It clears owned geometry and reports `UsdCurveError` in
 the inspector; corrected source data recovers on the same entity. The capture
 example exits with an error instead of saving a partial scene. Missing counts
-still infer one curve; cubic basis/stride and primvar-cardinality validation
-remain incomplete. `assets/invalid_curves.usda` is a negative capture fixture.
+still infer one curve. Unknown type/basis/wrap tokens and unsupported segment
+layouts report errors; nonperiodic Bezier requires `4 + 3n` control points,
+periodic Bezier `3n`, and pinned Bspline/Catmull-Rom at least two. Periodic cubic
+counts below three are not supported. Primvar-cardinality validation remains
+incomplete. `assets/invalid_curves.usda` and `assets/invalid_curve_layout.usda`
+are negative capture fixtures.
 
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:

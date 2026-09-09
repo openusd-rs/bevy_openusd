@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Curve validation now rejects unknown type/wrap/cubic-basis tokens and unsupported
+segment layouts instead of dropping unused control points. Nonperiodic Bezier
+requires 4+3n controls; periodic Bezier requires 3n with at least three controls;
+nonperiodic Bspline/Catmull-Rom require four, pinned require two. Periodic cubic
+counts below three remain explicitly unsupported; zero-count entries are empty.
+Linear basis tokens are ignored. The reader fallback now names the schema's
+Bezier default rather than Bspline. Older tests were corrected to author linear
+type/Bspline basis explicitly instead of depending on malformed cubic fallback.
+
+The layout matrix covers valid/invalid strides, pinned minimum counts, periodic
+three-point layouts and unknown tokens. All 355 tests, check-all, build and
+whitespace checks pass (`/tmp/usd-curve-layout-{tests,check,build}.log`). Negative
+GPU fixture `assets/invalid_curve_layout.usda` exits nonzero with a five-control
+Bezier layout error and writes no PNG (`/tmp/usd-curve-layout-capture.log`).
+Primvar cardinality, output budgets, width-aware surfaces and full reference
+fidelity remain open; this supersedes the preceding basis/stride limitation.
+
 Added UsdCurveError validation for negative/overflowing counts, authored count
 totals that differ from the point count, invalid count value types and non-finite
 input/tessellated positions. Invalid projection clears owned geometry instead of

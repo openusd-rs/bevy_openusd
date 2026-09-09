@@ -31,12 +31,28 @@ fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
     if points.iter().flatten().any(|value| !value.is_finite()) { return Err("non-finite curve point".into()); }
     let counts = curves.curve_vertex_counts_attr().get_at::<Value>(ctx.time.map(openusd::usd::TimeCode::new))
         .map_err(|error| error.to_string())?;
-    if let Some(counts) = counts {
+    let counts = if let Some(counts) = counts {
         let Value::IntVec(counts) = counts else { return Err("invalid curveVertexCounts type".into()); };
         let total = counts.iter().try_fold(0usize, |total, count| {
             usize::try_from(*count).ok().and_then(|count| total.checked_add(count))
         }).ok_or("negative or overflowing curveVertexCounts")?;
         if total != points.len() { return Err(format!("curveVertexCounts sum {total} differs from {} points", points.len())); }
+        counts.into_iter().map(|count| count as usize).collect::<Vec<_>>()
+    } else { vec![points.len()] };
+    let kind = read_token(curves.type_attr(), "cubic", ctx.time);
+    if !matches!(kind.as_str(), "linear" | "cubic") { return Err(format!("unsupported curve type {kind}")); }
+    let wrap = read_token(curves.wrap_attr(), "nonperiodic", ctx.time);
+    if !matches!(wrap.as_str(), "nonperiodic" | "periodic" | "pinned") { return Err(format!("unsupported curve wrap {wrap}")); }
+    let basis = read_token(curves.basis_attr(), "bezier", ctx.time);
+    if kind == "cubic" && !matches!(basis.as_str(), "bezier" | "bspline" | "catmullRom") { return Err(format!("unsupported cubic basis {basis}")); }
+    let stride = if basis == "bezier" { 3 } else { 1 };
+    for (curve,count) in counts.into_iter().enumerate() {
+        if count == 0 { continue; }
+        let valid = if kind == "linear" { count >= 2 }
+            else if wrap == "periodic" { count >= 3 && count % stride == 0 }
+            else if wrap == "pinned" && basis != "bezier" { count >= 2 }
+            else { count >= 4 && (count - 4) % stride == 0 };
+        if !valid { return Err(format!("unsupported {kind}/{basis}/{wrap} layout: curve {curve} has {count} control points")); }
     }
     Ok(())
 }
@@ -202,7 +218,7 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<
         return None;
     }
     let is_cubic = read_token(curves.type_attr(), "cubic", ctx.time) == "cubic";
-    let basis = Basis::parse(&read_token(curves.basis_attr(), "bspline", ctx.time));
+    let basis = Basis::parse(&read_token(curves.basis_attr(), "bezier", ctx.time));
     let wrap = read_token(curves.wrap_attr(), "nonperiodic", ctx.time);
     let periodic = wrap == "periodic";
 
@@ -354,6 +370,31 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn curve_layout_validation_rejects_unused_controls_and_unknown_tokens() {
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("layout.usda").unwrap();
+        stage.define_prim("/Curve").unwrap().set_type_name("BasisCurves").unwrap();
+        let path = openusd::sdf::path("/Curve").unwrap();
+        for (kind,basis,wrap,count,valid) in [
+            ("cubic","bezier","nonperiodic",4,true), ("cubic","bezier","nonperiodic",5,false),
+            ("cubic","bezier","nonperiodic",7,true), ("cubic","bezier","periodic",3,true),
+            ("cubic","bezier","periodic",4,false), ("cubic","bezier","periodic",6,true),
+            ("cubic","bspline","pinned",2,true), ("cubic","catmullRom","pinned",2,true),
+            ("cubic","bspline","nonperiodic",3,false), ("cubic","catmullRom","periodic",3,true),
+            ("linear","ignored","nonperiodic",2,true), ("linear","ignored","periodic",3,true),
+            ("cubic","power","nonperiodic",4,false), ("unknown","bezier","nonperiodic",4,false),
+            ("cubic","bezier","unknown",4,false),
+        ] {
+            for (name,value) in [("type",kind), ("basis",basis), ("wrap",wrap)] {
+                stage.create_attribute(format!("/Curve.{name}"), "token").unwrap().set(Value::Token(value.into())).unwrap();
+            }
+            stage.create_attribute("/Curve.points", "point3f[]").unwrap().set(Value::Vec3fVec(vec![[0.,0.,0.].into();count])).unwrap();
+            stage.create_attribute("/Curve.curveVertexCounts", "int[]").unwrap().set(Value::IntVec(vec![count as i32])).unwrap();
+            let result = validate_curves(&RouteCtx::new(&stage, &path));
+            assert_eq!(result.is_ok(), valid, "{kind}/{basis}/{wrap}/{count}: {result:?}");
+        }
+    }
 
     #[test]
     fn curve_errors_clear_geometry_and_recover_without_losing_children() {
@@ -598,6 +639,7 @@ def BasisCurves "Curve" {
             .unwrap()
             .set_type_name("BasisCurves")
             .unwrap();
+        stage.create_attribute("/Curve.type", "token").unwrap().set(Value::Token("linear".into())).unwrap();
         stage
             .create_attribute("/Curve.points", "point3f[]")
             .unwrap()
@@ -625,7 +667,7 @@ def BasisCurves "Curve" {
         let handle = world.get::<Mesh3d>(e).expect("curve mesh").0.clone();
         let mesh = world.resource::<Assets<Mesh>>().get(&handle).unwrap();
         assert_eq!(mesh.primitive_topology(), PrimitiveTopology::LineList);
-        // 3 points (< 4 CVs) → polyline fallback → 2 segments → 4 line indices.
+        // Three linear points produce two segments.
         assert_eq!(mesh.indices().map(|i| i.len()), Some(4));
     }
 
@@ -728,6 +770,7 @@ def BasisCurves "Curve" {
     fn periodic_cubic_wraps_without_panic() {
         let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("crv.usda").unwrap();
         stage.define_prim("/Curve").unwrap().set_type_name("BasisCurves").unwrap();
+        stage.create_attribute("/Curve.basis", "token").unwrap().set(Value::Token("bspline".into())).unwrap();
         stage
             .create_attribute("/Curve.type", "token")
             .unwrap()
@@ -763,7 +806,7 @@ def BasisCurves "Curve" {
         project_stage(&mut world, &live, &mut map);
         let handle = world.get::<Mesh3d>(map.entity("/Curve").unwrap()).unwrap().0.clone();
         let mesh = world.resource::<Assets<Mesh>>().get(&handle).unwrap();
-        // 4 CVs, vstep 1 (bspline default), periodic → 4 segments, each closing
+        // Four Bspline control points produce four periodic segments, each closing
         // back through the ring; a non-empty index buffer proves the wrap ran.
         assert!(mesh.indices().map(|i| i.len()).unwrap_or(0) > 0);
     }

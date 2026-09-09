@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Added UsdCurveError validation for negative/overflowing counts, authored count
+totals that differ from the point count, invalid count value types and non-finite
+input/tessellated positions. Invalid projection clears owned geometry instead of
+silently clamping the shape; corrected data recovers, type changes clear errors,
+and entity/runtime children remain intact. Missing counts still infer one curve;
+full cubic stride/token and primvar-cardinality validation remain open.
+
+The editor bridge publishes/clears curve diagnostics with other rendering
+issues. Standalone capture rejects these errors. Adding a separate curve query
+exceeded the capture system parameter limit; combined shape/curve diagnostic
+queries without changing the existing shape failure behavior. Regression tests
+cover malformed counts, non-finite points, recovery and editor issue lifecycle.
+All 354 tests, check-all, build and whitespace checks pass
+(`/tmp/usd-curve-validation-final-{tests,check,build}.log`).
+
+Negative GPU fixture `assets/invalid_curves.usda` fails with
+`curve /Broken: curveVertexCounts sum 4 differs from 2 points`; verified nonzero
+capture exit and no `target/invalid-curves.png` output. Log:
+`/tmp/usd-invalid-curves-final-capture.log`. New inspector visual acceptance was
+not performed; its bridge state is tested. Validation currently rereads point
+arrays before tessellation; performance has not been benchmarked.
+
 Curve fallback materials now choose alpha mode from generated vertex colors,
 not only authored opacity controls. Added a defensive Catmull-Rom regression:
 controls [2,1,1,2] produce midpoint alpha 0.875 and require blending; resampling

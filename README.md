@@ -216,6 +216,12 @@ vertex/varying values. Single unindexed values also broadcast.
 gradients on identical Bezier geometry, with independent varying opacity.
 Unbound curve materials choose blending from generated vertex alpha, including
 cubic undershoot, rather than from the authored control values alone.
+Curve projection rejects negative/mismatched counts and non-finite input or
+tessellated positions. It clears owned geometry and reports `UsdCurveError` in
+the inspector; corrected source data recovers on the same entity. The capture
+example exits with an error instead of saving a partial scene. Missing counts
+still infer one curve; cubic basis/stride and primvar-cardinality validation
+remain incomplete. `assets/invalid_curves.usda` is a negative capture fixture.
 
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:

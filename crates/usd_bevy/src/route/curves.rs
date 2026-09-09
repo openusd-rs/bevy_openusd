@@ -21,6 +21,26 @@ use crate::read::geom::{Interpolation, MeshPrimvar};
 /// Maps `UsdGeomBasisCurves` to a line-list mesh.
 pub struct CurvesRoute;
 
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct UsdCurveError(pub String);
+
+fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
+    let curves = BasisCurves::get(ctx.stage, ctx.path.clone()).map_err(|error| error.to_string())?
+        .ok_or("missing BasisCurves schema")?;
+    let points = read_points(&curves, ctx.time).ok_or("missing or invalid curve points")?;
+    if points.iter().flatten().any(|value| !value.is_finite()) { return Err("non-finite curve point".into()); }
+    let counts = curves.curve_vertex_counts_attr().get_at::<Value>(ctx.time.map(openusd::usd::TimeCode::new))
+        .map_err(|error| error.to_string())?;
+    if let Some(counts) = counts {
+        let Value::IntVec(counts) = counts else { return Err("invalid curveVertexCounts type".into()); };
+        let total = counts.iter().try_fold(0usize, |total, count| {
+            usize::try_from(*count).ok().and_then(|count| total.checked_add(count))
+        }).ok_or("negative or overflowing curveVertexCounts")?;
+        if total != points.len() { return Err(format!("curveVertexCounts sum {total} differs from {} points", points.len())); }
+    }
+    Ok(())
+}
+
 fn read_points(curves: &BasisCurves, time: Option<f64>) -> Option<Vec<[f32; 3]>> {
     match curves.points_attr().get_at::<Value>(time.map(openusd::usd::TimeCode::new)) {
         Ok(Some(Value::Vec3fVec(v))) => Some(v.iter().map(|p| [p.x, p.y, p.z]).collect()),
@@ -285,6 +305,7 @@ impl CurveSampling {
 impl PrimRoute for CurvesRoute {
     fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
         super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
+        world.entity_mut(entity).remove::<UsdCurveError>();
     }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         ctx.type_name.as_deref() == Some("BasisCurves")
@@ -296,10 +317,21 @@ impl PrimRoute for CurvesRoute {
         {
             return;
         }
+        if let Err(error) = validate_curves(ctx) {
+            super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
+            world.entity_mut(entity).insert(UsdCurveError(error));
+            return;
+        }
+        world.entity_mut(entity).remove::<UsdCurveError>();
         let Some((points, indices, colors)) = line_geometry(ctx) else {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             return;
         };
+        if points.iter().flatten().any(|value| !value.is_finite()) {
+            super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
+            world.entity_mut(entity).insert(UsdCurveError("non-finite tessellated curve point".into()));
+            return;
+        }
         let translucent = colors.as_ref().is_some_and(|colors| colors.iter().any(|color| color[3].is_finite() && color[3] < 1.));
         let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, points);
@@ -322,6 +354,39 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn curve_errors_clear_geometry_and_recover_without_losing_children() {
+        let source = crate::UsdSource::new("curves.usda", include_bytes!("../../../../assets/curve_colors.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let mut app = App::new();
+        app.add_plugins(crate::live::LiveStagePlugin);
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        app.world_mut().insert_non_send(LiveStage::new(stage.clone()));
+        app.world_mut().run_schedule(Update);
+        let entity = app.world().resource::<PrimEntities>().entity("/Root/Inherited").unwrap();
+        let child = app.world_mut().spawn(ChildOf(entity)).id();
+        let counts = stage.attribute("/Root/Inherited.curveVertexCounts").unwrap();
+        for invalid in [vec![5], vec![-1,5], vec![2], vec![]] {
+            counts.clone().set(Value::IntVec(invalid)).unwrap();
+            app.world_mut().run_schedule(Update);
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+            assert!(app.world().get::<UsdCurveError>(entity).is_some());
+            counts.clone().set(Value::IntVec(vec![2,2])).unwrap();
+            app.world_mut().run_schedule(Update);
+            assert!(app.world().get::<Mesh3d>(entity).is_some());
+            assert!(app.world().get::<UsdCurveError>(entity).is_none());
+        }
+        stage.attribute("/Root/Inherited.points").unwrap().set(Value::Vec3fVec(vec![[f32::INFINITY,0.,0.].into();4])).unwrap();
+        app.world_mut().run_schedule(Update);
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        assert_eq!(app.world().get::<UsdCurveError>(entity).unwrap().0, "non-finite curve point");
+        stage.prim(openusd::sdf::path("/Root/Inherited").unwrap()).unwrap().set_type_name("Xform").unwrap();
+        app.world_mut().run_schedule(Update);
+        assert!(app.world().get::<UsdCurveError>(entity).is_none());
+        assert_eq!(app.world().resource::<PrimEntities>().entity("/Root/Inherited"), Some(entity));
+        assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
+    }
 
     #[test]
     fn curve_blending_tracks_generated_opacity_and_recovers() {
@@ -625,9 +690,7 @@ def BasisCurves "Curve" {
         }
     }
 
-    /// A cubic curve whose `curveVertexCounts` overshoots the point buffer, plus
-    /// a negative count, must not panic on out-of-range indexing — the geometry
-    /// is clamped to the available points.
+    /// Invalid curve counts suppress geometry and expose a projection error.
     #[test]
     fn malformed_counts_do_not_panic() {
         let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("crv.usda").unwrap();
@@ -654,9 +717,10 @@ def BasisCurves "Curve" {
         world.insert_resource(SchemaRegistry::builtin());
         let live = LiveStage::new(stage);
         let mut map = PrimEntities::default();
-        // The assertion is simply that this does not panic.
         project_stage(&mut world, &live, &mut map);
-        assert!(world.get::<Mesh3d>(map.entity("/Curve").unwrap()).is_some());
+        let entity = map.entity("/Curve").unwrap();
+        assert!(world.get::<Mesh3d>(entity).is_none());
+        assert!(world.get::<UsdCurveError>(entity).is_some());
     }
 
     /// A periodic cubic curve exercises the wrap-around index path (`% n`).

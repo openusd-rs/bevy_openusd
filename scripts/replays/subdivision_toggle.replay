@@ -1,0 +1,7 @@
+# Rendering pane, default 1600x1000 isolated viewer.
+5000 move 260 468
+5100 down 260 468
+5200 up 260 468
+14000 move 260 404
+14100 down 260 404
+14200 up 260 404

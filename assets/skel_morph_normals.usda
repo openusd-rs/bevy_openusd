@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    subLayers = [@morph_normals.usda@]
+)
+over "Test"
+{
+    over "Face"
+    {
+        int[] primvars:skel:jointIndices = [0] (
+            elementSize = 1
+            interpolation = "constant"
+        )
+        float[] primvars:skel:jointWeights = [1] (
+            elementSize = 1
+            interpolation = "constant"
+        )
+    }
+    over "Skel"
+    {
+        over "Anim"
+        {
+            uniform token[] joints = ["Root"]
+            float3[] translations = [(0,0,0)]
+            quatf[] rotations = [(0.9238795,0,0.3826834,0)]
+            half3[] scales = [(2,1,0.5)]
+        }
+    }
+}

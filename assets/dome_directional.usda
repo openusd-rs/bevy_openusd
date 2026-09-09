@@ -1,0 +1,10 @@
+#usda 1.0
+(
+    subLayers = [@dome_environment.usda@]
+)
+over "Env" {
+    asset inputs:texture:file = @dome_directional.hdr@
+    float inputs:intensity.timeSamples = { 0: 10000, 10: 10000 }
+    float xformOp:rotateY.timeSamples = { 0: 0, 10: 180 }
+    uniform token[] xformOpOrder = ["xformOp:rotateY"]
+}

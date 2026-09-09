@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    subLayers = [@skel_morph_normals.usda@]
+)
+over "Test" {
+    over "Skel" {
+        over "Anim" {
+            half3[] scales.timeSamples = {
+                0: [(2, 1, 0.5)],
+                10: [(0, 1, 0.5)],
+                20: [(2, 1, 0.5)]
+            }
+        }
+    }
+}

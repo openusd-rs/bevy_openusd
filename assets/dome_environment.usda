@@ -1,0 +1,41 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+def DomeLight "Env" {
+    asset inputs:texture:file = @dome_warm.hdr@
+    token inputs:texture:format = "latlong"
+    float inputs:intensity = 10000
+    float inputs:intensity.timeSamples = { 0: 10000, 10: 0 }
+}
+def Sphere "Diffuse" {
+    double radius = 0.8
+    double3 xformOp:translate = (-1, 1, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel material:binding = </Matte>
+}
+def Sphere "Metal" {
+    double radius = 0.8
+    double3 xformOp:translate = (1, 1, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel material:binding = </Metallic>
+}
+def Material "Matte" {
+    token outputs:surface.connect = </Matte/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+        float inputs:roughness = 0.8
+        token outputs:surface
+    }
+}
+def Material "Metallic" {
+    token outputs:surface.connect = </Metallic/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+        float inputs:metallic = 1
+        float inputs:roughness = 0.2
+        token outputs:surface
+    }
+}

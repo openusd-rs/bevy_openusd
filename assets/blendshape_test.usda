@@ -1,0 +1,45 @@
+#usda 1.0
+(
+    defaultPrim = "Test"
+    upAxis = "Y"
+    doc = "Minimal blend-shape-only mesh (no skinning): a quad whose one BlendShape 'smile' pushes vertex 0 by +1 in Z, driven at full weight by the SkelAnimation. Exercises the Phase D1 CPU morph path."
+)
+
+def SkelRoot "Test"
+{
+    def Skeleton "Skel"
+    {
+        uniform token[] joints = ["Root"]
+        uniform matrix4d[] bindTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        uniform matrix4d[] restTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+
+        rel skel:animationSource = </Test/Skel/Anim>
+
+        def SkelAnimation "Anim"
+        {
+            uniform token[] blendShapes = ["smile"]
+            float[] blendShapeWeights = [1.0]
+        }
+    }
+
+    def Mesh "Face" (
+        prepend apiSchemas = ["SkelBindingAPI"]
+    )
+    {
+        rel skel:skeleton = </Test/Skel>
+        uniform token[] skel:blendShapes = ["smile"]
+        prepend rel skel:blendShapeTargets = [</Test/Face/smile>]
+
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [
+            (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)
+        ]
+
+        def BlendShape "smile"
+        {
+            uniform vector3f[] offsets = [(0, 0, 1)]
+            uniform int[] pointIndices = [0]
+        }
+    }
+}

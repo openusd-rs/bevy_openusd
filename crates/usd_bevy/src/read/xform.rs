@@ -3,7 +3,7 @@
 
 use glam::{Mat4, Quat, Vec3};
 use openusd::sdf::{Path, Value};
-use openusd::usd::Stage;
+use openusd::usd::{Stage, TimeCode};
 
 /// Decomposed local transform: translate, rotate (quaternion `xyzw`), scale.
 #[derive(Debug, Clone, Copy)]
@@ -13,14 +13,42 @@ pub struct Transform3 {
     pub scale: [f32; 3],
 }
 
-fn attr_value(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
-    stage.prim(prim.clone()).attribute(name).get::<Value>()
+fn attr_value(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+    time: Option<TimeCode>,
+) -> anyhow::Result<Option<Value>> {
+    Ok(stage.prim(prim.clone()).expect("validated USD path").attribute(name).get_at::<Value>(time)?)
 }
 
 /// Read `xformOpOrder` and compose every listed op into a single 4×4, then
-/// decompose to TRS. `None` when no `xformOpOrder` is authored.
+/// decompose to TRS, at the stage's default time. `None` when no
+/// `xformOpOrder` is authored.
 pub fn read_transform(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Transform3>> {
-    let Some(raw) = attr_value(stage, prim, "xformOpOrder")? else {
+    read_transform_at(stage, prim, None)
+}
+
+/// Like [`read_transform`], but resolves attribute values at `time` (a USD
+/// time code). `None` reads the default (unanimated) value.
+pub fn read_transform_at(
+    stage: &Stage,
+    prim: &Path,
+    time: Option<f64>,
+) -> anyhow::Result<Option<Transform3>> {
+    let Some(matrix) = read_transform_matrix_at(stage, prim, time)? else { return Ok(None) };
+    let (s, r, t) = Mat4::from_cols_array(&matrix).to_scale_rotation_translation();
+    Ok(Some(Transform3 {
+        translate: [t.x, t.y, t.z],
+        rotate: [r.x, r.y, r.z, r.w],
+        scale: [s.x, s.y, s.z],
+    }))
+}
+
+/// Composed local matrix in column-major order before TRS decomposition.
+pub fn read_transform_matrix_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<Option<[f32; 16]>> {
+    let tc = time.map(TimeCode::new);
+    let Some(raw) = attr_value(stage, prim, "xformOpOrder", tc)? else {
         return Ok(None);
     };
     let order: Vec<String> = match raw {
@@ -36,25 +64,25 @@ pub fn read_transform(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Trans
 
     let mut m = Mat4::IDENTITY;
     for op in &order {
-        m *= build_op_matrix(stage, prim, op)?;
+        m *= build_op_matrix(stage, prim, op, tc)?;
     }
 
-    let (s, r, t) = m.to_scale_rotation_translation();
-    Ok(Some(Transform3 {
-        translate: [t.x, t.y, t.z],
-        rotate: [r.x, r.y, r.z, r.w],
-        scale: [s.x, s.y, s.z],
-    }))
+    Ok(Some(m.to_cols_array()))
 }
 
-fn build_op_matrix(stage: &Stage, prim: &Path, op_token: &str) -> anyhow::Result<Mat4> {
+fn build_op_matrix(
+    stage: &Stage,
+    prim: &Path,
+    op_token: &str,
+    time: Option<TimeCode>,
+) -> anyhow::Result<Mat4> {
     const INVERT: &str = "!invert!";
     let (inverted, base) = match op_token.strip_prefix(INVERT) {
         Some(stripped) => (true, stripped),
         None => (false, op_token),
     };
 
-    let Some(raw) = attr_value(stage, prim, base)? else {
+    let Some(raw) = attr_value(stage, prim, base, time)? else {
         return Ok(Mat4::IDENTITY);
     };
 

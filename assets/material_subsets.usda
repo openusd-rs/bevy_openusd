@@ -1,0 +1,46 @@
+#usda 1.0
+(
+    defaultPrim = "Panels"
+    upAxis = "Y"
+    startTimeCode = 0
+    endTimeCode = 10
+    timeCodesPerSecond = 24
+)
+def Mesh "Panels" {
+    point3f[] points = [(-2,0,0), (0,0,0), (0,3,0), (-2,3,0), (0,0,-2), (0,3,-2)]
+    int[] faceVertexCounts = [4,4]
+    int[] faceVertexIndices = [0,1,2,3,1,4,5,2]
+    normal3f[] normals = [(0,0,1), (1,0,0)] (interpolation = "uniform")
+    uniform token subdivisionScheme = "none"
+    bool doubleSided = true
+    def GeomSubset "Orange" {
+        uniform token familyName = "materialBind"
+        uniform token elementType = "face"
+        int[] indices.timeSamples = { 0: [0], 10: [1] }
+        rel material:binding = </Orange>
+    }
+    def GeomSubset "Blue" {
+        uniform token familyName = "materialBind"
+        uniform token elementType = "face"
+        int[] indices.timeSamples = { 0: [1], 10: [0] }
+        rel material:binding = </Blue>
+    }
+}
+def Material "Orange" {
+    token outputs:surface.connect = </Orange/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.9,0.16,0.025)
+        float inputs:roughness = 0.45
+        token outputs:surface
+    }
+}
+def Material "Blue" {
+    token outputs:surface.connect = </Blue/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.025,0.22,0.85)
+        float inputs:roughness = 0.45
+        token outputs:surface
+    }
+}

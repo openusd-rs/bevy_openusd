@@ -1,9 +1,11 @@
 SHELL := /bin/bash
 
-PROJECT_NAME := $(shell sed -n '/^[[:space:]]*[^#\[[:space:]]/p' PROJECT | head -1 | tr -d '[:space:]')
-PROJECT_VERSION := $(shell sed -n '/^[[:space:]]*[^#\[[:space:]]/p' PROJECT | sed -n '2p' | tr -d '[:space:]')
+# Name + version come from the root Cargo.toml [package] table (the `s` command
+# is scoped to the [package]…next-table range, so dependency versions are safe).
+PROJECT_NAME := $(shell sed -n '/^\[package\]/,/^\[/ s/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+PROJECT_VERSION := $(shell sed -n '/^\[package\]/,/^\[/ s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 ifeq ($(PROJECT_NAME),)
-    $(error Error: PROJECT file not found or invalid)
+    $(error Error: could not read package name/version from Cargo.toml)
 endif
 
 TOP_DIR := $(CURDIR)

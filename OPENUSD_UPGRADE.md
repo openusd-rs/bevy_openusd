@@ -1,5 +1,31 @@
 # OpenUSD upgrade and capability reassessment
 
+## Native interoperability audit — open failures
+
+On 2026-09-10, the installed native OpenUSD 25.05.01 tools exposed compatibility
+gaps not covered by the Rust reader/writer self-reopen tests:
+
+- Native `usdcat` reads only layer metadata from the collection's original
+  `spot_base_urdf/spot.usdc`, while the pinned Rust reader traverses 26 meshes.
+  CPU `usdrecord`/Embree produces a black Spot image, including with all purposes
+  enabled. The same native renderer produces visible geometry from our
+  `assets/subdivision_cube.usda`. The Spot image is not a valid visual reference.
+- Exporting the Spot root layer through the current Rust writer produces
+  `prepend apiSchemas = "MaterialBindingAPI"`; native `usdcat` rejects that
+  singleton list-op representation. Minimal reproduction:
+  `assets/single_api_schema.usda` is accepted natively, but its Rust root-layer
+  text export is rejected with `Expected None or [` and status 1.
+  Logs: `/tmp/single-api-export.log`, `/tmp/single-api-native-error.log`.
+- A native Storm offscreen attempt segfaulted in this environment; it provides
+  no acceptance evidence. CPU Embree emits a color-correction limitation warning.
+
+The original Spot binary compatibility issue is not yet attributed to a writer
+version or specific binary field. The minimal text-export failure is reproduced
+against the current pinned writer. Neither is fixed. Native interchange and
+reference-render acceptance must remain open; self-reopen success is insufficient.
+The diagnostic `scene_report` export writes a new file only and does not modify
+the original asset or rebase its relative references.
+
 Reviewed on 2026-09-09 against upstream
 [`b7df5add628cbb791103a7da842dbd82810da5d0`](https://github.com/mxpv/openusd/commit/b7df5add628cbb791103a7da842dbd82810da5d0).
 Rechecked with `git ls-remote` on 2026-09-09: this is upstream HEAD,

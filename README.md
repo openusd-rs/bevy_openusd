@@ -262,6 +262,27 @@ eight samples per segment rather than adaptive or exact-limit rendering.
 with an explicitly closed four-point nonperiodic equivalent. Both render the
 same cubic loop, not the triangular control hull.
 
+`scene_report` also reports exact authored-vertex-normal preservation, degenerate
+and exact-duplicate triangles, normal/face alignment and indexed versus
+exact-position-welded boundary edges. These are local, undeformed triangle-data
+diagnostics across all traversed meshes, not a visibility-filtered reference
+render. Geometric boundary counts can include intentional openings; they do not
+by themselves establish a rendering defect.
+Set `USD_REPORT_EXPORT_LAYER=NEW.usda` to write a diagnostic root-layer text
+snapshot; it refuses existing files and does not rebase relative assets. This
+is not a validated interchange exporter: see the native compatibility findings
+in `OPENUSD_UPGRADE.md`.
+
+For independent reference renders, `make capture-reference ARGS='...'` invokes
+an installed native `usdrecord` (`USD_RECORD` overrides the executable):
+
+```bash
+make capture-reference ARGS='--renderer Embree --disableGpu assets/subdivision_cube.usda target/native-cube.png'
+```
+
+Renderer availability depends on that native installation. Inspect the result;
+successful image writing does not prove that the native stage contained meshes.
+
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
 flat normals independently of authored normals. Capture without shadow maps:

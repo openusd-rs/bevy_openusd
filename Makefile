@@ -16,6 +16,7 @@ WAYLAND_DISPLAY ?= wayland-0
 APP_TARGET := --bin usdview
 RUN_WITH ?= nixVulkan
 ARGS ?=
+USD_RECORD ?= usdrecord
 TYPE ?= patch
 HAS_REL := $(shell command -v git-rel 2>/dev/null)
 RUN_ENV := WINIT_UNIX_BACKEND=$(BACKEND)
@@ -31,10 +32,13 @@ $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info Display: $(BACKEND) backend)
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r serve-web build-web test t test-all check check-all harden bench clean docs release help h
+.PHONY: build b compile c run r serve-web build-web test t test-all check check-all harden bench clean docs release help h capture-reference
 
 build:
 	@$(CARGO) build $(APP_TARGET)
+
+capture-reference:
+	@$(USD_RECORD) $(ARGS)
 
 b: build
 

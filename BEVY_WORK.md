@@ -25,6 +25,34 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Returned to Spot seam diagnosis. Extended scene_report with authored-normal
+preservation, face/normal alignment, duplicate/degenerate triangles and indexed
+versus exact-position-welded boundary/nonmanifold edges. Tests cover reversed
+normals, duplicates, degeneracy and a split-index quad. Current Spot data:
+26 traversed meshes preserve authored vertex normals exactly; none have reversed
+normal corners or exact duplicate/degenerate triangles. Minimum face-normal dot
+is at least 0.999785, supporting source-authored flat faceting. Body geometry has
+55 exact-position boundary edges and one nonmanifold edge after welding versus
+3,368 indexed boundaries. These are diagnostic counts, not proof of defective
+source geometry or attribution of every visible seam. Log:
+`/tmp/spot-surface-edges.log`. Source assets and runtime normals were not modified.
+
+Found native usdrecord/usdcat (OpenUSD 25.05.01) and added optional Makefile
+capture-reference; default make still builds usdview. CPU Embree renders the
+cube fixture, but the original Spot USDC renders black because native usdcat
+sees only 11 lines of root metadata, unlike the Rust reader. All-purpose capture
+also stays black. Offscreen Storm segfaulted. Diagnostic root-layer text export
+then exposed invalid singleton apiSchemas serialization in the pinned Rust
+writer. Minimal valid source `assets/single_api_schema.usda` passes native usdcat;
+its Rust text export fails native parsing with status 1. Detailed evidence and
+limitations are in OPENUSD_UPGRADE.md. Native interoperability is not fixed and
+self-reopen tests do not prove it. Next priority: isolate/correct the native
+export compatibility failure before claiming save/interchange acceptance.
+
+All 361 repository tests, check-all, build and whitespace checks pass
+(`/tmp/usd-native-audit-{tests,check,build}.log`), separately from the expected
+native interoperability failures. Spot visual fidelity remains unresolved.
+
 Curve color/opacity interpolation now uses f64 scalar/vector intermediates and
 f64 basis weights. Generated RGBA is checked after conversion to f32; overflow
 reports UsdCurveError and suppresses geometry before GPU upload. A regression

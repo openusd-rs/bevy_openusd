@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Curves now project inherited/local constant and indexed uniform display color
+and opacity, broadcasting each curve's sample over its generated vertices.
+Single unindexed values also broadcast. The geometry builder returns optional
+RGBA alongside positions/indices; curve-index lookup stays separate from the
+tessellated vertex index. `assets/curve_colors.usda` covers inherited style on
+two lines and sampled uniform indices on two cubic curves. Plugin tests verify
+time scrubbing, alpha modes, parent index edits, local override/clear and stable
+entities/runtime children. Multi-value vertex/varying interpolation is still
+unimplemented and is not approximated as constant.
+
+Inspected `target/curve-colors-{0,10}.png`: inherited lines change translucent
+red to opaque green, and cubic curves exchange yellow/blue while retaining their
+independent opacity. All 349 tests, check-all, build and whitespace checks pass
+(`/tmp/usd-curve-colors-{tests,check,build}.log`). Width-aware rendering, remaining
+primvar interpolation, strict topology validation and broader fidelity remain
+open; this is not full curve-renderer acceptance.
+
 Fixed the three-control-point periodic cubic path: wrapping supplies the fourth
 Bezier control point instead of falling back to a triangular polyline. Added
 `assets/periodic_bezier.usda` and a regression comparing its sampled positions

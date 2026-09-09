@@ -16,6 +16,7 @@ use openusd_schemas::geom::{BasisCurves, Curves, PointBased};
 use openusd::sdf::Value;
 
 use super::{PrimRoute, RouteCtx};
+use crate::read::geom::{Interpolation, MeshPrimvar};
 
 /// Maps `UsdGeomBasisCurves` to a line-list mesh.
 pub struct CurvesRoute;
@@ -174,7 +175,7 @@ fn emit_polyline(cv: &[[f32; 3]], periodic: bool, out: &mut Vec<[f32; 3]>, idx: 
 
 /// Positions + line indices for every curve. Linear curves connect vertices
 /// directly; cubic curves are tessellated through their basis.
-fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>)> {
+fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<[f32; 4]>>)> {
     let curves = BasisCurves::get(ctx.stage, ctx.path.clone()).ok()??;
     let points = read_points(&curves, ctx.time)?;
     if points.is_empty() {
@@ -193,11 +194,15 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>)> {
 
     let mut out: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
+    let color = crate::read::geom::read_primvar_vec3f(ctx.stage, ctx.path, "primvars:displayColor", ctx.time).ok().flatten();
+    let opacity = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time).ok().flatten();
+    let mut colors = (color.is_some() || opacity.is_some()).then(Vec::new);
     let mut cursor = 0usize;
-    for c in counts {
+    for (curve, c) in counts.into_iter().enumerate() {
         let n = c.max(0) as usize;
         let end = (cursor + n).min(points.len());
         let cv = &points[cursor..end];
+        let first = out.len();
         if is_cubic && wrap == "pinned" {
             tessellate_pinned(cv, basis, &mut out, &mut indices);
         } else if is_cubic {
@@ -205,9 +210,25 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>)> {
         } else {
             emit_polyline(cv, periodic, &mut out, &mut indices);
         }
+        if let Some(colors) = &mut colors {
+            let rgb = color.as_ref().and_then(|value| curve_value(value, curve)).unwrap_or([1.;3]);
+            let alpha = opacity.as_ref().and_then(|value| curve_value(value, curve)).unwrap_or(1.);
+            colors.extend(std::iter::repeat_n([rgb[0], rgb[1], rgb[2], alpha], out.len() - first));
+        }
         cursor = end;
     }
-    Some((out, indices))
+    Some((out, indices, colors))
+}
+
+fn curve_value<T: Copy>(value: &MeshPrimvar<T>, curve: usize) -> Option<T> {
+    let slot = match value.interpolation {
+        Interpolation::Constant => 0,
+        Interpolation::Uniform => curve,
+        _ if value.values.len() == 1 && value.indices.is_empty() => 0,
+        _ => return None,
+    };
+    let index = if value.indices.is_empty() { slot } else { usize::try_from(*value.indices.get(slot)?).ok()? };
+    value.values.get(index).copied()
 }
 
 impl PrimRoute for CurvesRoute {
@@ -224,12 +245,13 @@ impl PrimRoute for CurvesRoute {
         {
             return;
         }
-        let Some((points, indices)) = line_geometry(ctx) else {
+        let Some((points, indices, colors)) = line_geometry(ctx) else {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             return;
         };
         let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, points);
+        if let Some(colors) = colors { mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors); }
         mesh.insert_indices(bevy::mesh::Indices::U32(indices));
         let mesh_handle = super::cache::intern_mesh(world, mesh);
         let mut material = super::material::default_material(ctx);
@@ -247,6 +269,46 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn curve_display_colors_sample_and_reconcile_parent_edits() {
+        let source = crate::UsdSource::new("curve-colors.usda", include_bytes!("../../../../assets/curve_colors.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let mut app = App::new();
+        app.add_plugins(crate::live::LiveStagePlugin);
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        app.world_mut().insert_non_send(LiveStage::new(stage.clone()));
+        app.world_mut().run_schedule(Update);
+        let inherited = app.world().resource::<PrimEntities>().entity("/Root/Inherited").unwrap();
+        let uniform = app.world().resource::<PrimEntities>().entity("/Root/Uniform").unwrap();
+        let child = app.world_mut().spawn(ChildOf(inherited)).id();
+        let check = |app: &App, entity, expected: Vec<[f32;4]>| {
+            let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colors") };
+            assert_eq!(colors, &expected);
+            let material = app.world().resource::<Assets<StandardMaterial>>().get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+            assert_eq!(material.alpha_mode, if expected.iter().any(|color| color[3] < 1.) { AlphaMode::Blend } else { AlphaMode::Opaque });
+        };
+        for time in [0.,10.,0.,10.] {
+            app.world_mut().resource_mut::<super::super::StageTime>().current = time;
+            app.world_mut().run_schedule(Update);
+            check(&app, inherited, vec![if time == 0. { [1.,0.,0.,0.25] } else { [0.,1.,0.,1.] };4]);
+            let pair = if time == 0. { [[1.,1.,0.,0.5], [0.,0.,1.,1.]] } else { [[0.,0.,1.,0.5], [1.,1.,0.,1.]] };
+            check(&app, uniform, pair.into_iter().flat_map(|color| std::iter::repeat_n(color, CUBIC_STEPS + 1)).collect());
+        }
+        stage.attribute("/Root.primvars:displayColor:indices").unwrap().set_at(Value::IntVec(vec![0]), openusd::usd::TimeCode::new(10.)).unwrap();
+        app.world_mut().run_schedule(Update);
+        check(&app, inherited, vec![[1.,0.,0.,1.];4]);
+        let local = stage.create_attribute("/Root/Inherited.primvars:displayColor", "color3f[]").unwrap();
+        local.clone().set(Value::Vec3fVec(vec![[0.,0.,1.].into()])).unwrap();
+        app.world_mut().run_schedule(Update);
+        check(&app, inherited, vec![[0.,0.,1.,1.];4]);
+        local.clear().unwrap();
+        app.world_mut().run_schedule(Update);
+        check(&app, inherited, vec![[1.,0.,0.,1.];4]);
+        assert_eq!(app.world().resource::<PrimEntities>().entity("/Root/Inherited"), Some(inherited));
+        assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), inherited);
+    }
 
     #[test]
     fn three_point_periodic_bezier_matches_explicit_closure() {
@@ -305,7 +367,7 @@ mod tests {
         let stage = source.open_stage().unwrap();
         let closed = openusd::sdf::path("/Closed").unwrap();
         let open = openusd::sdf::path("/Open").unwrap();
-        let (positions, indices) = line_geometry(&RouteCtx::new(&stage, &closed)).unwrap();
+        let (positions, indices, _) = line_geometry(&RouteCtx::new(&stage, &closed)).unwrap();
         assert_eq!(positions.len(), 8);
         assert_eq!(indices, [0,1,1,2,2,3,3,0,4,5,5,6,6,7,7,4]);
         assert_eq!(line_geometry(&RouteCtx::new(&stage, &open)).unwrap().1, [0,1,1,2,2,3]);

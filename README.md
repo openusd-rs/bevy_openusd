@@ -205,6 +205,12 @@ material selects alpha blending when needed without multiplying opacity twice.
 pair changes from translucent red to opaque green; the right pair swaps yellow
 and blue while retaining its per-point opacity. Points remain one-pixel marks.
 
+Curves project constant/inherited and indexed `uniform` display color/opacity,
+broadcasting each curve's sample across its tessellated vertices. Single unindexed
+values also broadcast. `assets/curve_colors.usda` compares inherited animated
+style on two lines with independent uniform styles on two cubic curves.
+Multi-value vertex/varying curve primvars are not yet interpolated.
+
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:
 

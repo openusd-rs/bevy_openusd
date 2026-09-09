@@ -5,6 +5,7 @@
 pub mod geom;
 pub mod shade;
 pub mod skel;
+pub mod subdivision;
 pub mod util;
 pub mod variants;
 pub mod xform;

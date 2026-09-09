@@ -19,7 +19,8 @@ path = "src/main.rs"
 # The live USD editor: stage projection, sync, authoring, persistence.
 usd_bevy = { path = "crates/usd_bevy" }
 # Pure-Rust USD — the viewer opens the live `Stage` directly.
-openusd = { git = "https://github.com/mxpv/openusd", rev = "7934d9f3a375fabc93c14dc96b7900cbd035204d", features = ["geom", "shade"] }
+openusd = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0", features = ["geom", "shade"] }
 
 # mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
 mara = { path = "../mara/mara", default-features = false, features = ["window", "bevy"] }
@@ -32,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Bevy 0.19 (needs Rust 1.95+) — the embedded viewport renders the USD scene
 # offscreen into a mara-provided render target.
-bevy = { version = "0.19", default-features = false, features = [
+bevy = { version = "0.19.1", default-features = false, features = [
     "std",
     "bevy_asset",
     "bevy_log",
@@ -43,6 +44,7 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_mesh",
     "bevy_camera",
     "bevy_image",
+    "bevy_dev_tools",
     "reflect_auto_register",
 ] }
 
@@ -50,8 +52,3 @@ bevy = { version = "0.19", default-features = false, features = [
 eframe = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
 wgpu = { version = "29", default-features = false, features = ["vulkan"] }
 egui-wgpu = { version = "0.34", default-features = false, features = ["winit"] }
-
-# Use the local openusd checkout (carries the USDZ `.usd`-layer content-sniff
-# fix, so Kitchen_set.usdz and friends load). Drop once the fix is upstream.
-[patch."https://github.com/mxpv/openusd"]
-openusd = { path = "../openusd" }

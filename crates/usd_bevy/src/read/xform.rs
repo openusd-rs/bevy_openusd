@@ -19,7 +19,7 @@ fn attr_value(
     name: &str,
     time: Option<TimeCode>,
 ) -> anyhow::Result<Option<Value>> {
-    stage.prim(prim.clone()).attribute(name).get_at::<Value>(time)
+    Ok(stage.prim(prim.clone()).expect("validated USD path").attribute(name).get_at::<Value>(time)?)
 }
 
 /// Read `xformOpOrder` and compose every listed op into a single 4×4, then
@@ -36,6 +36,17 @@ pub fn read_transform_at(
     prim: &Path,
     time: Option<f64>,
 ) -> anyhow::Result<Option<Transform3>> {
+    let Some(matrix) = read_transform_matrix_at(stage, prim, time)? else { return Ok(None) };
+    let (s, r, t) = Mat4::from_cols_array(&matrix).to_scale_rotation_translation();
+    Ok(Some(Transform3 {
+        translate: [t.x, t.y, t.z],
+        rotate: [r.x, r.y, r.z, r.w],
+        scale: [s.x, s.y, s.z],
+    }))
+}
+
+/// Composed local matrix in column-major order before TRS decomposition.
+pub fn read_transform_matrix_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<Option<[f32; 16]>> {
     let tc = time.map(TimeCode::new);
     let Some(raw) = attr_value(stage, prim, "xformOpOrder", tc)? else {
         return Ok(None);
@@ -56,12 +67,7 @@ pub fn read_transform_at(
         m *= build_op_matrix(stage, prim, op, tc)?;
     }
 
-    let (s, r, t) = m.to_scale_rotation_translation();
-    Ok(Some(Transform3 {
-        translate: [t.x, t.y, t.z],
-        rotate: [r.x, r.y, r.z, r.w],
-        scale: [s.x, s.y, s.z],
-    }))
+    Ok(Some(m.to_cols_array()))
 }
 
 fn build_op_matrix(

@@ -9,15 +9,23 @@
 // crate's own tests/examples too.
 extern crate self as usd_bevy;
 
+pub mod asset;
 pub mod authoring;
+pub mod editor;
+pub mod instance;
 pub mod live;
 pub mod mesh;
+mod persistence;
+pub mod subdivision;
 pub mod prim_ref;
 pub mod read;
 pub mod route;
 pub mod snippet;
+pub mod source;
 pub mod sync;
 
+pub use asset::{UsdAssetLoader, UsdAssetPlugin, UsdScene, UsdSceneRoot, UsdSceneState};
+pub use source::UsdSource;
 pub use prim_ref::UsdPrimRef;
 pub use route::{DisplayPurposes, PrimRoute, RouteCtx, SchemaRegistry};
 /// The inline-USD macro (see [`snippet::UsdSnippet`]).
@@ -43,6 +51,7 @@ impl Plugin for UsdPlugin {
         }
         // Intern projected meshes so identical prims share one GPU asset (6d).
         app.init_resource::<route::cache::ProjectionCache>();
+        app.init_resource::<route::cache::MaterialCache>();
         // Which USD `purpose` classes are displayed (Phase A). Default: show
         // proxy, hide render + guide.
         app.init_resource::<DisplayPurposes>();

@@ -12,6 +12,51 @@ use openusd::usd::{NamespaceEditor, Stage};
 
 type Result<T> = anyhow::Result<T>;
 
+/// Replaces a relationship's target list in the current edit target.
+pub fn set_relationship_targets(stage: &Stage, prim: &str, name: &str, targets: &[openusd::sdf::Path]) -> Result<()> {
+    for target in targets {
+        anyhow::ensure!(target.as_str().starts_with('/') && target.as_str() != "/"
+            && (target.is_prim_path() || target.is_property_path()) && !target.contains_prim_variant_selection(),
+            "relationship target must be an absolute prim or property path");
+    }
+    let prim = stage.prim(openusd::sdf::path(prim)?)?;
+    anyhow::ensure!(prim.is_valid()?, "relationship owner does not exist");
+    prim.create_relationship(name)?.set_targets(targets.iter().cloned())?;
+    Ok(())
+}
+
+/// Clears only the local target-list opinion, allowing weaker targets to compose.
+pub fn clear_relationship_targets(stage: &Stage, prim: &str, name: &str) -> Result<()> {
+    stage.prim(openusd::sdf::path(prim)?)?.relationship(name).clear_targets()?;
+    Ok(())
+}
+
+/// Replaces the reference list authored on a prim in the current edit target.
+/// Relative asset paths remain relative to that layer; an empty list blocks
+/// weaker references. Use `clear_references` to remove the local opinion.
+pub fn set_references(stage: &Stage, prim: &str, references: &[openusd::sdf::Reference]) -> Result<()> {
+    for reference in references {
+        anyhow::ensure!(reference.prim_path.is_empty() || (
+            reference.prim_path.as_str().starts_with('/') && reference.prim_path.is_prim_path()
+                && !reference.prim_path.contains_prim_variant_selection()
+                && reference.prim_path.as_str() != "/"
+        ), "reference target must be an absolute prim path or empty for defaultPrim");
+        anyhow::ensure!(reference.layer_offset.offset.is_finite()
+            && reference.layer_offset.scale.is_finite() && reference.layer_offset.scale != 0.0,
+            "reference time mapping must have a finite offset and nonzero finite scale");
+    }
+    let prim = stage.prim(openusd::sdf::path(prim)?)?;
+    anyhow::ensure!(prim.is_valid()?, "reference owner does not exist");
+    prim.set_metadata("references", Value::ReferenceListOp(openusd::sdf::ReferenceListOp::explicit(references.to_vec())))?;
+    Ok(())
+}
+
+/// Removes the current edit target's reference-list opinion.
+pub fn clear_references(stage: &Stage, prim: &str) -> Result<()> {
+    stage.prim(openusd::sdf::path(prim)?)?.clear_metadata("references")?;
+    Ok(())
+}
+
 // ─── Namespace ops ──────────────────────────────────────────────────
 
 /// Define (create) a prim of `type_name` at `path`.
@@ -30,7 +75,7 @@ pub fn remove_prim(stage: &Stage, path: &str) -> Result<bool> {
 
 /// Rename the prim at `path` to `new_name` (last namespace component only).
 pub fn rename_prim(stage: &Stage, path: &str, new_name: &str) -> Result<()> {
-    let prim = stage.prim(openusd::sdf::path(path)?);
+    let prim = stage.prim(openusd::sdf::path(path)?)?;
     let mut editor = NamespaceEditor::new(stage);
     editor.rename_prim(&prim, new_name)?;
     editor.apply()?;
@@ -39,8 +84,8 @@ pub fn rename_prim(stage: &Stage, path: &str, new_name: &str) -> Result<()> {
 
 /// Reparent the prim at `path` under `new_parent` (keeping its name).
 pub fn reparent_prim(stage: &Stage, path: &str, new_parent: &str) -> Result<()> {
-    let prim = stage.prim(openusd::sdf::path(path)?);
-    let parent = stage.prim(openusd::sdf::path(new_parent)?);
+    let prim = stage.prim(openusd::sdf::path(path)?)?;
+    let parent = stage.prim(openusd::sdf::path(new_parent)?)?;
     let mut editor = NamespaceEditor::new(stage);
     editor.reparent_prim(&prim, &parent)?;
     editor.apply()?;
@@ -50,7 +95,7 @@ pub fn reparent_prim(stage: &Stage, path: &str, new_parent: &str) -> Result<()> 
 /// Move the prim at `old` to the absolute path `new` (rename + reparent in one).
 pub fn move_prim(stage: &Stage, old: &str, new: &str) -> Result<()> {
     let mut editor = NamespaceEditor::new(stage);
-    editor.move_prim(openusd::sdf::path(old)?, openusd::sdf::path(new)?);
+    editor.move_prim(openusd::sdf::path(old)?, openusd::sdf::path(new)?)?;
     editor.apply()?;
     Ok(())
 }
@@ -71,10 +116,40 @@ pub fn set_attribute(
     Ok(())
 }
 
-/// Clear an authored attribute opinion (in the current edit target).
+/// Authors a scene-time sample through the current edit target's time mapping.
+pub fn set_attribute_sample(stage: &Stage, prim: &str, name: &str, type_name: &str, value: Value, time: f64) -> Result<()> {
+    anyhow::ensure!(time.is_finite(), "attribute sample time must be finite");
+    let path = openusd::sdf::path(prim)?.append_property(name)?;
+    stage.create_attribute(path, type_name)?.set_at(value, openusd::usd::TimeCode::new(time))?;
+    Ok(())
+}
+
+/// Removes the sample at scene time from the current edit target.
+pub fn clear_attribute_sample(stage: &Stage, prim: &str, name: &str, time: f64) -> Result<()> {
+    anyhow::ensure!(time.is_finite(), "attribute sample time must be finite");
+    let path = openusd::sdf::path(prim)?.append_property(name)?;
+    stage.attribute(path)?.clear_at(openusd::usd::TimeCode::new(time))?;
+    Ok(())
+}
+
+/// Removes the attribute spec from the current edit target.
 pub fn clear_attribute(stage: &Stage, prim: &str, name: &str) -> Result<bool> {
     let attr = openusd::sdf::path(prim)?.append_property(name)?;
     Ok(stage.remove_property(attr)?)
+}
+
+/// Removes local default and time-sample values while retaining property metadata.
+pub fn clear_attribute_values(stage: &Stage, prim: &str, name: &str) -> Result<()> {
+    let path = openusd::sdf::path(prim)?.append_property(name)?;
+    stage.attribute(path)?.clear()?;
+    Ok(())
+}
+
+/// Blocks weaker values and removes local time samples in the current edit target.
+pub fn block_attribute_values(stage: &Stage, prim: &str, name: &str) -> Result<()> {
+    let path = openusd::sdf::path(prim)?.append_property(name)?;
+    stage.attribute(path)?.block()?;
+    Ok(())
 }
 
 // ─── Variant selection (PLAN Phase 2) ───────────────────────────────
@@ -87,36 +162,28 @@ pub fn set_variant(stage: &Stage, prim: &str, set: &str, selection: &str) -> Res
     let set = set.to_string();
     let selection = selection.to_string();
     stage
-        .prim(openusd::sdf::path(prim)?)
+        .prim(openusd::sdf::path(prim)?).expect("validated USD path")
         .update_metadata("variantSelection", move |cur| {
             let mut map = match cur {
                 Some(Value::VariantSelectionMap(m)) => m,
                 _ => std::collections::HashMap::new(),
             };
             map.insert(set, selection);
-            Value::VariantSelectionMap(map)
+            Some(Value::VariantSelectionMap(map))
         })?;
     Ok(())
-}
-
-/// The prim's currently authored/composed selection for `set`, if any.
-fn current_variant(stage: &Stage, prim: &str, set: &str) -> Option<String> {
-    openusd::sdf::path(prim)
-        .ok()
-        .and_then(|p| crate::read::variants::variant_selection(stage, &p, set))
 }
 
 // ─── Persistence (P6) ───────────────────────────────────────────────
 
 /// Serialize the stage's composed root layer to a `.usda` string.
 pub fn export_stage_string(stage: &Stage) -> Result<String> {
-    stage.root_layer().export_to_string()
+    Ok(stage.root_layer().export_to_string()?)
 }
 
-/// Write the stage's root layer to `filename` (a `.usda`/`.usd` path).
+/// Atomically replace `filename` with the stage's root layer in its selected format.
 pub fn save_stage_as(stage: &Stage, filename: &str) -> Result<()> {
-    stage.root_layer().export(filename)?;
-    Ok(())
+    crate::persistence::export_layer(&stage.root_layer(), filename)
 }
 
 /// Whether a prim with an authored type currently resolves on the stage.
@@ -125,7 +192,7 @@ pub fn prim_exists(stage: &Stage, path: &str) -> bool {
         .ok()
         .map(|p| {
             stage
-                .prim(p)
+                .prim(p).expect("validated USD path")
                 .type_name()
                 .map(|t| t.is_some())
                 .unwrap_or(false)
@@ -133,225 +200,12 @@ pub fn prim_exists(stage: &Stage, path: &str) -> bool {
         .unwrap_or(false)
 }
 
-// ─── Undo / redo over authoring ops (RETHINK §13) ───────────────────
-//
-// Each user action is a typed [`Op`]; the history captures its inverse
-// *before* applying (reading the prior state), so undo replays the inverse
-// and redo replays the forward op. Both go through the live stage and
-// commit, so undo/redo reproject like any other edit.
-
-/// `(parent, name)` split of an absolute prim path.
-fn split_path(p: &str) -> (&str, &str) {
-    match p.rfind('/') {
-        Some(0) => ("/", &p[1..]),
-        Some(i) => (&p[..i], &p[i + 1..]),
-        None => ("", p),
-    }
-}
-
-#[derive(Clone)]
-enum Op {
-    Define {
-        path: String,
-        type_name: String,
-    },
-    Remove {
-        path: String,
-    },
-    SetAttr {
-        prim: String,
-        name: String,
-        type_name: String,
-        value: Option<Value>,
-    },
-    RenameTo {
-        path: String,
-        new_name: String,
-    },
-    ReparentTo {
-        path: String,
-        new_parent: String,
-    },
-    SetVariant {
-        prim: String,
-        set: String,
-        selection: Option<String>,
-    },
-}
-
-impl Op {
-    fn apply(&self, stage: &Stage) -> Result<()> {
-        match self {
-            Op::Define { path, type_name } => define_prim(stage, path, type_name),
-            Op::Remove { path } => remove_prim(stage, path).map(|_| ()),
-            Op::SetAttr {
-                prim,
-                name,
-                type_name,
-                value,
-            } => match value {
-                Some(v) => set_attribute(stage, prim, name, type_name, v.clone()),
-                None => clear_attribute(stage, prim, name).map(|_| ()),
-            },
-            Op::RenameTo { path, new_name } => rename_prim(stage, path, new_name),
-            Op::ReparentTo { path, new_parent } => reparent_prim(stage, path, new_parent),
-            Op::SetVariant {
-                prim,
-                set,
-                selection,
-            } => match selection {
-                Some(sel) => set_variant(stage, prim, set, sel),
-                // Restoring "no selection" clears the set back to its default.
-                None => set_variant(stage, prim, set, ""),
-            },
-        }
-    }
-}
-
-/// Undo/redo stack over the authoring ops.
-#[derive(Default)]
-pub struct EditHistory {
-    undo: Vec<(Op, Op)>, // (forward, inverse)
-    redo: Vec<(Op, Op)>,
-}
-
-impl EditHistory {
-    fn record(&mut self, stage: &Stage, forward: Op, inverse: Op) -> Result<()> {
-        forward.apply(stage)?;
-        self.undo.push((forward, inverse));
-        self.redo.clear();
-        Ok(())
-    }
-
-    pub fn define(&mut self, stage: &Stage, path: &str, type_name: &str) -> Result<()> {
-        let fwd = Op::Define {
-            path: path.into(),
-            type_name: type_name.into(),
-        };
-        let inv = Op::Remove { path: path.into() };
-        self.record(stage, fwd, inv)
-    }
-
-    pub fn set_attr(
-        &mut self,
-        stage: &Stage,
-        prim: &str,
-        name: &str,
-        type_name: &str,
-        value: Value,
-    ) -> Result<()> {
-        let old = stage
-            .prim(openusd::sdf::path(prim)?)
-            .attribute(name)
-            .get::<Value>()
-            .ok()
-            .flatten();
-        let fwd = Op::SetAttr {
-            prim: prim.into(),
-            name: name.into(),
-            type_name: type_name.into(),
-            value: Some(value),
-        };
-        let inv = Op::SetAttr {
-            prim: prim.into(),
-            name: name.into(),
-            type_name: type_name.into(),
-            value: old,
-        };
-        self.record(stage, fwd, inv)
-    }
-
-    pub fn rename(&mut self, stage: &Stage, path: &str, new_name: &str) -> Result<()> {
-        let (parent, old_name) = split_path(path);
-        let new_path = if parent == "/" {
-            format!("/{new_name}")
-        } else {
-            format!("{parent}/{new_name}")
-        };
-        let fwd = Op::RenameTo {
-            path: path.into(),
-            new_name: new_name.into(),
-        };
-        let inv = Op::RenameTo {
-            path: new_path,
-            new_name: old_name.into(),
-        };
-        self.record(stage, fwd, inv)
-    }
-
-    pub fn reparent(&mut self, stage: &Stage, path: &str, new_parent: &str) -> Result<()> {
-        let (old_parent, name) = split_path(path);
-        let new_path = if new_parent == "/" {
-            format!("/{name}")
-        } else {
-            format!("{new_parent}/{name}")
-        };
-        let fwd = Op::ReparentTo {
-            path: path.into(),
-            new_parent: new_parent.into(),
-        };
-        let inv = Op::ReparentTo {
-            path: new_path,
-            new_parent: old_parent.into(),
-        };
-        self.record(stage, fwd, inv)
-    }
-
-    /// Select `selection` for variant `set` on `prim`, recording the prior
-    /// selection for undo.
-    pub fn set_variant(
-        &mut self,
-        stage: &Stage,
-        prim: &str,
-        set: &str,
-        selection: &str,
-    ) -> Result<()> {
-        let old = current_variant(stage, prim, set);
-        let fwd = Op::SetVariant {
-            prim: prim.into(),
-            set: set.into(),
-            selection: Some(selection.into()),
-        };
-        let inv = Op::SetVariant {
-            prim: prim.into(),
-            set: set.into(),
-            selection: old,
-        };
-        self.record(stage, fwd, inv)
-    }
-
-    pub fn undo(&mut self, stage: &Stage) -> Result<bool> {
-        let Some((fwd, inv)) = self.undo.pop() else {
-            return Ok(false);
-        };
-        inv.apply(stage)?;
-        self.redo.push((fwd, inv));
-        Ok(true)
-    }
-
-    pub fn redo(&mut self, stage: &Stage) -> Result<bool> {
-        let Some((fwd, inv)) = self.redo.pop() else {
-            return Ok(false);
-        };
-        fwd.apply(stage)?;
-        self.undo.push((fwd, inv));
-        Ok(true)
-    }
-
-    pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-    pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn stage_with(root: &str) -> Stage {
-        let stage = Stage::builder().in_memory("authoring_test.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("authoring_test.usda").unwrap();
         stage
             .define_prim(root)
             .unwrap()
@@ -366,7 +220,7 @@ mod tests {
         define_prim(&stage, "/World/Box", "Cube").unwrap();
         assert_eq!(
             stage
-                .prim(openusd::sdf::path("/World/Box").unwrap())
+                .prim(openusd::sdf::path("/World/Box").unwrap()).expect("validated USD path")
                 .type_name()
                 .unwrap()
                 .as_deref(),
@@ -375,7 +229,7 @@ mod tests {
         assert!(remove_prim(&stage, "/World/Box").unwrap());
         assert!(
             stage
-                .prim(openusd::sdf::path("/World/Box").unwrap())
+                .prim(openusd::sdf::path("/World/Box").unwrap()).expect("validated USD path")
                 .type_name()
                 .unwrap()
                 .is_none(),
@@ -393,7 +247,7 @@ mod tests {
         rename_prim(&stage, "/World/A", "Renamed").unwrap();
         assert!(
             stage
-                .prim(openusd::sdf::path("/World/Renamed").unwrap())
+                .prim(openusd::sdf::path("/World/Renamed").unwrap()).expect("validated USD path")
                 .type_name()
                 .unwrap()
                 .is_some(),
@@ -401,7 +255,7 @@ mod tests {
         );
         assert!(
             stage
-                .prim(openusd::sdf::path("/World/A").unwrap())
+                .prim(openusd::sdf::path("/World/A").unwrap()).expect("validated USD path")
                 .type_name()
                 .unwrap()
                 .is_none(),
@@ -411,7 +265,7 @@ mod tests {
         reparent_prim(&stage, "/World/Renamed/Child", "/World/B").unwrap();
         assert!(
             stage
-                .prim(openusd::sdf::path("/World/B/Child").unwrap())
+                .prim(openusd::sdf::path("/World/B/Child").unwrap()).expect("validated USD path")
                 .type_name()
                 .unwrap()
                 .is_some(),
@@ -424,7 +278,7 @@ mod tests {
         let stage = stage_with("/World");
         set_attribute(&stage, "/World", "radius", "double", Value::Double(2.5)).unwrap();
         let got = stage
-            .prim(openusd::sdf::path("/World").unwrap())
+            .prim(openusd::sdf::path("/World").unwrap()).expect("validated USD path")
             .attribute("radius")
             .get::<Value>()
             .unwrap();
@@ -432,42 +286,27 @@ mod tests {
     }
 
     #[test]
-    fn edit_history_undo_redo() {
+    fn editor_history_preserves_existing_prim_and_authored_absence() {
+        use crate::editor::{EditorEdit, EditorSession};
         let stage = stage_with("/World");
-        let mut hist = EditHistory::default();
-
-        // Define → undo removes → redo re-creates.
-        hist.define(&stage, "/World/Box", "Cube").unwrap();
-        assert!(prim_exists(&stage, "/World/Box"));
-        assert!(hist.undo(&stage).unwrap());
-        assert!(!prim_exists(&stage, "/World/Box"), "undo removed the prim");
-        assert!(hist.redo(&stage).unwrap());
-        assert!(prim_exists(&stage, "/World/Box"), "redo re-created it");
-
-        // SetAttr captures the prior value for undo.
-        hist.set_attr(&stage, "/World/Box", "size", "double", Value::Double(1.0))
-            .unwrap();
-        hist.set_attr(&stage, "/World/Box", "size", "double", Value::Double(9.0))
-            .unwrap();
-        let read = |s: &Stage| {
-            s.prim(openusd::sdf::path("/World/Box").unwrap())
-                .attribute("size")
-                .get::<Value>()
-                .unwrap()
-        };
-        assert!(matches!(read(&stage), Some(Value::Double(d)) if (d - 9.0).abs() < 1e-9));
-        hist.undo(&stage).unwrap();
-        assert!(
-            matches!(read(&stage), Some(Value::Double(d)) if (d - 1.0).abs() < 1e-9),
-            "undo → prior value"
-        );
-
-        // Rename → undo restores the original name.
-        hist.rename(&stage, "/World/Box", "Crate").unwrap();
+        define_prim(&stage, "/World/Box", "Cube").unwrap();
+        set_attribute(&stage, "/World/Box", "custom", "string", Value::String("retained".into())).unwrap();
+        let baseline = export_stage_string(&stage).unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        editor.edit(EditorEdit::Define { path: "/World/Box".into(), type_name: "Sphere".into() }).unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(export_stage_string(&stage).unwrap(), baseline);
+        editor.edit(EditorEdit::Attribute {
+            prim: "/World/Box".into(), name: "size".into(), type_name: "double".into(), value: Value::Double(9.0),
+        }).unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(export_stage_string(&stage).unwrap(), baseline);
+        assert!(editor.redo().unwrap());
+        assert_eq!(stage.prim(openusd::sdf::path("/World/Box").unwrap()).unwrap().attribute("size").get::<Value>().unwrap(), Some(Value::Double(9.0)));
+        editor.edit(EditorEdit::Rename { path: "/World/Box".into(), name: "Crate".into() }).unwrap();
         assert!(prim_exists(&stage, "/World/Crate"));
-        hist.undo(&stage).unwrap();
-        assert!(prim_exists(&stage, "/World/Box"), "undo restored the name");
-        assert!(!prim_exists(&stage, "/World/Crate"));
+        assert!(editor.undo().unwrap());
+        assert!(prim_exists(&stage, "/World/Box"));
     }
 
     #[test]
@@ -494,10 +333,10 @@ mod tests {
         let path = std::env::temp_dir().join("usd_bevy_persist_test.usda");
         let path_str = path.to_str().unwrap();
         save_stage_as(&stage, path_str).unwrap();
-        let reopened = Stage::open(path_str).unwrap();
+        let reopened = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path_str).unwrap();
         assert!(
             reopened
-                .prim(openusd::sdf::path("/World/Saved").unwrap())
+                .prim(openusd::sdf::path("/World/Saved").unwrap()).expect("validated USD path")
                 .type_name()
                 .unwrap()
                 .is_some(),

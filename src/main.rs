@@ -7,6 +7,16 @@
 use bevy::camera::RenderTarget;
 use bevy::prelude::*;
 
+mod environment;
+mod lighting;
+mod inspector;
+mod capture;
+mod framing;
+mod timeline;
+mod ui_replay;
+mod render_settings;
+mod file_dialog;
+
 use mara::host::{MaraHostCtx, RibbonRail};
 use mara::ui::mara_core;
 use mara::ui::modules::bevy as mara_bevy;
@@ -20,12 +30,9 @@ use mara_core::vocab::{Color32 as MaraColor32, Id as MaraId};
 use mara_core::widget::{TreeBody, TreeIconKind, TreeIconSlot};
 use mara_core::{RibbonAvoidance, WorkspaceStack};
 
-use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
-
-use openusd::usd::Stage;
 use usd_bevy::UsdPlugin;
-use usd_bevy::live::{LiveStage, LiveStagePlugin, PrimEntities};
+use usd_bevy::live::LiveStagePlugin;
+use usd_bevy::editor::{EditorBridge, EditorCommand, EditorPlugin, SaveMode};
 
 /// Everything (trace + panics + backtraces) is mirrored here so a hard crash
 /// is still recoverable after the window dies.
@@ -88,35 +95,20 @@ fn install_panic_logger() {
     }));
 }
 
-/// Open a stage + collect its prims, returning a human-readable status line
-/// (logged at info/error too).
-fn open_stage(path: &str) -> (Option<Stage>, Vec<PrimRow>, String) {
-    match Stage::open(path) {
-        Ok(stage) => {
-            let prims = collect_prims(&stage);
-            let status = format!("loaded {} prims — {path}", prims.len());
-            tracing::info!(target: "usdview", "{status}");
-            (Some(stage), prims, status)
-        }
-        Err(e) => {
-            let status = format!("FAILED to open {path}: {e:#}");
-            tracing::error!(target: "usdview", "{status}");
-            (None, Vec::new(), status)
-        }
-    }
-}
-
 // ─── Ribbon / pane ids ──────────────────────────────────────────────
 
 const RIBBON_LEFT: &str = "usd_ribbon_left";
 const PANE_OUTLINER: &str = "usd_pane_outliner";
 const PANE_PROPERTIES: &str = "usd_pane_properties";
+const PANE_TIMELINE: &str = "usd_pane_timeline";
+const PANE_LIGHTING: &str = "usd_pane_lighting";
+const PANE_RENDERING: &str = "usd_pane_rendering";
 const ACTION_SAVE: &str = "usd_action_save";
 const ACTION_OPEN: &str = "usd_action_open";
-
-/// Shared path slot: the egui Open action pushes a file here; a Bevy system
-/// (`poll_reload`) picks it up and swaps the live stage.
-type LoadSlot = Arc<Mutex<Option<String>>>;
+const ACTION_UNDO: &str = "usd_action_undo";
+const ACTION_REDO: &str = "usd_action_redo";
+const ACTION_FLATTEN: &str = "usd_action_flatten";
+const ACTION_SAVE_LAYER: &str = "usd_action_save_layer";
 
 fn ribbon_action(id: &'static str) -> RibbonAction {
     RibbonAction::Command(MaraId::new(id))
@@ -133,71 +125,67 @@ struct PrimRow {
 struct UsdApp {
     bevy_view: mara_bevy::MaraBevyViewport,
     workspace: WorkspaceStack,
-    /// A read-side stage for the outliner/properties panes (the embedded
-    /// viewport renders its own live copy).
-    stage: Option<Stage>,
-    prims: Vec<PrimRow>,
-    selected: Option<String>,
-    /// Last load result, shown in the Outliner.
-    status: String,
-    /// A file path chosen this frame, applied at the top of the next.
-    pending_open: Option<String>,
-    /// Shared with the embedded Bevy app so it reloads the viewport.
-    load_queue: LoadSlot,
+    editor: EditorBridge,
+    drafts: inspector::Drafts,
+    timeline_draft: timeline::Draft,
+    lighting: lighting::LightingBridge,
+    rendering: render_settings::RenderSettingsBridge,
+    file_dialogs: file_dialog::FileDialogs,
 }
 
 impl WindowApp for UsdApp {
     fn new(ctx: CreationContext<'_>) -> Self {
+        ui_replay::install(ctx.__internal_egui_ctx()).expect("invalid USD_UI_REPLAY script");
         // Initial file: `USD_FILE` env var, else argv[1], else none.
         let path = std::env::var("USD_FILE")
             .ok()
             .or_else(|| std::env::args().nth(1));
-        let viewport_path = path.clone();
-        let load_queue: LoadSlot = Arc::new(Mutex::new(None));
-        let queue = load_queue.clone();
+        let editor = EditorBridge::default();
+        if let Some(path) = path { send(&editor, EditorCommand::Open(path)); }
+        if let Ok(path) = std::env::var("USD_VIEWER_SELECT") { send(&editor, EditorCommand::Select(Some(path))); }
+        let bridge = editor.clone();
+        let lighting = lighting::LightingBridge::from_env();
+        let lighting_bridge = lighting.clone();
+        let rendering = render_settings::RenderSettingsBridge::default();
+        let rendering_bridge = rendering.clone();
         let bevy_view = mara_bevy::MaraBevyViewport::with_render_state_and_content(
-            ctx.__internal_render_state(),
-            move |app: &mut App| configure_usd_app(app, viewport_path.clone(), queue.clone()),
+            ctx.gpu(),
+            move |app: &mut App| {
+                configure_usd_app(app, bridge.clone());
+                lighting::configure(app, lighting_bridge.clone());
+                render_settings::configure(app, rendering_bridge.clone());
+            },
         );
 
-        let (stage, prims, status) = match path.as_deref() {
-            Some(p) => open_stage(p),
-            None => (None, Vec::new(), "no file — use Open USD…".to_string()),
-        };
+        if std::env::var_os("USD_UI_CAPTURE_HANDSHAKE").is_some() {
+            eprintln!("USD_VIEWER_STARTED");
+        }
 
         Self {
             bevy_view,
             workspace: WorkspaceStack::new("usd-workspace"),
-            stage,
-            prims,
-            selected: None,
-            status,
-            pending_open: None,
-            load_queue,
+            editor,
+            drafts: Default::default(),
+            timeline_draft: Default::default(),
+            lighting,
+            rendering,
+            file_dialogs: file_dialog::FileDialogs::new(ctx.__internal_egui_ctx()),
         }
     }
 
     fn update(&mut self, host: &mut MaraHostCtx<'_>) {
-        // Apply a file-open chosen last frame: reload the read-side stage for
-        // the panes, and signal the embedded viewport to reload too.
-        if let Some(path) = self.pending_open.take() {
-            let (stage, prims, status) = open_stage(&path);
-            self.stage = stage;
-            self.prims = prims;
-            self.status = status;
-            self.selected = None;
-            *self.load_queue.lock().unwrap() = Some(path);
-        }
-
         let Self {
             bevy_view,
             workspace,
-            stage,
-            prims,
-            selected,
-            status,
+            editor,
+            drafts,
+            timeline_draft,
+            lighting,
+            rendering,
+            file_dialogs,
             ..
         } = self;
+        if let Some(command) = file_dialogs.poll() { send(editor, command); }
         // Apply the mara theme every frame (without this the panes/ribbons
         // render with raw-egui defaults).
         mara_core::style::set_theme(mara_core::style::theme_pro(Mode::Dark));
@@ -212,17 +200,25 @@ impl WindowApp for UsdApp {
 
         // Panes + ribbon rail. Mara owns the pane/ribbon wiring,
         // open-state, pane-id publication, and paint ordering.
-        let selected = RefCell::new(selected);
+        let view = match editor.view() { Ok(view) => view, Err(error) => { error!("{error}"); return; } };
+        let prims: Vec<_> = view.document.prims.iter().map(|path| PrimRow {
+            path: path.clone(), name: path.rsplit('/').next().unwrap_or(path).to_string(),
+        }).collect();
         let rail = RibbonRail::view_left(RIBBON_LEFT, "usdview.ribbons")
-            .default_open(PANE_OUTLINER)
+            .default_open(match std::env::var("USD_VIEWER_PANE").as_deref() {
+                Ok("lighting") => PANE_LIGHTING,
+                Ok("inspector") => PANE_PROPERTIES,
+                Ok("timeline") => PANE_TIMELINE,
+                Ok("rendering") => PANE_RENDERING,
+                _ => PANE_OUTLINER,
+            })
             .pane(
                 PANE_OUTLINER,
                 "list",
                 "Outliner",
                 PaneAnchor::LeftRail(RailZone::Start),
                 |body| {
-                    let mut selected = selected.borrow_mut();
-                    outliner_pane(body, prims, &mut **selected, status.as_str(), accent);
+                    outliner_pane(body, &prims, editor, view.document.selected.as_deref(), file_dialogs.status().unwrap_or(&view.status), accent, &view.document.visibility);
                 },
             )
             .pane(
@@ -231,10 +227,18 @@ impl WindowApp for UsdApp {
                 "Properties",
                 PaneAnchor::LeftRail(RailZone::Middle),
                 |body| {
-                    let selected = selected.borrow();
-                    properties_pane(body, stage, &**selected);
+                    inspector::show(body, &view.document, editor, drafts, view.timeline.current);
                 },
             )
+            .pane(PANE_TIMELINE, "options", "Timeline", PaneAnchor::LeftRail(RailZone::Middle), |body| {
+                timeline::show(body, &view.timeline, editor, timeline_draft);
+            })
+            .pane(PANE_LIGHTING, "options", "Lighting", PaneAnchor::LeftRail(RailZone::Middle), |body| {
+                lighting::show(body, lighting);
+            })
+            .pane(PANE_RENDERING, "options", "Rendering", PaneAnchor::LeftRail(RailZone::Middle), |body| {
+                render_settings::show(body, rendering);
+            })
             .action(
                 ACTION_OPEN,
                 "folder",
@@ -244,49 +248,32 @@ impl WindowApp for UsdApp {
             .action(
                 ACTION_SAVE,
                 "document",
-                "Save stage",
+                "Save root layer as…",
                 ribbon_action(ACTION_SAVE),
-            );
-        let mut picked: Option<String> = None;
+            )
+            .action(ACTION_SAVE_LAYER, "document", "Save edit layer as…", ribbon_action(ACTION_SAVE_LAYER))
+            .action(ACTION_FLATTEN, "document", "Export flattened…", ribbon_action(ACTION_FLATTEN))
+            .action(ACTION_UNDO, "arrow-left", "Undo", ribbon_action(ACTION_UNDO))
+            .action(ACTION_REDO, "arrow-right", "Redo", ribbon_action(ACTION_REDO));
         for click in host.show_ribbon_rail(rail, accent) {
-            if click.action == ribbon_action(ACTION_SAVE) {
-                if let Some(stage) = stage.as_ref() {
-                    match usd_bevy::authoring::save_stage_as(stage, "usdview_out.usda") {
-                        Ok(()) => info!("saved stage to usdview_out.usda"),
-                        Err(e) => error!("save failed: {e:#}"),
-                    }
-                }
+            if click.action == ribbon_action(ACTION_SAVE) || click.action == ribbon_action(ACTION_SAVE_LAYER)
+                || click.action == ribbon_action(ACTION_FLATTEN) {
+                let mode = if click.action == ribbon_action(ACTION_SAVE_LAYER) { SaveMode::EditLayer }
+                    else if click.action == ribbon_action(ACTION_FLATTEN) { SaveMode::Flattened } else { SaveMode::RootLayer };
+                file_dialogs.start(file_dialog::Request::save(mode, &view.document));
+            } else if click.action == ribbon_action(ACTION_UNDO) {
+                send(editor, EditorCommand::Undo);
+            } else if click.action == ribbon_action(ACTION_REDO) {
+                send(editor, EditorCommand::Redo);
             } else if click.action == ribbon_action(ACTION_OPEN) {
-                if let Some(file) = rfd::FileDialog::new()
-                    .add_filter("USD", &["usd", "usda", "usdc", "usdz"])
-                    .pick_file()
-                {
-                    picked = Some(file.to_string_lossy().into_owned());
-                }
+                file_dialogs.start(file_dialog::Request::Open);
             }
-        }
-        // Release the borrow of `self.selected` before touching `self` again.
-        drop(selected);
-        if let Some(p) = picked {
-            self.pending_open = Some(p);
         }
     }
 }
 
-fn collect_prims(stage: &Stage) -> Vec<PrimRow> {
-    let mut out = Vec::new();
-    let _ = stage.traverse(
-        openusd::usd::PrimPredicate::default(),
-        |path: &openusd::sdf::Path| {
-            let s = path.as_str();
-            let name = s.rsplit('/').next().unwrap_or(s).to_string();
-            out.push(PrimRow {
-                path: s.to_string(),
-                name,
-            });
-        },
-    );
-    out
+fn send(editor: &EditorBridge, command: EditorCommand) {
+    if let Err(error) = editor.send(command) { error!("{error}"); }
 }
 
 /// A node in the prim hierarchy (built from the flat traversal list).
@@ -326,9 +313,11 @@ fn build_usd_tree(prims: &[PrimRow]) -> (Vec<UsdNode>, Vec<usize>) {
 fn outliner_pane(
     body: &mut PaneBody,
     prims: &[PrimRow],
-    selected: &mut Option<String>,
+    editor: &EditorBridge,
+    selected: Option<&str>,
     status: &str,
     accent: MaraColor32,
+    visibility: &std::collections::HashMap<String, bool>,
 ) {
     // Load status (shows failures like "FAILED to open … unsupported .usd").
     body.add_normal(
@@ -339,10 +328,10 @@ fn outliner_pane(
     );
 
     let tree_root = MaraId::new(("usd.outliner", "tree_root"));
-    let sel_key = tree_root.with("selected");
-    // Selection from last frame (the tree writes it during render).
-    let sel = body.temp_string(sel_key).unwrap_or_default();
-    *selected = (!sel.is_empty()).then(|| sel.clone());
+    let sel = selected.unwrap_or_default().to_string();
+    let tree_selected = sel.clone();
+    let editor = editor.clone();
+    let visibility = visibility.clone();
 
     let search_id = MaraId::new(("usd.outliner", "scene", 0usize));
     let filter = body.search_query(search_id, 0).to_lowercase();
@@ -360,7 +349,7 @@ fn outliner_pane(
                 .with_separator(SeparatorStyle::Line)
                 .fill()
                 .with_tree(7, move |tree| {
-                    usd_tree(tree, tree_root, accent, &filter, &nodes, &roots)
+                    usd_tree(tree, tree_root, accent, &filter, &nodes, &roots, &tree_selected, &editor, &visibility)
                 }),
             Pod::new(MaraId::new(("usd.outliner", "scene", 2usize))).with_readout(
                 "selected",
@@ -381,9 +370,10 @@ fn usd_tree(
     filter: &str,
     nodes: &[UsdNode],
     roots: &[usize],
+    selected: &str,
+    editor: &EditorBridge,
+    visibility: &std::collections::HashMap<String, bool>,
 ) {
-    let sel_key = root_id.with("selected");
-    let mut selected = tree.temp_string(sel_key).unwrap_or_default();
     let mut clicked: Option<String> = None;
     for &r in roots {
         walk_usd_tree(
@@ -392,15 +382,16 @@ fn usd_tree(
             nodes,
             r,
             0,
-            &selected,
+            selected,
             accent,
             filter,
             &mut clicked,
+            editor,
+            visibility,
         );
     }
     if let Some(p) = clicked {
-        selected = p;
-        tree.set_temp_string(sel_key, selected);
+        send(editor, EditorCommand::Select(Some(p)));
     }
 }
 
@@ -415,6 +406,8 @@ fn walk_usd_tree(
     accent: MaraColor32,
     filter: &str,
     clicked: &mut Option<String>,
+    editor: &EditorBridge,
+    visibility: &std::collections::HashMap<String, bool>,
 ) {
     if !usd_tree_passes(nodes, i, filter) {
         return;
@@ -422,9 +415,9 @@ fn walk_usd_tree(
     let node = &nodes[i];
     let is_branch = !node.children.is_empty();
     let exp_key = root_id.with(("exp", node.path.as_str()));
-    let eye_key = root_id.with(("eye", node.path.as_str()));
     let mut expanded = tree.persisted_bool(exp_key).unwrap_or(true);
-    let mut eye_on = tree.persisted_bool(eye_key).unwrap_or(true);
+    let previous_eye = visibility.get(&node.path).copied().unwrap_or(true);
+    let mut eye_on = previous_eye;
     let mut slots =
         [TreeIconSlot::new(TreeIconKind::Eye, &mut eye_on).with_tooltip("Toggle visibility")];
     let resp = tree.row(
@@ -441,7 +434,12 @@ fn walk_usd_tree(
         *clicked = Some(node.path.clone());
     }
     tree.set_persisted_bool(exp_key, expanded);
-    tree.set_persisted_bool(eye_key, eye_on);
+    if eye_on != previous_eye {
+        send(editor, EditorCommand::Edit(usd_bevy::editor::EditorEdit::Attribute {
+            prim: node.path.clone(), name: "visibility".into(), type_name: "token".into(),
+            value: openusd::sdf::Value::Token(if eye_on { "inherited" } else { "invisible" }.into()),
+        }));
+    }
     if is_branch && expanded {
         for &c in &node.children {
             walk_usd_tree(
@@ -454,6 +452,8 @@ fn walk_usd_tree(
                 accent,
                 filter,
                 clicked,
+                editor,
+                visibility,
             );
         }
     }
@@ -473,271 +473,36 @@ fn usd_tree_passes(nodes: &[UsdNode], i: usize, filter: &str) -> bool {
         .any(|&c| usd_tree_passes(nodes, c, filter))
 }
 
-fn properties_pane(body: &mut PaneBody, stage: &Option<Stage>, selected: &Option<String>) {
-    let pods = match (stage, selected) {
-        (Some(stage), Some(path)) => {
-            let ty = openusd::sdf::path(path)
-                .ok()
-                .and_then(|p| stage.prim(p).type_name().ok().flatten())
-                .map(|t| t.as_str().to_string())
-                .unwrap_or_else(|| "—".to_string());
-            vec![
-                Pod::new("usd.prop.path").with_readout("Path", path.clone()),
-                Pod::new("usd.prop.type").with_readout("Type", ty),
-            ]
-        }
-        _ => vec![Pod::new("usd.prop.none").with_readout("Selection", "none")],
-    };
-    body.add_normal("usd.properties", "Properties", "options", pods);
-}
 
 // ─── Embedded Bevy viewport (the USD scene) ─────────────────────────
 
-#[derive(Resource, Clone)]
-struct UsdArg(Option<String>);
-
-/// The shared load slot, as a Bevy resource the reload system reads.
-#[derive(Resource, Clone)]
-struct LoadQueue(LoadSlot);
-
-fn configure_usd_app(app: &mut App, path: Option<String>, load_queue: LoadSlot) {
-    // The mara viewport already adds GroundGridPlugin + the core/render
-    // plugins; we add only our own and configure the grid resource.
-    app.add_plugins((UsdPlugin, LiveStagePlugin))
+fn configure_usd_app(app: &mut App, editor: EditorBridge) {
+    app.insert_resource(editor);
+    app.add_plugins((
+        UsdPlugin,
+        LiveStagePlugin,
+        EditorPlugin,
+        environment::ViewerEnvironmentPlugin,
+    ))
         .init_resource::<mara_bevy::BevyViewportInput>()
         .insert_resource(mara_bevy::GroundGrid {
-            visible: true,
-            color: grid_color(1.0),
+            visible: false,
+            ..default()
         })
-        .insert_resource(ClearColor(Color::srgb_u8(12, 14, 18)))
-        .insert_resource(UsdArg(path))
-        .insert_resource(LoadQueue(load_queue))
         .add_systems(
             Startup,
             setup_camera.after(mara_bevy::BevyViewportSet::SetupTarget),
         )
-        .add_systems(Startup, open_usd)
-        .add_systems(Update, mara_bevy::apply_viewport_camera_input_system)
-        .add_systems(
-            Update,
-            draw_large_editor_grid_system.after(mara_bevy::apply_viewport_camera_input_system),
-        )
-        .add_systems(Update, poll_reload);
-}
-
-/// Extend Mara's small close-range gizmo grid with a large camera-following
-/// editor grid. It keeps a stable world spacing and fades at the far edge so
-/// lines do not pop/flicker as the camera moves.
-fn draw_large_editor_grid_system(
-    grid: Option<Res<mara_bevy::GroundGrid>>,
-    cameras: Query<&mara_bevy::ChaseCamera>,
-    mut gizmos: Gizmos,
-) {
-    let Some(grid) = grid else {
-        return;
-    };
-    if !grid.visible {
-        return;
+        .add_systems(Update, mara_bevy::apply_viewport_camera_input_system);
+    if std::env::var_os("USD_CPU_SKINNING").is_none() {
+        app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
-    let Some(camera) = cameras.iter().next() else {
-        return;
-    };
-
-    const STEP: f32 = 32.0;
-    const MIN_HALF_EXTENT: f32 = 16_384.0;
-    const MAX_HALF_LINES: i32 = 1024;
-    // Mara's built-in grid covers roughly ±32 units at 1-unit spacing. Do not
-    // draw the coarse extension over that same center area, or coincident
-    // gizmo lines fight and shimmer.
-    const NEAR_SKIP_EXTENT: f32 = 34.0;
-    let focus = camera.focus;
-    let step = STEP;
-    let requested_half_extent = (camera.distance * 12.0).max(MIN_HALF_EXTENT);
-    let half_lines = ((requested_half_extent / step).ceil() as i32).clamp(512, MAX_HALF_LINES);
-    let half_extent = half_lines as f32 * step;
-    let fade_start = half_extent * 0.55;
-    let center_x = (focus.x / step).round() * step;
-    let center_z = (focus.z / step).round() * step;
-    let near_center_x = focus.x.round();
-    let near_center_z = focus.z.round();
-    let near_min_x = near_center_x - NEAR_SKIP_EXTENT;
-    let near_max_x = near_center_x + NEAR_SKIP_EXTENT;
-    let near_min_z = near_center_z - NEAR_SKIP_EXTENT;
-    let near_max_z = near_center_z + NEAR_SKIP_EXTENT;
-    let min_x = center_x - half_extent;
-    let max_x = center_x + half_extent;
-    let min_z = center_z - half_extent;
-    let max_z = center_z + half_extent;
-
-    for i in -half_lines..=half_lines {
-        let x = center_x + i as f32 * step;
-        let z = center_z + i as f32 * step;
-        let x_alpha = far_grid_alpha((x - center_x).abs(), fade_start, half_extent);
-        let z_alpha = far_grid_alpha((z - center_z).abs(), fade_start, half_extent);
-
-        if x >= near_min_x && x <= near_max_x {
-            draw_fading_grid_segment(
-                &mut gizmos,
-                Vec3::new(x, 0.0, min_z),
-                Vec3::new(x, 0.0, near_min_z),
-                center_x,
-                center_z,
-                fade_start,
-                half_extent,
-                x_alpha,
-            );
-            draw_fading_grid_segment(
-                &mut gizmos,
-                Vec3::new(x, 0.0, near_max_z),
-                Vec3::new(x, 0.0, max_z),
-                center_x,
-                center_z,
-                fade_start,
-                half_extent,
-                x_alpha,
-            );
-        } else {
-            draw_fading_grid_segment(
-                &mut gizmos,
-                Vec3::new(x, 0.0, min_z),
-                Vec3::new(x, 0.0, center_z),
-                center_x,
-                center_z,
-                fade_start,
-                half_extent,
-                x_alpha,
-            );
-            draw_fading_grid_segment(
-                &mut gizmos,
-                Vec3::new(x, 0.0, center_z),
-                Vec3::new(x, 0.0, max_z),
-                center_x,
-                center_z,
-                fade_start,
-                half_extent,
-                x_alpha,
-            );
-        }
-
-        if z >= near_min_z && z <= near_max_z {
-            draw_fading_grid_segment(
-                &mut gizmos,
-                Vec3::new(min_x, 0.0, z),
-                Vec3::new(near_min_x, 0.0, z),
-                center_x,
-                center_z,
-                fade_start,
-                half_extent,
-                z_alpha,
-            );
-            draw_fading_grid_segment(
-                &mut gizmos,
-                Vec3::new(near_max_x, 0.0, z),
-                Vec3::new(max_x, 0.0, z),
-                center_x,
-                center_z,
-                fade_start,
-                half_extent,
-                z_alpha,
-            );
-        } else {
-            draw_fading_grid_segment(
-                &mut gizmos,
-                Vec3::new(min_x, 0.0, z),
-                Vec3::new(center_x, 0.0, z),
-                center_x,
-                center_z,
-                fade_start,
-                half_extent,
-                z_alpha,
-            );
-            draw_fading_grid_segment(
-                &mut gizmos,
-                Vec3::new(center_x, 0.0, z),
-                Vec3::new(max_x, 0.0, z),
-                center_x,
-                center_z,
-                fade_start,
-                half_extent,
-                z_alpha,
-            );
-        }
+    capture::configure(app);
+    if let Ok(levels) = std::env::var("USD_SUBDIVISION_LEVELS") {
+        app.insert_resource(usd_bevy::route::subdivision::UsdSubdivisionSettings::new(
+            levels.parse().expect("USD_SUBDIVISION_LEVELS must be an integer")).expect("invalid subdivision levels"));
     }
-}
-
-fn draw_fading_grid_segment(
-    gizmos: &mut Gizmos,
-    start: Vec3,
-    end: Vec3,
-    center_x: f32,
-    center_z: f32,
-    fade_start: f32,
-    fade_end: f32,
-    line_alpha: f32,
-) {
-    if start.distance_squared(end) > 0.01 {
-        let start_alpha = line_alpha
-            * far_grid_alpha(
-                (start.x - center_x).abs().max((start.z - center_z).abs()),
-                fade_start,
-                fade_end,
-            );
-        let end_alpha = line_alpha
-            * far_grid_alpha(
-                (end.x - center_x).abs().max((end.z - center_z).abs()),
-                fade_start,
-                fade_end,
-            );
-        if start_alpha > 0.01 || end_alpha > 0.01 {
-            gizmos.line_gradient(start, end, grid_color(start_alpha), grid_color(end_alpha));
-        }
-    }
-}
-
-fn far_grid_alpha(distance: f32, fade_start: f32, fade_end: f32) -> f32 {
-    1.0 - smoothstep01((distance - fade_start) / (fade_end - fade_start).max(1.0))
-}
-
-fn smoothstep01(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-fn grid_color(alpha: f32) -> Color {
-    Color::srgba(0.44, 0.44, 0.46, 0.35 * alpha.clamp(0.0, 1.0))
-}
-
-/// Pick up a path pushed by the egui "Open" action, despawn the current scene,
-/// and install a fresh `LiveStage` (which `LiveStagePlugin` then reprojects).
-fn poll_reload(world: &mut World) {
-    let path = world
-        .resource::<LoadQueue>()
-        .0
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take());
-    let Some(path) = path else {
-        return;
-    };
-
-    world.remove_non_send::<LiveStage>();
-    let entities: Vec<Entity> = world
-        .resource::<PrimEntities>()
-        .iter()
-        .map(|(_, e)| e)
-        .collect();
-    for entity in entities {
-        world.despawn(entity);
-    }
-    *world.resource_mut::<PrimEntities>() = PrimEntities::default();
-
-    match Stage::open(&path) {
-        Ok(stage) => {
-            info!("reloaded USD stage: {path}");
-            world.insert_non_send(LiveStage::new(stage));
-        }
-        Err(e) => error!("failed to reload {path}: {e:#}"),
-    }
+    framing::configure(app);
 }
 
 fn setup_camera(
@@ -751,35 +516,13 @@ fn setup_camera(
         Camera3d::default(),
         transform,
         AmbientLight {
-            brightness: 220.0,
+            color: Color::srgb(0.78, 0.85, 1.0),
+            brightness: 160.0,
             ..default()
         },
         chase,
     ));
     if let Some(render_target) = render_target {
         camera.insert(RenderTarget::from(render_target.0.clone()));
-    }
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 9_000.0,
-            shadow_maps_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(4.0, 10.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-}
-
-fn open_usd(world: &mut World) {
-    let path = world.resource::<UsdArg>().0.clone();
-    let Some(path) = path else {
-        info!("usage: usdview <file.usd|usda|usdz>");
-        return;
-    };
-    match Stage::open(&path) {
-        Ok(stage) => {
-            info!("opened USD stage: {path}");
-            world.insert_non_send(LiveStage::new(stage));
-        }
-        Err(e) => error!("failed to open {path}: {e:#}"),
     }
 }

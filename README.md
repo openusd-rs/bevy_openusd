@@ -4,7 +4,7 @@
 > A lot of the code was carved out of an internal repo to be open-sourced. Special thanks
 > to the team for letting it ship.
 
-A live [OpenUSD](https://openusd.org) editor on [Bevy](https://bevy.org) 0.19.
+A live [OpenUSD](https://openusd.org) editor on [Bevy](https://bevy.org) 0.19.1.
 
 The composed USD stage is the source of truth: it's held live (not baked), projected
 into Bevy entities, and kept in sync off openusd's change notifications. Edits flow
@@ -21,12 +21,714 @@ both ways — author back to the stage, undo/redo, and save.
     [`mxpv/openusd`](https://github.com/mxpv/openusd).
   - `mesh` — `UsdGeom.Mesh` → `bevy::mesh::Mesh`.
 - **`usdview`** (`src/main.rs`) — a minimal viewport host: opens a USD file, projects
-  it with `LiveStagePlugin`, renders with a camera + light + grid.
+  it with `LiveStagePlugin`, and renders with studio key/fill/rim lighting.
+  `src/environment.rs` configures the slate background and anti-aliased infinite
+  X/Z grid: one-stage-unit minor lines, major lines every ten units, colored axes,
+  and a fading horizon. The grid remains transparent to geometry below it.
 
 ## Usage
 
 ```sh
-cargo run -- path/to/stage.usda
+make run ARGS="path/to/stage.usda"
 ```
 
-Requires Rust 1.95+ (Bevy 0.19). See `RETHINK.md` for the architecture.
+Requires Rust 1.96+ and the sibling `../mara` checkout.
+OpenUSD core and generated schemas are pinned to upstream commit
+`b7df5add628cbb791103a7da842dbd82810da5d0` (0.7.0).
+The sibling `../openusd` checkout is not used or modified.
+See `OPENUSD_UPGRADE.md` for the migration and revised capability assessment.
+See `PLAN.md` for the architecture and remaining integration work.
+
+Run `make check-all` and `make test-all` to check and test the full workspace.
+
+Inline `usd!` snippets open directly from memory. Use
+`snippet.open_stage_at("path/to/source.usda")` to anchor relative references at
+an explicit filename without creating that file. `UsdSource` also opens root
+bytes (including USDZ) as independent stages. Ongoing Bevy integration work is
+tracked in `BEVY_WORK.md`. The AssetServer loader now uses dependency snapshots
+and exposes `UsdSceneState` (Loading/Ready/Failed). Snapshot PNG/JPEG textures are
+tracked labeled assets with color/data color spaces. Dependency-change events
+reload their owning USD asset. Each root retains an independent live stage;
+matching prim entities and runtime-only components survive source reloads.
+
+`usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
+codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
+time-code range; otherwise it uses the stage's authored start/end and rate.
+Playback is paused by default. Non-looping playback stops at its endpoint;
+looping uses a half-open range. `UsdInstanceOverrides` stores
+variant selections and typed attribute opinions reapplied on reload. Removing
+an override restores the source opinion. Access stages and prim entities through
+the `UsdInstances` non-send resource; direct stage edits are transient across
+source reloads. Failed reloads preserve the last good live projection.
+
+Broader editor, material fidelity and performance work remains in progress.
+See [SUPPORT.md](SUPPORT.md) for the integration support/limitation matrix and a
+runnable, self-checking independent-instance example.
+
+`UsdPlugin` enables mesh and material sharing. Treat shared material handles as
+shared Bevy assets: clone the material into a new asset and replace the entity's
+handle before making an entity-local runtime modification. USD-authored material
+changes are reprojected into matching/new handles rather than mutating a shared
+material in place. Remove `route::cache::MaterialCache` to disable material sharing.
+
+The viewer's outliner and Properties pane operate on the rendered live document.
+Properties supports scalar, string/token/asset-path and three-vector edits, relationship
+targets, namespace moves, layer targets, variant selection and provenance readouts.
+Provenance defaults to the source kind, composition arc and source prim path;
+“Show source details” expands the complete wrapped record. Each attribute lists
+up to six composed scene-time sample keys, with the total count for longer lists.
+Attribute controls can block values or clear local defaults/time samples, including
+when the composed value is blocked or absent. These operations are undoable and
+preserve property metadata; they differ from `authoring::clear_attribute`, which
+removes the local property spec. Clearing values reveals weaker-layer opinions.
+Supported attributes without resolved values use their declared USD type to prepare
+an editable draft; nothing is authored until an apply button is pressed.
+“Apply default value” edits the default opinion, not an animation time sample.
+“Apply sample at time” uses the explicit scene-time field; “Use timeline time”
+copies the current timeline position into that field. “Clear sample at time”
+removes only the local sample at that time, including for read-only value types.
+For explicit samples, use `EditorEdit::AttributeSample` or
+`EditorEdit::ClearAttributeSample`. Their finite `time` is in scene time and is
+mapped through the active edit target; defaults are left intact. These operations
+participate in editor undo/redo. The lower-level authoring functions are
+`set_attribute_sample` and `clear_attribute_sample`.
+The ribbon provides undo/redo and
+separate root-layer, edit-layer and flattened export dialogs. Unsupported value
+types are displayed read-only; see `BEVY_WORK.md` for remaining editor work and
+visual acceptance limits.
+
+The editor loads PNG/JPEG material images from filesystem and USDZ documents,
+refreshes them after edits, and preserves the previous document if opening fails.
+This direct editor path does not yet automatically watch filesystem image changes.
+
+Undoable authoring uses `editor::EditorSession` and `editor::EditorEdit`:
+
+```rust,ignore
+use usd_bevy::editor::{EditorEdit, EditorSession};
+
+let mut editor = EditorSession::new(stage);
+editor.edit(EditorEdit::Rename {
+    path: "/World/Box".into(),
+    name: "Crate".into(),
+})?;
+editor.undo()?;
+editor.redo()?;
+```
+
+The old `authoring::EditHistory` API has been removed. Migrate `define`,
+`set_attr`, `rename`, `reparent` and `set_variant` calls to the corresponding
+`EditorEdit` variants; `undo`/`redo` no longer take a stage argument. Low-level
+`authoring` functions remain available for edits without editor history. In the
+viewer, send `EditorCommand::Edit` through `EditorBridge` to retain live namespace
+entity identity as well as authored history.
+
+`usd!` escapes `${value}` inside quoted strings. Unquoted interpolation accepts
+only built-in numeric/boolean scalars; arbitrary strings cannot inject USD
+structure. Asset/prim-path interpolation is rejected. Dynamic identifiers and
+field-specific value validity are checked when parsing/opening the result.
+
+For reusable assets, `authoring::set_references` accepts upstream typed
+`sdf::Reference` values (relative paths, default prims and time offsets).
+`EditorEdit::References` adds undo/redo grouping. Empty reference lists block
+weaker references; `clear_references` removes the edit layer's local opinion.
+
+Native instance proxies are projected into the Bevy hierarchy. Identical static
+geometry shares mesh handles, with prototype identity available through
+`route::native::{UsdNativeInstance, UsdInstanceProxy}`. This is not yet a claim
+of prototype-level CPU build reuse or measured rendering performance.
+
+The viewer uses Bevy GPU skinning for supported classic-linear bindings and
+falls back to CPU deformation with a `UsdCpuSkinFallback` reason otherwise.
+Library users opt in with `route::gpu_skin::UsdGpuSkinningPlugin`.
+Set `USD_CPU_SKINNING=1` for the CPU baseline. Optional `USD_SCREENSHOT` and
+`USD_CAPTURE_TIME` capture a fixed-time viewport frame; UI overlays are excluded.
+Current binding restrictions and fidelity evidence are in `BEVY_WORK.md`.
+
+Dome projection now emits sampled `UsdDomeLight` data without overwriting
+`GlobalAmbientLight`. For an explicit ambient approximation, add
+`route::dome::UsdDomeAmbientPlugin` and attach
+`route::dome::UsdDomeAmbientSource(dome_entity)` to a camera. Different cameras
+can select domes from different USD roots. Removing the selection, hiding or
+despawning the dome restores the camera's prior ambient value, provided it has
+not been overwritten externally. This adapter owns camera ambient while selected;
+it is not image-based lighting. The viewer keeps its existing studio ambient.
+
+### Animation showcase
+
+Open the Timeline ribbon pane to play/pause, step one USD time code, return to
+the authored start time, or enter a time code and seek. Seeking pauses playback;
+playing loops over the authored start/end range using the stage's time-code rate.
+Timeline operations change viewer time, not USD opinions or undo history.
+
+`assets/animation_showcase.usda` combines a growing Cube, three shared animated
+mesh prototypes and an orange-to-blue material transition over time codes 0–10.
+
+```sh
+make run ARGS='assets/animation_showcase.usda'
+USD_SCREENSHOT=target/showcase-t10.png USD_CAPTURE_TIME=10 make run ARGS='assets/animation_showcase.usda'
+```
+
+`USD_SCREENSHOT` reads the actual embedded viewport GPU texture, without the UI.
+It writes the PNG plus tightly packed `.rgba` pixels and `.capture.txt` containing
+dimensions, source texture format and row length. `VIEWPORT_CAPTURE_OK` in stderr
+means all three files were written; `VIEWPORT_CAPTURE_ERROR` reports a failure.
+The viewer stays open. Capture is requested once after 120 update frames and a
+camera is available; this delay does not guarantee asset/pipeline readiness.
+The standalone `viewer_capture` example below has explicit readiness checks and
+process exit status. Use `scripts/capture_viewer_ui.sh` to capture UI composition.
+
+For a deterministic textured UV comparison, generate a new fixture directory
+(existing directories are refused), then capture both indexed samples:
+
+```bash
+make run RUN_WITH= APP_TARGET='--example uv_fixture' ARGS='target/uv-check'
+USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='target/uv-check/scene.usda target/uv-check-0.png 0 0 0 7 0 0 0'
+USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='target/uv-check/scene.usda target/uv-check-10.png 10 0 0 7 0 0 0'
+```
+
+The left panel inherits constant indexed UVs, the center instances that mesh,
+and the right uses explicit local UVs. All three should be blue at time 0 and
+green at time 10. The generated quadrant texture lives beside the USD source.
+This checks constant UV inheritance, indices and V orientation, not normal maps
+or arbitrary shader primvar networks.
+
+`assets/point_curve_animation.usda` exercises sampled Points and BasisCurves
+without default positions. From time 0 to 10, four points and a line move upward;
+the line splits into two disjoint segments at time 10. Both routes follow each
+scene root's clock. Unbound geometry uses an unlit point/line preview; USD widths
+and full curve surface shading are not represented.
+
+`assets/periodic_curves.usda` compares two closed linear loops in one prim with
+an open control. Periodic closure stays within each curve's vertex range:
+
+```bash
+USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='assets/periodic_curves.usda target/periodic-curves.png 0 -0.5 0.5 7 -0.5 0.5 0'
+```
+
+The two left squares should be closed; the right square intentionally lacks its
+left edge. This follows [OpenUSD's periodic segment rules](https://openusd.org/dev/api/class_usd_geom_basis_curves.html).
+Pinned Bspline and Catmull-Rom curves add extrapolated phantom control points
+per curve so the tessellated output reaches both authored endpoints. Bezier and
+linear curves retain their nonperiodic behavior for `pinned` wrap.
+`assets/pinned_curves.usda` places pinned curves on the left and explicitly
+expanded equivalents on the right, with Bspline above Catmull-Rom:
+
+```bash
+USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='assets/pinned_curves.usda target/pinned-curves.png 0 0 0.5 8 0 0.5 0'
+```
+
+Each row should have matching shapes and endpoint heights. Tessellation remains
+eight samples per segment rather than adaptive or exact-limit rendering.
+
+`assets/normal_scale.usda` places three identical world-size panels side by side
+using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
+flat normals independently of authored normals. Capture without shadow maps:
+
+```bash
+USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='assets/normal_scale.usda target/normal-scale.png 0 0 0 6 0 0 0'
+```
+
+The capture command saves the viewport after 120 frames and leaves the viewer
+open. Set `USD_CAPTURE_TIME=0` for the starting state. These fixed-time captures
+do not demonstrate interactive playback or inspector controls.
+
+`make run ARGS='assets/material_subsets.usda'` shows two material-bound panels.
+Their orange/blue assignments swap at time code 10; use the timeline to seek.
+`make run ARGS='assets/point_material_subsets.usda'` instances that layered asset
+three times with shared subset meshes and materials.
+`make run ARGS='assets/point_deformation.usda'` shows three CPU-skinned prototypes;
+seek to time code 30 for the bent pose.
+
+### Typed component authoring
+
+`usd_bevy::sync::author_component_value(&registry, &stage, "/Enemy", &health)`
+authors a registered `Component + Reflect` value directly, without an ECS entity
+or string type-name argument. Register `ReflectComponent` for the type. All
+encodable fields commit atomically into the current edit target; a field error
+rolls back the write. Read-only instance proxies/prototypes are rejected.
+This is a field patch: supported absent options are omitted and do not clear
+previous opinions. Unsupported fields reject typed writes before editing the
+stage. `sync::component_field_issues(&value)` reports field paths, Rust types and
+whether each omission is unsupported or an absent option. Empty reflected struct
+and tuple-struct components author a bare boolean presence opinion. The older entity-based
+`author_component` still patches only encodable fields. This is not complete
+arbitrary-component serialization.
+
+`custom bool bevy:Marker = true` constructs a registered default component even
+without field opinions. `false` suppresses its USD projection, including any
+remaining field opinions, and removes it only if the route owned it previously;
+unowned runtime components are preserved. Clearing that boolean resumes ordinary
+field-driven projection, or removes an owned marker if no fields remain. Typed
+empty-component writes set presence to true. Nested empty fields and root enum
+components remain unsupported. An invalid presence value reports a projection
+issue and retains the previous component.
+
+Use `sync::author_component_presence::<Health>(&registry, &stage, "/Enemy", false)`
+to author suppression without a string type name or component value. Passing true
+re-enables projection of the retained field opinions. This uses the same checked
+type naming, owner validation and atomic current-edit-target writer as typed field
+authoring. The returned attribute name can be passed to `authoring::clear_attribute`
+to remove the local presence opinion and reveal weaker layers. Field patches do
+not implicitly override an existing false presence opinion.
+
+For reload-persistent root-local edits, call
+`overrides.set_component(&registry, "/Enemy", &health)` on
+`UsdInstanceOverrides` and attach it to the `UsdSceneRoot` entity. The method
+encodes and validates the entire typed patch before modifying the override list,
+replacing matching prim/property entries without duplicating them. Unrelated
+opinions and absent-option overrides remain intact. These opinions are reapplied
+to each new source snapshot; direct `UsdInstances::stage` edits are transient.
+Stage-dependent validation is deferred until projection and can fail the root's
+load state. Removing an override reveals the latest source opinion.
+
+Unique short component names retain `bevy:Health:field` attributes. Colliding
+short names use the full reflected Rust path with `::` encoded as `__`; authoring
+checks that the segment resolves back to the same registered type before writing.
+The entity-based API also accepts full Rust paths and encoded paths. An ambiguous
+short-name argument or a lossy qualified encoding is rejected. Register all
+component types before authoring: adding a short-name collision later does not
+migrate existing short-name opinions. Refactoring Rust paths requires migrating
+qualified opinions in saved USD files.
+
+Integer projection uses checked range conversions, including `Option<i32>`.
+Negative-to-unsigned, overflow, fractional and nonfinite floating-point opinions
+are rejected rather than wrapped, truncated or saturated. Rejected assignments
+leave the existing field unchanged and emit the route's unsupported-value warning.
+Integral floating-point values remain accepted when representable by the target.
+
+`route::reflect::UsdReflectIssues` exposes current projection failures on the prim
+entity: missing registry/type/component reflection/default, unknown fields and
+unsupported values. Each issue includes its type segment and optional reflected
+field path. Successful reprojection clears resolved issues. The editor snapshot
+publishes the selected prim's issues after projection; the inspector lists them
+as component issues. These are diagnostics, not atomic component-level rollback.
+
+Short and qualified aliases resolving to the same registered type share field
+ownership. Disjoint fields merge; clearing one alias does not remove fields still
+authored under another. Multiple effective aliases for the same field produce
+`ConflictingAliases`: projection retains the previous component until the conflict
+is resolved, rather than inventing a strength order between different attributes.
+On first projection a conflicting component is not constructed. Diagnostics use
+the canonical Rust path for resolved types and the authored segment otherwise.
+
+```sh
+make run RUN_WITH= APP_TARGET='--example typed_authoring'
+```
+
+The example authors a sphere through upstream's typed schema API, adds a typed
+`Health` value, projects one source twice and verifies isolated subsequent edits.
+
+### Low-level viewport capture
+
+Mesh conversion honors sampled `holeIndices` even when subdivision refinement is
+disabled. Hole faces emit no triangles, while source face/corner numbering remains
+unchanged for primvars and material subsets. Refinement retains hole-face support
+until after tessellation; this does not make the default control cage a subdivision
+surface.
+
+Inspect sampled source geometry and the current mesh conversion with:
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example scene_report' ARGS='path/to/scene.usdc 0'
+```
+
+The report includes point/face/corner counts, authored normal interpolation and
+invalid-normal counts, UV counts, projected vertex/unique-normal counts, and
+subdivision settings with authored-versus-fallback status. It traverses meshes
+without visibility filtering and does not evaluate skinning or morph deformation.
+Subdivision meshes produce a warning: conversion currently renders their control
+cage, not the requested subdivision surface. In particular, Spot's collection
+asset omits `subdivisionScheme`, resolving to Catmull–Clark despite having vertex
+normals. [USD defaults meshes to subdivision surfaces](https://openusd.org/24.08/user_guides/render_user_guide.html);
+forcing smooth polygon normals would not establish fidelity for this asset.
+
+`subdivision::catmull_clark` now provides a separate finite-level CPU position and
+topology kernel for consistently oriented, edge-manifold cages, with edge-only/edge-and-corner
+boundary modes and source-face IDs on refined quads. It validates topology and
+caps refinement levels/output sizes. Rendering is opt-in and incomplete:
+other subdivision rules and limit-surface evaluation
+remain required. Analytic cube/boundary tests
+are not OpenSubdiv reference-renderer acceptance.
+The returned `RefinedSurface::interpolate_vertex` reuses recorded per-level weights
+for finite scalar/vector control-point data. Geometry itself uses those same
+weights. Separate methods interpolate linear varying values, copy face-uniform
+values by source-face ID, and refine expanded face-corner values with the explicit
+all-linear rule while preserving UV seams. Other face-varying rules, normals of
+the limit surface and gamma/color-space conversion are not implemented. Weight
+storage is bounded across all retained levels.
+`interpolate_primvar` validates and expands indexed mesh primvars before applying
+their interpolation; face-varying data requires explicit `AllLinear` selection.
+`remap_subsets` maps material face membership to refined faces, preserves binding
+paths and rejects out-of-range source indices.
+`read::subdivision::read_subdivision_at` reads composed rules, creases, corners
+and holes at a requested time. `ReadSubdivision::validate` checks sharpness
+cardinality and index bounds against sampled mesh dimensions; it does not check
+whether crease pairs are actual topology edges. The scene report includes these
+rules and counts. Reading a rule does not imply the renderer evaluates it.
+`subdivision::refine_mesh` applies supported Catmull-Clark or bilinear rules to sampled mesh
+data, including indexed UV/color/opacity primvars and material subsets. It removes
+authored normals and generates per-corner normals for permanent sharp features;
+conversion handles other finite-mesh normals. These are not limit-surface normals.
+Unsupported interpolation modes return errors.
+Set `USD_SUBDIVISION_LEVELS=1` (1–6) for the viewer or offscreen
+capture, or insert `route::subdivision::UsdSubdivisionSettings` before projection.
+The mesh route path refines CPU-deformed control points before material subsets.
+It exposes `UsdSubdivisionApplied` or `UsdSubdivisionError`; failures suppress
+generated mesh/subset geometry, and offscreen capture fails instead of saving a
+partial result. Direct mesh point-instancer prototypes use the same CPU refinement
+before prototype transforms and material-subset splitting, retaining shared mesh
+handles. Hierarchical prototypes remain unsupported.
+Changing or removing the settings resource automatically reprojects existing
+meshes and point instancers in live stages and asset instances, preserving each
+instance's clock and runtime-owned entities. GPU subdivision and exact
+limit normals remain unsupported; this option is not full USD fidelity.
+With subdivision enabled, unknown/malformed scheme values are errors, not silent
+polygon fallbacks. The selected prim's inspector shows subdivision, deformation
+and point-instancer diagnostics. For UI capture, `USD_VIEWER_PANE=inspector` and
+`USD_VIEWER_SELECT=/Prim` open the inspector with an initial selection; pane values
+also include `lighting`, `timeline` and the default outliner.
+The Rendering pane (`USD_VIEWER_PANE=rendering`) switches between the control cage
+and subdivision levels 1–6 at runtime, reports refined mesh prim counts, and lists
+subdivision/point-instancer errors. These controls do not author USD opinions.
+`assets/subdivision_cube.usda` and `scripts/replays/subdivision_toggle.replay`
+exercise level 2 at five seconds and restore the control cage at fourteen seconds;
+capture at eleven or twenty seconds respectively to inspect the two states.
+`subdivision::bilinear` preserves existing vertices and uses linear edge/face
+interpolation. Vertex and varying primvars use the same linear weights, and
+face-varying values remain linear across all schema interpolation settings.
+Warped quads are sampled as bilinear patches; finite triangles still approximate
+the surface. Bilinear positions are unaffected by sharpness.
+The Catmull–Clark adapter supports uniform-decay crease/corner position stencils,
+including fractional transitions, per-chain/per-edge sharpness, and permanent
+sharpness at values of 10 or higher. Crease pairs must name actual topology edges;
+duplicate crease edges and duplicate corner entries are rejected. The decay and
+transition rules follow [OpenSubdiv's crease implementation](https://raw.githubusercontent.com/PixarAnimationStudios/OpenSubdiv/release/opensubdiv/sdc/crease.cpp).
+`assets/subdivision_creases.usda` animates all cube-edge sharpness through 0, 0.5,
+2 and 10. Permanent creases and corners split finite-mesh normal averaging into
+smooth face fans after hole filtering. Other points retain smooth averaging;
+normal data uses face-varying interpolation and preserves subset point mappings.
+Chaikin creasing, exact semi-sharp/limit normals and reference-renderer parity
+remain unverified/unsupported.
+Authored hole faces retain their subdivision influence but omit their refined
+descendants from rendering; uniform/face-varying data and subsets are filtered
+with the topology. `assets/subdivision_holes.usda` demonstrates a center hole.
+Catmull–Clark's `interpolateBoundary = "none"` similarly omits faces touching
+boundary vertices while retaining their refinement support. Bilinear refinement
+does not implicitly hide boundary faces under this setting.
+**Experimental:** scale-independent generated normals fix the large dark patches
+in the first level-1 Spot capture. Smaller seams/faceting remain, and comparison
+against a reference renderer is still required. The default remains control cages.
+An optional third scene-report argument (`ASSET TIME LEVELS`) runs this refinement
+check for 1–6 levels and returns failure if any mesh cannot be refined. All 26
+traversed Spot meshes pass one-level refinement. Disconnected vertex fans keep
+their shared vertex fixed, following OpenSubdiv's infinite-sharpness treatment
+for this case; non-manifold edges and inconsistent winding remain unsupported.
+The rule is visible in [OpenSubdiv's topology initialization](https://github.com/PixarAnimationStudios/OpenSubdiv/blob/release/opensubdiv/far/topologyRefinerFactory.cpp).
+No topology welding or splitting is performed. This is not rendered parity proof.
+
+For the actual Mara viewer window, including panes, use an isolated Weston
+compositor. This Linux-only script creates a private runtime directory, captures
+one framebuffer and stops only its own viewer/compositor process groups:
+
+```sh
+make build CARGO='cargo --offline'
+USD_VIEWER_DOME=/Env USD_VIEWER_PANE=lighting nix shell nixpkgs#weston -c /bin/bash scripts/capture_viewer_ui.sh assets/dome_directional.usda target/viewer-ui.png
+```
+
+Choose a new output filename. Companion `.viewer.log`, `.weston.log` and
+`.capture.log` files are retained. The script waits up to 300 seconds for the
+viewer startup handshake, then `USD_UI_CAPTURE_WAIT` sets a 1–300 second delay
+(default 20). Build-lock waits do not consume that delay. The handshake marks
+viewport construction, not scene/pipeline readiness; inspect the screenshot.
+Use real `/bin/bash`, not the local `bash` wrapper. Weston uses its Vulkan renderer
+by default (`USD_UI_COMPOSITOR_RENDERER` overrides it); on this machine the GL
+capture was vertically inverted and Pixman could not host the viewer GPU surface.
+Weston's debug/capture interface is enabled only inside the private runtime, not
+on the user's desktop. See [Weston's headless backend documentation](https://wayland.pages.freedesktop.org/weston/toc/running-weston.html).
+
+Native-picker captures can also isolate D-Bus and XDG config/data/cache directories:
+
+```sh
+portal=$(nix build --no-link --print-out-paths nixpkgs#xdg-desktop-portal)
+gtk=$(nix build --no-link --print-out-paths nixpkgs#xdg-desktop-portal-gtk)
+USD_UI_CAPTURE_PRIVATE_BUS=1 XDG_CURRENT_DESKTOP=gnome \
+XDG_DATA_DIRS="$portal/share:$gtk/share" \
+USD_UI_REPLAY=scripts/replays/open_dialog.replay \
+nix shell nixpkgs#weston -c /bin/bash scripts/capture_viewer_ui.sh assets/editor_samples.usda target/native-picker.png
+```
+
+`save_dialog.replay` opens the root-layer save picker instead. These replays only
+open the chooser; they neither select a file nor save one. Their coordinates are
+specific to the 1600x1000 capture layout. Private-bus cleanup stops the viewer's
+session and removes its temporary XDG directories. Native dialogs currently lack
+a parent-window handle from Mara; GTK reports that missing association.
+
+Set `USD_UI_REPLAY=path/to/input.replay` to replay input into this viewer's egui
+input pipeline. Each line has an elapsed millisecond timestamp followed by
+`move X Y`, `down X Y`, `up X Y`, `scroll DX DY`, or `text TEXT`. Coordinates and
+scroll deltas are window-local logical points; timestamps must be nondecreasing.
+Separate pointer movement, press and release into successive frames. Text retains
+spaces after its single separator. Blank lines and `#` comment lines are ignored.
+The tool is disabled unless explicitly configured, logs event times without text
+contents, and does not inject OS input or issue editor commands directly.
+Replays use elapsed time rather than widget readiness; inspect captures and logs
+before treating them as acceptance evidence. For example:
+
+```text
+5000 move 600 450
+6000 scroll 0 -700
+```
+
+The repeatable sample-authoring replay uses `assets/editor_samples.usda` and
+`scripts/replays/sample_history.replay`. Build first, retain the private
+compositor's default 1600x1000 output and default UI scale, and select `/Model`:
+
+```sh
+make build CARGO='cargo --offline'
+USD_UI_CAPTURE_WAIT=24 USD_UI_REPLAY=scripts/replays/sample_history.replay USD_VIEWER_PANE=inspector USD_VIEWER_SELECT=/Model nix shell nixpkgs#weston -c /bin/bash scripts/capture_viewer_ui.sh assets/editor_samples.usda target/sample-clear.png
+```
+
+Use a new output name for each run. Capture at 16 seconds to inspect Undo
+(`0, 10`), 20 for Redo (`0, 10, 25`), 24 for Clear Sample (`0, 10`), or 28 for
+undoing that clear (`0, 10, 25`). These are expected scene-sample keys; the default
+value stays `5`. The replay does not save the fixture. Coordinates are layout
+dependent, so a successful capture alone does not establish the expected result.
+
+The current Mara host creates a GPU device with four storage textures per shader
+stage. Bevy's dome filtering requires at least six plus compute support, so the
+embedded viewer cannot currently filter dome maps on that device. The adapter
+reports `Unavailable` instead of waiting indefinitely. Standalone captures request
+a different device and have passed IBL checks; they do not prove embedded-host
+capability. The Mara GPU configuration hook remains a separate integration change.
+
+For opt-in runtime dome IBL, add
+`usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin` and attach
+`UsdDomeEnvironmentSource::new(dome_entity)` from that module to a camera.
+The selected dome must have a loaded `UsdDomeTexture`; AssetServer snapshots
+provide it. The adapter converts latitude-longitude textures and lets Bevy filter
+the cubemap on the GPU. It preserves/restores the camera's previous environment
+on deselection and leaves ambient lighting and skybox selection unchanged.
+`UsdDomeEnvironmentState::Attached` reports map attachment, not GPU completion.
+Runtime filtering requires a compute-capable PBR renderer.
+
+An isolated dome capture disables directional lights and camera ambient:
+
+```sh
+USD_CAPTURE_DOME=/Env make run APP_TARGET='--example viewer_capture' ARGS='assets/dome_environment.usda /dev/shm/dome.png 0 0 3 7 0 1 0'
+```
+
+Time `10` is the zero-intensity control. The fixture's constant warm HDR tests
+diffuse/specular illumination, not directional detail or reflection orientation.
+The viewer's **Lighting** pane lists projected domes and offers studio-only,
+dome-only and combined lighting. These are viewport settings and do not author
+USD opinions. The studio toggle affects only the viewer's own lights and camera
+ambient; authored USD lights remain unchanged. A missing selected dome is reported
+and detached, rather than silently replaced by another dome.
+For startup selection, use `USD_VIEWER_DOME=/Env`; `USD_VIEWER_PANE=lighting`
+opens that pane initially. Without a selection, studio lighting remains the default.
+EXR and non-HDR dome color-space
+metadata remain unsupported; automatic layout currently accepts only 2:1 latlong.
+`assets/dome_directional.usda` uses a red/blue HDR and rotates the dome 180 degrees
+between times 0 and 10. Use the same camera arguments above for both captures;
+the blue contribution moves from right to left on the spheres. Capture metadata
+records the applied environment intensity and quaternion. Owned generators stop
+after their filtering commands have been recorded. Image/tint/resolution changes
+start another generation; rotation/intensity changes reuse the filtered maps.
+`UsdDomeEnvironmentDiagnostics` counts recorded generations, not GPU time or
+completion fences. Dome captures wait for generator retirement and record both
+the generation count and active-generator count.
+
+```sh
+make run APP_TARGET='--example viewer_capture' ARGS='assets/point_deformation.usda /dev/shm/capture.png 30 6 4 8 0 1 0'
+```
+
+This windowless tool renders through Bevy into a fixed 1280x720 GPU texture and
+reads it back through Bevy's screenshot pipeline. It shares the viewer's studio
+environment, USD routes and skinning selection, but does not capture Mara UI.
+Arguments are asset, PNG output, USD time code, then optional eye XYZ and target
+XYZ. The default eye is `(6,4,8)` looking at `(0,1,0)`. No orbit input or automatic
+camera framing is used. The grid fits below visible mesh bounds using the viewer's
+shared height/scale/fade calculation; this does not move the USD scene or camera.
+Set `USD_CAPTURE_CAMERA=/Scene/Camera` to copy a projected USD camera's world
+transform and projection instead of using eye/target arguments. Metadata records
+the selected path; missing cameras wait until the capture timeout. The tool does
+not activate the source camera itself. Camera transforms must be representable as
+Bevy TRS; sheared camera transforms are not fidelity-validated.
+
+Perspective aperture offsets use `route::camera::UsdPerspectiveProjection` inside
+`Projection::Custom`; unshifted cameras retain `Projection::Perspective`.
+Viewport resizing preserves vertical FOV and physical aperture-offset/focal-length
+ratios, adjusting horizontal coverage. Orthographic cameras retain their fixed
+filmback policy. This follows the aperture-offset units described by
+[OpenUSD GfCamera](https://openusd.org/dev/api/class_gf_camera.html).
+`assets/camera_offsets.usda` animates horizontal/vertical offsets from zero:
+
+```bash
+USD_CAPTURE_CAMERA=/Scene/Camera make run APP_TARGET='--example viewer_capture' ARGS='assets/camera_offsets.usda target/camera-offset.png 10'
+```
+
+Set `USD_CPU_SKINNING=1` to compare the ordinary CPU skin path.
+Set `USD_CAPTURE_SHADOWS=off` to disable directional, point and spot shadow maps
+for an isolated rendering comparison. The default `scene` preserves each light's
+shadow setting. This diagnostic is recorded in metadata and does not edit USD.
+Set `USD_CAPTURE_RENDERER=forward|prepass|deferred` to select the render path
+(default `forward`). The latter two enable depth, normal and motion-vector
+prepasses and disable MSAA; deferred also selects Bevy's deferred opaque renderer.
+The selected renderer and subdivision level (`0` means disabled) are recorded in
+capture metadata. Set `USD_SUBDIVISION_LEVELS=1..6` to refine the scene. Match renderer settings
+as well as camera/time when comparing CPU and GPU captures.
+
+It uses synchronous pipeline compilation and waits for scene readiness plus
+60 consecutive frames with no pending/failed GPU pipelines, then writes `.png`, tightly
+packed `.rgba` (RGBA8 sRGB, 5120 bytes per row), and `.capture.txt` settings.
+`CAPTURE_OK` and exit status 0 indicate completed readback/file output, not scene
+fidelity. Load, readback timeout and write failures produce a nonzero exit.
+Use identical camera/time arguments and `cmp` on the raw files for repeat checks.
+`/dev/shm` avoids the current `/tmp` quota issue; choose persistent storage for
+long-term baselines. Repeated captures were byte-identical on the tested Vulkan
+adapter; this is not a cross-GPU determinism guarantee.
+
+Capture metadata also records hierarchy-visible mesh/GPU-mesh counts and CPU
+fallback reasons. Visibility here does not prove a mesh was inside the camera
+frustum. Compare raw captures with matching camera/time/resolution settings:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example capture_compare' ARGS='/dev/shm/before.rgba /dev/shm/after.rgba'
+```
+
+The comparison reports changed RGB pixels, maximum channel error and mean
+absolute RGB error. It ignores alpha (the PNG preview does too), exits nonzero
+when pixels differ, and accepts an optional per-channel tolerance from 0 to 255.
+Background pixels contribute to the mean; a small whole-image mean does not
+establish mesh fidelity.
+
+To locate differences, append a tolerance, image width and diagnostic PNG path:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example capture_compare' ARGS='/dev/shm/before.rgba /dev/shm/after.rgba 0 1280 /dev/shm/difference.png'
+```
+
+Changed pixels are marked red/yellow over a dim grayscale reference; green
+intensity encodes maximum RGB channel error. The command also reports inclusive
+changed-pixel bounds. A successfully written diagnostic still exits nonzero when
+the captures differ. Width must match the source image.
+
+`assets/skel_double_sided.usda` and `assets/skel_backface_reference.usda` compare
+backface illumination with an equivalent reversed-winding front face. Capture
+both at time `30`, eye `(2,3,4)` and target `(0,0,0)` in forward mode.
+
+`assets/skel_influences.usda` animates weights with a static joint pose. Capture
+times `0`, `5` and `10` using eye `(4,3,6)` and target `(1,1,0)` to inspect
+influence-only motion; set `USD_CPU_SKINNING=1` for the CPU comparison.
+`assets/skel_constant_influences.usda` expresses the same motion with one
+constant influence set shared by the entire mesh instead of per-vertex arrays.
+`assets/skel_material_subsets.usda` exercises shared-palette GPU skinning with
+orange/blue face materials. Capture time `30`, eye `(4,3,6)`, target `(0,1,0)`
+and compare against `USD_CPU_SKINNING=1` using the same camera.
+`assets/morph_animation.usda` exercises standalone GPU morph targets. Capture
+time `10`, eye `(2,2,4)`, target `(0.5,0.5,0)`; `USD_CPU_SKINNING=1` also disables
+the GPU morph route for comparison. Metadata reports GPU morph meshes separately
+from GPU-skinned meshes.
+`assets/morph_subsets.usda` adds a time-varying orange face subset to that morph
+fixture. Use the same camera and time for GPU/CPU comparisons.
+`assets/skel_morph_subsets.usda` combines a rotated skeleton, tip morph and
+orange/blue subsets. Capture time `30`, eye `(4,3,6)`, target `(0,1,0)`.
+`assets/morph_normals.usda` adds indexed authored vertex normals and sparse
+normal offsets to the standalone morph-subset fixture. Capture time `10`, eye
+`(2,2,4)`, target `(0.5,0.5,0)` for CPU/GPU normal-delta comparison.
+`assets/skel_morph_normals.usda` adds constant skin influences, joint rotation
+and nonuniform scale to the same normal-delta fixture; use the same capture settings.
+`assets/skel_singular_normals.usda` has a zero-scale pose at time 10 and valid
+poses at 0/20. An unevaluable deformation carries `UsdDeformationError` and omits
+generated geometry/subsets until a valid sample or edit recovers it. The capture
+tool treats this component as a failure and reports the prim path rather than
+publishing a partial-scene screenshot.
+`assets/skel_corner_normals.usda` adds an indexed face-varying normal seam to the
+combined skin/morph fixture. Capture time 10 with the same camera arguments.
+Authored constant, uniform, vertex, varying and face-varying normals are retained
+through deformation. Constant normals become per-point; uniform normals become
+per-corner when deformation can vary within the authored interpolation domain.
+`assets/skel_corner_influences.usda` exercises corner normals with different
+sampled source-point skin influences. Generated smooth normals and animated
+normal-map tangent fidelity remain separate limitations.
+
+### Saving files
+
+The viewer polls native open/save dialogs asynchronously and requests a repaint
+when a selection completes. Only one dialog can be pending. Paths are accepted
+without lossy Unicode conversion. Save selections carry a process-local document
+ID and edit-layer identity; `EditorCommand::SaveChecked` revalidates both when the
+command executes. A changed document/target requires choosing the destination
+again. `EditorCommand::Save` remains an unconditional programmatic operation.
+This keeps file selection off the blocking UI path; USD loading/export itself
+still runs on the editor thread. Native-dialog platform acceptance remains open.
+
+Editor root-layer, edit-layer and flattened saves, and `authoring::save_stage_as`,
+export to a temporary sibling with the destination's format extension. The file
+is synced before atomic replacement; Unix saves also sync the parent directory.
+Export or publication failures preserve the previous destination and clean up
+the temporary file. A directory-sync error explicitly reports that publication
+already occurred, but durability could not be confirmed.
+
+Existing file permissions are retained. Final symlinks, directories and read-only
+destinations are rejected. Replacement creates a new inode; ownership, ACLs and
+hard-link identity are not preserved. Concurrent saves use last-writer-wins,
+without conflict detection. Save As does not rebase relative asset paths or
+change the stage's source identifier. Root/edit-layer exports retain their layer
+opinions; flattened export has different composition semantics.
+
+### Hierarchical point prototypes
+
+`assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
+between times 0 and 10 while the red child stays fixed. Mesh/material/subset
+handles are shared across copies. Nested transforms remain on generated entities
+rather than being decomposed from an accumulated matrix. Generated nodes carry
+`route::instancer::UsdPrototypePart` with the source prototype path; hierarchical
+`UsdInstance` entities are transform roots, not necessarily renderable meshes.
+
+Xform, Scope, SkelRoot, untyped grouping nodes, Mesh, Cube, Sphere, Cylinder,
+Capsule, Cone and Plane nodes are supported;
+material/subset/skeleton definitions are consumed by their mesh adapters.
+Hierarchy preparation rejects reset stacks, per-prim shear, perspective/singular
+transforms, unsupported node types, depth >=256 and more than 4096 projected
+nodes. Failure suppresses generated geometry while retaining existing node
+identities and runtime children for recovery. Full hierarchy/deformation fidelity
+and performance remain unverified; this is not native scenegraph instancing.
+
+`assets/point_shapes.usda` instances two copies of a six-shape assembly. All
+dimensions double between time codes 0 and 10. Shapes use the same tessellation
+and preview-material conversion as ordinary prims, with shared handles. Constant
+display colors/opacities (including sampled indices) and single unindexed values
+are replicated across generated vertices; nonconstant multi-value shape colors
+and opacities are not mapped by this adapter. Shape
+face subsets are not supported. Shape prims can also be direct prototype targets.
+Negative, nonfinite or f32-overflowing dimensions suppress shape geometry and
+publish `route::shapes::UsdShapeError`; nonfinite generated positions/normals are
+also rejected. The selected prim's inspector shows the error, and the standalone
+capture exits unsuccessfully instead of publishing a partial scene. Valid edits
+restore geometry without replacing the prim entity or its runtime children.
+Shape regeneration invalidates cached bounds before Bevy recomputes them.
+
+`assets/display_opacity.usda` compares an ordinary mesh, cube and point-instanced
+cube against a blue backdrop. Their display opacity animates from 0.2 to 1 at
+time codes 0 and 10. Unbound fallback materials switch between blend and opaque
+mode while opacity remains in vertex alpha, without multiplying it a second time
+into material alpha. This does not implement shader primvar-reader networks or
+order-independent transparency for intersecting transparent surfaces.
+
+`assets/inherited_display.usda` authors animated display color and opacity on
+the parent Xform instead. Meshes, primitives and their point prototypes resolve
+the nearest authored, nonblocked constant ancestor value; local values take
+precedence. Values and indices are sampled from that same owner. Parent edits
+reconcile consumers, and independent instance clocks sample inherited inputs.
+This follows [OpenUSD primvar inheritance](https://openusd.org/dev/api/class_usd_geom_primvars_a_p_i.html).
+Mesh UVs also inherit constant `primvars:st` (or fallback `primvars:st0`), including
+sampled owner-local indices and parent-edit invalidation. The canonical `st`
+lookup precedes `st0`, including inherited values. Both flat and indexed mesh
+layouts resolve constant UV indices before applying the USD-to-Bevy V flip.
+General shader primvar-reader networks and arbitrary per-texture UV sets remain
+separate work; constant UVs do not define a usable normal-map tangent basis.
+
+```bash
+make run APP_TARGET='--example viewer_capture' ARGS='assets/point_shapes.usda target/point-shapes.png 10 6 4 9 2.5 0.75 0'
+```

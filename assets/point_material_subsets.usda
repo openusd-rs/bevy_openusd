@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    subLayers = [@material_subsets.usda@]
+    defaultPrim = "Instances"
+)
+over "Panels" {
+    uniform token purpose = "guide"
+}
+def PointInstancer "Instances" {
+    point3f[] positions = [(-3,0,0), (0,0,0), (3,0,0)]
+    int[] protoIndices = [0,0,0]
+    int64[] ids = [10,20,30]
+    rel prototypes = [</Panels>]
+}

@@ -72,8 +72,12 @@ pub struct MeshPrimvar<T> {
 #[derive(Debug, Clone)]
 pub struct ReadMesh {
     pub points: Vec<[f32; 3]>,
+    /// Pre-deformation positions used to select polygon diagonals.
+    pub triangulation_points: Option<Vec<[f32; 3]>>,
     pub face_vertex_counts: Vec<i32>,
     pub face_vertex_indices: Vec<i32>,
+    /// Source face indices excluded from rendering.
+    pub hole_indices: Vec<i32>,
     pub normals: Option<MeshPrimvar<[f32; 3]>>,
     pub uvs: Option<MeshPrimvar<[f32; 2]>>,
     pub orientation: Orientation,
@@ -93,40 +97,57 @@ pub struct ReadSubset {
 }
 
 pub fn read_mesh(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadMesh>> {
-    let Some(points) = read_vec3f_array(stage, prim, "points")? else {
+    read_mesh_at(stage, prim, None)
+}
+
+/// Read mesh geometry and primvars at a USD time code, or their default values.
+pub fn read_mesh_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<Option<ReadMesh>> {
+    let Some(points) = vec3f_values(attr_at(stage, prim, "points", time)?) else {
         return Ok(None);
     };
-    let Some(face_vertex_counts) = read_int_array(stage, prim, "faceVertexCounts")? else {
+    let Some(face_vertex_counts) = read_int_array_at(stage, prim, "faceVertexCounts", time)? else {
         return Ok(None);
     };
-    let Some(face_vertex_indices) = read_int_array(stage, prim, "faceVertexIndices")? else {
+    let Some(face_vertex_indices) = read_int_array_at(stage, prim, "faceVertexIndices", time)? else {
         return Ok(None);
     };
 
-    let normals = read_primvar_vec3f(stage, prim, "normals")?;
-    let uvs = read_primvar_vec2f(stage, prim, "primvars:st")?.or(read_primvar_vec2f(
+    let normal_owner = inherited_primvar_owner(stage, prim, "primvars:normals")?;
+    let normals = match read_primvar_vec3f(stage, &normal_owner, "primvars:normals", time)? {
+        Some(mut normals) => {
+            normals.interpolation = read_primvar_interpolation(stage, &normal_owner, "primvars:normals")?
+                .unwrap_or(Interpolation::Constant);
+            Some(normals)
+        }
+        None => read_primvar_vec3f(stage, prim, "normals", time)?,
+    };
+    let uvs = read_primvar_vec2f(stage, prim, "primvars:st", time)?.or(read_primvar_vec2f(
         stage,
         prim,
         "primvars:st0",
+        time,
     )?);
     let orientation = match read_token(stage, prim, "orientation")?.as_deref() {
         Some("leftHanded") => Orientation::LeftHanded,
         _ => Orientation::RightHanded,
     };
-    let display_color = read_primvar_vec3f(stage, prim, "primvars:displayColor")?;
-    let display_opacity = read_primvar_float(stage, prim, "primvars:displayOpacity")?;
-    let subsets = read_material_subsets(stage, prim)?;
+    let display_color = read_primvar_vec3f(stage, prim, "primvars:displayColor", time)?;
+    let display_opacity = read_primvar_float(stage, prim, "primvars:displayOpacity", time)?;
+    let subsets = read_material_subsets(stage, prim, time)?;
     let double_sided = read_bool(stage, prim, "doubleSided")?.unwrap_or(false);
-    let extent = read_extent(stage, prim)?;
+    let extent = vec3f_values(attr_at(stage, prim, "extent", time)?)
+        .filter(|values| values.len() >= 2).map(|values| [values[0], values[1]]);
     let subdivision_scheme = read_token(stage, prim, "subdivisionScheme")?
         .as_deref()
         .and_then(SubdivScheme::parse)
         .unwrap_or_default();
 
     Ok(Some(ReadMesh {
+        triangulation_points: None,
         points,
         face_vertex_counts,
         face_vertex_indices,
+        hole_indices: read_int_array_at(stage, prim, "holeIndices", time)?.unwrap_or_default(),
         normals,
         uvs,
         orientation,
@@ -139,13 +160,13 @@ pub fn read_mesh(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadMesh>>
     }))
 }
 
-fn read_material_subsets(stage: &Stage, mesh_prim: &Path) -> anyhow::Result<Vec<ReadSubset>> {
+fn read_material_subsets(stage: &Stage, mesh_prim: &Path, time: Option<f64>) -> anyhow::Result<Vec<ReadSubset>> {
     let mut out = Vec::new();
-    for child_name in stage.prim(mesh_prim.clone()).child_names()? {
+    for child_name in stage.prim(mesh_prim.clone()).expect("validated USD path").child_names()? {
         let Ok(child_path) = mesh_prim.append_path(child_name.as_str()) else {
             continue;
         };
-        if stage.prim(child_path.clone()).type_name()?.as_deref() != Some("GeomSubset") {
+        if stage.prim(child_path.clone()).expect("validated USD path").type_name()?.as_deref() != Some("GeomSubset") {
             continue;
         }
         if read_token(stage, &child_path, "familyName")?.as_deref() != Some("materialBind") {
@@ -157,7 +178,7 @@ fn read_material_subsets(stage: &Stage, mesh_prim: &Path) -> anyhow::Result<Vec<
         }
         out.push(ReadSubset {
             name: child_name.to_string(),
-            indices: read_int_array(stage, &child_path, "indices")?.unwrap_or_default(),
+            indices: read_int_array_at(stage, &child_path, "indices", time)?.unwrap_or_default(),
             material_binding: super::shade::read_material_binding(stage, &child_path)?,
         });
     }
@@ -240,19 +261,33 @@ pub fn read_point_instancer(
     stage: &Stage,
     prim: &Path,
 ) -> anyhow::Result<Option<ReadPointInstancer>> {
-    let Some(positions) = read_vec3f_array(stage, prim, "positions")? else {
-        return Ok(None);
+    read_point_instancer_at(stage, prim, None)
+}
+
+pub fn read_point_instancer_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<Option<ReadPointInstancer>> {
+    let owner = stage.prim(prim.clone())?;
+    let value = |name| match time {
+        Some(time) => owner.attribute(name).get_at::<Value>(openusd::usd::TimeCode::new(time)),
+        None => owner.attribute(name).get::<Value>(),
     };
-    let Some(proto_indices) = read_int_array(stage, prim, "protoIndices")? else {
-        return Ok(None);
+    let positions = match value("positions")? {
+        None => return Ok(None),
+        value => vec3f_values(value).ok_or_else(|| anyhow::anyhow!("invalid positions array"))?,
     };
-    let prototypes = stage
-        .prim(prim.clone())
-        .relationship("prototypes")
-        .targets()
-        .unwrap_or_default();
-    let orientations = read_quat_array(stage, prim, "orientations")?.unwrap_or_default();
-    let scales = read_vec3f_array(stage, prim, "scales")?.unwrap_or_default();
+    let proto_indices = match value("protoIndices")? {
+        Some(Value::IntVec(indices)) => indices,
+        None => return Ok(None),
+        _ => anyhow::bail!("invalid prototype indices array"),
+    };
+    let prototypes = owner.relationship("prototypes").targets()?;
+    let orientations = match value("orientations")? {
+        None => Vec::new(),
+        value => quat_values(value).ok_or_else(|| anyhow::anyhow!("invalid orientations array"))?,
+    };
+    let scales = match value("scales")? {
+        None => Vec::new(),
+        value => vec3f_values(value).ok_or_else(|| anyhow::anyhow!("invalid scales array"))?,
+    };
     Ok(Some(ReadPointInstancer {
         prototypes,
         positions,
@@ -563,8 +598,11 @@ pub fn read_purpose(stage: &Stage, prim: &Path) -> anyhow::Result<String> {
 pub fn read_effective_purpose(stage: &Stage, prim: &Path) -> anyhow::Result<String> {
     let mut cur = prim.clone();
     loop {
-        if let Some(t) = read_token(stage, &cur, "purpose")? {
-            return Ok(t);
+        let attr = stage.prim(cur.clone())?.attribute("purpose");
+        if attr.resolve_info()?.has_authored_value() {
+            if let Some(t) = read_token(stage, &cur, "purpose")? {
+                return Ok(t);
+            }
         }
         match cur.parent() {
             Some(p) => cur = p,
@@ -580,15 +618,21 @@ pub enum VisibilityState {
 }
 
 pub fn read_visibility(stage: &Stage, prim: &Path) -> anyhow::Result<VisibilityState> {
-    Ok(match read_token(stage, prim, "visibility")?.as_deref() {
-        Some("invisible") => VisibilityState::Invisible,
+    read_visibility_at(stage, prim, None)
+}
+
+/// Read the prim's local visibility at a USD time code.
+pub fn read_visibility_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<VisibilityState> {
+    Ok(match attr_at(stage, prim, "visibility", time)? {
+        Some(Value::Token(value)) if value.as_str() == "invisible" => VisibilityState::Invisible,
+        Some(Value::String(value)) if value == "invisible" => VisibilityState::Invisible,
         _ => VisibilityState::Inherited,
     })
 }
 
 pub fn read_kind(stage: &Stage, prim: &Path) -> anyhow::Result<Option<String>> {
     Ok(stage
-        .prim(prim.clone())
+        .prim(prim.clone()).expect("validated USD path")
         .kind()?
         .map(|t| t.as_str().to_string()))
 }
@@ -761,8 +805,8 @@ pub fn read_custom_attrs(
     prim: &Path,
 ) -> anyhow::Result<Vec<(String, CustomAttrValue)>> {
     let mut out = Vec::new();
-    for name in stage.prim(prim.clone()).property_names()? {
-        let attr = stage.prim(prim.clone()).attribute(&name);
+    for name in stage.prim(prim.clone()).expect("validated USD path").property_names()? {
+        let attr = stage.prim(prim.clone()).expect("validated USD path").attribute(&name);
         let is_custom = matches!(
             attr.get_metadata::<bool>("custom").ok().flatten(),
             Some(true)
@@ -872,15 +916,12 @@ fn dict_from_value(raw: Option<Value>) -> Option<CustomDict> {
 }
 
 pub fn read_custom_data(stage: &Stage, prim: &Path) -> anyhow::Result<Option<CustomDict>> {
-    Ok(dict_from_value(stage.prim(prim.clone()).custom_data()?))
+    Ok(dict_from_value(stage.prim(prim.clone()).expect("validated USD path").custom_data()?))
 }
 
-/// `assetInfo` dictionary on a prim (package-management metadata). Read via
-/// the fork's public `Stage::metadata` accessor.
+/// Composed `assetInfo` dictionary on a prim.
 pub fn read_asset_info(stage: &Stage, prim: &Path) -> anyhow::Result<Option<CustomDict>> {
-    // `assetInfo` has no public per-prim metadata accessor upstream yet. TODO restore.
-    let _ = (stage, prim);
-    Ok(None)
+    Ok(dict_from_value(stage.prim(prim.clone())?.get_metadata::<Value>("assetInfo")?))
 }
 
 pub fn read_custom_layer_data(stage: &Stage) -> anyhow::Result<Option<CustomDict>> {
@@ -892,7 +933,7 @@ pub fn read_custom_layer_data(stage: &Stage) -> anyhow::Result<Option<CustomDict
 /// Composed `default` value, falling back to the first time sample when the
 /// default is an empty array placeholder (common in FX caches).
 fn attr_default(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
-    let attr = stage.prim(prim.clone()).attribute(name);
+    let attr = stage.prim(prim.clone()).expect("validated USD path").attribute(name);
     if let Some(v) = attr.get::<Value>()?
         && !is_empty_array_value(&v)
     {
@@ -945,15 +986,16 @@ fn read_bool(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<bo
     })
 }
 
-fn read_extent(stage: &Stage, prim: &Path) -> anyhow::Result<Option<[[f32; 3]; 2]>> {
-    Ok(match read_vec3f_array(stage, prim, "extent")? {
-        Some(v) if v.len() >= 2 => Some([v[0], v[1]]),
-        _ => None,
-    })
+fn read_int_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<i32>>> {
+    read_int_array_at(stage, prim, name, None)
 }
 
-fn read_int_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<i32>>> {
-    Ok(match attr_default(stage, prim, name)? {
+fn attr_at(stage: &Stage, prim: &Path, name: &str, time: Option<f64>) -> anyhow::Result<Option<Value>> {
+    Ok(stage.prim(prim.clone())?.attribute(name).get_at::<Value>(time.map(openusd::usd::TimeCode::new))?)
+}
+
+fn read_int_array_at(stage: &Stage, prim: &Path, name: &str, time: Option<f64>) -> anyhow::Result<Option<Vec<i32>>> {
+    Ok(match attr_at(stage, prim, name, time)? {
         Some(Value::IntVec(v)) => Some(v),
         _ => None,
     })
@@ -975,12 +1017,16 @@ fn read_int_scalar(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Opt
 }
 
 fn read_float_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<f32>>> {
-    Ok(match attr_default(stage, prim, name)? {
+    Ok(float_values(attr_default(stage, prim, name)?))
+}
+
+fn float_values(value: Option<Value>) -> Option<Vec<f32>> {
+    match value {
         Some(Value::FloatVec(v)) => Some(v),
         Some(Value::DoubleVec(v)) => Some(v.into_iter().map(|d| d as f32).collect()),
         Some(Value::Float(v)) => Some(vec![v]),
         _ => None,
-    })
+    }
 }
 
 fn read_int64_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Vec<i64>>> {
@@ -991,12 +1037,9 @@ fn read_int64_array(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Op
     })
 }
 
-fn read_quat_array(
-    stage: &Stage,
-    prim: &Path,
-    name: &str,
-) -> anyhow::Result<Option<Vec<[f32; 4]>>> {
-    Ok(match attr_default(stage, prim, name)? {
+fn quat_values(value: Option<Value>) -> Option<Vec<[f32; 4]>> {
+    match value {
+        Some(Value::QuathVec(v)) => Some(v.into_iter().map(|q| [q.w.to_f32(), q.x.to_f32(), q.y.to_f32(), q.z.to_f32()]).collect()),
         Some(Value::QuatfVec(v)) => Some(v.into_iter().map(|q| [q.w, q.x, q.y, q.z]).collect()),
         Some(Value::QuatdVec(v)) => Some(
             v.into_iter()
@@ -1004,7 +1047,7 @@ fn read_quat_array(
                 .collect(),
         ),
         _ => None,
-    })
+    }
 }
 
 fn read_vec2d_scalar(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<[f64; 2]>> {
@@ -1032,7 +1075,11 @@ fn read_vec3f_array(
     prim: &Path,
     name: &str,
 ) -> anyhow::Result<Option<Vec<[f32; 3]>>> {
-    Ok(match attr_default(stage, prim, name)? {
+    Ok(vec3f_values(attr_default(stage, prim, name)?))
+}
+
+fn vec3f_values(value: Option<Value>) -> Option<Vec<[f32; 3]>> {
+    match value {
         Some(Value::Vec3fVec(v)) => Some(v.into_iter().map(|a| [a.x, a.y, a.z]).collect()),
         Some(Value::Vec3dVec(v)) => Some(
             v.into_iter()
@@ -1040,19 +1087,31 @@ fn read_vec3f_array(
                 .collect(),
         ),
         _ => None,
-    })
+    }
 }
 
-fn read_vec2f_array(
-    stage: &Stage,
-    prim: &Path,
-    name: &str,
-) -> anyhow::Result<Option<Vec<[f32; 2]>>> {
-    Ok(match attr_default(stage, prim, name)? {
+fn vec2f_values(value: Option<Value>) -> Option<Vec<[f32; 2]>> {
+    match value {
         Some(Value::Vec2fVec(v)) => Some(v.into_iter().map(|a| [a.x, a.y]).collect()),
         Some(Value::Vec2dVec(v)) => Some(v.into_iter().map(|a| [a.x as f32, a.y as f32]).collect()),
         _ => None,
-    })
+    }
+}
+
+pub(crate) fn inherited_primvar_owner(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Path> {
+    let mut candidate = Some(prim.clone());
+    while let Some(path) = candidate {
+        if path.is_abs_root() { break; }
+        let info = stage.prim(path.clone())?.attribute(name).resolve_info()?;
+        if info.has_authored_value() && !info.value_is_blocked()
+            && (path == *prim || read_primvar_interpolation(stage, &path, name)?
+                .unwrap_or(Interpolation::Constant) == Interpolation::Constant)
+        {
+            return Ok(path);
+        }
+        candidate = path.parent();
+    }
+    Ok(prim.clone())
 }
 
 fn read_primvar_interpolation(
@@ -1061,7 +1120,7 @@ fn read_primvar_interpolation(
     name: &str,
 ) -> anyhow::Result<Option<Interpolation>> {
     let raw = stage
-        .prim(prim.clone())
+        .prim(prim.clone()).expect("validated USD path")
         .attribute(name)
         .get_metadata::<Value>("interpolation")?;
     if let Some(s) = raw.and_then(|v| match v {
@@ -1078,35 +1137,45 @@ fn read_primvar_interpolation(
         .and_then(Interpolation::parse))
 }
 
-fn read_primvar_vec3f(
+pub(crate) fn read_primvar_vec3f(
     stage: &Stage,
     prim: &Path,
     name: &str,
+    time: Option<f64>,
 ) -> anyhow::Result<Option<MeshPrimvar<[f32; 3]>>> {
-    let Some(values) = read_vec3f_array(stage, prim, name)? else {
+    let owner = if name == "primvars:displayColor" { inherited_primvar_owner(stage, prim, name)? } else { prim.clone() };
+    let inherited = owner != *prim;
+    let prim = &owner;
+    let Some(values) = vec3f_values(attr_at(stage, prim, name, time)?) else {
         return Ok(None);
     };
     Ok(Some(MeshPrimvar {
         values,
-        interpolation: read_primvar_interpolation(stage, prim, name)?
-            .unwrap_or(Interpolation::Vertex),
-        indices: read_int_array(stage, prim, &format!("{name}:indices"))?.unwrap_or_default(),
+        interpolation: if inherited { Interpolation::Constant } else {
+            read_primvar_interpolation(stage, prim, name)?.unwrap_or(Interpolation::Vertex)
+        },
+        indices: read_int_array_at(stage, prim, &format!("{name}:indices"), time)?.unwrap_or_default(),
     }))
 }
 
-fn read_primvar_float(
+pub(crate) fn read_primvar_float(
     stage: &Stage,
     prim: &Path,
     name: &str,
+    time: Option<f64>,
 ) -> anyhow::Result<Option<MeshPrimvar<f32>>> {
-    let Some(values) = read_float_array(stage, prim, name)? else {
+    let owner = if name == "primvars:displayOpacity" { inherited_primvar_owner(stage, prim, name)? } else { prim.clone() };
+    let inherited = owner != *prim;
+    let prim = &owner;
+    let Some(values) = float_values(attr_at(stage, prim, name, time)?) else {
         return Ok(None);
     };
     Ok(Some(MeshPrimvar {
         values,
-        interpolation: read_primvar_interpolation(stage, prim, name)?
-            .unwrap_or(Interpolation::Vertex),
-        indices: read_int_array(stage, prim, &format!("{name}:indices"))?.unwrap_or_default(),
+        interpolation: if inherited { Interpolation::Constant } else {
+            read_primvar_interpolation(stage, prim, name)?.unwrap_or(Interpolation::Vertex)
+        },
+        indices: read_int_array_at(stage, prim, &format!("{name}:indices"), time)?.unwrap_or_default(),
     }))
 }
 
@@ -1114,14 +1183,19 @@ fn read_primvar_vec2f(
     stage: &Stage,
     prim: &Path,
     name: &str,
+    time: Option<f64>,
 ) -> anyhow::Result<Option<MeshPrimvar<[f32; 2]>>> {
-    let Some(values) = read_vec2f_array(stage, prim, name)? else {
+    let owner = inherited_primvar_owner(stage, prim, name)?;
+    let inherited = owner != *prim;
+    let prim = &owner;
+    let Some(values) = vec2f_values(attr_at(stage, prim, name, time)?) else {
         return Ok(None);
     };
     Ok(Some(MeshPrimvar {
         values,
-        interpolation: read_primvar_interpolation(stage, prim, name)?
-            .unwrap_or(Interpolation::FaceVarying),
-        indices: read_int_array(stage, prim, &format!("{name}:indices"))?.unwrap_or_default(),
+        interpolation: if inherited { Interpolation::Constant } else {
+            read_primvar_interpolation(stage, prim, name)?.unwrap_or(Interpolation::FaceVarying)
+        },
+        indices: read_int_array_at(stage, prim, &format!("{name}:indices"), time)?.unwrap_or_default(),
     }))
 }

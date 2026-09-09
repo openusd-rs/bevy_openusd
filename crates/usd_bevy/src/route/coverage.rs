@@ -9,11 +9,14 @@
 //! without re-walking the stage.
 
 use bevy::prelude::*;
+use openusd_schemas::render::SettingsSchema;
+use openusd_schemas::proc::GenerativeProceduralSchema;
+use openusd_schemas::ui::BackdropSchema;
 
 use openusd::sdf::Value;
-use openusd::schemas::proc::GenerativeProcedural;
-use openusd::schemas::render::RenderSettings;
-use openusd::schemas::ui::Backdrop;
+use openusd_schemas::proc::GenerativeProcedural;
+use openusd_schemas::render::Settings as RenderSettings;
+use openusd_schemas::ui::Backdrop;
 
 use super::{PrimRoute, RouteCtx};
 
@@ -60,6 +63,9 @@ fn token_vec(v: Option<Value>) -> Vec<String> {
 pub struct RenderSettingsRoute;
 
 impl PrimRoute for RenderSettingsRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        world.entity_mut(entity).remove::<UsdRenderSettings>();
+    }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         ctx.type_name.as_deref() == Some("RenderSettings")
     }
@@ -86,6 +92,9 @@ impl PrimRoute for RenderSettingsRoute {
 pub struct ProceduralRoute;
 
 impl PrimRoute for ProceduralRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        world.entity_mut(entity).remove::<UsdProcedural>();
+    }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         ctx.type_name.as_deref() == Some("GenerativeProcedural")
     }
@@ -107,6 +116,9 @@ impl PrimRoute for ProceduralRoute {
 pub struct BackdropRoute;
 
 impl PrimRoute for BackdropRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        world.entity_mut(entity).remove::<UsdBackdrop>();
+    }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         ctx.type_name.as_deref() == Some("Backdrop")
     }
@@ -127,13 +139,43 @@ impl PrimRoute for BackdropRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_routes_remove_stale_markers_on_type_changes() {
+        use crate::live::{LiveStage, PrimEntities, project_stage, apply_changes};
+        use crate::route::audio::{UsdSpatialAudio, UsdVolume};
+        #[derive(Component)]
+        struct RuntimeOnly;
+        let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("markers.usda").unwrap();
+        stage.define_prim("/Prim").unwrap().set_type_name("SpatialAudio").unwrap();
+        let live = LiveStage::new(stage);
+        let mut world = World::new();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let entity = map.entity("/Prim").unwrap();
+        world.entity_mut(entity).insert(RuntimeOnly);
+        let child = world.spawn((RuntimeOnly, ChildOf(entity))).id();
+        assert!(world.get::<UsdSpatialAudio>(entity).is_some());
+        for kind in ["Volume", "RenderSettings", "GenerativeProcedural", "Backdrop", "Xform", "SpatialAudio", "Xform"] {
+            live.stage.prim("/Prim").unwrap().set_type_name(kind).unwrap();
+            apply_changes(&mut world, &live, &mut map);
+            assert_eq!(map.entity("/Prim"), Some(entity));
+            assert_eq!(world.get::<UsdSpatialAudio>(entity).is_some(), kind == "SpatialAudio");
+            assert_eq!(world.get::<UsdVolume>(entity).is_some(), kind == "Volume");
+            assert_eq!(world.get::<UsdRenderSettings>(entity).is_some(), kind == "RenderSettings");
+            assert_eq!(world.get::<UsdProcedural>(entity).is_some(), kind == "GenerativeProcedural");
+            assert_eq!(world.get::<UsdBackdrop>(entity).is_some(), kind == "Backdrop");
+            assert!(world.get::<RuntimeOnly>(entity).is_some());
+            assert!(world.get::<RuntimeOnly>(child).is_some());
+        }
+    }
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
 
     #[test]
     fn render_proc_ui_project_markers() {
-        let stage = Stage::builder().in_memory("cov.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("cov.usda").unwrap();
         RenderSettings::define(&stage, "/Render/Settings").unwrap();
         stage
             .define_prim("/Render")

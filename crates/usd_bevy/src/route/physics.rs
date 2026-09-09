@@ -7,8 +7,10 @@
 //! hook the plan calls for; a full physics integration is out of scope.
 
 use bevy::prelude::*;
+use openusd_schemas::physics::RevoluteJointSchema;
+use openusd_schemas::physics::PrismaticJointSchema;
 
-use openusd::schemas::physics::{
+use openusd_schemas::physics::{
     CollisionAPI, DriveAPI, LimitAPI, MassAPI, PrismaticJoint, RevoluteJoint, RigidBodyAPI,
 };
 use openusd::sdf::Value;
@@ -116,6 +118,9 @@ const JOINT_TYPES: &[&str] = &[
 pub struct PhysicsRoute;
 
 impl PrimRoute for PhysicsRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        world.entity_mut(entity).remove::<(UsdRigidBody, UsdCollider, UsdPhysicsJoint, UsdMass, UsdJoint, UsdDrives, UsdLimits)>();
+    }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         // Joints are typed; rigid-body/collision are applied API schemas.
         JOINT_TYPES.contains(&ctx.type_name.as_deref().unwrap_or_default())
@@ -137,6 +142,7 @@ impl PrimRoute for PhysicsRoute {
         let limits = is_joint.then(|| read_limits(ctx)).filter(|l| !l.0.is_empty());
 
         if let Ok(mut e) = world.get_entity_mut(entity) {
+            e.remove::<(UsdRigidBody, UsdCollider, UsdPhysicsJoint, UsdMass, UsdJoint, UsdDrives, UsdLimits)>();
             if is_body {
                 e.insert(UsdRigidBody);
             }
@@ -223,7 +229,7 @@ fn read_joint(ctx: &RouteCtx, type_name: &str) -> UsdJoint {
 }
 
 fn read_drives(ctx: &RouteCtx) -> UsdDrives {
-    let drives = DriveAPI::get_all(ctx.stage, ctx.path.clone())
+    let drives = DriveAPI::get_all(&ctx.stage.prim(ctx.path.clone()).expect("validated USD path"))
         .unwrap_or_default()
         .into_iter()
         .map(|d| UsdDrive {
@@ -240,7 +246,7 @@ fn read_drives(ctx: &RouteCtx) -> UsdDrives {
 }
 
 fn read_limits(ctx: &RouteCtx) -> UsdLimits {
-    let limits = LimitAPI::get_all(ctx.stage, ctx.path.clone())
+    let limits = LimitAPI::get_all(&ctx.stage.prim(ctx.path.clone()).expect("validated USD path"))
         .unwrap_or_default()
         .into_iter()
         .map(|l| UsdLimit {
@@ -255,13 +261,49 @@ fn read_limits(ctx: &RouteCtx) -> UsdLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_physics_apis_clear_only_their_projected_state() {
+        use crate::live::{LiveStage, PrimEntities, project_stage, apply_changes};
+        let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("physics-removal.usda").unwrap();
+        stage.define_prim("/Body").unwrap().set_type_name("Xform").unwrap()
+            .add_applied_schema("PhysicsRigidBodyAPI").unwrap()
+            .add_applied_schema("PhysicsCollisionAPI").unwrap()
+            .add_applied_schema("PhysicsMassAPI").unwrap();
+        let live = LiveStage::new(stage);
+        let mut world = World::new();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let entity = map.entity("/Body").unwrap();
+        assert!(world.get::<UsdRigidBody>(entity).is_some());
+        assert!(world.get::<UsdCollider>(entity).is_some());
+        assert!(world.get::<UsdMass>(entity).is_some());
+        live.stage.prim("/Body").unwrap().set_metadata("apiSchemas", Value::TokenListOp(openusd::sdf::ListOp::explicit(vec!["PhysicsCollisionAPI".into()]))).unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        assert!(world.get::<UsdRigidBody>(entity).is_none());
+        assert!(world.get::<UsdMass>(entity).is_none());
+        assert!(world.get::<UsdCollider>(entity).is_some());
+        live.stage.prim("/Body").unwrap().set_metadata("apiSchemas", Value::TokenListOp(openusd::sdf::ListOp::explicit(vec![]))).unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        assert!(world.get::<UsdCollider>(entity).is_none());
+        live.stage.prim("/Body").unwrap().set_type_name("PhysicsFixedJoint").unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        assert!(world.get::<UsdPhysicsJoint>(entity).is_some());
+        assert!(world.get::<UsdJoint>(entity).is_some());
+        live.stage.prim("/Body").unwrap().set_type_name("Xform").unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        assert!(world.get::<UsdPhysicsJoint>(entity).is_none());
+        assert!(world.get::<UsdJoint>(entity).is_none());
+        assert_eq!(map.entity("/Body"), Some(entity));
+        assert!(world.get::<Transform>(entity).is_some());
+    }
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
 
     #[test]
     fn physics_schemas_project_markers() {
-        let stage = Stage::builder().in_memory("phys.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("phys.usda").unwrap();
         // A rigid body + collider.
         stage
             .define_prim("/Body")
@@ -297,7 +339,7 @@ mod tests {
 
     #[test]
     fn joint_mass_and_drive_data_enriched() {
-        let stage = Stage::builder().in_memory("phys2.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("phys2.usda").unwrap();
         // Rigid body carrying mass properties.
         stage
             .define_prim("/Body")
@@ -306,7 +348,7 @@ mod tests {
             .unwrap()
             .add_applied_schema("PhysicsRigidBodyAPI")
             .unwrap();
-        let mass = MassAPI::apply(&stage, "/Body").unwrap();
+        let mass = MassAPI::apply(&stage.prim("/Body").unwrap()).unwrap();
         mass.create_mass_attr().unwrap().set(Value::Float(2.5)).unwrap();
         mass.create_center_of_mass_attr()
             .unwrap()
@@ -323,10 +365,10 @@ mod tests {
             .unwrap()
             .add_target(openusd::sdf::path("/Body").unwrap())
             .unwrap();
-        let drive = DriveAPI::apply(&stage, "/Joint", "angular").unwrap();
+        let drive = DriveAPI::apply(&stage.prim("/Joint").unwrap(), "angular").unwrap();
         drive.create_target_position_attr().unwrap().set(Value::Float(10.0)).unwrap();
         drive.create_stiffness_attr().unwrap().set(Value::Float(100.0)).unwrap();
-        let limit = LimitAPI::apply(&stage, "/Joint", "angular").unwrap();
+        let limit = LimitAPI::apply(&stage.prim("/Joint").unwrap(), "angular").unwrap();
         limit.create_low_attr().unwrap().set(Value::Float(-90.0)).unwrap();
         limit.create_high_attr().unwrap().set(Value::Float(90.0)).unwrap();
 

@@ -1,0 +1,93 @@
+use std::sync::{Arc, Mutex};
+use bevy::prelude::*;
+use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
+use usd_bevy::route::subdivision::{UsdSubdivisionApplied, UsdSubdivisionError, UsdSubdivisionSettings};
+
+#[derive(Clone, Default)]
+struct State {
+    requested: Option<u32>,
+    level: u32,
+    refined: usize,
+    errors: Vec<String>,
+}
+
+#[derive(Resource, Clone, Default)]
+pub struct RenderSettingsBridge(Arc<Mutex<State>>);
+
+pub fn configure(app: &mut App, bridge: RenderSettingsBridge) {
+    app.insert_resource(bridge).add_systems(PreUpdate, apply).add_systems(Last, publish);
+}
+
+fn apply(world: &mut World) {
+    let bridge = world.resource::<RenderSettingsBridge>().clone();
+    let Some(level) = bridge.0.lock().ok().and_then(|mut state| state.requested.take()) else { return };
+    if level == 0 { world.remove_resource::<UsdSubdivisionSettings>(); }
+    else if let Ok(settings) = UsdSubdivisionSettings::new(level) { world.insert_resource(settings); }
+}
+
+fn publish(world: &mut World) {
+    let bridge = world.resource::<RenderSettingsBridge>().clone();
+    let Ok(mut state) = bridge.0.lock() else { return };
+    state.level = world.get_resource::<UsdSubdivisionSettings>().map_or(0, |settings| settings.levels());
+    state.refined = world.query::<&UsdSubdivisionApplied>().iter(world).count();
+    state.errors = world.query::<(&usd_bevy::UsdPrimRef, &UsdSubdivisionError)>().iter(world)
+        .map(|(prim, error)| format!("{}: {}", prim.path, error.0)).collect();
+    state.errors.extend(world.query::<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>().iter(world)
+        .map(|(prim, error)| format!("{}: {}", prim.path, error.0)));
+    state.errors.sort();
+    state.errors.dedup();
+}
+
+pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
+    let Ok(state) = bridge.0.lock().map(|state| state.clone()) else { return };
+    let current = if state.level == 0 { "Control cage".into() } else { format!("Subdivision level {}", state.level) };
+    let mut pods = vec![Pod::new("rendering.status").with_custom_units(4, move |ui| {
+        ui.label(&current);
+        ui.label(&format!("Refined mesh prims: {}", state.refined));
+        ui.label("Finite CPU refinement, not limit surfaces");
+        ui.label("Higher levels can exceed geometry budgets");
+    })];
+    for level in 0..=6 {
+        let bridge = bridge.clone();
+        pods.push(Pod::new(Id::new(("rendering.level", level))).with_custom_units(1, move |ui| {
+            let label = if level == 0 { "Use control cage".into() } else { format!("Use subdivision level {level}") };
+            if ui.button(&label).clicked && let Ok(mut state) = bridge.0.lock() { state.requested = Some(level); }
+        }));
+    }
+    body.add_normal("rendering.subdivision", "Subdivision", "options", pods);
+    if state.errors.is_empty() { return; }
+    let errors = state.errors.into_iter().enumerate().map(|(index, error)| {
+        let lines = super::lighting::status_lines(&error);
+        Pod::new(Id::new(("rendering.error", index))).with_custom_units(lines.len(), move |ui| {
+            for line in lines { ui.label(&line); }
+        })
+    }).collect();
+    body.add_normal("rendering.errors", "Projection errors", "options", errors);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controls_preserve_initial_settings_and_publish_recovery() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let bridge = RenderSettingsBridge::default();
+        configure(&mut app, bridge.clone());
+        app.insert_resource(UsdSubdivisionSettings::new(2).unwrap());
+        let prim = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/M"), UsdSubdivisionError("unsupported rule".into()))).id();
+        app.update();
+        assert_eq!(bridge.0.lock().unwrap().level, 2);
+        assert_eq!(bridge.0.lock().unwrap().errors, ["/M: unsupported rule"]);
+        bridge.0.lock().unwrap().requested = Some(1);
+        app.world_mut().entity_mut(prim).remove::<UsdSubdivisionError>().insert(UsdSubdivisionApplied { levels: 1 });
+        app.update();
+        assert_eq!(bridge.0.lock().unwrap().level, 1);
+        assert_eq!(bridge.0.lock().unwrap().refined, 1);
+        assert!(bridge.0.lock().unwrap().errors.is_empty());
+        bridge.0.lock().unwrap().requested = Some(0);
+        app.update();
+        assert!(!app.world().contains_resource::<UsdSubdivisionSettings>());
+    }
+}

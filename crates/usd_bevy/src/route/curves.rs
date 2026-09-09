@@ -10,17 +10,18 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
+use openusd_schemas::geom::BasisCurvesSchema;
 
-use openusd::schemas::geom::{BasisCurves, Curves, PointBased};
+use openusd_schemas::geom::{BasisCurves, Curves, PointBased};
 use openusd::sdf::Value;
 
 use super::{PrimRoute, RouteCtx};
 
-/// Maps `UsdGeomBasisCurves` to a line-strip mesh.
+/// Maps `UsdGeomBasisCurves` to a line-list mesh.
 pub struct CurvesRoute;
 
-fn read_points(curves: &BasisCurves) -> Option<Vec<[f32; 3]>> {
-    match curves.points_attr().get::<Value>() {
+fn read_points(curves: &BasisCurves, time: Option<f64>) -> Option<Vec<[f32; 3]>> {
+    match curves.points_attr().get_at::<Value>(time.map(openusd::usd::TimeCode::new)) {
         Ok(Some(Value::Vec3fVec(v))) => Some(v.iter().map(|p| [p.x, p.y, p.z]).collect()),
         Ok(Some(Value::Vec3dVec(v))) => {
             Some(v.iter().map(|p| [p.x as f32, p.y as f32, p.z as f32]).collect())
@@ -29,15 +30,15 @@ fn read_points(curves: &BasisCurves) -> Option<Vec<[f32; 3]>> {
     }
 }
 
-fn read_counts(curves: &BasisCurves) -> Vec<i32> {
-    match curves.curve_vertex_counts_attr().get::<Value>() {
+fn read_counts(curves: &BasisCurves, time: Option<f64>) -> Vec<i32> {
+    match curves.curve_vertex_counts_attr().get_at::<Value>(time.map(openusd::usd::TimeCode::new)) {
         Ok(Some(Value::IntVec(v))) => v,
         _ => Vec::new(),
     }
 }
 
-fn read_token(attr: openusd::usd::Attribute, default: &str) -> String {
-    match attr.get::<Value>() {
+fn read_token(attr: openusd::usd::Attribute, default: &str, time: Option<f64>) -> String {
+    match attr.get_at::<Value>(time.map(openusd::usd::TimeCode::new)) {
         Ok(Some(Value::Token(t))) => t.as_str().to_string(),
         Ok(Some(Value::String(s))) => s,
         _ => default.to_string(),
@@ -112,7 +113,7 @@ fn tessellate_cubic(cv: &[[f32; 3]], basis: Basis, periodic: bool, out: &mut Vec
     let n = cv.len();
     if n < 4 {
         // Not enough CVs for a cubic segment; fall back to a polyline.
-        emit_polyline(cv, out, idx);
+        emit_polyline(cv, periodic, out, idx);
         return;
     }
     let vstep = basis.vstep();
@@ -145,13 +146,29 @@ fn tessellate_cubic(cv: &[[f32; 3]], basis: Basis, periodic: bool, out: &mut Vec
     }
 }
 
-/// Append straight segments connecting consecutive vertices.
-fn emit_polyline(cv: &[[f32; 3]], out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>) {
+fn tessellate_pinned(cv: &[[f32; 3]], basis: Basis, out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>) {
+    if cv.len() < 2 || basis == Basis::Bezier {
+        tessellate_cubic(cv, basis, false, out, idx);
+        return;
+    }
+    let phantom = |a: [f32; 3], b: [f32; 3]| std::array::from_fn(|i| (2.0 * a[i] as f64 - b[i] as f64) as f32);
+    let mut expanded = Vec::with_capacity(cv.len() + 2);
+    expanded.push(phantom(cv[0], cv[1]));
+    expanded.extend_from_slice(cv);
+    expanded.push(phantom(cv[cv.len() - 1], cv[cv.len() - 2]));
+    tessellate_cubic(&expanded, basis, false, out, idx);
+}
+
+/// Append consecutive straight segments and optional last-to-first closure.
+fn emit_polyline(cv: &[[f32; 3]], periodic: bool, out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>) {
     let base = out.len() as u32;
     out.extend_from_slice(cv);
     for i in 0..cv.len().saturating_sub(1) {
         idx.push(base + i as u32);
         idx.push(base + i as u32 + 1);
+    }
+    if periodic && cv.len() > 1 {
+        idx.extend([base + cv.len() as u32 - 1, base]);
     }
 }
 
@@ -159,15 +176,16 @@ fn emit_polyline(cv: &[[f32; 3]], out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>) {
 /// directly; cubic curves are tessellated through their basis.
 fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>)> {
     let curves = BasisCurves::get(ctx.stage, ctx.path.clone()).ok()??;
-    let points = read_points(&curves)?;
+    let points = read_points(&curves, ctx.time)?;
     if points.is_empty() {
         return None;
     }
-    let is_cubic = read_token(curves.type_attr(), "cubic") == "cubic";
-    let basis = Basis::parse(&read_token(curves.basis_attr(), "bspline"));
-    let periodic = read_token(curves.wrap_attr(), "nonperiodic") == "periodic";
+    let is_cubic = read_token(curves.type_attr(), "cubic", ctx.time) == "cubic";
+    let basis = Basis::parse(&read_token(curves.basis_attr(), "bspline", ctx.time));
+    let wrap = read_token(curves.wrap_attr(), "nonperiodic", ctx.time);
+    let periodic = wrap == "periodic";
 
-    let mut counts = read_counts(&curves);
+    let mut counts = read_counts(&curves, ctx.time);
     // Absent counts ⇒ one curve spanning all points.
     if counts.is_empty() {
         counts = vec![points.len() as i32];
@@ -180,10 +198,12 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>)> {
         let n = c.max(0) as usize;
         let end = (cursor + n).min(points.len());
         let cv = &points[cursor..end];
-        if is_cubic {
+        if is_cubic && wrap == "pinned" {
+            tessellate_pinned(cv, basis, &mut out, &mut indices);
+        } else if is_cubic {
             tessellate_cubic(cv, basis, periodic, &mut out, &mut indices);
         } else {
-            emit_polyline(cv, &mut out, &mut indices);
+            emit_polyline(cv, periodic, &mut out, &mut indices);
         }
         cursor = end;
     }
@@ -191,6 +211,9 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>)> {
 }
 
 impl PrimRoute for CurvesRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
+    }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         ctx.type_name.as_deref() == Some("BasisCurves")
     }
@@ -202,17 +225,18 @@ impl PrimRoute for CurvesRoute {
             return;
         }
         let Some((points, indices)) = line_geometry(ctx) else {
+            super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             return;
         };
         let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, points);
         mesh.insert_indices(bevy::mesh::Indices::U32(indices));
         let mesh_handle = super::cache::intern_mesh(world, mesh);
-        let material = world
-            .resource_mut::<Assets<StandardMaterial>>()
-            .add(StandardMaterial::default());
+        let mut material = super::material::default_material(ctx);
+        material.unlit = true;
+        let material = super::cache::intern_material(world, material);
         if let Ok(mut e) = world.get_entity_mut(entity) {
-            e.insert((Mesh3d(mesh_handle), MeshMaterial3d(material)));
+            e.insert((Mesh3d(mesh_handle), MeshMaterial3d(material), super::geom::GeometryOwner::Curves));
         }
     }
 }
@@ -225,8 +249,76 @@ mod tests {
     use openusd::usd::Stage;
 
     #[test]
+    fn pinned_cubics_match_explicit_phantom_points() {
+        let source = crate::UsdSource::new("pinned.usda", include_bytes!("../../../../assets/pinned_curves.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        for basis in ["Bspline", "CatmullRom"] {
+            let pinned = openusd::sdf::path(&format!("/Pinned{basis}")).unwrap();
+            let explicit = openusd::sdf::path(&format!("/Explicit{basis}")).unwrap();
+            let actual = line_geometry(&RouteCtx::new(&stage, &pinned)).unwrap();
+            assert_eq!(actual, line_geometry(&RouteCtx::new(&stage, &explicit)).unwrap());
+            assert_eq!(actual.0.len(), 3 * CUBIC_STEPS + 1);
+            assert!(Vec3::from(actual.0[0]).distance(Vec3::new(-1.,0.,0.)) < 1e-6);
+            assert!(Vec3::from(*actual.0.last().unwrap()).distance(Vec3::new(1.,0.,0.)) < 1e-6);
+            stage.prim(pinned.clone()).unwrap().attribute("wrap").set(Value::Token("nonperiodic".into())).unwrap();
+            assert_eq!(line_geometry(&RouteCtx::new(&stage, &pinned)).unwrap().0.len(), CUBIC_STEPS + 1);
+        }
+    }
+
+    #[test]
+    fn pinned_two_point_cubics_interpolate_and_keep_batches_separate() {
+        let cv = [[-2.,1.,0.], [2.,3.,0.]];
+        for basis in [Basis::Bspline, Basis::CatmullRom] {
+            let mut positions = Vec::new();
+            let mut indices = Vec::new();
+            for _ in 0..2 {
+                let base = positions.len();
+                let index_base = indices.len();
+                tessellate_pinned(&cv, basis, &mut positions, &mut indices);
+                assert_eq!(positions.len() - base, CUBIC_STEPS + 1);
+                for step in 0..=CUBIC_STEPS {
+                    let expected = Vec3::from(cv[0]).lerp(Vec3::from(cv[1]), step as f32 / CUBIC_STEPS as f32);
+                    assert!(Vec3::from(positions[base + step]).distance(expected) < 1e-6);
+                }
+                assert!(indices[index_base..].iter().all(|index| (*index as usize) >= base && (*index as usize) < positions.len()));
+            }
+        }
+    }
+
+    #[test]
+    fn periodic_linear_batches_close_without_cross_curve_edges() {
+        let source = crate::UsdSource::new("periodic.usda", include_bytes!("../../../../assets/periodic_curves.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let closed = openusd::sdf::path("/Closed").unwrap();
+        let open = openusd::sdf::path("/Open").unwrap();
+        let (positions, indices) = line_geometry(&RouteCtx::new(&stage, &closed)).unwrap();
+        assert_eq!(positions.len(), 8);
+        assert_eq!(indices, [0,1,1,2,2,3,3,0,4,5,5,6,6,7,7,4]);
+        assert_eq!(line_geometry(&RouteCtx::new(&stage, &open)).unwrap().1, [0,1,1,2,2,3]);
+        stage.prim(closed.clone()).unwrap().attribute("wrap").set(Value::Token("nonperiodic".into())).unwrap();
+        assert_eq!(line_geometry(&RouteCtx::new(&stage, &closed)).unwrap().1, [0,1,1,2,2,3,4,5,5,6,6,7]);
+    }
+
+    #[test]
+    fn periodic_cubic_bases_close_each_batch_independently() {
+        let cv = [[0.,0.,0.], [1.,0.,0.], [2.,1.,0.], [2.,2.,0.], [1.,2.,0.], [0.,1.,0.]];
+        for basis in [Basis::Bezier, Basis::Bspline, Basis::CatmullRom] {
+            let mut positions = Vec::new();
+            let mut indices = Vec::new();
+            for _ in 0..2 {
+                let base = positions.len();
+                let index_base = indices.len();
+                tessellate_cubic(&cv, basis, true, &mut positions, &mut indices);
+                assert_eq!(positions.len() - base, cv.len() / basis.vstep() * CUBIC_STEPS + 1);
+                assert!(Vec3::from(positions[base]).distance(Vec3::from(*positions.last().unwrap())) < 1e-6);
+                assert!(indices[index_base..].iter().all(|index| (*index as usize) >= base && (*index as usize) < positions.len()));
+            }
+        }
+    }
+
+    #[test]
     fn curves_project_line_mesh() {
-        let stage = Stage::builder().in_memory("crv.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("crv.usda").unwrap();
         stage
             .define_prim("/Curve")
             .unwrap()
@@ -265,7 +357,7 @@ mod tests {
 
     #[test]
     fn cubic_curve_tessellates() {
-        let stage = Stage::builder().in_memory("crv.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("crv.usda").unwrap();
         stage
             .define_prim("/Curve")
             .unwrap()
@@ -329,7 +421,7 @@ mod tests {
     /// is clamped to the available points.
     #[test]
     fn malformed_counts_do_not_panic() {
-        let stage = Stage::builder().in_memory("crv.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("crv.usda").unwrap();
         stage.define_prim("/Curve").unwrap().set_type_name("BasisCurves").unwrap();
         stage
             .create_attribute("/Curve.points", "point3f[]")
@@ -361,7 +453,7 @@ mod tests {
     /// A periodic cubic curve exercises the wrap-around index path (`% n`).
     #[test]
     fn periodic_cubic_wraps_without_panic() {
-        let stage = Stage::builder().in_memory("crv.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("crv.usda").unwrap();
         stage.define_prim("/Curve").unwrap().set_type_name("BasisCurves").unwrap();
         stage
             .create_attribute("/Curve.type", "token")

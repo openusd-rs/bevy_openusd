@@ -1,0 +1,93 @@
+# OpenUSD upgrade and capability reassessment
+
+Reviewed on 2026-09-09 against upstream
+[`b7df5add628cbb791103a7da842dbd82810da5d0`](https://github.com/mxpv/openusd/commit/b7df5add628cbb791103a7da842dbd82810da5d0).
+Rechecked with `git ls-remote` on 2026-09-09: this is upstream HEAD,
+not a floating dependency.
+
+## Dependency and integration
+
+- Core `openusd`, `openusd-schemas`, and its transitive generator
+  `openusd-build` are version 0.7.0 from the same pinned Git revision.
+- Minimum Rust version is 1.96. Bevy remains 0.19.1.
+- Removed the local Cargo patch; `../openusd` and its uncommitted skinning
+  changes remain untouched. The remote `bresilla/openusd` HEAD was behind
+  the existing local checkout, so it was not an upgrade target.
+- Migrated generated schema names, accessor traits, applied-API constructors,
+  fallible path access, and typed errors.
+- All viewer/asset/snippet stage constructors now install the generated schema
+  registry. Callers constructing their own stage for `LiveStage` must also use
+  `Stage::builder().schema_registry(openusd_schemas::schema_registry())`.
+  Bare `Stage::open` knows only the upstream core USD schema family.
+
+## Revised roadmap assessment
+
+These are separate questions: what upstream can represent/resolve, and what
+our Bevy runtime and editor expose. Upgrading the former does not finish the latter.
+
+| Earlier recommendation or blocker | Latest upstream evidence | Revised conclusion |
+|---|---|---|
+| In-memory text-to-layer opening is blocked | `crates/openusd/src/sdf/layer.rs`: `Layer::from_bytes`; `usd/stage.rs`: `Stage::insert_layer` | **Blocker removed.** A local integration test composes byte-backed USDA and flattens it with no files. The current asset and snippet entry points now use `UsdSource` snapshots without temporary files. |
+| Layer-relative asset resolution is missing | `ar.rs`: resolver and package-path APIs; `usd/attribute.rs`: asset-value resolution through the winning composition site | **Earlier blanket claim withdrawn.** Core resolution exists. Our snapshot loader now preserves source identity, tracks external layer/texture bytes through Bevy and tests automatic dependency reloads. Anonymous `Layer::from_bytes` alone still provides no relative-path anchor. Nested packages remain unsupported. |
+| Reference authoring needs upstream work | `usd/prim.rs`: metadata authoring; upstream stage/editor tests author `ReferenceListOp` | References can already be authored through the core metadata APIs. A typed reusable USD scene-component API remains our work; no claim that upstream ships a BSN-style helper. |
+| Native instances/prototypes need support | `usd/prim.rs`: `is_instance`, `prototype`, `instances`, instance-proxy queries; `usd/stage.rs`: `prototypes` | Core capability exists. Sharing Bevy assets and managing projected prototype/instance entities still need an explicit runtime design. PointInstancer support is not the same as native instanceable prims. |
+| Multiple independent live instances | Core stage handles remain `Rc<StageInner>`; stages, variants, time queries and edit targets exist | Now integrated through the non-send `UsdInstances` registry, per-root sampling and reload-persistent variant/attribute overrides. Editor integration and performance validation remain. |
+| Composition-aware inspector | `usd/attribute.rs`: `resolve_info`; `usd/stage.rs`: layer stack, layer identifiers, node-layer stacks, edit targets | More is available than the old roadmap implied. Build the UI and authoring contracts on these APIs instead of implementing another composition engine. |
+| Prim asset metadata was unavailable | `usd/prim.rs`: `Prim::get_metadata` returns composed dictionary fields | Removed the obsolete `read_asset_info` stub. The reader and inspector now expose `assetInfo`, with nested layered-dictionary composition verified. |
+| Save/reopen and export | `usd/flatten.rs`: `Stage::flatten` | Composed flattening is now available and tested locally. Existing save helpers still export the root layer, which is different from flattening or saving a selected override layer. Keep those operations explicit. |
+| Better developer authoring API | Generated schema views provide read and create accessors, registered defaults and inheritance | Upstream provides much of the typed USD foundation. Our `usd!` still produces interpolated text, not a typed Bevy scene; runtime escaping, component diagnostics and optional BSN integration remain separate. |
+| Rendering and performance | Upstream schemas and CPU deformation helpers describe/evaluate content, not Bevy GPU resources | IBL, GPU skinning/morphs, measured native-instance projection and render fidelity remain renderer work. No evidence here that the dependency upgrade implements them. |
+| Regression corpus and releases | Our tests and build remain owned here | Real AssetServer dependency/reload, package and material-assignment tests now exist. Multi-instance lifecycle tests, rendered image baselines, benchmarks and a support matrix remain. This upgrade is not a production-readiness certification. |
+
+## Regressions caught during migration
+
+1. Schema fallback `purpose = default` masked an authored ancestor purpose.
+   Inheritance now checks whether the value was authored before accepting it.
+2. Property creation can produce resync notices. Echo suppression now accounts
+   for self-authored property resyncs, without suppressing structural prim resyncs.
+3. Asset-typed fields reject string values. The asset-handle test now authors an
+   actual `Value::AssetPath`.
+4. Generated light schemas expose common inputs through `LightAPI`.
+5. The parser rejects numeric prim identifiers. Macro validation now uses an
+   identifier-safe placeholder in quoted interpolation sites.
+6. Upstream binding discovery walks to the pseudo-root and attempts to append
+   `skel:animationSource`, which now fails path validation. Our reader resolves
+   the selected mesh's binding directly and stops inherited-target walks before
+   the pseudo-root. Existing animated-skeleton and blend-shape tests cover it.
+7. The sibling's uncommitted fallible skinning helpers are not in upstream.
+   Our reader validates influence lengths, stride and joint bounds before calling
+   upstream LBS. Added negative-index and mismatched-stride regression coverage.
+
+## Verification
+
+- `make check-all CARGO='cargo --offline'`
+- `make test-all CARGO='cargo --offline'`: 116 passed, zero failures on recheck,
+  including the subsequent snapshot and dependency-reload integration tests
+  (106 passed at the original migration checkpoint).
+- `make build CARGO='cargo --offline'`
+- `git diff --check`
+- Timed `make run` desktop smoke tests: Spot projected 96 prims; the skinning
+  fixture projected four prims, two animated. Both runs were intentionally
+  terminated after 25 seconds. No screenshot/fidelity comparison was performed.
+
+The capability table combines source inspection with the explicit byte-backed
+composition/flattening test. It does not claim every upstream resolver, authoring
+or instancing API was exhaustively tested.
+
+## Integration progress after migration
+
+Further inspection found upstream `usd::UndoStage`, which captures layer-level
+transaction inverses. The new composition editor model uses it to restore the
+absence of authored opinions correctly; the older composed-value inverse model
+is not the editor's foundation. Bevy command grouping and redo remain local.
+
+The current checkout adds source-preserving snapshots, tracked layer and texture
+dependencies, loading/failure states, static subtree reloads and byte-backed
+snippets. PNG/JPEG snapshot images are labeled Bevy assets with separate color
+and linear handles. See `BEVY_WORK.md` for the acceptance checklist and remaining
+material fidelity limitations.
+
+Per-instance live state now reconciles reloads without replacing matching
+entities and supports independent sampling and persistent overrides. Next:
+complete playback/lifecycle acceptance, then build the composition inspector and
+typed developer API on the now-available upstream primitives.

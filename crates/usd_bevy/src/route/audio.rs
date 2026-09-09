@@ -9,10 +9,11 @@
 //! scope.
 
 use bevy::prelude::*;
+use openusd_schemas::media::SpatialAudioSchema;
 
 use openusd::sdf::Value;
-use openusd::schemas::media::SpatialAudio;
-use openusd::schemas::vol::{Field3DAsset, FieldAsset, OpenVDBAsset, Volume};
+use openusd_schemas::media::SpatialAudio;
+use openusd_schemas::vol::{Field3DAsset, FieldAsset, OpenVDBAsset, Volume};
 use openusd::usd::Stage;
 
 use super::{PrimRoute, RouteCtx};
@@ -80,6 +81,9 @@ fn token_string(v: Option<Value>) -> Option<String> {
 pub struct SpatialAudioRoute;
 
 impl PrimRoute for SpatialAudioRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        world.entity_mut(entity).remove::<UsdSpatialAudio>();
+    }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         // Gate on the composed typeName so the schema read only runs for the
         // handful of audio prims, not every prim on the stage.
@@ -109,6 +113,9 @@ impl PrimRoute for SpatialAudioRoute {
 pub struct VolumeRoute;
 
 impl PrimRoute for VolumeRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        world.entity_mut(entity).remove::<UsdVolume>();
+    }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         ctx.type_name.as_deref() == Some("Volume")
     }
@@ -161,6 +168,7 @@ fn field_asset_data<F: FieldAsset>(f: &F) -> (String, Option<String>, Option<i32
 
 #[cfg(test)]
 mod tests {
+    use openusd_schemas::vol::VolumeFieldAsset;
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
@@ -169,7 +177,7 @@ mod tests {
 
     #[test]
     fn spatial_audio_projects_marker() {
-        let stage = Stage::builder().in_memory("audio.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("audio.usda").unwrap();
         stage.define_prim("/World").unwrap().set_type_name("Xform").unwrap();
         let audio = SpatialAudio::define(&stage, "/World/Ambient").unwrap();
         audio
@@ -193,7 +201,7 @@ mod tests {
 
     #[test]
     fn volume_resolves_field_assets() {
-        let stage = Stage::builder().in_memory("vol.usda").unwrap();
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("vol.usda").unwrap();
         stage.define_prim("/World").unwrap().set_type_name("Xform").unwrap();
         // The field target is a real OpenVDBAsset with a file + grid name.
         let field = OpenVDBAsset::define(&stage, "/World/density").unwrap();

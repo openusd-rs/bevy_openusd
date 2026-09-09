@@ -54,9 +54,32 @@ type Groups = Vec<(String, Vec<(String, Option<Value>)>)>;
 /// Maps `bevy:`-namespaced attributes onto arbitrary registered components.
 pub struct ReflectRoute;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReflectIssueKind {
+    MissingRegistry,
+    UnregisteredType,
+    MissingComponentReflection,
+    MissingDefault,
+    UnknownField,
+    UnsupportedValue,
+    ConflictingAliases,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReflectIssue {
+    /// Canonical registered Rust path, or the unresolved authored type segment.
+    pub type_segment: String,
+    pub field: Option<String>,
+    pub kind: ReflectIssueKind,
+}
+
+/// Current reflected-component projection failures on this prim.
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct UsdReflectIssues(pub Vec<ReflectIssue>);
+
 /// Parse a property name `bevy:<Type>:<field>:<sub>…` into the type segment and
-/// a `.`-joined reflect field path. Returns `None` for non-`bevy:` names or a
-/// bare `bevy:Type` with no field.
+/// a `.`-joined reflect field path. Non-`bevy:` names return `None`;
+/// bare `bevy:Type` returns an empty field path for component presence.
 ///
 /// The type segment is the first `:`-delimited component; it is normally a
 /// short type path (`Health`). To disambiguate a short-name collision, author
@@ -72,7 +95,7 @@ fn parse_attr(name: &str) -> Option<(String, String)> {
         .map(decode_index)
         .collect();
     if field.is_empty() {
-        return None;
+        return Some((ty, String::new()));
     }
     Some((ty, field.join(".")))
 }
@@ -94,7 +117,7 @@ fn decode_index(seg: &str) -> String {
 /// Resolve a type segment to its registration: short type path first (the
 /// common case), then the full type path, then the full path with `__` decoded
 /// to `::` (the path-legal way to author a full path for disambiguation).
-fn resolve<'a>(
+pub(crate) fn resolve<'a>(
     registry: &'a bevy::reflect::TypeRegistry,
     ty: &str,
 ) -> Option<&'a bevy::reflect::TypeRegistration> {
@@ -108,7 +131,7 @@ fn resolve<'a>(
 /// each as `(reflect_field_path, composed_value_or_none)`. `None` value means
 /// no layer currently authors an opinion (a cleared field).
 fn collect(ctx: &RouteCtx) -> Groups {
-    let prim = ctx.stage.prim(ctx.path.clone());
+    let prim = ctx.stage.prim(ctx.path.clone()).expect("validated USD path");
     let Ok(names) = prim.property_names() else {
         return Vec::new();
     };
@@ -146,33 +169,33 @@ fn set_field(field: &mut dyn PartialReflect, v: &Value) -> bool {
         return true;
     }
     if let Some(f) = field.try_downcast_mut::<i32>()
-        && let Some(n) = as_i64(v)
+        && let Some(n) = as_integer(v).and_then(|n| i32::try_from(n).ok())
     {
-        *f = n as i32;
+        *f = n;
         return true;
     }
     if let Some(f) = field.try_downcast_mut::<u32>()
-        && let Some(n) = as_i64(v)
+        && let Some(n) = as_integer(v).and_then(|n| u32::try_from(n).ok())
     {
-        *f = n as u32;
+        *f = n;
         return true;
     }
     if let Some(f) = field.try_downcast_mut::<i64>()
-        && let Some(n) = as_i64(v)
+        && let Some(n) = as_integer(v).and_then(|n| i64::try_from(n).ok())
     {
         *f = n;
         return true;
     }
     if let Some(f) = field.try_downcast_mut::<u64>()
-        && let Some(n) = as_i64(v)
+        && let Some(n) = as_integer(v).and_then(|n| u64::try_from(n).ok())
     {
-        *f = n as u64;
+        *f = n;
         return true;
     }
     if let Some(f) = field.try_downcast_mut::<usize>()
-        && let Some(n) = as_i64(v)
+        && let Some(n) = as_integer(v).and_then(|n| usize::try_from(n).ok())
     {
-        *f = n as usize;
+        *f = n;
         return true;
     }
     if let Some(b) = field.try_downcast_mut::<bool>()
@@ -302,9 +325,9 @@ fn set_field(field: &mut dyn PartialReflect, v: &Value) -> bool {
         return true;
     }
     if let Some(o) = field.try_downcast_mut::<Option<i32>>()
-        && let Some(n) = as_i64(v)
+        && let Some(n) = as_integer(v).and_then(|n| i32::try_from(n).ok())
     {
-        *o = Some(n as i32);
+        *o = Some(n);
         return true;
     }
     if let Some(o) = field.try_downcast_mut::<Option<bool>>()
@@ -461,16 +484,21 @@ fn as_f64(v: &Value) -> Option<f64> {
     })
 }
 
-fn as_i64(v: &Value) -> Option<i64> {
+fn as_integer(v: &Value) -> Option<i128> {
     Some(match v {
-        Value::Int(x) => *x as i64,
-        Value::Int64(x) => *x,
-        Value::Uint(x) => *x as i64,
-        Value::Uint64(x) => *x as i64,
-        Value::Uchar(x) => *x as i64,
-        Value::Float(x) => *x as i64,
-        Value::Double(x) => *x as i64,
-        Value::Bool(x) => *x as i64,
+        Value::Int(x) => i128::from(*x),
+        Value::Int64(x) => i128::from(*x),
+        Value::Uint(x) => i128::from(*x),
+        Value::Uint64(x) => i128::from(*x),
+        Value::Uchar(x) => i128::from(*x),
+        Value::Bool(x) => i128::from(*x),
+        Value::Float(_) | Value::Double(_) | Value::Half(_) => {
+            let n = as_f64(v)?;
+            if !n.is_finite() || n.fract() != 0.0 || n < i128::MIN as f64 || n >= -(i128::MIN as f64) {
+                return None;
+            }
+            n as i128
+        }
         _ => return None,
     })
 }
@@ -512,8 +540,8 @@ impl ReflectRoute {
     ///
     /// USD has already done the opinion merging; this only projects the result.
     fn reconcile_prim(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        let now = collect(ctx);
-        let prev = world
+        let mut now = collect(ctx);
+        let mut prev = world
             .get::<ReflectAuthored>(entity)
             .cloned()
             .unwrap_or_default();
@@ -522,6 +550,7 @@ impl ReflectRoute {
         // never touched (the overwhelmingly common case on a large stage).
         let nothing_now = now.iter().all(|(_, fs)| fs.iter().all(|(_, v)| v.is_none()));
         if nothing_now && prev.0.is_empty() {
+            if let Ok(mut ent) = world.get_entity_mut(entity) { ent.remove::<UsdReflectIssues>(); }
             return;
         }
 
@@ -529,6 +558,12 @@ impl ReflectRoute {
         // when there actually *are* `bevy:` opinions to project) and bail
         // instead of panicking on a bare `World`.
         let Some(app_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
+            if let Ok(mut ent) = world.get_entity_mut(entity) {
+                let issues: Vec<_> = now.iter().filter(|(_, fields)| fields.iter().any(|(_, value)| value.is_some()))
+                    .map(|(ty, _)| ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::MissingRegistry }).collect();
+                if issues.is_empty() { ent.remove::<UsdReflectIssues>(); }
+                else { ent.insert(UsdReflectIssues(issues)); }
+            }
             if !nothing_now {
                 bevy::log::warn!(
                     target: "usd_bevy::route::reflect",
@@ -539,6 +574,24 @@ impl ReflectRoute {
             return;
         };
         let registry = app_registry.read();
+        let canonical = |ty: &str| resolve(&registry, ty)
+            .map_or_else(|| ty.to_string(), |registration| registration.type_info().type_path().to_string());
+        let mut grouped: Groups = Vec::new();
+        for (ty, fields) in now {
+            let ty = canonical(&ty);
+            if let Some((_, existing)) = grouped.iter_mut().find(|(name, _)| *name == ty) {
+                existing.extend(fields);
+            } else { grouped.push((ty, fields)); }
+        }
+        now = grouped;
+        let mut previous: Record = Vec::new();
+        for (ty, fields) in prev.0 {
+            let ty = canonical(&ty);
+            if let Some((_, existing)) = previous.iter_mut().find(|(name, _)| *name == ty) {
+                existing.extend(fields);
+            } else { previous.push((ty, fields)); }
+        }
+        prev.0 = previous;
         // Read the AssetServer (if any) before borrowing the entity, so
         // `Handle<T>` fields can resolve asset-path values at project time.
         let assets = world.get_resource::<AssetServer>().cloned();
@@ -547,6 +600,7 @@ impl ReflectRoute {
         };
 
         let mut new_record: Record = Vec::new();
+        let mut issues = Vec::new();
 
         for (ty, fields) in &now {
             // Fields with an actual authored opinion.
@@ -557,10 +611,32 @@ impl ReflectRoute {
             if effective.is_empty() {
                 continue;
             }
+            let mut seen = std::collections::HashSet::new();
+            let conflicts: Vec<_> = effective.iter().filter(|(field, _)| !seen.insert(field.as_str()))
+                .map(|(field, _)| (*field).clone()).collect();
+            if !conflicts.is_empty() {
+                for field in conflicts {
+                    issues.push(ReflectIssue { type_segment: ty.clone(), field: Some(field), kind: ReflectIssueKind::ConflictingAliases });
+                }
+                if let Some(record) = prev.0.iter().find(|(name, _)| name == ty) { new_record.push(record.clone()); }
+                continue;
+            }
+            if let Some((_, presence)) = effective.iter().find(|(field, _)| field.is_empty()) {
+                match presence {
+                    Value::Bool(false) => continue,
+                    Value::Bool(true) => (),
+                    _ => {
+                        issues.push(ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::UnsupportedValue });
+                        if let Some(record) = prev.0.iter().find(|(name, _)| name == ty) { new_record.push(record.clone()); }
+                        continue;
+                    }
+                }
+            }
             // Apply shallower paths first so an enum variant selector (`state`)
             // lands before its payload fields (`state.0`) that descend into it.
             effective.sort_by(|a, b| a.0.cmp(b.0));
             let Some(registration) = resolve(&registry, ty) else {
+                issues.push(ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::UnregisteredType });
                 bevy::log::warn!(
                     target: "usd_bevy::route::reflect",
                     "bevy:{ty}: not in the type registry — skipping (register the type + #[reflect(Component)])"
@@ -568,6 +644,7 @@ impl ReflectRoute {
                 continue;
             };
             let Some(reflect_component) = registration.data::<ReflectComponent>() else {
+                issues.push(ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::MissingComponentReflection });
                 bevy::log::warn!(
                     target: "usd_bevy::route::reflect",
                     "bevy:{ty}: registered but missing ReflectComponent (add #[reflect(Component)])"
@@ -578,6 +655,7 @@ impl ReflectRoute {
             // Ensure the component exists, constructing a default when absent.
             if reflect_component.reflect(&ent).is_none() {
                 let Some(default) = registration.data::<ReflectDefault>() else {
+                    issues.push(ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::MissingDefault });
                     bevy::log::warn!(
                         target: "usd_bevy::route::reflect",
                         "bevy:{ty}: no ReflectDefault and not present — cannot construct (add #[reflect(Default)])"
@@ -592,22 +670,27 @@ impl ReflectRoute {
             // Set each authored field.
             let mut field_names: Vec<String> = Vec::new();
             for (field_path, v) in &effective {
+                if field_path.is_empty() { field_names.push(String::new()); continue; }
                 let path = format!(".{field_path}");
                 if let Some(mut comp) = reflect_component.reflect_mut(&mut ent) {
                     match comp.reflect_path_mut(path.as_str()) {
                         Ok(target) => {
                             if !try_set_handle(target, v, assets.as_ref()) && !set_field(target, v)
                             {
+                                issues.push(ReflectIssue { type_segment: ty.clone(), field: Some((*field_path).clone()), kind: ReflectIssueKind::UnsupportedValue });
                                 bevy::log::warn!(
                                     target: "usd_bevy::route::reflect",
                                     "bevy:{ty}:{field_path}: unsupported value/type pairing — skipped"
                                 );
                             }
                         }
-                        Err(e) => bevy::log::warn!(
+                        Err(e) => {
+                            issues.push(ReflectIssue { type_segment: ty.clone(), field: Some((*field_path).clone()), kind: ReflectIssueKind::UnknownField });
+                            bevy::log::warn!(
                             target: "usd_bevy::route::reflect",
                             "bevy:{ty}:{field_path}: no such field ({e})"
-                        ),
+                            );
+                        }
                     }
                 }
                 field_names.push((*field_path).clone());
@@ -651,6 +734,8 @@ impl ReflectRoute {
         }
 
         ent.insert(ReflectAuthored(new_record));
+        if issues.is_empty() { ent.remove::<UsdReflectIssues>(); }
+        else { ent.insert(UsdReflectIssues(issues)); }
     }
 }
 
@@ -698,7 +783,7 @@ mod tests {
             "nested tuple index then struct field"
         );
         // Not reflect-routed.
-        assert_eq!(parse_attr("bevy:Health"), None, "no field");
+        assert_eq!(parse_attr("bevy:Health"), s("Health", ""), "component presence");
         assert_eq!(parse_attr("bevy:"), None, "no type or field");
         assert_eq!(parse_attr("xformOp:translate"), None, "not bevy-namespaced");
         assert_eq!(parse_attr("visibility"), None);
@@ -729,6 +814,38 @@ mod tests {
         assert_eq!(s, "hi", "token coerces to String");
         assert!(set_field(&mut s, &Value::String("bye".into())));
         assert_eq!(s, "bye");
+    }
+
+    #[test]
+    fn integer_coercions_reject_loss_without_mutation() {
+        let mut signed = 7i32;
+        let mut unsigned = 7u32;
+        let mut optional = Some(7i32);
+        for value in [Value::Int64(i64::MAX), Value::Uint64(u64::MAX),
+            Value::Double(f64::NAN), Value::Double(f64::INFINITY), Value::Double(1.5),
+            Value::Double(2.0_f64.powi(127)), Value::Double(-2.0_f64.powi(127))] {
+            assert!(!set_field(&mut signed, &value));
+            assert!(!set_field(&mut unsigned, &value));
+            assert!(!set_field(&mut optional, &value));
+        }
+        assert_eq!((signed, unsigned, optional), (7, 7, Some(7)));
+        let mut wide_signed = 9i64;
+        let mut wide_unsigned = 9u64;
+        let mut size = 9usize;
+        assert!(!set_field(&mut wide_signed, &Value::Uint64(u64::MAX)));
+        assert!(!set_field(&mut wide_signed, &Value::Double(2.0_f64.powi(63))));
+        assert!(!set_field(&mut wide_unsigned, &Value::Int(-1)));
+        assert!(!set_field(&mut wide_unsigned, &Value::Double(2.0_f64.powi(64))));
+        assert!(!set_field(&mut size, &Value::Int(-1)));
+        assert_eq!((wide_signed, wide_unsigned, size), (9, 9, 9));
+        assert!(set_field(&mut wide_signed, &Value::Int64(i64::MIN)));
+        assert_eq!(wide_signed, i64::MIN);
+        assert!(set_field(&mut wide_unsigned, &Value::Uint64(u64::MAX)));
+        assert_eq!(wide_unsigned, u64::MAX);
+        assert!(set_field(&mut signed, &Value::Double(42.0)));
+        assert_eq!(signed, 42);
+        assert!(set_field(&mut size, &Value::Uint64(usize::MAX as u64)));
+        assert_eq!(size, usize::MAX);
     }
 
     #[test]

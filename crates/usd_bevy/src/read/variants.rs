@@ -10,7 +10,7 @@ use openusd::usd::Stage;
 /// The composed `(variant set, selection)` pairs on `prim` — the effective
 /// selections (authored, fallback, or default), sorted by set name.
 pub fn variant_selections(stage: &Stage, prim: &Path) -> anyhow::Result<Vec<(String, String)>> {
-    stage.prim(prim.clone()).variant_sets().get_all_variant_selections()
+    Ok(stage.prim(prim.clone()).expect("validated USD path").variant_sets().get_all_variant_selections()?)
 }
 
 /// The names of the variant sets that currently contribute a selection to

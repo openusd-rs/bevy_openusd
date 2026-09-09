@@ -8,11 +8,14 @@ repository = "https://github.com/bresilla/bevy_openusd"
 
 [dependencies]
 usd_macro = { path = "../usd_macro" }
-openusd = { git = "https://github.com/mxpv/openusd", rev = "7934d9f3a375fabc93c14dc96b7900cbd035204d", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
+openusd = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
 glam = "0.30"
 anyhow = "1"
 log = "0.4"
-bevy = { version = "0.19", default-features = false, features = [
+tempfile = "3"
+zip = { version = "8.2.0", default-features = false, features = ["deflate"] }
+bevy = { version = "0.19.1", default-features = false, features = [
     "std",
     "bevy_asset",
     "bevy_log",
@@ -21,7 +24,14 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_pbr",
     "bevy_light",
     "bevy_mesh",
+    "morph",
     "bevy_camera",
     "bevy_image",
+    "png",
+    "jpeg",
+    "hdr",
     "reflect_auto_register",
 ] }
+
+[dev-dependencies]
+png = "0.18"

@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Added optional `make test-native` exercising the real editor persistence path
+for RootLayer/EditLayer/Flattened and usda/usdc/usd/usdz. All 12 combinations
+currently fail native interchange checks: USDA metadata syntax errors (a distinct
+array-shape error for flattened output) and missing hierarchy/values/API metadata
+for binary/package outputs. Source control parses natively. Log:
+`/tmp/bevy-native-export-tests.log`. Normal tests explicitly ignore this native
+tool requirement; they do not certify interchange.
+
+Binary failure now reproduced independently of Spot with single_api_schema.usda.
+An experimental change in `/tmp/openusd-native-patch-b7df/crates/openusd/src/usdc/writer.rs`
+emits primChildren/properties as non-array TokenVector rather than Token arrays;
+native usdcat then sees the minimal USDC prim and its API metadata. Evidence:
+`/tmp/upstream-vector-convert.log`, `/tmp/single-api-vector-native.usda`.
+This temporary change is not yet a reviewed patch artifact, does not cover all
+token-vector metadata, and is not integrated. Next: expand binary regression
+coverage, correct flattened metadata, and validate the actual dependency with
+the native gate before claiming save interoperability.
+
+Validation for the native-gate addition: all 361 ordinary tests pass, with one
+explicitly ignored native test; check-all, build and git diff --check pass.
+Logs: `/tmp/bevy-native-gate-{tests,check,build}.log`. The separate native gate
+fails as described above, and that failure remains an acceptance blocker.
+
 Prepared `patches/openusd-singleton-listops.patch` against the pinned upstream
 revision in an isolated temporary copy; no sibling or Cargo cache sources were
 modified. All 1,582 upstream core library tests pass, including a new six-operation

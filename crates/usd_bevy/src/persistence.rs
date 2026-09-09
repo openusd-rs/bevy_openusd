@@ -39,6 +39,53 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_preserves_hierarchy_values_and_api_metadata() {
+        use crate::editor::{EditorSession, SaveMode};
+        use std::process::Command;
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = br#"#usda 1.0
+def Xform "Saved" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+) {
+    double score = 7
+    def Cube "Child" {
+        double size = 3
+    }
+}
+"#;
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let original = directory.path().join("source.usda");
+        fs::write(&original, source).unwrap();
+        let control = Command::new(&native).arg(&original).output().expect("launch native USD_CAT or usdcat");
+        assert!(control.status.success(), "native source control failed: {}", String::from_utf8_lossy(&control.stderr));
+        let stage = crate::UsdSource::new(&original, source.as_slice()).unwrap().open_stage().unwrap();
+        let editor = EditorSession::new(stage);
+        let mut failures = Vec::new();
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            for extension in ["usda", "usdc", "usd", "usdz"] {
+                let destination = directory.path().join(format!("{name}.{extension}"));
+                editor.save(destination.to_str().unwrap(), mode).unwrap();
+                let output = Command::new(&native).arg(&destination).output().expect("launch native USD reader");
+                if !output.status.success() {
+                    failures.push(format!("{name}.{extension}: {}", String::from_utf8_lossy(&output.stderr)));
+                    continue;
+                }
+                let metadata = String::from_utf8_lossy(&output.stdout).contains("MaterialBindingAPI");
+                let reopened = crate::UsdSource::new(directory.path().join("native.usda"), output.stdout)
+                    .unwrap().open_stage().unwrap();
+                let score = reopened.prim("/Saved").ok().and_then(|prim| prim.attribute("score").get::<f64>().ok().flatten());
+                let size = reopened.prim("/Saved/Child").ok().and_then(|prim| prim.attribute("size").get::<f64>().ok().flatten());
+                if score != Some(7.0) || size != Some(3.0) || !metadata {
+                    failures.push(format!("{name}.{extension}: score={score:?}, child size={size:?}, API={metadata}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "native interchange failures:\n{}", failures.join("\n"));
+    }
+
+    #[test]
     fn exported_formats_reopen_and_unknown_format_preserves_existing_bytes() {
         let directory = tempfile::tempdir().unwrap();
         let stage = crate::UsdSource::new("source.usda", &b"#usda 1.0\ndef Scope \"Saved\" { double score = 7 }\n"[..])

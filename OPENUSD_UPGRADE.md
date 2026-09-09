@@ -2,6 +2,23 @@
 
 ## Native interoperability audit — open failures
 
+`make test-native` now checks actual editor saves through native `usdcat` in all
+three save modes and four supported extensions. It fails in all 12 combinations
+at the current pin: root/edit USDA reject singleton list-op syntax, flattened
+USDA rejects a non-shaped value with an array type, and all USDC/USD/USDZ cases
+decode without the expected parent/child, attributes or API metadata. The
+original USDA control parses successfully. Log: `/tmp/bevy-native-export-tests.log`.
+The test is explicitly ignored in the ordinary suite because it requires native
+OpenUSD, not because self-reopen constitutes equivalent coverage.
+
+An isolated binary-writer experiment encodes `primChildren` and `properties` as
+non-array `TokenVector` representations instead of token arrays. This makes a
+minimal Rust-written USDC prim visible to native usdcat. The Rust reader merges
+both wire types into the same TokenVec value, masking this distinction in
+self-reopen tests. Native [crate data loading](https://github.com/PixarAnimationStudios/OpenUSD/blob/v25.05/pxr/usd/usd/crateData.cpp)
+also treats TokenVector specially. The experiment is not integrated or covered
+across all hierarchy/order metadata yet; do not treat it as a complete fix.
+
 On 2026-09-10, the installed native OpenUSD 25.05.01 tools exposed compatibility
 gaps not covered by the Rust reader/writer self-reopen tests:
 

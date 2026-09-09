@@ -228,6 +228,10 @@ cardinality, index bounds and finite authored values; single unindexed values
 retain their broadcast behavior. `assets/invalid_curves.usda`,
 `assets/invalid_curve_layout.usda` and `assets/invalid_curve_colors.usda` are
 negative capture fixtures. Width and normal primvar validation remains open.
+Curve projection also rejects output above 1,000,000 vertices or 2,000,000 line
+indices per prim before allocating tessellation buffers. These limits include
+all curves in the prim and use checked arithmetic. They do not bound source
+decoding, the number of prims, asset-cache memory or total GPU memory.
 
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:

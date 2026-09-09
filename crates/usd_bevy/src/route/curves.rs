@@ -24,6 +24,19 @@ pub struct CurvesRoute;
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct UsdCurveError(pub String);
 
+pub const MAX_CURVE_VERTICES: usize = 1_000_000;
+pub const MAX_CURVE_INDICES: usize = 2_000_000;
+
+fn accumulate_curve_output(total: &mut (usize, usize), vertices: usize, indices: usize) -> Result<(), String> {
+    let vertices = total.0.checked_add(vertices).ok_or("curve vertex count overflow")?;
+    let indices = total.1.checked_add(indices).ok_or("curve index count overflow")?;
+    if vertices > MAX_CURVE_VERTICES || indices > MAX_CURVE_INDICES {
+        return Err(format!("curve output {vertices} vertices/{indices} indices exceeds limits {MAX_CURVE_VERTICES}/{MAX_CURVE_INDICES}"));
+    }
+    *total = (vertices, indices);
+    Ok(())
+}
+
 fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
     let curves = BasisCurves::get(ctx.stage, ctx.path.clone()).map_err(|error| error.to_string())?
         .ok_or("missing BasisCurves schema")?;
@@ -47,6 +60,7 @@ fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
     if kind == "cubic" && !matches!(basis.as_str(), "bezier" | "bspline" | "catmullRom") { return Err(format!("unsupported cubic basis {basis}")); }
     let stride = if basis == "bezier" { 3 } else { 1 };
     let mut varying_count = 0usize;
+    let mut output_size = (0usize, 0usize);
     for (curve,count) in counts.iter().copied().enumerate() {
         if count == 0 { continue; }
         let valid = if kind == "linear" { count >= 2 }
@@ -59,6 +73,12 @@ fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
             else if wrap == "pinned" && basis != "bezier" { count }
             else { (count - 4) / stride + 2 };
         varying_count = varying_count.checked_add(varying).ok_or("varying sample count overflow")?;
+        let segments = varying - usize::from(wrap != "periodic");
+        let (vertices, segments) = if kind == "linear" { (count, segments) } else {
+            let segments = segments.checked_mul(CUBIC_STEPS).ok_or("curve segment count overflow")?;
+            (segments.checked_add(1).ok_or("curve vertex count overflow")?, segments)
+        };
+        accumulate_curve_output(&mut output_size, vertices, segments.checked_mul(2).ok_or("curve index count overflow")?)?;
     }
     if let Some(color) = crate::read::geom::read_primvar_vec3f(ctx.stage, ctx.path, "primvars:displayColor", ctx.time).map_err(|error| error.to_string())? {
         validate_curve_primvar(&color, counts.len(), points.len(), varying_count, "displayColor")?;
@@ -401,6 +421,44 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn curve_output_limits_are_inclusive_and_do_not_wrap() {
+        let mut total = (0,0);
+        accumulate_curve_output(&mut total, MAX_CURVE_VERTICES, MAX_CURVE_INDICES).unwrap();
+        assert!(accumulate_curve_output(&mut total, 1, 0).is_err());
+        assert!(accumulate_curve_output(&mut total, 0, 1).is_err());
+        assert_eq!(total, (MAX_CURVE_VERTICES, MAX_CURVE_INDICES));
+        assert!(accumulate_curve_output(&mut total, usize::MAX, 0).is_err());
+        assert!(accumulate_curve_output(&mut total, 0, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn oversized_curve_projection_allocates_no_mesh_and_recovers() {
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("oversized.usda").unwrap();
+        stage.define_prim("/Curve").unwrap().set_type_name("BasisCurves").unwrap();
+        stage.create_attribute("/Curve.basis", "token").unwrap().set(Value::Token("bspline".into())).unwrap();
+        let points = stage.create_attribute("/Curve.points", "point3f[]").unwrap();
+        let counts = stage.create_attribute("/Curve.curveVertexCounts", "int[]").unwrap();
+        let count = MAX_CURVE_VERTICES / CUBIC_STEPS + 3;
+        points.clone().set(Value::Vec3fVec(vec![[0.,0.,0.].into();count])).unwrap();
+        counts.clone().set(Value::IntVec(vec![count as i32])).unwrap();
+        let path = openusd::sdf::path("/Curve").unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let entity = world.spawn_empty().id();
+        let child = world.spawn(ChildOf(entity)).id();
+        CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+        assert_eq!(world.resource::<Assets<Mesh>>().len(), 0);
+        assert!(world.get::<UsdCurveError>(entity).unwrap().0.contains("exceeds limits"));
+        points.set(Value::Vec3fVec(vec![[0.,0.,0.].into();4])).unwrap();
+        counts.set(Value::IntVec(vec![4])).unwrap();
+        CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+        assert!(world.get::<Mesh3d>(entity).is_some());
+        assert!(world.get::<UsdCurveError>(entity).is_none());
+        assert_eq!(world.get::<ChildOf>(child).unwrap().parent(), entity);
+    }
 
     #[test]
     fn curve_primvar_cardinality_and_indices_are_validated() {

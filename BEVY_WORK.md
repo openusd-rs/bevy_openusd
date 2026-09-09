@@ -25,6 +25,21 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Curve validation now preflights total tessellated output across each prim's
+curves, with checked arithmetic and inclusive limits of 1,000,000 vertices and
+2,000,000 line indices. It derives linear/cubic, periodic/pinned segment counts
+before allocating generated geometry; over-budget input reports UsdCurveError
+through the existing cleanup/recovery and capture failure paths.
+
+Tests cover exact limits, one-over-limit cases, usize arithmetic overflow, and
+a 125,003-control-point Bspline whose output would exceed one million vertices.
+That projection creates no mesh asset and recovers after replacing the source
+with four points, preserving a runtime child. All 359 tests, check-all, build
+and whitespace checks pass (`/tmp/usd-curve-budget-{tests,check,build}.log`).
+This bounds generated curve buffers, not input decoding, total prim count,
+asset-cache overhead or process/GPU memory. No new GPU acceptance or performance
+benchmark was performed; width-aware surfaces and broader fidelity remain open.
+
 Curve display primvars now validate sample cardinality by interpolation, negative
 and out-of-range indices, unsupported faceVarying interpolation and non-finite
 authored color/opacity values. Constant/uniform/vertex/varying use their distinct

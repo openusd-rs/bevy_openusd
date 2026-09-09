@@ -25,6 +25,13 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+User-requested checkpoint committed as 788e3e5
+(`feat(bevy):expand USD integration and viewer`), unsigned and title-only.
+The pending point-color regression and GPU capture exposed invalid USDA syntax:
+interpolation metadata followed a timeSamples assignment. Split it into an
+attribute declaration plus timeSamples assignment. Point-color validation is
+still in progress; the failed capture did not establish visual acceptance.
+
 User inspection handoff: launched `assets/animation_showcase.usda` through make
 on the active desktop `wayland-0`; the inherited WAYLAND_DISPLAY referenced a
 stale waypipe socket and failed with NoCompositor. Successful launch log:

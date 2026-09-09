@@ -25,6 +25,20 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Prepared `patches/openusd-singleton-listops.patch` against the pinned upstream
+revision in an isolated temporary copy; no sibling or Cargo cache sources were
+modified. All 1,582 upstream core library tests pass, including a new six-operation
+singleton metadata regression. Native usdcat now accepts patched conversions of
+the minimal fixture and Spot (919 lines of native text output). Native Embree
+renders the converted Spot visibly, with faceting, in
+`target/spot-patched-embree.png`, inspected directly. Logs:
+`/tmp/upstream-listop-all-tests.log`, `/tmp/spot-patched-convert.log`,
+`/tmp/spot-patched-embree.log`. Embree does not support the scene's Material prims;
+camera/lighting are unmatched. This is not pixel/material parity or proof that
+the Rust reader interprets the original binary correctly. Patch integration and
+the original binary's native-read discrepancy remain open. The active viewer
+dependency is still unpatched; see `patches/README.md` for reproduction.
+
 Returned to Spot seam diagnosis. Extended scene_report with authored-normal
 preservation, face/normal alignment, duplicate/degenerate triangles and indexed
 versus exact-position-welded boundary/nonmanifold edges. Tests cover reversed

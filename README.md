@@ -210,8 +210,9 @@ Applications can send `EditorCommand::RefreshTextures` through `EditorBridge`
 to reread source-backed images without reopening the USD document. Successful
 refreshes preserve selection, unsaved edits, runtime entities and undo/redo;
 decode failures retain the previous image set and report an error. This command
-does not reload USD layers or changed package-root bytes, and currently has no
-viewer ribbon action.
+does not reload USD layers or changed package-root bytes. The viewer exposes
+it as the image-icon **Refresh textures** action in the left ribbon. Errors
+appear in the outliner's Status section while the last good textures remain.
 
 Undoable authoring uses `editor::EditorSession` and `editor::EditorEdit`:
 

@@ -109,6 +109,7 @@ const ACTION_UNDO: &str = "usd_action_undo";
 const ACTION_REDO: &str = "usd_action_redo";
 const ACTION_FLATTEN: &str = "usd_action_flatten";
 const ACTION_SAVE_LAYER: &str = "usd_action_save_layer";
+const ACTION_REFRESH_TEXTURES: &str = "usd_action_refresh_textures";
 
 fn ribbon_action(id: &'static str) -> RibbonAction {
     RibbonAction::Command(MaraId::new(id))
@@ -259,7 +260,8 @@ impl WindowApp for UsdApp {
             .action(ACTION_SAVE_LAYER, "document", "Save edit layer as…", ribbon_action(ACTION_SAVE_LAYER))
             .action(ACTION_FLATTEN, "document", "Export flattened…", ribbon_action(ACTION_FLATTEN))
             .action(ACTION_UNDO, "arrow-left", "Undo", ribbon_action(ACTION_UNDO))
-            .action(ACTION_REDO, "arrow-right", "Redo", ribbon_action(ACTION_REDO));
+            .action(ACTION_REDO, "arrow-right", "Redo", ribbon_action(ACTION_REDO))
+            .action(ACTION_REFRESH_TEXTURES, "image", "Refresh textures", ribbon_action(ACTION_REFRESH_TEXTURES));
         for click in host.show_ribbon_rail(rail, accent) {
             if click.action == ribbon_action(ACTION_SAVE) || click.action == ribbon_action(ACTION_SAVE_LAYER)
                 || click.action == ribbon_action(ACTION_FLATTEN) {
@@ -272,6 +274,8 @@ impl WindowApp for UsdApp {
                 send(editor, EditorCommand::Redo);
             } else if click.action == ribbon_action(ACTION_OPEN) {
                 file_dialogs.start(file_dialog::Request::Open);
+            } else if click.action == ribbon_action(ACTION_REFRESH_TEXTURES) {
+                send(editor, EditorCommand::RefreshTextures);
             }
         }
         if *capture_handshake {

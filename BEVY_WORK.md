@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Viewer texture-refresh ribbon action
+
+The left ribbon now exposes Refresh textures with an image icon and dispatches
+the existing EditorCommand. Added a checked-in, parser-tested input replay for
+the 1600x1000 isolated viewer layout. The action is appended after the existing
+declarations; other action handlers remain unchanged.
+
+Inspected three full-window Weston captures: initial red texture, a successful
+refresh to blue, and a corrupt-image failure retaining red. In the success and
+failure runs, only a generated fixture's red.png was replaced after the viewer
+startup handshake, before the replay clicked the ribbon action. Selection stays
+on /Quad. The failure Status section visibly wraps the PNG error while the last
+good quad remains rendered. Captures:
+`target/viewer-ui-captures/refresh-{button,click,failure}.png`; replay:
+`scripts/replays/refresh_textures.replay`; run logs:
+`/tmp/refresh-ui-{capture,click,failure}.log` plus adjacent viewer/compositor logs.
+The replay feeds egui input, not native OS mouse events. Existing isolated-UI
+clipboard/Vulkan-loader diagnostics and the shared-device SSAO limit warning
+remain present; this is not a clean GPU-environment claim or automatic watching.
+
+Validation: 435 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/refresh-ui-{tests,check,build}.log`.
+
 ### Explicit editor texture refresh
 
 Added `EditorCommand::RefreshTextures` for source-backed editor documents. It

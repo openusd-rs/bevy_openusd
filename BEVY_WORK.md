@@ -25,6 +25,40 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Compact subset vertices and keep empty assets out of GPU uploads
+
+`cffdd62` compacts each material subset and the unassigned remainder, applying
+one stable vertex remapping to every attribute and every target-major morph
+block. Invalid inputs retain their original layout without partial mutation.
+Regression tests compare indexed attributes byte-for-byte and preserve skin,
+morph, independent-clock, subdivision and instancer behavior. ANYmal's retained
+vertex payload drops to 19,969,120 bytes from 720,548,416–771,589,120, with the
+same 296 mesh entities and 231 subset entities. Raw before/after samples and
+CPU-only measurement limits are in `benchmarks/editor-assets.md`.
+
+Native fixed-camera captures exposed two allocator errors for the empty parent
+remainder in both CPU and GPU deformation modes. Bevy 0.19.1's mesh allocator
+skips zero-byte vertex allocation but still attempts the vertex/index uploads.
+Empty compacted assets now omit RENDER_WORLD usage while retaining their CPU
+data and entity identity. Animated subsets regain renderable assets when faces
+return; a regression checks this transition and isolation from another root.
+Empty morph data also stays absent, avoiding the image-backed morph allocator's
+division by zero for zero vertices.
+
+All 388 ordinary tests, check-all, build and whitespace checks pass. Logs:
+`/tmp/subset-empty-final-{tests,check}.log`, `/tmp/subset-empty-build.log`.
+Both fixed-camera captures at time 30 complete without logged warnings/errors:
+`target/subset-empty-{gpu,cpu}.png` and `/tmp/subset-empty-{gpu,cpu}.log`.
+Each raw RGBA file is byte-identical to its corresponding pre-upload-fix
+`target/subset-compact-fixed-{gpu,cpu}.rgba`; removing empty uploads does not
+change those rendered pixels. Both output images were visually inspected.
+
+Source cache payload and transient full-source clones remain. Automatic grid
+fitting and viewer framing differ between CPU- and GPU-deformed bounds; fixed
+camera captures isolate geometry from framing but do not prove full visual
+parity or matched native USD rendering. The broad acceptance checklist remains
+open.
+
 ### Measure real editor opens and retained subset payload
 
 Added examples/editor_benchmark.rs using the real EditorCommand::Open path,

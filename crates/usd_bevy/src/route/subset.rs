@@ -401,6 +401,10 @@ def Material "Mat" {
             let handle = &world.get::<Mesh3d>(entity).unwrap().0;
             world.resource::<Assets<Mesh>>().get(handle).unwrap().indices().unwrap().iter().collect::<Vec<_>>()
         };
+        let renderable = |world: &World, entity| {
+            let handle = &world.get::<Mesh3d>(entity).unwrap().0;
+            world.resource::<Assets<Mesh>>().get(handle).unwrap().asset_usage.contains(bevy::asset::RenderAssetUsages::RENDER_WORLD)
+        };
         assert_eq!(indices(app.world(), ca), [0,1,2]);
         assert_eq!(indices(app.world(), pa), [0,2,1]);
         assert_eq!(indices(app.world(), cb), [0,2,1]);
@@ -420,12 +424,15 @@ def Material "Mat" {
         assert_eq!(children(app.world(), pa)[0].0, ca);
         assert!(app.world().get::<Runtime>(ca).is_some());
         assert!(indices(app.world(), ca).is_empty());
+        assert!(!renderable(app.world(), ca));
+        assert!(renderable(app.world(), cb));
         assert_eq!(indices(app.world(), pa).len(), 6);
         assert_eq!(indices(app.world(), cb), [0,2,1]);
         app.world_mut().get_mut::<UsdInstanceTime>(a).unwrap().current = 5.0;
         app.update();
         assert_eq!(indices(app.world(), ca), [0,1,2]);
         let handle = &app.world().get::<MeshMaterial3d<StandardMaterial>>(ca).unwrap().0;
+        assert!(renderable(app.world(), ca));
         assert_eq!(app.world().resource::<Assets<StandardMaterial>>().get(handle).unwrap().base_color, Color::linear_rgb(0.5,0.0,0.5));
         app.world_mut().despawn(a);
         app.update();

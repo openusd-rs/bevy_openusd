@@ -19,6 +19,7 @@ pub(crate) fn compact(mesh: &mut Mesh) -> bool {
     let morph = mesh.get_morph_targets().map(|targets| targets.chunks_exact(count)
         .flat_map(|target| retained.iter().map(|&old| target[old])).collect());
     let mut output = Mesh::new(mesh.primitive_topology(), mesh.asset_usage);
+    if retained.is_empty() { output.asset_usage.remove(bevy::asset::RenderAssetUsages::RENDER_WORLD); }
     output.enable_raytracing = mesh.enable_raytracing;
     output.final_aabb = mesh.final_aabb;
     for (attribute, values) in mesh.attributes() { output.insert_attribute(*attribute, select(values, &retained)); }
@@ -83,6 +84,8 @@ mod tests {
         assert!(compact(&mut mesh));
         assert_eq!(mesh.count_vertices(), 0);
         assert!(mesh.get_morph_targets().is_none());
+        assert!(mesh.asset_usage.contains(RenderAssetUsages::MAIN_WORLD));
+        assert!(!mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD));
         assert!(compact(&mut mesh));
     }
 

@@ -69,3 +69,26 @@ The bundled material_subsets test verifies exact entity/asset counts, vertex and
 index payloads, unreferenced-vertex counts and rejection of failed opens. The
 final benchmark uses tracked assets; an earlier untracked prototype overcounted
 assets waiting for handle cleanup and is not used in these results.
+
+## After subset vertex compaction
+
+Implementation committed as `cffdd62`. Same release benchmark and ANYmal asset:
+
+```csv
+sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes
+0,679.503,27.484,296,231,109,624035,310045,19969120,7244184,0,10240000
+1,616.179,29.505,296,231,109,624035,310045,19969120,7244184,0,10240000
+2,625.352,27.192,296,231,109,624035,310045,19969120,7244184,0,10240000
+```
+
+Retained vertex payload falls from 720.5–771.6 MB to 19.97 MB, with unchanged
+mesh/subset entity counts. Each subset retains only referenced vertices, with
+the same remapping applied to every attribute and every morph target. Source
+cache assets still retain 310,045 unreferenced vertices; source cloning also
+still incurs transient allocations. These measurements do not prove a reduction
+in peak RSS or VRAM, nor make the device-bounded allocator unnecessary. Timing
+ranges overlap and this is not a controlled CPU speedup experiment.
+
+Raw after-compaction log: `/tmp/subset-compact-anymal.log`. Empty compacted
+assets subsequently became CPU-only to avoid uploading zero-vertex buffers;
+that upload policy is outside this CPU payload benchmark.

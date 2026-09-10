@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Double-precision local transform composition
+
+The reader now composes local op matrices in f64 and converts only the final
+matrix to Bevy's f32 representation. `read_transform_stack_f64_at` exposes the
+double result and reset flag; the existing float API diagnoses final values
+outside f32 range. This preserves small residuals such as 100000001 - 100000000
+and allows individually large/small scale ops whose product fits the renderer.
+It does not make Bevy hierarchy/global propagation double precision or eliminate
+precision loss between separately projected parent/child transforms.
+
+Tests cover the one-unit residual, a sub-f32 residual retained by the f64 API,
+large/small finite scale composition and explicit final-range rejection. Existing
+half, quaternion, scalar-axis and inverse tests continue to exercise the reader.
+Native OpenUSD 25.05.01 confirms the one-unit local result for
+`assets/xform_precision.usda` (`/tmp/native-double-stack.log`). Its reference is
+`assets/xform_precision_reference.usda`, which authors a direct translation.
+
 ### Scalar-axis transforms and adjacent inverse cancellation
 
 Added translateX/Y/Z and scaleX/Y/Z with half/float/double scalar decoding.

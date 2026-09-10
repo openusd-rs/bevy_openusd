@@ -1,7 +1,7 @@
 //! Xform reader — compose `xformOpOrder` into a single 4×4 and decompose to
 //! TRS, read from the composed stage via openusd.
 
-use glam::{DMat4, DVec3, Mat4, Vec3};
+use glam::{DMat4, DVec3, Mat4};
 use openusd::sdf::{Path, Value};
 use openusd::usd::{Stage, TimeCode};
 
@@ -52,6 +52,14 @@ pub fn read_transform_matrix_at(stage: &Stage, prim: &Path, time: Option<f64>) -
 
 /// Composed local matrix and inheritance-reset flag at the requested time.
 pub fn read_transform_stack_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<Option<([f32; 16], bool)>> {
+    let Some((matrix, reset)) = read_transform_stack_f64_at(stage, prim, time)? else { return Ok(None) };
+    let matrix = matrix.map(|value| value as f32);
+    anyhow::ensure!(matrix.iter().all(|value| value.is_finite()), "composed transform exceeds f32 range");
+    Ok(Some((matrix, reset)))
+}
+
+/// Composes local operations in double precision before any render conversion.
+pub fn read_transform_stack_f64_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<Option<([f64; 16], bool)>> {
     let tc = time.map(TimeCode::new);
     let Some(raw) = attr_value(stage, prim, "xformOpOrder", tc)? else {
         return Ok(None);
@@ -67,7 +75,7 @@ pub fn read_transform_stack_at(stage: &Stage, prim: &Path, time: Option<f64>) ->
         _ => anyhow::bail!("unsupported xformOpOrder value type"),
     };
 
-    let mut m = Mat4::IDENTITY;
+    let mut m = DMat4::IDENTITY;
     let reset = order.iter().rposition(|op| op == "!resetXformStack!");
     let mut index = reset.map_or(0, |index| index + 1);
     while index < order.len() {
@@ -81,6 +89,7 @@ pub fn read_transform_stack_at(stage: &Stage, prim: &Path, time: Option<f64>) ->
         index += 1;
     }
 
+    anyhow::ensure!(m.is_finite(), "non-finite composed transform");
     Ok(Some((m.to_cols_array(), reset.is_some())))
 }
 
@@ -89,7 +98,7 @@ fn build_op_matrix(
     prim: &Path,
     op_token: &str,
     time: Option<TimeCode>,
-) -> anyhow::Result<Mat4> {
+) -> anyhow::Result<DMat4> {
     const INVERT: &str = "!invert!";
     let (inverted, base) = match op_token.strip_prefix(INVERT) {
         Some(stripped) => (true, stripped),
@@ -97,7 +106,7 @@ fn build_op_matrix(
     };
 
     let Some(raw) = attr_value(stage, prim, base, time)? else {
-        return Ok(Mat4::IDENTITY);
+        return Ok(DMat4::IDENTITY);
     };
 
     let kind = base.strip_prefix("xformOp:").unwrap_or(base);
@@ -106,29 +115,29 @@ fn build_op_matrix(
 
     let m = match kind {
         "translate" => {
-            Mat4::from_translation(Vec3::from(value_to_vec3f(&raw).ok_or_else(invalid)?))
+            DMat4::from_translation(DVec3::from(value_to_vec3d(&raw).ok_or_else(invalid)?))
         }
-        "scale" => Mat4::from_scale(Vec3::from(value_to_vec3f(&raw).ok_or_else(invalid)?)),
+        "scale" => DMat4::from_scale(DVec3::from(value_to_vec3d(&raw).ok_or_else(invalid)?)),
         "translateX" | "translateY" | "translateZ" | "scaleX" | "scaleY" | "scaleZ" => {
-            let scalar = value_to_scalar_f32(&raw).ok_or_else(invalid)?;
+            let scalar = value_to_scalar_f64(&raw).ok_or_else(invalid)?;
             let scale = kind.starts_with("scale");
             let axis = match kind.as_bytes().last() { Some(b'X') => 0, Some(b'Y') => 1, _ => 2 };
-            let mut vector = if scale { Vec3::ONE } else { Vec3::ZERO };
+            let mut vector = if scale { DVec3::ONE } else { DVec3::ZERO };
             vector[axis] = if scale && inverted { -scalar } else { scalar };
-            if scale { Mat4::from_scale(vector) } else { Mat4::from_translation(vector) }
+            if scale { DMat4::from_scale(vector) } else { DMat4::from_translation(vector) }
         }
         "orient" => {
             let q = value_to_quat_wxyz(&raw).ok_or_else(invalid)?;
             orientation_matrix(q).ok_or_else(|| anyhow::anyhow!("invalid orientation in {op_token}"))?
         }
-        "rotateX" => Mat4::from_rotation_x(value_to_scalar_f32(&raw).ok_or_else(invalid)?.to_radians()),
-        "rotateY" => Mat4::from_rotation_y(value_to_scalar_f32(&raw).ok_or_else(invalid)?.to_radians()),
-        "rotateZ" => Mat4::from_rotation_z(value_to_scalar_f32(&raw).ok_or_else(invalid)?.to_radians()),
+        "rotateX" => DMat4::from_rotation_x(value_to_scalar_f64(&raw).ok_or_else(invalid)?.to_radians()),
+        "rotateY" => DMat4::from_rotation_y(value_to_scalar_f64(&raw).ok_or_else(invalid)?.to_radians()),
+        "rotateZ" => DMat4::from_rotation_z(value_to_scalar_f64(&raw).ok_or_else(invalid)?.to_radians()),
         "rotateXYZ" | "rotateYXZ" | "rotateZXY" | "rotateXZY" | "rotateYZX" | "rotateZYX" => {
-            let v = value_to_vec3f(&raw).ok_or_else(invalid)?;
-            let rx_m = Mat4::from_rotation_x(v[0].to_radians());
-            let ry_m = Mat4::from_rotation_y(v[1].to_radians());
-            let rz_m = Mat4::from_rotation_z(v[2].to_radians());
+            let v = value_to_vec3d(&raw).ok_or_else(invalid)?;
+            let rx_m = DMat4::from_rotation_x(v[0].to_radians());
+            let ry_m = DMat4::from_rotation_y(v[1].to_radians());
+            let rz_m = DMat4::from_rotation_z(v[2].to_radians());
             match kind {
                 "rotateXYZ" => rz_m * ry_m * rx_m,
                 "rotateYXZ" => rz_m * rx_m * ry_m,
@@ -145,50 +154,47 @@ fn build_op_matrix(
 
     anyhow::ensure!(m.is_finite(), "non-finite transform in {op_token}");
     if !inverted || matches!(kind, "scaleX" | "scaleY" | "scaleZ") { return Ok(m); }
-    let matrix = m.as_dmat4();
+    let matrix = m;
     anyhow::ensure!(matrix.determinant() != 0.0, "singular inverse transform in {op_token}");
-    let inverse = matrix.inverse().as_mat4();
+    let inverse = matrix.inverse();
     anyhow::ensure!(inverse.is_finite(), "non-finite inverse transform in {op_token}");
     Ok(inverse)
 }
 
-fn value_to_mat4_glam(v: &Value) -> Option<Mat4> {
+fn value_to_mat4_glam(v: &Value) -> Option<DMat4> {
     match v {
-        Value::Matrix4d(m) => {
-            let cols: [f32; 16] = std::array::from_fn(|i| m.0[i] as f32);
-            Some(Mat4::from_cols_array(&cols))
-        }
+        Value::Matrix4d(m) => Some(DMat4::from_cols_array(&m.0)),
         _ => None,
     }
 }
 
-fn value_to_vec3f(v: &Value) -> Option<[f32; 3]> {
+fn value_to_vec3d(v: &Value) -> Option<[f64; 3]> {
     match v {
-        Value::Vec3f(a) => Some([a.x, a.y, a.z]),
-        Value::Vec3d(a) => Some([a.x as f32, a.y as f32, a.z as f32]),
-        Value::Vec3h(a) => Some([a.x.to_f32(), a.y.to_f32(), a.z.to_f32()]),
+        Value::Vec3f(a) => Some([a.x as f64, a.y as f64, a.z as f64]),
+        Value::Vec3d(a) => Some([a.x, a.y, a.z]),
+        Value::Vec3h(a) => Some([a.x.to_f64(), a.y.to_f64(), a.z.to_f64()]),
         _ => None,
     }
 }
 
-fn value_to_scalar_f32(v: &Value) -> Option<f32> {
+fn value_to_scalar_f64(v: &Value) -> Option<f64> {
     match v {
-        Value::Float(f) => Some(*f),
-        Value::Double(d) => Some(*d as f32),
-        Value::Half(h) => Some(h.to_f32()),
-        Value::Int(i) => Some(*i as f32),
-        Value::Int64(i) => Some(*i as f32),
+        Value::Float(f) => Some(*f as f64),
+        Value::Double(d) => Some(*d),
+        Value::Half(h) => Some(h.to_f64()),
+        Value::Int(i) => Some(*i as f64),
+        Value::Int64(i) => Some(*i as f64),
         _ => None,
     }
 }
 
-fn orientation_matrix(q: [f64; 4]) -> Option<Mat4> {
+fn orientation_matrix(q: [f64; 4]) -> Option<DMat4> {
     if !q.iter().all(|value| value.is_finite()) { return None; }
     let axis = DVec3::new(q[1], q[2], q[3]);
     let length = axis.length();
     if !length.is_finite() { return None; }
-    if length <= 1e-10 { return Some(Mat4::IDENTITY); }
-    Some(DMat4::from_axis_angle(axis / length, 2.0 * q[0].clamp(-1.0, 1.0).acos()).as_mat4())
+    if length <= 1e-10 { return Some(DMat4::IDENTITY); }
+    Some(DMat4::from_axis_angle(axis / length, 2.0 * q[0].clamp(-1.0, 1.0).acos()))
 }
 
 fn value_to_quat_wxyz(v: &Value) -> Option<[f64; 4]> {
@@ -203,6 +209,36 @@ fn value_to_quat_wxyz(v: &Value) -> Option<[f64; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
+
+    #[test]
+    fn double_stack_keeps_small_residual_before_render_conversion() {
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/xform_precision.usda")).unwrap();
+        let path = openusd::sdf::path("/Panels").unwrap();
+        assert_eq!(read_transform_matrix_at(&stage, &path, None).unwrap(), Some(Mat4::from_translation(Vec3::X).to_cols_array()));
+        stage.attribute("/Panels.xformOp:translate:offset").unwrap()
+            .set(Value::Vec3d(openusd::gf::Vec3d::from([-100000000.0 + 1e-6,0.0,0.0]))).unwrap();
+        let precise = read_transform_stack_f64_at(&stage, &path, None).unwrap().unwrap().0;
+        assert!(precise[12] > 1.0);
+        assert!((precise[12] - 1.000001).abs() < 1e-8);
+        assert_eq!(read_transform_matrix_at(&stage, &path, None).unwrap().unwrap()[12], precise[12] as f32);
+    }
+
+    #[test]
+    fn double_ops_can_exceed_float_range_before_final_composition() {
+        let stage = Stage::builder().in_memory("double-range.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        stage.create_attribute("/Root.xformOp:scale:a", "double3").unwrap().set(Value::Vec3d(openusd::gf::Vec3d::from([1e40;3]))).unwrap();
+        stage.create_attribute("/Root.xformOp:scale:b", "double3").unwrap().set(Value::Vec3d(openusd::gf::Vec3d::from([1e-40;3]))).unwrap();
+        let order = stage.create_attribute("/Root.xformOpOrder", "token[]").unwrap()
+            .set(Value::TokenVec(vec!["xformOp:scale:a".into(), "xformOp:scale:b".into()])).unwrap();
+        let path = openusd::sdf::path("/Root").unwrap();
+        assert_eq!(read_transform_matrix_at(&stage, &path, None).unwrap(), Some(Mat4::IDENTITY.to_cols_array()));
+        order.set(Value::TokenVec(vec!["xformOp:scale:a".into()])).unwrap();
+        assert!(read_transform_stack_f64_at(&stage, &path, None).unwrap().unwrap().0[0].is_finite());
+        assert!(read_transform_stack_at(&stage, &path, None).unwrap_err().to_string().contains("f32 range"));
+    }
 
     #[test]
     fn scalar_axis_stack_matches_vector_reference_and_native_inverse_values() {
@@ -216,11 +252,11 @@ mod tests {
             let inverse_scale = build_op_matrix(&stage, &path, &format!("!invert!xformOp:scale{suffix}"), None).unwrap();
             let mut expected = Vec3::ONE;
             expected[axis] = -scale;
-            assert_eq!(inverse_scale, Mat4::from_scale(expected));
+            assert_eq!(inverse_scale, Mat4::from_scale(expected).as_dmat4());
             let inverse_translate = build_op_matrix(&stage, &path, &format!("!invert!xformOp:translate{suffix}"), None).unwrap();
             let mut expected = Vec3::ZERO;
             expected[axis] = -translate;
-            assert_eq!(inverse_translate, Mat4::from_translation(expected));
+            assert_eq!(inverse_translate, Mat4::from_translation(expected).as_dmat4());
         }
     }
 
@@ -246,14 +282,14 @@ mod tests {
     #[test]
     fn quaternion_conversion_matches_native_axis_angle_cases() {
         for q in [[0.0,0.0,0.0,0.0], [2.0,0.0,0.0,0.0], [0.5,0.0,0.0,1e-10]] {
-            assert_eq!(orientation_matrix(q), Some(Mat4::IDENTITY));
+            assert_eq!(orientation_matrix(q), Some(DMat4::IDENTITY));
         }
         let native = Mat4::from_cols_array(&[-0.00021362304687522204,0.9999999771825967,0.0,0.0,
             -0.9999999771825967,-0.00021362304687522204,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0]);
-        assert!(orientation_matrix([0.70703125,0.0,0.0,0.70703125]).unwrap().abs_diff_eq(native, 1e-7));
+        assert!(orientation_matrix([0.70703125,0.0,0.0,0.70703125]).unwrap().abs_diff_eq(native.as_dmat4(), 1e-7));
         let non_unit = Mat4::from_rotation_z(120_f32.to_radians());
         for length in [1e-9, 2.0, 1e100] {
-            assert!(orientation_matrix([0.5,0.0,0.0,length]).unwrap().abs_diff_eq(non_unit, 1e-6));
+            assert!(orientation_matrix([0.5,0.0,0.0,length]).unwrap().abs_diff_eq(non_unit.as_dmat4(), 1e-6));
         }
         for q in [[f64::NAN,0.0,0.0,1.0], [0.5,f64::INFINITY,0.0,0.0], [0.5,0.0,0.0,1e300]] {
             assert!(orientation_matrix(q).is_none());
@@ -272,7 +308,7 @@ mod tests {
         assert!(actual.abs_diff_eq(expected, 1e-7));
         let direct = build_op_matrix(&stage, &path, "xformOp:orient", None).unwrap();
         let inverse = build_op_matrix(&stage, &path, "!invert!xformOp:orient", None).unwrap();
-        assert!((direct * inverse).abs_diff_eq(Mat4::IDENTITY, 1e-6));
+        assert!((direct * inverse).abs_diff_eq(DMat4::IDENTITY, 1e-6));
     }
 
     #[test]
@@ -290,7 +326,7 @@ mod tests {
         for op in ["translate", "rotateY", "scale"] {
             let direct = build_op_matrix(&stage, &path, &format!("xformOp:{op}"), None).unwrap();
             let inverse = build_op_matrix(&stage, &path, &format!("!invert!xformOp:{op}"), None).unwrap();
-            assert!((direct * inverse).abs_diff_eq(Mat4::IDENTITY, 1e-6));
+            assert!((direct * inverse).abs_diff_eq(DMat4::IDENTITY, 1e-6));
         }
     }
 
@@ -305,7 +341,7 @@ mod tests {
             let error = build_op_matrix(&stage, &path, &name, None).unwrap_err().to_string();
             assert!(error.contains(&name));
         }
-        assert_eq!(build_op_matrix(&stage, &path, "xformOp:translate:missing", None).unwrap(), Mat4::IDENTITY);
+        assert_eq!(build_op_matrix(&stage, &path, "xformOp:translate:missing", None).unwrap(), DMat4::IDENTITY);
         stage.create_attribute("/Root.xformOpOrder", "string").unwrap().set(Value::String("bad".into())).unwrap();
         assert!(read_transform_stack_at(&stage, &path, None).unwrap_err().to_string().contains("xformOpOrder"));
     }
@@ -321,7 +357,7 @@ mod tests {
             assert!(build_op_matrix(&stage, &path, "xformOp:orient", None).is_err());
         }
         orientation.set(Value::Quatf(openusd::gf::Quatf::IDENTITY)).unwrap();
-        assert_eq!(build_op_matrix(&stage, &path, "xformOp:orient", None).unwrap(), Mat4::IDENTITY);
+        assert_eq!(build_op_matrix(&stage, &path, "xformOp:orient", None).unwrap(), DMat4::IDENTITY);
         let scale = stage.create_attribute("/Root.xformOp:scale", "double3").unwrap();
         let scale = scale.set(Value::Vec3d(openusd::gf::Vec3d::from([0.0, 1.0, 1.0]))).unwrap();
         assert!(build_op_matrix(&stage, &path, "!invert!xformOp:scale", None).is_err());

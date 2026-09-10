@@ -914,6 +914,11 @@ cancel before evaluation. For compatibility with native OpenUSD 25.05.01,
 an unpaired inverse scalar-axis scale negates its value; vector-scale inverses
 instead use reciprocals. These two forms are not interchangeable.
 
+Local op stacks compose in double precision before final conversion for Bevy.
+`read::xform::read_transform_stack_f64_at` exposes that result directly;
+`assets/xform_precision.usda` demonstrates large offsets cancelling to a one-unit
+translation. This does not provide double-precision world/hierarchy transforms.
+
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset
 handles are shared across copies. Nested transforms remain on generated entities

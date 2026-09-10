@@ -232,13 +232,15 @@ type PreparedTextures = Vec<((String, bool), Image)>;
 fn prepare_textures(stage: &Stage, source: &crate::UsdSource) -> anyhow::Result<PreparedTextures> {
     let mut images = Vec::new();
     for (path, srgb) in crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)? {
-        let bytes = source.read_asset(&path)?;
+        let bytes = source.read_asset(&path)
+            .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
         let inner = openusd::ar::split_package_relative_path_inner(&path).map(|(_, inner)| inner).unwrap_or_else(|| path.clone());
         let extension = std::path::Path::new(&inner).extension().and_then(|extension| extension.to_str())
             .ok_or_else(|| anyhow::anyhow!("texture has no extension: {path}"))?;
         let image = Image::from_buffer(&bytes, bevy::image::ImageType::Extension(extension),
             bevy::image::CompressedImageFormats::NONE, srgb, bevy::image::ImageSampler::default(),
-            bevy::asset::RenderAssetUsages::default())?;
+            bevy::asset::RenderAssetUsages::default())
+            .map_err(|error| anyhow::anyhow!("cannot decode texture {path}: {error}"))?;
         images.push(((path, srgb), image));
     }
     Ok(images)
@@ -1283,10 +1285,21 @@ def Material "Mat" {
                 app.update();
                 let before = app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap();
                 let document_id = bridge.view().unwrap().document.document_id;
+                std::fs::remove_file(directory.path().join("pixel.png")).unwrap();
+                bridge.send(EditorCommand::RefreshTextures).unwrap();
+                app.update();
+                let status = bridge.view().unwrap().status;
+                assert!(status.starts_with("Failed: cannot read texture "));
+                assert!(status.contains("pixel.png"), "{status}");
+                assert_eq!(app.world().resource::<Assets<StandardMaterial>>()
+                    .get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap()
+                    .base_color_texture.as_ref(), Some(&texture));
                 std::fs::write(directory.path().join("pixel.png"), b"broken image").unwrap();
                 bridge.send(EditorCommand::RefreshTextures).unwrap();
                 app.update();
-                assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+                let status = bridge.view().unwrap().status;
+                assert!(status.starts_with("Failed: cannot decode texture "));
+                assert!(status.contains(directory.path().join("pixel.png").to_str().unwrap()));
                 assert_eq!(app.world().resource::<Assets<StandardMaterial>>()
                     .get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap()
                     .base_color_texture.as_ref(), Some(&texture));

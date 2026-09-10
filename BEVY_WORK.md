@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Actionable editor texture errors
+
+Image preparation now identifies the requested texture path and whether reading
+or decoding failed. Existing resolved paths include their full filename/package
+entry; an unresolved missing file can retain its authored relative path. Errors
+are formatted once at this boundary rather than repeating nested decode causes.
+The refresh regression now deletes the image before the corrupt-image case,
+checks operation-specific path diagnostics, and confirms both failures retain
+the installed texture before the existing repair/undo/redo checks.
+
+Inspected `target/viewer-ui-captures/texture-error-path.png`: after replacing a
+generated PNG with invalid bytes and replaying the ribbon click, Status visibly
+shows the full texture filename and decode error while retaining the red quad
+and /Quad selection. Run log: `/tmp/texture-error-ui.log` with adjacent viewer
+and compositor logs. The established isolated-UI environment warnings remain;
+this capture does not claim a warning-free renderer.
+
+Validation: 435 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/texture-error-{tests,check,build}.log`.
+
 ### Viewer texture-refresh ribbon action
 
 The left ribbon now exposes Refresh textures with an image icon and dispatches

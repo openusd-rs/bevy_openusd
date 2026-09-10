@@ -213,6 +213,8 @@ decode failures retain the previous image set and report an error. This command
 does not reload USD layers or changed package-root bytes. The viewer exposes
 it as the image-icon **Refresh textures** action in the left ribbon. Errors
 appear in the outliner's Status section while the last good textures remain.
+Read and decode failures identify the texture path (resolved when available),
+including the package entry when applicable.
 
 Undoable authoring uses `editor::EditorSession` and `editor::EditorEdit`:
 

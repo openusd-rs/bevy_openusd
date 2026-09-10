@@ -17,8 +17,27 @@ delay=${USD_UI_CAPTURE_WAIT:-20}
 [[ "$delay" =~ ^[1-9][0-9]*$ && "$delay" -le 300 ]] || {
     echo "USD_UI_CAPTURE_WAIT must be 1..300 seconds" >&2; exit 2;
 }
+scene_graph=${USD_UI_CAPTURE_SCENE_GRAPH:-0}
+[[ "$scene_graph" == 0 || "$scene_graph" == 1 ]] || {
+    echo "USD_UI_CAPTURE_SCENE_GRAPH must be 0 or 1" >&2; exit 2;
+}
+if [[ "$scene_graph" == 1 ]]; then
+    for command in weston-debug timeout; do
+        command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 2; }
+    done
+fi
+renderer=${USD_UI_COMPOSITOR_RENDERER:-vulkan}
+case "$renderer" in
+    vulkan) ;;
+    pixman) echo "warning: pixman failed wgpu surface compatibility in local validation; this is not a validated fallback" >&2 ;;
+    gl) echo "warning: GL compositor screenshots were vertically inverted in local validation; inspect orientation" >&2 ;;
+    *) echo "USD_UI_COMPOSITOR_RENDERER must be vulkan, gl or pixman" >&2; exit 2 ;;
+esac
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 mkdir -p "$(dirname "$output")"
+printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutput_height=1000\ninspection_region=110,110,1400,800\nvalidation=near-black-only\n' \
+    "$renderer" "$delay" > "${output%.png}.settings.txt"
+printf 'scene_graph_requested=%s\n' "$scene_graph" >> "${output%.png}.settings.txt"
 runtime=$(mktemp -d /dev/shm/usd-viewer-ui.XXXXXX)
 chmod 700 "$runtime"
 compositor_pid=
@@ -37,7 +56,7 @@ if [[ ${USD_UI_CAPTURE_PRIVATE_BUS:-0} == 1 ]]; then
     mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
 fi
 unset WAYLAND_SOCKET
-compositor=(weston --backend=headless --renderer="${USD_UI_COMPOSITOR_RENDERER:-vulkan}" --fake-seat --width=1600 --height=1000 --socket="$WAYLAND_DISPLAY" --no-config --debug --idle-time=0)
+compositor=(weston --backend=headless --renderer="$renderer" --fake-seat --width=1600 --height=1000 --socket="$WAYLAND_DISPLAY" --no-config --debug --idle-time=0)
 if command -v nixVulkan >/dev/null; then compositor=(nixVulkan "${compositor[@]}"); fi
 setsid "${compositor[@]}" > "${output%.png}.weston.log" 2>&1 &
 compositor_pid=$!
@@ -65,10 +84,24 @@ for ((i=0; i<delay; i++)); do
     kill -0 "$viewer_pid" 2>/dev/null || { echo "viewer exited before capture" >&2; exit 1; }
     sleep 1
 done
+if [[ "$scene_graph" == 1 ]]; then
+    if timeout --kill-after=1 5 weston-debug scene-graph > "${output%.png}.scene-graph.log" 2>&1; then
+        echo 'scene_graph_status=ok' >> "${output%.png}.settings.txt"
+    else
+        status=$?
+        printf 'scene_graph_status=failed:%s\n' "$status" >> "${output%.png}.settings.txt"
+        echo "warning: scene graph diagnostic failed ($status); continuing capture" >&2
+    fi
+fi
 cd "$runtime"
 weston-screenshooter > "${output%.png}.capture.log" 2>&1
 shopt -s nullglob
 captures=(wayland-screenshot-*.png)
 [[ ${#captures[@]} == 1 ]] || { echo "expected one captured output" >&2; exit 1; }
 cp -- "${captures[0]}" "$output"
+cd "$root"
+make run RUN_WITH= CARGO="${CARGO:-cargo --offline}" APP_TARGET='--example capture_inspect' \
+    ARGS="$(printf '%q' "$output") 110 110 1400 800" > "${output%.png}.inspect.log" 2>&1 || {
+    echo "viewer capture failed region inspection; image and logs retained: $output" >&2; exit 1;
+}
 echo "UI_CAPTURE_OK $output (inspect image; fixed wait is not render readiness)"

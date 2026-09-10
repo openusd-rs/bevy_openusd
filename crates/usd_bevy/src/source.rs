@@ -179,14 +179,27 @@ impl UsdSource {
         &self,
         references: impl IntoIterator<Item = (D, &'a Self, T)>,
     ) -> anyhow::Result<Self> {
-        let references = references.into_iter().map(|(destination, source, target)| {
-            Ok((openusd::sdf::try_into_path(destination)?, source, openusd::sdf::try_into_path(target)?))
+        self.with_offset_references(references.into_iter().map(|(destination, source, target)|
+            (destination, source, target, openusd::sdf::LayerOffset::IDENTITY)))
+    }
+
+    /// Atomically mounts (destination, source, target, time offset) entries.
+    /// Offsets must be finite and scales finite and positive.
+    /// Empty typed target paths select defaultPrim; input snapshots stay unchanged.
+    pub fn with_offset_references<'a, D: openusd::sdf::IntoPath, T: openusd::sdf::IntoPath>(
+        &self,
+        references: impl IntoIterator<Item = (D, &'a Self, T, openusd::sdf::LayerOffset)>,
+    ) -> anyhow::Result<Self> {
+        let references = references.into_iter().map(|(destination, source, target, offset)| {
+            Ok((openusd::sdf::try_into_path(destination)?, source, openusd::sdf::try_into_path(target)?, offset))
         }).collect::<Result<Vec<_>, openusd::sdf::PathParseError>>()?;
         if references.is_empty() { return Ok(self.clone()); }
         anyhow::ensure!(self.identifier.ends_with(".usda"), "reference assembly requires a .usda root identifier");
         let mut combined = self.clone();
         let mut sources = BTreeMap::new();
-        for (destination, dependency, target) in &references {
+        for (destination, dependency, target, offset) in &references {
+            anyhow::ensure!(offset.is_valid() && offset.scale > 0.0,
+                "reference assembly requires a finite offset and positive finite scale");
             for path in std::iter::once(destination).chain((!target.is_empty()).then_some(target)) {
                 anyhow::ensure!(path.as_str().starts_with('/') && path.as_str() != "/"
                     && path.is_prim_path() && !path.contains_prim_variant_selection(),
@@ -204,11 +217,11 @@ impl UsdSource {
             }
         }
         let stage = combined.open_stage()?;
-        for (destination, dependency, target) in references {
+        for (destination, dependency, target, layer_offset) in references {
             anyhow::ensure!(!stage.prim(&destination)?.is_valid()?, "reference destination already exists: {destination}");
             stage.define_prim(&destination)?;
             crate::authoring::set_references(&stage, destination.as_str(), &[openusd::sdf::Reference {
-                asset_path: dependency.identifier.clone(), prim_path: target, ..Default::default()
+                asset_path: dependency.identifier.clone(), prim_path: target, layer_offset, ..Default::default()
             }])?;
             anyhow::ensure!(stage.prim(&destination)?.is_valid()?, "reference destination did not compose");
         }
@@ -482,6 +495,37 @@ mod tests {
         ]).is_err());
         assert_eq!(root.bytes.as_ref(), b"#usda 1.0\n");
         assert_eq!(root.dependencies().count(), 0);
+    }
+
+    #[test]
+    fn offset_reference_batches_preserve_arcs_and_retime_samples() {
+        use openusd::sdf::{LayerOffset, Path, Value};
+        let root = UsdSource::snapshot("retimed/root.usda", &b"#usda 1.0\n"[..]).unwrap();
+        let model = UsdSource::snapshot("retimed/model.usda", &b"#usda 1.0\n(defaultPrim = \"Model\")\ndef Sphere \"Model\" { double radius.timeSamples = {0: 1, 10: 3} }\n"[..]).unwrap();
+        let offset = LayerOffset::new(10.0, 2.0);
+        let assembly = root.with_offset_references([
+            ("/Original", &model, Path::new("/Model").unwrap(), LayerOffset::IDENTITY),
+            ("/Retimed", &model, Path::default(), offset),
+        ]).unwrap();
+        let stage = assembly.open_stage().unwrap();
+        for (path, time, expected) in [("/Original", 10.0, 3.0), ("/Retimed", 10.0, 1.0),
+            ("/Retimed", 20.0, 2.0), ("/Retimed", 30.0, 3.0)] {
+            assert_eq!(stage.prim(path).unwrap().attribute("radius")
+                .get_at::<f64>(Some(openusd::usd::TimeCode::new(time))).unwrap(), Some(expected));
+        }
+        let Value::ReferenceListOp(arcs) = stage.prim("/Retimed").unwrap()
+            .get_metadata("references").unwrap().unwrap() else { panic!() };
+        assert!(arcs.explicit_items[0].prim_path.is_empty());
+        assert_eq!(arcs.explicit_items[0].layer_offset, offset);
+        assert_eq!(assembly.dependencies().count(), 1);
+        for invalid in [LayerOffset::new(f64::NAN, 1.0), LayerOffset::new(0.0, f64::INFINITY),
+            LayerOffset::new(0.0, 0.0), LayerOffset::new(0.0, -1.0)] {
+            assert!(root.with_offset_references([
+                ("/Valid", &model, "/Model", offset), ("/Invalid", &model, "/Model", invalid),
+            ]).is_err());
+        }
+        assert_eq!(&*root.bytes, b"#usda 1.0\n");
+        assert!(root.dependencies().next().is_none());
     }
 
     #[test]

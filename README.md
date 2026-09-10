@@ -79,8 +79,13 @@ app.register_asset_source(
 ```
 
 The adapter retains Bevy's file reader and debounced watcher, forwarding removal
-events as dependency invalidations as well. It supports unprocessed native file
-sources; folder removal and processed assets remain unsupported. Registration
+events and both paths of file renames as dependency invalidations as well.
+Untyped non-metadata removals also invalidate their reported path. The reader
+records requested file paths, including failed reads, so folder additions,
+removals and renames invalidate requested descendants without scanning the disk.
+Paths are retained until the source is dropped; this is not an active-handle-only
+index. It supports unprocessed native file sources; processed assets and
+replacement of the watched source root itself remain unsupported. Registration
 does not override the AssetPlugin runtime watch setting. Its event worker is
 closed and joined when the source is dropped.
 
@@ -159,6 +164,18 @@ make run RUN_WITH= APP_TARGET='--example reference_benchmark' ARGS='32 3'
 
 It reports assembly time only, not Bevy projection, rendering or disk I/O.
 For release measurements, append `--release` to `APP_TARGET`.
+
+`with_offset_references` accepts `(destination, source, target, LayerOffset)`
+entries using `openusd::sdf::LayerOffset`. It preserves reference arcs while
+retiming samples; offsets must be finite and scales finite and positive.
+The existing `with_references` API uses identity offsets. Invalid entries reject
+the whole batch without changing inputs. `examples/retimed_sources.rs` demonstrates
+one animated source mounted twice with different timing and checks projected mesh
+radii and stable entities across clock changes:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example retimed_sources'
+```
 
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under
@@ -736,7 +753,45 @@ viewer's first completed UI update, then `USD_UI_CAPTURE_WAIT` sets a 1–300 se
 delay (default 20). Build-lock waits and synchronous first-update projection do
 not consume that delay. `USD_VIEWER_STARTED` marks viewport construction;
 `USD_VIEWER_UI_UPDATED` starts the delay. Neither proves GPU pipeline readiness
-or final texture upload completion; inspect the screenshot.
+or final texture upload completion; inspect the screenshot. Before reporting
+success, the script runs `capture_inspect` on a fixed interior viewer region of
+its 1600×1000 output, excluding desktop wallpaper. Predominantly near-black
+regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
+the failure. This catches the observed black-window case, not arbitrary incorrect
+rendering or incomplete uploads.
+
+The `.settings.txt` companion records compositor backend, output/inspection
+dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's
+one-shot surface/buffer dump in `.scene-graph.log` immediately before capture.
+This opt-in diagnostic requires `weston-debug` and `timeout`; it has a five-second
+timeout followed by a one-second kill grace. Failure is recorded in settings and
+does not suppress the screenshot. The dump describes submitted surfaces, not
+their pixel correctness or rendering readiness. See
+[Weston's debug scopes](https://wayland.pages.freedesktop.org/weston/toc/libweston/log.html).
+
+The `.settings.txt` companion also records whether the diagnostic was requested.
+Vulkan remains the default. `USD_UI_COMPOSITOR_RENDERER`
+accepts `vulkan`, `gl` or `pixman` for diagnostic experiments; the latter two are
+not validated alternatives. Three local GL captures were vertically inverted
+despite passing the near-black check, so GL emits an orientation warning. Three
+paired Vulkan captures were correctly oriented, but this small comparison did
+not reproduce or resolve the intermittent black-window failure.
+Pixman also emits a warning: a native playback attempt failed during window
+creation with wgpu reporting incompatible Vulkan and GL surface backends. No
+frame or PNG was produced; software compositing is not a working fallback here.
+
+The low-level inspector also accepts explicit PNG regions:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example capture_inspect' \
+  ARGS='target/viewer-ui.png 110 110 1400 800'
+```
+
+Optional final arguments set the black-channel threshold (default 8) and minimum
+nonblack percentage (default 1). The executable exits 0 for a passing region,
+1 for predominantly near-black, and 2 for invalid input; make wraps nonzero exits.
+Input is limited to 32 MiB and decoded output/decoder allocations to 64 MiB each.
+Animated PNGs are rejected. Alpha is ignored; passing is not visual acceptance.
 At render startup the viewer caps mesh allocator slabs at half the shared device's
 maximum buffer size, retaining smaller configured limits. This leaves allocation
 rounding headroom and avoids growing pooled buffers beyond the host's limit.

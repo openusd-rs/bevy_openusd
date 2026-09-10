@@ -25,6 +25,198 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Compositor surface diagnostics
+
+Added opt-in USD_UI_CAPTURE_SCENE_GRAPH=1 to the isolated capture script. It
+collects Weston's one-shot scene-graph scope before the screenshot, with a
+five-second timeout and one-second kill grace, and records success/failure in
+settings. Diagnostic failure does not suppress capture. Invalid flags reject
+before compositor startup. This uses the existing private debug-enabled compositor,
+not the user's desktop, and does not modify Mara or Bevy rendering.
+
+The live playback capture `target/viewer-ui-captures/scene-graph-play.png` passes
+the guard and was visually inspected: upright UI, time 3.617/Pause and visible
+animated geometry. Its dump shows a 1440x920 XRGB8888 dmabuf with an NVIDIA block
+linear modifier and a normal output transform. The one-second sample reports 92
+commits and 47 paints per second, confirming delayed repaint requests are not a
+hard 60 FPS cap. This successful sample does not explain the black failure.
+Logs: `/tmp/scene-graph-play.log`, companion scene-graph/settings files. Invalid
+flag rejection (`/tmp/invalid-scene-graph.log`), shell syntax and whitespace pass.
+No Rust changes were made; Rust gates were not rerun for this script-only change.
+
+### Software compositor capture failure
+
+A Pixman-compositor playback attempt terminates before the first UI update:
+Mara's surface attachment reports RequestAdapterError with incompatible surface
+backends VULKAN and GL. The compositor itself starts, but no PNG is produced.
+Evidence: `/tmp/pixman-play-1.log` and
+`target/viewer-ui-captures/pixman-play-1.{viewer,weston}.log`. This rules out Pixman
+as a working fallback on this machine; it does not locate or fix the intermittent
+black output under Vulkan. The script now warns explicitly when Pixman is selected,
+while retaining the diagnostic option and Vulkan default. No host changes made.
+The warning-path recheck reproduces the startup failure without creating a PNG
+(`/tmp/pixman-warning.log`, companion viewer log); shell syntax and whitespace
+checks pass. No Rust sources changed, so Rust build/test gates were not rerun.
+
+### Native retimed package export
+
+The new native regression exports a diskless retimed assembly as USDZ in RootLayer,
+EditLayer and Flattened modes, moves each package and invokes native usdcat
+--flatten. All three outputs succeed with empty stderr. The native-produced
+sample keys are 0/10 for the identity mount and 10/30 for offset 10, scale 2;
+endpoint and midpoint values remain 1/2/3. Input directories stay empty, and saves
+leave the editor root unchanged. This covers these positive-scale packaged
+references, not arbitrary retiming or native ordinary-file dependency bundling.
+
+All nine native export regressions pass: `/tmp/retimed-native-recheck.log`.
+The first test build used the wrong time_samples return shape; the corrected
+assertion extracts keys from its (time, value) pairs before comparing them.
+All 463 ordinary workspace tests pass (nine ignored); check-all, build and
+whitespace validation pass: `/tmp/retimed-export-{tests,check,build}.log`.
+
+### Retimed reference assembly
+
+UsdSource::with_offset_references accepts batches with canonical sdf::LayerOffset
+values. Existing with_references delegates with identity offsets. Finite offsets
+and positive finite scales are required; invalid entries fail atomically before
+publication. Default-prim targeting, captured dependencies and authored reference
+arcs remain preserved. This is reference retiming, not a general scene DSL.
+
+The source regression checks offset 10/scale 2 samples at stage times 10, 20 and
+30, retained default-prim arcs and offset metadata, deduplicated dependencies and
+invalid late entries without input mutation. The runnable retimed_sources example
+checks actual Bevy mesh radii and entity/runtime-name preservation across those
+clock changes. Native export validation was added subsequently as recorded above.
+All 463 ordinary workspace tests pass (eight ignored), as do check-all, build,
+the runnable example and whitespace checks:
+`/tmp/offset-reference-{tests,check,build,example}.log`.
+
+### Texture folder recovery evidence
+
+The native AssetServer regression now also renames the texture directory away,
+requires both roots to report Failed, and checks that the previous image handles
+and green pixel bytes remain installed. It changes the image to yellow while the
+directory is displaced, restores the directory and requires Ready plus the new
+pixels in both instances. A subsequent green file edit verifies continued watching.
+The expanded regression passes: `/tmp/texture-folder-native.log`. This is installed
+image/state evidence, not a new GPU screenshot or editor-watcher validation.
+
+A direct TrackingReader regression requests a nonexistent file, verifies its
+path is invalidated by a later folder addition, creates the file and reads it
+successfully; repeated reads do not duplicate the path entry.
+All 461 ordinary workspace tests (eight ignored) and 396 usd_bevy file_watcher
+feature tests (13 ignored) pass, along with check-all, build and whitespace
+validation: `/tmp/texture-folder-{tests,feature,check,build}.log`.
+
+### Folder dependency invalidation
+
+The file-source adapter delegates I/O to Bevy's FileAssetReader and records file
+read requests, including failed reads, in a source-local shared path set. Added,
+removed, renamed and untyped-removed folders now invalidate requested descendants;
+rename checks both old and new paths. Matching uses path components, not string
+prefixes, and original events still pass through. No filesystem scan or sibling
+changes are involved. The path set is retained for the source lifetime, not
+pruned with asset handles. Processed sources and replacement of the watched root
+itself remain unsupported; this does not change the editor texture watcher.
+
+The mapping regression covers nested descendants, similarly named sibling
+folders, both rename sides and untyped removal. The native two-instance regression
+also renames the models folder away/back and removes/recreates it, requiring
+Failed/Ready transitions with retained geometry and runtime entity state.
+The expanded native regression passes (`/tmp/folder-watch-native-final.log`).
+All 461 ordinary workspace tests (eight ignored) and 395 usd_bevy file_watcher
+feature tests (13 ignored) pass, along with check-all, build and whitespace
+validation: `/tmp/folder-watch-{tests,feature,check,build}.log`.
+
+### File rename dependency invalidation
+
+The native AssetServer file-source adapter now emits ModifiedAsset invalidations
+for both paths of RenamedAsset and for non-metadata RemovedUnknown, while still
+forwarding the original event. Bevy 0.19.1's current source-event handler ignores
+those two event forms. Folder descendant invalidation remains unsupported.
+
+A deterministic mapping test checks rename/removal paths and metadata/folder
+exclusions. The real OS-watcher regression now renames an active sublayer away,
+waits for both instances to fail while retaining their meshes, renames it back
+and waits for recovery before exercising deletion. Runtime names, children,
+entity identities and shared assets remain checked by the existing test.
+The expanded native regression passes: `/tmp/rename-watch-native.log`.
+All 461 ordinary workspace tests pass (eight ignored), and the usd_bevy
+file_watcher feature suite passes 394 tests (13 ignored). Check-all, build and
+whitespace validation pass; `/tmp/rename-watch-{tests,feature,check,build}.log`.
+
+### Paced viewer repaint requests
+
+The viewer now requests its next repaint after 1/60 second through the public
+Mara view context instead of requesting an immediate repaint on every update.
+Input and UI animation can still request earlier frames; this is not a hard FPS
+cap or measured CPU/GPU improvement. No sibling host code changed.
+
+All 461 ordinary tests pass (eight ignored), as do check-all and build:
+`/tmp/paced-viewer-{tests,check,build}.log`. Visually inspected
+`target/viewer-ui-captures/paced-static.png` shows the curve scene and Rendering
+controls. The first playback capture, `paced-play.png`, is black across the whole
+application, including UI, and correctly fails the near-black guard. Its logs
+still show geometry updates after the final replay event; scheduling alone does
+not resolve the intermittent presentation/capture failure.
+
+A separate 35-second capture, `paced-play-recheck.png`, passes and was visually
+inspected: upright UI, animated geometry, time code 0.869 and Pause button.
+Geometry updates continue over 23 seconds after the last injected input event.
+This verifies playback continues without replay-driven immediate repaint requests,
+not consistent capture reliability. Both successful and failed artifacts remain.
+
+### Compositor backend capture comparison
+
+Ran three GL and three Vulkan captures in alternating order with the same static
+gradient scene, Rendering pane, 20-second wait and no input replay. All six passed
+the near-black guard, but visual inspection found all GL outputs vertically
+inverted (including desktop chrome); all Vulkan outputs were correctly oriented.
+Both sets measured 99.999375 percent nonblack in the inspected region. Thus neither
+the guard nor a successful screenshot exit can establish orientation/fidelity.
+The black failure did not recur in this small comparison; it is not resolved.
+
+Vulkan remains the default. The script now validates the backend name, warns
+about the observed GL orientation problem and writes backend/wait/region metadata
+to a settings.txt companion. GL/pixman remain explicit diagnostic options, not
+validated replacements. Evidence: `target/viewer-ui-captures/backend-{gl,vulkan}-{1,2,3}.png`
+(all inspected), companion inspector/Weston/viewer logs, and `/tmp/backend-*.log`.
+
+A subsequent default-backend run produces the expected settings companion and a
+correctly oriented image (`target/viewer-ui-captures/backend-metadata.png`,
+inspected). Invalid backend names reject before compositor startup. Shell syntax,
+all 461 ordinary workspace tests (eight ignored), check-all, build and whitespace
+checks pass; `/tmp/backend-probe-{tests,check,build}.log`,
+`/tmp/capture-invalid-backend.log`, `/tmp/capture-backend-metadata.log`.
+
+### Black-window capture rejection
+
+Added a low-level capture_inspect example that decodes a bounded static PNG,
+checks a caller-specified rectangular region and reports near-black versus
+nonblack pixel counts. Default threshold is RGB >8 in at least one percent of
+region pixels, ignoring alpha. Decoder and output allocations are individually
+capped at 64 MiB; encoded input at 32 MiB. Animated PNG, malformed input, invalid
+regions and nonfinite percentages are rejected. Tests cover wallpaper exclusion,
+opaque black, grayscale/alpha/RGB/16-bit decoding and threshold boundaries.
+
+The full-UI capture script now checks its fixed viewer-interior region before
+printing UI_CAPTURE_OK. Failures retain the PNG, compositor/viewer logs and
+inspect report without retrying. The region excludes wallpaper from the observed
+1600x1000 black-window screenshots. This is a known-failure guard, not proof of
+correct UI layout, GPU pipeline readiness or rendering fidelity.
+
+Live artifact checks reject all three retained black captures (50/1120000
+nonblack pixels, about 0.0045 percent) and accept three previously inspected good
+captures (about 99.9994 percent). The rejected images still contain cursor pixels;
+testing for exactly zero would have missed them. Reports: `/tmp/inspect-*.log`
+for curve-quality-64, curve-quality-64-recheck, curve-controls-default and their
+verified controls. A fresh full-script run passes and its complete viewer image
+was inspected: `target/viewer-ui-captures/inspected-curve-ui.png`, with the
+companion inspect log. Script evidence: `/tmp/capture-inspect-ui.log`.
+
+All 461 ordinary workspace tests pass (eight ignored), plus check-all, build and
+whitespace checks; `/tmp/capture-inspect-final-{tests,check,build}.log`.
+
 ### Rendering-pane curve controls
 
 The Rendering pane now exposes 1/8/32/64 sample presets and the current effective

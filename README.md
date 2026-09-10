@@ -165,6 +165,11 @@ are excluded.
 The [real-asset baseline](benchmarks/editor-assets.md) records ANYmal and Spot
 measurements. Payload bytes are not resident-memory or VRAM measurements.
 
+GPU flat-normal materials share converted assets when entities use the same base
+material and its values match. The conversion cache retains at most 1024 handles
+and rejects missing or modified cached assets. As with other shared Bevy assets,
+clone a material before making entity-local runtime changes.
+
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
 time-code range; otherwise it uses the stage's authored start/end and rate.

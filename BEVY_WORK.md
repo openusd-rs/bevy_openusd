@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Shared flat-normal materials for independent GPU morph instances
+
+GPU deformation plugin setup now installs a private flat-material cache keyed by
+the canonical base StandardMaterial asset ID. Converted materials are reused
+across entities only when the current cached asset still matches the requested
+base, including cull_mode. Missing or externally changed assets are rejected.
+At most 1024 strong handles are cached; reaching the bound clears the cache,
+without removing materials still referenced by entities. Different base IDs are
+not deduplicated here; standard-material interning remains the earlier boundary.
+
+A headless real-scene regression opens eight independent morph_animation stage
+instances and compares cache-disabled/enabled setups: eight distinct converted
+materials versus one, with all eight scene roots Ready and eight material
+entities in both cases. Tests also cover externally mutated/removed cached
+assets and the retained-handle bound. Sharing follows ordinary Bevy asset
+semantics: clone before entity-local runtime mutation. This is asset-allocation
+evidence, not GPU timing, VRAM usage or a new screenshot-fidelity claim.
+All six focused conversion tests and all 442 ordinary workspace tests pass
+(seven ignored), plus check-all, build and whitespace checks. Logs:
+`/tmp/flat-sharing-final-focused.log` and `/tmp/flat-sharing-{tests,check,build}.log`.
+
 ### Preserve culling changes in flat-normal material conversion
 
 A new regression reproduced a base material changing from back-face culling to

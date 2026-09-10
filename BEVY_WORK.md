@@ -25,6 +25,34 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Public immutable source composition
+
+Exposed `UsdSource::snapshot` with filesystem fallback disabled and added
+`with_dependency`, which returns an immutable merged source containing another
+source's root and transitive captured bytes. Existing identifiers require identical
+bytes; collisions fail without changing either input. Duplicate merges preserve
+the source revision, while new captured assets generate a new revision. The root's
+filesystem policy is retained, not inherited from dependencies.
+
+Regression coverage composes a nested sublayer and parent-relative opaque asset
+at two reference sites with no source files, then packages and reopens the assembly
+from bytes after removing its saved archive. It checks transitive byte capture,
+deduplication, collisions (including normalized aliases and root collisions),
+receiver filesystem policy and immutable inputs. Fixed snapshot construction to
+anchor relative paths before normalization so leading `..` is not discarded.
+
+The runnable `composed_sources` example combines an inline assembly with canonical
+upstream typed Sphere authoring. Two Bevy roots project distinct entities with
+shared meshes; changing one mount's radius preserves its entity and leaves the
+other mount/root unchanged. Typeless reference-site definitions preserve the
+referenced Sphere type; a local Xform type would instead override it.
+
+This is reusable source composition, not a complete BSN-style typed scene DSL or
+automatic capture of filesystem dependencies. The broader checklist stays open.
+Validation: 371 ordinary tests, five optional native tests (44 export checks),
+check-all, build, the composed_sources runnable example and whitespace checks
+pass. Logs: `/tmp/source-composition-{tests,native,check,build,example}.log`.
+
 ### Variant payload and cyclic asset package acceptance
 
 Added a fixture with two variant-selected payload layers, distinct binary assets,

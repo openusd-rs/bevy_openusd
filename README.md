@@ -51,6 +51,24 @@ tracked labeled assets with color/data color spaces. Dependency-change events
 reload their owning USD asset. Each root retains an independent live stage;
 matching prim entities and runtime-only components survive source reloads.
 
+For reusable in-memory assemblies, `UsdSource::snapshot(path, bytes)` disables
+filesystem fallback. `root.with_dependency(&model)` returns a new source containing
+the model and its captured dependencies, retaining each filename as its relative
+asset anchor. Identical bytes deduplicate; conflicting bytes at the same identifier
+return an error without changing either source. The root source controls filesystem
+fallback; merging a filesystem-backed dependency does not enable it on a snapshot.
+Supply opaque assets such as textures as dependency snapshots too. A merge captures
+only supplied bytes, not files reachable on disk. Rebuild an assembly from its root
+when replacing a dependency revision; this merge API never silently overwrites one.
+
+`examples/composed_sources.rs` combines an inline `usd!` assembly with a model
+authored through the upstream typed Sphere schema. It verifies projection under
+two independent Bevy roots, shared meshes and isolated edits without source files:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example composed_sources'
+```
+
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
 time-code range; otherwise it uses the stage's authored start/end and rate.

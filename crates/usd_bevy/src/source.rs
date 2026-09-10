@@ -122,10 +122,35 @@ impl UsdSource {
         Ok(requests)
     }
 
-    pub(crate) fn snapshot(path: &Path, bytes: Vec<u8>) -> io::Result<Self> {
-        let mut source = Self::new(normalize(path), bytes)?;
+    /// Anchor bytes without allowing filesystem fallback for missing dependencies.
+    /// Bytes may represent a USD layer, package, or opaque dependency asset.
+    pub fn snapshot(path: impl AsRef<Path>, bytes: impl Into<Arc<[u8]>>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let absolute = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) };
+        let mut source = Self::new(normalize(&absolute), bytes)?;
         source.filesystem = false;
         Ok(source)
+    }
+
+    /// Return a snapshot containing another source and its captured dependencies.
+    /// Identical identifiers must have identical bytes. The receiver's filesystem
+    /// fallback policy is retained; no dependency files are read or created.
+    pub fn with_dependency(&self, dependency: &Self) -> io::Result<Self> {
+        let mut combined = self.clone();
+        let mut changed = false;
+        for (identifier, bytes) in std::iter::once((&dependency.identifier, &dependency.bytes)).chain(dependency.files.iter()) {
+            let existing = if identifier == &combined.identifier { Some(&combined.bytes) } else { combined.files.get(identifier) };
+            if let Some(existing) = existing {
+                if existing.as_ref() != bytes.as_ref() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("conflicting USD source bytes: {identifier}")));
+                }
+            } else {
+                Arc::make_mut(&mut combined.files).insert(identifier.clone(), bytes.clone());
+                changed = true;
+            }
+        }
+        if changed { combined.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed); }
+        Ok(combined)
     }
 
     pub(crate) fn insert_dependency(&mut self, identifier: String, bytes: Vec<u8>) {
@@ -316,6 +341,79 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_anchors_parent_relative_paths_before_normalizing() {
+        let cwd = std::env::current_dir().unwrap();
+        let expected = normalize(&cwd.join("../virtual-source.usda"));
+        let source = UsdSource::snapshot("../virtual-source.usda", &b"root"[..]).unwrap();
+        assert_eq!(source.identifier(), expected.to_str().unwrap());
+    }
+
+    #[test]
+    fn merged_sources_preserve_transitive_layer_and_asset_anchors() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = |name: &str, bytes: &[u8]| UsdSource::snapshot(&directory.path().join(name), bytes.to_vec()).unwrap();
+        let weak = source("parts/weak.usda", b"#usda 1.0\ndef Scope \"Model\" {\n double score = 17\n}\n");
+        let paint = source("paint.bin", b"captured paint");
+        let model = source("parts/model.usda", b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Model\" {\n asset paint = @../paint.bin@\n}\n")
+            .with_dependency(&weak).unwrap().with_dependency(&paint).unwrap();
+        let root = source("root.usda", b"#usda 1.0\ndef Scope \"First\" (prepend references = @parts/model.usda@</Model>) {}\ndef Scope \"Second\" (prepend references = @parts/model.usda@</Model>) {}\n");
+        let assembled = root.with_dependency(&model).unwrap();
+        assert_eq!(root.dependencies().count(), 0);
+        assert_eq!(assembled.dependencies().count(), 3);
+        assert_ne!(assembled.revision(), root.revision());
+        assert_eq!(assembled.with_dependency(&model).unwrap().revision(), assembled.revision());
+        let stage = assembled.open_stage().unwrap();
+        for path in ["/First", "/Second"] {
+            let prim = stage.prim(path).unwrap();
+            assert_eq!(prim.attribute("score").get::<f64>().unwrap(), Some(17.0));
+            let value = prim.attribute("paint").get::<openusd::sdf::Value>().unwrap().unwrap();
+            let openusd::sdf::Value::AssetPath(asset) = value else { panic!("expected asset") };
+            assert_eq!(assembled.read_asset(asset.resolved_path().unwrap()).unwrap(), b"captured paint");
+        }
+        let output = tempfile::tempdir().unwrap();
+        let package = output.path().join("assembled.usdz");
+        crate::authoring::save_stage_as(&stage, package.to_str().unwrap()).unwrap();
+        let bytes = std::fs::read(&package).unwrap();
+        std::fs::remove_file(&package).unwrap();
+        let reopened = UsdSource::snapshot(&package, bytes).unwrap().open_stage().unwrap();
+        assert_eq!(reopened.prim("/First").unwrap().attribute("score").get::<f64>().unwrap(), Some(17.0));
+        assert_eq!(reopened.prim("/Second").unwrap().attribute("score").get::<f64>().unwrap(), Some(17.0));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn merging_conflicting_identifiers_never_changes_either_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = |name: &str, bytes: &[u8]| UsdSource::snapshot(&directory.path().join(name), bytes.to_vec()).unwrap();
+        let root = source("root.usda", b"root");
+        let original = source("asset.bin", b"original");
+        let root = root.with_dependency(&original).unwrap();
+        let conflict = source("asset.bin", b"replacement");
+        let incoming = source("extra.usda", b"extra").with_dependency(&conflict).unwrap();
+        assert_eq!(root.with_dependency(&incoming).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(root.read_asset(original.identifier()).unwrap(), b"original");
+        assert_eq!(root.dependencies().count(), 1);
+        assert_eq!(incoming.dependencies().count(), 1);
+        assert!(root.with_dependency(&source("root.usda", b"changed root")).is_err());
+        assert_eq!(root.with_dependency(&root).unwrap().revision(), root.revision());
+        let alias = source("parts/../asset.bin", b"replacement");
+        assert!(root.with_dependency(&alias).is_err());
+    }
+
+    #[test]
+    fn merged_sources_retain_the_receivers_filesystem_policy() {
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("root.usda");
+        let asset_path = directory.path().join("disk.bin");
+        std::fs::write(&asset_path, b"on disk").unwrap();
+        let closed = UsdSource::snapshot(&root_path, b"root".to_vec()).unwrap();
+        let open = UsdSource::new(&root_path, &b"root"[..]).unwrap();
+        let dependency = UsdSource::new(directory.path().join("dependency.bin"), &b"captured"[..]).unwrap();
+        assert!(closed.with_dependency(&dependency).unwrap().read_asset(asset_path.to_str().unwrap()).is_err());
+        assert_eq!(open.with_dependency(&dependency).unwrap().read_asset(asset_path.to_str().unwrap()).unwrap(), b"on disk");
+    }
 
     #[test]
     fn bytes_are_the_root_layer_and_stages_are_independent() {

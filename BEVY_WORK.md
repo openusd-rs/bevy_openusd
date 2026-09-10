@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Resolve connected texture color spaces
+
+Texture sourceColorSpace now resolves canonical UsdShade value-producing
+attributes, including sampled Material inputs routed through NodeGraph outputs.
+Sample discovery follows the producer even when its input name is encoding.
+Sampled-only defaults remain unset; raw/sRGB/auto retain their existing meanings.
+Invalid, ambiguous, cyclic-without-value and unreadable inputs fail explicitly.
+This does not implement metadata-based auto detection or arbitrary shader math.
+
+The unit regression covers held tokens, backward reads, sample discovery,
+unsupported tokens and cycles. The eighth GPU live-clock case compares a
+connected raw/sRGB switch against independently precomputed linear texture
+bytes. All eight cases pass with zero changed RGB pixels out of 921600.
+Both new images were visually inspected: two spheres, clocks reversed to 10/0
+after 30 ready frames, matching the fresh reference scene exactly.
+Evidence: `target/live-colorspace-interface-regression/` and
+`/tmp/colorspace-interface-gpu.log`. All 490 ordinary tests pass (13 ignored),
+and check-all/build pass: `/tmp/colorspace-interface-{tests,check,build}.log`.
+All 13 native export tests pass: `/tmp/colorspace-interface-native.log`.
+This establishes endpoint scalar packing parity, not general texture filtering
+or floating-point color-space fidelity.
+
 ### Resolve and discover connected texture filenames
 
 Texture file reads now use the canonical UsdShade value-producing attribute

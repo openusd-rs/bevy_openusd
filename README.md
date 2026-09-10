@@ -574,6 +574,11 @@ those interfaces. File reads use the canonical value-producing attribute, and
 texture discovery gathers its sample times even when the interface input is not
 named `file`. Invalid/ambiguous connections and unreadable producer values fail
 explicitly; sampled-only filenames remain unset during default-time discovery.
+Connected `sourceColorSpace` inputs use the same producer resolution and sample
+discovery. `colorspace_interface_animated.usda` switches raw/sRGB interpretation
+through a Material/NodeGraph interface; `colorspace_reference.usda` switches
+between precomputed raw linear bytes instead. This is an explicit color-space
+test, not implementation of metadata-based `auto` color-space detection.
 
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:
@@ -1182,7 +1187,7 @@ make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/
 
 It generates fresh UV/texture/scalar fixtures and compares live clock reversals
 against baked UV, fixed-image, CPU-morph and precomputed scalar-map references.
-All seven comparisons use zero RGB
+All eight comparisons use zero RGB
 tolerance. Metadata must confirm the reversal and two visible mesh entities;
 the morph case also verifies shared GPU material use. Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain

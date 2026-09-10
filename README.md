@@ -831,9 +831,14 @@ already occurred, but durability could not be confirmed.
 Existing file permissions are retained. Final symlinks, directories and read-only
 destinations are rejected. Replacement creates a new inode; ownership, ACLs and
 hard-link identity are not preserved. Concurrent saves use last-writer-wins,
-without conflict detection. Save As does not rebase relative asset paths or
-change the stage's source identifier. Root/edit-layer exports retain their layer
-opinions; flattened export has different composition semantics.
+without conflict detection. Cross-directory ordinary root/edit saves anchor
+external sublayers, references, payloads and typed asset values through the
+stage's resolver without changing its source identifier or live layers. The
+dependencies remain external; use USDZ for dependency bundling. Same-directory
+saves retain authored path spelling. Asset expressions, tile/sequence patterns
+and clip templates currently reject cross-directory relocation before replacing
+the destination. Flattened export has different composition semantics; nested
+asset metadata in anonymous flattened layers remains a separate limitation.
 
 ### Hierarchical point prototypes
 
@@ -909,7 +914,9 @@ remaining compatibility findings.
 
 A second native fixture checks sublayers and external references in all three
 save modes and four formats. These checks keep exports beside their dependencies;
-they do not certify cross-directory Save As or self-contained USDZ packaging.
+they do not alone certify cross-directory Save As or self-contained USDZ packaging.
+A separate native fixture now checks cross-directory root and nested edit-layer
+exports in USDA, USDC and USD, retaining referenced values and external textures.
 
 The native gate also removes the source directory before checking exported
 packages. All three save modes now pass that regression, including an asset

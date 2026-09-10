@@ -20,6 +20,7 @@ mod package;
 mod prim;
 mod prim_definition;
 mod prim_type_info;
+mod reanchor;
 mod relationship;
 mod resolve_info;
 mod schema;

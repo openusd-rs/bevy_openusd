@@ -25,6 +25,37 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Anchor dependencies for ordinary cross-directory root/edit saves
+
+Ordinary root/edit exports to another directory now serialize an anchored copy
+through the stage's resolver. Sublayers, references, payloads, all reference/
+payload list buckets, typed asset arrays, dictionaries and time samples are
+rewritten without modifying live layer data or identifiers. Same-directory
+exports preserve authored spelling. Dependencies remain external, unlike USDZ
+packaging. The implementation is recorded in
+`patches/openusd-layer-reanchoring.patch` with the vendored source.
+
+The regression exports both the root and a nested edit layer into another
+directory in USDA, USDC and USD. Reopened values and texture bytes survive;
+explicit-relative unresolved asset samples retain their source directory in the
+exported edit layer. Root and weak live-layer serializations remain unchanged.
+Unsupported asset expressions, tile/sequence patterns and clip templates fail
+before publication; the test preserves an existing destination on such failure.
+Anonymous flattened nested-asset metadata and arbitrary custom-resolver
+portability remain unverified. This does not save unsaved edits in other layers
+or make ordinary exports self-contained.
+
+All 393 ordinary tests, check-all and build pass
+(`/tmp/save-reanchor-final2-{tests,check,build}.log`). All six optional native
+export tests pass (`/tmp/save-reanchor-native.log`), including six new
+cross-directory mode/format combinations. The temporary upstream validation
+checkout passes 1,589 library tests and strict library clippy
+(`/tmp/save-reanchor-upstream-final3-tests.log`,
+`/tmp/save-reanchor-upstream-clippy.log`). Validation required the existing
+writable Cargo cache and a trailing slash in CARGO_WORKSPACE_DIR for fixture
+paths; earlier setup failures are not counted as product test results. All five
+vendored patches pass reverse-application checks; whitespace checks pass.
+
 ### Fit viewer and capture bounds to evaluated deformation
 
 `usd_bevy::mesh::bounds::MeshBounds` samples world-space bounds from current

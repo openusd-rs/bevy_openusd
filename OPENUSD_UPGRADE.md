@@ -2,6 +2,14 @@
 
 ## Integrated writer fixes
 
+The fifth local patch, `patches/openusd-layer-reanchoring.patch`, adds
+Stage::anchored_layer for resolver-aware, non-mutating layer copies. Bevy uses
+it for cross-directory ordinary root/edit saves; native regression coverage
+checks external sublayers, references and textures in USDA, USDC and USD.
+Dependencies remain external. Asset expressions, tile/sequence patterns and
+clip templates reject relocation; anonymous flattened nested asset metadata
+remains outside this fix.
+
 Bevy source publication now checks discovered composition diagnostics rather
 than treating a successfully parsed but incomplete stage as Ready. A fourth
 local patch adds missing external root/sub-root target diagnostics. Sub-root

@@ -834,6 +834,16 @@ def Xform "Model" (
             world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
                 == Some(&[0, 255, 0, 255])));
         if removal_adapter {
+            let models = layer.parent().unwrap();
+            let moved = directory.path().join("moved-models");
+            let retained_meshes = mesh_handles(app.world());
+            std::fs::rename(models, &moved).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            assert_eq!(mesh_handles(app.world()), retained_meshes);
+            std::fs::rename(&moved, models).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
             let retained_meshes = mesh_handles(app.world());
             let renamed = layer.with_extension("renamed.usda");
             std::fs::rename(&layer, &renamed).unwrap();
@@ -845,9 +855,11 @@ def Xform "Model" (
                 world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
             let retained_meshes = mesh_handles(app.world());
             std::fs::remove_file(&layer).unwrap();
+            std::fs::remove_dir(models).unwrap();
             tick_until(&mut app, |world| roots.iter().all(|root|
                 matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
             assert_eq!(mesh_handles(app.world()), retained_meshes);
+            std::fs::create_dir(models).unwrap();
             std::fs::write(&layer, TEXTURED.replace("(1, 0, 0)", "(3, 0, 0)")).unwrap();
             tick_until(&mut app, |world| roots.iter().all(|root|
                 world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));

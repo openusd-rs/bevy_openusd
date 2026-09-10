@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Folder dependency invalidation
+
+The file-source adapter delegates I/O to Bevy's FileAssetReader and records file
+read requests, including failed reads, in a source-local shared path set. Added,
+removed, renamed and untyped-removed folders now invalidate requested descendants;
+rename checks both old and new paths. Matching uses path components, not string
+prefixes, and original events still pass through. No filesystem scan or sibling
+changes are involved. The path set is retained for the source lifetime, not
+pruned with asset handles. Processed sources and replacement of the watched root
+itself remain unsupported; this does not change the editor texture watcher.
+
+The mapping regression covers nested descendants, similarly named sibling
+folders, both rename sides and untyped removal. The native two-instance regression
+also renames the models folder away/back and removes/recreates it, requiring
+Failed/Ready transitions with retained geometry and runtime entity state.
+The expanded native regression passes (`/tmp/folder-watch-native-final.log`).
+All 461 ordinary workspace tests (eight ignored) and 395 usd_bevy file_watcher
+feature tests (13 ignored) pass, along with check-all, build and whitespace
+validation: `/tmp/folder-watch-{tests,feature,check,build}.log`.
+
 ### File rename dependency invalidation
 
 The native AssetServer file-source adapter now emits ModifiedAsset invalidations

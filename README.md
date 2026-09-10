@@ -80,9 +80,12 @@ app.register_asset_source(
 
 The adapter retains Bevy's file reader and debounced watcher, forwarding removal
 events and both paths of file renames as dependency invalidations as well.
-Untyped non-metadata removals also invalidate their reported path; this does not
-expand folder events into descendant dependencies. It supports unprocessed native file
-sources; folder removal and processed assets remain unsupported. Registration
+Untyped non-metadata removals also invalidate their reported path. The reader
+records requested file paths, including failed reads, so folder additions,
+removals and renames invalidate requested descendants without scanning the disk.
+Paths are retained until the source is dropped; this is not an active-handle-only
+index. It supports unprocessed native file sources; processed assets and
+replacement of the watched source root itself remain unsupported. Registration
 does not override the AssetPlugin runtime watch setting. Its event worker is
 closed and joined when the source is dropped.
 

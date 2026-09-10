@@ -362,8 +362,11 @@ Library applications can opt in by enabling `usd_bevy/file_watcher` and adding
 `EditorPlugin`. It watches requested external images and sends RefreshTextures
 on native file events. `EditorTextureWatchStatus` reports active file count and
 setup errors. Watched paths update with the document/image set; idle frames do
-not reread images or rescan USD materials. Package entries, USD layers and folder
-replacement are not watched. Failed watcher setups retry once per second while
+not reread images or rescan USD materials. On Unix, directory device/inode
+identities are checked at most once per second; removed or replaced directories
+re-arm only their own watchers and queue a texture refresh. Package entries and
+USD layers are not watched; directory replacement recovery is not implemented
+on non-Unix platforms. Failed watcher setups retry once per second while
 the app updates, without restarting successful watchers. Recovery queues a texture
 refresh to catch edits made while unavailable. Document/path changes reset the
 retry state. Images missing during a failed initial Open are not watched.

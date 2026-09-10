@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Re-arm replaced editor texture directories on Unix
+
+Editor texture watching now checks watched directory device/inode identities at
+most once per second on Unix. Changed or unavailable directories drop only their
+own watcher, enter the existing setup retry path and queue a texture refresh.
+Identity is checked before and after installation to reject a directory changed
+during setup. This polls directory metadata, not image bytes or material graphs.
+Non-Unix directory replacement recovery remains unimplemented.
+
+Native regressions rename a watched directory and create its replacement without
+an intervening app update, verify recovered pixels and then another pixel edit,
+and preserve document identity/authored edits. Separate identity checks verify
+the one-second interval and retention of an unaffected watcher's receiver.
+The full feature suite caught an initial idle status change-tick regression
+(`/tmp/editor-directory-feature.log`); polling now mutates status only when a
+watcher actually needs re-arming.
+Final validation: 472 ordinary tests pass (ten ignored), 402 file-watcher tests
+pass (15 ignored), all three native editor watcher tests pass, and build/check
+and whitespace validation pass without warnings:
+`/tmp/editor-directory-{tests,feature-final,native-verified,check,build}.log`.
+
 ### Watch failed texture requests after editor edits
 
 Editor texture refreshes now track requested paths separately from installed

@@ -534,6 +534,12 @@ impl EditorSession {
                 crate::persistence::export_layer(&self.stage, &layer, filename)?;
             }
             SaveMode::Flattened => {
+                let mut paths = Vec::new();
+                self.stage.traverse(openusd::usd::PrimPredicate::ALL, |path| paths.push(path.clone()))?;
+                for path in paths {
+                    anyhow::ensure!(self.stage.prim(&path)?.get_metadata::<Value>("clips")?.is_none(),
+                        "flattened save does not support value clips at {path}; use root or edit-layer save");
+                }
                 crate::UsdSource::validate_composition(&self.stage)?;
                 crate::persistence::export_layer(&self.stage, &self.stage.flatten()?, filename)?;
             }
@@ -1454,6 +1460,42 @@ def Xform "Asset" (prepend variantSets = "shape") {
         bridge.send(EditorCommand::Payload { prim: "/Missing".into(), loaded: true }).unwrap();
         app.update();
         assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+    }
+
+    #[test]
+    fn flatten_rejects_value_clips_without_replacing_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = crate::UsdSource::snapshot(directory.path().join("source.usda"), &br#"#usda 1.0
+def Xform "Model" (
+    clips = {
+        dictionary default = {
+            asset[] assetPaths = [@clip.usda@]
+            double2[] active = [(0, 0)]
+            double2[] times = [(0, 0), (10, 10)]
+            string primPath = "/Model"
+        }
+    }
+) {}
+"#[..]).unwrap();
+        let clip = crate::UsdSource::snapshot(directory.path().join("clip.usda"),
+            &b"#usda 1.0\ndef Xform \"Model\" { double score.timeSamples = {0: 1, 10: 3} }\n"[..]).unwrap();
+        let source = source.with_dependency(&clip).unwrap();
+        let editor = EditorSession::new(source.open_stage().unwrap());
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        for extension in ["usda", "usdc", "usd", "usdz"] {
+            let destination = directory.path().join(format!("output.{extension}"));
+            std::fs::write(&destination, b"existing output").unwrap();
+            let error = editor.save(destination.to_str().unwrap(), SaveMode::Flattened).unwrap_err();
+            assert!(error.to_string().contains("value clips at /Model"), "{error:#}");
+            assert_eq!(std::fs::read(destination).unwrap(), b"existing output");
+        }
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 4);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
+            let destination = directory.path().join("authored.usda");
+            editor.save(destination.to_str().unwrap(), mode).unwrap();
+            assert!(std::fs::read_to_string(destination).unwrap().contains("clips"));
+        }
     }
 
     #[test]

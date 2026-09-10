@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject lossy value-clip flattening
+
+EditorSession::save now checks the same ALL prim traversal used by the upstream
+flattener and rejects Flattened saves when composed clips metadata is present.
+The error names the prim and suggests root/edit-layer saves. The check is
+conservative, including empty dictionaries, and runs before staged publication.
+It does not implement clip baking or change root/edit-layer export semantics.
+
+The regression includes captured clip bytes and verifies rejection for USDA,
+USDC, USD and USDZ while preserving existing destination bytes, leaving no staged
+files and keeping the editor root unchanged. Ordinary root/edit-layer output
+retains clips metadata. This prevents silent loss at the editor save boundary;
+direct upstream Stage::flatten and full clip fidelity remain separate work.
+All 466 ordinary workspace tests pass (ten ignored), as do ten native export
+tests, check-all, build and whitespace validation:
+`/tmp/clip-save-{tests,native,check,build}.log`.
+
 ### Native instanceable export contracts and flattening gap
 
 The new native USDZ regression saves and relocates a diskless two-instance assembly

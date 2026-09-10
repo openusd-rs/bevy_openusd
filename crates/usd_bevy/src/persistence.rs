@@ -3,6 +3,8 @@
 use anyhow::{Context, Result, ensure};
 use std::{fs, path::Path};
 
+pub(crate) mod flatten;
+
 pub(crate) fn export_layer(stage: &openusd::usd::Stage, layer: &openusd::sdf::Layer, filename: &str) -> Result<()> {
     write_atomic(filename, |temporary| {
         if Path::new(filename).extension().and_then(|extension| extension.to_str())
@@ -57,6 +59,12 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat"]
+    fn native_export_nested_retimed_instances() {
+        super::flatten::tests::verify_nested_retimed_instances(true);
+    }
+
     use super::*;
 
     fn relocated_fixture(directory: &Path) -> crate::editor::EditorSession {
@@ -207,14 +215,13 @@ def Xform "Model" {
             let stage = UsdSource::snapshot(relocated.path().join("native.usda"), result.stdout).unwrap().open_stage().unwrap();
             let first = stage.prim("/First").unwrap();
             let second = stage.prim("/Second").unwrap();
-            let instanced = !matches!(mode, SaveMode::Flattened);
-            assert_eq!(first.is_instance().unwrap(), instanced, "{name}");
-            assert_eq!(second.is_instance().unwrap(), instanced, "{name}");
-            assert_eq!(first.prototype().unwrap().is_some(), instanced, "{name}");
+            assert!(first.is_instance().unwrap(), "{name}");
+            assert!(second.is_instance().unwrap(), "{name}");
+            assert!(first.prototype().unwrap().is_some(), "{name}");
             assert_eq!(first.prototype().unwrap(), second.prototype().unwrap(), "{name}");
             for path in ["/First/Geometry", "/Second/Geometry"] {
                 let prim = stage.prim(path).unwrap();
-                assert_eq!(prim.is_instance_proxy().unwrap(), instanced, "{name}: {path}");
+                assert!(prim.is_instance_proxy().unwrap(), "{name}: {path}");
                 assert_eq!(prim.type_name().unwrap().as_deref(), Some("Cube"));
                 assert_eq!(prim.attribute("size").get::<f64>().unwrap(), Some(2.0));
             }

@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Preserve native instances in flattened editor saves
+
+Native USD output (`/tmp/native-instance-flat.usda.log`) establishes the shape:
+non-defining prototype roots, internal references from instance roots, and baked
+stage-time samples for retimed prototypes. The editor's flatten path now rebuilds
+that sharing after upstream flattening, grouping by canonical prototype identity
+and processing nested instance dependencies first. Namespace-aware spec copying
+remaps subtree paths; instance-root properties/opinions stay on each instance.
+Prototype names avoid existing prims. The original stage is not edited.
+
+The basic moved-USDZ native contract now requires shared instances for all three
+save modes, including Flattened. A nested/retimed fixture compares visible paths,
+root transforms, root properties, default/sampled values and relationship targets
+before/after; same-time roots share and retimed roots retain distinct prototypes.
+An existing Flattened_Prototype_1 prim survives. The same fixture passes through
+native OpenUSD after USDZ relocation, without diagnostics.
+All 475 ordinary tests pass (11 ignored), all 11 native export tests pass, and
+check-all/build/whitespace validation pass without warnings:
+`/tmp/instance-flatten-{tests,native-all,check,build}.log`.
+Direct upstream Stage::flatten still expands instances, as does the intermediate
+layer here: this preserves saved-file sharing, not peak export memory. Value clips
+are still rejected by flattened editor saves; clip baking remains unfinished.
+
 ### Numeric clip dependency reload and recovery
 
 Two AssetServer regressions now exercise the clip dependency lifecycle: a named

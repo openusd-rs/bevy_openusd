@@ -575,7 +575,7 @@ impl EditorSession {
                         "flattened save does not support value clips at {path}; use root or edit-layer save");
                 }
                 crate::UsdSource::validate_composition(&self.stage)?;
-                crate::persistence::export_layer(&self.stage, &self.stage.flatten()?, filename)?;
+                crate::persistence::export_layer(&self.stage, &crate::persistence::flatten::preserving_instances(&self.stage)?, filename)?;
             }
         }
         Ok(())

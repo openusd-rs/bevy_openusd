@@ -169,10 +169,13 @@ For release measurements, append `--release` to `APP_TARGET`.
 `with_offset_references` and marks every mount instanceable. OpenUSD determines
 prototype sharing; descendant prims become instance proxies, not independently
 editable copies. The ordinary reference APIs do not mark mounts instanceable.
-Native relocated-USDZ tests retain shared instances in root/edit-layer saves.
-Flattened saves currently expand instances into independent geometry copies:
-the upstream flattener removes instanceable metadata and does not emit shared
-prototype references. Use a composition-preserving save to retain instancing.
+Native relocated-USDZ tests retain shared instances in root/edit-layer and
+flattened editor saves. The editor rebuilds shared prototype subtrees as internal
+references after upstream flattening, retaining instance-root opinions and
+processing nested instances before their parents. Generated prototype names avoid
+existing prims. Retimed instances keep their baked stage-time samples. The
+intermediate upstream layer still expands instances, so this does not reduce peak
+flattening memory; direct upstream `Stage::flatten` still expands instances.
 Flattened editor saves also reject scenes carrying `clips` metadata before
 writing any output: upstream does not yet bake clip schedules and values.
 This conservative check includes empty clip dictionaries. Root/edit-layer saves

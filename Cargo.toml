@@ -1,7 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["crates/usd_bevy", "crates/usd_macro"]
-exclude = ["xtra"]
+exclude = ["xtra", "vendor/openusd"]
+
+[patch."https://github.com/mxpv/openusd"]
+openusd = { path = "vendor/openusd/crates/openusd" }
+openusd-build = { path = "vendor/openusd/crates/openusd-build" }
+openusd-schemas = { path = "vendor/openusd/crates/openusd-schemas" }
 
 [package]
 name = "usdview"

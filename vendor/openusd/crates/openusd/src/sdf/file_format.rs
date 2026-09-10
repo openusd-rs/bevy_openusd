@@ -1,0 +1,260 @@
+//! Pluggable per-format read/write seam (C++ `SdfFileFormat`).
+//!
+//! A [`FileFormat`] maps a concrete on-disk encoding (`usda` text, `usdc`
+//! binary crate, `usdz` archive) to the shared [`AbstractData`] interface, so
+//! [`Layer`](super::Layer) and the loader stay decoupled from any single
+//! format. This module is the format abstraction (the trait); the registry that
+//! holds the built-in formats and looks them up by extension/content lives with
+//! [`LayerRegistry`](super::LayerRegistry) (`find_by_extension` / `find_by_id`),
+//! mirroring C++ `SdfFileFormat::FindByExtension` / `FindById`.
+
+use std::borrow::Cow;
+use std::io::{self, Seek, Write};
+use std::{error, fmt, mem};
+
+use bitflags::bitflags;
+
+use super::{AbstractData, DataError, LayerData, PathParseError};
+use crate::{ar, tf};
+
+/// Error returned by [`FileFormat::read`] and [`FileFormat::write`].
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum FormatError {
+    /// Byte I/O against the asset failed (resolver open, read, seek, write).
+    #[error(transparent)]
+    Io(#[from] io::Error),
+
+    /// The asset's bytes could not be decoded as this format. Transparent:
+    /// Display and `source` are the boxed format error's own, so a rich decode
+    /// diagnostic (e.g. a `usda` parse error's caret rendering) survives to
+    /// the caller and stays downcastable. Boxed so `sdf` stays below the
+    /// concrete formats and external [`FileFormat`] implementors can report
+    /// their own decode errors.
+    #[error(transparent)]
+    Decode(Box<dyn error::Error + Send + Sync>),
+
+    /// The data holds something this format cannot encode.
+    #[error("cannot encode: {reason}")]
+    Encode {
+        /// What could not be encoded.
+        reason: Box<str>,
+    },
+
+    /// Reading a field value out of the layer's data failed while serializing
+    /// it (a lazy backend could not decode the authored value). Boxed, with
+    /// [`Path`](Self::Path), to keep the enum small — the assertion below
+    /// pins it, since this error rides the writers' per-element loops.
+    #[error(transparent)]
+    Data(Box<DataError>),
+
+    /// A name in the data does not form a valid `sdf` path while walking the
+    /// hierarchy for serialization.
+    #[error(transparent)]
+    Path(Box<PathParseError>),
+
+    /// No registered format recognizes what the bytes begin with, so there is
+    /// nothing to decode them with. Boxed, like the errors above, to keep the
+    /// enum within the size the assertion below pins.
+    #[error("no file format recognizes the content of {0}")]
+    Unrecognized(Box<str>),
+}
+
+const _: () = assert!(mem::size_of::<FormatError>() <= 24);
+
+impl From<DataError> for FormatError {
+    fn from(error: DataError) -> Self {
+        Self::Data(Box::new(error))
+    }
+}
+
+impl From<PathParseError> for FormatError {
+    fn from(error: PathParseError) -> Self {
+        Self::Path(Box::new(error))
+    }
+}
+
+/// A `Display` implementation failed while formatting a value into text.
+/// `fmt::Error` carries no detail, so the message is fixed.
+impl From<fmt::Error> for FormatError {
+    fn from(_: fmt::Error) -> Self {
+        Self::Encode {
+            reason: "formatting failed".into(),
+        }
+    }
+}
+
+bitflags! {
+    /// The operations a [`FileFormat`] supports, mirroring C++ `SdfFileFormat`'s
+    /// `supportsReading` / `supportsWriting` / `supportsEditing` plugInfo flags.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct FileFormatCaps: u8 {
+        /// Can deserialize layer data via [`FileFormat::read`]
+        /// (`SupportsReading`).
+        const READ = 1 << 0;
+        /// Can serialize layer data via [`FileFormat::write`]
+        /// (`SupportsWriting`).
+        const WRITE = 1 << 1;
+        /// A layer backed by this format can be edited in place / used as an
+        /// edit target (`SupportsEditing`).
+        const EDIT = 1 << 2;
+    }
+}
+
+impl FileFormatCaps {
+    /// Whether [`READ`](Self::READ) is set.
+    pub fn can_read(self) -> bool {
+        self.contains(Self::READ)
+    }
+
+    /// Whether [`WRITE`](Self::WRITE) is set.
+    pub fn can_write(self) -> bool {
+        self.contains(Self::WRITE)
+    }
+
+    /// Whether [`EDIT`](Self::EDIT) is set.
+    pub fn can_edit(self) -> bool {
+        self.contains(Self::EDIT)
+    }
+}
+
+/// A seekable write sink. `dyn Write + Seek` is not a legal trait object (both
+/// are non-auto traits), so this supertrait gives [`FileFormat::write`] a
+/// single object-safe sink type. The blanket impl covers every `Write + Seek`
+/// type (`std::fs::File`, `Cursor<Vec<u8>>`, …).
+pub trait WriteSeek: Write + Seek {}
+
+impl<T: Write + Seek + ?Sized> WriteSeek for T {}
+
+/// A scene-description file format: the read/write bridge between a concrete
+/// encoding and [`AbstractData`].
+///
+/// `Sync` so the built-in formats can live in the static registry. Format
+/// objects are stateless; lookup hands out `&'static dyn FileFormat`.
+pub trait FileFormat: Sync {
+    /// The format's stable identifier token (C++ `SdfFileFormat::GetFormatId`),
+    /// e.g. `"usda"`.
+    fn format_id(&self) -> tf::Token;
+
+    /// File extensions this format claims, without the leading dot. The first
+    /// is the canonical one; additional entries (e.g. `usdc` also claiming
+    /// `usd`) let one format be the default for an ambiguous extension.
+    fn extensions(&self) -> &[&str];
+
+    /// The operations this format supports (C++ `SdfFileFormat`'s
+    /// `supportsReading`/`Writing`/`Editing` plugInfo flags). Defaults to all
+    /// three; an asymmetric encoding (e.g. an import-only third-party format)
+    /// overrides this to drop a flag.
+    /// [`Layer::export`](super::Layer::export) rejects a format lacking
+    /// [`WRITE`](FileFormatCaps::WRITE).
+    fn caps(&self) -> FileFormatCaps {
+        FileFormatCaps::all()
+    }
+
+    /// Decode a layer's data from `bytes`, already read out of `source_name`.
+    ///
+    /// `source_name` is where the bytes came from, for diagnostics that quote a
+    /// location: the resolved path for a layer read off disk, and whatever
+    /// label a caller chooses for bytes that were never there.
+    ///
+    /// The bytes are owned or borrowed for the program's life because a
+    /// decoder may keep reading them — the crate format indexes into the
+    /// buffer rather than copying it out — so bytes compiled into the program
+    /// decode without a copy while bytes just read off disk move in.
+    fn read_bytes(&self, bytes: Cow<'static, [u8]>, source_name: &str) -> Result<LayerData, FormatError>;
+
+    /// Read a layer's data from `resolved`, opening the asset (and any
+    /// sibling assets) through `resolver`.
+    ///
+    /// A format that reads nothing but its own bytes needs only
+    /// [`read_bytes`](Self::read_bytes); one that reaches for sibling assets
+    /// overrides this.
+    fn read(&self, resolver: &dyn ar::Resolver, resolved: &ar::ResolvedPath) -> Result<LayerData, FormatError> {
+        let bytes = resolver.open_asset(resolved)?.read_all()?;
+        self.read_bytes(bytes.into(), &resolved.to_string())
+    }
+
+    /// Resolves the real path of the layer to open at `resolved` — the location
+    /// it physically loads from and anchors its relative asset paths against
+    /// (C++ `SdfLayer::GetRealPath`) — or `None` if this format cannot read it
+    /// there.
+    ///
+    /// The default is the identity: an ordinary layer loads from the location
+    /// it resolved to. A package format overrides this to select the package's
+    /// default layer (`pkg.usdz` → `pkg.usdz[root.usd]`), so the package
+    /// composes as an ordinary layer stack and the paths authored inside it
+    /// anchor in-package; a package it cannot open returns `None`. Opening the
+    /// asset goes through `resolver` so a host-provided byte source is honored.
+    fn resolve_layer(&self, _resolver: &dyn ar::Resolver, resolved: &ar::ResolvedPath) -> Option<ar::ResolvedPath> {
+        Some(resolved.clone())
+    }
+
+    /// Whether this format can read an asset whose leading bytes are `prefix`
+    /// (C++ `SdfFileFormat::CanRead`). Used to disambiguate an extension claimed
+    /// by more than one format — binary vs text `.usd` — by content. The default
+    /// has no content signature; a binary format overrides it to match its magic.
+    fn matches_content(&self, _prefix: &[u8]) -> bool {
+        false
+    }
+
+    /// Serialize `data` to `sink` in this format.
+    fn write(&self, data: &dyn AbstractData, sink: &mut dyn WriteSeek) -> Result<(), FormatError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ar::{DefaultResolver, Resolver};
+    use crate::sdf::{self, SpecType};
+    use crate::usda::UsdaFileFormat;
+    use crate::usdc::UsdcFileFormat;
+    use crate::usdz::UsdzFileFormat;
+
+    /// Build a one-prim layer's data for write/read round-tripping.
+    fn sample_data() -> sdf::Data {
+        let mut data = sdf::Data::new();
+        let ps = data.create_spec(sdf::Path::abs_root(), SpecType::PseudoRoot);
+        ps.add("primChildren", sdf::Value::TokenVec(vec!["Foo".into()]));
+        let foo = sdf::path("/Foo").unwrap();
+        let sp = data.create_spec(foo, SpecType::Prim);
+        sp.add("specifier", sdf::Value::Specifier(sdf::Specifier::Def));
+        sp.add("typeName", sdf::Value::Token("Xform".into()));
+        data
+    }
+
+    fn roundtrip(format: &dyn FileFormat, ext: &str) {
+        let data = sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("rt.{ext}"));
+
+        let mut file = std::fs::File::create(&path).unwrap();
+        format.write(&data, &mut file).unwrap();
+        drop(file);
+
+        let resolver = DefaultResolver::new();
+        let resolved = resolver.resolve(path.to_str().unwrap()).unwrap();
+        let read = format.read(&resolver, &resolved).unwrap();
+
+        let foo = sdf::path("/Foo").unwrap();
+        assert_eq!(read.spec_type(&foo), Some(SpecType::Prim));
+        assert_eq!(
+            read.get_field(&foo, "typeName").unwrap().into_owned(),
+            sdf::Value::Token("Xform".into())
+        );
+    }
+
+    #[test]
+    fn roundtrip_usda() {
+        roundtrip(&UsdaFileFormat, "usda");
+    }
+
+    #[test]
+    fn roundtrip_usdc() {
+        roundtrip(&UsdcFileFormat, "usdc");
+    }
+
+    #[test]
+    fn roundtrip_usdz() {
+        roundtrip(&UsdzFileFormat, "usdz");
+    }
+}

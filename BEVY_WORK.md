@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Integrated both writer patches through the root Cargo patch table and the new
+`vendor/openusd` snapshot (389 files, approximately 7.5 MiB on disk). The base is
+still upstream HEAD b7df5ad, rechecked on 2026-09-10. All three packages resolve
+to repository-local paths; no temporary override, sibling checkout modification,
+existing xtra replacement or build-time patching is required. The vendored
+crates differ from upstream only in the two writer files, and both patch files
+pass reverse-apply checks against the integrated snapshot. Licenses, provenance
+and switch-back instructions are in `vendor/openusd/VENDORED.md`.
+
+The normal make test-native passes all 12 combinations including native variant
+composition. Normal test-all passes 361 tests with one optional native test
+ignored; check-all and build pass. Logs:
+`/tmp/bevy-integrated-{native,tests,check,build}.log`. The integrated scene_report
+exports Spot text accepted by native usdcat:
+`target/spot-integrated-review.usda`, `/tmp/spot-integrated-export.log`,
+`/tmp/spot-integrated-native.usda`. This resolves integration of the diagnosed
+writer fixes, not the full Bevy checklist or arbitrary save/render parity.
+
+Native Embree also rendered that integrated export to
+`target/spot-integrated-embree.png`, inspected directly. The robot is visible
+and faceted; Material prims and GPU-disabled color correction remain unsupported
+by this reference renderer. Log: `/tmp/spot-integrated-embree.log`. No original
+collection asset was changed, and this is not a matched Bevy/native image test.
+
+### Earlier interoperability checkpoints
+
 Expanded and preserved the binary fix as
 `patches/openusd-token-vector-fields.patch`: all eight native token-vector
 structural/order fields use non-array TokenVector values, and variantSetNames

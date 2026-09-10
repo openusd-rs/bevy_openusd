@@ -1,9 +1,18 @@
 # OpenUSD upgrade and capability reassessment
 
-## Native interoperability audit — open failures
+## Integrated writer fixes
 
-Both review patches in `patches/` now pass the actual editor's 12-combination
-native gate when supplied as temporary Cargo overrides. The gate additionally
+The root Cargo patch table now uses the additive `vendor/openusd` snapshot for
+all three OpenUSD packages. Its upstream baseline remains b7df5ad, rechecked as
+upstream HEAD on 2026-09-10. Only the two recorded writer patches differ from
+the upstream crate sources. Existing xtra directories and sibling checkouts are
+untouched. `vendor/openusd/VENDORED.md` records included files, licenses and the
+switch-back procedure. No temporary source path or build-time patching is needed.
+
+## Native interoperability audit — history and remaining scope
+
+Before integration, both patches passed the editor's 12-combination native gate
+when supplied as temporary Cargo overrides. The gate additionally
 uses native flattening to verify the selected variant's authored value. Fixes:
 USDA singleton list brackets; non-array TokenVector encoding for the eight
 structural/order fields; StringListOp encoding for variantSetNames. The last
@@ -17,7 +26,7 @@ not dependency integration or comprehensive interchange acceptance.
 
 `make test-native` now checks actual editor saves through native `usdcat` in all
 three save modes and four supported extensions. It fails in all 12 combinations
-at the current pin: root/edit USDA reject singleton list-op syntax, flattened
+at the unpatched upstream pin: root/edit USDA reject singleton list-op syntax, flattened
 USDA rejects a non-shaped value with an array type, and all USDC/USD/USDZ cases
 decode without the expected parent/child, attributes or API metadata. The
 original USDA control parses successfully. Log: `/tmp/bevy-native-export-tests.log`.
@@ -29,8 +38,8 @@ non-array `TokenVector` representations instead of token arrays. This makes a
 minimal Rust-written USDC prim visible to native usdcat. The Rust reader merges
 both wire types into the same TokenVec value, masking this distinction in
 self-reopen tests. Native [crate data loading](https://github.com/PixarAnimationStudios/OpenUSD/blob/v25.05/pxr/usd/usd/crateData.cpp)
-also treats TokenVector specially. The experiment is not integrated or covered
-across all hierarchy/order metadata yet; do not treat it as a complete fix.
+also treats TokenVector specially. This initial experiment was subsequently
+expanded to all eight token-vector fields and integrated as recorded above.
 
 On 2026-09-10, the installed native OpenUSD 25.05.01 tools exposed compatibility
 gaps not covered by the Rust reader/writer self-reopen tests:
@@ -51,8 +60,9 @@ gaps not covered by the Rust reader/writer self-reopen tests:
 
 The original Spot binary compatibility issue is not yet attributed to a writer
 version or specific binary field. The minimal text-export failure is reproduced
-against the current pinned writer. Neither is fixed. Native interchange and
-reference-render acceptance must remain open; self-reopen success is insufficient.
+against the unpatched upstream writer and is now fixed locally. Broad native
+interchange and reference-render acceptance remain open; the selected native
+fixture and self-reopen tests do not prove arbitrary interchange.
 The diagnostic `scene_report` export writes a new file only and does not modify
 the original asset or rebase its relative references.
 

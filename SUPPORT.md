@@ -1,7 +1,8 @@
 # Bevy integration support
 
 This describes the current checkout, not every capability of upstream OpenUSD.
-Bevy is pinned to 0.19.1; OpenUSD is pinned to the revision in Cargo.toml.
+Bevy is pinned to 0.19.1. OpenUSD uses the Git baseline in Cargo.toml plus the
+two local writer fixes recorded in `vendor/openusd/VENDORED.md`.
 Passing data tests do not establish rendered fidelity or production performance.
 
 | Area | Implemented integration | Limits / outstanding acceptance |

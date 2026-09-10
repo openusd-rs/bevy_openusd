@@ -805,8 +805,9 @@ selected variant composition and API metadata through native flattening. Missing
 tools are errors, not passes.
 The test is ignored in the ordinary suite because native OpenUSD is optional.
 
-This gate is expected to fail with the current pinned dependency; ordinary Rust
-self-reopen tests do not establish native interchange. The pending upstream
-patches in `patches/` correct singleton text and structural binary metadata;
-the gate passes with both supplied as temporary dependency overrides, but they
-are not integrated. See `OPENUSD_UPGRADE.md` for the active findings.
+The fixes in `patches/` are integrated through the root Cargo patch table and
+`vendor/openusd`, so this gate runs against the actual viewer dependency without
+temporary overrides. Ordinary Rust self-reopen tests are not a replacement.
+The fixture covers selected scene data, not arbitrary lossless interchange.
+See `vendor/openusd/VENDORED.md` for provenance and `OPENUSD_UPGRADE.md` for the
+remaining compatibility findings.

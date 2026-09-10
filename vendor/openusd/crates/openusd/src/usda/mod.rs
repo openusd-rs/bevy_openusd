@@ -1,0 +1,100 @@
+//! Text file format (`usda`) reader and writer.
+
+use std::borrow::Cow;
+use std::fs;
+use std::io;
+use std::path::Path;
+
+mod cursor;
+mod error;
+pub mod parser;
+pub mod token;
+mod types;
+mod writer;
+
+use parser::Parser;
+
+pub use error::ParseError;
+pub use writer::TextWriter;
+
+use crate::{sdf, tf};
+
+/// Parse `usda` text into an in-memory [`sdf::Data`] store.
+pub fn parse(text: &str) -> Result<sdf::Data, ParseError> {
+    let specs = Parser::new(text).parse()?;
+    Ok(sdf::Data::from_specs(specs))
+}
+
+/// The header every `usda` layer opens with (C++ `SdfUsdaFileFormat`'s file
+/// cookie), the literal the lexer's magic token requires before the version.
+/// Content-based format detection matches it; the trailing space is part of
+/// the cookie, so `#usdaFOO` is not text this format claims.
+pub const MAGIC: &[u8] = b"#usda ";
+
+/// Read a `usda` file from disk into an in-memory [`sdf::Data`] store.
+pub fn read_file(path: impl AsRef<Path>) -> crate::Result<sdf::Data> {
+    let path = path.as_ref();
+    let text = fs::read_to_string(path)
+        .map_err(|error| io::Error::new(error.kind(), format!("unable to read {}: {error}", path.display())))?;
+
+    Ok(parse(&text).map_err(|error| error.with_source_name(path.display().to_string()))?)
+}
+
+/// Text format (`.usda`) as an [`sdf::FileFormat`], wrapping [`parse`] and
+/// [`TextWriter`].
+pub struct UsdaFileFormat;
+
+impl sdf::FileFormat for UsdaFileFormat {
+    fn format_id(&self) -> tf::Token {
+        tf::Token::new("usda")
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["usda"]
+    }
+
+    fn matches_content(&self, prefix: &[u8]) -> bool {
+        // The lexer skips whitespace before the cookie, so a layer that opens
+        // with a blank line is still text (C++ `CanRead` reads the cookie the
+        // same way).
+        let start = prefix
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .unwrap_or(prefix.len());
+        prefix[start..].starts_with(MAGIC)
+    }
+
+    fn read_bytes(&self, bytes: Cow<'static, [u8]>, source_name: &str) -> Result<sdf::LayerData, sdf::FormatError> {
+        // Borrowed, not owned: the parse copies out everything it keeps, so
+        // bytes compiled into the program are never copied wholesale.
+        let text = str::from_utf8(&bytes).map_err(|error| sdf::FormatError::Decode(Box::new(error)))?;
+        let data = parse(text)
+            .map_err(|error| sdf::FormatError::Decode(Box::new(error.with_source_name(source_name.to_owned()))))?;
+        Ok(Box::new(data))
+    }
+
+    fn write(&self, data: &dyn sdf::AbstractData, mut sink: &mut dyn sdf::WriteSeek) -> Result<(), sdf::FormatError> {
+        TextWriter::write(data, &mut sink)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdf::{AbstractData, SpecType};
+
+    #[test]
+    fn parse_builds_data() {
+        let data = parse("#usda 1.0\ndef \"Root\"\n{\n    float size = 2.5\n}\n").expect("parse");
+
+        let root = sdf::path("/Root").unwrap();
+        assert_eq!(data.spec_type(&root), Some(SpecType::Prim));
+
+        let size = root.append_property("size").unwrap();
+        assert_eq!(data.spec_type(&size), Some(SpecType::Attribute));
+        assert_eq!(
+            data.get_field(&size, "default").unwrap().into_owned(),
+            sdf::Value::Float(2.5)
+        );
+    }
+}

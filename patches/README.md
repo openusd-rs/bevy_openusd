@@ -1,7 +1,9 @@
-# Pending upstream fixes
+# Local upstream fixes
 
-These patches are review artifacts, not automatically applied dependencies.
-The viewer still uses the revision in Cargo.toml and Cargo.lock.
+These review patches are applied to `vendor/openusd`. The root Cargo patch table
+uses that repository-local copy for all three OpenUSD packages. The Git revision
+declarations record its upstream baseline; Cargo.lock records path packages.
+See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
 ## Singleton metadata list operations
 
@@ -36,8 +38,7 @@ this capture is a geometry diagnostic, not material or pixel-parity acceptance.
 
 The original Spot binary still produces only root metadata in native usdcat.
 Converting through the Rust reader does not establish that reader's binary
-interpretation is correct. That discrepancy and integration of this patch into
-the actual dependency remain open.
+interpretation is correct. That discrepancy remains open.
 
 ## Binary structural metadata
 
@@ -59,17 +60,6 @@ root/edit and flattened singleton API metadata; those native errors did not
 require separate text fixes. These results do not establish arbitrary layer,
 reference, payload, animation or material interchange.
 
-Apply both patches in an isolated upstream checkout. A temporary test override
-can then be supplied without changing project manifests:
-
-```sh
-make test-native CARGO="cargo \
-  --config 'patch.\"https://github.com/mxpv/openusd\".openusd.path=\"$UPSTREAM/crates/openusd\"' \
-  --config 'patch.\"https://github.com/mxpv/openusd\".openusd-schemas.path=\"$UPSTREAM/crates/openusd-schemas\"' \
-  --config 'patch.\"https://github.com/mxpv/openusd\".openusd-build.path=\"$UPSTREAM/crates/openusd-build\"'"
-```
-
-Cargo temporarily updates its lockfile to those path dependencies. Run the normal
-Cargo-backed Make targets afterward to resolve the pinned Git dependencies again,
-and inspect the lockfile diff. Do not commit temporary paths or discard unrelated
-lockfile changes. The normal native gate still fails until integration occurs.
+The normal `make test-native` now uses both fixes without command-line overrides.
+To review them independently, apply both to a separate checkout of the recorded
+revision. Never apply them again to the already-patched repository-local copy.

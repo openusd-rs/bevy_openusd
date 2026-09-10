@@ -866,6 +866,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shader_connection_edits_refresh_live_animation_membership() {
+        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Cube "Box" { rel material:binding = </Mat> }
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        float inputs:roughness = 0.5
+        token outputs:surface
+    }
+    def Shader "Animated" {
+        uniform token info:id = "ND_constant_float"
+        float inputs:value.timeSamples = {0: 0.2, 10: 0.8}
+        float outputs:out
+    }
+}
+"#).open_stage().unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), crate::UsdPlugin, LiveStagePlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
+        app.insert_non_send(LiveStage::new(stage.clone()));
+        app.update();
+        let entity = app.world().resource::<PrimEntities>().entity("/Box").unwrap();
+        app.world_mut().entity_mut(entity).insert(Name::new("runtime annotation"));
+        assert!(!app.world().resource::<AnimatedPrims>().0.contains("/Box"));
+        let roughness = |world: &World| {
+            let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
+            world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().perceptual_roughness
+        };
+        assert_eq!(roughness(app.world()), 0.5);
+        let input = stage.prim("/Mat/Surface").unwrap().attribute("inputs:roughness");
+        let input = input.set_connections([openusd::sdf::path("/Mat/Animated.outputs:out").unwrap()]).unwrap();
+        app.update();
+        assert!(app.world().resource::<AnimatedPrims>().0.contains("/Box"));
+        for (current, expected) in [(0.0, 0.2), (10.0, 0.8)] {
+            app.world_mut().resource_mut::<StageTime>().current = current;
+            app.update();
+            assert!((roughness(app.world()) - expected).abs() < 1e-6);
+            assert_eq!(app.world().resource::<PrimEntities>().entity("/Box"), Some(entity));
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime annotation");
+        }
+        input.set_connections(std::iter::empty::<openusd::sdf::Path>()).unwrap();
+        app.update();
+        assert!(!app.world().resource::<AnimatedPrims>().0.contains("/Box"));
+        assert_eq!(roughness(app.world()), 0.5);
+        app.world_mut().resource_mut::<StageTime>().current = 0.0;
+        app.update();
+        assert_eq!(roughness(app.world()), 0.5);
+        assert_eq!(app.world().resource::<PrimEntities>().entity("/Box"), Some(entity));
+        assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime annotation");
+    }
+
+    #[test]
     fn combined_deformation_animation_scan_matches_individual_queries() {
         for fixture in ["skel_test_simple.usda", "blendshape_test.usda", "point_shapes.usda", "skel_morph_normals.usda"] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets").join(fixture);

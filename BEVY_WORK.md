@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Live shader-connection edits rebuild animation membership
+
+A new LiveStagePlugin regression projects a bound cube with a disconnected
+animated shader, verifies the cube is absent from AnimatedPrims, then connects
+the shader through the real stage authoring API. The stage notice path adds the
+cube to the animation index. Clock updates sample projected material roughness
+at 0.2 and 0.8; disconnecting restores the authored 0.5 and removes the cube from
+the index. Further clock changes retain that static value. The same projected
+entity and its runtime Name survive every operation.
+
+This verifies live connection-edit invalidation after the graph-scan change,
+not merely direct detector queries. Focused test log:
+`/tmp/live-graph-membership-recheck.log`. It is headless material/state evidence,
+not an interactive shader editor or a new GPU screenshot.
+All 445 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/live-graph-{tests,check,build}.log`.
+
 ### Scope material animation detection to connected shader graphs
 
 A regression reproduced bound geometry being classified as animated solely

@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Viewer save-format acceptance
+
+The native save chooser exposes USDA, binary USD and USDZ output, with distinct
+root/edit/flattened default filenames. Filename validation retains the selected
+path and stale-document checks; uppercase `.USDZ` uses the dependency packager.
+All 365 ordinary tests, check-all and build pass
+(`/tmp/save-format-{tests,check,build}.log`). The four optional native tests pass
+again (`/tmp/save-formats-native.log`), covering 34 export checks.
+
+Inspected isolated GTK captures for all three modes:
+`target/viewer-ui-captures/save-formats-root.png`, `save-formats-edit.png`, and
+`save-formats.png` (flattened). Each shows the correct default filename and a
+readable filter listing all four extensions. The old root-picker replay actually
+clicked flattened export; corrected its coordinates and added explicit edit and
+flattened replays. These checks prove chooser presentation, not native file
+selection, cancellation, overwrite confirmation or save/reopen interaction.
+GTK does not display the requested explanatory dialog title in this layout.
+
+### Single-level package re-export checkpoint
+
 Added single-level USDZ input/re-export support to the stage-aware packager.
 Package-relative layer and asset paths resolve through the existing stage context;
 source containers are cached, while container bytes and extracted entry bytes

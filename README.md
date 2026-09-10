@@ -520,7 +520,11 @@ USD_UI_REPLAY=scripts/replays/open_dialog.replay \
 nix shell nixpkgs#weston -c /bin/bash scripts/capture_viewer_ui.sh assets/editor_samples.usda target/native-picker.png
 ```
 
-`save_dialog.replay` opens the root-layer save picker instead. These replays only
+`save_dialog.replay` opens the root-layer save picker instead;
+`save_edit_dialog.replay` and `save_flattened_dialog.replay` open the other save modes.
+The filename extension selects `.usda`, `.usdc`, `.usd`, or `.usdz` output;
+the defaults are `scene.usda`, `edit-layer.usda`, and `flattened.usda`, respectively.
+Unsupported or missing extensions are rejected without writing a file. These replays only
 open the chooser; they neither select a file nor save one. Their coordinates are
 specific to the 1600x1000 capture layout. Private-bus cleanup stops the viewer's
 session and removes its temporary XDG directories. Native dialogs currently lack

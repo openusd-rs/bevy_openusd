@@ -1,0 +1,4 @@
+# Open the edit-layer save picker from the isolated 1600x1000 viewer.
+5000 move 20 817
+5100 down 20 817
+5200 up 20 817

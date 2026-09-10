@@ -1523,6 +1523,9 @@ Normal-mapped ordinary meshes, material subsets and point-instancer prototypes
 carry `UsdMaterialWarning` when the projected mesh lacks tangents. Bevy then uses
 geometric shading normals; the diagnostic does not invent a UV/tangent basis or
 validate the numerical quality of existing tangents.
+Material warnings on the selected prim's mapped entity appear in the Properties
+pane's render issues and clear when the warning or selection disappears. This
+does not aggregate warnings from generated subset/prototype descendants.
 
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:

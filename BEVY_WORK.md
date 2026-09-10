@@ -25,6 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Publish projected material warnings in the Properties pane
+
+UsdMaterialWarning was attached to projected meshes but omitted from the editor's
+render-issue publication query. The selected mapped entity's material warning now
+appears alongside subdivision/deformation/shape/curve/transform issues. Existing
+render-issue presentation wraps it into readable lines. The publication regression
+now includes material warnings and verifies clearing when components are removed;
+missing/unselected prims retain empty issue lists. Generated descendant warnings
+are not aggregated onto selected parent prims by this change.
+
+A paired private-Weston capture selects /Quad in the normal fixture's no-UV case
+with Properties open. Both host and viewport images were inspected; the host
+shows the full material warning explaining the missing tangent frame, while the
+quad remains rendered with the geometric fallback. Evidence:
+`target/viewer-ui-captures/material-missing-tangents*`,
+`/tmp/editor-material-warning-ui.log`. UI_CAPTURE_OK and VIEWPORT_CAPTURE_OK are
+present. The expected material warning and known native Vulkan-layer/SSAO-limit
+diagnostics persist; this nonblack run does not resolve intermittent host blackouts.
+
+All 508 ordinary tests pass (13 ignored), make check-all/build and git diff --check
+pass: `/tmp/editor-material-warning-{tests,check,build}.log`.
+Full descendant diagnostics, native interaction acceptance and the broader Bevy
+checklist remain open.
+
 ### Keep sampled editor snapshots synchronized with playback
 
 Visibility snapshots previously read default values even when a scene clock was

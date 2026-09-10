@@ -770,6 +770,10 @@ their pixel correctness or rendering readiness. See
 [Weston's debug scopes](https://wayland.pages.freedesktop.org/weston/toc/libweston/log.html).
 
 The `.settings.txt` companion also records whether the diagnostic was requested.
+`USD_UI_CAPTURE_TIMEOUT` bounds the screenshot subprocess to 1..120 seconds
+(default 15), followed by a one-second kill grace. A failed or timed-out command
+records its exit status in settings, retains its log and triggers normal cleanup;
+it does not emit `UI_CAPTURE_OK` or retry automatically.
 Vulkan remains the default. `USD_UI_COMPOSITOR_RENDERER`
 accepts `vulkan`, `gl` or `pixman` for diagnostic experiments; the latter two are
 not validated alternatives. Three local GL captures were vertically inverted

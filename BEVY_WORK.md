@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Bounded screenshot subprocess
+
+The full-UI capture script now bounds weston-screenshooter with a default
+15-second timeout and one-second kill grace. USD_UI_CAPTURE_TIMEOUT accepts
+1..120 seconds; settings record the selected deadline and subprocess status.
+Failure retains its log, exits unsuccessfully and runs existing cleanup without
+publishing UI_CAPTURE_OK or retrying. This bounds the screenshot step, not every
+possible teardown delay, and does not fix intermittent black pixel output.
+
+An injected screenshot stub sleeping for 300 seconds is terminated at the
+configured two-second deadline, records failed:124, produces no PNG and leaves
+no matching isolated compositor or sleeping stub process. Evidence:
+`/tmp/stalled-screenshot.log`, `target/viewer-ui-captures/stalled-screenshot.*`.
+The real `bounded-screenshot.png` capture succeeds with screenshot_status=ok
+and was visually inspected: upright curve scene and Rendering controls. Invalid
+zero timeout rejects before metadata/compositor creation. Shell syntax and
+whitespace checks pass; `/tmp/bounded-screenshot.log`,
+`/tmp/invalid-capture-timeout.log`. No Rust changes or Rust gate reruns.
+
 ### Compositor surface diagnostics
 
 Added opt-in USD_UI_CAPTURE_SCENE_GRAPH=1 to the isolated capture script. It

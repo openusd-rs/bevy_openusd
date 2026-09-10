@@ -79,12 +79,12 @@ pub(crate) fn prepare(
             Err(error) => (default_material.clone(), vec![error.to_string()]),
         };
         let mut mesh = source.clone();
-        mesh.insert_indices(crate::mesh::mesh_from_usd_subset(read, Some(&subset.indices)).indices().unwrap().clone());
+        mesh.insert_indices(crate::mesh::mesh_indices_for_faces(read, &subset.indices));
         prepared.parts.push((subset.name.clone(), super::cache::intern_mesh(world, mesh), material, warnings));
     }
     let remaining: Vec<i32> = assigned.iter().enumerate().filter_map(|(face, assigned)| (!assigned).then_some(face as i32)).collect();
     let mut mesh = source.clone();
-    mesh.insert_indices(crate::mesh::mesh_from_usd_subset(read, Some(&remaining)).indices().unwrap().clone());
+    mesh.insert_indices(crate::mesh::mesh_indices_for_faces(read, &remaining));
     prepared.remainder = Some(super::cache::intern_mesh(world, mesh));
     prepared
 }

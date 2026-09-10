@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Build material-subset indices without discarded vertex attributes
+
+Subset preparation previously called mesh_from_usd_subset for each material part
+and the remainder, retained only its indices, and discarded newly computed
+positions, normals, UVs, colors and tangents. It now uses an index-only helper
+that preserves the full source mesh's render-vertex layout. Indexed and expanded
+layouts reuse the existing triangulator; flat geometry shares the canonical
+triangle-selection mapping with the full builder. Reference triangulation points,
+hole filtering and authored winding remain unchanged. Source meshes are still
+cloned for their existing attributes, including deformation data.
+
+A 432-case differential regression compares direct indices against the full
+builder over six layouts, both windings, hole configurations, empty/reordered/
+duplicate/invalid face selections and deformed positions with reference topology.
+Existing fixed flat-index expectations and GPU skin/morph/subset tests also pass.
+All 385 ordinary tests, check-all, build and whitespace checks pass
+(`/tmp/subset-indices-{tests,check,build}.log`).
+
+Inspected `target/viewer-ui-captures/anymal-subset-indices.png` against the previous
+healthy ANYmal capture: the robot and material regions remain visible without an
+observed regression; no reproduced GPU validation errors are logged. This is a
+qualitative rendered regression check, not pixel-identical or reference-renderer
+acceptance. No controlled CPU speedup measurement was made for this change.
+Per-subset vertex-buffer duplication remains, so the device-bounded mesh allocator
+is still required; this change does not establish reduced GPU memory or draw calls.
+
 ### Surface stopped-renderer diagnostics in the viewer
 
 Installed a viewer-owned Bevy RenderErrorHandler that retains the first error in

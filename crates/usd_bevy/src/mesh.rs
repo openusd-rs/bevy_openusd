@@ -98,6 +98,29 @@ pub fn vertex_point_indices(read: &ReadMesh) -> Vec<usize> {
     } else { points }
 }
 
+/// Indices for selected faces in the full mesh's render-vertex layout.
+pub(crate) fn mesh_indices_for_faces(read: &ReadMesh, faces: &[i32]) -> Indices {
+    let indices = if uses_flat_normals(read) {
+        select_flat_indices(read, &flat_corner_indices(read, None), Some(faces))
+    } else if expands_vertices(read) {
+        flat_corner_indices(read, Some(faces))
+    } else {
+        triangulate_mesh(read, triangulation_points(read), &read.face_vertex_indices, Some(faces))
+    };
+    Indices::U32(indices)
+}
+
+fn select_flat_indices(read: &ReadMesh, triangles: &[u32], subset: Option<&[i32]>) -> Vec<u32> {
+    let selected = subset.map(|faces| {
+        flat_corner_indices(read, Some(faces)).chunks_exact(3)
+            .map(|triangle| [triangle[0], triangle[1], triangle[2]])
+            .collect::<std::collections::HashSet<_>>()
+    });
+    triangles.chunks_exact(3).enumerate().filter(|(_, triangle)| {
+        selected.as_ref().is_none_or(|selected| selected.contains(&[triangle[0], triangle[1], triangle[2]]))
+    }).flat_map(|(index, _)| (index as u32 * 3)..(index as u32 * 3 + 3)).collect()
+}
+
 /// Builds all faces or the supplied face subset, retaining the vertex layout.
 pub fn mesh_from_usd_subset(read: &ReadMesh, face_subset: Option<&[i32]>) -> Mesh {
     let expand = expands_vertices(read);
@@ -385,17 +408,12 @@ pub(crate) fn crease_corner_normals(
 
 fn build_flat(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
     let (positions, _, uvs, colors, triangles) = build_expanded(read, None);
-    let selected = face_subset.map(|subset| {
-        flat_corner_indices(read, Some(subset)).chunks_exact(3)
-            .map(|triangle| [triangle[0], triangle[1], triangle[2]])
-            .collect::<std::collections::HashSet<_>>()
-    });
+    let output_indices = select_flat_indices(read, &triangles, face_subset);
     let mut output_positions = Vec::with_capacity(triangles.len());
     let mut output_normals = Vec::with_capacity(triangles.len());
     let mut output_uvs = Vec::with_capacity(triangles.len());
     let mut output_colors = colors.as_ref().map(|_| Vec::with_capacity(triangles.len()));
-    let mut output_indices = Vec::new();
-    for (index, triangle) in triangles.chunks_exact(3).enumerate() {
+    for triangle in triangles.chunks_exact(3) {
         let [a,b,c] = [triangle[0], triangle[1], triangle[2]];
         let point = |index: u32| Vec3::from_array(positions[index as usize]).as_dvec3();
         let normal = (point(b) - point(a)).cross(point(c) - point(a))
@@ -407,9 +425,6 @@ fn build_flat(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
             if let (Some(input), Some(output)) = (&colors, &mut output_colors) {
                 output.push(input[corner as usize]);
             }
-        }
-        if selected.as_ref().is_none_or(|selected| selected.contains(&[a,b,c])) {
-            output_indices.extend((index as u32 * 3)..(index as u32 * 3 + 3));
         }
     }
     (output_positions, Some(output_normals), output_uvs, output_colors, output_indices)
@@ -1077,6 +1092,44 @@ def Mesh "M" {
         read.uvs = Some(MeshPrimvar { values: vec![[0.0,0.0], [1.0,0.0], [0.0,1.0]],
             indices: vec![], interpolation: Interpolation::Vertex });
         assert!(mesh_from_usd(&read).attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
+    }
+
+    #[test]
+    fn face_indices_match_full_subset_builders_across_vertex_layouts() {
+        let base = mesh(
+            vec![[0.0,0.0,0.0], [2.0,0.0,0.0], [1.0,0.5,0.0], [2.0,2.0,0.0], [0.0,2.0,0.0], [0.0,0.0,1.0]],
+            vec![5,3], vec![0,1,2,3,4,0,5,1],
+        );
+        for layout in 0..6 {
+            let mut read = base.clone();
+            read.subdivision_scheme = if layout == 0 { SubdivScheme::None } else { SubdivScheme::CatmullClark };
+            match layout {
+                2 => read.normals = Some(MeshPrimvar { values: vec![[0.0,0.0,1.0]; 6], indices: vec![], interpolation: Interpolation::Vertex }),
+                3 => read.uvs = Some(MeshPrimvar { values: vec![[0.0,0.0]; 8], indices: vec![], interpolation: Interpolation::FaceVarying }),
+                4 => read.display_color = Some(MeshPrimvar { values: vec![[1.0,0.0,0.0]; 2], indices: vec![], interpolation: Interpolation::Uniform }),
+                5 => read.normals = Some(MeshPrimvar { values: vec![[0.0,0.0,1.0]; 8], indices: vec![], interpolation: Interpolation::FaceVarying }),
+                _ => {}
+            }
+            for orientation in [Orientation::LeftHanded, Orientation::RightHanded] {
+                read.orientation = orientation;
+                for holes in [vec![], vec![0], vec![1]] {
+                    read.hole_indices = holes;
+                    for faces in [&[][..], &[0], &[1], &[1,0], &[0,0], &[-1,8]] {
+                        for deformed in [false, true] {
+                            let mut sampled = read.clone();
+                            if deformed {
+                                sampled.triangulation_points = Some(sampled.points.clone());
+                                sampled.points[2] = [0.5,1.5,0.8];
+                            }
+                            let expected = mesh_from_usd_subset(&sampled, Some(faces));
+                            let indices = mesh_indices_for_faces(&sampled, faces);
+                            assert_eq!(Some(&indices), expected.indices(), "layout={layout} orientation={orientation:?} faces={faces:?} deformed={deformed}");
+                            assert!(indices.iter().all(|index| index < expected.count_vertices()));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

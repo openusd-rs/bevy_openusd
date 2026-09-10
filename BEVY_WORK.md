@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Scope material animation detection to connected shader graphs
+
+A regression reproduced bound geometry being classified as animated solely
+because a disconnected child shader had samples. The animation detector now
+seeds traversal with the material and resolved surface (including the existing
+child-shader fallback), follows attribute connections and no longer recursively
+walks all child namespaces. The 256-node conservative bound and cycle detection
+remain; surface-resolution errors conservatively request animation updates.
+
+Tests prove the disconnected case is static both in the material detector and
+prim_is_animated, connecting the node makes it animated, and removing the
+explicit surface output still discovers the sampled fallback surface graph.
+Existing external-connection/cycle coverage passes. This removes a false-positive
+update classification, not a measured frame-time improvement. Before/after logs:
+`/tmp/material-animation-before.log` and `/tmp/material-animation-focused.log`.
+All 444 ordinary workspace tests pass (seven ignored), plus check-all and build:
+`/tmp/material-animation-{tests,check,build}.log`. The native live-clock suite
+passes all three cases with zero differing pixels, retaining results and images
+in `target/live-clock-connected-graphs`; the three live images were inspected.
+Suite log: `/tmp/material-animation-live-suite.log`.
+
 ### Reconcile the current support matrix
 
 SUPPORT.md no longer claims that direct editor watching is absent or that texture

@@ -803,6 +803,10 @@ This is a time-zero diagnostic, not a scene exporter: original transforms,
 deformation, materials, subsets and other primvars are omitted. Render either
 through `viewer_capture` with `USD_CAPTURE_CAMERA=/Camera`, or through native
 `capture-reference` with `--camera /Camera --imageWidth 1280`.
+The probe also reports scale-independent triangle-quality bins and diagnostic
+normal recomputations excluding very thin triangles at two thresholds. These
+report changed vectors, reversed normal corners and zero referenced normals;
+they do not modify the emitted normals or enable a production filtering rule.
 
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated

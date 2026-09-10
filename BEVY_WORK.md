@@ -314,6 +314,41 @@ git diff --check pass. Logs: `/tmp/normal-isolation-all-tests-final.log`,
 point/index/normal round trips, deliberate normal omission and directory refusal.
 Full Bevy fidelity and subdivision acceptance remain open.
 
+## Thin-triangle normal hypothesis checked
+
+`normal_isolation` now reports double-area / longest-edge-squared quality bins,
+plus diagnostic angle-weighted normal recomputations with quality thresholds
+0, 1e-6 and 1e-4. Reports include changed vectors, remaining reversed normal
+corners and zero referenced normals. These calculations do not replace emitted
+normals or change production shading. Scale-invariance tests run at 1e-12, 1 and
+1e12, including the zero-normal consequence of removing a vertex's only face.
+
+The UR5 shoulder cage has 4 exactly degenerate triangles, 5 triangles at or below
+1e-6 quality and 24 at or below 1e-4. Recomputing with threshold zero matches
+the existing vectors within 1e-4. The thin-face cutoff does not improve the
+reversed-corner metric:
+
+| Geometry | Threshold | Changed vertices | Reversed corners | Zero referenced normals |
+| --- | ---: | ---: | ---: | ---: |
+| Cage | 0 | 0 | 64 | 0 |
+| Cage | 1e-6 | 1 | 64 | 0 |
+| Cage | 1e-4 | 35 | 70 | 0 |
+| Level 1 | 0 | 0 | 570 | 1 |
+| Level 1 | 1e-6 | 0 | 570 | 1 |
+| Level 1 | 1e-4 | 2 | 572 | 1 |
+
+This does not support adding a simple thin-triangle cutoff as a repair. No
+experimental filtered normals were rendered or installed. The level-one probe
+also reveals one zero normal on a referenced vertex despite its triangles having
+nonzero area; topology/fan cancellation remains an investigation target.
+Logs: `/tmp/ur5-normal-filter-final.log`,
+`/tmp/ur5-normal-filter-level1-final.log`. Byte comparisons confirm the emitted
+with-normal USDA files are unchanged from the prior cage and level-one probes.
+
+Validation: 517 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/normal-quality-all-tests-final.log`,
+`/tmp/normal-quality-{check,build}-final.log`. Full fidelity remains open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

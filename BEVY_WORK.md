@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reproduce black presentation without USD
+
+`examples/bridge_capture_probe.rs` runs the canonical Mara/Bevy viewport bridge
+with only one camera, an orange unlit cube and a blue clear color. A foreground
+egui label independently marks the host UI. It registers no USD plugins and
+loads no stage, editor, scene textures or lighting. The headless unit regression
+checks its camera, mesh and material setup.
+
+Three fresh private Vulkan Weston runs produced two healthy images followed by
+one wholly black application surface, including the egui label and host chrome.
+All three images were inspected. The failed run has only 50 nonblack pixels in
+the 1120000-pixel inspection region and correctly fails the capture script.
+This reproduces the symptom without USD content; it does not identify whether
+the bridge, shared GPU state, host presentation or compositor readback is faulty.
+Earlier host-only successes are not proof that the host cannot fail.
+
+Evidence: `target/viewer-ui-captures/bridge-only-{1,2,3}*` and
+`/tmp/bridge-probe-gpu.log`; the failed third capture is preserved, not retried
+into success. All 491 ordinary tests pass (13 ignored), check-all/build and
+whitespace checks pass: `/tmp/bridge-probe-{tests,check,build}.log`.
+No sibling Mara implementation or compositor configuration was changed.
+
 ### Resolve connected texture color spaces
 
 Texture sourceColorSpace now resolves canonical UsdShade value-producing

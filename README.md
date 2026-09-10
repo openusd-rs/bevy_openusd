@@ -968,6 +968,18 @@ USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example host_capture_probe' --eval=
 Use the Weston-enabled environment described above. This is a diagnostic, not
 the viewer or proof of its rendering fidelity.
 
+`examples/bridge_capture_probe.rs` adds only the Bevy viewport bridge, a blue
+clear color and an orange unlit cube, with a white egui label over the viewport.
+It has no USD plugins, stage, lights or editor. Compare it with the host-only
+probe to isolate failures that require the embedded Bevy renderer:
+
+```sh
+USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example bridge_capture_probe' --eval='capture-bridge:; @/bin/bash scripts/capture_viewer_ui.sh assets/retimed_instances.usda target/NEW-bridge-only.png' capture-bridge
+```
+
+The asset argument is ignored. Inspect both the cube and the egui label; a
+nonblack background alone does not prove that the bridge rendered correctly.
+
 The `.settings.txt` companion records compositor backend, output/inspection
 dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's
 one-shot surface/buffer dump in `.scene-graph.log` immediately before capture.

@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone)]
 pub enum EditorCommand {
     Open(String),
+    /// Reload source-backed images without replacing the document or edit history.
+    RefreshTextures,
     Select(Option<String>),
     Edit(EditorEdit),
     EditLayer(String),
@@ -161,6 +163,13 @@ fn process_commands(world: &mut World) {
                 })
         } else if let Some(editor) = &mut session {
             match command {
+                EditorCommand::RefreshTextures => editor.source.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("document has no source snapshot"))
+                    .and_then(|source| prepare_textures(editor.stage(), source))
+                    .and_then(|textures| install_textures(world, textures))
+                    .map(|_| {
+                        if let Some(live) = world.get_non_send::<crate::live::LiveStage>() { live.enqueue_resync("/"); }
+                    }),
                 EditorCommand::Select(path) => editor.select(path),
                 EditorCommand::Edit(edit) => editor.edit(edit),
                 EditorCommand::EditLayer(identifier) => editor.set_edit_layer(&identifier),
@@ -1267,6 +1276,57 @@ def Material "Mat" {
             assert_eq!(material.ior, 1.7);
             assert_eq!(material.base_color_texture.as_ref(), Some(&texture));
             assert_eq!(material.metallic_roughness_texture.as_ref(), Some(&packed));
+            if filename == "scene.usda" {
+                bridge.send(EditorCommand::Select(Some("/Mesh".into()))).unwrap();
+                app.world_mut().entity_mut(entity).insert(Name::new("runtime name"));
+                let child = app.world_mut().spawn((Name::new("runtime child"), ChildOf(entity))).id();
+                app.update();
+                let before = app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap();
+                let document_id = bridge.view().unwrap().document.document_id;
+                std::fs::write(directory.path().join("pixel.png"), b"broken image").unwrap();
+                bridge.send(EditorCommand::RefreshTextures).unwrap();
+                app.update();
+                assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+                assert_eq!(app.world().resource::<Assets<StandardMaterial>>()
+                    .get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap()
+                    .base_color_texture.as_ref(), Some(&texture));
+                let mut changed = Vec::new();
+                {
+                    let mut encoder = png::Encoder::new(&mut changed, 1, 1);
+                    encoder.set_color(png::ColorType::Rgba);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    encoder.write_header().unwrap().write_image_data(&[20, 160, 240, 255]).unwrap();
+                }
+                std::fs::write(directory.path().join("pixel.png"), changed).unwrap();
+                bridge.send(EditorCommand::RefreshTextures).unwrap();
+                app.update();
+                assert_eq!(bridge.view().unwrap().status, "Ready");
+                assert_eq!(bridge.view().unwrap().document.document_id, document_id);
+                assert_eq!(bridge.view().unwrap().document.selected.as_deref(), Some("/Mesh"));
+                assert!(bridge.view().unwrap().document.can_undo);
+                assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), before);
+                assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/Mesh"), Some(entity));
+                assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+                assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
+                let material = app.world().resource::<Assets<StandardMaterial>>()
+                    .get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+                assert_eq!(material.ior, 1.7);
+                assert_ne!(material.base_color_texture.as_ref(), Some(&texture));
+                assert_eq!(app.world().resource::<Assets<Image>>().get(material.base_color_texture.as_ref().unwrap()).unwrap().data.as_deref(), Some([20,160,240,255].as_slice()));
+                assert_eq!(app.world().resource::<Assets<Image>>().get(material.metallic_roughness_texture.as_ref().unwrap()).unwrap().data.as_deref(), Some([255,160,240,255].as_slice()));
+                bridge.send(EditorCommand::Undo).unwrap();
+                app.update();
+                assert_eq!(app.world().non_send::<EditorSession>().stage().prim("/Mat/Surface").unwrap()
+                    .attribute("inputs:ior").get::<Value>().unwrap(), None);
+                bridge.send(EditorCommand::RefreshTextures).unwrap();
+                app.update();
+                assert!(bridge.view().unwrap().document.can_redo);
+                bridge.send(EditorCommand::Redo).unwrap();
+                app.update();
+                assert_eq!(app.world().non_send::<EditorSession>().stage().prim("/Mat/Surface").unwrap()
+                    .attribute("inputs:ior").get::<Value>().unwrap(), Some(Value::Float(1.7)));
+                std::fs::write(directory.path().join("pixel.png"), &png).unwrap();
+            }
             bridge.send(EditorCommand::Open(directory.path().join("missing.usda").to_string_lossy().into_owned())).unwrap();
             app.update();
             assert!(bridge.view().unwrap().status.starts_with("Failed:"));

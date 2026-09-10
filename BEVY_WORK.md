@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Explicit editor texture refresh
+
+Added `EditorCommand::RefreshTextures` for source-backed editor documents. It
+prepares all current material/dome images before publishing any replacements,
+then queues a live resync. It does not reopen layers or modify the document,
+selection, playback, or undo/redo history. Unchanged images reuse their handles;
+decode failures retain the previously installed image set and report Failed.
+No open document or a session without a source snapshot produces an error.
+
+Extended the filesystem/packaged-image editor regression with an unsaved IOR
+edit, selected prim and runtime name/child. A corrupt PNG fails without replacing
+the material texture; repairing it updates diffuse and packed metallic/roughness
+bytes while retaining the edit, document ID, entity IDs and runtime parenting.
+Undo still removes the IOR opinion, and refresh between Undo and Redo preserves
+the redo operation. This is an EditorBridge API command, not yet a viewer ribbon
+action or automatic file watcher. Package-root bytes remain the opened snapshot;
+this command does not reopen a changed USDZ archive.
+
+Validation: 434 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/editor-refresh-{tests,check,build}.log`.
+
 ### Time-sampled texture GPU acceptance
 
 Extended the reproducible UV fixture with red/blue one-pixel images and a

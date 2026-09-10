@@ -206,6 +206,12 @@ visual acceptance limits.
 The editor loads PNG/JPEG material images from filesystem and USDZ documents,
 refreshes them after edits, and preserves the previous document if opening fails.
 This direct editor path does not yet automatically watch filesystem image changes.
+Applications can send `EditorCommand::RefreshTextures` through `EditorBridge`
+to reread source-backed images without reopening the USD document. Successful
+refreshes preserve selection, unsaved edits, runtime entities and undo/redo;
+decode failures retain the previous image set and report an error. This command
+does not reload USD layers or changed package-root bytes, and currently has no
+viewer ribbon action.
 
 Undoable authoring uses `editor::EditorSession` and `editor::EditorEdit`:
 

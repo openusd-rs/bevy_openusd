@@ -25,6 +25,24 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Refresh live animation membership after sparse edits
+
+Reproduced time-sample authoring on an already-projected static Xform leaving it
+out of AnimatedPrims (`/tmp/sparse-animation-before.log`). USD reports these
+edits as changed-info, not resync, so the existing sparse component patch bypassed
+animation discovery. Sparse live patches now refresh the affected prim's index
+membership when a live animation index exists. Source-root ticks without that
+resource do not perform this additional scan; dependency-affecting edits still
+use the existing reconciliation path.
+
+The regression authors samples through actual USD attributes, checks sparse
+notices, scrubs through the real animation-resampling system and verifies the
+interpolated transform. Removing both samples restores the static default and
+removes index membership without replacing the entity. All 382 ordinary tests,
+check-all, build and whitespace checks pass
+(`/tmp/sparse-animation-{tests,check,build}.log`). This is live editing/timeline
+state coverage, not a new rendered animation or native export acceptance claim.
+
 ### Skip unused source-reload animation discovery
 
 Source-root publication now disables animation-index collection during

@@ -221,9 +221,8 @@ use crate::prim_ref::UsdPrimRef;
 use crate::read::xform::read_transform;
 use crate::route::{SchemaRegistry, StageTime};
 
-/// Prim paths that have at least one time-sampled (animated) attribute — the
-/// set the animation resampler revisits when [`StageTime`] changes. Computed
-/// once at projection.
+/// Prim paths with animated inputs, revisited when [`StageTime`] changes.
+/// Refreshed by projection and live change processing.
 #[derive(Resource, Default, Clone)]
 pub struct AnimatedPrims(pub std::collections::HashSet<String>);
 
@@ -558,6 +557,12 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         };
         let prop_refs: Vec<&str> = props.iter().map(String::as_str).collect();
         registry.patch_prim(&live.stage, &p, world, entity, &prop_refs);
+        if world.contains_resource::<AnimatedPrims>() {
+            let animated = prim_is_animated(&live.stage, &p);
+            if let Some(mut index) = world.get_resource_mut::<AnimatedPrims>() {
+                if animated { index.0.insert(prim); } else { index.0.remove(&prim); }
+            }
+        }
     }
 }
 
@@ -2026,6 +2031,40 @@ def NodeGraph "Graph" {}
             .set(Value::TokenVec(vec!["xformOp:translate".into()]))
             .unwrap();
         stage
+    }
+
+    #[test]
+    fn sparse_sample_edits_refresh_the_live_animation_index() {
+        let stage = animated_translate_stage();
+        stage.prim("/Mover").unwrap().attribute("xformOp:translate").clear().unwrap()
+            .set(Value::Vec3d(openusd::gf::Vec3d::from([1.0, 0.0, 0.0]))).unwrap();
+        let live = LiveStage::new(stage);
+        let mut world = World::new();
+        world.insert_resource(StageTime { current: 0.0 });
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let mover = map.entity("/Mover").unwrap();
+        assert!(world.resource::<AnimatedPrims>().0.is_empty());
+        live.stage.prim("/Mover").unwrap().attribute("xformOp:translate")
+            .set_at(Value::Vec3d(openusd::gf::Vec3d::from([0.0, 0.0, 0.0])), TimeCode::new(0.0)).unwrap()
+            .set_at(Value::Vec3d(openusd::gf::Vec3d::from([10.0, 0.0, 0.0])), TimeCode::new(10.0)).unwrap();
+        assert!(live.queue.borrow().iter().all(|change| change.resynced.is_empty()));
+        apply_changes(&mut world, &live, &mut map);
+        assert!(world.resource::<AnimatedPrims>().0.contains("/Mover"));
+        world.insert_resource(map);
+        world.insert_non_send(live);
+        world.resource_mut::<StageTime>().current = 5.0;
+        resample_animation_system(&mut world);
+        assert_eq!(world.get::<Transform>(mover).unwrap().translation.x, 5.0);
+        let live = world.remove_non_send::<LiveStage>().unwrap();
+        let mut map = world.remove_resource::<PrimEntities>().unwrap();
+        live.stage.prim("/Mover").unwrap().attribute("xformOp:translate")
+            .clear_at(TimeCode::new(0.0)).unwrap().clear_at(TimeCode::new(10.0)).unwrap();
+        assert!(live.queue.borrow().iter().all(|change| change.resynced.is_empty()));
+        apply_changes(&mut world, &live, &mut map);
+        assert!(world.resource::<AnimatedPrims>().0.is_empty());
+        assert_eq!(map.entity("/Mover"), Some(mover));
+        assert_eq!(world.get::<Transform>(mover).unwrap().translation.x, 1.0);
     }
 
     #[test]

@@ -83,6 +83,22 @@ runtime-only component preservation, malformed-root failure/recovery and cleanup
 make run RUN_WITH= APP_TARGET='--example composed_sources'
 ```
 
+`source_benchmark` measures the actual UsdSceneRoot lifecycle for one and four
+roots, each containing the requested number of native USD instances. Three
+alternating-order samples report initial load/validation/projection, captured
+dependency reload, idle App updates and asset sharing. It checks geometry updates,
+entity identity and runtime-only components. Inputs are already captured in memory;
+disk I/O, plugin startup, GPU upload and rendering are excluded.
+
+```sh
+make run RUN_WITH= APP_TARGET='--example source_benchmark' ARGS=128
+make run RUN_WITH= APP_TARGET='--release --example source_benchmark' ARGS=128
+```
+
+The separate `projection_benchmark` measures direct LiveStage projection and edits,
+not the source-root publication path. Its timings are not interchangeable with
+the lifecycle benchmark. Debug timings are diagnostic, not production guarantees.
+
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
 time-code range; otherwise it uses the stage's authored start/end and rate.

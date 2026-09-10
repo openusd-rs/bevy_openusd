@@ -25,6 +25,38 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### End-to-end source-root performance baseline
+
+Added `examples/source_benchmark.rs` to exercise actual UsdSceneRoot publication,
+including composition validation, with captured external model dependencies.
+Three alternating-order samples use one/four roots with 128 native instances per
+root. It measures first App update, captured dependency replacement plus App
+update, and mean idle App update time over 100 iterations. Plugin startup and
+input construction are outside the timers; disk I/O and rendering are absent.
+
+Every sample verifies unique projected entities, Ready roots, a single initial
+mesh/material asset, retained entity identity/runtime-only components across
+reload, shared updated mesh handles, and updated cube geometry. Four roots yield
+512 distinct projected meshes sharing one asset; this does not measure GPU draw
+calls or CPU geometry work avoided by interning.
+
+Current debug measurements (`/tmp/source-benchmark-128.log`):
+
+| Roots | Load/validate/project ms | Dependency reload ms | Mean idle update us |
+| --- | --- | --- | --- |
+| 1 | 278.156–450.994 | 341.460–345.210 | 392.325–491.726 |
+| 4 | 1120.493–1160.782 | 1238.661–1517.410 | 458.587–573.368 |
+
+Also refreshed the separate 128-instance direct projection benchmark
+(`/tmp/projection-current-baseline.log`): cached projection 264.962–273.477ms,
+uncached 251.639–264.033ms, with one versus 129 initial mesh/material assets.
+No CPU speedup is established. These fixtures/interfaces differ, so subtracting
+their timings does not isolate validation overhead. Host load is uncontrolled;
+release and rendered performance still require measurement.
+
+Validation: 378 ordinary tests, check-all, build, the runnable 128-instance
+benchmark and whitespace checks pass (`/tmp/source-benchmark-{tests,check,build}.log`).
+
 ### Reject lossy flattening of incomplete compositions
 
 Reproduced flattened export overwriting a valid destination despite an unresolved

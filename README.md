@@ -815,3 +815,8 @@ remaining compatibility findings.
 A second native fixture checks sublayers and external references in all three
 save modes and four formats. These checks keep exports beside their dependencies;
 they do not certify cross-directory Save As or self-contained USDZ packaging.
+
+The native gate now also removes the source directory before checking exported
+packages. That regression currently fails for root/edit-layer USDZ: dependencies
+are not bundled. `PACKAGING.md` records the failure and implementation boundary.
+The gate is therefore not fully green despite the 24 earlier checks passing.

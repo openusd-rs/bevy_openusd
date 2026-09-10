@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Added a native USDZ portability regression: save into a separate directory,
+close/delete the owned source directory, then decode with fresh native processes.
+Root/edit packages lose sublayer and referenced values; flattened preserves
+these geometry-only values. The two prior fixtures still pass. The native gate
+is now deliberately failing on this real acceptance gap, not claimed green.
+Evidence: `/tmp/native-portable-package.log`. `PACKAGING.md` records the
+source-grounded implementation boundary and required coverage: resolver-aware
+dependency traversal above ArchiveWriter, live layer snapshots, preserved save
+semantics, deterministic collision-free paths, bounds and atomic publication.
+No dependency bundling is implemented yet; flattened texture portability and
+non-package cross-directory Save As remain open too.
+
+The ordinary suite passes 361 tests with three optional native tests ignored;
+check-all, build and git diff --check pass. Logs:
+`/tmp/native-portability-{tests,check,build}.log`. The separate native gate fails
+the moved-package test as above. Next implementation priority is the dependency
+packager in PACKAGING.md, not weakening that regression or flattening root/edit
+saves implicitly.
+
 Extended native persistence coverage to sublayers and external references in all
 12 root/edit/flattened x usda/usdc/usd/usdz combinations. Before the fix, native
 composition lost the sublayer in root/edit binary exports. Corrected the vendored

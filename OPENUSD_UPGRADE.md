@@ -2,6 +2,12 @@
 
 ## Integrated writer fixes
 
+The added moved-package test demonstrates a separate remaining gap: root/edit
+USDZ writes do not bundle dependencies. Once original files are deleted, native
+composition loses sublayer and referenced values. `make test-native` currently
+fails that portability regression while its earlier two fixtures still pass.
+See `PACKAGING.md`; this is not a regression in the integrated wire-type fixes.
+
 Native layered-scene checks exposed and fixed an additional binary mismatch:
 subLayers must use a non-array StringVector, not a string array. Root/edit USDC
 and USD exports previously lost the weak layer under native composition. The

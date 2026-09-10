@@ -3,6 +3,11 @@
 This describes the current checkout, not every capability of upstream OpenUSD.
 Bevy is pinned to 0.19.1. OpenUSD uses the Git baseline in Cargo.toml plus the
 two local writer fixes recorded in `vendor/openusd/VENDORED.md`.
+
+Portable USDZ dependency bundling is not implemented. Root/edit-layer packages
+lose external layer content after their sources are removed; the native gate
+now records this failure. Flattened geometry-only success does not certify
+texture packaging. See `PACKAGING.md`.
 Passing data tests do not establish rendered fidelity or production performance.
 
 | Area | Implemented integration | Limits / outstanding acceptance |

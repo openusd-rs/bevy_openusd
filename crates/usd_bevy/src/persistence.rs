@@ -40,6 +40,45 @@ mod tests {
 
     #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_package_survives_removal_of_layer_dependencies() {
+        use crate::editor::{EditorSession, SaveMode};
+        use std::process::Command;
+
+        let source_directory = tempfile::tempdir().unwrap();
+        let output_directory = tempfile::tempdir().unwrap();
+        fs::write(source_directory.path().join("weak.usda"), "#usda 1.0\ndef Scope \"Layered\" {\n double score = 11\n}\n").unwrap();
+        fs::write(source_directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n}\n").unwrap();
+        let source = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Referenced\" (\n prepend references = @model.usda@</Model>\n) {}\n";
+        let original = source_directory.path().join("source.usda");
+        fs::write(&original, source).unwrap();
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let control = Command::new(&native).arg("--flatten").arg(&original).output().expect("launch native reader");
+        assert!(control.status.success(), "native source control: {}", String::from_utf8_lossy(&control.stderr));
+        let editor = EditorSession::new(crate::UsdSource::new(&original, source.as_slice()).unwrap().open_stage().unwrap());
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            editor.save(output_directory.path().join(format!("{name}.usdz")).to_str().unwrap(), mode).unwrap();
+        }
+        drop(editor);
+        source_directory.close().unwrap();
+        let mut failures = Vec::new();
+        for name in ["root", "edit", "flat"] {
+            let package = output_directory.path().join(format!("{name}.usdz"));
+            let output = Command::new(&native).arg("--flatten").arg(&package).output().expect("launch native reader");
+            if !output.status.success() {
+                failures.push(format!("{name}: {}", String::from_utf8_lossy(&output.stderr)));
+                continue;
+            }
+            let stage = crate::UsdSource::new(output_directory.path().join("native.usda"), output.stdout).unwrap().open_stage().unwrap();
+            for (prim, expected) in [("/Layered", 11.0), ("/Referenced", 23.0)] {
+                let value = stage.prim(prim).unwrap().attribute("score").get::<f64>().unwrap();
+                if value != Some(expected) { failures.push(format!("{name} {prim}: expected {expected}, got {value:?}")); }
+            }
+        }
+        assert!(failures.is_empty(), "non-portable package exports:\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_preserves_sublayers_and_external_references() {
         use crate::editor::{EditorSession, SaveMode};
         use std::process::Command;

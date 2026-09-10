@@ -25,6 +25,202 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject invalid payload time offsets
+
+The expanded Bevy-world regression reproduces the same silent identity-timing
+fallback for internal payloads: scale -1 reached Ready before this fix
+(`/tmp/payload-offset-before.log`). Source validation now checks composed payload
+list entries with LayerOffset::is_valid_composition, alongside references.
+The regression covers both arc kinds with scales -1 and 0, retaining existing
+entities/runtime names on failed reload, refusing a fresh projection and recovering
+after the valid source returns. Sublayer offsets and unselected branches remain
+outside this explicit metadata guard.
+Payload offsets are optional in the canonical type; absent offsets retain
+identity behavior. All 469 ordinary workspace tests pass (ten ignored), as do
+check-all, build and whitespace validation:
+`/tmp/payload-offset-tests-final.log`, `/tmp/payload-offset-{check,build}.log`.
+
+### Reject invalid reference offsets during source publication
+
+The Rust composition code sanitizes nonpositive scales to identity, but an
+internal-reference load probe still reached Ready rather than surfacing an error
+(`/tmp/invalid-offset-load-focused.log`). Source validation now checks composed
+reference-list entries on traversed prims with LayerOffset::is_valid_composition
+before publication. It rejects invalid reference offsets explicitly; this is not
+a payload/sublayer-offset or unselected-branch validation implementation.
+
+The Bevy-world regression replaces a valid shared scene with internal references
+using scales -1 and 0. Both existing roots must fail while retaining their entities
+and runtime names; a fresh root must fail without installing geometry, and no
+/Invalid projection may appear. Restoring the valid source returns existing roots
+to Ready with their identities intact. The focused recheck passes:
+`/tmp/invalid-offset-load-recheck.log`.
+All 469 ordinary workspace tests pass (ten ignored), as do ten native export
+tests, check-all, build and whitespace validation:
+`/tmp/invalid-offset-{tests,native,check,build}.log`.
+
+### Reject unsupported reverse-time reference authoring
+
+The lower-level set_references helper accepted negative scales while the new
+assembly APIs required positive ones. A native usdcat probe confirms offset 10,
+scale -1 reverses samples from 1/3 to 3/1, with a deprecation warning:
+`/tmp/negative-reference-native.log`. The pinned Rust implementation instead
+returns 1 at stage time 0; the attempted parity regression fails:
+`/tmp/reference-scales-focused.log`. Therefore set_references now also requires
+positive finite scales, rejecting unsupported reverse-time authoring before
+mutation. This is a validation fix, not implemented reverse-time playback or a
+comprehensive check of negative mappings in externally loaded stages.
+
+The final regression verifies supported offset 10/scale 2 interpolation and
+atomic rejection of a late negative, zero, signed-zero, NaN or infinite scale,
+leaving the previously authored root unchanged.
+All 468 ordinary workspace tests pass (ten ignored), as do check-all, build and
+whitespace validation: `/tmp/reference-scales-{tests,check,build}.log`.
+
+### Typed assembly lifecycle measurements
+
+source_benchmark now prepares both source revisions through
+with_instanceable_references rather than generated reference text. Its CSV adds
+assembly_ms and replacement_assembly_ms separately from Bevy load/reload and
+idle update timings. Input generation, plugin startup, disk I/O and GPU work
+remain excluded. Validation outside the timers checks actual native instances
+and shared prototypes as well as mesh/material sharing, changed Cube geometry,
+preserved entity identities and runtime-only components. The empty root snapshot
+must remain dependency-free after both assemblies.
+A debug run with 32 mounts per root and three alternating samples at one/four
+roots verifies one mesh and one material for 32/128 projected meshes. Across
+the six samples, initial assembly spans 34.308–140.063 ms and replacement assembly
+39.552–234.942 ms. Variance is substantial; this is an unisolated debug measurement,
+not a release speedup or frame-rate claim. Full rows: `/tmp/typed-source-benchmark-final.log`.
+All 467 ordinary tests pass (ten ignored), as do check-all, build and whitespace
+validation: `/tmp/typed-source-{tests,check,build}.log`.
+
+### Live retimed assembly clocks and capture spacing
+
+Extended the retimed GPU script with two assemblies at clocks 10/20, reversed to
+20/10 after 30 ready frames, compared against independent baked geometry loaded
+at the final clocks. The initial capture matched exactly but fixed spacing 2.5
+made assemblies overlap (`target/retimed-instance-live-regression/`), weakening
+visual inspection. viewer_capture now accepts USD_CAPTURE_INSTANCE_SPACING,
+validated as positive/finite and safe for 16 instances, and records it in metadata.
+The default remains 2.5; both regression scripts isolate this environment setting.
+An ordinary test checks default, accepted spacing and atomic invalid-value rejection.
+The live retimed case now uses spacing 14 and a wider fixed camera, and requires
+six visible meshes, final times 20/10 and reversal metadata before RGB comparison.
+The separated live/reference pair matches exactly (zero changed pixels out of
+921600) and both images were visually inspected with all six cubes unobscured.
+All three fixed-time comparisons also pass again:
+`target/retimed-instance-spaced-regression/`, `/tmp/retimed-instance-spaced-regression.log`.
+All 467 ordinary workspace tests pass (ten ignored), as do check-all, build,
+both scripts' syntax checks and whitespace validation:
+`/tmp/retimed-live-{tests,check,build}.log`.
+
+### Retimed native-instance GPU reference regression
+
+Added a three-instance fixture with internal references to an abstract model,
+two identity mounts and one offset 10/scale 2 mount. Its independent reference
+authors the corresponding Cube samples directly without instances or arcs.
+scripts/check_retimed_instances.sh renders both at times 10/20/30 with the same
+fixed camera and forward/shadows-off configuration, checks three visible meshes,
+the sampled time and absence of renderer warnings, then compares RGB at tolerance 0.
+The script requires a new output directory and retains all evidence on failure.
+
+All three pairs match exactly: zero changed pixels out of 921600 per frame.
+The instanced images were visually inspected at each time: the right cube grows
+through sizes 1/2/3 while the first two stay size 3. Evidence:
+`target/retimed-instance-regression/`, `/tmp/retimed-instance-regression.log`.
+This is sampled GPU equivalence for the fixture, not native-renderer parity,
+general material fidelity, live-clock validation or a performance measurement.
+All 466 ordinary workspace tests pass (ten ignored); check-all, build, shell
+syntax and whitespace validation pass: `/tmp/retimed-images-{tests,check,build,shell}.log`.
+
+### Retimed native-instance mesh isolation
+
+The instanceable_sources example now mounts an animated Cube source three times:
+two identity references share a native prototype, while offset 10/scale 2 uses a
+distinct prototype. At stage times 10, 20, 30 and back to 10, projected edge sizes
+are checked as 3/3/1, 3/3/2, 3/3/3 and 3/3/1. The identity pair must retain shared
+mesh handles; differently sized geometry must not share a handle. Equality of
+handles at coincident sizes is not required. Entity identities and a runtime name
+remain intact throughout, and root despawn cleans up all three proxy entities.
+This is headless mesh/state evidence, not a GPU image or speedup measurement.
+All 466 ordinary workspace tests pass (ten ignored), as do check-all, build,
+the runnable example and whitespace validation:
+`/tmp/retimed-instance-{tests,check,build,example}.log`.
+
+### Reject lossy value-clip flattening
+
+EditorSession::save now checks the same ALL prim traversal used by the upstream
+flattener and rejects Flattened saves when composed clips metadata is present.
+The error names the prim and suggests root/edit-layer saves. The check is
+conservative, including empty dictionaries, and runs before staged publication.
+It does not implement clip baking or change root/edit-layer export semantics.
+
+The regression includes captured clip bytes and verifies rejection for USDA,
+USDC, USD and USDZ while preserving existing destination bytes, leaving no staged
+files and keeping the editor root unchanged. Ordinary root/edit-layer output
+retains clips metadata. This prevents silent loss at the editor save boundary;
+direct upstream Stage::flatten and full clip fidelity remain separate work.
+All 466 ordinary workspace tests pass (ten ignored), as do ten native export
+tests, check-all, build and whitespace validation:
+`/tmp/clip-save-{tests,native,check,build}.log`.
+
+### Native instanceable export contracts and flattening gap
+
+The new native USDZ regression saves and relocates a diskless two-instance assembly
+in all three modes. Root and edit-layer outputs, composed by native usdcat, retain
+two instances with a shared prototype and Cube proxy descendants of size 2.
+Flattened output instead contains two non-instance Cube copies with the same
+size. The initial preservation assertion fails only for Flattened:
+`/tmp/instance-native.log`. `vendor/openusd/crates/openusd/src/usd/flatten.rs` explicitly
+expands proxies and strips Instanceable rather than writing shared prototypes.
+
+The regression now records both contracts, including geometry preservation;
+it does not treat expanded copies as preserved instancing. Native-parity
+instance-preserving flattening remains unfinished. Save operations must leave
+the original editor root unchanged and native composition must emit no warnings.
+All ten native export tests pass (`/tmp/instance-native-contracts.log`), along
+with 465 ordinary workspace tests (ten ignored), check-all, build and whitespace
+validation: `/tmp/instance-export-{tests,check,build}.log`.
+
+### Instanceable reference assembly
+
+UsdSource::with_instanceable_references accepts the retimed API's four-field
+entries and marks every mount instanceable through the canonical Prim API.
+The existing reference methods retain their non-instanceable behavior, sharing
+the same atomic assembly/validation path. Prototype sharing remains determined
+by USD composition; descendants are instance proxies, not independent editable
+copies. No claim of complete BSN parity or general native-instance fidelity.
+
+The source regression verifies a shared native prototype, proxy descendants,
+source immutability, one captured dependency and rejection of a destination
+inside an existing instance. The runnable instanceable_sources example checks
+two distinct Bevy entities sharing one mesh handle and cleanup after root despawn.
+Native exported instanceability through this API and render/performance evidence
+remain separate acceptance work.
+All 465 ordinary workspace tests pass (nine ignored); check-all, build, the
+runnable example and whitespace validation pass:
+`/tmp/instance-assembly-{tests,check,build,example}.log`.
+
+### Bounded screenshot subprocess
+
+The full-UI capture script now bounds weston-screenshooter with a default
+15-second timeout and one-second kill grace. USD_UI_CAPTURE_TIMEOUT accepts
+1..120 seconds; settings record the selected deadline and subprocess status.
+Failure retains its log, exits unsuccessfully and runs existing cleanup without
+publishing UI_CAPTURE_OK or retrying. This bounds the screenshot step, not every
+possible teardown delay, and does not fix intermittent black pixel output.
+
+An injected screenshot stub sleeping for 300 seconds is terminated at the
+configured two-second deadline, records failed:124, produces no PNG and leaves
+no matching isolated compositor or sleeping stub process. Evidence:
+`/tmp/stalled-screenshot.log`, `target/viewer-ui-captures/stalled-screenshot.*`.
+The real `bounded-screenshot.png` capture succeeds with screenshot_status=ok
+and was visually inspected: upright curve scene and Rendering controls. Invalid
+zero timeout rejects before metadata/compositor creation. Shell syntax and
+whitespace checks pass; `/tmp/bounded-screenshot.log`,
+`/tmp/invalid-capture-timeout.log`. No Rust changes or Rust gate reruns.
+
 ### Compositor surface diagnostics
 
 Added opt-in USD_UI_CAPTURE_SCENE_GRAPH=1 to the isolated capture script. It

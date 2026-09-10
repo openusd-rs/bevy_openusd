@@ -190,6 +190,24 @@ impl UsdSource {
         &self,
         references: impl IntoIterator<Item = (D, &'a Self, T, openusd::sdf::LayerOffset)>,
     ) -> anyhow::Result<Self> {
+        self.assemble_references(references, false)
+    }
+
+    /// Mounts retimed references with instanceable metadata on every destination.
+    /// Entries use (destination, source, target, offset); descendants are USD proxies.
+    /// Composition determines prototype sharing; offsets follow with_offset_references.
+    pub fn with_instanceable_references<'a, D: openusd::sdf::IntoPath, T: openusd::sdf::IntoPath>(
+        &self,
+        references: impl IntoIterator<Item = (D, &'a Self, T, openusd::sdf::LayerOffset)>,
+    ) -> anyhow::Result<Self> {
+        self.assemble_references(references, true)
+    }
+
+    fn assemble_references<'a, D: openusd::sdf::IntoPath, T: openusd::sdf::IntoPath>(
+        &self,
+        references: impl IntoIterator<Item = (D, &'a Self, T, openusd::sdf::LayerOffset)>,
+        instanceable: bool,
+    ) -> anyhow::Result<Self> {
         let references = references.into_iter().map(|(destination, source, target, offset)| {
             Ok((openusd::sdf::try_into_path(destination)?, source, openusd::sdf::try_into_path(target)?, offset))
         }).collect::<Result<Vec<_>, openusd::sdf::PathParseError>>()?;
@@ -223,6 +241,7 @@ impl UsdSource {
             crate::authoring::set_references(&stage, destination.as_str(), &[openusd::sdf::Reference {
                 asset_path: dependency.identifier.clone(), prim_path: target, layer_offset, ..Default::default()
             }])?;
+            if instanceable { stage.prim(&destination)?.set_instanceable(true)?; }
             anyhow::ensure!(stage.prim(&destination)?.is_valid()?, "reference destination did not compose");
         }
         Self::validate_composition(&stage)?;
@@ -256,7 +275,22 @@ impl UsdSource {
         let mut paths = Vec::new();
         stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| paths.push(path.clone()))?;
         for path in paths {
-            for attribute in stage.prim(path)?.attributes()? {
+            let prim = stage.prim(&path)?;
+            if let Some(openusd::sdf::Value::ReferenceListOp(references)) = prim.get_metadata("references")? {
+                for reference in references.explicit_items.iter().chain(&references.prepended_items)
+                    .chain(&references.appended_items).chain(&references.added_items) {
+                    anyhow::ensure!(reference.layer_offset.is_valid_composition(),
+                        "unsupported reference time offset at {path}: {:?}", reference.layer_offset);
+                }
+            }
+            if let Some(openusd::sdf::Value::PayloadListOp(payloads)) = prim.get_metadata("payload")? {
+                for payload in payloads.explicit_items.iter().chain(&payloads.prepended_items)
+                    .chain(&payloads.appended_items).chain(&payloads.added_items) {
+                    anyhow::ensure!(payload.layer_offset.as_ref().is_none_or(openusd::sdf::LayerOffset::is_valid_composition),
+                        "unsupported payload time offset at {path}: {:?}", payload.layer_offset);
+                }
+            }
+            for attribute in prim.attributes()? {
                 attribute.get::<openusd::sdf::Value>()?;
                 if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
                     for time in attribute.time_sample_times()? {
@@ -495,6 +529,38 @@ mod tests {
         ]).is_err());
         assert_eq!(root.bytes.as_ref(), b"#usda 1.0\n");
         assert_eq!(root.dependencies().count(), 0);
+    }
+
+    #[test]
+    fn instanceable_reference_batches_share_native_prototypes() {
+        use openusd::sdf::{LayerOffset, Path};
+        let root = UsdSource::snapshot("instanced/root.usda", &b"#usda 1.0\n"[..]).unwrap();
+        let model = UsdSource::snapshot("instanced/model.usda", &b"#usda 1.0\n(defaultPrim = \"Model\")\ndef Xform \"Model\" { def Cube \"Geometry\" {} }\n"[..]).unwrap();
+        let assembly = root.with_instanceable_references([
+            ("/First", &model, Path::default(), LayerOffset::IDENTITY),
+            ("/Second", &model, Path::default(), LayerOffset::IDENTITY),
+        ]).unwrap();
+        let stage = assembly.open_stage().unwrap();
+        let first = stage.prim("/First").unwrap();
+        let second = stage.prim("/Second").unwrap();
+        assert!(first.is_instance().unwrap() && second.is_instance().unwrap());
+        assert!(first.prototype().unwrap().is_some());
+        assert_eq!(first.prototype().unwrap(), second.prototype().unwrap());
+        for path in ["/First/Geometry", "/Second/Geometry"] {
+            let prim = stage.prim(path).unwrap();
+            assert!(prim.is_instance_proxy().unwrap());
+            assert_eq!(prim.type_name().unwrap().as_deref(), Some("Cube"));
+        }
+        assert_eq!(assembly.dependencies().count(), 1);
+        assert_eq!(&*root.bytes, b"#usda 1.0\n");
+        assert!(!model.open_stage().unwrap().prim("/Model").unwrap().is_instance().unwrap());
+        let ordinary = root.with_reference("/First", &model, Path::default()).unwrap().open_stage().unwrap();
+        assert!(!ordinary.prim("/First").unwrap().is_instance().unwrap());
+        assert!(root.with_instanceable_references([
+            ("/First", &model, Path::default(), LayerOffset::IDENTITY),
+            ("/First/Geometry", &model, Path::default(), LayerOffset::IDENTITY),
+        ]).is_err());
+        assert!(root.dependencies().next().is_none());
     }
 
     #[test]

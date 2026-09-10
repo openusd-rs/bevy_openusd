@@ -5,7 +5,7 @@ if [[ $# != 2 ]]; then
     echo "usage: capture_viewer_ui.sh ASSET OUTPUT.png" >&2
     exit 2
 fi
-for command in weston weston-screenshooter setsid make realpath grep; do
+for command in weston weston-screenshooter setsid make realpath grep timeout; do
     command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 2; }
 done
 asset=$(realpath "$1")
@@ -16,6 +16,10 @@ output=$(realpath -m "$2")
 delay=${USD_UI_CAPTURE_WAIT:-20}
 [[ "$delay" =~ ^[1-9][0-9]*$ && "$delay" -le 300 ]] || {
     echo "USD_UI_CAPTURE_WAIT must be 1..300 seconds" >&2; exit 2;
+}
+capture_timeout=${USD_UI_CAPTURE_TIMEOUT:-15}
+[[ "$capture_timeout" =~ ^[1-9][0-9]*$ && "$capture_timeout" -le 120 ]] || {
+    echo "USD_UI_CAPTURE_TIMEOUT must be 1..120 seconds" >&2; exit 2;
 }
 scene_graph=${USD_UI_CAPTURE_SCENE_GRAPH:-0}
 [[ "$scene_graph" == 0 || "$scene_graph" == 1 ]] || {
@@ -38,6 +42,7 @@ mkdir -p "$(dirname "$output")"
 printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutput_height=1000\ninspection_region=110,110,1400,800\nvalidation=near-black-only\n' \
     "$renderer" "$delay" > "${output%.png}.settings.txt"
 printf 'scene_graph_requested=%s\n' "$scene_graph" >> "${output%.png}.settings.txt"
+printf 'capture_timeout_seconds=%s\n' "$capture_timeout" >> "${output%.png}.settings.txt"
 runtime=$(mktemp -d /dev/shm/usd-viewer-ui.XXXXXX)
 chmod 700 "$runtime"
 compositor_pid=
@@ -94,7 +99,14 @@ if [[ "$scene_graph" == 1 ]]; then
     fi
 fi
 cd "$runtime"
-weston-screenshooter > "${output%.png}.capture.log" 2>&1
+if timeout --kill-after=1 "$capture_timeout" weston-screenshooter > "${output%.png}.capture.log" 2>&1; then
+    echo 'screenshot_status=ok' >> "${output%.png}.settings.txt"
+else
+    status=$?
+    printf 'screenshot_status=failed:%s\n' "$status" >> "${output%.png}.settings.txt"
+    echo "screenshot command failed ($status); capture log retained: ${output%.png}.capture.log" >&2
+    exit 1
+fi
 shopt -s nullglob
 captures=(wayland-screenshot-*.png)
 [[ ${#captures[@]} == 1 ]] || { echo "expected one captured output" >&2; exit 1; }

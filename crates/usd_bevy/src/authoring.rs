@@ -34,6 +34,7 @@ pub fn clear_relationship_targets(stage: &Stage, prim: &str, name: &str) -> Resu
 /// Replaces the reference list authored on a prim in the current edit target.
 /// Relative asset paths remain relative to that layer; an empty list blocks
 /// weaker references. Use `clear_references` to remove the local opinion.
+/// Time mappings require a finite offset and positive finite scale.
 pub fn set_references(stage: &Stage, prim: &str, references: &[openusd::sdf::Reference]) -> Result<()> {
     for reference in references {
         anyhow::ensure!(reference.prim_path.is_empty() || (
@@ -42,8 +43,8 @@ pub fn set_references(stage: &Stage, prim: &str, references: &[openusd::sdf::Ref
                 && reference.prim_path.as_str() != "/"
         ), "reference target must be an absolute prim path or empty for defaultPrim");
         anyhow::ensure!(reference.layer_offset.offset.is_finite()
-            && reference.layer_offset.scale.is_finite() && reference.layer_offset.scale != 0.0,
-            "reference time mapping must have a finite offset and nonzero finite scale");
+            && reference.layer_offset.scale.is_finite() && reference.layer_offset.scale > 0.0,
+            "reference time mapping must have a finite offset and positive finite scale");
     }
     let prim = stage.prim(openusd::sdf::path(prim)?)?;
     anyhow::ensure!(prim.is_valid()?, "reference owner does not exist");
@@ -212,6 +213,32 @@ mod tests {
             .set_type_name("Xform")
             .unwrap();
         stage
+    }
+
+    #[test]
+    fn reference_authoring_retimes_and_rejects_unsupported_scales_atomically() {
+        use openusd::sdf::{LayerOffset, Reference};
+        let stage = crate::UsdSource::snapshot("reference-scales.usda", &br#"#usda 1.0
+class Xform "Model" {
+    double score.timeSamples = {0: 1, 10: 3}
+}
+def Xform "Instance" {}
+"#[..]).unwrap().open_stage().unwrap();
+        let reference = Reference {
+            prim_path: openusd::sdf::path("/Model").unwrap(),
+            layer_offset: LayerOffset::new(10.0, 2.0), ..Default::default()
+        };
+        set_references(&stage, "/Instance", &[reference.clone()]).unwrap();
+        for (time, value) in [(10.0, 1.0), (20.0, 2.0), (30.0, 3.0)] {
+            assert_eq!(stage.prim("/Instance").unwrap().attribute("score")
+                .get_at::<f64>(Some(openusd::usd::TimeCode::new(time))).unwrap(), Some(value));
+        }
+        let before = stage.root_layer().export_to_string().unwrap();
+        for scale in [-1.0, 0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let invalid = Reference { layer_offset: LayerOffset::new(0.0, scale), ..reference.clone() };
+            assert!(set_references(&stage, "/Instance", &[reference.clone(), invalid]).is_err());
+            assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        }
     }
 
     #[test]

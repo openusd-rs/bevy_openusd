@@ -165,11 +165,57 @@ make run RUN_WITH= APP_TARGET='--example reference_benchmark' ARGS='32 3'
 It reports assembly time only, not Bevy projection, rendering or disk I/O.
 For release measurements, append `--release` to `APP_TARGET`.
 
+`with_instanceable_references` accepts the same four-field entries as
+`with_offset_references` and marks every mount instanceable. OpenUSD determines
+prototype sharing; descendant prims become instance proxies, not independently
+editable copies. The ordinary reference APIs do not mark mounts instanceable.
+Native relocated-USDZ tests retain shared instances in root/edit-layer saves.
+Flattened saves currently expand instances into independent geometry copies:
+the upstream flattener removes instanceable metadata and does not emit shared
+prototype references. Use a composition-preserving save to retain instancing.
+Flattened editor saves also reject scenes carrying `clips` metadata before
+writing any output: upstream does not yet bake clip schedules and values.
+This conservative check includes empty clip dictionaries. Root/edit-layer saves
+remain available to preserve authored composition; full clip baking is unfinished.
+The headless example verifies two same-timing mounts sharing a mesh and a third
+retimed mount using the correct sampled geometry. It checks forward/backward
+clock changes, stable entities/runtime names and cleanup after root despawn:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example instanceable_sources'
+```
+
+`assets/retimed_instances.usda` places three native instances side by side;
+the third uses offset 10 and scale 2. Its independently authored baked reference
+is `assets/retimed_instances_reference.usda`. The GPU regression checks times
+10/20/30 at a fixed camera, three visible meshes and zero RGB pixel differences:
+
+```sh
+make --eval='check-retimed-images:; @/bin/bash scripts/check_retimed_instances.sh target/NEW-retimed-images' check-retimed-images
+```
+
+The output directory must be new. Logs, metadata, raw pixels and diff images are
+retained. The three fixed-time cases establish sampled-frame equivalence, not performance.
+The script also swaps two assemblies' clocks from 10/20 to 20/10 after 30 ready
+frames and compares against the baked reference at the final times. That case
+uses `USD_CAPTURE_INSTANCE_SPACING=14` and a wider camera to expose all six cubes.
+The capture tool accepts a positive finite spacing safe for 16 instances; its
+default remains 2.5, and the selected spacing is recorded in capture metadata.
+
 `with_offset_references` accepts `(destination, source, target, LayerOffset)`
 entries using `openusd::sdf::LayerOffset`. It preserves reference arcs while
 retiming samples; offsets must be finite and scales finite and positive.
 The existing `with_references` API uses identity offsets. Invalid entries reject
-the whole batch without changing inputs. `examples/retimed_sources.rs` demonstrates
+the whole batch without changing inputs. The lower-level
+`authoring::set_references` also requires positive finite scales. Native OpenUSD
+supports negative scales with a deprecation warning, but the pinned Rust reader
+failed a reversed-sample probe; newly authored negative mappings are rejected
+rather than silently interpreted incorrectly. Source validation also rejects
+invalid time offsets in composed reference and payload lists on traversed prims, including
+the internal-reference case that did not surface a composition error. Rejected
+reloads retain the last valid projection. Sublayer offsets and unselected
+branches are not covered by this additional arc-metadata check.
+`examples/retimed_sources.rs` demonstrates
 one animated source mounted twice with different timing and checks projected mesh
 radii and stable entities across clock changes:
 
@@ -189,9 +235,10 @@ make run RUN_WITH= APP_TARGET='--example composed_sources'
 
 `source_benchmark` measures the actual UsdSceneRoot lifecycle for one and four
 roots, each containing the requested number of native USD instances. Three
-alternating-order samples report initial load/validation/projection, captured
+alternating-order samples report typed instanceable-batch assembly and replacement
+assembly separately from initial load/validation/projection, captured
 dependency reload, idle App updates and asset sharing. It checks geometry updates,
-entity identity and runtime-only components. Inputs are already captured in memory;
+entity identity, shared native prototypes and runtime-only components. Inputs are already captured in memory;
 disk I/O, plugin startup, GPU upload and rendering are excluded.
 
 ```sh
@@ -770,6 +817,10 @@ their pixel correctness or rendering readiness. See
 [Weston's debug scopes](https://wayland.pages.freedesktop.org/weston/toc/libweston/log.html).
 
 The `.settings.txt` companion also records whether the diagnostic was requested.
+`USD_UI_CAPTURE_TIMEOUT` bounds the screenshot subprocess to 1..120 seconds
+(default 15), followed by a one-second kill grace. A failed or timed-out command
+records its exit status in settings, retains its log and triggers normal cleanup;
+it does not emit `UI_CAPTURE_OK` or retry automatically.
 Vulkan remains the default. `USD_UI_COMPOSITOR_RENDERER`
 accepts `vulkan`, `gl` or `pixman` for diagnostic experiments; the latter two are
 not validated alternatives. Three local GL captures were vertically inverted

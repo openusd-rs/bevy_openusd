@@ -13,6 +13,9 @@ struct State {
     curve_steps: usize,
     level: u32,
     refined: usize,
+    mesh_entities: usize,
+    unique_meshes: usize,
+    standard_materials: usize,
     errors: Vec<String>,
     renderer_error: Option<String>,
 }
@@ -74,6 +77,16 @@ fn publish(world: &mut World) {
     state.level = world.get_resource::<UsdSubdivisionSettings>().map_or(0, |settings| settings.levels());
     state.curve_steps = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().cubic_steps();
     state.refined = world.query::<&UsdSubdivisionApplied>().iter(world).count();
+    let mut meshes = std::collections::HashSet::new();
+    let mut materials = std::collections::HashSet::new();
+    state.mesh_entities = 0;
+    for (mesh, material) in world.query_filtered::<(&Mesh3d, Option<&MeshMaterial3d<StandardMaterial>>), With<usd_bevy::UsdPrimRef>>().iter(world) {
+        state.mesh_entities += 1;
+        meshes.insert(mesh.0.id());
+        if let Some(material) = material { materials.insert(material.0.id()); }
+    }
+    state.unique_meshes = meshes.len();
+    state.standard_materials = materials.len();
     state.errors = world.query::<(&usd_bevy::UsdPrimRef, &UsdSubdivisionError)>().iter(world)
         .map(|(prim, error)| format!("{}: {}", prim.path, error.0)).collect();
     state.errors.extend(world.query::<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>().iter(world)
@@ -124,6 +137,15 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
         }));
     }
     body.add_normal("rendering.curves", "Cubic curves", "options", curve_pods);
+    body.add_normal("rendering.scene", "Scene assets", "options", vec![
+        Pod::new("rendering.scene.counts").with_custom_units(5, move |ui| {
+            ui.label(&format!("USD mesh entities: {}", state.mesh_entities));
+            ui.label(&format!("Referenced mesh handles: {}", state.unique_meshes));
+            ui.label(&format!("Standard material handles: {}", state.standard_materials));
+            ui.label("Includes hidden USD mesh entities");
+            ui.label("Handle counts, not GPU memory usage");
+        }),
+    ]);
     if state.errors.is_empty() { return; }
     let errors = state.errors.into_iter().enumerate().map(|(index, error)| {
         let lines = super::lighting::status_lines(&error);
@@ -137,6 +159,41 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_counts_track_shared_handles_hidden_entities_and_cleanup() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let bridge = RenderSettingsBridge::default();
+        configure(&mut app, bridge.clone());
+        let mut meshes = Assets::<Mesh>::default();
+        let shared = meshes.add(Cuboid::default());
+        let distinct = meshes.add(Cuboid::default());
+        let mut materials = Assets::<StandardMaterial>::default();
+        let material = materials.add(StandardMaterial::default());
+        let other_material = materials.add(StandardMaterial::default());
+        let first = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/First"), Mesh3d(shared.clone()), MeshMaterial3d(material.clone()))).id();
+        let second = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/Second"), Mesh3d(shared), MeshMaterial3d(material), Visibility::Hidden)).id();
+        let third = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/Third"), Mesh3d(distinct.clone()))).id();
+        app.world_mut().spawn((Mesh3d(distinct), MeshMaterial3d(other_material.clone())));
+        app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/NoMesh"), MeshMaterial3d(other_material.clone())));
+        app.update();
+        let counts = || {
+            let state = bridge.0.lock().unwrap();
+            (state.mesh_entities, state.unique_meshes, state.standard_materials)
+        };
+        assert_eq!(counts(), (3, 2, 1));
+        app.world_mut().entity_mut(third).insert(MeshMaterial3d(other_material));
+        app.update();
+        assert_eq!(counts(), (3, 2, 2));
+        app.world_mut().despawn(first);
+        app.update();
+        assert_eq!(counts(), (2, 2, 2));
+        app.world_mut().despawn(second);
+        app.world_mut().despawn(third);
+        app.update();
+        assert_eq!(counts(), (0, 0, 0));
+    }
 
     #[test]
     fn renderer_failure_is_retained_without_exiting_or_resuming_rendering() {

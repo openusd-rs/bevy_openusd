@@ -750,6 +750,10 @@ also include `lighting`, `timeline` and the default outliner.
 The Rendering pane (`USD_VIEWER_PANE=rendering`) switches between the control cage
 and subdivision levels 1–6 at runtime, reports refined mesh prim counts, and lists
 subdivision/point-instancer errors. These controls do not author USD opinions.
+Its Scene assets section counts USD mesh entities and distinct referenced mesh
+and StandardMaterial handles, including hidden entities but excluding viewer
+helpers. These are handle counts, not draw calls or GPU memory measurements;
+custom material types are not included in the StandardMaterial count.
 `assets/subdivision_cube.usda` and `scripts/replays/subdivision_toggle.replay`
 exercise level 2 at five seconds and restore the control cage at fourteen seconds;
 capture at eleven or twenty seconds respectively to inspect the two states.

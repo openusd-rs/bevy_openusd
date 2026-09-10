@@ -25,6 +25,22 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Viewer scene asset counts
+
+The Rendering pane now reports USD mesh entities and distinct referenced Mesh
+and StandardMaterial handles. Hidden entities count; non-USD helpers do not.
+Custom materials are excluded from the explicitly labeled StandardMaterial count.
+These are not loaded-asset, draw-call, GPU-memory or performance measurements.
+The regression checks shared handles, distinct handles, hidden entities, absent
+materials, non-mesh USD prims, helper exclusion, material changes and cleanup.
+All 470 ordinary tests pass (ten ignored), as do check-all and build:
+`/tmp/scene-count-{tests,check,build}.log`.
+The native UI capture `target/viewer-ui-captures/scene-counts.png` was inspected:
+all three sections are upright and readable, and the retimed-instance fixture
+reports three mesh entities sharing one mesh and one StandardMaterial at time zero.
+The pane obscures much of the model; this is UI evidence, not geometry acceptance
+or a resolution of the intermittent black-capture issue.
+
 ### Reject invalid sublayer time offsets
 
 The same Bevy-world regression found a negative sublayer scale could also reach

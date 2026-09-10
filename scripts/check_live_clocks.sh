@@ -11,7 +11,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 mkdir -p "$(dirname "$output")"
 mkdir "$output"
-unset USD_CPU_SKINNING USD_CAPTURE_CAMERA USD_CAPTURE_DOME USD_SUBDIVISION_LEVELS
+unset USD_CPU_SKINNING USD_CAPTURE_CAMERA USD_CAPTURE_DOME USD_SUBDIVISION_LEVELS USD_CURVE_STEPS
 export USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off
 
 run_example() {

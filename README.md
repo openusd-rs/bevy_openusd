@@ -476,6 +476,16 @@ linear curves are unchanged. Existing output-size limits still apply. Changing
 the resource alone does not trigger a resync: reload or explicitly reproject
 existing curves to apply it. This does not add width-aware curve surfaces.
 
+For the viewer and fixed-camera capture tool, set `USD_CURVE_STEPS=1..64` before
+launch (default eight). Invalid values fail before renderer startup. Capture
+metadata records `curve_steps`:
+
+```sh
+USD_CURVE_STEPS=32 make run ARGS='assets/curve_gradients.usda'
+USD_CURVE_STEPS=32 make run APP_TARGET='--example viewer_capture' \
+  ARGS='assets/curve_gradients.usda target/curves-32.png 0 0 0 8 0 0 0'
+```
+
 `assets/periodic_bezier.usda` compares a three-control-point periodic Bezier
 with an explicitly closed four-point nonperiodic equivalent. Both render the
 same cubic loop, not the triangular control hull.

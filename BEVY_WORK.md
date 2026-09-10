@@ -25,6 +25,42 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Viewer curve quality configuration
+
+The viewer and offscreen capture executable share startup parsing for
+USD_CURVE_STEPS (1–64, default eight) and install the canonical UsdCurveSettings
+resource before projection. Invalid integers, out-of-range values and non-UTF8
+environment values return errors before renderer startup. Capture metadata records
+the effective curve_steps, and the live-clock suite clears the override for
+repeatable defaults. This is a launch setting, not a live ribbon quality control.
+
+Shared parser tests cover defaults, both bounds, intermediate values, negative,
+fractional, oversized and nonnumeric inputs. Capture readback tests assert the
+quality metadata. Width-aware surfaces and adaptive tessellation remain open.
+
+Native offscreen captures at one and 64 steps show endpoint chords versus smooth
+gradient arcs, with matching curve_steps metadata:
+`target/curve-quality-captures/steps-{1,64}.png` (both inspected).
+An invalid 65-step viewer launch rejects before renderer startup through make;
+log: `/tmp/viewer-curve-quality-invalid-make.log`.
+
+Full-host captures exposed a separate repaint issue: both 18- and 40-second
+captures stayed black despite projected scene and UI_UPDATED logs. A replay with
+only a future event (none executed during capture) continuously requested frames
+and rendered the complete UI. The viewer now calls the public host.request_repaint
+each update, without changing the sibling Mara implementation. This keeps Bevy
+frames progressing for static startup as well as animation; idle rendering cost
+is not benchmarked. Before/control evidence:
+`target/viewer-ui-captures/curve-quality-64{,-recheck,-repaint}.png`.
+
+After the repaint change, an 18-second capture with USD_UI_REPLAY explicitly
+unset shows the complete Ready UI and all four smooth gradient arcs:
+`target/viewer-ui-captures/curve-quality-64-final.png` (inspected). The known
+clipboard, Vulkan-loader and unsupported-SSAO diagnostics remain; this is not a
+clean-environment claim. Final log: `/tmp/viewer-curve-quality-ui-final.log`.
+All 457 ordinary workspace tests pass (eight ignored), plus check-all/build and
+whitespace checks; `/tmp/viewer-curve-quality-final-{tests,check,build}.log`.
+
 ### Configurable cubic curve quality
 
 The library now exposes canonical route::curves::UsdCurveSettings with validated

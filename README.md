@@ -918,6 +918,15 @@ The renderer still preserves finite affine shear/singular transforms through its
 residual path. `live::current_transform` returns `None` on a TRS read error;
 `route::xform::transform_of` retains its documented identity-on-error fallback.
 
+`make run RUN_WITH= APP_TARGET='--example normal_fixture' ARGS='target/normal_probe'`
+creates a new directory containing a normal-mapped quad, an equivalent
+explicit-normal reference and an opposite-Y control. It refuses overwrites.
+The 8-bit map uses raw color space and scale/bias (2,-1), following the
+[UsdPreviewSurface normal specification](https://openusd.org/24.08/spec_usdpreviewsurface.html).
+Bevy's tangent generation already compensates the relevant handedness change;
+adding a second normal-map Y flip would break this fixture. This checks a static
+constant map, not arbitrary texture transforms, scale/bias or deformed tangents.
+
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a
 default or a time sample using the ordinary attribute controls; these edits keep

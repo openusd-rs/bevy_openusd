@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Normal-map orientation probe
+
+Added `examples/normal_fixture.rs`, which generates a raw 8-bit tangent-normal
+map, its equivalent explicit-normal quad and an opposite-Y control in a new
+directory. The source follows the canonical USD PreviewSurface scale/bias rule:
+https://openusd.org/24.08/spec_usdpreviewsurface.html . The CPU regression verifies
+the actual generated tangent basis maps the sampled vector to the expected world
+normal and that an extra Y flip produces a different vector. Bevy 0.19.1's
+`bevy_mesh/src/mikktspace.rs` already negates tangent handedness after generation;
+no renderer flip or other speculative material change was made.
+
+All three GPU captures were inspected at eye (0,1,5), focus (0,1,0), time 0,
+shadows off: `target/normal_before_{mapped,reference}.png` and
+`target/normal_opposite.png`. Mapped vs equivalent differs at only two of 921,600
+pixels, maximum RGB error 1 (strict-zero comparison exits nonzero). The opposite
+control changes 121,104 pixels, maximum 163, mean RGB error 19.492016, visibly
+darkening the quad. All captures have CAPTURE_OK without WARN/ERROR entries.
+Logs: `/tmp/normal-before-{mapped,reference,compare}.log`,
+`/tmp/normal-opposite-{capture,compare}.log`.
+
+All 423 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and generator execution (`/tmp/normal-fixture-{tests,check,build,run}.log`).
+This verifies a static constant normal map and orientation-sensitive reference,
+not arbitrary shader scale/bias, UV transforms, deformed tangent fidelity or
+native-renderer image parity.
+
 ### Guarded public TRS reads
 
 Moved the renderer's guarded TRS decomposition into one internal reader helper.

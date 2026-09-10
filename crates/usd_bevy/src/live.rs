@@ -523,13 +523,13 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         });
     }
     if changes.iter().any(|c| !c.resynced.is_empty()) {
-        reconcile(world, live, map);
+        reconcile(world, live, map, true);
         return;
     }
     let changed_paths: Vec<_> = changes.iter().flat_map(|change| change.changed_info.iter())
         .filter(|path| !suppressed.contains(prim_of(path))).map(String::as_str).collect();
     if affects_projection_consumers(&live.stage, map, &changed_paths) {
-        reconcile(world, live, map);
+        reconcile(world, live, map, true);
         return;
     }
     // `changed_info` only: group the changed *property* paths by owning prim so
@@ -583,8 +583,8 @@ pub(crate) fn remap_namespace(world: &mut World, old: &str, new: &str) {
     world.insert_resource(map);
 }
 
-/// Reconciles projected paths, hierarchy and routed components with the stage.
-pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
+/// Reconciles paths, hierarchy and routed components, optionally rebuilding the live animation index.
+pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool) {
     let stage = &live.stage;
     let registry = registry_of(world);
     let mut current: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -622,7 +622,7 @@ pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntit
         let Ok(p) = openusd::sdf::path(path) else {
             continue;
         };
-        if prim_is_animated(stage, &p) {
+        if collect_animation && prim_is_animated(stage, &p) {
             animated.insert(path.clone());
         }
         if let Some(entity) = map.entity(path).filter(|entity| world.get_entity(*entity).is_ok()) {
@@ -647,7 +647,7 @@ pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntit
         }
     }
     // Refresh the animated set for the reconciled prim set.
-    world.insert_resource(AnimatedPrims(animated));
+    if collect_animation { world.insert_resource(AnimatedPrims(animated)); }
 }
 
 // ─── Bevy plugin + systems ──────────────────────────────────────────
@@ -2026,6 +2026,26 @@ def NodeGraph "Graph" {}
             .set(Value::TokenVec(vec!["xformOp:translate".into()]))
             .unwrap();
         stage
+    }
+
+    #[test]
+    fn reconciliation_can_skip_the_live_animation_index() {
+        let live = LiveStage::new(animated_translate_stage());
+        let mut world = World::new();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let mover = map.entity("/Mover").unwrap();
+        let sentinel = std::collections::HashSet::from(["/OtherSession".to_string()]);
+        world.insert_resource(AnimatedPrims(sentinel.clone()));
+        world.insert_resource(StageTime { current: 5.0 });
+        reconcile(&mut world, &live, &mut map, false);
+        assert_eq!(world.resource::<AnimatedPrims>().0, sentinel);
+        assert_eq!(map.entity("/Mover"), Some(mover));
+        assert_eq!(world.get::<Transform>(mover).unwrap().translation.x, 5.0);
+        world.insert_resource(StageTime { current: 10.0 });
+        reconcile(&mut world, &live, &mut map, true);
+        assert_eq!(world.resource::<AnimatedPrims>().0, std::collections::HashSet::from(["/Mover".to_string()]));
+        assert_eq!(world.get::<Transform>(mover).unwrap().translation.x, 10.0);
     }
 
     /// Projection resolves animated transforms at the world's `StageTime`, and

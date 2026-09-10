@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Skip unused source-reload animation discovery
+
+Source-root publication now disables animation-index collection during
+reconciliation, rather than building the live editor index and immediately
+discarding it. Live editor reconciliation still collects its index; source-root
+clock changes retain their existing current-stage discovery. No cross-stage cache
+was introduced. Two regressions cover index ownership and static/animated reloads
+followed by independent root scrubbing, preserving entity identity and unrelated
+live-session resources.
+
+Paired before/after/after/before release runs at 4,096 shapes measured reloads
+601.643–785.630ms before versus 432.302–508.268ms after. Smaller instrumented runs
+locate the reduction in projection; validation ranges overlap. Raw evidence and
+limitations are in `benchmarks/reload-animation.md`. This supports a fixture-local
+CPU reload improvement, not rendering acceptance or universal speedup. Instance
+edit reconciliation and clock discovery remain separate optimization work.
+
+All 381 ordinary tests, check-all, build and whitespace checks pass; logs are
+`/tmp/reload-animation-{tests,check,build,release-build}.log`. Both executables
+passed all benchmark lifecycle assertions. The five optional native export tests
+were not rerun for this projection-only change.
+
 ### Release lifecycle and cache baseline
 
 Ran optimized source-root benchmarks at 128 and 1,024 native instances per root,

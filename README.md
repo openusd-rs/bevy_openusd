@@ -110,6 +110,9 @@ the lifecycle benchmark. Debug timings are diagnostic, not production guarantees
 The [release CPU baseline](benchmarks/source-lifecycle.md) records raw samples up
 to 4,096 projected shapes, source-phase profiles and a separate cache comparison.
 It demonstrates asset sharing, but not CPU acceleration or rendered performance.
+The subsequent [reload comparison](benchmarks/reload-animation.md) measures reduced
+CPU reload cost from skipping an unused animation-index scan, with clock-isolation
+regressions. It does not establish GPU or frame-rate improvements.
 
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional

@@ -273,7 +273,7 @@ fn spawn_usd_scenes(world: &mut World) {
                 let live = LiveStage::new(stage);
                 let map = timed(profiled, &mut timing.projection, || {
                     if let Some(mut runtime) = retained {
-                        reconcile(world, &live, &mut runtime.map);
+                        reconcile(world, &live, &mut runtime.map, false);
                         if let Some(root) = runtime.map.entity("/") {
                             world.entity_mut(root).insert(Transform::from_rotation(stage_up_axis(&live.stage)));
                         }
@@ -426,6 +426,41 @@ def Xform "Old" {}
         spawn_usd_scenes(&mut world);
         assert_eq!(world.get::<Score>(ea), Some(&Score { value: 20.0 }));
         assert!(world.get::<RuntimeMarker>(ea).is_some());
+    }
+
+    #[test]
+    fn source_reload_and_scrub_detect_new_animation_without_a_shared_index() {
+        let (mut world, handle) = instance_world();
+        let static_source = UsdSource::snapshot("instances.usda", &b"#usda 1.0\ndef Xform \"Mover\" {}\n"[..]).unwrap();
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = static_source.clone();
+        let sentinel = std::collections::HashSet::from(["/OtherSession".to_string()]);
+        world.insert_resource(AnimatedPrims(sentinel.clone()));
+        world.insert_resource(StageTime { current: 999.0 });
+        let a = world.spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 2.0 })).id();
+        let b = world.spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 8.0 })).id();
+        spawn_usd_scenes(&mut world);
+        let ea = instance_entity(&world, a, "/Mover");
+        let eb = instance_entity(&world, b, "/Mover");
+        for animated in [true, false, true] {
+            world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = if animated {
+                UsdSource::snapshot("instances.usda", ANIMATED.as_bytes()).unwrap()
+            } else { static_source.clone() };
+            world.get_mut::<UsdInstanceTime>(a).unwrap().current = 2.0;
+            world.get_mut::<UsdInstanceTime>(b).unwrap().current = 8.0;
+            spawn_usd_scenes(&mut world);
+            assert_eq!(world.get::<Transform>(ea).unwrap().translation.x, if animated { 2.0 } else { 0.0 });
+            assert_eq!(world.get::<Transform>(eb).unwrap().translation.x, if animated { 8.0 } else { 0.0 });
+            world.get_mut::<UsdInstanceTime>(a).unwrap().current = 5.0;
+            spawn_usd_scenes(&mut world);
+            assert_eq!(world.get::<Transform>(ea).unwrap().translation.x, if animated { 5.0 } else { 0.0 });
+            assert_eq!(world.get::<Transform>(eb).unwrap().translation.x, if animated { 8.0 } else { 0.0 });
+            assert_eq!(instance_entity(&world, a, "/Mover"), ea);
+            assert_eq!(instance_entity(&world, b, "/Mover"), eb);
+            assert_eq!(world.resource::<StageTime>().current, 999.0);
+            assert_eq!(world.resource::<AnimatedPrims>().0, sentinel);
+            assert_eq!(world.get::<UsdSceneState>(a), Some(&UsdSceneState::Ready));
+            assert_eq!(world.get::<UsdSceneState>(b), Some(&UsdSceneState::Ready));
+        }
     }
 
     #[test]

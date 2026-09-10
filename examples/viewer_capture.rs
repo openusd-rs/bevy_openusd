@@ -39,6 +39,7 @@ struct Capture {
     output: PathBuf,
     time: f64,
     instance_times: Vec<f64>,
+    instance_spacing: f32,
     swap_clocks: bool,
     clocks_swapped: bool,
     eye: Vec3,
@@ -89,7 +90,7 @@ impl Capture {
         let output = PathBuf::from(&args[1]);
         if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
         Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, curve_steps: 8, asset: PathBuf::from(&args[0]), output, time, eye, focus,
-            instance_times: vec![time], swap_clocks: false, clocks_swapped: false,
+            instance_times: vec![time], instance_spacing: 2.5, swap_clocks: false, clocks_swapped: false,
             started: Instant::now(), ready_frames: 0, requested: false, mesh_report: String::new() })
     }
 
@@ -101,6 +102,15 @@ impl Capture {
             return Err("USD_CAPTURE_INSTANCE_TIMES requires 1 to 16 finite time codes".into());
         }
         self.instance_times = times;
+        Ok(())
+    }
+
+    fn set_instance_spacing(&mut self, value: &str) -> Result<(), String> {
+        let spacing = value.parse::<f32>().map_err(|_| "invalid USD_CAPTURE_INSTANCE_SPACING")?;
+        if !spacing.is_finite() || spacing <= 0.0 || !(spacing * 16.0).is_finite() {
+            return Err("USD_CAPTURE_INSTANCE_SPACING must be positive, finite and safe for 16 instances".into());
+        }
+        self.instance_spacing = spacing;
         Ok(())
     }
 }
@@ -146,6 +156,13 @@ fn main() -> AppExit {
         if let Err(error) = capture.set_instance_times(&times) {
             eprintln!("{error}"); return AppExit::error();
         }
+    }
+    match std::env::var("USD_CAPTURE_INSTANCE_SPACING") {
+        Ok(value) => if let Err(error) = capture.set_instance_spacing(&value) {
+            eprintln!("{error}"); return AppExit::error();
+        },
+        Err(std::env::VarError::NotPresent) => {},
+        Err(error) => { eprintln!("USD_CAPTURE_INSTANCE_SPACING: {error}"); return AppExit::error(); },
     }
     if capture.instance_times.len() > 1 && capture.camera_path.is_some() {
         eprintln!("multi-instance capture requires a fixed camera"); return AppExit::error();
@@ -236,7 +253,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
     }
     let scene: Handle<UsdScene> = server.load(capture.asset.file_name().unwrap().to_string_lossy().into_owned());
     for (index, current) in capture.instance_times.iter().copied().enumerate() {
-        let x = (index as f32 - (capture.instance_times.len() - 1) as f32 * 0.5) * 2.5;
+        let x = (index as f32 - (capture.instance_times.len() - 1) as f32 * 0.5) * capture.instance_spacing;
         commands.spawn((UsdSceneRoot(scene.clone()), CaptureInstance(index), usd_bevy::instance::UsdInstanceTime { current },
             Transform::from_xyz(x, 0.0, 0.0)));
     }
@@ -409,7 +426,7 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
     let report = format!("asset={asset}\ntime={time}\neye={eye:?}\ntarget={target:?}\nwidth=1280\nheight=720\nformat=rgba8-srgb\nrow_bytes=5120\nbytes={bytes}\nready_frames={frames}\ncpu_skinning={cpu}\n",
         asset = capture.asset.display(), time = capture.time, eye = capture.eye, target = capture.focus,
         bytes = rgba.len(), frames = capture.ready_frames, cpu = std::env::var_os("USD_CPU_SKINNING").is_some());
-    let report = report + &format!("instance_times={:?}\ninstance_spacing=2.5\n", capture.instance_times)
+    let report = report + &format!("instance_times={:?}\ninstance_spacing={}\n", capture.instance_times, capture.instance_spacing)
         + &format!("clocks_reversed_after_ready_frames={}\n", if capture.clocks_swapped { 30 } else { 0 })
         + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
         capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("curve_steps={}\n", capture.curve_steps) + &capture.mesh_report;
@@ -445,6 +462,17 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn instance_spacing_is_finite_positive_and_atomic() {
+        let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();
+        assert_eq!(capture.instance_spacing, 2.5);
+        capture.set_instance_spacing("14").unwrap();
+        for invalid in ["", "NaN", "inf", "0", "-1", "3e38", "bad"] {
+            assert!(capture.set_instance_spacing(invalid).is_err());
+            assert_eq!(capture.instance_spacing, 14.0);
+        }
+    }
+
     #[test]
     fn instance_time_lists_are_finite_bounded_and_atomic() {
         let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "3".into()]).unwrap();

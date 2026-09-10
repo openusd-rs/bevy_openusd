@@ -195,7 +195,12 @@ make --eval='check-retimed-images:; @/bin/bash scripts/check_retimed_instances.s
 ```
 
 The output directory must be new. Logs, metadata, raw pixels and diff images are
-retained. This is sampled-frame equivalence, not a live-clock or performance test.
+retained. The three fixed-time cases establish sampled-frame equivalence, not performance.
+The script also swaps two assemblies' clocks from 10/20 to 20/10 after 30 ready
+frames and compares against the baked reference at the final times. That case
+uses `USD_CAPTURE_INSTANCE_SPACING=14` and a wider camera to expose all six cubes.
+The capture tool accepts a positive finite spacing safe for 16 instances; its
+default remains 2.5, and the selected spacing is recorded in capture metadata.
 
 `with_offset_references` accepts `(destination, source, target, LayerOffset)`
 entries using `openusd::sdf::LayerOffset`. It preserves reference arcs while

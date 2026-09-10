@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Live retimed assembly clocks and capture spacing
+
+Extended the retimed GPU script with two assemblies at clocks 10/20, reversed to
+20/10 after 30 ready frames, compared against independent baked geometry loaded
+at the final clocks. The initial capture matched exactly but fixed spacing 2.5
+made assemblies overlap (`target/retimed-instance-live-regression/`), weakening
+visual inspection. viewer_capture now accepts USD_CAPTURE_INSTANCE_SPACING,
+validated as positive/finite and safe for 16 instances, and records it in metadata.
+The default remains 2.5; both regression scripts isolate this environment setting.
+An ordinary test checks default, accepted spacing and atomic invalid-value rejection.
+The live retimed case now uses spacing 14 and a wider fixed camera, and requires
+six visible meshes, final times 20/10 and reversal metadata before RGB comparison.
+The separated live/reference pair matches exactly (zero changed pixels out of
+921600) and both images were visually inspected with all six cubes unobscured.
+All three fixed-time comparisons also pass again:
+`target/retimed-instance-spaced-regression/`, `/tmp/retimed-instance-spaced-regression.log`.
+All 467 ordinary workspace tests pass (ten ignored), as do check-all, build,
+both scripts' syntax checks and whitespace validation:
+`/tmp/retimed-live-{tests,check,build}.log`.
+
 ### Retimed native-instance GPU reference regression
 
 Added a three-instance fixture with internal references to an abstract model,

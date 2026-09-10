@@ -14,6 +14,8 @@ use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, Meshable, PrimitiveTopology, VertexAttributeValues};
 
+pub(crate) mod compact;
+
 /// Convert a `crate::read::geom::ReadMesh` into a Bevy mesh.
 ///
 /// Steps:

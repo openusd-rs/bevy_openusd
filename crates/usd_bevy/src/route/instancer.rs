@@ -601,8 +601,14 @@ mod tests {
             let ea = entities(app.world(), a);
             let eb = entities(app.world(), b);
             let positions = |world: &World, entity| {
-                world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap()
-                    .attribute(Mesh::ATTRIBUTE_POSITION).unwrap().clone()
+                let mut entities = vec![entity];
+                entities.extend(world.get::<Children>(entity).into_iter().flat_map(|children| children.iter())
+                    .filter(|child| world.get::<super::super::subset::UsdSubset>(*child).is_some()));
+                entities.into_iter().flat_map(|entity| {
+                    let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
+                    let bevy::mesh::VertexAttributeValues::Float32x3(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!() };
+                    mesh.indices().unwrap().iter().map(|index| positions[index]).collect::<Vec<_>>()
+                }).collect::<Vec<_>>()
             };
             let validate = |world: &World, entities: [Entity; 3]| {
                 let expected = positions(world, entities[0]);
@@ -610,7 +616,10 @@ mod tests {
                     assert_eq!(positions(world, entity), expected);
                     let subset = world.get::<Children>(entity).unwrap()[0];
                     assert!(world.get::<super::super::subset::UsdSubset>(subset).is_some());
-                    assert_eq!(positions(world, subset), expected);
+                    let name = &world.get::<super::super::subset::UsdSubset>(subset).unwrap().0;
+                    let ordinary_subset = world.get::<Children>(entities[0]).unwrap().iter()
+                        .find(|child| world.get::<super::super::subset::UsdSubset>(*child).is_some_and(|subset| &subset.0 == name)).unwrap();
+                    assert_eq!(positions(world, subset), positions(world, ordinary_subset));
                 }
                 assert_eq!(world.get::<Mesh3d>(entities[1]).unwrap().0, world.get::<Mesh3d>(entities[2]).unwrap().0);
             };
@@ -738,8 +747,9 @@ def PointInstancer "PI" {
         let indices = |world: &World, part| {
             let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(part).unwrap().0).unwrap();
             let bevy::mesh::VertexAttributeValues::Float32x3(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!("positions") };
-            assert_eq!(positions[0][0], 1.0);
-            mesh.indices().unwrap().iter().collect::<Vec<_>>()
+            let points: Vec<_> = mesh.indices().unwrap().iter().map(|index| positions[index]).collect();
+            assert!(points.iter().all(|point| point[0] >= 1.0 && point[0] <= 3.0));
+            points
         };
         let start = indices(app.world(), pa[0]);
         let end = indices(app.world(), pb[0]);

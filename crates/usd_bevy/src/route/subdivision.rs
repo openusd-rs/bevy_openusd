@@ -141,7 +141,7 @@ def PointInstancer "PI" {{
                 for parent in std::iter::once(parents[index]).chain(instances) {
                     for entity in [parent, part(app.world(), parent)] {
                         let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
-                        assert_eq!(mesh.count_vertices(), if times[index] == 0.0 { 98 } else { 384 });
+                        assert_eq!(mesh.count_vertices(), mesh.indices().unwrap().iter().collect::<std::collections::HashSet<_>>().len());
                         let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
                         assert!(normals.iter().all(|normal| (Vec3::from_array(*normal).length_squared() - 1.0).abs() < 1e-5));
                         if times[index] == 3.0 {
@@ -175,12 +175,12 @@ def PointInstancer "PI" {{
         assert_eq!(recovered.len(), 2);
         for entity in recovered {
             let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
-            assert_eq!(mesh.count_vertices(), 384);
+            assert_eq!(mesh.count_vertices(), 320);
         }
         assert_eq!(app.world().get::<ChildOf>(runtime).unwrap().parent(), parents[0]);
         let restored = part(app.world(), parents[0]);
         let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(restored).unwrap().0).unwrap();
-        assert_eq!(mesh.count_vertices(), 384);
+        assert_eq!(mesh.count_vertices(), 64);
         assert_eq!(app.world().get::<Mesh3d>(parents[1]).unwrap().0, unaffected);
     }
 
@@ -314,14 +314,15 @@ def PointInstancer "PI" {
             let handles: Vec<_> = children.iter().map(|&child| world.get::<Mesh3d>(child).unwrap().0.clone()).collect();
             assert_eq!(handles[0], handles[1]);
             let mesh = world.resource::<Assets<Mesh>>().get(&handles[0]).unwrap();
-            assert_eq!(mesh.count_vertices(), 9);
-            let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("points") };
-            assert_eq!(points[1][0], width);
+            assert_eq!(mesh.count_vertices(), 0);
             for child in children {
                 let subset = world.get::<Children>(child).unwrap().iter()
                     .find(|child| world.get::<super::super::subset::UsdSubset>(*child).is_some()).unwrap();
                 let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(subset).unwrap().0).unwrap();
                 assert_eq!(mesh.indices().unwrap().len(), 24);
+                assert_eq!(mesh.count_vertices(), 9);
+                let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("points") };
+                assert_eq!(points[1][0], width);
             }
         };
         let check = |world: &World, entity, width| {

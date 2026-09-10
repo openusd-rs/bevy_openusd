@@ -82,7 +82,7 @@ fn editor_benchmark_counts_subset_payload_and_rejects_failed_opens() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let m = measure(&root.join("assets/material_subsets.usda")).unwrap();
     assert_eq!((m.mesh_entities, m.subset_entities, m.mesh_assets), (3, 2, 4));
-    assert_eq!((m.vertices, m.unreferenced_vertices), (32, 16));
-    assert_eq!((m.vertex_bytes, m.index_bytes, m.morph_bytes, m.image_bytes), (1024, 96, 0, 0));
+    assert_eq!((m.vertices, m.unreferenced_vertices), (16, 0));
+    assert_eq!((m.vertex_bytes, m.index_bytes, m.morph_bytes, m.image_bytes), (512, 96, 0, 0));
     assert!(measure(&root.join("assets/missing-editor-benchmark.usda")).is_err());
 }

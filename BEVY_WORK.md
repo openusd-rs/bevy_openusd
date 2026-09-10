@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Default-prim source references
+
+UsdSource::with_reference now accepts the canonical empty typed Path as a target
+to use the dependency's defaultPrim. It preserves that empty target in authored
+reference metadata instead of replacing it with today's resolved prim name.
+Destinations still require explicit absolute non-root paths. Missing defaults
+fail directly; invalid defaults fail composition validation before publishing.
+The upstream string parser rejects empty strings, so callers use Path::default().
+
+Tests verify projected default-target data, retained empty reference metadata,
+rebuilding against a changed defaultPrim, missing/invalid-default rejection and
+empty-destination rejection. The composed_sources example now uses a default
+reference for First and an explicit reference for Second, preserving its existing
+independent-root and reload checks. Focused source tests pass in
+`/tmp/default-reference-recheck.log`. General typed scene DSL work remains open.
+All 451 ordinary workspace tests pass (seven ignored), plus check-all, build and
+the composed_sources executable. Logs:
+`/tmp/default-reference-{tests,check,build,example}.log`.
+
 ### Source-reference assembly export contracts
 
 An attempted root-layer USDA relocation test failed because the referenced model

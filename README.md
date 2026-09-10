@@ -114,8 +114,13 @@ let assembly = root
     .with_reference("/Second", &model, "/Model")?;
 ```
 
-The receiver must have a `.usda` identifier. Both paths must be absolute non-root
-prim paths; targets must exist and destinations must be new. Existing prim
+The receiver must have a `.usda` identifier. Destinations and explicit targets
+must be absolute non-root prim paths; targets must exist and destinations must be
+new. Pass `openusd::sdf::Path::default()` as the target to use the model's
+`defaultPrim`. The emitted reference retains its empty target rather than baking
+in the resolved name; a missing or unresolvable default fails. An empty typed
+path is distinct from an empty string, which the upstream path parser rejects.
+Existing prim
 patches remain explicit editor/authoring operations. Conflicting dependencies or
 composition errors fail without changing either input. References use the source
 identifier as an absolute asset anchor. For a self-contained assembly with

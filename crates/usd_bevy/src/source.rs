@@ -162,6 +162,7 @@ impl UsdSource {
     /// Mounts a source prim at a new absolute prim path in a USDA root snapshot.
     /// Captured dependencies and the receiver's filesystem policy are retained.
     /// Existing destinations, missing targets and conflicting source bytes fail.
+    /// An empty typed target path references the dependency's defaultPrim.
     pub fn with_reference(
         &self,
         destination: impl openusd::sdf::IntoPath,
@@ -171,13 +172,18 @@ impl UsdSource {
         anyhow::ensure!(self.identifier.ends_with(".usda"), "reference assembly requires a .usda root identifier");
         let destination = openusd::sdf::try_into_path(destination)?;
         let target = openusd::sdf::try_into_path(target)?;
-        for path in [&destination, &target] {
+        for path in std::iter::once(&destination).chain((!target.is_empty()).then_some(&target)) {
             anyhow::ensure!(path.as_str().starts_with('/') && path.as_str() != "/"
                 && path.is_prim_path() && !path.contains_prim_variant_selection(),
                 "reference assembly requires absolute non-root prim paths");
         }
         let mut combined = self.with_dependency(dependency)?;
-        anyhow::ensure!(dependency.open_stage()?.prim(&target)?.is_valid()?, "reference target does not exist: {target}");
+        let dependency_stage = dependency.open_stage()?;
+        if target.is_empty() {
+            anyhow::ensure!(dependency_stage.default_prim().is_some(), "reference source has no defaultPrim");
+        } else {
+            anyhow::ensure!(dependency_stage.prim(&target)?.is_valid()?, "reference target does not exist: {target}");
+        }
         let stage = combined.open_stage()?;
         anyhow::ensure!(!stage.prim(&destination)?.is_valid()?, "reference destination already exists: {destination}");
         stage.define_prim(&destination)?;
@@ -424,6 +430,30 @@ mod tests {
             model_stage.root_layer().export_to_string().unwrap());
         assert!(!root.filesystem && !first.filesystem && !second.filesystem);
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn reference_assembly_uses_and_preserves_default_prim_arcs() {
+        let root = UsdSource::snapshot("defaults/root.usda", &b"#usda 1.0\n"[..]).unwrap();
+        let model = UsdSource::snapshot("defaults/model.usda", &b"#usda 1.0\n(defaultPrim = \"Model\")\ndef Sphere \"Model\" { double radius = 2 }\n"[..]).unwrap();
+        let assembly = root.with_reference("/Instance", &model, openusd::sdf::Path::default()).unwrap();
+        let stage = assembly.open_stage().unwrap();
+        assert_eq!(stage.prim("/Instance").unwrap().attribute("radius").get::<f64>().unwrap(), Some(2.0));
+        let openusd::sdf::Value::ReferenceListOp(references) = stage.prim("/Instance").unwrap().get_metadata("references").unwrap().unwrap() else { panic!() };
+        assert_eq!(references.explicit_items.len(), 1);
+        assert!(references.explicit_items[0].prim_path.is_empty());
+        let changed = UsdSource::snapshot("defaults/model.usda", &b"#usda 1.0\n(defaultPrim = \"Other\")\ndef Cube \"Other\" {}\n"[..]).unwrap();
+        let replacement = root.with_reference("/Instance", &changed, openusd::sdf::Path::default()).unwrap();
+        assert_eq!(replacement.open_stage().unwrap().prim("/Instance").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+        for contents in [
+            "#usda 1.0\ndef Sphere \"Model\" {}\n",
+            "#usda 1.0\n(defaultPrim = \"Missing\")\ndef Sphere \"Model\" {}\n",
+        ] {
+            let invalid = UsdSource::snapshot("defaults/invalid.usda", contents.as_bytes()).unwrap();
+            assert!(root.with_reference("/Instance", &invalid, openusd::sdf::Path::default()).is_err());
+        }
+        assert!(root.with_reference(openusd::sdf::Path::default(), &model, "/Model").is_err());
+        assert!(root.dependencies().next().is_none());
     }
 
     #[test]

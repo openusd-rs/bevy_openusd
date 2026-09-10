@@ -147,8 +147,10 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             if !draft.2.is_empty() { ui.label(&draft.2); }
         }));
     }
+    let mut matrix_pods = Vec::new();
     for attribute in &snapshot.attributes {
-        let key = format!("{path}:{}", attribute.name);
+        let matrix_attribute = attribute.type_name == "matrix4d";
+        let key = format!("{}:{}:{path}:{}", snapshot.document_id, snapshot.edit_layer, attribute.name);
         let attribute = attribute.clone();
         let path = path.clone();
         let drafts = drafts.clone();
@@ -157,9 +159,23 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let summary_lines = path_lines(&attribute.source_summary);
         let expanded = drafts.2.lock().ok().and_then(|states| states.get(&key).copied()).unwrap_or(false);
         let sample_lines = path_lines(&sample_summary(&attribute.sample_times));
-        let units = 16 + summary_lines.len() + sample_lines.len() + if expanded { source_lines.len() } else { 0 };
-        pods.push(Pod::new(Id::new(&key)).with_custom_units(units, move |ui| {
+        let units = 16 + summary_lines.len() + sample_lines.len() + if expanded { source_lines.len() } else { 0 } + if matrix_attribute { 5 } else { 0 };
+        let destination = if matrix_attribute { &mut matrix_pods } else { &mut pods };
+        destination.push(Pod::new(Id::new(&key)).with_custom_units(units, move |ui| {
             ui.label(&format!("{} ({})", attribute.name, attribute.type_name));
+            if matrix_attribute {
+                if attribute.value.is_none() { ui.label("No default: identity draft, not sampled pose"); }
+                let value = attribute.value.clone().or_else(|| value_template("matrix4d")).unwrap();
+                let Some(current) = editable_text(&value) else { ui.label("Invalid matrix value"); return };
+                let Ok(mut state) = drafts.0.lock() else { return };
+                let draft = state.entry(key.clone()).or_insert_with(|| (current.clone(), current.clone(), String::new()));
+                if draft.0 != current { *draft = (current.clone(), current, String::new()); }
+                ui.label("USD rows; translation is in row 4");
+                let mut rows: Vec<String> = draft.1.split('\n').map(str::to_owned).collect();
+                rows.resize(4, String::new());
+                for (index, row) in rows.iter_mut().enumerate() { ui.text_input(row, &format!("Row {}: four numbers", index + 1)); }
+                draft.1 = rows.join("\n");
+            }
             ui.label("Source");
             for line in summary_lines { ui.label(&line); }
             if ui.button(if expanded { "Hide source details" } else { "Show source details" }).clicked {
@@ -199,7 +215,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             let Ok(mut drafts) = drafts.0.lock() else { return };
             let draft = drafts.entry(key).or_insert_with(|| (current.clone(), current.clone(), String::new()));
             if draft.0 != current { *draft = (current.clone(), current, String::new()); }
-            ui.text_input(&mut draft.1, "Value");
+            if !matrix_attribute { ui.text_input(&mut draft.1, "Value"); }
             if ui.button("Apply sample at time").clicked {
                 match parse_sample_time(&time.0).and_then(|time| parse_value(&value, &draft.1).map(|value| (time, value))) {
                     Ok((time_code, value)) => {
@@ -226,6 +242,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             if !draft.2.is_empty() { ui.label(&draft.2); }
         }));
     }
+    if !matrix_pods.is_empty() { body.add_normal("editor.matrices", "Matrix attributes", "options", matrix_pods); }
     body.add_normal("editor.attributes", "Composed properties", "options", pods);
 }
 
@@ -250,6 +267,7 @@ fn value_template(type_name: &str) -> Option<Value> {
         "uint64" => Value::Uint64(0),
         "float" => Value::Float(0.0),
         "double" => Value::Double(0.0),
+        "matrix4d" => Value::Matrix4d(openusd::gf::Matrix4d([1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0])),
         "string" => Value::String(String::new()),
         "token" => Value::Token("".into()),
         "asset" => Value::AssetPath("".into()),
@@ -273,6 +291,7 @@ fn editable_text(value: &Value) -> Option<String> {
         Value::AssetPath(v) => v.as_str().into(),
         Value::Vec3f(v) => format!("{} {} {}", v.x, v.y, v.z),
         Value::Vec3d(v) => format!("{} {} {}", v.x, v.y, v.z),
+        Value::Matrix4d(v) => v.0.chunks_exact(4).map(|row| row.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n"),
         _ => return None,
     })
 }
@@ -299,6 +318,13 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
             if !value.is_finite() { return Err(invalid()); }
             Value::Double(value)
         }
+        Value::Matrix4d(_) => {
+            let values = text.split_whitespace().map(str::parse::<f64>).collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "Matrix needs sixteen finite numbers".to_string())?;
+            let values: [f64; 16] = values.try_into().map_err(|_| "Matrix needs sixteen finite numbers".to_string())?;
+            if !values.iter().all(|v| v.is_finite()) { return Err("Matrix needs sixteen finite numbers".into()); }
+            Value::Matrix4d(openusd::gf::Matrix4d(values))
+        }
         Value::Vec3f(_) | Value::Vec3d(_) => {
             let values: Vec<f64> = text.split_whitespace().map(str::parse)
                 .collect::<Result<_, _>>().map_err(|_| invalid())?;
@@ -316,6 +342,45 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn matrix_rows_preserve_double_precision_and_reject_invalid_input() {
+        use openusd::sdf::Value;
+        let values = [1.000000000000001,0.0,0.5,0.0, 0.75,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 3.25,-4.5,5.75,1.0];
+        let value = Value::Matrix4d(openusd::gf::Matrix4d(values));
+        let text = super::editable_text(&value).unwrap();
+        assert_eq!(text.lines().count(), 4);
+        assert_eq!(text.lines().last().unwrap(), "3.25 -4.5 5.75 1");
+        assert_eq!(super::parse_value(&value, &text).unwrap(), value);
+        for bad in ["", "1 2 3", "0 ".repeat(17).as_str(), text.replace("3.25", "NaN").as_str(), text.replace("3.25", "inf").as_str()] {
+            assert!(super::parse_value(&value, bad).is_err());
+        }
+    }
+
+    #[test]
+    fn parsed_matrix_sample_keeps_stack_and_undo_restores_authored_data() {
+        use usd_bevy::editor::{EditorEdit, EditorSession};
+        let stage = usd_bevy::UsdSource::new("inspector-matrix.usda", br#"#usda 1.0
+def Xform "M" {
+    matrix4d xformOp:transform = ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))
+    double3 xformOp:translate = (1,2,3)
+    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:transform"]
+}
+"#.as_slice()).unwrap().open_stage().unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let template = super::value_template("matrix4d").unwrap();
+        let value = super::parse_value(&template, "1 0 0.5 0\n0.75 1 0 0\n0 0 1 0\n3 4 5 1").unwrap();
+        let order = stage.attribute("/M.xformOpOrder").unwrap().get::<openusd::sdf::Value>().unwrap();
+        editor.edit(EditorEdit::AttributeSample { prim: "/M".into(), name: "xformOp:transform".into(),
+            type_name: "matrix4d".into(), value: value.clone(), time: 10.0 }).unwrap();
+        let attribute = stage.attribute("/M.xformOp:transform").unwrap();
+        assert_eq!(attribute.get::<openusd::sdf::Value>().unwrap(), Some(template));
+        assert_eq!(attribute.get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(10.0))).unwrap(), Some(value));
+        assert_eq!(stage.attribute("/M.xformOpOrder").unwrap().get::<openusd::sdf::Value>().unwrap(), order);
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
+
     #[test]
     fn sample_summary_bounds_the_visible_time_list() {
         assert_eq!(super::sample_summary(&[]), "Scene samples: none");
@@ -336,12 +401,12 @@ mod tests {
     #[test]
     fn absent_value_templates_roundtrip_declared_types_without_authoring() {
         for name in ["bool", "int", "int64", "uint", "uint64", "float", "double", "string", "token", "asset",
-            "float3", "point3f", "vector3f", "normal3f", "color3f", "double3", "point3d", "vector3d", "normal3d", "color3d"] {
+            "float3", "point3f", "vector3f", "normal3f", "color3f", "double3", "point3d", "vector3d", "normal3d", "color3d", "matrix4d"] {
             let template = super::value_template(name).unwrap();
             let text = super::editable_text(&template).unwrap();
             assert_eq!(super::parse_value(&template, &text).unwrap(), template, "{name}");
         }
-        for name in ["", "matrix4d", "float[]", "unknown"] { assert!(super::value_template(name).is_none()); }
+        for name in ["", "float[]", "unknown"] { assert!(super::value_template(name).is_none()); }
         let template = super::value_template("asset").unwrap();
         let path = "../textures/材質 with  spaces.exr";
         let value = super::parse_value(&template, path).unwrap();

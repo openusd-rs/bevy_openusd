@@ -25,6 +25,33 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Four-row matrix attribute inspector
+
+The inspector now edits `matrix4d` values in four USD rows, with an explicit
+translation-row label and lossless f64 text round trips. Matrix attributes have
+their own section, retaining the existing provenance, default/sample, block and
+clear controls. These are ordinary attribute edits, not whole-stack replacement;
+the transform-op order remains unchanged. A missing default is labelled as an
+identity draft rather than an evaluated animated pose. Attribute draft keys now
+include document and edit-layer identity to avoid reusing drafts across them.
+
+Tests cover exact double-precision row formatting/parsing, wrong-length and
+non-finite rejection, matrix templates, and a parsed matrix time-sample edit
+with unchanged default/op-order and exact undo. The actual static matrix section
+was captured and inspected at
+`target/viewer-ui-captures/matrix-inspector.png` using `/Panels` in
+`assets/xform_affine.usda`. The four rows and authored shear values are visible.
+Native button/keyboard interaction is not yet acceptance-tested; parser/model
+coverage and screenshot inspection are not a substitute for that interaction.
+The sample-only `/Affine` case was also captured and inspected at
+`target/viewer-ui-captures/matrix-inspector-sampled.png`; the identity-draft
+warning, four rows and sample times 0/5/10 are visible. Capture logs:
+`/tmp/matrix-inspector-ui.log`, `/tmp/matrix-inspector-sampled-ui.log`.
+Known desktop/shared-device warnings remain; the private capture sessions exited.
+All 406 ordinary tests pass, seven native tests ignored; final check-all, build
+and whitespace checks pass. Logs: `/tmp/matrix-inspector-final-tests.log`,
+`/tmp/matrix-inspector-final2-check.log`, `/tmp/matrix-inspector-final-build.log`.
+
 ### Visible transform diagnostics
 
 The selected prim's `UsdTransformError` now joins the inspector's rendering

@@ -105,9 +105,26 @@ Supply opaque assets such as textures as dependency snapshots too. A merge captu
 only supplied bytes, not files reachable on disk. Rebuild an assembly from its root
 when replacing a dependency revision; this merge API never silently overwrites one.
 
-`examples/composed_sources.rs` combines an inline `usd!` assembly with a model
+`with_reference(destination, &model, target)` also authors the reference through
+the typed USD API and validates the composed result, returning a new snapshot:
+
+```rust
+let assembly = root
+    .with_reference("/First", &model, "/Model")?
+    .with_reference("/Second", &model, "/Model")?;
+```
+
+The receiver must have a `.usda` identifier. Both paths must be absolute non-root
+prim paths; targets must exist and destinations must be new. Existing prim
+patches remain explicit editor/authoring operations. Conflicting dependencies or
+composition errors fail without changing either input. References use the source
+identifier as an absolute asset anchor; use the persistence export APIs when
+relocating an assembly. This operation opens and serializes a stage per call;
+it is not a constant-cost bulk builder or complete typed scene DSL.
+
+`examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under
-two independent Bevy roots, shared meshes and isolated edits without source files.
+two independent Bevy roots, typed reference composition, shared meshes and isolated edits without source files.
 It also exercises captured dependency replacement, persistent overrides,
 runtime-only component preservation, malformed-root failure/recovery and cleanup:
 

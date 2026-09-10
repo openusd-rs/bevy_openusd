@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Immutable typed source-reference composition
+
+UsdSource::with_reference(destination, dependency, target) accepts canonical
+upstream IntoPath inputs, validates absolute non-root prim paths, merges captured
+dependencies, authors reference metadata through the existing authoring API and
+validates composition before returning a new root snapshot. It rejects existing
+destinations, missing targets, conflicting bytes and incomplete composition.
+Neither input is mutated. Captured source anchors and receiver filesystem policy
+are retained. The output root must be USDA; absolute reference identifiers are
+not a claim of portable relocation without the persistence export path.
+
+Tests cover a typed Sphere source mounted twice, retained transitive opaque
+assets, absence of created files, unchanged earlier snapshots and invalid paths,
+targets, conflicts and root formats. The composed_sources example now uses this
+API instead of interpolated reference metadata while retaining its independent
+root, shared-mesh, override, dependency-replacement, failure/recovery and cleanup
+checks. Its test and runnable invocation pass:
+`/tmp/reference-assembly-example-test.log`, `/tmp/reference-assembly-example.log`.
+This adds reusable source composition, not full BSN equivalence or a general
+typed scene DSL. Each call opens/serializes stages; bulk performance is unmeasured.
+All 449 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/reference-assembly-{tests,check,build}.log`.
+
 ### Timeline playback and stepping UI acceptance
 
 Five checked-in replay scripts now exercise Play, Pause, Next time code, Previous

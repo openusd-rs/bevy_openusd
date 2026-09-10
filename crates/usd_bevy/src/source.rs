@@ -159,6 +159,38 @@ impl UsdSource {
         Ok(combined)
     }
 
+    /// Mounts a source prim at a new absolute prim path in a USDA root snapshot.
+    /// Captured dependencies and the receiver's filesystem policy are retained.
+    /// Existing destinations, missing targets and conflicting source bytes fail.
+    pub fn with_reference(
+        &self,
+        destination: impl openusd::sdf::IntoPath,
+        dependency: &Self,
+        target: impl openusd::sdf::IntoPath,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(self.identifier.ends_with(".usda"), "reference assembly requires a .usda root identifier");
+        let destination = openusd::sdf::try_into_path(destination)?;
+        let target = openusd::sdf::try_into_path(target)?;
+        for path in [&destination, &target] {
+            anyhow::ensure!(path.as_str().starts_with('/') && path.as_str() != "/"
+                && path.is_prim_path() && !path.contains_prim_variant_selection(),
+                "reference assembly requires absolute non-root prim paths");
+        }
+        let mut combined = self.with_dependency(dependency)?;
+        anyhow::ensure!(dependency.open_stage()?.prim(&target)?.is_valid()?, "reference target does not exist: {target}");
+        let stage = combined.open_stage()?;
+        anyhow::ensure!(!stage.prim(&destination)?.is_valid()?, "reference destination already exists: {destination}");
+        stage.define_prim(&destination)?;
+        crate::authoring::set_references(&stage, destination.as_str(), &[openusd::sdf::Reference {
+            asset_path: dependency.identifier.clone(), prim_path: target, ..Default::default()
+        }])?;
+        anyhow::ensure!(stage.prim(&destination)?.is_valid()?, "reference destination did not compose");
+        Self::validate_composition(&stage)?;
+        combined.bytes = stage.root_layer().export_to_string()?.into_bytes().into();
+        combined.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
+        Ok(combined)
+    }
+
     pub(crate) fn insert_dependency(&mut self, identifier: String, bytes: Vec<u8>) {
         Arc::make_mut(&mut self.files).insert(identifier, bytes.into());
         self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
@@ -363,6 +395,58 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_assembly_preserves_sources_dependencies_and_reuse() {
+        use openusd_schemas::geom::{Sphere, SphereSchema};
+        let directory = tempfile::tempdir().unwrap();
+        let model_stage = Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .in_memory("model.usda").unwrap();
+        Sphere::define(&model_stage, "/Model").unwrap().create_radius_attr().unwrap().set(1.5_f64).unwrap();
+        let image = UsdSource::snapshot(directory.path().join("texture.bin"), &b"texture bytes"[..]).unwrap();
+        let model = UsdSource::snapshot(directory.path().join("model.usda"),
+            model_stage.root_layer().export_to_string().unwrap().into_bytes()).unwrap()
+            .with_dependency(&image).unwrap();
+        let root = UsdSource::snapshot(directory.path().join("root.usda"), &b"#usda 1.0\n"[..]).unwrap();
+        let before = root.bytes.clone();
+        let first = root.with_reference("/Assembly/First", &model, "/Model").unwrap();
+        let second = first.with_reference("/Assembly/Second", &model, "/Model").unwrap();
+        let stage = second.open_stage().unwrap();
+        for path in ["/Assembly/First", "/Assembly/Second"] {
+            assert_eq!(stage.prim(path).unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+            assert_eq!(stage.prim(path).unwrap().attribute("radius").get::<f64>().unwrap(), Some(1.5));
+        }
+        assert_eq!(second.dependencies().count(), 2);
+        assert_eq!(second.read_asset(image.identifier()).unwrap(), b"texture bytes");
+        assert_eq!(root.bytes, before);
+        assert!(!first.open_stage().unwrap().prim("/Assembly/Second").unwrap().is_valid().unwrap());
+        assert_eq!(model.open_stage().unwrap().root_layer().export_to_string().unwrap(),
+            model_stage.root_layer().export_to_string().unwrap());
+        assert!(!root.filesystem && !first.filesystem && !second.filesystem);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn reference_assembly_rejects_invalid_inputs_without_changing_sources() {
+        let root = UsdSource::snapshot("assembly/root.usda", &b"#usda 1.0\ndef Scope \"Existing\" {}\n"[..]).unwrap();
+        let model = UsdSource::snapshot("assembly/model.usda", &b"#usda 1.0\ndef Sphere \"Model\" {}\n"[..]).unwrap();
+        let before = root.bytes.clone();
+        for path in ["/", "relative", "/Prim.attr", "/Prim{choice=a}"] {
+            assert!(root.with_reference(path, &model, "/Model").is_err());
+            assert!(root.with_reference("/New", &model, path).is_err());
+        }
+        assert!(root.with_reference("/Existing", &model, "/Model").is_err());
+        assert!(root.with_reference("/New", &model, "/Missing").is_err());
+        let incomplete = UsdSource::snapshot("assembly/incomplete.usda",
+            &b"#usda 1.0\ndef Sphere \"Model\" (prepend references = @missing.usda@</Missing>) {}\n"[..]).unwrap();
+        assert!(root.with_reference("/New", &incomplete, "/Model").is_err());
+        let conflict = UsdSource::snapshot(root.identifier(), &b"#usda 1.0\ndef Scope \"Other\" {}\n"[..]).unwrap();
+        assert!(root.with_reference("/New", &conflict, "/Other").is_err());
+        let package = UsdSource::snapshot("assembly/root.usdz", &b"not a package"[..]).unwrap();
+        assert!(package.with_reference("/New", &model, "/Model").is_err());
+        assert_eq!(root.bytes, before);
+        assert_eq!(root.dependencies().count(), 0);
+    }
 
     #[test]
     fn asset_reads_reject_unresolved_working_directory_paths() {

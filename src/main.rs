@@ -205,6 +205,7 @@ impl WindowApp for UsdApp {
         // Panes + ribbon rail. Mara owns the pane/ribbon wiring,
         // open-state, pane-id publication, and paint ordering.
         let view = match editor.view() { Ok(view) => view, Err(error) => { error!("{error}"); return; } };
+        let renderer_error = rendering.renderer_error();
         let prims: Vec<_> = view.document.prims.iter().map(|path| PrimRow {
             path: path.clone(), name: path.rsplit('/').next().unwrap_or(path).to_string(),
         }).collect();
@@ -222,7 +223,7 @@ impl WindowApp for UsdApp {
                 "Outliner",
                 PaneAnchor::LeftRail(RailZone::Start),
                 |body| {
-                    outliner_pane(body, &prims, editor, view.document.selected.as_deref(), file_dialogs.status().unwrap_or(&view.status), accent, &view.document.visibility);
+                    outliner_pane(body, &prims, editor, view.document.selected.as_deref(), renderer_error.as_deref().or(file_dialogs.status()).unwrap_or(&view.status), accent, &view.document.visibility);
                 },
             )
             .pane(

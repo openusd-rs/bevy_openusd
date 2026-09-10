@@ -574,6 +574,11 @@ rounding headroom and avoids growing pooled buffers beyond the host's limit.
 It is not a total-memory budget or support for individual meshes exceeding the
 device limit. Large scenes can still spend substantial time projecting before
 the first UI update.
+Reported Bevy renderer failures appear in the Outliner status and Rendering pane,
+taking precedence over document Ready/save-dialog status. Rendering stays stopped;
+the handler does not request application exit or attempt automatic recovery. Save
+edits before restarting. The first diagnostic is retained, with long descriptions
+limited to 2,048 characters plus an ellipsis; full errors remain in the log.
 Use real `/bin/bash`, not the local `bash` wrapper. Weston uses its Vulkan renderer
 by default (`USD_UI_COMPOSITOR_RENDERER` overrides it); on this machine the GL
 capture was vertically inverted and Pixman could not host the viewer GPU surface.

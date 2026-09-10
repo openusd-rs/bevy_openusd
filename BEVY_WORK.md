@@ -25,6 +25,36 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Surface stopped-renderer diagnostics in the viewer
+
+Installed a viewer-owned Bevy RenderErrorHandler that retains the first error in
+RenderSettingsBridge and returns StopRendering. It does not resume a broken
+renderer, request AppExit, mutate the USD document or attempt recovery. The
+Outliner prioritizes the renderer failure over Ready/file-dialog text, and the
+Rendering pane shows the same wrapped diagnostic and save-before-restart advice.
+Descriptions are UTF-8-safe, bounded to 2,048 characters with an ellipsis; the
+original Bevy error log remains available.
+
+Verified against real GPU validation failures, not only injected UI strings:
+temporarily restored the oversized slab limit and captured ANYmal in both panes.
+Inspected `target/viewer-ui-captures/anymal-renderer-error-status.png` and
+`anymal-renderer-error-pane.png`; both show readable Validation/buffer-limit
+details. Logs no longer repeat the default handler's quitting message. The
+temporary unsafe setting was restored before final builds/tests and is absent
+from the committed diff.
+
+Inspected the final safe build's `anymal-renderer-status-healthy.png`: ANYmal
+renders normally, Ready is shown, and its log has no reproduced render-validation
+errors. Tests verify StopRendering, retained first-error text through publication,
+no AppExit message, retained world entities, absent-bridge handling and bounded
+multibyte diagnostics. All 384 ordinary tests, check-all, build and whitespace
+checks pass (`/tmp/renderer-status-final-{tests,check,build}.log`).
+
+This does not implement renderer/device recovery. The viewport's host-provided
+warm-up placeholder can remain behind the explicit error pane; no Mara changes
+were made. Saving through a native picker after a GPU failure and continued UI
+operation after loss of the shared host device remain unverified.
+
 ### Render ANYmal within the embedded device's buffer limit
 
 Actual collection inspection exposed two separate failures. The first capture,

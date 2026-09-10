@@ -17,6 +17,7 @@ pub mod live;
 pub mod mesh;
 mod persistence;
 pub mod subdivision;
+mod subdivision_normals;
 pub mod prim_ref;
 pub mod read;
 pub mod route;

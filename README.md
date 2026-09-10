@@ -832,6 +832,11 @@ It does not compare refined topology, materials, authored normals, creases or
 rendered images. Native limit tangents are diagnostic only, not installed into
 the viewer. OpenSubdiv is not a new viewer build dependency.
 
+`--compare-normals` additionally compares the probe's normals against native
+limit derivatives evaluated on the same refined float positions, at absolute
+component tolerance `1e-5`. Using native double-precision refined positions
+instead can amplify tiny position differences around nearly cancelling fans.
+
 Append `--normal-probe NEW_DIRECTORY` after any witness indices to write two
 controlled polygon probes with the input camera and triangle indices retained:
 `with_limit_normals.usda` replaces only normals with normalized native limit
@@ -1006,8 +1011,12 @@ before prototype transforms and material-subset splitting, retaining shared mesh
 handles. Hierarchical prototypes remain unsupported.
 Changing or removing the settings resource automatically reprojects existing
 meshes and point instancers in live stages and asset instances, preserving each
-instance's clock and runtime-owned entities. GPU subdivision and exact
-limit normals remain unsupported; this option is not full USD fidelity.
+instance's clock and runtime-owned entities. Uncreased Catmull-Clark meshes
+without holes, using edge-only or edge-and-corner boundaries, use limit-surface
+normals evaluated on the refined float positions. Disconnected vertex fans retain
+finite-mesh normals. Creases, corners, holes and boundary-none use the existing
+finite-normal path. Bilinear surfaces remain flat shaded. GPU subdivision and
+full USD limit-surface fidelity remain unsupported.
 With subdivision enabled, unknown/malformed scheme values are errors, not silent
 polygon fallbacks. The selected prim's inspector shows subdivision, deformation
 and point-instancer diagnostics. For UI capture, `USD_VIEWER_PANE=inspector` and

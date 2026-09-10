@@ -90,6 +90,24 @@ int main(int argc,char **argv) try {
     }
     std::cout<<"points="<<native.size()<<" max_component_error="<<maximum<<" worst_vertex="<<worst<<" over_1e-7="<<failures<<'\n';
     for(int arg=3;arg<argc;++arg) {
+        if(std::string(argv[arg])=="--compare-normals") {
+            auto normals=array(argv[2],"normals");
+            if(normals.size()!=map.size()*3) throw std::runtime_error("normal count mismatch");
+            std::vector<Point> rounded(native.size()), normal_limit(native.size()), normal_du(native.size()), normal_dv(native.size());
+            for(size_t i=0;i<map.size();++i) rounded[map[i]]=expected[i];
+            Far::PrimvarRefinerReal<double>(*ref).Limit(rounded,normal_limit,normal_du,normal_dv);
+            size_t mismatches=0; double max_error=0;
+            for(size_t i=0;i<map.size();++i) {
+                auto const &a=normal_du.at(map[i]), &b=normal_dv.at(map[i]);
+                double n[3]={a.p[1]*b.p[2]-a.p[2]*b.p[1],a.p[2]*b.p[0]-a.p[0]*b.p[2],a.p[0]*b.p[1]-a.p[1]*b.p[0]};
+                double length=std::hypot(n[0],n[1],n[2]), error=0;
+                for(int k=0;k<3;++k) error=std::max(error,std::abs(normals[i*3+k]-(length==0?0:n[k]/length)));
+                mismatches+=error>1e-5; max_error=std::max(max_error,error);
+            }
+            std::cout<<"normal_mismatches="<<mismatches<<" max_normal_component_error="<<max_error<<'\n';
+            failures+=mismatches;
+            continue;
+        }
         if(std::string(argv[arg])=="--normal-probe") {
             if(arg+2!=argc || failures) throw std::runtime_error("normal probe requires matching positions and final NEW_DIRECTORY");
             std::ostringstream normals; normals<<std::setprecision(9)<<"    normal3f[] normals = [";

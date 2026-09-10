@@ -20,7 +20,8 @@ def Mesh "Probe" {
     normal3f[] normals = [(0,0,1),(0,0,1),(0,0,1),(0,0,1),(0,0,1),(0,0,1),(0,0,1)]
 }
 USD
-"$tool" "$work/cage.usda" "$work/refined.usda" --normal-probe "$work/output" >"$work/result"
+"$tool" "$work/cage.usda" "$work/refined.usda" --compare-normals --normal-probe "$work/output" >"$work/result"
+grep -q 'normal_mismatches=0' "$work/result"
 grep -q 'zero_referenced_normals=0' "$work/result"
 cmp <(grep -v 'normal3f\[\] normals' "$work/refined.usda") \
     <(grep -v 'normal3f\[\] normals' "$work/output/with_limit_normals.usda")

@@ -86,7 +86,7 @@ pub enum BoundaryInterpolation { EdgeOnly, EdgeAndCorner }
 pub enum FaceVaryingInterpolation { Reject, AllLinear }
 
 /// Refines a sampled Catmull–Clark or bilinear mesh with supported rules and primvars.
-/// Authored normals are removed; downstream normals approximate the finite mesh.
+/// Uncreased surfaces without holes use limit normals; other normals approximate the finite mesh.
 pub fn refine_mesh(mesh: &ReadMesh, rules: &ReadSubdivision, levels: u32) -> Result<ReadMesh> {
     rules.validate(mesh.points.len(), mesh.face_vertex_counts.len())?;
     let linear = mesh.subdivision_scheme == SubdivScheme::Bilinear && rules.scheme == "bilinear";
@@ -135,6 +135,9 @@ pub fn refine_mesh(mesh: &ReadMesh, rules: &ReadSubdivision, levels: u32) -> Res
     let mut output = omit_faces(output, &keep);
     if !linear && (!hard_edges.is_empty() || !hard_corners.is_empty()) {
         output.normals = Some(crate::mesh::crease_corner_normals(&output, &hard_edges, &hard_corners));
+    } else if !linear && rules.crease_indices.is_empty() && rules.corner_indices.is_empty()
+        && rules.holes.is_empty() && rules.boundary != "none" {
+        output.normals = Some(crate::subdivision_normals::limit_normals(&output));
     }
     Ok(output)
 }
@@ -869,7 +872,9 @@ def Material "Material" {}
         assert_eq!(output.points.len(), 25);
         assert_eq!(output.face_vertex_counts, [4;16]);
         assert_eq!(output.triangulation_points.as_ref().unwrap(), &output.points);
-        assert!(output.normals.is_none());
+        let normals = output.normals.as_ref().unwrap();
+        assert_eq!(normals.interpolation, Interpolation::Vertex);
+        assert_eq!(normals.values, vec![[0.0,0.0,-1.0];25]);
         assert!(input.normals.is_some());
         assert_eq!(output.orientation, input.orientation);
         assert!(output.double_sided);

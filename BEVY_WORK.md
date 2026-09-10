@@ -487,6 +487,51 @@ native derivative comparisons independently of these problematic cap renders.
 The four renders and wrapper are diagnostic artifacts only; no production
 code changed, and no Rust gates were rerun for this evidence update.
 
+## Uncreased Catmull-Clark limit normals
+
+`crates/usd_bevy/src/subdivision_normals.rs` evaluates ordered one-ring limit
+tangents for smooth interior and boundary vertices after finite refinement.
+The normal is the normalized tangent cross-product, with left-handed orientation
+applied once. Regular and extraordinary valences are supported; disconnected
+fans retain finite-mesh normals, and unused points remain zero. Positions, UVs,
+subsets and authored source data are unchanged.
+
+The production route applies this to uncreased Catmull-Clark meshes without
+holes, using edge-only or edge-and-corner boundary interpolation. Authored crease
+or corner indices, holes and boundary-none keep the existing finite-normal path;
+bilinear behavior is unchanged. This does not claim complete limit-surface
+support, GPU subdivision or crease-normal parity.
+
+The native diagnostic's new `--compare-normals` mode evaluates OpenSubdiv
+derivatives on exactly the same refined float positions as Rust. Across all
+46,817 UR5 shoulder vertices, zero normals exceed component tolerance `1e-5`;
+maximum component error is `5.94309e-8`. The probe now reports zero invalid
+referenced normals. Log: `/tmp/ur5-rust-limit-compare-rounded.log`.
+An initial comparison used native double-precision refined positions instead
+and had 5,988 mismatches (maximum 0.00307778); the small position discrepancies
+are amplified by nearly cancelling derivatives. That failed comparison is
+retained in `/tmp/ur5-rust-limit-compare.log`, not hidden by loosening tolerance.
+
+Analytic tests exercise planar orientation across scales and interior/boundary
+valences, and nonplanar invariance under cyclic ring ordering. The existing
+left-handed primvar/subset refinement test now checks generated -Z vertex normals
+instead of expecting absent normals. The first full test run failed only on that
+obsolete absent-normal assertion; its log is `/tmp/limit-normals-all-tests.log`.
+The native standalone fixture check passes with derivative comparison enabled.
+
+Final validation: 520 ordinary tests pass, 13 ignored; check-all, viewer build
+and `git diff --check` pass. Logs: `/tmp/limit-normals-all-tests-final.log`,
+`/tmp/limit-normals-{check,build}.log`. Inspected
+`target/ur5-rust-limit-normals/rust-bevy.png`: front-cap streaks disappear while
+the known rim and lower-edge bands remain. Also inspected the production route
+on `target/ur5-limit-normals-full-bevy.png`: the complete robot remains visible,
+cap surfaces are smooth, and substantial cylinder/rim striping still remains.
+Both captures report CAPTURE_OK. The full-scene metadata confirms subdivision
+level 1, forward renderer, time 0, 31 visible mesh entities and the authored
+`/__ReferenceCamera`; shadows were disabled. Logs:
+`/tmp/ur5-rust-limit-bevy.log`, `/tmp/ur5-limit-normals-full-bevy.log`.
+This is a bounded production shading improvement, not full asset fidelity.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

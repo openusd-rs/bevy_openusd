@@ -3,6 +3,32 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use std::path::Path;
 
+#[derive(Default)]
+struct CaptureGate {
+    document: Option<u64>,
+    frames: u32,
+    finished: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum CaptureAction { Wait, Request, Timeout }
+
+impl CaptureGate {
+    fn advance(&mut self, document: Option<u64>, elapsed: std::time::Duration) -> CaptureAction {
+        if self.finished { return CaptureAction::Wait; }
+        if elapsed >= std::time::Duration::from_secs(60) {
+            self.finished = true;
+            return CaptureAction::Timeout;
+        }
+        if document != self.document { self.frames = 0; self.document = document; }
+        if document.is_none() { return CaptureAction::Wait; }
+        self.frames += 1;
+        if self.frames < 120 { return CaptureAction::Wait; }
+        self.finished = true;
+        CaptureAction::Request
+    }
+}
+
 fn save_readback(image: &Image, output: &Path) -> Result<(), String> {
     if output.extension().and_then(|value| value.to_str()) != Some("png") {
         return Err("USD_SCREENSHOT must end in .png".into());
@@ -22,10 +48,15 @@ pub fn configure(app: &mut App) {
             if current.is_finite() { app.insert_resource(usd_bevy::route::StageTime { current }); }
         }
     }
-    app.add_systems(Update, move |mut commands: Commands, cameras: Query<&RenderTarget, With<Camera3d>>, mut frames: Local<u32>, mut requested: Local<bool>| {
-        *frames += 1;
-        if *frames >= 120 && !*requested {
-            if let Some(target) = cameras.iter().next() {
+    let started = std::time::Instant::now();
+    app.add_systems(Update, move |mut commands: Commands, cameras: Query<(&Camera, &RenderTarget), With<Camera3d>>,
+        session: Option<NonSend<usd_bevy::editor::EditorSession>>, mut gate: Local<CaptureGate>| {
+        let target = cameras.iter().find(|(camera, _)| camera.is_active).map(|(_, target)| target);
+        let document = target.and_then(|_| session.as_ref().map(|session| session.document_id()));
+        match gate.advance(document, started.elapsed()) {
+            CaptureAction::Timeout => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: timed out waiting for an open document and active camera"),
+            CaptureAction::Request => {
+                let target = target.expect("capture gate requires an active camera");
                 let output = output.clone();
                 commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>| {
                     match save_readback(&event.image, Path::new(&output)) {
@@ -33,8 +64,8 @@ pub fn configure(app: &mut App) {
                         Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
                     }
                 });
-                *requested = true;
             }
+            CaptureAction::Wait => {}
         }
     });
 }
@@ -43,6 +74,29 @@ pub fn configure(app: &mut App) {
 mod tests {
     use super::*;
     use bevy::render::render_resource::TextureFormat;
+
+    #[test]
+    fn capture_gate_requires_one_document_for_120_updates() {
+        let mut gate = CaptureGate::default();
+        let elapsed = std::time::Duration::from_secs(1);
+        for _ in 0..200 { assert_eq!(gate.advance(None, elapsed), CaptureAction::Wait); }
+        for _ in 0..119 { assert_eq!(gate.advance(Some(1), elapsed), CaptureAction::Wait); }
+        assert_eq!(gate.advance(None, elapsed), CaptureAction::Wait);
+        for _ in 0..119 { assert_eq!(gate.advance(Some(1), elapsed), CaptureAction::Wait); }
+        for _ in 0..119 { assert_eq!(gate.advance(Some(2), elapsed), CaptureAction::Wait); }
+        assert_eq!(gate.advance(Some(2), elapsed), CaptureAction::Request);
+        assert_eq!(gate.advance(Some(3), elapsed), CaptureAction::Wait);
+    }
+
+    #[test]
+    fn capture_gate_times_out_once_even_with_a_document() {
+        for document in [None, Some(1)] {
+            let mut gate = CaptureGate::default();
+            assert_eq!(gate.advance(document, std::time::Duration::from_secs(59)), CaptureAction::Wait);
+            assert_eq!(gate.advance(document, std::time::Duration::from_secs(60)), CaptureAction::Timeout);
+            assert_eq!(gate.advance(document, std::time::Duration::from_secs(61)), CaptureAction::Wait);
+        }
+    }
 
     #[test]
     fn embedded_readback_is_tightly_packed_and_reports_dimensions() {

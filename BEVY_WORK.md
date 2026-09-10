@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject embedded captures without an open document
+
+The embedded screenshot gate now counts 120 consecutive updates with the same
+EditorSession document identity and an active Camera3d. Losing either resets
+the count; replacing the document also restarts it. The editor exposes its
+existing document_id directly so capture does not clone the UI snapshot each
+frame. A 60-second pre-request deadline emits one VIEWPORT_CAPTURE_ERROR instead
+of producing a grid-only success after an invalid initial Open. It is checked
+on updates, not by an independent watchdog, and stops once readback is requested.
+The paired script separately bounds waiting for a readback callback.
+
+Gate tests cover no document, camera/document loss, identity replacement,
+the 120-update boundary and one-shot timeout/request behavior. All 482 ordinary
+tests pass (13 ignored), all 13 native export tests pass, and check-all/build
+and whitespace validation pass:
+`/tmp/capture-gate-{all-tests,native,check,build}.log`.
+
+Native failure evidence: `target/viewer-ui-captures/gated-invalid-document*`
+and `/tmp/capture-gate-invalid-ui.log`. The deliberately invalid initial file
+produced the timeout error, no viewport PNG and a failing paired command; its
+retained full-window screenshot visibly shows the parser error over the grid.
+Native success evidence: `target/viewer-ui-captures/gated-valid-document*`
+and `/tmp/capture-gate-valid-ui.log`. Both captures pass and were visually
+inspected with all three cubes visible. This gate does not establish GPU
+pipeline/upload readiness, projection correctness or fix black host captures.
+
 ### Isolate the native host from Bevy and USD
 
 `examples/host_capture_probe.rs` uses the same Mara native runner but constructs

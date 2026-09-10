@@ -539,8 +539,13 @@ Scalar UsdUVTexture inputs now apply the selected channel's `scale` and `bias`
 when packing roughness, metallic, occlusion and opacity. Values are transformed
 after color-space decoding, then clamped/quantized into the existing 8-bit packed
 images. Sampled transforms participate in material time updates; packed content
-keys distinguish changed results. Connected scale/bias inputs are rejected;
-diffuse, emissive and normal-map scale/bias are not implemented by this packing
+keys distinguish changed results. Connected Material/NodeGraph scale/bias
+interfaces resolve through upstream UsdShade value-producing attributes,
+including sampled values. Multiple producers, invalid direct sources and
+connections with no readable value reject the material read. Authored fallback
+values follow the upstream resolver's rules; arbitrary shader computation is
+not evaluated for these float4 inputs.
+Diffuse, emissive and normal-map scale/bias are not implemented by this packing
 path. Out-of-range values are clamped before GPU filtering, so this is not exact
 shader parity for arbitrary filtered float textures.
 Material graph evaluation has a 256-input traversal budget and a separate
@@ -562,6 +567,8 @@ The live-clock regression includes these two scenes, reversing the mapped roots
 from 0/10 to 10/0 and comparing against fresh reference roots at 10/0. The
 file-switched reference establishes endpoint equivalence, not intermediate-time
 GPU interpolation or arbitrary texture-filtering parity.
+`interface_animated.usda` supplies the same sampled coefficients through a
+Material input and a NodeGraph output and runs as a separate live-clock case.
 
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:
@@ -1170,7 +1177,7 @@ make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/
 
 It generates fresh UV/texture/scalar fixtures and compares live clock reversals
 against baked UV, fixed-image, CPU-morph and precomputed scalar-map references.
-All five comparisons use zero RGB
+All six comparisons use zero RGB
 tolerance. Metadata must confirm the reversal and two visible mesh entities;
 the morph case also verifies shared GPU material use. Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain

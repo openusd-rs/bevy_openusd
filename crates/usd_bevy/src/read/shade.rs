@@ -170,12 +170,24 @@ pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64
 }
 
 fn texture_value_transform(stage: &Stage, prim: &Path, channel: usize, time: Option<f64>) -> anyhow::Result<[f32; 2]> {
+    use openusd_schemas::shade::{Connectable, ProducerFilter, Shader};
     if read_token_or_string(stage, prim, "info:id")?.as_deref() != Some("UsdUVTexture") { return Ok([1.0, 0.0]); }
     let mut result = [1.0, 0.0];
-    for (index, name) in ["inputs:scale", "inputs:bias"].into_iter().enumerate() {
-        let path = prim.append_property(name)?;
-        anyhow::ensure!(connections_at(stage, &path)?.is_empty(), "connected texture scale/bias is unsupported at {path}");
-        if let Some(value) = sampled_value(stage, &path, time)? {
+    let shader = Shader::new(stage.prim(prim)?);
+    for (index, name) in ["scale", "bias"].into_iter().enumerate() {
+        let input = shader.input(name);
+        let path = input.path();
+        let connections = input.connected_sources()?;
+        anyhow::ensure!(connections.invalid_source_paths().is_empty(), "connected texture scale/bias has invalid sources at {path}");
+        let producers = input.value_producing_attributes(ProducerFilter::Any)?;
+        anyhow::ensure!(producers.len() <= 1, "multiple texture scale/bias value producers at {path}");
+        let value = producers.first().map(|source| source.attribute()
+            .get_at::<Value>(time.map(openusd::usd::TimeCode::new))).transpose()?.flatten();
+        let sampled_default = value.is_none() && time.is_none() && producers.first()
+            .map(|source| source.attribute().time_sample_times()).transpose()?.is_some_and(|times| !times.is_empty());
+        anyhow::ensure!(connections.sources().is_empty() || value.is_some() || sampled_default,
+            "connected texture scale/bias has no readable value at {path}");
+        if let Some(value) = value {
             let Value::Vec4f(value) = value else { anyhow::bail!("texture scale/bias must be float4 at {path}"); };
             let values = [value.x, value.y, value.z, value.w];
             anyhow::ensure!(values.iter().all(|value| value.is_finite()), "nonfinite texture scale/bias at {path}");
@@ -189,6 +201,44 @@ fn sampled_value(stage: &Stage, path: &Path, time: Option<f64>) -> anyhow::Resul
     let Some((prim, name)) = path.split_property() else { return Ok(None) };
     Ok(stage.prim(prim)?.attribute(name)
         .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?)
+}
+
+#[test]
+fn texture_scale_bias_resolves_sampled_container_interfaces() {
+    let source = crate::UsdSource::snapshot("interface.usda", br#"#usda 1.0
+def Material "Mat" {
+    float4 inputs:scale.timeSamples = {0: (2,3,4,5), 10: (4,5,6,7)}
+    float4 inputs:bias = (0.1,0.2,0.3,0.4)
+    def NodeGraph "Graph" {
+        float4 outputs:scale.connect = </Mat.inputs:scale>
+        float4 outputs:cycle.connect = </Mat/Graph.outputs:cycle>
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        float4 inputs:scale.connect = </Mat/Graph.outputs:scale>
+        float4 inputs:bias.connect = </Mat.inputs:bias>
+    }
+}
+"#.as_slice()).unwrap();
+    let stage = source.open_stage().unwrap();
+    let prim = openusd::sdf::path("/Mat/Tex").unwrap();
+    let before = stage.root_layer().export_to_string().unwrap();
+    assert_eq!(texture_value_transform(&stage, &prim, 0, None).unwrap(), [1.0, 0.1]);
+    for (time, first) in [(0.0, 2.0), (5.0, 3.0), (10.0, 4.0), (0.0, 2.0)] {
+        for (channel, bias) in [0.1, 0.2, 0.3, 0.4].into_iter().enumerate() {
+            assert_eq!(texture_value_transform(&stage, &prim, channel, Some(time)).unwrap(), [first + channel as f32, bias]);
+        }
+    }
+    assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    let scale = stage.attribute("/Mat/Tex.inputs:scale").unwrap();
+    scale.clone().set_connections([openusd::sdf::path("/Mat/Graph.outputs:cycle").unwrap()]).unwrap();
+    assert!(texture_value_transform(&stage, &prim, 0, Some(0.0)).unwrap_err().to_string().contains("no readable value"));
+    scale.clone().set(Value::Vec4f([-9.0; 4].into())).unwrap();
+    assert_eq!(texture_value_transform(&stage, &prim, 0, Some(0.0)).unwrap(), [-9.0, 0.1]);
+    scale.clone().set_connections([openusd::sdf::path("/Mat.inputs:scale").unwrap(), openusd::sdf::path("/Mat.inputs:bias").unwrap()]).unwrap();
+    assert!(texture_value_transform(&stage, &prim, 0, Some(0.0)).unwrap_err().to_string().contains("multiple texture scale/bias"));
+    scale.set_connections([openusd::sdf::path("/Mat.inputs:scale").unwrap()]).unwrap();
+    assert_eq!(texture_value_transform(&stage, &prim, 0, Some(0.0)).unwrap(), [2.0, 0.1]);
 }
 
 fn read_uv_transform(stage: &Stage, textures: &[Path], time: Option<f64>) -> anyhow::Result<Option<bevy::math::Affine2>> {

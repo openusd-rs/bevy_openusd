@@ -25,6 +25,35 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Resolve scale/bias through typed UsdShade interfaces
+
+Texture scale/bias now uses canonical Shader/Input value_producing_attributes
+with ProducerFilter::Any instead of rejecting every connection. Sampled
+Material inputs reached through NodeGraph outputs work without a duplicate
+downstream connection walker. Multiple producers, invalid direct sources and
+connected terminals with no readable value fail explicitly. Authored fallback
+behavior follows the upstream resolver; shader computation is not evaluated.
+The regression covers interpolation/backward reads, no root-layer mutation,
+cycles without values, authored fallback, ambiguous producers and upstream
+values overriding a local fallback.
+
+The first native interface capture failed in AssetServer's default-time material
+discovery despite timed reads passing: sampled-only producers have no default
+value. Default-time reads now retain the coefficient fallback when a real
+producer has time samples, without treating missing producers as valid.
+Evidence of failure is retained in `target/live-scalar-interface-regression/`.
+The new interface_animated fixture runs as a sixth live-clock GPU case against
+the precomputed texture reference. All six cases pass with zero changed RGB
+pixels out of 921600, including the reversed interface roots. Both interface
+images and the other five live images were visually inspected.
+Evidence: `target/live-scalar-interface-fixed-regression/`,
+`/tmp/scalar-interface-gpu-fixed.log`.
+All 488 ordinary tests pass (13 ignored), all 13 native export tests pass,
+check-all/build and shell syntax/whitespace checks pass:
+`/tmp/scalar-interface-{tests-verified,check-verified,build-verified,native}.log`.
+This is interface-value resolution and endpoint GPU evidence, not arbitrary
+shader-graph evaluation or complete native texture-node parity.
+
 ### Verify scalar material updates on independent live clocks
 
 The scalar fixture now includes sampled scale coefficients and an independent

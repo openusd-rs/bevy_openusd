@@ -1,0 +1,57 @@
+--- a/crates/openusd/src/usda/writer.rs
++++ b/crates/openusd/src/usda/writer.rs
+@@ -817,22 +817,16 @@
+     where
+         F: FnMut(&mut String, &T) -> Result<(), FormatError>,
+     {
+-        if items.len() == 1 {
++        self.out.write_all(b"[")?;
++        for (i, item) in items.iter().enumerate() {
++            if i > 0 {
++                self.out.write_all(b", ")?;
++            }
+             let mut buf = String::new();
+-            fmt_item(&mut buf, &items[0])?;
++            fmt_item(&mut buf, item)?;
+             self.out.write_all(buf.as_bytes())?;
+-        } else {
+-            self.out.write_all(b"[")?;
+-            for (i, item) in items.iter().enumerate() {
+-                if i > 0 {
+-                    self.out.write_all(b", ")?;
+-                }
+-                let mut buf = String::new();
+-                fmt_item(&mut buf, item)?;
+-                self.out.write_all(buf.as_bytes())?;
+-            }
+-            self.out.write_all(b"]")?;
+         }
++        self.out.write_all(b"]")?;
+         Ok(())
+     }
+ 
+@@ -1382,6 +1376,24 @@
+     use super::*;
+     use crate::sdf::{Data, path};
+ 
++    #[test]
++    fn singleton_metadata_listops_keep_array_syntax() {
++        for operation in ["", "prepend ", "append ", "delete ", "add ", "reorder "] {
++            let source = format!(
++                "#usda 1.0\ndef Xform \"Root\" (\n    {operation}apiSchemas = [\"MaterialBindingAPI\"]\n) {{}}\n"
++            );
++            let data = crate::usda::parse(&source).expect("parses");
++            let text = TextWriter::write_to_string(&data as &dyn AbstractData).expect("writes");
++            assert!(
++                text.contains(&format!("{operation}apiSchemas = [\"MaterialBindingAPI\"]")),
++                "{text}"
++            );
++            let reparsed = crate::usda::parse(&text).expect("re-parses");
++            let root = path("/Root").unwrap();
++            assert_eq!(data.spec(&root).unwrap().fields, reparsed.spec(&root).unwrap().fields);
++        }
++    }
++
+     /// A relationship keeps its variability through emit → re-parse. The text
+     /// form spells only the `varying` case, so the uniform default has to
+     /// survive as the absence of a keyword.

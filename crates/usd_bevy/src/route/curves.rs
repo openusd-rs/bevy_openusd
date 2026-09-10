@@ -10,6 +10,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
+use bevy::math::DVec3;
 use openusd_schemas::geom::BasisCurvesSchema;
 
 use openusd_schemas::geom::{BasisCurves, Curves, PointBased};
@@ -24,6 +25,19 @@ pub struct CurvesRoute;
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct UsdCurveError(pub String);
 
+pub const MAX_CURVE_VERTICES: usize = 1_000_000;
+pub const MAX_CURVE_INDICES: usize = 2_000_000;
+
+fn accumulate_curve_output(total: &mut (usize, usize), vertices: usize, indices: usize) -> Result<(), String> {
+    let vertices = total.0.checked_add(vertices).ok_or("curve vertex count overflow")?;
+    let indices = total.1.checked_add(indices).ok_or("curve index count overflow")?;
+    if vertices > MAX_CURVE_VERTICES || indices > MAX_CURVE_INDICES {
+        return Err(format!("curve output {vertices} vertices/{indices} indices exceeds limits {MAX_CURVE_VERTICES}/{MAX_CURVE_INDICES}"));
+    }
+    *total = (vertices, indices);
+    Ok(())
+}
+
 fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
     let curves = BasisCurves::get(ctx.stage, ctx.path.clone()).map_err(|error| error.to_string())?
         .ok_or("missing BasisCurves schema")?;
@@ -31,12 +45,66 @@ fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
     if points.iter().flatten().any(|value| !value.is_finite()) { return Err("non-finite curve point".into()); }
     let counts = curves.curve_vertex_counts_attr().get_at::<Value>(ctx.time.map(openusd::usd::TimeCode::new))
         .map_err(|error| error.to_string())?;
-    if let Some(counts) = counts {
+    let counts = if let Some(counts) = counts {
         let Value::IntVec(counts) = counts else { return Err("invalid curveVertexCounts type".into()); };
         let total = counts.iter().try_fold(0usize, |total, count| {
             usize::try_from(*count).ok().and_then(|count| total.checked_add(count))
         }).ok_or("negative or overflowing curveVertexCounts")?;
         if total != points.len() { return Err(format!("curveVertexCounts sum {total} differs from {} points", points.len())); }
+        counts.into_iter().map(|count| count as usize).collect::<Vec<_>>()
+    } else { vec![points.len()] };
+    let kind = read_token(curves.type_attr(), "cubic", ctx.time);
+    if !matches!(kind.as_str(), "linear" | "cubic") { return Err(format!("unsupported curve type {kind}")); }
+    let wrap = read_token(curves.wrap_attr(), "nonperiodic", ctx.time);
+    if !matches!(wrap.as_str(), "nonperiodic" | "periodic" | "pinned") { return Err(format!("unsupported curve wrap {wrap}")); }
+    let basis = read_token(curves.basis_attr(), "bezier", ctx.time);
+    if kind == "cubic" && !matches!(basis.as_str(), "bezier" | "bspline" | "catmullRom") { return Err(format!("unsupported cubic basis {basis}")); }
+    let stride = if basis == "bezier" { 3 } else { 1 };
+    let mut varying_count = 0usize;
+    let mut output_size = (0usize, 0usize);
+    for (curve,count) in counts.iter().copied().enumerate() {
+        if count == 0 { continue; }
+        let valid = if kind == "linear" { count >= 2 }
+            else if wrap == "periodic" { count >= 3 && count % stride == 0 }
+            else if wrap == "pinned" && basis != "bezier" { count >= 2 }
+            else { count >= 4 && (count - 4) % stride == 0 };
+        if !valid { return Err(format!("unsupported {kind}/{basis}/{wrap} layout: curve {curve} has {count} control points")); }
+        let varying = if kind == "linear" { count }
+            else if wrap == "periodic" { count / stride }
+            else if wrap == "pinned" && basis != "bezier" { count }
+            else { (count - 4) / stride + 2 };
+        varying_count = varying_count.checked_add(varying).ok_or("varying sample count overflow")?;
+        let segments = varying - usize::from(wrap != "periodic");
+        let (vertices, segments) = if kind == "linear" { (count, segments) } else {
+            let segments = segments.checked_mul(CUBIC_STEPS).ok_or("curve segment count overflow")?;
+            (segments.checked_add(1).ok_or("curve vertex count overflow")?, segments)
+        };
+        accumulate_curve_output(&mut output_size, vertices, segments.checked_mul(2).ok_or("curve index count overflow")?)?;
+    }
+    if let Some(color) = crate::read::geom::read_primvar_vec3f(ctx.stage, ctx.path, "primvars:displayColor", ctx.time).map_err(|error| error.to_string())? {
+        validate_curve_primvar(&color, counts.len(), points.len(), varying_count, "displayColor")?;
+        if color.values.iter().flatten().any(|value| !value.is_finite()) { return Err("non-finite displayColor".into()); }
+    }
+    if let Some(opacity) = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time).map_err(|error| error.to_string())? {
+        validate_curve_primvar(&opacity, counts.len(), points.len(), varying_count, "displayOpacity")?;
+        if opacity.values.iter().any(|value| !value.is_finite()) { return Err("non-finite displayOpacity".into()); }
+    }
+    Ok(())
+}
+
+fn validate_curve_primvar<T>(value: &MeshPrimvar<T>, curves: usize, points: usize, varying: usize, name: &str) -> Result<(), String> {
+    let expected = match value.interpolation {
+        Interpolation::Constant => 1,
+        Interpolation::Uniform => curves,
+        Interpolation::Vertex => points,
+        Interpolation::Varying => varying,
+        Interpolation::FaceVarying => return Err(format!("unsupported faceVarying {name}")),
+    };
+    if value.values.len() == 1 && value.indices.is_empty() { return Ok(()); }
+    let actual = if value.indices.is_empty() { value.values.len() } else { value.indices.len() };
+    if actual != expected { return Err(format!("{name} has {actual} samples; expected {expected}")); }
+    if value.indices.iter().any(|index| usize::try_from(*index).map_or(true, |index| index >= value.values.len())) {
+        return Err(format!("{name} index outside its value array"));
     }
     Ok(())
 }
@@ -95,7 +163,7 @@ impl Basis {
     }
 
     /// The four blending weights for parameter `t` in `[0, 1]`.
-    fn weights(self, t: f32) -> [f32; 4] {
+    fn weights(self, t: f64) -> [f64; 4] {
         let (t2, t3) = (t * t, t * t * t);
         match self {
             Basis::Bezier => {
@@ -158,7 +226,7 @@ fn tessellate_cubic(cv: &[[f32; 3]], basis: Basis, periodic: bool, out: &mut Vec
         for step in start..=CUBIC_STEPS {
             let t = step as f32 / CUBIC_STEPS as f32;
             let cur = out.len() as u32;
-            out.push(eval(cvs, basis.weights(t)));
+            out.push(eval(cvs, basis.weights(t as f64).map(|weight| weight as f32)));
             if cur > 0 && !(s == 0 && step == 0) {
                 idx.push(cur - 1);
                 idx.push(cur);
@@ -202,7 +270,7 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<
         return None;
     }
     let is_cubic = read_token(curves.type_attr(), "cubic", ctx.time) == "cubic";
-    let basis = Basis::parse(&read_token(curves.basis_attr(), "bspline", ctx.time));
+    let basis = Basis::parse(&read_token(curves.basis_attr(), "bezier", ctx.time));
     let wrap = read_token(curves.wrap_attr(), "nonperiodic", ctx.time);
     let periodic = wrap == "periodic";
 
@@ -215,8 +283,9 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<
     let mut out: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let color = crate::read::geom::read_primvar_vec3f(ctx.stage, ctx.path, "primvars:displayColor", ctx.time).ok().flatten();
-    let color = color.map(|value| MeshPrimvar { values: value.values.into_iter().map(Vec3::from).collect(), interpolation: value.interpolation, indices: value.indices });
+    let color = color.map(|value| MeshPrimvar { values: value.values.into_iter().map(|value| Vec3::from(value).as_dvec3()).collect(), interpolation: value.interpolation, indices: value.indices });
     let opacity = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time).ok().flatten();
+    let opacity = opacity.map(|value| MeshPrimvar { values: value.values.into_iter().map(f64::from).collect(), interpolation: value.interpolation, indices: value.indices });
     let mut colors = (color.is_some() || opacity.is_some()).then(Vec::new);
     let mut cursor = 0usize;
     let mut varying_offset = 0usize;
@@ -239,9 +308,9 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<
         let layout = CurveSampling { curve, point_offset: cursor, varying_offset, count: cv.len(), segments, basis, cubic, periodic, pinned };
         if let Some(colors) = &mut colors {
             for sample in 0..samples {
-                let rgb = color.as_ref().map(|value| layout.sample(value, sample, Vec3::ONE)).unwrap_or(Vec3::ONE);
+                let rgb = color.as_ref().map(|value| layout.sample(value, sample, DVec3::ONE)).unwrap_or(DVec3::ONE);
                 let alpha = opacity.as_ref().map(|value| layout.sample(value, sample, 1.)).unwrap_or(1.);
-                colors.push([rgb.x, rgb.y, rgb.z, alpha]);
+                colors.push([rgb.x as f32, rgb.y as f32, rgb.z as f32, alpha as f32]);
             }
         }
         varying_offset += if cubic { segments + usize::from(!periodic) } else { cv.len() };
@@ -264,7 +333,7 @@ struct CurveSampling {
 
 impl CurveSampling {
     fn sample<T>(&self, value: &MeshPrimvar<T>, sample: usize, fallback: T) -> T
-    where T: Copy + std::ops::Add<Output=T> + std::ops::Sub<Output=T> + std::ops::Mul<f32, Output=T> {
+    where T: Copy + std::ops::Add<Output=T> + std::ops::Sub<Output=T> + std::ops::Mul<f64, Output=T> {
         let lookup = |slot: usize| {
             let index = if value.indices.is_empty() { Some(slot) }
                 else { value.indices.get(slot).and_then(|index| usize::try_from(*index).ok()) };
@@ -282,7 +351,7 @@ impl CurveSampling {
             return lookup(offset + sample);
         }
         let segment = (sample / CUBIC_STEPS).min(self.segments - 1);
-        let t = (sample - segment * CUBIC_STEPS) as f32 / CUBIC_STEPS as f32;
+        let t = (sample - segment * CUBIC_STEPS) as f64 / CUBIC_STEPS as f64;
         if value.interpolation == Interpolation::Varying {
             let next = if self.periodic { (segment + 1) % self.segments } else { segment + 1 };
             return lookup(self.varying_offset + segment) * (1. - t) + lookup(self.varying_offset + next) * t;
@@ -332,6 +401,11 @@ impl PrimRoute for CurvesRoute {
             world.entity_mut(entity).insert(UsdCurveError("non-finite tessellated curve point".into()));
             return;
         }
+        if colors.as_ref().is_some_and(|colors| colors.iter().flatten().any(|value| !value.is_finite())) {
+            super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
+            world.entity_mut(entity).insert(UsdCurveError("non-finite tessellated curve color/opacity".into()));
+            return;
+        }
         let translucent = colors.as_ref().is_some_and(|colors| colors.iter().any(|color| color[3].is_finite() && color[3] < 1.));
         let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, points);
@@ -354,6 +428,157 @@ mod tests {
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::usd::Stage;
+
+    #[test]
+    fn curve_color_intermediates_stay_wide_and_overflow_is_reported() {
+        let source = crate::UsdSource::new("gradients.usda", include_bytes!("../../../../assets/curve_gradients.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let path = openusd::sdf::path("/Vertex").unwrap();
+        stage.attribute("/Vertex.basis").unwrap().set(Value::Token("catmullRom".into())).unwrap();
+        stage.create_attribute("/Vertex.wrap", "token").unwrap().set(Value::Token("pinned".into())).unwrap();
+        stage.attribute("/Vertex.primvars:displayColor:indices").unwrap().clear().unwrap();
+        stage.attribute("/Vertex.primvars:displayOpacity").unwrap().clear().unwrap();
+        let color = stage.attribute("/Vertex.primvars:displayColor").unwrap();
+        color.clone().set(Value::Vec3fVec(vec![[f32::MAX;3].into();8])).unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let entity = world.spawn_empty().id();
+        CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+        assert!(world.get::<UsdCurveError>(entity).is_none());
+        let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colors") };
+        assert!(colors.iter().all(|color| color[..3] == [f32::MAX;3]));
+        stage.attribute("/Vertex.wrap").unwrap().set(Value::Token("nonperiodic".into())).unwrap();
+        color.clone().set(Value::Vec3fVec(vec![[0.;3].into(), [f32::MAX;3].into(), [f32::MAX;3].into(), [0.;3].into(),
+            [0.;3].into(), [f32::MAX;3].into(), [f32::MAX;3].into(), [0.;3].into()])).unwrap();
+        CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+        assert!(world.get::<Mesh3d>(entity).is_none());
+        assert_eq!(world.get::<UsdCurveError>(entity).unwrap().0, "non-finite tessellated curve color/opacity");
+        color.set(Value::Vec3fVec(vec![[1.;3].into();8])).unwrap();
+        CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+        assert!(world.get::<Mesh3d>(entity).is_some());
+        assert!(world.get::<UsdCurveError>(entity).is_none());
+    }
+
+    #[test]
+    fn curve_output_limits_are_inclusive_and_do_not_wrap() {
+        let mut total = (0,0);
+        accumulate_curve_output(&mut total, MAX_CURVE_VERTICES, MAX_CURVE_INDICES).unwrap();
+        assert!(accumulate_curve_output(&mut total, 1, 0).is_err());
+        assert!(accumulate_curve_output(&mut total, 0, 1).is_err());
+        assert_eq!(total, (MAX_CURVE_VERTICES, MAX_CURVE_INDICES));
+        assert!(accumulate_curve_output(&mut total, usize::MAX, 0).is_err());
+        assert!(accumulate_curve_output(&mut total, 0, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn oversized_curve_projection_allocates_no_mesh_and_recovers() {
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("oversized.usda").unwrap();
+        stage.define_prim("/Curve").unwrap().set_type_name("BasisCurves").unwrap();
+        stage.create_attribute("/Curve.basis", "token").unwrap().set(Value::Token("bspline".into())).unwrap();
+        let points = stage.create_attribute("/Curve.points", "point3f[]").unwrap();
+        let counts = stage.create_attribute("/Curve.curveVertexCounts", "int[]").unwrap();
+        let count = MAX_CURVE_VERTICES / CUBIC_STEPS + 3;
+        points.clone().set(Value::Vec3fVec(vec![[0.,0.,0.].into();count])).unwrap();
+        counts.clone().set(Value::IntVec(vec![count as i32])).unwrap();
+        let path = openusd::sdf::path("/Curve").unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let entity = world.spawn_empty().id();
+        let child = world.spawn(ChildOf(entity)).id();
+        CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+        assert_eq!(world.resource::<Assets<Mesh>>().len(), 0);
+        assert!(world.get::<UsdCurveError>(entity).unwrap().0.contains("exceeds limits"));
+        points.set(Value::Vec3fVec(vec![[0.,0.,0.].into();4])).unwrap();
+        counts.set(Value::IntVec(vec![4])).unwrap();
+        CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+        assert!(world.get::<Mesh3d>(entity).is_some());
+        assert!(world.get::<UsdCurveError>(entity).is_none());
+        assert_eq!(world.get::<ChildOf>(child).unwrap().parent(), entity);
+    }
+
+    #[test]
+    fn curve_primvar_cardinality_and_indices_are_validated() {
+        for (interpolation, count) in [(Interpolation::Constant,1), (Interpolation::Uniform,2), (Interpolation::Vertex,8), (Interpolation::Varying,4)] {
+            let mut value = MeshPrimvar { values: vec![0.5;count], interpolation, indices: Vec::new() };
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_ok());
+            value.values = vec![0.5,0.75];
+            value.indices = vec![1;count];
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_ok());
+            value.indices[0] = -1;
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_err());
+            value.indices[0] = 2;
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_err());
+            value.indices = vec![0;count+1];
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_err());
+            value.values = vec![0.5];
+            value.indices.clear();
+            assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_ok());
+        }
+        let value = MeshPrimvar { values: vec![1.], interpolation: Interpolation::FaceVarying, indices: Vec::new() };
+        assert!(validate_curve_primvar(&value, 2, 8, 4, "test").is_err());
+    }
+
+    #[test]
+    fn invalid_curve_display_arrays_suppress_and_recover() {
+        let source = crate::UsdSource::new("gradients.usda", include_bytes!("../../../../assets/curve_gradients.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let mut app = App::new();
+        app.add_plugins(crate::live::LiveStagePlugin);
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        app.world_mut().insert_non_send(LiveStage::new(stage.clone()));
+        app.world_mut().run_schedule(Update);
+        let entity = app.world().resource::<PrimEntities>().entity("/Vertex").unwrap();
+        let child = app.world_mut().spawn(ChildOf(entity)).id();
+        let indices = stage.attribute("/Vertex.primvars:displayColor:indices").unwrap();
+        for invalid in [vec![0,1], vec![-1;8], vec![4;8]] {
+            indices.clone().set(Value::IntVec(invalid)).unwrap();
+            app.world_mut().run_schedule(Update);
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+            assert!(app.world().get::<UsdCurveError>(entity).unwrap().0.contains("displayColor"));
+            indices.clone().set(Value::IntVec(vec![0,1,1,2,2,3,3,0])).unwrap();
+            app.world_mut().run_schedule(Update);
+            assert!(app.world().get::<Mesh3d>(entity).is_some());
+            assert!(app.world().get::<UsdCurveError>(entity).is_none());
+        }
+        stage.attribute("/Vertex.primvars:displayOpacity").unwrap().set(Value::FloatVec(vec![f32::NAN;4])).unwrap();
+        app.world_mut().run_schedule(Update);
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        assert_eq!(app.world().get::<UsdCurveError>(entity).unwrap().0, "non-finite displayOpacity");
+        stage.attribute("/Vertex.primvars:displayOpacity").unwrap().set(Value::FloatVec(vec![1.;4])).unwrap();
+        app.world_mut().run_schedule(Update);
+        assert!(app.world().get::<Mesh3d>(entity).is_some());
+        assert!(app.world().get::<UsdCurveError>(entity).is_none());
+        assert_eq!(app.world().resource::<PrimEntities>().entity("/Vertex"), Some(entity));
+        assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
+    }
+
+    #[test]
+    fn curve_layout_validation_rejects_unused_controls_and_unknown_tokens() {
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("layout.usda").unwrap();
+        stage.define_prim("/Curve").unwrap().set_type_name("BasisCurves").unwrap();
+        let path = openusd::sdf::path("/Curve").unwrap();
+        for (kind,basis,wrap,count,valid) in [
+            ("cubic","bezier","nonperiodic",4,true), ("cubic","bezier","nonperiodic",5,false),
+            ("cubic","bezier","nonperiodic",7,true), ("cubic","bezier","periodic",3,true),
+            ("cubic","bezier","periodic",4,false), ("cubic","bezier","periodic",6,true),
+            ("cubic","bspline","pinned",2,true), ("cubic","catmullRom","pinned",2,true),
+            ("cubic","bspline","nonperiodic",3,false), ("cubic","catmullRom","periodic",3,true),
+            ("linear","ignored","nonperiodic",2,true), ("linear","ignored","periodic",3,true),
+            ("cubic","power","nonperiodic",4,false), ("unknown","bezier","nonperiodic",4,false),
+            ("cubic","bezier","unknown",4,false),
+        ] {
+            for (name,value) in [("type",kind), ("basis",basis), ("wrap",wrap)] {
+                stage.create_attribute(format!("/Curve.{name}"), "token").unwrap().set(Value::Token(value.into())).unwrap();
+            }
+            stage.create_attribute("/Curve.points", "point3f[]").unwrap().set(Value::Vec3fVec(vec![[0.,0.,0.].into();count])).unwrap();
+            stage.create_attribute("/Curve.curveVertexCounts", "int[]").unwrap().set(Value::IntVec(vec![count as i32])).unwrap();
+            let result = validate_curves(&RouteCtx::new(&stage, &path));
+            assert_eq!(result.is_ok(), valid, "{kind}/{basis}/{wrap}/{count}: {result:?}");
+        }
+    }
 
     #[test]
     fn curve_errors_clear_geometry_and_recover_without_losing_children() {
@@ -448,10 +673,10 @@ def BasisCurves "Curve" {
                 let mut indices = Vec::new();
                 if pinned { tessellate_pinned(cv, basis, &mut positions, &mut indices); }
                 else { tessellate_cubic(cv, basis, periodic, &mut positions, &mut indices); }
-                let value = MeshPrimvar { values: cv.iter().copied().map(Vec3::from).collect(), interpolation: Interpolation::Vertex, indices: Vec::new() };
+                let value = MeshPrimvar { values: cv.iter().copied().map(|value| Vec3::from(value).as_dvec3()).collect(), interpolation: Interpolation::Vertex, indices: Vec::new() };
                 let layout = CurveSampling { curve: 0, point_offset: 0, varying_offset: 0, count, segments: (positions.len()-1)/CUBIC_STEPS, basis, cubic: true, periodic, pinned };
                 for (sample, expected) in positions.into_iter().enumerate() {
-                    assert!(layout.sample(&value, sample, Vec3::ONE).abs_diff_eq(Vec3::from(expected), 1e-5));
+                    assert!(layout.sample(&value, sample, DVec3::ONE).abs_diff_eq(Vec3::from(expected).as_dvec3(), 1e-5));
                 }
             }
         }
@@ -598,6 +823,7 @@ def BasisCurves "Curve" {
             .unwrap()
             .set_type_name("BasisCurves")
             .unwrap();
+        stage.create_attribute("/Curve.type", "token").unwrap().set(Value::Token("linear".into())).unwrap();
         stage
             .create_attribute("/Curve.points", "point3f[]")
             .unwrap()
@@ -625,7 +851,7 @@ def BasisCurves "Curve" {
         let handle = world.get::<Mesh3d>(e).expect("curve mesh").0.clone();
         let mesh = world.resource::<Assets<Mesh>>().get(&handle).unwrap();
         assert_eq!(mesh.primitive_topology(), PrimitiveTopology::LineList);
-        // 3 points (< 4 CVs) → polyline fallback → 2 segments → 4 line indices.
+        // Three linear points produce two segments.
         assert_eq!(mesh.indices().map(|i| i.len()), Some(4));
     }
 
@@ -728,6 +954,7 @@ def BasisCurves "Curve" {
     fn periodic_cubic_wraps_without_panic() {
         let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("crv.usda").unwrap();
         stage.define_prim("/Curve").unwrap().set_type_name("BasisCurves").unwrap();
+        stage.create_attribute("/Curve.basis", "token").unwrap().set(Value::Token("bspline".into())).unwrap();
         stage
             .create_attribute("/Curve.type", "token")
             .unwrap()
@@ -763,7 +990,7 @@ def BasisCurves "Curve" {
         project_stage(&mut world, &live, &mut map);
         let handle = world.get::<Mesh3d>(map.entity("/Curve").unwrap()).unwrap().0.clone();
         let mesh = world.resource::<Assets<Mesh>>().get(&handle).unwrap();
-        // 4 CVs, vstep 1 (bspline default), periodic → 4 segments, each closing
+        // Four Bspline control points produce four periodic segments, each closing
         // back through the ring; a non-empty index buffer proves the wrap ran.
         assert!(mesh.indices().map(|i| i.len()).unwrap_or(0) > 0);
     }

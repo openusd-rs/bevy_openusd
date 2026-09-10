@@ -1,5 +1,88 @@
 # OpenUSD upgrade and capability reassessment
 
+## Integrated writer fixes
+
+The added moved-package test demonstrates a separate remaining gap: root/edit
+USDZ writes do not bundle dependencies. Once original files are deleted, native
+composition loses sublayer and referenced values. `make test-native` currently
+fails that portability regression while its earlier two fixtures still pass.
+See `PACKAGING.md`; this is not a regression in the integrated wire-type fixes.
+
+Native layered-scene checks exposed and fixed an additional binary mismatch:
+subLayers must use a non-array StringVector, not a string array. Root/edit USDC
+and USD exports previously lost the weak layer under native composition. The
+updated binary patch includes this correction with 0/1/3-element wire regressions
+and checks that ordinary string arrays remain arrays. Native tests now pass
+24 save checks: 12 for hierarchy/variants/API metadata and 12 for sublayers and
+external references, all saved beside their dependencies. USDZ portable bundling
+and cross-directory asset-path preservation remain separate acceptance work.
+Logs: `/tmp/native-layered-gate.log` (before),
+`/tmp/native-layered-packages.log` (after), `/tmp/upstream-sublayer-tests.log`.
+
+The root Cargo patch table now uses the additive `vendor/openusd` snapshot for
+all three OpenUSD packages. Its upstream baseline remains b7df5ad, rechecked as
+upstream HEAD on 2026-09-10. Only the two recorded writer patches differ from
+the upstream crate sources. Existing xtra directories and sibling checkouts are
+untouched. `vendor/openusd/VENDORED.md` records included files, licenses and the
+switch-back procedure. No temporary source path or build-time patching is needed.
+
+## Native interoperability audit — history and remaining scope
+
+Before integration, both patches passed the editor's 12-combination native gate
+when supplied as temporary Cargo overrides. The gate additionally
+uses native flattening to verify the selected variant's authored value. Fixes:
+USDA singleton list brackets; non-array TokenVector encoding for the eight
+structural/order fields; StringListOp encoding for variantSetNames. The last
+case is required by native schema.cpp and is distinct from the token-vector
+array bit. Upstream's parser currently stores variantSetNames as TokenListOp,
+so the binary writer translates it at the format boundary. Both patches pass
+1,584 core tests and 56 binary fixture roundtrips. Logs:
+`/tmp/upstream-vector-tests.log`, `/tmp/upstream-vector-roundtrip-final.log`,
+`/tmp/bevy-native-patched-variants.log`. These are temporary-override results,
+not dependency integration or comprehensive interchange acceptance.
+
+`make test-native` now checks actual editor saves through native `usdcat` in all
+three save modes and four supported extensions. It fails in all 12 combinations
+at the unpatched upstream pin: root/edit USDA reject singleton list-op syntax, flattened
+USDA rejects a non-shaped value with an array type, and all USDC/USD/USDZ cases
+decode without the expected parent/child, attributes or API metadata. The
+original USDA control parses successfully. Log: `/tmp/bevy-native-export-tests.log`.
+The test is explicitly ignored in the ordinary suite because it requires native
+OpenUSD, not because self-reopen constitutes equivalent coverage.
+
+An isolated binary-writer experiment encodes `primChildren` and `properties` as
+non-array `TokenVector` representations instead of token arrays. This makes a
+minimal Rust-written USDC prim visible to native usdcat. The Rust reader merges
+both wire types into the same TokenVec value, masking this distinction in
+self-reopen tests. Native [crate data loading](https://github.com/PixarAnimationStudios/OpenUSD/blob/v25.05/pxr/usd/usd/crateData.cpp)
+also treats TokenVector specially. This initial experiment was subsequently
+expanded to all eight token-vector fields and integrated as recorded above.
+
+On 2026-09-10, the installed native OpenUSD 25.05.01 tools exposed compatibility
+gaps not covered by the Rust reader/writer self-reopen tests:
+
+- Native `usdcat` reads only layer metadata from the collection's original
+  `spot_base_urdf/spot.usdc`, while the pinned Rust reader traverses 26 meshes.
+  CPU `usdrecord`/Embree produces a black Spot image, including with all purposes
+  enabled. The same native renderer produces visible geometry from our
+  `assets/subdivision_cube.usda`. The Spot image is not a valid visual reference.
+- Exporting the Spot root layer through the current Rust writer produces
+  `prepend apiSchemas = "MaterialBindingAPI"`; native `usdcat` rejects that
+  singleton list-op representation. Minimal reproduction:
+  `assets/single_api_schema.usda` is accepted natively, but its Rust root-layer
+  text export is rejected with `Expected None or [` and status 1.
+  Logs: `/tmp/single-api-export.log`, `/tmp/single-api-native-error.log`.
+- A native Storm offscreen attempt segfaulted in this environment; it provides
+  no acceptance evidence. CPU Embree emits a color-correction limitation warning.
+
+The original Spot binary compatibility issue is not yet attributed to a writer
+version or specific binary field. The minimal text-export failure is reproduced
+against the unpatched upstream writer and is now fixed locally. Broad native
+interchange and reference-render acceptance remain open; the selected native
+fixture and self-reopen tests do not prove arbitrary interchange.
+The diagnostic `scene_report` export writes a new file only and does not modify
+the original asset or rebase its relative references.
+
 Reviewed on 2026-09-09 against upstream
 [`b7df5add628cbb791103a7da842dbd82810da5d0`](https://github.com/mxpv/openusd/commit/b7df5add628cbb791103a7da842dbd82810da5d0).
 Rechecked with `git ls-remote` on 2026-09-09: this is upstream HEAD,

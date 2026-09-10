@@ -25,6 +25,217 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Added a native USDZ portability regression: save into a separate directory,
+close/delete the owned source directory, then decode with fresh native processes.
+Root/edit packages lose sublayer and referenced values; flattened preserves
+these geometry-only values. The two prior fixtures still pass. The native gate
+is now deliberately failing on this real acceptance gap, not claimed green.
+Evidence: `/tmp/native-portable-package.log`. `PACKAGING.md` records the
+source-grounded implementation boundary and required coverage: resolver-aware
+dependency traversal above ArchiveWriter, live layer snapshots, preserved save
+semantics, deterministic collision-free paths, bounds and atomic publication.
+No dependency bundling is implemented yet; flattened texture portability and
+non-package cross-directory Save As remain open too.
+
+The ordinary suite passes 361 tests with three optional native tests ignored;
+check-all, build and git diff --check pass. Logs:
+`/tmp/native-portability-{tests,check,build}.log`. The separate native gate fails
+the moved-package test as above. Next implementation priority is the dependency
+packager in PACKAGING.md, not weakening that regression or flattening root/edit
+saves implicitly.
+
+Extended native persistence coverage to sublayers and external references in all
+12 root/edit/flattened x usda/usdc/usd/usdz combinations. Before the fix, native
+composition lost the sublayer in root/edit binary exports. Corrected the vendored
+writer to emit subLayers as non-array StringVector; ordinary string arrays are
+unchanged. Updated the binary patch artifact and provenance. Wire regressions
+cover 0/1/3 items. Upstream validation passes 1,585 core tests and 56 binary fixture
+roundtrips; the expanded native gate passes both fixtures, totaling 24 save checks.
+Logs: `/tmp/native-layered-gate.log` (failure before fix),
+`/tmp/native-layered-packages.log` (pass after), `/tmp/upstream-sublayer-tests.log`.
+These exports remain beside their external dependencies: portable packaging and
+cross-directory Save As have not been certified by these tests.
+
+Repository validation: 361 ordinary tests pass with two optional native tests
+ignored; check-all, build and whitespace checks pass. Logs:
+`/tmp/native-layered-{tests,check,build}.log`. Both recorded patch files pass
+reverse-apply checks against the integrated source.
+
+Integrated both writer patches through the root Cargo patch table and the new
+`vendor/openusd` snapshot (389 files, approximately 7.5 MiB on disk). The base is
+still upstream HEAD b7df5ad, rechecked on 2026-09-10. All three packages resolve
+to repository-local paths; no temporary override, sibling checkout modification,
+existing xtra replacement or build-time patching is required. The vendored
+crates differ from upstream only in the two writer files, and both patch files
+pass reverse-apply checks against the integrated snapshot. Licenses, provenance
+and switch-back instructions are in `vendor/openusd/VENDORED.md`.
+
+The normal make test-native passes all 12 combinations including native variant
+composition. Normal test-all passes 361 tests with one optional native test
+ignored; check-all and build pass. Logs:
+`/tmp/bevy-integrated-{native,tests,check,build}.log`. The integrated scene_report
+exports Spot text accepted by native usdcat:
+`target/spot-integrated-review.usda`, `/tmp/spot-integrated-export.log`,
+`/tmp/spot-integrated-native.usda`. This resolves integration of the diagnosed
+writer fixes, not the full Bevy checklist or arbitrary save/render parity.
+
+Native Embree also rendered that integrated export to
+`target/spot-integrated-embree.png`, inspected directly. The robot is visible
+and faceted; Material prims and GPU-disabled color correction remain unsupported
+by this reference renderer. Log: `/tmp/spot-integrated-embree.log`. No original
+collection asset was changed, and this is not a matched Bevy/native image test.
+
+### Earlier interoperability checkpoints
+
+Expanded and preserved the binary fix as
+`patches/openusd-token-vector-fields.patch`: all eight native token-vector
+structural/order fields use non-array TokenVector values, and variantSetNames
+token list operations emit native StringListOp values. Wire tests cover vector
+sizes 0/1/3, ordinary arrays and six variant-set operations. Both patches together
+pass 1,584 upstream core tests and 56 binary fixture roundtrips. The native editor
+gate now uses `assets/native_save.usda` and native flattening to check variant
+composition as well as hierarchy/values/API metadata. All 12 combinations pass
+with temporary Cargo overrides pointing at the patched isolated copy. Logs:
+`/tmp/upstream-vector-tests.log`, `/tmp/upstream-vector-roundtrip-final.log`,
+`/tmp/bevy-native-patched-variants.log`. Permanent integration remains pending;
+ordinary pinned dependencies are not fixed by committing patch artifacts.
+
+The patched Bevy workspace also passes all 361 ordinary tests (one optional
+native test ignored), check-all and build; logs:
+`/tmp/bevy-patched-{all-tests,check,build}.log`. Restored the normal Git dependency
+resolution and verified Cargo.lock has no diff. The unchanged pin fails the
+expanded native gate as expected; the normal viewer build passes
+(`/tmp/bevy-native-restored-pin.log`, `/tmp/bevy-restored-build.log`). Both patch
+files pass git apply --check against the pinned upstream checkout.
+
+Added optional `make test-native` exercising the real editor persistence path
+for RootLayer/EditLayer/Flattened and usda/usdc/usd/usdz. All 12 combinations
+currently fail native interchange checks: USDA metadata syntax errors (a distinct
+array-shape error for flattened output) and missing hierarchy/values/API metadata
+for binary/package outputs. Source control parses natively. Log:
+`/tmp/bevy-native-export-tests.log`. Normal tests explicitly ignore this native
+tool requirement; they do not certify interchange.
+
+Binary failure now reproduced independently of Spot with single_api_schema.usda.
+An experimental change in `/tmp/openusd-native-patch-b7df/crates/openusd/src/usdc/writer.rs`
+emits primChildren/properties as non-array TokenVector rather than Token arrays;
+native usdcat then sees the minimal USDC prim and its API metadata. Evidence:
+`/tmp/upstream-vector-convert.log`, `/tmp/single-api-vector-native.usda`.
+This temporary change is not yet a reviewed patch artifact, does not cover all
+token-vector metadata, and is not integrated. Next: expand binary regression
+coverage, correct flattened metadata, and validate the actual dependency with
+the native gate before claiming save interoperability.
+
+Validation for the native-gate addition: all 361 ordinary tests pass, with one
+explicitly ignored native test; check-all, build and git diff --check pass.
+Logs: `/tmp/bevy-native-gate-{tests,check,build}.log`. The separate native gate
+fails as described above, and that failure remains an acceptance blocker.
+
+Prepared `patches/openusd-singleton-listops.patch` against the pinned upstream
+revision in an isolated temporary copy; no sibling or Cargo cache sources were
+modified. All 1,582 upstream core library tests pass, including a new six-operation
+singleton metadata regression. Native usdcat now accepts patched conversions of
+the minimal fixture and Spot (919 lines of native text output). Native Embree
+renders the converted Spot visibly, with faceting, in
+`target/spot-patched-embree.png`, inspected directly. Logs:
+`/tmp/upstream-listop-all-tests.log`, `/tmp/spot-patched-convert.log`,
+`/tmp/spot-patched-embree.log`. Embree does not support the scene's Material prims;
+camera/lighting are unmatched. This is not pixel/material parity or proof that
+the Rust reader interprets the original binary correctly. Patch integration and
+the original binary's native-read discrepancy remain open. The active viewer
+dependency is still unpatched; see `patches/README.md` for reproduction.
+
+Returned to Spot seam diagnosis. Extended scene_report with authored-normal
+preservation, face/normal alignment, duplicate/degenerate triangles and indexed
+versus exact-position-welded boundary/nonmanifold edges. Tests cover reversed
+normals, duplicates, degeneracy and a split-index quad. Current Spot data:
+26 traversed meshes preserve authored vertex normals exactly; none have reversed
+normal corners or exact duplicate/degenerate triangles. Minimum face-normal dot
+is at least 0.999785, supporting source-authored flat faceting. Body geometry has
+55 exact-position boundary edges and one nonmanifold edge after welding versus
+3,368 indexed boundaries. These are diagnostic counts, not proof of defective
+source geometry or attribution of every visible seam. Log:
+`/tmp/spot-surface-edges.log`. Source assets and runtime normals were not modified.
+
+Found native usdrecord/usdcat (OpenUSD 25.05.01) and added optional Makefile
+capture-reference; default make still builds usdview. CPU Embree renders the
+cube fixture, but the original Spot USDC renders black because native usdcat
+sees only 11 lines of root metadata, unlike the Rust reader. All-purpose capture
+also stays black. Offscreen Storm segfaulted. Diagnostic root-layer text export
+then exposed invalid singleton apiSchemas serialization in the pinned Rust
+writer. Minimal valid source `assets/single_api_schema.usda` passes native usdcat;
+its Rust text export fails native parsing with status 1. Detailed evidence and
+limitations are in OPENUSD_UPGRADE.md. Native interoperability is not fixed and
+self-reopen tests do not prove it. Next priority: isolate/correct the native
+export compatibility failure before claiming save/interchange acceptance.
+
+All 361 repository tests, check-all, build and whitespace checks pass
+(`/tmp/usd-native-audit-{tests,check,build}.log`), separately from the expected
+native interoperability failures. Spot visual fidelity remains unresolved.
+
+Curve color/opacity interpolation now uses f64 scalar/vector intermediates and
+f64 basis weights. Generated RGBA is checked after conversion to f32; overflow
+reports UsdCurveError and suppresses geometry before GPU upload. A regression
+keeps pinned all-f32::MAX color controls finite, rejects true Catmull-Rom
+overshoot beyond f32 range and verifies recovery after correction. Geometry
+positions remain f32 with their existing finite-output guard.
+
+All 360 tests, check-all, build and whitespace checks pass
+(`/tmp/usd-curve-color-finite-{tests,check,build}.log`). Inspected the repeated GPU
+gradient capture `target/curve-gradients-finite.png`; raw RGB comparison against
+the earlier capture finds zero changed pixels out of 921,600 at tolerance zero
+(`/tmp/usd-curve-color-finite-compare.log`). This verifies preservation of that
+fixture, not general reference parity or performance of widened interpolation.
+Widths, adaptive tessellation and broader acceptance remain open.
+
+Curve validation now preflights total tessellated output across each prim's
+curves, with checked arithmetic and inclusive limits of 1,000,000 vertices and
+2,000,000 line indices. It derives linear/cubic, periodic/pinned segment counts
+before allocating generated geometry; over-budget input reports UsdCurveError
+through the existing cleanup/recovery and capture failure paths.
+
+Tests cover exact limits, one-over-limit cases, usize arithmetic overflow, and
+a 125,003-control-point Bspline whose output would exceed one million vertices.
+That projection creates no mesh asset and recovers after replacing the source
+with four points, preserving a runtime child. All 359 tests, check-all, build
+and whitespace checks pass (`/tmp/usd-curve-budget-{tests,check,build}.log`).
+This bounds generated curve buffers, not input decoding, total prim count,
+asset-cache overhead or process/GPU memory. No new GPU acceptance or performance
+benchmark was performed; width-aware surfaces and broader fidelity remain open.
+
+Curve display primvars now validate sample cardinality by interpolation, negative
+and out-of-range indices, unsupported faceVarying interpolation and non-finite
+authored color/opacity values. Constant/uniform/vertex/varying use their distinct
+sample counts, including cubic segment-boundary varying counts and periodic
+wrap. Single unindexed values retain the existing broadcast behavior. Invalid
+data reports UsdCurveError instead of silently substituting fallback colors.
+
+Tests cover interpolation cardinalities, valid indexed palettes, malformed index
+arrays, broadcast, non-finite opacity and live recovery preserving entity/runtime
+children. All 357 tests, check-all, build and whitespace checks pass
+(`/tmp/usd-curve-primvar-validation-{tests,check,build}.log`). Negative GPU fixture
+`assets/invalid_curve_colors.usda` exits with `displayColor has 2 samples; expected
+4` and writes no PNG (`/tmp/usd-invalid-curve-colors-capture.log`). Width/normal
+primvars, output budgets, finite interpolated color arithmetic and broader
+reference fidelity remain open. This supersedes the display-cardinality gap.
+
+Curve validation now rejects unknown type/wrap/cubic-basis tokens and unsupported
+segment layouts instead of dropping unused control points. Nonperiodic Bezier
+requires 4+3n controls; periodic Bezier requires 3n with at least three controls;
+nonperiodic Bspline/Catmull-Rom require four, pinned require two. Periodic cubic
+counts below three remain explicitly unsupported; zero-count entries are empty.
+Linear basis tokens are ignored. The reader fallback now names the schema's
+Bezier default rather than Bspline. Older tests were corrected to author linear
+type/Bspline basis explicitly instead of depending on malformed cubic fallback.
+
+The layout matrix covers valid/invalid strides, pinned minimum counts, periodic
+three-point layouts and unknown tokens. All 355 tests, check-all, build and
+whitespace checks pass (`/tmp/usd-curve-layout-{tests,check,build}.log`). Negative
+GPU fixture `assets/invalid_curve_layout.usda` exits nonzero with a five-control
+Bezier layout error and writes no PNG (`/tmp/usd-curve-layout-capture.log`).
+Primvar cardinality, output budgets, width-aware surfaces and full reference
+fidelity remain open; this supersedes the preceding basis/stride limitation.
+
 Added UsdCurveError validation for negative/overflowing counts, authored count
 totals that differ from the point count, invalid count value types and non-finite
 input/tessellated positions. Invalid projection clears owned geometry instead of

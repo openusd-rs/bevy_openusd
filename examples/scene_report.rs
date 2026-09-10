@@ -1,7 +1,46 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bevy::mesh::{Mesh, VertexAttributeValues};
 use usd_bevy::read::geom::ReadMesh;
+
+fn surface_diagnostics(mesh: &Mesh) -> String {
+    let Some(VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return "surface=missing_positions".into(); };
+    let normals = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) { Some(VertexAttributeValues::Float32x3(values)) => Some(values), _ => None };
+    let indices = mesh.indices().map(|indices| indices.iter().collect::<Vec<_>>()).unwrap_or_else(|| (0..points.len()).collect());
+    let mut faces = HashSet::new();
+    let mut geometric_edges = HashMap::<[[u32;3];2], usize>::new();
+    let mut indexed_edges = HashMap::<[usize;2], usize>::new();
+    let (mut duplicate, mut degenerate, mut reversed, mut grazing, mut corners) = (0,0,0,0,0);
+    let mut minimum_dot = 1.0f64;
+    for triangle in indices.chunks_exact(3) {
+        let Some(vertices) = triangle.iter().map(|index| points.get(*index).copied()).collect::<Option<Vec<_>>>() else { continue; };
+        let p = vertices.iter().map(|point| bevy::math::DVec3::from_array(point.map(f64::from))).collect::<Vec<_>>();
+        let Some(face) = (p[1]-p[0]).cross(p[2]-p[0]).try_normalize() else { degenerate += 1; continue; };
+        let mut key = vertices.iter().map(|point| point.map(|value| if value == 0. { 0 } else { value.to_bits() })).collect::<Vec<_>>();
+        for edge in [[0,1], [1,2], [2,0]] {
+            let mut geometric = [key[edge[0]], key[edge[1]]];
+            geometric.sort_unstable();
+            *geometric_edges.entry(geometric).or_default() += 1;
+            let mut indexed = [triangle[edge[0]], triangle[edge[1]]];
+            indexed.sort_unstable();
+            *indexed_edges.entry(indexed).or_default() += 1;
+        }
+        key.sort_unstable();
+        if !faces.insert(key) { duplicate += 1; }
+        for index in triangle {
+            let Some(normal) = normals.and_then(|normals| normals.get(*index)).and_then(|normal| bevy::math::DVec3::from_array(normal.map(f64::from)).try_normalize()) else { continue; };
+            let dot = face.dot(normal);
+            minimum_dot = minimum_dot.min(dot);
+            reversed += usize::from(dot < -0.001);
+            grazing += usize::from(dot.abs() < 0.1);
+            corners += 1;
+        }
+    }
+    format!("triangles={} degenerate_triangles={degenerate} exact_duplicate_triangles={duplicate} checked_normal_corners={corners} reversed_normal_corners={reversed} grazing_normal_corners={grazing} minimum_face_normal_dot={} indexed_boundary_edges={} position_welded_boundary_edges={} position_welded_nonmanifold_edges={}",
+        indices.len()/3, if corners == 0 { "none".into() } else { format!("{minimum_dot:.6}") },
+        indexed_edges.values().filter(|count| **count == 1).count(), geometric_edges.values().filter(|count| **count == 1).count(),
+        geometric_edges.values().filter(|count| **count > 2).count())
+}
 
 fn describe(mesh: &ReadMesh) -> String {
     let projected = usd_bevy::mesh::mesh_from_usd(mesh);
@@ -21,10 +60,13 @@ fn describe(mesh: &ReadMesh) -> String {
             !normal.iter().all(|value| value.is_finite()) || normal.iter().all(|value| *value == 0.0)).count(),
         _ => projected.count_vertices(),
     };
-    format!("points={} faces={} corners={} subdivision={:?} authored_normals={} uv_values={} projected_vertices={} projected_unique_normals={} projected_invalid_normals={} subsets={} double_sided={}",
+    let preserved = mesh.normals.as_ref().is_some_and(|normals| normals.indices.is_empty()
+        && normals.interpolation == usd_bevy::read::geom::Interpolation::Vertex
+        && matches!(projected.attribute(Mesh::ATTRIBUTE_NORMAL), Some(VertexAttributeValues::Float32x3(values)) if values == &normals.values));
+    format!("points={} faces={} corners={} subdivision={:?} authored_normals={} uv_values={} projected_vertices={} projected_unique_normals={} projected_invalid_normals={} subsets={} double_sided={} authored_vertex_normals_preserved={preserved}\n  {}",
         mesh.points.len(), mesh.face_vertex_counts.len(), mesh.face_vertex_indices.len(), mesh.subdivision_scheme,
         normals, mesh.uvs.as_ref().map_or(0, |uv| uv.values.len()), projected.count_vertices(), unique_normals,
-        invalid_normals, mesh.subsets.len(), mesh.double_sided)
+        invalid_normals, mesh.subsets.len(), mesh.double_sided, surface_diagnostics(&projected))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,6 +79,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::fs::canonicalize(&args[0])?;
     let source = usd_bevy::UsdSource::new(&path, std::fs::read(&path)?)?;
     let stage = source.open_stage()?;
+    if let Some(output) = std::env::var_os("USD_REPORT_EXPORT_LAYER") {
+        use std::io::Write;
+        let output = std::path::PathBuf::from(output);
+        if output.extension().and_then(|value| value.to_str()) != Some("usda") { return Err("USD_REPORT_EXPORT_LAYER must end in .usda".into()); }
+        let text = stage.root_layer().export_to_string()?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&output)?;
+        file.write_all(text.as_bytes())?;
+        println!("root_layer_export={} relative_assets_are_not_rebased=true", output.display());
+    }
     println!("asset={} time={time:?} geometry=source-sampled-without-deformation scope=all-traversed-meshes-not-visibility-filtered", path.display());
     let mut pending = stage.prim("/")?.children()?;
     let mut count = 0;
@@ -69,6 +120,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("meshes={count}");
     if refinement_errors > 0 { return Err(format!("{refinement_errors} meshes failed refinement").into()); }
     Ok(())
+}
+
+#[test]
+fn surface_report_detects_reversed_normals_duplicates_and_degeneracy() {
+    let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, Default::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.,0.,0.], [1.,0.,0.], [0.,1.,0.]]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.,0.,-1.];3]);
+    mesh.insert_indices(bevy::mesh::Indices::U32(vec![0,1,2,2,1,0,0,0,0]));
+    let report = surface_diagnostics(&mesh);
+    assert!(report.contains("triangles=3 degenerate_triangles=1 exact_duplicate_triangles=1"));
+    assert!(report.contains("checked_normal_corners=6 reversed_normal_corners=3 grazing_normal_corners=0"));
+    assert!(report.contains("minimum_face_normal_dot=-1.000000"));
+    assert!(report.contains("indexed_boundary_edges=0 position_welded_boundary_edges=0 position_welded_nonmanifold_edges=0"));
+    let mut split = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, Default::default());
+    split.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.,0.,0.], [1.,0.,0.], [1.,1.,0.], [0.,0.,0.], [1.,1.,0.], [0.,1.,0.]]);
+    split.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.,0.,1.];6]);
+    assert!(surface_diagnostics(&split).contains("indexed_boundary_edges=6 position_welded_boundary_edges=4 position_welded_nonmanifold_edges=0"));
 }
 
 #[test]

@@ -220,8 +220,21 @@ Curve projection rejects negative/mismatched counts and non-finite input or
 tessellated positions. It clears owned geometry and reports `UsdCurveError` in
 the inspector; corrected source data recovers on the same entity. The capture
 example exits with an error instead of saving a partial scene. Missing counts
-still infer one curve; cubic basis/stride and primvar-cardinality validation
-remain incomplete. `assets/invalid_curves.usda` is a negative capture fixture.
+still infer one curve. Unknown type/basis/wrap tokens and unsupported segment
+layouts report errors; nonperiodic Bezier requires `4 + 3n` control points,
+periodic Bezier `3n`, and pinned Bspline/Catmull-Rom at least two. Periodic cubic
+counts below three are not supported. Display primvars validate interpolation
+cardinality, index bounds and finite authored values; single unindexed values
+retain their broadcast behavior. `assets/invalid_curves.usda`,
+`assets/invalid_curve_layout.usda` and `assets/invalid_curve_colors.usda` are
+negative capture fixtures. Width and normal primvar validation remains open.
+Curve color/opacity interpolation uses f64 intermediates. Generated values that
+cannot be represented as finite f32 RGBA report `UsdCurveError` before upload;
+the renderer does not receive NaN or infinity from this path.
+Curve projection also rejects output above 1,000,000 vertices or 2,000,000 line
+indices per prim before allocating tessellation buffers. These limits include
+all curves in the prim and use checked arithmetic. They do not bound source
+decoding, the number of prims, asset-cache memory or total GPU memory.
 
 `assets/periodic_curves.usda` compares two closed linear loops in one prim with
 an open control. Periodic closure stays within each curve's vertex range:
@@ -248,6 +261,27 @@ eight samples per segment rather than adaptive or exact-limit rendering.
 `assets/periodic_bezier.usda` compares a three-control-point periodic Bezier
 with an explicitly closed four-point nonperiodic equivalent. Both render the
 same cubic loop, not the triangular control hull.
+
+`scene_report` also reports exact authored-vertex-normal preservation, degenerate
+and exact-duplicate triangles, normal/face alignment and indexed versus
+exact-position-welded boundary edges. These are local, undeformed triangle-data
+diagnostics across all traversed meshes, not a visibility-filtered reference
+render. Geometric boundary counts can include intentional openings; they do not
+by themselves establish a rendering defect.
+Set `USD_REPORT_EXPORT_LAYER=NEW.usda` to write a diagnostic root-layer text
+snapshot; it refuses existing files and does not rebase relative assets. This
+is not a validated interchange exporter: see the native compatibility findings
+in `OPENUSD_UPGRADE.md`.
+
+For independent reference renders, `make capture-reference ARGS='...'` invokes
+an installed native `usdrecord` (`USD_RECORD` overrides the executable):
+
+```bash
+make capture-reference ARGS='--renderer Embree --disableGpu assets/subdivision_cube.usda target/native-cube.png'
+```
+
+Renderer availability depends on that native installation. Inspect the result;
+successful image writing does not prove that the native stage contained meshes.
 
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
@@ -761,3 +795,28 @@ separate work; constant UVs do not define a usable normal-map tangent basis.
 ```bash
 make run APP_TARGET='--example viewer_capture' ARGS='assets/point_shapes.usda target/point-shapes.png 10 6 4 9 2.5 0.75 0'
 ```
+
+### Native save interoperability gate
+
+`make test-native` requires Pixar OpenUSD's `usdcat` on PATH, or an executable
+path in `USD_CAT`. It exercises the editor's root-layer, edit-layer and flattened
+save modes in USDA, USDC, USD and USDZ, then checks hierarchy, attribute values,
+selected variant composition and API metadata through native flattening. Missing
+tools are errors, not passes.
+The test is ignored in the ordinary suite because native OpenUSD is optional.
+
+The fixes in `patches/` are integrated through the root Cargo patch table and
+`vendor/openusd`, so this gate runs against the actual viewer dependency without
+temporary overrides. Ordinary Rust self-reopen tests are not a replacement.
+The fixture covers selected scene data, not arbitrary lossless interchange.
+See `vendor/openusd/VENDORED.md` for provenance and `OPENUSD_UPGRADE.md` for the
+remaining compatibility findings.
+
+A second native fixture checks sublayers and external references in all three
+save modes and four formats. These checks keep exports beside their dependencies;
+they do not certify cross-directory Save As or self-contained USDZ packaging.
+
+The native gate now also removes the source directory before checking exported
+packages. That regression currently fails for root/edit-layer USDZ: dependencies
+are not bundled. `PACKAGING.md` records the failure and implementation boundary.
+The gate is therefore not fully green despite the 24 earlier checks passing.

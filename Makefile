@@ -16,6 +16,7 @@ WAYLAND_DISPLAY ?= wayland-0
 APP_TARGET := --bin usdview
 RUN_WITH ?= nixVulkan
 ARGS ?=
+USD_RECORD ?= usdrecord
 TYPE ?= patch
 HAS_REL := $(shell command -v git-rel 2>/dev/null)
 RUN_ENV := WINIT_UNIX_BACKEND=$(BACKEND)
@@ -31,10 +32,13 @@ $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info Display: $(BACKEND) backend)
 $(info ------------------------------------------)
 
-.PHONY: build b compile c run r serve-web build-web test t test-all check check-all harden bench clean docs release help h
+.PHONY: build b compile c run r serve-web build-web test t test-all test-native check check-all harden bench clean docs release help h capture-reference
 
 build:
 	@$(CARGO) build $(APP_TARGET)
+
+capture-reference:
+	@$(USD_RECORD) $(ARGS)
 
 b: build
 
@@ -64,6 +68,9 @@ t: test
 
 test-all:
 	@$(CARGO) test --workspace --all-targets
+
+test-native:
+	@$(CARGO) test --workspace --lib persistence::tests::native_export -- --ignored --nocapture
 
 check:
 	@$(CARGO) check $(APP_TARGET)
@@ -113,6 +120,7 @@ help:
 	@echo "  build-web    Build the wasm bundle to api_crates/web/dist"
 	@echo "  test         Test the same app target as build/run (usdview)"
 	@echo "  test-all     Run the full workspace all-target test suite"
+	@echo "  test-native  Check editor exports with native OpenUSD usdcat"
 	@echo "  check        Check the same app target as build/run (usdview)"
 	@echo "  check-all    Check the full workspace all-target suite"
 	@echo "  harden       Run diff whitespace check + fmt/check + strict clippy + all-feature tests"

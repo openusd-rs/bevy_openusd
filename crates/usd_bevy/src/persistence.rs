@@ -39,6 +39,123 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_package_survives_removal_of_layer_dependencies() {
+        use crate::editor::{EditorSession, SaveMode};
+        use std::process::Command;
+
+        let source_directory = tempfile::tempdir().unwrap();
+        let output_directory = tempfile::tempdir().unwrap();
+        fs::write(source_directory.path().join("weak.usda"), "#usda 1.0\ndef Scope \"Layered\" {\n double score = 11\n}\n").unwrap();
+        fs::write(source_directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n}\n").unwrap();
+        let source = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Referenced\" (\n prepend references = @model.usda@</Model>\n) {}\n";
+        let original = source_directory.path().join("source.usda");
+        fs::write(&original, source).unwrap();
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let control = Command::new(&native).arg("--flatten").arg(&original).output().expect("launch native reader");
+        assert!(control.status.success(), "native source control: {}", String::from_utf8_lossy(&control.stderr));
+        let editor = EditorSession::new(crate::UsdSource::new(&original, source.as_slice()).unwrap().open_stage().unwrap());
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            editor.save(output_directory.path().join(format!("{name}.usdz")).to_str().unwrap(), mode).unwrap();
+        }
+        drop(editor);
+        source_directory.close().unwrap();
+        let mut failures = Vec::new();
+        for name in ["root", "edit", "flat"] {
+            let package = output_directory.path().join(format!("{name}.usdz"));
+            let output = Command::new(&native).arg("--flatten").arg(&package).output().expect("launch native reader");
+            if !output.status.success() {
+                failures.push(format!("{name}: {}", String::from_utf8_lossy(&output.stderr)));
+                continue;
+            }
+            let stage = crate::UsdSource::new(output_directory.path().join("native.usda"), output.stdout).unwrap().open_stage().unwrap();
+            for (prim, expected) in [("/Layered", 11.0), ("/Referenced", 23.0)] {
+                let value = stage.prim(prim).unwrap().attribute("score").get::<f64>().unwrap();
+                if value != Some(expected) { failures.push(format!("{name} {prim}: expected {expected}, got {value:?}")); }
+            }
+        }
+        assert!(failures.is_empty(), "non-portable package exports:\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_preserves_sublayers_and_external_references() {
+        use crate::editor::{EditorSession, SaveMode};
+        use std::process::Command;
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("weak.usda"), "#usda 1.0\ndef Scope \"Layered\" {\n double score = 11\n}\n").unwrap();
+        fs::write(directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n}\n").unwrap();
+        let source = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Referenced\" (\n prepend references = @model.usda@</Model>\n) {}\n";
+        let original = directory.path().join("source.usda");
+        fs::write(&original, source).unwrap();
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let check = |path: &Path| -> Result<()> {
+            let output = Command::new(&native).arg("--flatten").arg(path).output().context("launch native USD reader")?;
+            ensure!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let stage = crate::UsdSource::new(directory.path().join("native.usda"), output.stdout)?.open_stage()?;
+            for (prim, expected) in [("/Layered", 11.0), ("/Referenced", 23.0)] {
+                let value = stage.prim(prim)?.attribute("score").get::<f64>()?;
+                ensure!(value == Some(expected), "{prim}: expected {expected}, got {value:?}");
+            }
+            Ok(())
+        };
+        check(&original).expect("native source control");
+        let stage = crate::UsdSource::new(&original, source.as_slice()).unwrap().open_stage().unwrap();
+        let editor = EditorSession::new(stage);
+        let mut failures = Vec::new();
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            for extension in ["usda", "usdc", "usd", "usdz"] {
+                let destination = directory.path().join(format!("{name}.{extension}"));
+                editor.save(destination.to_str().unwrap(), mode).unwrap();
+                if let Err(error) = check(&destination) {
+                    failures.push(format!("{name}.{extension}: {error:#}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "native composition failures:\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_preserves_hierarchy_values_and_api_metadata() {
+        use crate::editor::{EditorSession, SaveMode};
+        use std::process::Command;
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = include_bytes!("../../../assets/native_save.usda");
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let original = directory.path().join("source.usda");
+        fs::write(&original, source).unwrap();
+        let control = Command::new(&native).arg(&original).output().expect("launch native USD_CAT or usdcat");
+        assert!(control.status.success(), "native source control failed: {}", String::from_utf8_lossy(&control.stderr));
+        let stage = crate::UsdSource::new(&original, source.as_slice()).unwrap().open_stage().unwrap();
+        let editor = EditorSession::new(stage);
+        let mut failures = Vec::new();
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            for extension in ["usda", "usdc", "usd", "usdz"] {
+                let destination = directory.path().join(format!("{name}.{extension}"));
+                editor.save(destination.to_str().unwrap(), mode).unwrap();
+                let output = Command::new(&native).arg("--flatten").arg(&destination).output().expect("launch native USD reader");
+                if !output.status.success() {
+                    failures.push(format!("{name}.{extension}: {}", String::from_utf8_lossy(&output.stderr)));
+                    continue;
+                }
+                let metadata = String::from_utf8_lossy(&output.stdout).contains("MaterialBindingAPI");
+                let reopened = crate::UsdSource::new(directory.path().join("native.usda"), output.stdout)
+                    .unwrap().open_stage().unwrap();
+                let score = reopened.prim("/Saved").ok().and_then(|prim| prim.attribute("score").get::<f64>().ok().flatten());
+                let size = reopened.prim("/Saved/Child").ok().and_then(|prim| prim.attribute("size").get::<f64>().ok().flatten());
+                let variant = reopened.prim("/Saved").ok().and_then(|prim| prim.attribute("variantScore").get::<f64>().ok().flatten());
+                if score != Some(7.0) || size != Some(3.0) || variant != Some(21.0) || !metadata {
+                    failures.push(format!("{name}.{extension}: score={score:?}, child size={size:?}, variant={variant:?}, API={metadata}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "native interchange failures:\n{}", failures.join("\n"));
+    }
+
+    #[test]
     fn exported_formats_reopen_and_unknown_format_preserves_existing_bytes() {
         let directory = tempfile::tempdir().unwrap();
         let stage = crate::UsdSource::new("source.usda", &b"#usda 1.0\ndef Scope \"Saved\" { double score = 7 }\n"[..])

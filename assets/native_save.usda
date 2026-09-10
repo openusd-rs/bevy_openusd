@@ -1,0 +1,19 @@
+#usda 1.0
+def Xform "Saved" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+    prepend variantSets = ["look"]
+    variants = { string look = "large" }
+) {
+    double score = 7
+    variantSet "look" = {
+        "large" {
+            double variantScore = 21
+        }
+        "small" {
+            double variantScore = 2
+        }
+    }
+    def Cube "Child" {
+        double size = 3
+    }
+}

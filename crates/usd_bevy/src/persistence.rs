@@ -61,6 +61,18 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
 mod tests {
     #[test]
     #[ignore = "requires native OpenUSD usdcat"]
+    fn native_export_baked_clip_values() {
+        super::flatten::tests::verify_baked_clips(true);
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat"]
+    fn native_export_baked_clip_assets() {
+        super::flatten::tests::verify_baked_clip_assets(true);
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat"]
     fn native_export_nested_retimed_instances() {
         super::flatten::tests::verify_nested_retimed_instances(true);
     }

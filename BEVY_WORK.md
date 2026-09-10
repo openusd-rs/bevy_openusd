@@ -25,6 +25,31 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Bake clip-resolved attributes in flattened editor saves
+
+The editor now bakes attributes whose proximal source is ValueClips into the
+flattened layer before shared instance subtrees are rebuilt. It queries sample
+keys and immediately preceding representable times, writes explicit value blocks
+where resolution is blocked, and anchors asset samples to resolved identifiers.
+Missing nonempty asset resolutions, clip-sourced timecode/timecode[] values and
+more than one million attempted sample entries reject the save before publication.
+Direct upstream Stage::flatten is unchanged. Root/edit saves retain clip metadata.
+
+Rust and native relocated-export tests cover scalar interpolation/switching and
+value-block boundaries across USDA/USDC/USD/USDZ. A separate moved-USDZ case
+verifies clip-selected asset bytes remain embedded and readable; omitting an
+asset leaves an existing destination unchanged. The nested/retimed instance
+fixture now sources its geometry size from a captured clip and verifies baked
+samples together with prototype sharing, root opinions and relationship targets.
+The former blanket clip-rejection test now checks unsupported timecode clips
+and untouched destinations in all four formats.
+All 478 ordinary tests pass (13 ignored), all 13 native export tests pass, and
+check-all/build/whitespace validation pass without warnings:
+`/tmp/clip-bake-{tests-final,native-final,check-final,build-final}.log`.
+This is export/value evidence, not a new GPU comparison of baked output or
+complete native parity for every clip type/schedule. Timecode retiming remains
+unresolved upstream; peak flattening memory still includes expanded instances.
+
 ### Correct interpolation across active clip boundaries
 
 Native OpenUSD 25.05.01 probes (`/tmp/native-clip-switch-values.log`) show a

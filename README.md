@@ -176,10 +176,14 @@ processing nested instances before their parents. Generated prototype names avoi
 existing prims. Retimed instances keep their baked stage-time samples. The
 intermediate upstream layer still expands instances, so this does not reduce peak
 flattening memory; direct upstream `Stage::flatten` still expands instances.
-Flattened editor saves also reject scenes carrying `clips` metadata before
-writing any output: upstream does not yet bake clip schedules and values.
-This conservative check includes empty clip dictionaries. Root/edit-layer saves
-remain available to preserve authored composition; full clip baking is unfinished.
+Flattened editor saves bake clip-resolved values before rebuilding instances.
+They sample stage-time keys and their immediately preceding representable times
+to retain boundary behavior, including value blocks. Asset values are anchored;
+USDZ saves package their dependencies. Clip-sourced `timecode`/`timecode[]` values,
+unresolved clip assets and more than one million attempted baked samples are
+rejected before publishing output. Root/edit-layer saves retain authored clips.
+Native export tests cover scalar switching, value blocks, packaged asset values
+and nested retimed instances; they do not establish every clip schedule or type.
 The headless example verifies two same-timing mounts sharing a mesh and a third
 retimed mount using the correct sampled geometry. It checks forward/backward
 clock changes, stable entities/runtime names and cleanup after root despawn:

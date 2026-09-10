@@ -1,5 +1,14 @@
 # OpenUSD upgrade and capability reassessment
 
+## Editor clip baking
+
+The Bevy editor now bakes clip-resolved attributes during flattened saves before
+rebuilding shared instance subtrees. This is downstream export logic, not a
+change to upstream Stage::flatten. It anchors asset samples, preserves blocks
+and rejects clip-sourced timecode values, unresolved assets and excessive sample
+counts. Root/edit-layer saves remain composition-preserving. See README.md and
+BEVY_WORK.md for native export coverage and remaining scope.
+
 ## Clip activation interpolation
 
 `patches/openusd-clip-activation-samples.patch` corrects non-asset interpolation

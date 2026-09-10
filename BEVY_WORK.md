@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Correct interpolation across active clip boundaries
+
+Native OpenUSD 25.05.01 probes (`/tmp/native-clip-switch-values.log`) show a
+two-clip schedule returning 3.5 at stage time 5; the Rust source regression
+returned 1.5 before the fix (`/tmp/clip-switch-before.log`). The vendored resolver
+now interpolates non-asset values between composed stage-time sample boundaries
+instead of using only the active clip's local sample map. An upcoming value block
+holds the preceding value until its boundary, as verified separately against
+native OpenUSD (`/tmp/native-clip-held-values.log`). Asset-valued resolution is
+unchanged. Clip baking remains disabled; full schedule/timecode parity is not
+claimed.
+
+The review patch includes an upstream regression and passes reverse-apply check.
+All 55 upstream clip tests pass (`/tmp/clip-switch-upstream-complete.log`). Those
+tests used the vendored implementation, a temporary writable Cargo cache and the
+existing xtra external fixture pack read-only; generated vendor Cargo.lock was
+removed. No fixture checkout or Cargo configuration was modified.
+All 476 ordinary tests pass (11 ignored), 11 native export tests pass, and
+check-all/build/shell syntax/whitespace validation pass:
+`/tmp/clip-switch-{tests,native-exports,check,build}.log`.
+The switching-clips GPU fixture matches its native-verified direct-sample
+reference with zero RGB differences at 0/5/10/20 and after live clock reversal.
+All fixed-time clipped images, the midpoint reference and the live clipped image
+were visually inspected; spheres are unobscured. Artifacts:
+`target/switching-clips-regression/`, `/tmp/clip-switch-gpu.log`.
+
 ### Preserve native instances in flattened editor saves
 
 Native USD output (`/tmp/native-instance-flat.usda.log`) establishes the shape:

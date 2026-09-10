@@ -481,6 +481,40 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn clip_switch_interpolates_to_the_next_activation_sample() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = super::UsdSource::snapshot(directory.path().join("root.usda"), br#"#usda 1.0
+def Sphere "Model" (
+    clips = {
+        dictionary default = {
+            asset[] assetPaths = [@a.usda@, @b.usda@]
+            double2[] active = [(0, 0), (10, 1)]
+            string primPath = "/Model"
+        }
+    }
+) {
+    double radius
+}
+"#.as_slice()).unwrap();
+        let a = super::UsdSource::snapshot(directory.path().join("a.usda"), br#"#usda 1.0
+def Sphere "Model" {
+    double radius.timeSamples = {0: 1, 20: 3}
+}
+"#.as_slice()).unwrap();
+        let b = super::UsdSource::snapshot(directory.path().join("b.usda"), br#"#usda 1.0
+def Sphere "Model" {
+    double radius.timeSamples = {0: 5, 20: 7}
+}
+"#.as_slice()).unwrap();
+        let stage = source.with_dependency(&a).unwrap().with_dependency(&b).unwrap().open_stage().unwrap();
+        let radius = stage.attribute("/Model.radius").unwrap();
+        assert_eq!(radius.time_sample_times().unwrap(), [0.0, 10.0, 20.0]);
+        for (time, expected) in [(0.0, 1.0), (5.0, 3.5), (9.0, 5.5), (10.0, 6.0), (15.0, 6.5), (20.0, 7.0)] {
+            assert_eq!(radius.get_at::<f64>(Some(openusd::usd::TimeCode::new(time))).unwrap(), Some(expected), "time {time}");
+        }
+    }
+
+    #[test]
     fn probe_discovers_numeric_value_clip_layers() {
         let directory = tempfile::tempdir().unwrap();
         let mut source = super::UsdSource::snapshot(directory.path().join("root.usda"),

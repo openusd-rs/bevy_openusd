@@ -5,6 +5,17 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Clip activation samples
+
+`openusd-clip-activation-samples.patch` fixes interpolation across active-clip
+boundaries in the same upstream baseline. Native OpenUSD 25.05.01 returns 3.5
+at stage time 5 for clips with samples 0:1/20:3 and 0:5/20:7 switching at 10;
+the unpatched Rust resolver returns 1.5. Interpolation now uses composed
+stage-time sample boundaries for non-asset values, retaining value blocks rather
+than blending them as values. Asset resolution remains on its existing path.
+The upstream regression accompanies the patch; the Bevy regression and GPU
+fixtures live in the containing project. This does not implement clip baking.
+
 ## Singleton metadata list operations
 
 `openusd-singleton-listops.patch` applies to mxpv/openusd revision

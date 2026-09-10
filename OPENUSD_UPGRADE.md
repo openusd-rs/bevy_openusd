@@ -1,5 +1,14 @@
 # OpenUSD upgrade and capability reassessment
 
+## Clip activation interpolation
+
+`patches/openusd-clip-activation-samples.patch` corrects non-asset interpolation
+across active-clip boundaries in the vendored baseline. Native OpenUSD probes
+and the containing Bevy regression distinguish interpolation toward the next
+activation value from interpolation solely inside the active clip. Value-block
+boundaries retain the preceding value until the boundary; asset resolution is
+unchanged. This is a prerequisite for faithful clip baking, not baking support.
+
 ## Integrated writer fixes
 
 The fifth local patch, `patches/openusd-layer-reanchoring.patch`, adds

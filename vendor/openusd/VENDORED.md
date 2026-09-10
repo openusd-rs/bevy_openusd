@@ -18,6 +18,7 @@ Changes from the base source are recorded in these patches in the project root:
 - `patches/openusd-stage-packaging.patch`
 - `patches/openusd-reference-diagnostics.patch`
 - `patches/openusd-layer-reanchoring.patch`
+- `patches/openusd-clip-activation-samples.patch`
 
 The binary metadata patch includes sublayer StringVector encoding as well as
 token-vector child/order fields and variant-set StringListOp encoding.
@@ -35,6 +36,10 @@ ordinary root/edit exports. It anchors sublayers, reference/payload list buckets
 and nested typed asset values without editing the live layer. Dependencies stay
 external; asset expressions, tile/sequence patterns and clip templates fail
 explicitly rather than being silently relocated.
+The clip-activation patch interpolates non-asset values between composed
+stage-time sample boundaries across active clips and retains value-block
+transitions. Asset-valued clip resolution is unchanged. It does not add clip
+baking or establish complete clip parity.
 
 The root Cargo patch table redirects all three Git dependency packages here.
 The usd_bevy and usd_macro manifests also use direct relative paths to this

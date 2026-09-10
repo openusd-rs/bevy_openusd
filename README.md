@@ -241,7 +241,7 @@ The AssetServer loader queries sample times on numeric attributes as well as
 asset-valued attributes so their value-clip layers enter captured dependencies.
 `assets/clipped_sphere.usda` exercises this file-loading path. Its independent
 reference authors sphere radius samples directly at stage times 0 and 20.
-The GPU regression compares times 0/10/20 and two live roots whose clocks reverse
+The GPU regression compares times 0/5/10/20 and two live roots whose clocks reverse
 from 10/20 to 20/10, requiring zero RGB differences and the expected visible-mesh
 counts. It retains captures, metadata and diffs in a new output directory:
 
@@ -251,6 +251,17 @@ make --eval='check-clips:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW
 
 This checks sampled Bevy-frame equivalence, not native-renderer parity, clip
 switching or flattened clip baking.
+The `switching_clips` fixture additionally checks two active clips against
+native-verified direct samples. It uses wider cameras and root spacing to keep
+the larger spheres separated:
+
+```sh
+make --eval='check-switches:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW-switch-images switching_clips' check-switches
+```
+
+The local upstream patch corrects interpolation toward a subsequent clip's
+activation value and preserves value-block boundaries. These sampled cases do
+not establish all clip schedules, asset-valued clips or timecode-value parity.
 Clip dependency reload regressions also check independent clocks, malformed-layer
 failure with retained mesh handles, recovery, stable entities and runtime names.
 The native filesystem event lane runs explicitly:

@@ -1,7 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-[[ $# == 1 ]] || { echo "usage: check_clipped_sphere.sh NEW_OUTPUT_DIRECTORY" >&2; exit 2; }
+[[ $# == 1 || $# == 2 ]] || { echo "usage: check_clipped_sphere.sh NEW_OUTPUT_DIRECTORY [clipped_sphere|switching_clips]" >&2; exit 2; }
+fixture=${2:-clipped_sphere}
+[[ "$fixture" == clipped_sphere || "$fixture" == switching_clips ]] || { echo "unknown clip fixture" >&2; exit 2; }
 output=$(realpath -m "$1")
 [[ ! -e "$output" ]] || { echo "output directory must be new" >&2; exit 2; }
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -12,21 +14,26 @@ unset USD_CAPTURE_INSTANCE_TIMES USD_CAPTURE_SWAP_CLOCKS USD_CAPTURE_INSTANCE_SP
 export USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off
 printf 'case\tstatus\n' > "$output/results.tsv"
 
-for case in 0 10 20 clocks; do
+for case in 0 5 10 20 clocks; do
     time=$case
     meshes=1
     camera='8 6 14 0 0 0'
     times="[$time.0]"
+    [[ "$fixture" != switching_clips ]] || camera='0 10 32 0 0 0'
     if [[ "$case" == clocks ]]; then
         time=0
         meshes=2
         camera='0 8 22 0 0 0'
         times='[20.0, 10.0]'
         export USD_CAPTURE_INSTANCE_SPACING=8
+        if [[ "$fixture" == switching_clips ]]; then
+            camera='0 15 55 0 0 0'
+            export USD_CAPTURE_INSTANCE_SPACING=18
+        fi
     fi
     for kind in clipped reference; do
-        asset=assets/clipped_sphere.usda
-        [[ "$kind" != reference ]] || asset=assets/clipped_sphere_reference.usda
+        asset="assets/$fixture.usda"
+        [[ "$kind" != reference ]] || asset="assets/${fixture}_reference.usda"
         if [[ "$case" == clocks ]]; then
             export USD_CAPTURE_INSTANCE_TIMES=10,20 USD_CAPTURE_SWAP_CLOCKS=1
             if [[ "$kind" == reference ]]; then
@@ -52,5 +59,5 @@ done
 grep -qx 'clocks_reversed_after_ready_frames=30' "$output/clocks-clipped.capture.txt"
 grep -qx 'clocks_reversed_after_ready_frames=0' "$output/clocks-reference.capture.txt"
 for kind in clipped reference; do
-    grep -qx 'instance_spacing=8' "$output/clocks-$kind.capture.txt"
+    grep -qx "instance_spacing=$USD_CAPTURE_INSTANCE_SPACING" "$output/clocks-$kind.capture.txt"
 done

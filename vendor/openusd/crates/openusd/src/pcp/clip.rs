@@ -710,6 +710,39 @@ pub(crate) struct ClipQuery<'a> {
 }
 
 impl ClipCache {
+    pub(super) fn value_in_set(
+        &mut self,
+        graph: &LayerGraph,
+        diagnostics: &mut Diagnostics,
+        resolved: &ResolvedClipSet,
+        query: &ClipQuery<'_>,
+        time: f64,
+        interp: &dyn Fn(&sdf::TimeSampleMap, f64) -> Option<Value>,
+    ) -> Result<Option<Value>, QueryError> {
+        let value = self.value_at_active_clip(graph, diagnostics, resolved, query, time, interp)?;
+        if resolved.set.active.len() < 2 || value.as_ref().is_none_or(Value::is_asset_valued) {
+            return Ok(value);
+        }
+        let path = clip_attr_path(query, &resolved.set.clip_prim_path(query.anchor))?;
+        let Some(per_clip) = self.clip_set_participates(graph, diagnostics, resolved, query.anchor, &path)? else {
+            return Ok(value);
+        };
+        let times = resolved.set.stage_sample_times(&per_clip);
+        let upper = times.partition_point(|sample| *sample <= time);
+        if upper == 0 || upper == times.len() || times[upper - 1] == time {
+            return Ok(value);
+        }
+        let lower_time = times[upper - 1];
+        let upper_time = times[upper];
+        let lower = self.value_at_active_clip(graph, diagnostics, resolved, query, lower_time, interp)?;
+        let upper = self.value_at_active_clip(graph, diagnostics, resolved, query, upper_time, interp)?;
+        let (Some(lower), Some(upper)) = (lower, upper) else { return Ok(value); };
+        if matches!(lower, Value::ValueBlock) || matches!(upper, Value::ValueBlock) {
+            return Ok(Some(lower));
+        }
+        Ok(Some(interp(&vec![(lower_time, lower), (upper_time, upper)], time).unwrap_or(Value::ValueBlock)))
+    }
+
     /// Resolves a value-clip value for `query` at `time` from `resolved` — one
     /// of the clip sets composed on `query.anchor` — or `None` when that set
     /// does not source the attribute. An authored value block presents as
@@ -724,7 +757,7 @@ impl ClipCache {
     /// [`sdf::LayerOffset::apply_to_value`] maps a composed value out of its
     /// layer's frame (C++ `Usd_Clip::_TranslateTimeToExternal`, which is also
     /// why C++ skips the layer-offset transform for clip-sourced samples).
-    pub(super) fn value_in_set(
+    fn value_at_active_clip(
         &mut self,
         graph: &LayerGraph,
         diagnostics: &mut Diagnostics,

@@ -25,6 +25,44 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Fit viewer and capture bounds to evaluated deformation
+
+`usd_bevy::mesh::bounds::MeshBounds` samples world-space bounds from current
+render vertices, target-major morph data and joint global transforms multiplied
+by inverse bind poses. Morph offsets precede skinning. Referenced MorphWeights
+components are supported, unreferenced vertices and empty subsets are excluded,
+and malformed/non-finite inputs return no bounds. Static meshes use available
+vertex data, with transformed Aabb fallback when their CPU asset is unavailable.
+The sampler does not change Bevy's culling bounds or skinning implementation.
+
+Viewer opening now uses this sampler once per document instead of undeformed
+Aabbs, retaining the existing rule that subsequent camera input is preserved.
+The standalone capture fits its grid in Last, after joint globals update, using
+the same sampler. GPU deformation remains enabled: CPU evaluation here is for
+explicit bounds sampling, not replacement of the rendering path. No per-frame
+viewer resampling or automatic camera movement during playback was added.
+
+Regressions check morph-before-skin ordering, ignored undrawn vertices, malformed
+inputs, shared morph references, inverse bind poses, missing joints and five
+times of combined USD skin/morph deformation against CPU-evaluated points under
+a rotated, nonuniformly scaled transform.
+
+All 392 ordinary tests, check-all, build and whitespace checks pass; logs are
+`/tmp/deformed-bounds-final3-{tests,check,build}.log`. Private-Weston viewer
+captures `target/viewer-ui-captures/deformed-framing-{gpu,cpu}.png` were inspected:
+both now frame the deformed bar at matching size and position. Embedded viewport
+readbacks differ at 318 of 1,324,800 pixels, maximum RGB error 2, mean 0.000114
+(`/tmp/deformed-framing-compare.log`). This is a near-match, not pixel equality.
+The UI logs still report the environment's missing Mesa device-select layer,
+clipboard connection and shared-device SSAO limit; no claim of warning-free UI
+startup or full environment parity is made.
+Final fixed-camera captures `target/deformed-bounds-final-{gpu,cpu}.png` were
+also inspected. They differ at 6 of 921,600 pixels, maximum RGB error 1, mean
+0.000002; the zero-tolerance comparison correctly exits nonzero. Logs:
+`/tmp/deformed-bounds-final-{gpu,cpu,compare}.log`. Both standalone renderer logs
+contain no warnings/errors. These results cover the named fixture at time 30,
+not all assets, times, material modes or native USD visual equivalence.
+
 ### Build compact subsets directly from borrowed source data
 
 Subset construction now borrows the original mesh and selected indices rather

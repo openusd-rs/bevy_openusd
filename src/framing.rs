@@ -11,7 +11,9 @@ pub fn configure(app: &mut App) {
 
 fn frame_opened_document(
     prims: Res<PrimEntities>,
-    meshes: Query<(Entity, &Aabb, &GlobalTransform, &InheritedVisibility), With<Mesh3d>>,
+    meshes: Query<(Entity, &Mesh3d, Option<&Aabb>, &GlobalTransform, &InheritedVisibility,
+        Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&bevy::mesh::morph::MeshMorphWeights>)>,
+    mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
     parents: Query<&ChildOf>,
     mut cameras: Query<(&mut mara_bevy::ChaseCamera, &mut Transform, &mut Projection), (With<Camera3d>, Without<ViewerGrid>)>,
     mut grids: Query<(&mut Transform, &mut InfiniteGridSettings), (With<ViewerGrid>, Without<Camera3d>)>,
@@ -21,14 +23,12 @@ fn frame_opened_document(
     if *framed == Some(root) { return; }
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
-    for (entity, bounds, transform, visibility) in &meshes {
+    for (entity, mesh, bounds, transform, visibility, skin, morph) in &meshes {
         if !belongs_to_document(entity, root, &parents) { continue; }
         if !visibility.get() { continue; }
-        for corner in corners(bounds, transform) {
-            if corner.is_finite() {
-                low = low.min(corner);
-                high = high.max(corner);
-            }
+        if let Some((min, max)) = mesh_bounds.get(mesh, transform, bounds, skin, morph) {
+            low = low.min(min);
+            high = high.max(max);
         }
     }
     if !low.is_finite() || !high.is_finite() { return; }
@@ -64,14 +64,6 @@ fn belongs_to_document(mut entity: Entity, root: Entity, parents: &Query<&ChildO
         entity = parent.parent();
     }
     false
-}
-
-fn corners(bounds: &Aabb, transform: &GlobalTransform) -> [Vec3; 8] {
-    std::array::from_fn(|i| {
-        let sign = Vec3::new(if i & 1 == 0 { -1.0 } else { 1.0 },
-            if i & 2 == 0 { -1.0 } else { 1.0 }, if i & 4 == 0 { -1.0 } else { 1.0 });
-        transform.transform_point(Vec3::from(bounds.center) + Vec3::from(bounds.half_extents) * sign)
-    })
 }
 
 fn fit(low: Vec3, high: Vec3, fov: f32, aspect: f32) -> Option<(Vec3, f32, f32)> {
@@ -155,9 +147,9 @@ mod tests {
         let bounds = Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE);
         let transform = GlobalTransform::from(Transform::from_xyz(10.0, 0.0, 0.0)
             .with_scale(Vec3::new(2.0, 1.0, 3.0)).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)));
-        let points = corners(&bounds, &transform);
-        let low = points.into_iter().fold(Vec3::splat(f32::INFINITY), Vec3::min);
-        let high = points.into_iter().fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+        let mut world = World::new();
+        let mut state = bevy::ecs::system::SystemState::<usd_bevy::mesh::bounds::MeshBounds>::new(&mut world);
+        let (low, high) = state.get(&world).unwrap().get(&Mesh3d::default(), &transform, Some(&bounds), None, None).unwrap();
         assert!(low.abs_diff_eq(Vec3::new(7.0, -1.0, -2.0), 0.0001));
         assert!(high.abs_diff_eq(Vec3::new(13.0, 1.0, 2.0), 0.0001));
     }

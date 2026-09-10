@@ -126,7 +126,7 @@ fn main() -> AppExit {
         .add_systems(Startup, setup)
         .add_systems(Update, (select_authored_camera, capture_frame).chain())
         .add_systems(PostUpdate, configure_shadow_maps)
-        .add_systems(PostUpdate, fit_capture_grid.after(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate));
+        .add_systems(Last, fit_capture_grid);
     if std::env::var_os("USD_CAPTURE_DOME").is_some() {
         app.add_plugins(usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin)
             .add_systems(Update, select_dome);
@@ -187,19 +187,18 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
 
 fn fit_capture_grid(
     capture: Res<Capture>,
-    meshes: Query<(&bevy::camera::primitives::Aabb, &GlobalTransform, &InheritedVisibility), With<Mesh3d>>,
+    meshes: Query<(&Mesh3d, Option<&bevy::camera::primitives::Aabb>, &GlobalTransform, &InheritedVisibility,
+        Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&bevy::mesh::morph::MeshMorphWeights>)>,
+    mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
     mut grids: Query<(&mut Transform, &mut bevy::dev_tools::infinite_grid::InfiniteGridSettings), With<environment::ViewerGrid>>,
 ) {
     if capture.requested { return; }
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
-    for (bounds, transform, visibility) in &meshes {
+    for (mesh, bounds, transform, visibility, skin, morph) in &meshes {
         if !visibility.get() { continue; }
-        for i in 0..8 {
-            let sign = Vec3::new(if i & 1 == 0 { -1.0 } else { 1.0 },
-                if i & 2 == 0 { -1.0 } else { 1.0 }, if i & 4 == 0 { -1.0 } else { 1.0 });
-            let corner = transform.transform_point(Vec3::from(bounds.center) + Vec3::from(bounds.half_extents) * sign);
-            if corner.is_finite() { low = low.min(corner); high = high.max(corner); }
+        if let Some((min, max)) = mesh_bounds.get(mesh, transform, bounds, skin, morph) {
+            low = low.min(min); high = high.max(max);
         }
     }
     if let Some((height, scale, fade)) = environment::fit_grid(low, high) {

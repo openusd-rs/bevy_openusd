@@ -703,6 +703,10 @@ Arguments are asset, PNG output, USD time code, then optional eye XYZ and target
 XYZ. The default eye is `(6,4,8)` looking at `(0,1,0)`. No orbit input or automatic
 camera framing is used. The grid fits below visible mesh bounds using the viewer's
 shared height/scale/fade calculation; this does not move the USD scene or camera.
+Both grid fitting and initial viewer framing sample current morph and skin
+deformation through `usd_bevy::mesh::bounds::MeshBounds`. This on-demand CPU
+bounds calculation leaves vertex rendering on the GPU and does not replace
+Bevy's culling bounds. Viewer framing still runs only once per opened document.
 Set `USD_CAPTURE_CAMERA=/Scene/Camera` to copy a projected USD camera's world
 transform and projection instead of using eye/target arguments. Metadata records
 the selected path; missing cameras wait until the capture timeout. The tool does

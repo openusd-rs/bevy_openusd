@@ -16,6 +16,7 @@ mod diff;
 mod editor;
 mod flatten;
 mod interp;
+mod package;
 mod prim;
 mod prim_definition;
 mod prim_type_info;

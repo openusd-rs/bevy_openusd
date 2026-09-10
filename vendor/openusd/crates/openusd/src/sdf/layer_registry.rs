@@ -157,6 +157,23 @@ impl Default for LayerRegistry {
 }
 
 impl LayerRegistry {
+    pub(crate) fn package_asset_bytes(&self, identifier: &str, limit: usize) -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        let resolved = self.resolver.resolve(identifier).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("unresolved package asset: {identifier}"),
+            )
+        })?;
+        let asset = self.resolver.open_asset(&resolved)?;
+        let mut bytes = Vec::new();
+        asset.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > limit {
+            return Err(std::io::Error::other("package byte budget exceeded"));
+        }
+        Ok(bytes)
+    }
+
     /// A registry resolving asset paths through `resolver`.
     pub fn new(resolver: Box<dyn ar::Resolver>) -> Self {
         Self { resolver }

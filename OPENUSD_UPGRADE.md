@@ -2,11 +2,19 @@
 
 ## Integrated writer fixes
 
+Stage-aware packaging is now integrated as a third local upstream patch.
+Root/edit USDZ exports preserve authored composition while bundling reachable
+ordinary layers and assets through the same resolver; flattened saves bundle
+their remaining asset dependencies too. The moved-package native regression
+passes for all modes, including archived asset bytes. This closes the reproduced
+dependency-loss case, not arbitrary packaging support. `PACKAGING.md` records
+explicitly unsupported inputs, bounds and remaining acceptance work.
+
 The added moved-package test demonstrates a separate remaining gap: root/edit
 USDZ writes do not bundle dependencies. Once original files are deleted, native
 composition loses sublayer and referenced values. `make test-native` currently
-fails that portability regression while its earlier two fixtures still pass.
-See `PACKAGING.md`; this is not a regression in the integrated wire-type fixes.
+failed that portability regression before the stage-aware packager was added.
+See `PACKAGING.md` for the implementation and remaining limitations.
 
 Native layered-scene checks exposed and fixed an additional binary mismatch:
 subLayers must use a non-array StringVector, not a string array. Root/edit USDC
@@ -21,8 +29,8 @@ Logs: `/tmp/native-layered-gate.log` (before),
 
 The root Cargo patch table now uses the additive `vendor/openusd` snapshot for
 all three OpenUSD packages. Its upstream baseline remains b7df5ad, rechecked as
-upstream HEAD on 2026-09-10. Only the two recorded writer patches differ from
-the upstream crate sources. Existing xtra directories and sibling checkouts are
+upstream HEAD on 2026-09-10. Local source differences are recorded in the two
+writer patches and the stage-packaging patch. Existing xtra directories and sibling checkouts are
 untouched. `vendor/openusd/VENDORED.md` records included files, licenses and the
 switch-back procedure. No temporary source path or build-time patching is needed.
 

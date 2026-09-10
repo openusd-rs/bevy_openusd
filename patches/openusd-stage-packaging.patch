@@ -1,0 +1,342 @@
+--- a/crates/openusd/src/sdf/layer_registry.rs
++++ b/crates/openusd/src/sdf/layer_registry.rs
+@@ -157,6 +157,23 @@
+ }
+
+ impl LayerRegistry {
++    pub(crate) fn package_asset_bytes(&self, identifier: &str, limit: usize) -> std::io::Result<Vec<u8>> {
++        use std::io::Read;
++        let resolved = self.resolver.resolve(identifier).ok_or_else(|| {
++            std::io::Error::new(
++                std::io::ErrorKind::NotFound,
++                format!("unresolved package asset: {identifier}"),
++            )
++        })?;
++        let asset = self.resolver.open_asset(&resolved)?;
++        let mut bytes = Vec::new();
++        asset.take(limit as u64 + 1).read_to_end(&mut bytes)?;
++        if bytes.len() > limit {
++            return Err(std::io::Error::other("package byte budget exceeded"));
++        }
++        Ok(bytes)
++    }
++
+     /// A registry resolving asset paths through `resolver`.
+     pub fn new(resolver: Box<dyn ar::Resolver>) -> Self {
+         Self { resolver }
+--- a/crates/openusd/src/usd/mod.rs
++++ b/crates/openusd/src/usd/mod.rs
+@@ -16,6 +16,7 @@
+ mod editor;
+ mod flatten;
+ mod interp;
++mod package;
+ mod prim;
+ mod prim_definition;
+ mod prim_type_info;
+--- /dev/null
++++ b/crates/openusd/src/usd/package.rs
+@@ -0,0 +1,303 @@
++use std::{
++    borrow::Cow,
++    collections::{HashMap, VecDeque},
++    fmt::Display,
++    io::{self, Cursor, Seek, SeekFrom, Write},
++    path::Path,
++};
++
++use super::Stage;
++use crate::{
++    ar, pcp,
++    sdf::{self, AbstractData, Value},
++    usdc, usdz,
++};
++
++const MAX_ENTRIES: usize = 4096;
++const MAX_BYTES: usize = 256 * 1024 * 1024;
++
++fn invalid(error: impl Display) -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
++}
++
++struct Package<'a> {
++    graph: &'a pcp::LayerGraph,
++    names: HashMap<String, usize>,
++    entries: Vec<(String, Vec<u8>)>,
++    pending: VecDeque<(usize, sdf::Data, Option<String>)>,
++    bytes: usize,
++    input_bytes: usize,
++}
++
++struct LimitedBytes {
++    cursor: Cursor<Vec<u8>>,
++    limit: usize,
++}
++
++impl Write for LimitedBytes {
++    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
++        let end = self
++            .cursor
++            .position()
++            .checked_add(bytes.len() as u64)
++            .ok_or_else(|| invalid("package byte budget exceeded"))?;
++        if end > self.limit as u64 {
++            return Err(invalid("package byte budget exceeded"));
++        }
++        self.cursor.write(bytes)
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        Ok(())
++    }
++}
++
++impl Seek for LimitedBytes {
++    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
++        let position = self.cursor.seek(position)?;
++        if position > self.limit as u64 {
++            return Err(invalid("package byte budget exceeded"));
++        }
++        Ok(position)
++    }
++}
++
++impl Stage {
++    /// Write a dependency-containing USDZ from a layer using this stage's resolver and live layers.
++    /// Limited to 4096 entries and 256 MiB of serialized data. Package-relative dependencies,
++    /// asset expressions and tile/sequence patterns currently return errors.
++    pub fn write_usdz_package(&self, layer: &sdf::Layer, sink: &mut dyn sdf::WriteSeek) -> io::Result<()> {
++        let graph = self.layers();
++        let mut package = Package {
++            graph: &graph,
++            names: HashMap::new(),
++            entries: vec![("scene.usdc".into(), Vec::new())],
++            pending: VecDeque::new(),
++            bytes: 0,
++            input_bytes: 0,
++        };
++        package.names.insert(layer.identifier().to_owned(), 0);
++        if let Some(path) = layer.resolved_path() {
++            package.names.insert(path.to_owned(), 0);
++        }
++        package.pending.push_back((
++            0,
++            sdf::Data::from_abstract(layer.data()).map_err(invalid)?,
++            layer.resolved_path().map(str::to_owned),
++        ));
++        package.build()?;
++        let mut archive = usdz::ArchiveWriter::new(sink);
++        for (name, bytes) in package.entries {
++            archive.add_layer(&name, &bytes).map_err(invalid)?;
++        }
++        archive.finish().map_err(invalid)?;
++        Ok(())
++    }
++}
++
++impl Package<'_> {
++    fn store(&mut self, index: usize, bytes: Vec<u8>) -> io::Result<()> {
++        self.bytes = self
++            .bytes
++            .checked_add(bytes.len())
++            .filter(|size| *size <= MAX_BYTES)
++            .ok_or_else(|| invalid("package byte budget exceeded"))?;
++        self.entries[index].1 = bytes;
++        Ok(())
++    }
++
++    fn build(&mut self) -> io::Result<()> {
++        while let Some((index, mut data, anchor)) = self.pending.pop_front() {
++            let mut paths = data.spec_paths();
++            paths.sort();
++            for path in paths {
++                let mut fields = data.list_fields(&path).unwrap_or_default();
++                fields.sort();
++                for field in fields {
++                    let mut value = data.get_field(&path, &field).map_err(invalid)?.into_owned();
++                    if field == "subLayers"
++                        && let Value::StringVec(paths) = &mut value
++                    {
++                        for path in paths {
++                            *path = self.asset(path, anchor.as_deref(), true)?;
++                        }
++                    }
++                    self.value(&mut value, anchor.as_deref())?;
++                    data.set_field(&path, &field, value);
++                }
++            }
++            let mut bytes = LimitedBytes {
++                cursor: Cursor::new(Vec::new()),
++                limit: MAX_BYTES - self.bytes,
++            };
++            usdc::CrateWriter::write(&data, &mut bytes).map_err(invalid)?;
++            self.store(index, bytes.cursor.into_inner())?;
++        }
++        Ok(())
++    }
++
++    fn asset(&mut self, path: &str, anchor: Option<&str>, layer: bool) -> io::Result<String> {
++        if path.is_empty() {
++            return Ok(String::new());
++        }
++        if path.contains(['`', '<', '#'])
++            || ar::is_package_relative_path(path)
++            || anchor.is_some_and(ar::is_package_relative_path)
++        {
++            return Err(invalid(format!(
++                "unsupported package dependency expression/pattern/package path: {path}"
++            )));
++        }
++        if anchor.is_none() && Path::new(path).is_relative() {
++            return Err(invalid(format!(
++                "relative package dependency has no layer anchor: {path}"
++            )));
++        }
++        let registry = self.graph.layer_registry();
++        let anchor = anchor.map(ar::ResolvedPath::new);
++        let identifier = registry.create_identifier(path, anchor.as_ref());
++        if let Some(index) = self.names.get(&identifier) {
++            return Ok(self.entries[*index].0.clone());
++        }
++        if self.entries.len() >= MAX_ENTRIES {
++            return Err(invalid("package entry budget exceeded"));
++        }
++        let extension = Path::new(&identifier)
++            .extension()
++            .and_then(|value| value.to_str())
++            .unwrap_or("");
++        if extension == "usdz" {
++            return Err(invalid("nested package dependencies are not yet supported"));
++        }
++        let is_layer = layer || matches!(extension, "usd" | "usda" | "usdc");
++        let extension = if is_layer { "usdc" } else { extension };
++        if !extension.chars().all(|character| character.is_ascii_alphanumeric()) {
++            return Err(invalid(format!("unsupported package asset extension: {extension}")));
++        }
++        let index = self.entries.len();
++        let name = if extension.is_empty() {
++            format!("asset-{index:06}")
++        } else {
++            format!("asset-{index:06}.{extension}")
++        };
++        self.entries.push((name.clone(), Vec::new()));
++        self.names.insert(identifier.clone(), index);
++        if is_layer {
++            let live = self.graph.id_of(&identifier).map(|id| self.graph.layer(id));
++            let (data, anchor) = if let Some(layer) = live {
++                (
++                    sdf::Data::from_abstract(layer.data()).map_err(invalid)?,
++                    layer.resolved_path().map(str::to_owned),
++                )
++            } else {
++                let resolved = registry
++                    .resolve_layer(&identifier)
++                    .ok_or_else(|| invalid(format!("unresolved package layer: {identifier}")))?;
++                let bytes = registry.package_asset_bytes(&identifier, MAX_BYTES - self.input_bytes)?;
++                self.input_bytes += bytes.len();
++                let data = sdf::LayerRegistry::read_bytes(Cow::Owned(bytes), &identifier).map_err(invalid)?;
++                (
++                    sdf::Data::from_abstract(data.as_ref()).map_err(invalid)?,
++                    Some(resolved.to_string()),
++                )
++            };
++            self.pending.push_back((index, data, anchor));
++        } else {
++            let bytes = registry.package_asset_bytes(&identifier, MAX_BYTES - self.input_bytes)?;
++            self.input_bytes += bytes.len();
++            self.store(index, bytes)?;
++        }
++        Ok(name)
++    }
++
++    fn value(&mut self, value: &mut Value, anchor: Option<&str>) -> io::Result<()> {
++        match value {
++            Value::AssetPath(asset) => *asset = sdf::AssetPath::new(self.asset(&asset.authored_path, anchor, false)?),
++            Value::AssetPathVec(assets) => {
++                for asset in assets {
++                    *asset = sdf::AssetPath::new(self.asset(&asset.authored_path, anchor, false)?);
++                }
++            }
++            Value::Dictionary(values) => {
++                let mut keys: Vec<_> = values.keys().cloned().collect();
++                keys.sort();
++                for key in keys {
++                    if key == "templateAssetPath" {
++                        return Err(invalid("clip template asset paths are not yet supported in packages"));
++                    }
++                    if let Some(value) = values.get_mut(&key) {
++                        self.value(value, anchor)?;
++                    }
++                }
++            }
++            Value::ValueVec(values) => {
++                for value in values {
++                    self.value(value, anchor)?;
++                }
++            }
++            Value::TimeSamples(values) => {
++                for (_, value) in values {
++                    self.value(value, anchor)?;
++                }
++            }
++            Value::ReferenceListOp(op) => rewrite(op, |reference| {
++                reference.asset_path = self.asset(&reference.asset_path, anchor, true)?;
++                let mut keys: Vec<_> = reference.custom_data.keys().cloned().collect();
++                keys.sort();
++                for key in keys {
++                    if let Some(value) = reference.custom_data.get_mut(&key) {
++                        self.value(value, anchor)?;
++                    }
++                }
++                Ok(())
++            })?,
++            Value::PayloadListOp(op) => rewrite(op, |payload| {
++                payload.asset_path = self.asset(&payload.asset_path, anchor, true)?;
++                Ok(())
++            })?,
++            Value::Payload(payload) => payload.asset_path = self.asset(&payload.asset_path, anchor, true)?,
++            _ => {}
++        }
++        Ok(())
++    }
++}
++
++fn rewrite<T: Default + Clone + PartialEq>(
++    op: &mut sdf::ListOp<T>,
++    mut map: impl FnMut(&mut T) -> io::Result<()>,
++) -> io::Result<()> {
++    for items in [
++        &mut op.explicit_items,
++        &mut op.prepended_items,
++        &mut op.appended_items,
++        &mut op.deleted_items,
++        &mut op.added_items,
++        &mut op.ordered_items,
++    ] {
++        for item in items {
++            map(item)?;
++        }
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn serialized_bytes_are_bounded_before_growth() {
++        let mut bytes = LimitedBytes {
++            cursor: Cursor::new(Vec::new()),
++            limit: 4,
++        };
++        bytes.write_all(b"1234").unwrap();
++        assert!(bytes.write_all(b"5").is_err());
++        assert_eq!(bytes.cursor.get_ref(), b"1234");
++        bytes.seek(SeekFrom::Start(1)).unwrap();
++        bytes.write_all(b"AB").unwrap();
++        assert_eq!(bytes.cursor.get_ref(), b"1AB4");
++        assert!(bytes.seek(SeekFrom::Start(5)).is_err());
++        assert_eq!(bytes.cursor.get_ref().len(), 4);
++    }
++}

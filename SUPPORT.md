@@ -2,12 +2,13 @@
 
 This describes the current checkout, not every capability of upstream OpenUSD.
 Bevy is pinned to 0.19.1. OpenUSD uses the Git baseline in Cargo.toml plus the
-two local writer fixes recorded in `vendor/openusd/VENDORED.md`.
+local writer and packaging changes recorded in `vendor/openusd/VENDORED.md`.
 
-Portable USDZ dependency bundling is not implemented. Root/edit-layer packages
-lose external layer content after their sources are removed; the native gate
-now records this failure. Flattened geometry-only success does not certify
-texture packaging. See `PACKAGING.md`.
+USDZ export bundles ordinary layer and asset dependencies through the stage's
+resolver, preserving root/edit semantics and live edits. Moved-package native
+checks pass for the covered scene and asset payload. Package-relative inputs,
+expressions and tile/sequence patterns remain unsupported; failures retain the
+old destination. Limits and remaining acceptance work are in `PACKAGING.md`.
 Passing data tests do not establish rendered fidelity or production performance.
 
 | Area | Implemented integration | Limits / outstanding acceptance |

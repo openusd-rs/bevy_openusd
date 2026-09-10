@@ -1,22 +1,48 @@
 # Portable USDZ export
 
-## Acceptance gap
+## Implemented baseline
+
+`Stage::write_usdz_package` now builds a dependency graph through the stage's
+existing resolver and live layer graph. The Bevy persistence path uses it for
+USDZ in all save modes, within the existing atomic publication boundary.
+Root/edit layers remain authored layers rather than being flattened implicitly.
+
+The graph rewrites sublayers, all reference/payload list-operation buckets,
+asset-valued attributes, arrays, dictionaries and time samples. It uses flat,
+deterministic unique archive names, reserves identities before traversal and
+includes snapshot-only bytes and unsaved live layer edits. Missing dependencies
+fail instead of silently retaining external paths. ArchiveWriter remains the
+aligned stored ZIP sink.
+
+Limits: 4096 entries including the root, 256 MiB of serialized entry payloads,
+and a separate 256 MiB aggregate bound on newly read asset bytes. Serialization
+is bounded before buffer growth. These are not process-memory limits: live data
+clones, parsed-layer expansion, allocator overhead and ZIP headers are separate.
+
+Explicitly unsupported for now: package-relative/nested-package dependencies,
+asset expressions, tile/sequence patterns and clip template asset paths. Paths
+containing backticks, `<` or `#` are rejected conservatively. Unresolved assets
+in deleted/reordered list-op buckets also fail; support for those authored but
+non-contributing entries still needs refinement.
+
+## Portability regression
 
 `persistence::tests::native_export_package_survives_removal_of_layer_dependencies`
 saves into a separate directory, deletes the owned source directory, then opens
-each archive with a fresh native usdcat process. RootLayer and EditLayer lose
-both the sublayer and referenced prim. Flattened preserves these two values;
-this fixture has no textures and does not certify flattened-package portability.
+each archive with a fresh native usdcat process. Before packaging, RootLayer and
+EditLayer lost both the sublayer and referenced prim. All three modes now pass,
+including an asset payload whose package-relative path comes from native
+flattening and whose archived bytes are checked after source deletion.
 
 The existing 24 native checks still pass because their exports remain beside
 their dependencies. `make test-native` now includes the portability regression
-and fails until dependency packaging is implemented.
+and passes with the dependency packager. This is not comprehensive USDZ acceptance.
 
 ## Implementation boundary
 
 Keep `usdz::ArchiveWriter` as the aligned, stored ZIP sink. Its current API is
 explicitly bytes-in/bytes-out, and the file-format writer serializes only one
-layer. Packaging needs a separate dependency traversal above that layer writer,
+layer. Packaging uses a separate dependency traversal above that layer writer,
 not post-processing of USDA strings or implicit flattening of root/edit saves.
 
 Resolve through the stage's existing LayerRegistry/resolver context. A new
@@ -26,7 +52,7 @@ are exported rather than re-reading stale files. Unvisited external layers must
 be loaded through that same registry, including inactive variants and unloaded
 payload targets needed to preserve authored composition.
 
-## Required packaging work
+## Full packaging requirements
 
 1. Build an isolated dependency graph before publishing anything. Give each
    canonical asset identity a deterministic package-relative name. Reserve names
@@ -58,3 +84,11 @@ payload targets needed to preserve authored composition.
   and the correct first layer; exercise failure cleanup and destination retention.
 - Retain all existing native and ordinary checks. This work does not by itself
   fix relative references in non-package cross-directory Save As.
+
+Current tests additionally verify snapshot-only dependencies, unsaved sublayer
+edits, unchanged source exports and undo behavior, repeated paths, a root self
+asset cycle, colliding basenames, deterministic output, stored compression,
+64-byte alignment and root entry ordering. Missing-asset and entry-budget failures
+retain the existing destination and remove staging files. Broader cycle graphs,
+payload/variant combinations, resolver aliases, pattern expansion, package inputs
+and rendered texture fidelity remain to be verified or implemented.

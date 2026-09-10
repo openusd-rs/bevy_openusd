@@ -69,3 +69,12 @@ contains its external dependencies or remains portable when moved away from them
 The normal `make test-native` now uses both fixes without command-line overrides.
 To review them independently, apply both to a separate checkout of the recorded
 revision. Never apply them again to the already-patched repository-local copy.
+
+## Stage-aware USDZ packaging
+
+`openusd-stage-packaging.patch` adds `Stage::write_usdz_package` and a bounded
+registry asset-read operation. The Bevy persistence integration calls this API
+for USDZ saves; ArchiveWriter itself remains a byte-oriented archive sink.
+The patch is applied in `vendor/openusd` alongside the two writer fixes.
+See `PACKAGING.md` for resolver/snapshot behavior, bounds, unsupported inputs
+and the full acceptance requirements that remain open.

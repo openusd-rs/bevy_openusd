@@ -3,8 +3,16 @@
 use anyhow::{Context, Result, ensure};
 use std::{fs, path::Path};
 
-pub(crate) fn export_layer(layer: &openusd::sdf::Layer, filename: &str) -> Result<()> {
-    write_atomic(filename, |temporary| Ok(layer.export(temporary)?))
+pub(crate) fn export_layer(stage: &openusd::usd::Stage, layer: &openusd::sdf::Layer, filename: &str) -> Result<()> {
+    write_atomic(filename, |temporary| {
+        if Path::new(filename).extension().is_some_and(|extension| extension == "usdz") {
+            let mut output = fs::File::create(temporary)?;
+            stage.write_usdz_package(layer, &mut output)?;
+        } else {
+            layer.export(temporary)?;
+        }
+        Ok(())
+    })
 }
 
 fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Result<()> {
@@ -39,6 +47,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn package_preserves_snapshot_assets_live_edits_and_archive_layout() {
+        use crate::editor::{EditorEdit, EditorSession, SaveMode};
+        use openusd::sdf::Value;
+        use std::io::Read;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("virtual/root.usda");
+        let weak = directory.path().join("virtual/weak.usda");
+        let source_text = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Assets\" {\n asset first = @a/color.png@\n asset second = @b/color.png@\n asset repeated = @a/color.png@\n asset self = @root.usda@\n}\n";
+        let mut source = crate::UsdSource::snapshot(&root, source_text.to_vec()).unwrap();
+        source.insert_dependency(weak.to_str().unwrap().into(), b"#usda 1.0\ndef Scope \"Weak\" {\n double score = 11\n}\n".to_vec());
+        source.insert_dependency(directory.path().join("virtual/a/color.png").to_str().unwrap().into(), b"first image".to_vec());
+        source.insert_dependency(directory.path().join("virtual/b/color.png").to_str().unwrap().into(), b"second image".to_vec());
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        editor.set_edit_layer(weak.to_str().unwrap()).unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Weak".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(31.0) }).unwrap();
+        let root_before = editor.stage().root_layer().export_to_string().unwrap();
+        let weak_before = editor.stage().layer(weak.to_str().unwrap()).unwrap().export_to_string().unwrap();
+        let undo_before = editor.snapshot().unwrap().can_undo;
+        let output = directory.path().join("saved.usdz");
+        editor.save(output.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        let first = fs::read(&output).unwrap();
+        editor.save(output.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), first);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), root_before);
+        assert_eq!(editor.stage().layer(weak.to_str().unwrap()).unwrap().export_to_string().unwrap(), weak_before);
+        assert_eq!(editor.snapshot().unwrap().can_undo, undo_before);
+        assert!(!root.exists());
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&first)).unwrap();
+        assert_eq!(archive.len(), 4);
+        let mut images = Vec::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            if index == 0 { assert_eq!(entry.name(), "scene.usdc"); }
+            assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
+            assert_eq!(entry.data_start().unwrap() % 64, 0);
+            assert!(!entry.name().contains(['/', '\\']));
+            if entry.name().ends_with(".png") {
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                images.push(bytes);
+            }
+        }
+        images.sort();
+        assert_eq!(images, vec![b"first image".to_vec(), b"second image".to_vec()]);
+        let reopened = crate::UsdSource::new(&output, first).unwrap().open_stage().unwrap();
+        assert_eq!(reopened.prim("/Weak").unwrap().attribute("score").get::<f64>().unwrap(), Some(31.0));
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().prim("/Weak").unwrap().attribute("score").get::<f64>().unwrap(), Some(11.0));
+        assert!(!editor.snapshot().unwrap().can_undo);
+    }
+
+    #[test]
+    fn package_entry_budget_preserves_existing_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = (0..4096).map(|index| format!("@asset{index}.bin@")).collect::<Vec<_>>().join(", ");
+        let text = format!("#usda 1.0\ndef Scope \"Assets\" {{\n asset[] files = [{paths}]\n}}\n");
+        let mut source = crate::UsdSource::snapshot(&directory.path().join("virtual.usda"), text.into_bytes()).unwrap();
+        for index in 0..4096 {
+            source.insert_dependency(directory.path().join(format!("asset{index}.bin")).to_str().unwrap().into(), vec![1]);
+        }
+        let output = directory.path().join("saved.usdz");
+        fs::write(&output, b"original").unwrap();
+        let error = crate::authoring::save_stage_as(&source.open_stage().unwrap(), output.to_str().unwrap()).unwrap_err();
+        assert!(format!("{error:#}").contains("entry budget exceeded"));
+        assert_eq!(fs::read(&output).unwrap(), b"original");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn missing_package_asset_preserves_destination_and_cleans_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = crate::UsdSource::new(directory.path().join("source.usda"),
+            &b"#usda 1.0\ndef Scope \"Assets\" {\n asset texture = @missing.png@\n}\n"[..]).unwrap();
+        let output = directory.path().join("saved.usdz");
+        fs::write(&output, b"original").unwrap();
+        let error = crate::authoring::save_stage_as(&source.open_stage().unwrap(), output.to_str().unwrap()).unwrap_err();
+        assert!(format!("{error:#}").contains("missing.png"));
+        assert_eq!(fs::read(&output).unwrap(), b"original");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_package_survives_removal_of_layer_dependencies() {
         use crate::editor::{EditorSession, SaveMode};
@@ -47,7 +138,8 @@ mod tests {
         let source_directory = tempfile::tempdir().unwrap();
         let output_directory = tempfile::tempdir().unwrap();
         fs::write(source_directory.path().join("weak.usda"), "#usda 1.0\ndef Scope \"Layered\" {\n double score = 11\n}\n").unwrap();
-        fs::write(source_directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n}\n").unwrap();
+        fs::write(source_directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n asset texture = @paint.bin@\n}\n").unwrap();
+        fs::write(source_directory.path().join("paint.bin"), b"texture payload").unwrap();
         let source = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Referenced\" (\n prepend references = @model.usda@</Model>\n) {}\n";
         let original = source_directory.path().join("source.usda");
         fs::write(&original, source).unwrap();
@@ -73,6 +165,16 @@ mod tests {
                 let value = stage.prim(prim).unwrap().attribute("score").get::<f64>().unwrap();
                 if value != Some(expected) { failures.push(format!("{name} {prim}: expected {expected}, got {value:?}")); }
             }
+            let value = stage.prim("/Referenced").unwrap().attribute("texture").get::<openusd::sdf::Value>().unwrap();
+            if let Some(openusd::sdf::Value::AssetPath(asset)) = value {
+                if let Some((_, entry)) = openusd::ar::split_package_relative_path_outer(&asset.authored_path) {
+                    use std::io::Read;
+                    let mut archive = zip::ZipArchive::new(fs::File::open(&package).unwrap()).unwrap();
+                    let mut payload = Vec::new();
+                    archive.by_name(&entry).unwrap().read_to_end(&mut payload).unwrap();
+                    assert_eq!(payload, b"texture payload");
+                } else { failures.push(format!("{name}: texture is not package-relative: {}", asset.authored_path)); }
+            } else { failures.push(format!("{name}: texture asset is missing")); }
         }
         assert!(failures.is_empty(), "non-portable package exports:\n{}", failures.join("\n"));
     }

@@ -25,6 +25,45 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Implemented the initial stage-aware USDZ dependency packager. The new upstream
+Stage::write_usdz_package uses the stage's existing registry and live layer graph,
+preserves root/edit semantics, rewrites authored asset locations and includes
+ordinary layer and non-layer dependencies. Bevy's USDZ persistence routes it
+through existing atomic staging/publication. Missing dependencies and entry/byte
+budget failures report errors before replacing the destination. Limits are 4096
+entries, 256 MiB of serialized payloads and 256 MiB of newly read input bytes;
+these are not total process-memory limits. Unsupported package-relative inputs,
+expressions, tile/sequence patterns and clip templates fail explicitly.
+
+Native portability now passes all three save modes after source deletion,
+including verifying asset payload bytes reached through native package-relative
+paths. Added ordinary tests for snapshot-only dependencies, live unsaved sublayer
+edits, deterministic output, repeated paths, a root self asset cycle, same-basename
+assets, stored/aligned archive entries, unchanged source/undo behavior, missing
+asset cleanup and entry-budget rejection. The limited serializer has an upstream
+wire-buffer growth test. PACKAGING.md keeps the full remaining requirements.
+
+The changes are recorded in `patches/openusd-stage-packaging.patch` in addition
+to the existing writer patches. usd_bevy and usd_macro now reference the vendor
+crates directly: external path consumers do not inherit a workspace root's Cargo
+patch table, so a root-only override is insufficient for this new API dependency.
+The root viewer Git declarations still record the upstream baseline.
+
+Validation: 27 native save checks across three optional tests pass, including
+removal of source files and asset-payload verification. All 364 ordinary tests
+pass (three native tests ignored), check-all and build pass. Logs:
+`/tmp/package-accepted-native.log`,
+`/tmp/package-consumer-final-{tests,check,build}.log`. Upstream full-checkout
+validation: 1,586 core tests and 56 binary fixture roundtrips pass; strict core
+Clippy passes (`/tmp/upstream-package-tests.log`, `/tmp/upstream-package-clippy.log`).
+An independent path consumer compiles and resolves one local OpenUSD package
+without a root patch table (`/tmp/package-external-consumer.log`,
+`/tmp/package-external-tree.log`). All three recorded patches pass reverse-apply
+checks against the integrated source. The full packaging requirements remain
+open where PACKAGING.md names unsupported inputs or missing acceptance evidence.
+
+### Earlier packaging checkpoints
+
 Added a native USDZ portability regression: save into a separate directory,
 close/delete the owned source directory, then decode with fresh native processes.
 Root/edit packages lose sublayer and referenced values; flattened preserves

@@ -465,16 +465,17 @@ USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='ass
 
 Each row should have matching shapes and endpoint heights. Tessellation defaults
 to eight samples per segment rather than adaptive or exact-limit rendering.
-Library applications can choose 1–64 samples before loading/projecting curves:
+Library applications can choose 1–64 samples per cubic segment:
 
 ```rust
 app.insert_resource(usd_bevy::route::curves::UsdCurveSettings::new(32)?);
 ```
 
 The setting controls cubic positions and display-primvar interpolation together;
-linear curves are unchanged. Existing output-size limits still apply. Changing
-the resource alone does not trigger a resync: reload or explicitly reproject
-existing curves to apply it. This does not add width-aware curve surfaces.
+linear curves are unchanged. Existing output-size limits still apply.
+`LiveStagePlugin` and `UsdAssetPlugin` reproject existing curve entities when the
+effective sample count changes, retaining independent instance clocks. Removing
+the resource restores eight samples. This does not add width-aware curve surfaces.
 
 For the viewer and fixed-camera capture tool, set `USD_CURVE_STEPS=1..64` before
 launch (default eight). Invalid values fail before renderer startup. Capture

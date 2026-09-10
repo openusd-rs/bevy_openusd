@@ -42,6 +42,20 @@ impl Default for UsdCurveSettings {
     fn default() -> Self { Self { cubic_steps: CUBIC_STEPS } }
 }
 
+pub(crate) fn current_steps(world: &World) -> usize {
+    world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().cubic_steps
+}
+
+pub(crate) fn refresh_geometry(world: &mut World, stage: &openusd::usd::Stage, map: &crate::live::PrimEntities) {
+    let registry = world.resource::<super::SchemaRegistry>().clone();
+    for (path, entity) in map.iter() {
+        let Ok(path) = openusd::sdf::path(path) else { continue };
+        if stage.prim(&path).ok().and_then(|prim| prim.type_name().ok().flatten()).as_deref() == Some("BasisCurves") {
+            registry.patch_prim(stage, &path, world, entity, &[]);
+        }
+    }
+}
+
 pub const MAX_CURVE_VERTICES: usize = 1_000_000;
 pub const MAX_CURVE_INDICES: usize = 2_000_000;
 
@@ -403,7 +417,7 @@ impl PrimRoute for CurvesRoute {
         {
             return;
         }
-        let steps = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().cubic_steps;
+        let steps = current_steps(world);
         if let Err(error) = validate_curves(ctx, steps) {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             world.entity_mut(entity).insert(UsdCurveError(error));
@@ -873,6 +887,60 @@ def BasisCurves "Curve" {
         assert_eq!(mesh.primitive_topology(), PrimitiveTopology::LineList);
         // Three linear points produce two segments.
         assert_eq!(mesh.indices().map(|i| i.len()), Some(4));
+    }
+
+    #[test]
+    fn curve_quality_changes_refresh_live_and_independent_stages() {
+        let source = crate::UsdSource::snapshot("quality-animation.usda", &br#"#usda 1.0
+def BasisCurves "Curve" {
+    uniform token type = "cubic"
+    uniform token basis = "bezier"
+    int[] curveVertexCounts = [4]
+    point3f[] points.timeSamples = {
+        0: [(0,0,0),(1,1,0),(2,1,0),(3,0,0)],
+        10: [(0,2,0),(1,3,0),(2,3,0),(3,2,0)]
+    }
+}
+"#[..]).unwrap();
+        let check = |world: &World, entity, steps, height| {
+            assert_eq!(world.get::<Name>(entity).unwrap().as_str(), "runtime name");
+            let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
+            assert_eq!(mesh.count_vertices(), steps + 1);
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
+            assert_eq!(points[0][1], height);
+        };
+        let mut live_app = App::new();
+        live_app.add_plugins((MinimalPlugins, crate::UsdPlugin, crate::live::LiveStagePlugin));
+        live_app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        live_app.world_mut().insert_non_send(LiveStage::new(source.open_stage().unwrap()));
+        live_app.world_mut().resource_mut::<crate::route::StageTime>().current = 10.0;
+        live_app.update();
+        let live_entity = live_app.world().resource::<PrimEntities>().entity("/Curve").unwrap();
+        live_app.world_mut().entity_mut(live_entity).insert(Name::new("runtime name"));
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
+        let roots = [0.0, 10.0].map(|current| app.world_mut().spawn((crate::UsdSceneRoot(handle.clone()), crate::instance::UsdInstanceTime { current })).id());
+        app.update();
+        let entities = roots.map(|root| app.world().non_send::<crate::instance::UsdInstances>().entity(root, "/Curve").unwrap());
+        for entity in entities { app.world_mut().entity_mut(entity).insert(Name::new("runtime name")); }
+        for setting in [Some(2), Some(64), None] {
+            for world in [live_app.world_mut(), app.world_mut()] {
+                if let Some(steps) = setting { world.insert_resource(UsdCurveSettings::new(steps).unwrap()); }
+                else { world.remove_resource::<UsdCurveSettings>(); }
+            }
+            live_app.update();
+            app.update();
+            let steps = setting.unwrap_or(CUBIC_STEPS);
+            assert_eq!(live_app.world().resource::<PrimEntities>().entity("/Curve"), Some(live_entity));
+            check(live_app.world(), live_entity, steps, 2.0);
+            for (index, root) in roots.into_iter().enumerate() {
+                assert_eq!(app.world().non_send::<crate::instance::UsdInstances>().entity(root, "/Curve"), Some(entities[index]));
+                assert_eq!(app.world().get::<crate::UsdSceneState>(root), Some(&crate::UsdSceneState::Ready));
+                check(app.world(), entities[index], steps, index as f32 * 2.0);
+            }
+        }
     }
 
     #[test]

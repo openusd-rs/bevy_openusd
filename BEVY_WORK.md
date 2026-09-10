@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Live curve quality changes
+
+LiveStagePlugin and independent UsdSceneRoot runtimes now track the effective
+cubic sample count and reproject only BasisCurves when it changes. Removing the
+settings resource returns to the default eight samples. The existing registry
+patch path preserves entities/runtime state, and each independent stage refreshes
+under its own installed clock and texture context. Initial projection records the
+current setting; unchanged values do not trigger an additional quality refresh.
+
+A real App regression changes quality to two, then 64, then removes the override
+for both an editor-style live stage and two asset roots at different times. It
+checks mesh density, sampled endpoint heights, Ready states, entity identity and
+runtime-only names. Focused evidence: `/tmp/live-curve-quality-focused.log`.
+This enables runtime library quality changes; a live viewer UI control is still
+pending, and no adaptive tessellation or width-aware rendering is implied.
+
+All 458 ordinary workspace tests pass (eight ignored), plus check-all, viewer
+build and whitespace checks; `/tmp/live-curve-quality-{tests,check,build}.log`.
+
 ### Viewer curve quality configuration
 
 The viewer and offscreen capture executable share startup parsing for

@@ -135,6 +135,7 @@ pub(crate) struct InstanceRuntime {
     pub textures: SnapshotTextures,
     pub sampled: f64,
     pub subdivision_levels: Option<u32>,
+    pub curve_steps: usize,
 }
 
 #[cfg(test)]
@@ -272,6 +273,7 @@ def PointInstancer "PI" {{
 pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
     let delta = world.get_resource::<Time>().map_or(0.0, Time::delta_secs_f64);
     let subdivision_levels = crate::route::subdivision::current_levels(world);
+    let curve_steps = crate::route::curves::current_steps(world);
     for (&root, runtime) in &mut instances.roots {
         let mut current = world.get::<UsdInstanceTime>(root).map_or(0.0, |time| time.current);
         if let Some(mut playback) = world.get_mut::<UsdPlayback>(root) {
@@ -289,6 +291,10 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
         if subdivision_levels != runtime.subdivision_levels {
             crate::route::subdivision::refresh_geometry(world, &runtime.live.stage, &runtime.map);
             runtime.subdivision_levels = subdivision_levels;
+        }
+        if curve_steps != runtime.curve_steps {
+            crate::route::curves::refresh_geometry(world, &runtime.live.stage, &runtime.map);
+            runtime.curve_steps = curve_steps;
         }
         if current != runtime.sampled {
             let registry = world.resource::<SchemaRegistry>().clone();

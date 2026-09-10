@@ -707,6 +707,22 @@ Both grid fitting and initial viewer framing sample current morph and skin
 deformation through `usd_bevy::mesh::bounds::MeshBounds`. This on-demand CPU
 bounds calculation leaves vertex rendering on the GPU and does not replace
 Bevy's culling bounds. Viewer framing still runs only once per opened document.
+
+For a repeatable deformation sweep, use a fresh output directory and an explicit
+RGB tolerance (0 requests pixel equality):
+
+```sh
+make --eval='compare-deformation:; @/bin/bash scripts/compare_deformation.sh assets/skel_morph_subsets.usda target/deformation-check 0 0 15 30 45 60' compare-deformation
+```
+
+The script saves both PNG/RGBA captures, metadata, renderer logs, difference
+images and `results.tsv` for every time, continuing after a failed pair. It
+returns nonzero for capture/comparison failure, renderer warnings/errors, missing
+GPU-deformation components in the GPU run, or GPU-deformation components in the
+CPU control. Component counts are coverage checks, not proof of every draw or
+GPU performance. Existing output directories are rejected. Inspect the images;
+a chosen nonzero tolerance is not automatic evidence of visual fidelity.
+
 Set `USD_CAPTURE_CAMERA=/Scene/Camera` to copy a projected USD camera's world
 transform and projection instead of using eye/target arguments. Metadata records
 the selected path; missing cameras wait until the capture timeout. The tool does

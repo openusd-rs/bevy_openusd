@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Repeatable multi-time CPU/GPU image comparisons
+
+Added `scripts/compare_deformation.sh`, using make for both capture modes and
+pixel comparisons. It retains per-time images, raw readbacks, metadata, renderer
+logs, difference images and a TSV ledger; failures do not stop later pairs.
+Tolerance is explicit, output directories must be new, diagnostics fail the run,
+and metadata must show GPU deformation in the GPU case and none in the CPU case.
+Component counts do not certify every draw or GPU performance.
+
+Five combined skin/morph/subset samples differ at 2–14 pixels with maximum RGB
+error 1, so the zero-tolerance sweep correctly fails. Three authored-normal/
+nonuniform-skinning samples match exactly and pass. All sixteen images were
+inspected, with no renderer warnings/errors. A static negative control has
+identical images but correctly fails for missing GPU deformation. Invalid
+tolerance and existing-output preservation checks pass. Commands, raw metrics,
+artifact locations and limitations are in `benchmarks/deformation-captures.md`.
+No Rust source changed in this slice; validation covers the new script and
+actual captures rather than claiming another run of the ordinary Rust suite.
+
 ### Distinguish directory aliases from package-layer anchors when saving
 
 Ordinary save relocation now compares canonical directory identities when

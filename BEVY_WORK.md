@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Variant payload and cyclic asset package acceptance
+
+Added a fixture with two variant-selected payload layers, distinct binary assets,
+and asset-valued backlinks forming a two-layer cycle. An ordinary regression
+checks that saving with the selected payload unloaded includes both branches,
+exact asset bytes and only five archive entries, without changing the root layer.
+
+Ten new native checks export root/edit layers with payloads loaded and unloaded,
+plus the explicitly flattened loaded scene. After deleting the source directory,
+fresh native usdcat processes select both variants in each authored-layer output;
+the flattened output retains its chosen branch even with a different variant
+selection override. Composed scores,
+asset bytes, backlink layer values and deduplicated archive counts are verified.
+This proves an asset-dependency cycle, not a cyclic composition arc. The original
+compact fixture syntax was rejected by native USD and was corrected before the
+acceptance run; Rust parsing alone was insufficient fixture validation.
+
+Validation: 366 ordinary tests, five optional native tests (44 export checks),
+check-all, build and whitespace checks pass. Logs:
+`/tmp/package-variants-{tests,native,check,build}.log`. No runtime implementation
+change was needed. Nested packages, patterns, broader composition combinations
+and rendered texture fidelity remain open.
+
 ### Viewer save-format acceptance
 
 The native save chooser exposes USDA, binary USD and USDZ output, with distinct

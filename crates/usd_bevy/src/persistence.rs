@@ -47,6 +47,112 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
 mod tests {
     use super::*;
 
+    fn variant_payload_fixture(directory: &Path) -> crate::editor::EditorSession {
+        let root = r#"#usda 1.0
+def Scope "Model" (
+    prepend variantSets = ["choice"]
+    variants = { string choice = "a" }
+) {
+    variantSet "choice" = {
+        "a" {
+            def Scope "Content" (prepend payload = @a.usda@</Asset>) {}
+        }
+        "b" {
+            def Scope "Content" (prepend payload = @b.usda@</Asset>) {}
+        }
+    }
+}
+"#;
+        for (name, other, score) in [("a", "b", 13), ("b", "a", 29)] {
+            fs::write(directory.join(format!("{name}.usda")), format!(
+                "#usda 1.0\ndef Scope \"Asset\" {{\n double score = {score}\n asset blob = @{name}.bin@\n asset backlink = @{other}.usda@\n}}\n"
+            )).unwrap();
+            fs::write(directory.join(format!("{name}.bin")), format!("payload {name}")).unwrap();
+        }
+        let path = directory.join("root.usda");
+        fs::write(&path, root).unwrap();
+        crate::editor::EditorSession::new(crate::UsdSource::new(path, root.as_bytes()).unwrap().open_stage().unwrap())
+    }
+
+    #[test]
+    fn package_preserves_unloaded_variant_payloads_and_asset_cycles() {
+        use crate::editor::SaveMode;
+        let source = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let editor = variant_payload_fixture(source.path());
+        editor.set_payload_loaded("/Model/Content", false).unwrap();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let path = output.path().join("unloaded.usdz");
+        editor.save(path.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        let mut archive = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+        assert_eq!(archive.len(), 5);
+        let mut blobs = Vec::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            if entry.name().ends_with(".bin") {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+                blobs.push(bytes);
+            }
+        }
+        blobs.sort();
+        assert_eq!(blobs, [b"payload a".to_vec(), b"payload b".to_vec()]);
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_preserves_variant_payloads_after_source_removal() {
+        use crate::editor::SaveMode;
+        use std::{io::Read, process::Command};
+        let source = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let editor = variant_payload_fixture(source.path());
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let control = Command::new(&native).arg("--flatten").arg(source.path().join("root.usda")).output().unwrap();
+        assert!(control.status.success(), "{}", String::from_utf8_lossy(&control.stderr));
+        for loaded in [true, false] {
+            editor.set_payload_loaded("/Model/Content", loaded).unwrap();
+            for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer)] {
+                editor.save(output.path().join(format!("{name}-{loaded}.usdz")).to_str().unwrap(), mode).unwrap();
+            }
+        }
+        editor.set_payload_loaded("/Model/Content", true).unwrap();
+        editor.save(output.path().join("flat.usdz").to_str().unwrap(), SaveMode::Flattened).unwrap();
+        drop(editor);
+        source.close().unwrap();
+        for name in ["root-true", "edit-true", "root-false", "edit-false", "flat"] {
+            for (choice, expected) in [("a", 13.0), ("b", 29.0)] {
+                let (asset_choice, expected) = if name == "flat" { ("a", 13.0) } else { (choice, expected) };
+                let wrapper = output.path().join("selection.usda");
+                fs::write(&wrapper, format!(
+                    "#usda 1.0\n( subLayers = [@{name}.usdz@] )\nover \"Model\" (variants = {{ string choice = \"{choice}\" }}) {{}}\n"
+                )).unwrap();
+                let result = Command::new(&native).arg("--flatten").arg(&wrapper).output().unwrap();
+                assert!(result.status.success(), "{name}/{choice}: {}", String::from_utf8_lossy(&result.stderr));
+                let stage = crate::UsdSource::new(output.path().join("native.usda"), result.stdout).unwrap().open_stage().unwrap();
+                let prim = stage.prim("/Model/Content").unwrap();
+                assert_eq!(prim.attribute("score").get::<f64>().unwrap(), Some(expected), "{name}/{choice}");
+                let asset = prim.attribute("blob").get::<openusd::sdf::Value>().unwrap().unwrap();
+                let openusd::sdf::Value::AssetPath(asset) = asset else { panic!("expected asset") };
+                let (_, entry) = openusd::ar::split_package_relative_path_outer(&asset.authored_path).unwrap();
+                let mut archive = zip::ZipArchive::new(fs::File::open(output.path().join(format!("{name}.usdz"))).unwrap()).unwrap();
+                assert_eq!(archive.len(), 5, "{name}/{choice}: cycle must not duplicate layers");
+                let mut bytes = Vec::new();
+                archive.by_name(&entry).unwrap().read_to_end(&mut bytes).unwrap();
+                assert_eq!(bytes, format!("payload {asset_choice}").as_bytes());
+                let backlink = prim.attribute("backlink").get::<openusd::sdf::Value>().unwrap().unwrap();
+                let openusd::sdf::Value::AssetPath(backlink) = backlink else { panic!("expected layer asset") };
+                let (_, entry) = openusd::ar::split_package_relative_path_outer(&backlink.authored_path).unwrap();
+                let mut bytes = Vec::new();
+                archive.by_name(&entry).unwrap().read_to_end(&mut bytes).unwrap();
+                let linked = crate::UsdSource::new(output.path().join("linked.usdc"), bytes).unwrap().open_stage().unwrap();
+                assert_eq!(linked.prim("/Asset").unwrap().attribute("score").get::<f64>().unwrap(),
+                    Some(if asset_choice == "a" { 29.0 } else { 13.0 }), "{name}/{choice}: backlink target");
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_repackages_snapshot_archives() {

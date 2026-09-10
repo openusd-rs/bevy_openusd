@@ -98,10 +98,18 @@ edits, unchanged source exports and undo behavior, repeated paths, a root self
 asset cycle, colliding basenames, deterministic output, stored compression,
 64-byte alignment and root entry ordering. Missing-asset and entry-budget failures
 retain the existing destination and remove staging files. Broader cycle graphs,
-payload/variant combinations, broader resolver aliases, pattern expansion, nested packages
+broader payload/variant combinations, resolver aliases, pattern expansion, nested packages
 and rendered texture fidelity remain to be verified or implemented.
 
 Native coverage now also repackages a snapshot-only input in every save mode,
 deletes each first-generation output before re-exporting its snapshot, and checks
 a wrapper referencing the same bare package twice. It verifies composed values,
 shared archive entries and asset bytes, including an uppercase USDZ extension.
+
+Variant/payload coverage now selects both branches after source deletion in
+root/edit exports saved with payloads loaded and unloaded. A separate flattened
+export retains its selected branch. Two layer-valued asset backlinks form a
+cycle; native-composed asset paths lead to the expected archived layer values
+and binary payloads, with five entries and no duplication. These ten additional
+checks bring native coverage to 44 export checks across five optional tests.
+This is asset-dependency cycle coverage, not cyclic USD composition acceptance.

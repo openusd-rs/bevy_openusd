@@ -63,7 +63,9 @@ when replacing a dependency revision; this merge API never silently overwrites o
 
 `examples/composed_sources.rs` combines an inline `usd!` assembly with a model
 authored through the upstream typed Sphere schema. It verifies projection under
-two independent Bevy roots, shared meshes and isolated edits without source files:
+two independent Bevy roots, shared meshes and isolated edits without source files.
+It also exercises captured dependency replacement, persistent overrides,
+runtime-only component preservation, malformed-root failure/recovery and cleanup:
 
 ```sh
 make run RUN_WITH= APP_TARGET='--example composed_sources'

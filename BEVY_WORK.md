@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Composed-source lifecycle showcase
+
+Extended `examples/composed_sources.rs` through captured dependency replacement,
+root-local persistent radius overrides, malformed-root failure and recovery,
+override removal, root-component removal and root despawn. Matching entities and
+a runtime-only component survive replacement and recovery. Unmodified mounts
+adopt the new typed source radius and share a mesh; removing the persistent
+override restores the new source radius and shared mesh on that mount too.
+
+Both roots report Failed for malformed root bytes while retaining their previous
+live projections, then return to Ready when valid captured sources are restored.
+Removing one UsdSceneRoot leaves its caller-owned root entity and the second
+instance alive; despawning the second root leaves no projected UsdPrimRef entities
+or registered live instances. No runtime implementation change was required.
+
+Validation: all 371 ordinary tests, check-all, build, the runnable example and
+whitespace checks pass (`/tmp/composed-lifecycle-{tests,check,build,example}.log`).
+This is programmatic source replacement, not an AssetServer watcher or GUI test;
+the failure case is malformed root data, not every possible composition failure.
+It does not prove GPU allocation reclamation or rendered fidelity.
+
 ### Public immutable source composition
 
 Exposed `UsdSource::snapshot` with filesystem fallback disabled and added

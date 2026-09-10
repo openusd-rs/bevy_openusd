@@ -835,6 +835,15 @@ def Xform "Model" (
                 == Some(&[0, 255, 0, 255])));
         if removal_adapter {
             let retained_meshes = mesh_handles(app.world());
+            let renamed = layer.with_extension("renamed.usda");
+            std::fs::rename(&layer, &renamed).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            assert_eq!(mesh_handles(app.world()), retained_meshes);
+            std::fs::rename(&renamed, &layer).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+            let retained_meshes = mesh_handles(app.world());
             std::fs::remove_file(&layer).unwrap();
             tick_until(&mut app, |world| roots.iter().all(|root|
                 matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));

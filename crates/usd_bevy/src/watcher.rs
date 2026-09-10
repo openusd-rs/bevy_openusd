@@ -1,4 +1,4 @@
-//! Filesystem asset sources with dependency invalidation on file removal.
+//! Filesystem asset sources with dependency invalidation on file removal and rename.
 
 use std::{path::Path, thread::JoinHandle, time::Duration};
 use bevy::asset::io::{AssetSourceBuilder, AssetSourceEvent, AssetWatcher};
@@ -21,7 +21,16 @@ impl Drop for RemovalWatcher {
     }
 }
 
-/// Read-only native file source that reloads dependents when a file is removed.
+fn invalidated_paths(event: &AssetSourceEvent) -> [Option<&Path>; 2] {
+    match event {
+        AssetSourceEvent::RemovedAsset(path)
+        | AssetSourceEvent::RemovedUnknown { path, is_meta: false } => [Some(path), None],
+        AssetSourceEvent::RenamedAsset { old, new } => [Some(old), Some(new)],
+        _ => [None, None],
+    }
+}
+
+/// Read-only native file source that reloads dependents on file removal or rename.
 /// Register before `AssetPlugin`; watching follows its runtime watch setting.
 /// Folder deletion and processed asset sources are not supported by this adapter.
 pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
@@ -40,10 +49,10 @@ pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
             let events = receiver.clone();
             let worker = std::thread::Builder::new().name("usd-asset-events".into())
                 .spawn(move || {
-                    while let Ok(event) = events.recv_blocking() {
-                        if let AssetSourceEvent::RemovedAsset(path) = &event {
-                            if output.try_send(AssetSourceEvent::ModifiedAsset(path.clone())).is_err() {
-                                break;
+                    'events: while let Ok(event) = events.recv_blocking() {
+                        for path in invalidated_paths(&event).into_iter().flatten() {
+                            if output.try_send(AssetSourceEvent::ModifiedAsset(path.to_owned())).is_err() {
+                                break 'events;
                             }
                         }
                         if output.try_send(event).is_err() { break; }
@@ -59,4 +68,26 @@ pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
                 }
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removal_and_rename_invalidate_dependency_paths() {
+        let old = Path::new("models/old.usda");
+        let new = Path::new("models/new.usda");
+        assert_eq!(invalidated_paths(&AssetSourceEvent::RemovedAsset(old.into())), [Some(old), None]);
+        assert_eq!(invalidated_paths(&AssetSourceEvent::RemovedUnknown {
+            path: old.into(), is_meta: false,
+        }), [Some(old), None]);
+        assert_eq!(invalidated_paths(&AssetSourceEvent::RenamedAsset {
+            old: old.into(), new: new.into(),
+        }), [Some(old), Some(new)]);
+        for event in [AssetSourceEvent::RemovedUnknown { path: old.into(), is_meta: true },
+            AssetSourceEvent::RemovedFolder(old.into()), AssetSourceEvent::ModifiedAsset(old.into())] {
+            assert_eq!(invalidated_paths(&event), [None, None]);
+        }
+    }
 }

@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### File rename dependency invalidation
+
+The native AssetServer file-source adapter now emits ModifiedAsset invalidations
+for both paths of RenamedAsset and for non-metadata RemovedUnknown, while still
+forwarding the original event. Bevy 0.19.1's current source-event handler ignores
+those two event forms. Folder descendant invalidation remains unsupported.
+
+A deterministic mapping test checks rename/removal paths and metadata/folder
+exclusions. The real OS-watcher regression now renames an active sublayer away,
+waits for both instances to fail while retaining their meshes, renames it back
+and waits for recovery before exercising deletion. Runtime names, children,
+entity identities and shared assets remain checked by the existing test.
+The expanded native regression passes: `/tmp/rename-watch-native.log`.
+All 461 ordinary workspace tests pass (eight ignored), and the usd_bevy
+file_watcher feature suite passes 394 tests (13 ignored). Check-all, build and
+whitespace validation pass; `/tmp/rename-watch-{tests,feature,check,build}.log`.
+
 ### Paced viewer repaint requests
 
 The viewer now requests its next repaint after 1/60 second through the public

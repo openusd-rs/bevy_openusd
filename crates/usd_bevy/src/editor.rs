@@ -661,6 +661,52 @@ mod tests {
     }
 
     #[test]
+    fn matrix_edit_maps_reference_target_and_survives_save_reopen() {
+        let stage = crate::UsdSource::new("mapped-matrix.usda", br#"#usda 1.0
+def Xform "Source" {
+    double3 xformOp:translate.timeSamples = {0: (1,2,3), 10: (4,5,6)}
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+def Xform "M" {}
+"#.as_slice()).unwrap().open_stage().unwrap();
+        crate::authoring::set_references(&stage, "/M", &[openusd::sdf::Reference {
+            prim_path: openusd::sdf::path("/Source").unwrap(),
+            layer_offset: openusd::sdf::LayerOffset { offset: 10.0, scale: 2.0 },
+            ..Default::default()
+        }]).unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let path = openusd::sdf::path("/M").unwrap();
+        let root_target = stage.edit_target();
+        stage.set_edit_target(stage.edit_target_for_node(&path, openusd::usd::EditTargetArc::Reference).unwrap()).unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let matrix = [1.0,0.0,0.5,0.0, 0.75,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 3.0,4.0,5.0,1.0];
+        editor.edit(EditorEdit::TransformMatrix { prim: "/M".into(), matrix, reset: true }).unwrap();
+        assert!(!stage.root_layer().data().has_spec(&path.append_property("xformOp:transform").unwrap()));
+        let source_path = openusd::sdf::path("/Source").unwrap();
+        assert!(stage.root_layer().data().has_spec(&source_path.append_property("xformOp:transform").unwrap()));
+        let after = stage.root_layer().export_to_string().unwrap();
+        stage.set_edit_target(root_target.clone()).unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(stage.edit_target(), root_target);
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), after);
+        let directory = tempfile::tempdir().unwrap();
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            for extension in ["usda", "usdc", "usd"] {
+                let output = directory.path().join(format!("{name}.{extension}"));
+                editor.save(output.to_str().unwrap(), mode).unwrap();
+                let reopened = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(output.to_str().unwrap()).unwrap();
+                for prim in [&path, &source_path] {
+                    for time in [0.0, 10.0, 20.0, 30.0] {
+                        assert_eq!(crate::read::xform::read_transform_stack_at(&reopened, prim, Some(time)).unwrap(), Some((matrix.map(|v| v as f32), true)));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn sample_edits_map_reference_time_and_preserve_defaults() {
         let stage = crate::UsdSource::new("sample-edits.usda", br#"#usda 1.0
 def Xform "Source" { double score = 5 }

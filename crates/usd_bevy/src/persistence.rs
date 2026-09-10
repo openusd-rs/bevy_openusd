@@ -125,6 +125,36 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
 
     #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_preserves_editor_affine_reset_command() {
+        use crate::editor::{EditorEdit, EditorSession, SaveMode};
+        let stage = crate::UsdSource::new("native-matrix-edit.usda", include_bytes!("../../../assets/xform_animation.usda").as_slice())
+            .unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage);
+        let matrix = [1.0,0.0,0.5,0.0, 0.75,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 3.0,4.0,5.0,1.0];
+        editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix, reset: true }).unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            for extension in ["usda", "usdc", "usd"] {
+                let path = output.path().join(format!("{name}.{extension}"));
+                editor.save(path.to_str().unwrap(), mode).unwrap();
+                let result = std::process::Command::new(&native).arg("--flatten").arg(&path).output().expect("launch native USD_CAT or usdcat");
+                assert!(result.status.success(), "{}: {}", path.display(), String::from_utf8_lossy(&result.stderr));
+                let native_stage = crate::UsdSource::new(output.path().join("native-flat.usda"), result.stdout)
+                    .unwrap().open_stage().unwrap();
+                let prim = openusd::sdf::path("/Affine").unwrap();
+                for time in [0.0, 2.5, 5.0, 10.0] {
+                    assert_eq!(crate::read::xform::read_transform_stack_at(&native_stage, &prim, Some(time)).unwrap(), Some((matrix.map(|v| v as f32), true)));
+                }
+                assert!(native_stage.attribute("/Affine.xformOp:transform").unwrap().time_samples().unwrap().unwrap_or_default().is_empty());
+                assert!(native_stage.prim("/Affine/Following").unwrap().is_valid().unwrap());
+                assert!(native_stage.prim("/Affine/Reset").unwrap().is_valid().unwrap());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_preserves_cross_directory_layer_dependencies() {
         use crate::editor::SaveMode;
         let source = tempfile::tempdir().unwrap();

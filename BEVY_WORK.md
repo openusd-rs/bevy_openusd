@@ -39,10 +39,26 @@ Tests verify exact root-layer restoration of an animated matrix stack, static
 replacement at four times, reset preservation, redo and invalid-edit rejection
 without losing redo. A layered case verifies that undo removes the stronger
 override, reveals the weaker animation and restores every loaded layer's
-serialized authored data. Native save/reopen and mapped-target transform-command
-acceptance remain open.
+serialized authored data.
 All 403 ordinary tests pass, with six native tests ignored; check-all, build
 and whitespace checks pass. Logs: `/tmp/editor-matrix-{tests,check,build}.log`.
+
+A mapped-target regression now authors through an internal reference with a time
+offset, verifies the matrix is authored on `/Source` rather than `/M`, switches
+back to the root edit target and checks exact undo/redo plus target preservation.
+Root/edit/flattened output in USDA/USDC/USD reopens with the same matrix and reset
+at four times on both composed paths. These modes share one physical layer in
+this mapped fixture; external reference-layer and variant-target matrix-command
+coverage remain open.
+
+An optional native export test sends all nine mode/format combinations through
+native `usdcat --flatten`, then checks the returned composed data for the static
+affine matrix/reset, absence of stale matrix samples and retained children.
+This verifies native parse/composition interoperability, not native renderer
+fidelity or native file-picker interaction.
+All 404 ordinary tests and all seven optional native export tests pass, along
+with check-all, build and whitespace checks. Logs:
+`/tmp/editor-mapped-{tests,check,build,native}.log`.
 
 ### Ordinary affine transform propagation: validation in progress
 

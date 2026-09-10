@@ -33,7 +33,8 @@ pub fn intern_material(world: &mut World, material: StandardMaterial) -> Handle<
     if let Some(candidates) = world.resource::<MaterialCache>().materials.get(&signature) {
         let assets = world.resource::<Assets<StandardMaterial>>();
         for handle in candidates {
-            if assets.get(handle).is_some_and(|existing| existing.reflect_partial_eq(&material) == Some(true)) {
+            if assets.get(handle).is_some_and(|existing| existing.cull_mode == material.cull_mode
+                && existing.reflect_partial_eq(&material) == Some(true)) {
                 return handle.clone();
             }
         }
@@ -250,6 +251,19 @@ mod tests {
         }
         morph.set_morph_target_names(vec!["shape".into()]);
         assert_ne!(intern_mesh(&mut world, morph), zero);
+    }
+
+    #[test]
+    fn mutated_cull_mode_does_not_contaminate_cached_materials() {
+        let mut world = World::new();
+        world.insert_resource(Assets::<StandardMaterial>::default());
+        world.init_resource::<MaterialCache>();
+        let original = intern_material(&mut world, StandardMaterial::default());
+        world.resource_mut::<Assets<StandardMaterial>>().get_mut(&original).unwrap().cull_mode = None;
+        let clean = intern_material(&mut world, StandardMaterial::default());
+        assert_ne!(original, clean);
+        assert_eq!(world.resource::<Assets<StandardMaterial>>().get(&original).unwrap().cull_mode, None);
+        assert_eq!(world.resource::<Assets<StandardMaterial>>().get(&clean).unwrap().cull_mode, StandardMaterial::default().cull_mode);
     }
 
     #[test]

@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Preserve cull state during material interning
+
+Inspection of Bevy 0.19.1 StandardMaterial found that `cull_mode` is excluded from
+reflection. Reproduced a cached material mutated from back-face culling to None
+being reused for a later default-material request (`/tmp/material-cull-before.log`).
+Cache equality now checks cull_mode explicitly as well as reflected fields. The
+regression verifies distinct handles, preservation of the application's mutated
+asset and the default culling state of the newly requested material.
+
+A compact material-key experiment removed Debug-string hashing, but its four-root
+reload measurements overlapped the previous route profile: ShapesRoute application
+163.671–204.919ms versus 175.786–210.888ms, and MaterialRoute 63.759–80.266ms versus
+68.281–82.753ms (`/tmp/material-key-profile.log`, `/tmp/source-route-profile.log`).
+No end-to-end speedup was established, and a subset key increases collision groups
+for materials differing in other fields. The experimental key was reverted; only
+the proven cull-state correctness fix remains. Projection optimization stays open.
+
+All 379 ordinary tests, check-all, build and whitespace checks pass
+(`/tmp/material-cull-{tests,check,build}.log`). This is material-state regression
+coverage, not evidence that Spot's authored faceting or broader render fidelity
+has changed.
+
 ### Opt-in source publication phase profiling
 
 Added `asset::UsdSceneTimings`, an optional resource accumulating stage-open,

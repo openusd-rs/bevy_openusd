@@ -4,9 +4,10 @@
 
 Bevy source publication now checks discovered composition diagnostics rather
 than treating a successfully parsed but incomplete stage as Ready. A fourth
-local patch adds the upstream diagnostic missing for external references to
-absent root prims. Native USD reports that case; sub-root target diagnostics
-remain an upstream gap. See `patches/openusd-reference-diagnostics.patch`.
+local patch adds missing external root/sub-root target diagnostics. Sub-root
+checks run after composition tasks finish so variant-supplied targets remain
+valid. Native USD reports missing reference targets at both depths.
+See `patches/openusd-reference-diagnostics.patch` for the bounded coverage.
 
 Packaging now accepts single-level source USDZ archives and package-relative
 layers/assets. Native tests cover snapshot-only inputs, a second re-export after

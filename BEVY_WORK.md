@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Deferred sub-root target diagnostics
+
+Extended the recorded reference-diagnostic patch to absent external sub-root
+targets. Candidates retain their grafted node and are checked only after the
+composition task queue drains, so a target supplied by variant opinions remains
+valid. Internal cyclic-target handling is unchanged. Native usdcat independently
+reports the missing sub-root reference (`/tmp/native-missing-subroot.log`).
+
+The core regression now checks references and payloads at both root and sub-root
+depths. The actual AssetServer regression checks missing reference targets at
+both depths, while a new positive case composes a sub-root supplied entirely by
+an ancestor's selected variant, verifying its value and absence of diagnostics.
+This extends the previous checkpoint's root-only coverage; it does not establish
+all ancestral, relocation or late-variant composition combinations.
+Validation: 375 ordinary tests, five native tests (44 export checks), check-all,
+build and whitespace checks pass (`/tmp/subroot-validation-{tests,native,check,build}.log`).
+Upstream passes 1,588 core tests, 56 binary roundtrips and strict Clippy
+(`/tmp/upstream-subroot-diagnostics-{tests,clippy}.log`). All four recorded patches
+pass reverse-apply checks against the vendored source.
+
 ### Composition diagnostics gate before publication
 
 Reproduced a direct-source reload that reported Ready and replaced valid entities

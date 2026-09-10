@@ -2301,10 +2301,15 @@ def "Root" (
     }
 
     #[test]
-    fn absent_external_root_targets_report_reference_and_payload_errors() -> Result<()> {
-        for (field, arc) in [("references", ArcType::Reference), ("payload", ArcType::Payload)] {
+    fn absent_external_targets_report_reference_and_payload_errors() -> Result<()> {
+        for (field, arc, target) in [
+            ("references", ArcType::Reference, "/Absent"),
+            ("payload", ArcType::Payload, "/Absent"),
+            ("references", ArcType::Reference, "/Present/Absent"),
+            ("payload", ArcType::Payload, "/Present/Absent"),
+        ] {
             let root = parse_usda(&format!(
-                "#usda 1.0\ndef Scope \"Mounted\" ({field} = @model.usda@</Absent>) {{}}\n"
+                "#usda 1.0\ndef Scope \"Mounted\" ({field} = @model.usda@<{target}>) {{}}\n"
             ));
             let model = parse_usda("#usda 1.0\ndef Scope \"Present\" {}\n");
             let stack = LayerGraph::from_layers(
@@ -2322,7 +2327,7 @@ def "Root" (
             assert!(
                 errors.iter().any(|error| matches!(error,
                 CompositionDiagnostic::UnresolvedPrimPath { arc: actual, prim_path, .. }
-                    if *actual == arc && prim_path.as_str() == "/Absent")),
+                    if *actual == arc && prim_path.as_str() == target)),
                 "{errors:?}"
             );
         }

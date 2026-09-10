@@ -84,8 +84,12 @@ entry extraction and bare-package references; nested packages remain unsupported
 ## Missing external reference target diagnostics
 
 `openusd-reference-diagnostics.patch` adds UnresolvedPrimPath diagnostics for
-external references to absent root prims. The baseline only emitted that error
-for payloads. Native usdcat reports the missing reference target while still
-producing a partial stage (`/tmp/native-missing-reference.log`). The added core
-regression checks both reference and payload arcs. It does not alter culling or
-reference composition, and sub-root target diagnostics remain separate work.
+external references to absent root prims and for absent external sub-root targets.
+The baseline only diagnosed missing root targets for payloads and missing sub-root
+targets associated with cycles. Native usdcat reports missing reference targets
+at both depths while still producing a partial stage
+(`/tmp/native-missing-reference.log`, `/tmp/native-missing-subroot.log`). Core
+coverage checks reference and payload arcs at both depths. Sub-root diagnostics
+are deferred until composition tasks finish, preserving variant-supplied targets.
+Node culling and reference composition are unchanged; broader ancestral and
+relocation combinations still need acceptance coverage.

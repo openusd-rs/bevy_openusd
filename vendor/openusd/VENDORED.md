@@ -25,9 +25,10 @@ changing the layer-only ArchiveWriter contract. See the root PACKAGING.md for
 its limits and unsupported inputs.
 Single-level source archives are cached and their entry reads are bounded;
 package-relative dependencies are repackaged rather than retained externally.
-The reference diagnostic patch reports missing external root-prim reference
-targets, matching native USD's diagnostic for that case. Sub-root reference
-target diagnostics remain a separate upstream acceptance gap.
+The reference diagnostic patch reports missing external root and sub-root targets.
+Sub-root targets are checked after composition tasks finish, retaining targets
+whose opinions come from variants. Broader ancestral/relocation combinations
+remain outside the current acceptance evidence.
 
 The root Cargo patch table redirects all three Git dependency packages here.
 The usd_bevy and usd_macro manifests also use direct relative paths to this

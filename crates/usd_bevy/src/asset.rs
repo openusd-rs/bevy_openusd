@@ -1024,18 +1024,49 @@ def Material "Mat" {
 
     #[test]
     fn existing_layer_with_missing_reference_target_fails_asset_loading() {
+        for target in ["/Absent", "/Present/Absent"] {
+            let (mut app, directory) = memory_app();
+            directory.insert_asset_text(Path::new("model.usda"), "#usda 1.0\ndef Scope \"Present\" {}\n");
+            directory.insert_asset_text(Path::new("broken-target.usda"), &format!(
+                "#usda 1.0\ndef Scope \"Mounted\" (prepend references = @model.usda@<{target}>) {{}}\n"));
+            let handle = app.world().resource::<AssetServer>().load("fixture://broken-target.usda");
+            let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
+            tick_until(&mut app, |world| matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_) | UsdSceneState::Ready)));
+            let Some(UsdSceneState::Failed(error)) = app.world().get::<UsdSceneState>(root) else {
+                panic!("missing prim target state: {:?}", app.world().get::<UsdSceneState>(root));
+            };
+            assert!(error.contains("Absent"), "{error}");
+            assert!(app.world().get::<UsdSceneInstance>(root).is_none());
+        }
+    }
+
+    #[test]
+    fn variant_supplied_subroot_target_loads_without_false_diagnostics() {
         let (mut app, directory) = memory_app();
-        directory.insert_asset_text(Path::new("model.usda"), "#usda 1.0\ndef Scope \"Present\" {}\n");
-        directory.insert_asset_text(Path::new("broken-target.usda"),
-            "#usda 1.0\ndef Scope \"Mounted\" (prepend references = @model.usda@</Absent>) {}\n");
-        let handle = app.world().resource::<AssetServer>().load("fixture://broken-target.usda");
+        directory.insert_asset_text(Path::new("variant-model.usda"), r#"#usda 1.0
+def Scope "Model" (
+    prepend variantSets = ["choice"]
+    variants = { string choice = "show" }
+) {
+    variantSet "choice" = {
+        "show" {
+            def Scope "Child" {
+                double score = 17
+            }
+        }
+        "hide" {}
+    }
+}
+"#);
+        directory.insert_asset_text(Path::new("subroot.usda"),
+            "#usda 1.0\ndef Scope \"Mounted\" (prepend references = @variant-model.usda@</Model/Child>) {}\n");
+        let handle = app.world().resource::<AssetServer>().load("fixture://subroot.usda");
         let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
         tick_until(&mut app, |world| matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_) | UsdSceneState::Ready)));
-        let Some(UsdSceneState::Failed(error)) = app.world().get::<UsdSceneState>(root) else {
-            panic!("missing prim target state: {:?}", app.world().get::<UsdSceneState>(root));
-        };
-        assert!(error.contains("Absent"), "{error}");
-        assert!(app.world().get::<UsdSceneInstance>(root).is_none());
+        assert_eq!(app.world().get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        let stage = app.world().non_send::<UsdInstances>().stage(root).unwrap();
+        assert_eq!(stage.prim("/Mounted").unwrap().attribute("score").get::<f64>().unwrap(), Some(17.0));
+        assert!(stage.composition_errors().is_empty());
     }
 
     #[test]

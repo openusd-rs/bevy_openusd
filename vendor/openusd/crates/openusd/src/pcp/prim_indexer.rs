@@ -372,12 +372,7 @@ enum TaskKind {
     EvalNodeRelocations,
 }
 
-/// What grafting an ancestral sub-index produced: the grafted node, and
-/// whether *that* sub-build hit an arc cycle.
-///
-/// The flag answers for *this* sub-build alone, which is what a sub-root
-/// reference needs: it is unresolved only when composing its own target hit a
-/// cycle that left nothing behind.
+/// Grafted ancestral node and the sub-build's arc-cycle flag.
 struct GraftOutcome {
     node: Option<NodeId>,
     hit_cycle: bool,
@@ -511,6 +506,8 @@ pub(crate) struct Indexer<'a, 'f> {
     /// relocation target) reports no error, so only entries whose node survives
     /// (is not culled) are kept — matching C++'s per-contributing-arc reporting.
     pending_relocation_diagnostics: Vec<(NodeId, CompositionDiagnostic)>,
+    /// External sub-root targets checked after all composition tasks finish.
+    pending_target_diagnostics: Vec<(Option<NodeId>, CompositionDiagnostic)>,
 }
 
 impl<'a, 'f> Indexer<'a, 'f> {
@@ -543,6 +540,7 @@ impl<'a, 'f> Indexer<'a, 'f> {
             pending_loads: Vec::new(),
             expr_var_deps: ExprVarDeps::default(),
             pending_relocation_diagnostics: Vec::new(),
+            pending_target_diagnostics: Vec::new(),
         }
     }
 
@@ -664,6 +662,12 @@ impl<'a, 'f> Indexer<'a, 'f> {
                 }
                 // Placeholders kept only for `retry_variant_tasks`; nothing to do.
                 TaskKind::EvalNodeVariantNoneFound | TaskKind::EvalNodeAncestralVariantNoneFound => {}
+            }
+        }
+
+        for (node, error) in mem::take(&mut self.pending_target_diagnostics) {
+            if !node.is_some_and(|node| self.subtree_has_specs(node)) {
+                self.errors.report(error);
             }
         }
 
@@ -2891,18 +2895,20 @@ impl<'a, 'f> Indexer<'a, 'f> {
         if !source.is_root_prim() {
             let grafted =
                 self.compose_and_graft(&source, target_stack, self.frame_skip(), parent, arc, map, parent, 0)?;
-            // The target is unresolved only when composing it hit a cycle (its own
-            // ancestral chain loops back) that left nothing — not when it is merely
-            // empty so far (e.g. a variant supplies its opinions later).
             let unresolved = grafted.hit_cycle && !grafted.node.is_some_and(|g| self.subtree_has_specs(g));
-            if unresolved {
-                self.errors.report(CompositionDiagnostic::UnresolvedPrimPath {
+            if unresolved || !is_internal {
+                let diagnostic = CompositionDiagnostic::UnresolvedPrimPath {
                     arc,
                     target_layer: self.inputs.stack.layer(rep).identifier.clone(),
                     prim_path: source.clone(),
                     introduced_by: self.introducing_layer(parent),
                     site_path: parent_path.clone(),
-                });
+                };
+                if is_internal {
+                    self.errors.report(diagnostic);
+                } else {
+                    self.pending_target_diagnostics.push((grafted.node, diagnostic));
+                }
             }
             return Ok(());
         }

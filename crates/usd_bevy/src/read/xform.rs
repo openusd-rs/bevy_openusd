@@ -1,5 +1,6 @@
 //! Xform reader — compose `xformOpOrder` into a single 4×4 and decompose to
 //! TRS, read from the composed stage via openusd.
+//! Property paths resolve to their owning prim, matching `Stage::prim`.
 
 use glam::{DMat4, DVec3};
 use openusd::sdf::{Path, Value};
@@ -19,7 +20,7 @@ fn attr_value(
     name: &str,
     time: Option<TimeCode>,
 ) -> anyhow::Result<Option<Value>> {
-    Ok(stage.prim(prim.clone()).expect("validated USD path").attribute(name).get_at::<Value>(time)?)
+    Ok(stage.prim(prim.clone())?.attribute(name).get_at::<Value>(time)?)
 }
 
 /// Read `xformOpOrder` and compose every listed op into a single 4×4, then
@@ -231,6 +232,33 @@ fn value_to_quat_wxyz(v: &Value) -> Option<[f64; 4]> {
 mod tests {
     use super::*;
     use glam::{Mat4, Vec3, Vec4, Quat};
+
+    #[test]
+    fn public_transform_readers_resolve_property_owners() {
+        let stage = Stage::builder().in_memory("path-inputs.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        stage.create_attribute("/Root.xformOpOrder", "token[]").unwrap()
+            .set(Value::TokenVec(vec!["xformOp:translate".into()])).unwrap();
+        stage.create_attribute("/Root.xformOp:translate", "double3").unwrap()
+            .set(Value::Vec3d(openusd::gf::Vec3d::from([1.0, 2.0, 3.0]))).unwrap();
+        let prim = openusd::sdf::path("/Root").unwrap();
+        for name in ["/Root.xformOp:translate", "/Root.unauthoredProperty"] {
+            let property = openusd::sdf::path(name).unwrap();
+            assert_eq!(read_transform(&stage, &property).unwrap().unwrap().translate, [1.0, 2.0, 3.0]);
+            for time in [None, Some(0.0), Some(10.0)] {
+                assert_eq!(read_transform_at(&stage, &property, time).unwrap().unwrap().translate, [1.0, 2.0, 3.0]);
+                assert_eq!(read_transform_matrix_at(&stage, &property, time).unwrap(), read_transform_matrix_at(&stage, &prim, time).unwrap());
+                assert_eq!(read_transform_stack_at(&stage, &property, time).unwrap(), read_transform_stack_at(&stage, &prim, time).unwrap());
+                assert_eq!(read_transform_stack_f64_at(&stage, &property, time).unwrap(), read_transform_stack_f64_at(&stage, &prim, time).unwrap());
+            }
+        }
+        let missing = openusd::sdf::path("/Missing.property").unwrap();
+        assert!(read_transform(&stage, &missing).unwrap().is_none());
+        assert!(read_transform_at(&stage, &missing, Some(10.0)).unwrap().is_none());
+        assert!(read_transform_matrix_at(&stage, &missing, None).unwrap().is_none());
+        assert!(read_transform_stack_at(&stage, &missing, None).unwrap().is_none());
+        assert!(read_transform_stack_f64_at(&stage, &missing, None).unwrap().is_none());
+    }
 
     #[test]
     fn trs_reads_reject_lossy_or_degenerate_decomposition() {

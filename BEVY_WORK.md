@@ -25,6 +25,21 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Public transform path semantics
+
+Current upstream inspection disproved the suspected property-path panic:
+`Stage::prim` converts an already parsed property path to its owning prim. The
+transform reader now propagates the upstream Result instead of asserting it,
+without introducing a stricter local path policy. Module documentation states
+the owner-resolution behavior. A regression covers all five public transform
+entry points, authored and unauthored property names, default and numeric times,
+and missing owners returning None. This is a documented compatibility contract,
+not a claim that the previous implementation had a reproduced panic.
+
+Validation: 429 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks. Logs:
+`/tmp/xform-path-{tests,check,build}.log`.
+
 ### Atomic saves and deleted dependency recovery
 
 Extended native event acceptance to replace both a sublayer and a PNG via

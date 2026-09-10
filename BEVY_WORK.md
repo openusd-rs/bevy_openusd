@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Preserve culling changes in flat-normal material conversion
+
+A new regression reproduced a base material changing from back-face culling to
+no culling while the converted FlatMaterial incorrectly retained Some(Back).
+Bevy 0.19's StandardMaterial.cull_mode is excluded from reflection; reflected
+equality alone therefore accepted the stale converted asset. The reuse check now
+compares cull_mode explicitly as the standard-material cache already does.
+
+The regression exercises Back, None and Front while all reflected fields remain
+unchanged. Existing conversion reuse/update and external-replacement cleanup
+tests also pass. Failure evidence: `/tmp/flat-culling-before.log`; focused passing
+suite: `/tmp/flat-culling-after.log`. This verifies material asset state, not a
+new GPU screenshot. USD doubleSided edits also change a reflected field, so this
+does not claim a reproduced doubleSided-authoring failure.
+All 439 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/flat-culling-{tests,check,build}.log`.
+
 ### Headless GPU-prepared deformation payload measurement
 
 The editor benchmark now accepts a third cpu|gpu-prepared argument. CPU remains

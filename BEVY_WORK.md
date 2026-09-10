@@ -25,6 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Resolve and discover connected texture filenames
+
+Texture file reads now use the canonical UsdShade value-producing attribute
+instead of only reading inputs:file directly. Material/NodeGraph interfaces can
+supply asset/string/token filenames, including time samples. Discovery queries
+that producer's sample times, so inputs named image (rather than file) are still
+loaded at their authored endpoints. Invalid direct sources, ambiguous producers,
+cycles without producers and unreadable producer values return explicit errors.
+Sampled-only file inputs remain unset at default time while their numeric-time
+samples are discovered. Arbitrary shader computation remains unsupported.
+
+The source regression covers differently named interface samples, held file
+selection, backward reads, cycles, invalid connections and multiple producers.
+The fixture adds file_interface_animated.usda and the seventh live-clock case.
+All seven GPU cases pass with zero changed RGB pixels out of 921600; the new
+case confirms two meshes and clocks reversed to 10/0 after 30 ready frames.
+Both new file-interface images were visually inspected and match the reference.
+Evidence: `target/live-file-interface-regression/`, `/tmp/file-interface-gpu.log`.
+All 489 ordinary tests pass (13 ignored), check-all/build and shell syntax/
+whitespace checks pass: `/tmp/file-interface-{tests,check,build}.log`.
+All 13 native export tests also pass: `/tmp/file-interface-native.log`.
+This verifies interface filename loading and endpoint rendering, not all
+resolver contexts, shader graphs or texture-node behaviors.
+
 ### Resolve scale/bias through typed UsdShade interfaces
 
 Texture scale/bias now uses canonical Shader/Input value_producing_attributes

@@ -97,6 +97,11 @@ pub(crate) fn material_texture_sample_times(stage: &Stage, material: &Path) -> a
         let node = stage.prim(&path)?;
         times.extend(node.attribute("inputs:file").time_sample_times()?);
         times.extend(node.attribute("inputs:sourceColorSpace").time_sample_times()?);
+        if matches!(shader_kind(stage, &path)?, ShaderKind::Texture) {
+            if let Some(attribute) = texture_file_attribute(stage, &path)? {
+                times.extend(attribute.time_sample_times()?);
+            }
+        }
         for attribute in node.attributes()? {
             pending.extend(attribute.connections()?.into_iter().map(|connection| connection.prim_path()));
         }
@@ -763,13 +768,65 @@ fn shader_kind(stage: &Stage, prim: &Path) -> anyhow::Result<ShaderKind> {
     })
 }
 
+fn texture_file_attribute(stage: &Stage, tex_prim: &Path) -> anyhow::Result<Option<openusd::usd::Attribute>> {
+    use openusd_schemas::shade::{Connectable, ProducerFilter, Shader};
+    let input = Shader::new(stage.prim(tex_prim)?).input("file");
+    let connections = input.connected_sources()?;
+    anyhow::ensure!(connections.invalid_source_paths().is_empty(), "invalid texture file connection at {}", input.path());
+    let producers = input.value_producing_attributes(ProducerFilter::Any)?;
+    anyhow::ensure!(producers.len() <= 1, "multiple texture file value producers at {}", input.path());
+    anyhow::ensure!(connections.sources().is_empty() || !producers.is_empty(), "texture file connection has no value producer at {}", input.path());
+    Ok(producers.first().map(|source| source.attribute().clone()))
+}
+
 fn read_texture_file(stage: &Stage, tex_prim: &Path, time: Option<f64>) -> anyhow::Result<Option<String>> {
-    Ok(match stage.prim(tex_prim)?.attribute("inputs:file").get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+    let Some(attribute) = texture_file_attribute(stage, tex_prim)? else { return Ok(None); };
+    Ok(match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
         Some(Value::AssetPath(path)) => Some(path.resolved_path().unwrap_or(path.as_str()).to_owned()),
         Some(Value::String(path)) => Some(path),
         Some(Value::Token(path)) => Some(path.as_str().to_owned()),
-        _ => None,
+        None if time.is_none() && !attribute.time_sample_times()?.is_empty() => None,
+        _ => anyhow::bail!("texture file producer has no readable asset value at {}", attribute.path()),
     })
+}
+
+#[test]
+fn texture_file_interfaces_discover_arbitrarily_named_samples() {
+    let source = crate::UsdSource::snapshot("files.usda", br#"#usda 1.0
+def Material "Mat" {
+    asset inputs:image.timeSamples = {0: @a.png@, 10: @b.png@}
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def NodeGraph "Graph" {
+        asset outputs:image.connect = </Mat.inputs:image>
+        asset outputs:cycle.connect = </Mat/Graph.outputs:cycle>
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file.connect = </Mat/Graph.outputs:image>
+    }
+}
+"#.as_slice()).unwrap();
+    let stage = source.open_stage().unwrap();
+    let material = openusd::sdf::path("/Mat").unwrap();
+    let texture = openusd::sdf::path("/Mat/Tex").unwrap();
+    assert_eq!(material_texture_sample_times(&stage, &material).unwrap(), [0.0, 10.0]);
+    assert!(read_texture_file(&stage, &texture, None).unwrap().is_none());
+    for (time, name) in [(0.0, "a.png"), (5.0, "a.png"), (10.0, "b.png"), (0.0, "a.png")] {
+        assert!(read_texture_file(&stage, &texture, Some(time)).unwrap().unwrap().ends_with(name));
+    }
+    let file = stage.attribute("/Mat/Tex.inputs:file").unwrap();
+    file.clone().set_connections([openusd::sdf::path("/Mat/Graph.outputs:cycle").unwrap()]).unwrap();
+    assert!(read_texture_file(&stage, &texture, Some(0.0)).unwrap_err().to_string().contains("no value producer"));
+    file.clone().set_connections([openusd::sdf::path("/Mat.inputs:missing").unwrap()]).unwrap();
+    assert!(read_texture_file(&stage, &texture, Some(0.0)).unwrap_err().to_string().contains("invalid texture file connection"));
+    stage.create_attribute("/Mat.inputs:other", "asset").unwrap().set(Value::AssetPath(openusd::sdf::AssetPath::new("c.png"))).unwrap();
+    file.set_connections([openusd::sdf::path("/Mat.inputs:image").unwrap(), openusd::sdf::path("/Mat.inputs:other").unwrap()]).unwrap();
+    assert!(read_texture_file(&stage, &texture, Some(0.0)).unwrap_err().to_string().contains("multiple texture file value producers"));
 }
 
 fn value_to_preview(v: Value) -> Option<ResolvedValue> {

@@ -409,6 +409,47 @@ Log: `/tmp/ur5-osd-limit-compare-final.log`. No viewer/Rust production code chan
 the prior 518-test Rust result was not rerun for this native diagnostic.
 Full Bevy rendering acceptance remains open.
 
+## Native limit-normal rendering experiment
+
+Extended the native reference diagnostic with `--normal-probe NEW_DIRECTORY`.
+It retains the level-1 probe's triangle indices and camera and writes one file
+replacing only normals, plus a second replacing both normals and positions with
+native limit evaluations. Both remain polygon geometry. All 46,817 positions
+still pass the independent comparison before output is allowed. There are 6,245
+zero native limit normals, all unused: zero referenced normals is the relevant
+result. No viewer normal-generation policy has changed.
+
+Five images were rendered and inspected:
+
+- `target/ur5-limit-normal-probe/finite-bevy.png` and `finite-native.png`:
+  current finite normals; front-cap streaks, rippled rim and lower-edge bands.
+- `target/ur5-limit-normal-probe/limit-bevy.png` and `limit-native.png`:
+  native limit normals on unchanged positions; front-cap streaks disappear,
+  but the rim and lower-edge artifacts remain in both renderers.
+- `target/ur5-limit-surface-probe/surface-bevy.png`: native limit positions
+  and normals; upper silhouette is less jagged, but the rim/bands remain.
+
+Bevy captures use forward rendering, shadows off, `/Camera`, time 0, 1280x720;
+all returned CAPTURE_OK. Native captures use Embree, GPU disabled, `/Camera`,
+image width 1280, and report unavailable GPU color correction. Lighting and
+color processing differ, so cross-renderer observations are qualitative.
+Logs: `/tmp/ur5-{finite,limit}-normal-{bevy,native}.log`,
+`/tmp/ur5-limit-surface-{probe,bevy}.log`.
+The normals-only output is byte-identical to the source after excluding the
+normal array. Repeated generation gives identical normals-only output.
+
+The new `scripts/check_subdivision_reference.sh` passes through Make against
+the compiled native tool: an analytic single-triangle cage checks +Z normal
+orientation and child positions, non-normal fields stay unchanged, and missing
+arguments/files, count mismatch, negative witnesses and existing output
+directories fail with code 2. Signed zero is ignored in the orientation check.
+The native tool compiles with `-Wall -Wextra`; `git diff --check` passes.
+Rust production code is unchanged; the Rust suite was not rerun here.
+
+Limit normals are a supported direction for fixing the cap streaks, not a full
+visual repair. Remaining rim/band artifacts require higher-resolution native
+surface comparison and a representative-asset check before integration.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

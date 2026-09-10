@@ -832,6 +832,20 @@ It does not compare refined topology, materials, authored normals, creases or
 rendered images. Native limit tangents are diagnostic only, not installed into
 the viewer. OpenSubdiv is not a new viewer build dependency.
 
+Append `--normal-probe NEW_DIRECTORY` after any witness indices to write two
+controlled polygon probes with the input camera and triangle indices retained:
+`with_limit_normals.usda` replaces only normals with normalized native limit
+tangent cross-products; `with_limit_surface.usda` also replaces positions with
+native limit positions. The directory must not exist. Zero derivatives remain
+zero and are counted separately for referenced vertices; no fallback axis is
+invented. These files are finite triangles, not native subdivision patches.
+Check the compiled tool's planar orientation, output preservation and invalid
+inputs through Make:
+
+```bash
+make --eval='check-osd:; @/bin/bash scripts/check_subdivision_reference.sh target/compare-osd' check-osd
+```
+
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
 flat normals independently of authored normals. Capture without shadow maps:

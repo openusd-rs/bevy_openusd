@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -44,7 +46,7 @@ std::vector<Point> points(std::string const &path) {
     return result;
 }
 int main(int argc,char **argv) try {
-    if(argc<3) throw std::runtime_error("usage: compare_osd cage.usda level1.usda [vertex ...]");
+    if(argc<3) throw std::runtime_error("usage: compare_osd cage.usda level1.usda [vertex ...] [--normal-probe NEW_DIRECTORY]");
     auto src=points(argv[1]), expected=points(argv[2]);
     auto c=array(argv[1],"faceVertexCounts"), idx=array(argv[1],"faceVertexIndices");
     if(src.empty() || c.empty()) throw std::runtime_error("empty cage");
@@ -88,6 +90,47 @@ int main(int argc,char **argv) try {
     }
     std::cout<<"points="<<native.size()<<" max_component_error="<<maximum<<" worst_vertex="<<worst<<" over_1e-7="<<failures<<'\n';
     for(int arg=3;arg<argc;++arg) {
+        if(std::string(argv[arg])=="--normal-probe") {
+            if(arg+2!=argc || failures) throw std::runtime_error("normal probe requires matching positions and final NEW_DIRECTORY");
+            std::ostringstream normals; normals<<std::setprecision(9)<<"    normal3f[] normals = [";
+            std::ostringstream positions; positions<<std::setprecision(9)<<"    point3f[] points = [";
+            std::set<size_t> referenced;
+            for(double index:array(argv[2],"faceVertexIndices")) {
+                if(index<0 || index>=map.size() || std::floor(index)!=index) throw std::runtime_error("invalid refined index");
+                referenced.insert(size_t(index));
+            }
+            size_t zero=0, zero_referenced=0;
+            for(size_t i=0;i<map.size();++i) {
+                auto const &a=du.at(map[i]), &b=dv.at(map[i]);
+                double n[3]={a.p[1]*b.p[2]-a.p[2]*b.p[1],a.p[2]*b.p[0]-a.p[0]*b.p[2],a.p[0]*b.p[1]-a.p[1]*b.p[0]};
+                double length=std::hypot(n[0],n[1],n[2]);
+                if(!std::isfinite(length)) throw std::runtime_error("nonfinite limit normal");
+                zero+=length==0;
+                zero_referenced+=length==0 && referenced.count(i);
+                for(auto &v:n) v=length==0?0:v/length;
+                normals<<(i?",(":"(")<<n[0]<<','<<n[1]<<','<<n[2]<<')';
+                auto const &p=limit.at(map[i]);
+                for(double v:p.p) if(!std::isfinite(v)) throw std::runtime_error("nonfinite limit position");
+                positions<<(i?",(":"(")<<p.p[0]<<','<<p.p[1]<<','<<p.p[2]<<')';
+            }
+            normals<<']'; positions<<']';
+            std::ifstream input(argv[2]); std::string line; std::ostringstream output, surface; int replaced=0, replaced_points=0;
+            while(std::getline(input,line)) {
+                if(line.find("normal3f[] normals = [")!=std::string::npos) { line=normals.str(); ++replaced; }
+                output<<line<<'\n';
+                if(line.find("point3f[] points = [")!=std::string::npos) { line=positions.str(); ++replaced_points; }
+                surface<<line<<'\n';
+            }
+            if(replaced!=1 || replaced_points!=1 || input.bad()) throw std::runtime_error("missing or duplicate probe array");
+            std::filesystem::path dir=argv[++arg];
+            if(!std::filesystem::create_directory(dir)) throw std::runtime_error("output directory already exists");
+            std::ofstream file(dir/"with_limit_normals.usda"); file<<output.str(); file.close();
+            if(!file) throw std::runtime_error("normal probe write failed");
+            std::ofstream surface_file(dir/"with_limit_surface.usda"); surface_file<<surface.str(); surface_file.close();
+            if(!surface_file) throw std::runtime_error("surface probe write failed");
+            std::cout<<"limit_normal_probe="<<dir<<" zero_normals="<<zero<<" zero_referenced_normals="<<zero_referenced<<'\n';
+            break;
+        }
         std::string value=argv[arg]; size_t parsed=0; int i=std::stoi(value,&parsed);
         if(parsed!=value.size() || i<0 || i>=int(map.size())) throw std::runtime_error("invalid witness index");
         auto const &p=native[map[i]];

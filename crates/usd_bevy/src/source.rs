@@ -427,6 +427,49 @@ mod tests {
     }
 
     #[test]
+    fn reference_assembly_exports_respect_composition_modes() {
+        let input = tempfile::tempdir().unwrap();
+        let root = UsdSource::snapshot(input.path().join("root.usda"), &b"#usda 1.0\n"[..]).unwrap();
+        let model = UsdSource::snapshot(input.path().join("model.usda"),
+            &b"#usda 1.0\ndef Sphere \"Model\" { double radius = 1.5 }\n"[..]).unwrap();
+        let assembly = root.with_reference("/First", &model, "/Model").unwrap()
+            .with_reference("/Second", &model, "/Model").unwrap();
+        let editor = crate::editor::EditorSession::new(assembly.open_stage().unwrap());
+        let output = tempfile::tempdir().unwrap();
+        for (extension, mode, retains_references) in [
+            ("usda", crate::editor::SaveMode::Flattened, false),
+            ("usdc", crate::editor::SaveMode::Flattened, false),
+            ("usdz", crate::editor::SaveMode::RootLayer, true),
+        ] {
+            let original = output.path().join(format!("original-{extension}"));
+            std::fs::create_dir(&original).unwrap();
+            let filename = format!("assembly.{extension}");
+            editor.save(original.join(&filename).to_str().unwrap(), mode).unwrap();
+            let moved = output.path().join(format!("moved-{extension}"));
+            std::fs::rename(&original, &moved).unwrap();
+            let file = moved.join(&filename);
+            let reopened = UsdSource::new(&file, std::fs::read(&file).unwrap()).unwrap().open_stage().unwrap();
+            UsdSource::validate_composition(&reopened).unwrap();
+            for path in ["/First", "/Second"] {
+                let prim = reopened.prim(path).unwrap();
+                assert_eq!(prim.type_name().unwrap().as_deref(), Some("Sphere"));
+                assert_eq!(prim.attribute("radius").get::<f64>().unwrap(), Some(1.5));
+                assert_eq!(matches!(prim.get_metadata("references").unwrap(), Some(openusd::sdf::Value::ReferenceListOp(_))), retains_references);
+            }
+        }
+        for extension in ["usda", "usdc"] {
+            let path = output.path().join(format!("unbundled.{extension}"));
+            editor.save(path.to_str().unwrap(), crate::editor::SaveMode::RootLayer).unwrap();
+            let reopened = UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap();
+            assert!(UsdSource::validate_composition(&reopened).unwrap_err().to_string().contains("model.usda"));
+            assert!(matches!(reopened.prim("/First").unwrap().get_metadata("references").unwrap(),
+                Some(openusd::sdf::Value::ReferenceListOp(_))));
+        }
+        assert_eq!(std::fs::read_dir(input.path()).unwrap().count(), 0);
+        assert_eq!(root.dependencies().count(), 0);
+    }
+
+    #[test]
     fn reference_assembly_rejects_invalid_inputs_without_changing_sources() {
         let root = UsdSource::snapshot("assembly/root.usda", &b"#usda 1.0\ndef Scope \"Existing\" {}\n"[..]).unwrap();
         let model = UsdSource::snapshot("assembly/model.usda", &b"#usda 1.0\ndef Sphere \"Model\" {}\n"[..]).unwrap();

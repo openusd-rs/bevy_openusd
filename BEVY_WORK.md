@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Source-reference assembly export contracts
+
+An attempted root-layer USDA relocation test failed because the referenced model
+exists only in the source snapshot. Inspection confirms ordinary root/edit-layer
+export anchors references but does not bundle dependency bytes; this was an
+incorrect test expectation, not a newly introduced export implementation defect.
+Failure evidence: `/tmp/reference-export-focused.log`. The README now explicitly
+directs self-contained source assemblies to USDZ instead of implying that every
+persistence export mode materializes captured dependencies.
+
+The regression checks flattened USDA/USDC and composition-preserving root-layer
+USDZ after moving their output directories. Both referenced sphere values must
+survive; only USDZ retains reference arcs. It separately verifies that ordinary
+root-layer USDA/USDC retains those arcs but cannot compose without the source
+files, and that the original source directory remains empty. Flattening textures
+is not bundling their bytes; this fixture is geometry-only. No save-mode semantics
+were silently changed and ordinary layer exports remain available for repair.
+The focused contract test and all 450 ordinary workspace tests pass (seven
+ignored), plus check-all, build and whitespace checks. Logs:
+`/tmp/reference-export-modes.log`, `/tmp/reference-export-{tests,check,build}.log`.
+
 ### Immutable typed source-reference composition
 
 UsdSource::with_reference(destination, dependency, target) accepts canonical

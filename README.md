@@ -118,8 +118,19 @@ The receiver must have a `.usda` identifier. Both paths must be absolute non-roo
 prim paths; targets must exist and destinations must be new. Existing prim
 patches remain explicit editor/authoring operations. Conflicting dependencies or
 composition errors fail without changing either input. References use the source
-identifier as an absolute asset anchor; use the persistence export APIs when
-relocating an assembly. This operation opens and serializes a stage per call;
+identifier as an absolute asset anchor. For a self-contained assembly with
+captured dependencies, export USDZ through the editor:
+
+```rust
+usd_bevy::editor::EditorSession::new(assembly.open_stage()?)
+    .save("assembly.usdz", usd_bevy::editor::SaveMode::RootLayer)?;
+```
+
+Ordinary USDA/USDC root-layer export retains references but does not write their
+in-memory dependencies to disk. Such an export cannot reopen independently when
+the referenced files do not exist. Flattened export removes composition arcs,
+but does not bundle external textures; it is not a substitute for USDZ packaging.
+This operation opens and serializes a stage per call;
 it is not a constant-cost bulk builder or complete typed scene DSL.
 
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model

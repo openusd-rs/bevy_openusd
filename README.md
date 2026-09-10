@@ -517,6 +517,10 @@ USD_SCREENSHOT=target/showcase-t10.png USD_CAPTURE_TIME=10 make run ARGS='assets
 ```
 
 `USD_SCREENSHOT` reads the actual embedded viewport GPU texture, without the UI.
+When capture is enabled, the viewer rejects non-PNG destination names and
+non-finite or malformed `USD_CAPTURE_TIME` values before constructing the window.
+Negative and fractional finite time codes are accepted. Without USD_SCREENSHOT,
+USD_CAPTURE_TIME does not enable capture or set the editor clock.
 It writes the PNG plus tightly packed `.rgba` pixels and `.capture.txt` containing
 dimensions, source texture format and row length. `VIEWPORT_CAPTURE_OK` in stderr
 means all three files were written; `VIEWPORT_CAPTURE_ERROR` reports a failure.

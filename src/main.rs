@@ -41,6 +41,7 @@ const LOG_FILE: &str = "/tmp/usdview.log";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     curve_quality::from_env()?;
+    capture::CaptureConfig::from_env()?;
     let watch = match std::env::var("USD_WATCH_TEXTURES") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,

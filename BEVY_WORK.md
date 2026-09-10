@@ -25,6 +25,24 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Validate embedded capture options before window creation
+
+Capture configuration now rejects malformed/non-finite USD_CAPTURE_TIME values
+when USD_SCREENSHOT is set instead of silently leaving the clock unchanged.
+It also rejects non-PNG output names and trailing directory separators before
+initializing the native window. Finite negative/fractional time codes remain
+valid; no output option means capture/time override remain disabled.
+
+Parser tests cover missing options, malformed numbers, infinities/NaN, finite
+negative/fractional/large values, file extensions and trailing separators.
+The first regression exposed Path::extension treating `frame.png/` as a PNG
+name; explicit separator validation fixes that case. Native headless CLI probes
+for NaN time and JPG output both fail before `usdview starting`, creating no
+output files: `/tmp/capture-config-invalid-{time,output}.log`.
+All 484 ordinary tests pass (13 ignored), check-all/build and whitespace pass:
+`/tmp/capture-config-{all-tests,check,build}.log`.
+This changes option validation, not GPU rendering or black-host behavior.
+
 ### Reject embedded captures without an open document
 
 The embedded screenshot gate now counts 120 consecutive updates with the same

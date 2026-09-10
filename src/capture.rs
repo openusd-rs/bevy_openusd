@@ -3,6 +3,34 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use std::path::Path;
 
+pub struct CaptureConfig {
+    output: String,
+    time: Option<f64>,
+}
+
+impl CaptureConfig {
+    fn parse(output: Option<String>, time: Option<String>) -> Result<Option<Self>, String> {
+        let Some(output) = output else { return Ok(None); };
+        if output.ends_with('/') || (cfg!(windows) && output.ends_with('\\'))
+            || Path::new(&output).extension().and_then(|extension| extension.to_str()) != Some("png") {
+            return Err("USD_SCREENSHOT must end in .png".into());
+        }
+        let time = time.map(|value| value.parse::<f64>()
+            .ok().filter(|time| time.is_finite())
+            .ok_or_else(|| "USD_CAPTURE_TIME must be a finite number".to_owned())).transpose()?;
+        Ok(Some(Self { output, time }))
+    }
+
+    pub fn from_env() -> Result<Option<Self>, String> {
+        let read = |name| match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(error) => Err(format!("{name}: {error}")),
+        };
+        Self::parse(read("USD_SCREENSHOT")?, read("USD_CAPTURE_TIME")?)
+    }
+}
+
 #[derive(Default)]
 struct CaptureGate {
     document: Option<u64>,
@@ -42,12 +70,8 @@ fn save_readback(image: &Image, output: &Path) -> Result<(), String> {
 }
 
 pub fn configure(app: &mut App) {
-    let Ok(output) = std::env::var("USD_SCREENSHOT") else { return };
-    if let Ok(time) = std::env::var("USD_CAPTURE_TIME") {
-        if let Ok(current) = time.parse::<f64>() {
-            if current.is_finite() { app.insert_resource(usd_bevy::route::StageTime { current }); }
-        }
-    }
+    let Some(CaptureConfig { output, time }) = CaptureConfig::from_env().expect("invalid capture configuration") else { return };
+    if let Some(current) = time { app.insert_resource(usd_bevy::route::StageTime { current }); }
     let started = std::time::Instant::now();
     app.add_systems(Update, move |mut commands: Commands, cameras: Query<(&Camera, &RenderTarget), With<Camera3d>>,
         session: Option<NonSend<usd_bevy::editor::EditorSession>>, mut gate: Local<CaptureGate>| {
@@ -74,6 +98,27 @@ pub fn configure(app: &mut App) {
 mod tests {
     use super::*;
     use bevy::render::render_resource::TextureFormat;
+
+    #[test]
+    fn capture_options_reject_invalid_times_and_outputs() {
+        for time in ["", "NaN", "inf", "-inf", "1e999", "ten"] {
+            assert!(CaptureConfig::parse(Some("frame.png".into()), Some(time.into())).is_err());
+        }
+        for output in ["", "frame.jpg", "frame.png/", "frame"] {
+            assert!(CaptureConfig::parse(Some(output.into()), None).is_err());
+        }
+    }
+
+    #[test]
+    fn capture_options_preserve_finite_times_and_optional_capture() {
+        assert!(CaptureConfig::parse(None, Some("unused".into())).unwrap().is_none());
+        assert!(CaptureConfig::parse(Some("frame.png".into()), None).unwrap().unwrap().time.is_none());
+        for time in [-10.5, 0.0, 1.25, 1.0e100] {
+            let config = CaptureConfig::parse(Some("a frame.png".into()), Some(time.to_string())).unwrap().unwrap();
+            assert_eq!(config.output, "a frame.png");
+            assert_eq!(config.time, Some(time));
+        }
+    }
 
     #[test]
     fn capture_gate_requires_one_document_for_120_updates() {

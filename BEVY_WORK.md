@@ -25,6 +25,31 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Time-sampled material texture assets
+
+An AssetServer regression reproduced zero decoded images for a material whose
+UsdUVTexture inputs:file is authored only as time samples. Texture graph reads
+were dropping the requested time, and snapshot image discovery only evaluated
+default materials. The reader now resolves the file at the requested TimeCode;
+snapshot discovery unions Shader inputs:file sample times, evaluates materials
+at default plus those times, and deduplicates texture/color-space requests.
+This also captures connected shader nodes outside a material's own subtree.
+
+The regression uses two independent roots and two PNGs, each consumed as both
+sRGB diffuse and raw normal images. It checks four decoded texture entries,
+actual image bytes at independent clocks, clock swapping, held values before,
+between and after authored times, and a simulated dependency-change event that
+updates the later image without changing the other root's current pixels.
+Before/fixed focused logs: `/tmp/texture-times-{before,after}.log`.
+This is real AssetServer decoding with an injected watcher event, not native
+filesystem or GPU image acceptance. Snapshot discovery evaluates every material
+at the stage's union of texture sample times; large animated-material performance
+remains unbenchmarked. Filename sequences and animated color-space tokens are
+not implemented by this change.
+
+Validation: 432 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/texture-times-{tests,check,build}.log`.
+
 ### Simultaneous multi-instance GPU capture
 
 The low-level capture tool accepts `USD_CAPTURE_INSTANCE_TIMES`, a bounded list

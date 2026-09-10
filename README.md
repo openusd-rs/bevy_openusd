@@ -47,7 +47,11 @@ an explicit filename without creating that file. `UsdSource` also opens root
 bytes (including USDZ) as independent stages. Ongoing Bevy integration work is
 tracked in `BEVY_WORK.md`. The AssetServer loader now uses dependency snapshots
 and exposes `UsdSceneState` (Loading/Ready/Failed). Snapshot PNG/JPEG textures are
-tracked labeled assets with color/data color spaces. Dependency-change events
+tracked labeled assets with color/data color spaces. Time-sampled material
+`inputs:file` paths are supported: all authored texture times
+are decoded into the snapshot, and each instance selects the image at its own
+clock. This supports explicit asset-path samples, not filename sequence patterns.
+Dependency-change events
 reload their owning USD asset. Each root retains an independent live stage;
 matching prim entities and runtime-only components survive source reloads.
 For native filesystem events, enable the optional `usd_bevy/file_watcher`

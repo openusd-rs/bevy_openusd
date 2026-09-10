@@ -854,6 +854,46 @@ def Xform "Model" (
         assert_eq!(image_handles(app.world()), updated_images);
     }
 
+    #[test]
+    fn asset_server_captures_time_sampled_material_textures() {
+        let (mut app, directory, changed) = watched_memory_app();
+        let scene = TEXTURED.replace("asset inputs:file = @../textures/pixel.png@",
+            "asset inputs:file.timeSamples = {0: @../textures/pixel.png@, 10: @../textures/blue.png@}");
+        directory.insert_asset_text(Path::new("models/textured.usda"), &scene);
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([255, 0, 0, 255]));
+        directory.insert_asset(Path::new("textures/blue.png"), pixel_png([0, 0, 255, 255]));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://models/textured.usda");
+        let roots = [0.0, 10.0].map(|current| app.world_mut().spawn((UsdSceneRoot(handle.clone()),
+            UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        assert_eq!(app.world().resource::<Assets<UsdScene>>().get(&handle).unwrap().textures.len(), 4);
+        let pixels = |world: &World, root| {
+            let entity = world.non_send::<UsdInstances>().entity(root, "/Mesh").unwrap();
+            let material = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
+            let material = world.resource::<Assets<StandardMaterial>>().get(material).unwrap();
+            world.resource::<Assets<Image>>().get(material.base_color_texture.as_ref().unwrap()).unwrap()
+                .data.clone().unwrap()
+        };
+        assert_eq!(pixels(app.world(), roots[0]), [255, 0, 0, 255]);
+        assert_eq!(pixels(app.world(), roots[1]), [0, 0, 255, 255]);
+        app.world_mut().get_mut::<UsdInstanceTime>(roots[0]).unwrap().current = 10.0;
+        app.world_mut().get_mut::<UsdInstanceTime>(roots[1]).unwrap().current = 0.0;
+        app.update();
+        assert_eq!(pixels(app.world(), roots[0]), [0, 0, 255, 255]);
+        assert_eq!(pixels(app.world(), roots[1]), [255, 0, 0, 255]);
+        for (time, expected) in [(-1.0, [255, 0, 0, 255]), (5.0, [255, 0, 0, 255]), (11.0, [0, 0, 255, 255])] {
+            app.world_mut().get_mut::<UsdInstanceTime>(roots[0]).unwrap().current = time;
+            app.update();
+            assert_eq!(pixels(app.world(), roots[0]), expected);
+            assert_eq!(pixels(app.world(), roots[1]), [255, 0, 0, 255]);
+        }
+        directory.insert_asset(Path::new("textures/blue.png"), pixel_png([0, 255, 0, 255]));
+        changed("textures/blue.png");
+        tick_until(&mut app, |world| pixels(world, roots[0]) == [0, 255, 0, 255]);
+        assert_eq!(pixels(app.world(), roots[1]), [255, 0, 0, 255]);
+    }
+
     fn pixel_png(rgba: [u8; 4]) -> Vec<u8> {
         let mut bytes = Vec::new();
         {

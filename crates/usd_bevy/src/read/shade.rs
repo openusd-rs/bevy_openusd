@@ -571,7 +571,7 @@ fn resolve_attr_chain_inner(
                         None | Some("auto") => None,
                         Some(other) => anyhow::bail!("unsupported texture sourceColorSpace: {other}"),
                     };
-                    return Ok((None, read_texture_file(stage, &prim)?.map(|path| (path, channel, srgb, prim))));
+                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim))));
                 }
                 ShaderKind::NormalMap => {
                     cur = prim.append_property("inputs:in")?;
@@ -661,8 +661,13 @@ fn shader_kind(stage: &Stage, prim: &Path) -> anyhow::Result<ShaderKind> {
     })
 }
 
-fn read_texture_file(stage: &Stage, tex_prim: &Path) -> anyhow::Result<Option<String>> {
-    read_asset_path(stage, tex_prim, "inputs:file")
+fn read_texture_file(stage: &Stage, tex_prim: &Path, time: Option<f64>) -> anyhow::Result<Option<String>> {
+    Ok(match stage.prim(tex_prim)?.attribute("inputs:file").get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+        Some(Value::AssetPath(path)) => Some(path.resolved_path().unwrap_or(path.as_str()).to_owned()),
+        Some(Value::String(path)) => Some(path),
+        Some(Value::Token(path)) => Some(path.as_str().to_owned()),
+        _ => None,
+    })
 }
 
 fn value_to_preview(v: Value) -> Option<ResolvedValue> {

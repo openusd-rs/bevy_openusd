@@ -450,6 +450,43 @@ Limit normals are a supported direction for fixing the cap streaks, not a full
 visual repair. Remaining rim/band artifacts require higher-resolution native
 surface comparison and a representative-asset check before integration.
 
+## Native subdivision complexity control
+
+Rendered the same isolated, unauthored-normal shoulder cage through native
+Embree subdivision, rather than sending it our pre-refined polygon mesh.
+`target/ur5-native-subdivision-control.usda` contains this complete wrapper:
+
+```usda
+#usda 1.0
+(
+    subLayers = [@ur5-normal-isolation/without_normals.usda@]
+)
+over "Probe" {
+    uniform token subdivisionScheme = "catmullClark"
+    token interpolateBoundary = "edgeAndCorner"
+}
+```
+
+For each of `low`, `medium`, `high`, `veryhigh`, the command was:
+
+```bash
+make capture-reference ARGS='--renderer Embree --disableGpu --camera /Camera --complexity LEVEL --imageWidth 1280 target/ur5-native-subdivision-control.usda target/ur5-native-subdivision-LEVEL.png'
+```
+
+All four commands completed and all four images were inspected. Low shows a
+closed front cap and smoother rim than our level-1 finite polygon controls.
+Medium, high and veryhigh instead show a large triangular hole-like region
+through the front cap, plus lower-side bands. This is not a clean high-detail
+reference and does not prove the asset invalid or isolate an Embree bug.
+No equivalence between these named complexity settings and our finite levels
+has been established. Logs: `/tmp/ur5-native-subdivision-LEVEL.log`.
+
+Thus raising native detail is not a demonstrated repair or an unconditional
+acceptance oracle. Limit-normal integration still needs analytic fixtures and
+native derivative comparisons independently of these problematic cap renders.
+The four renders and wrapper are diagnostic artifacts only; no production
+code changed, and no Rust gates were rerun for this evidence update.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

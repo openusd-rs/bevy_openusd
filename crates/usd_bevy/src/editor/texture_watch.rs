@@ -205,6 +205,66 @@ mod tests {
 
     #[test]
     #[ignore = "requires native filesystem events"]
+    fn native_editor_texture_watch_recovery_refreshes_missed_pixels() {
+        let directory = tempfile::tempdir().unwrap();
+        let images = directory.path().join("images");
+        std::fs::create_dir(&images).unwrap();
+        let file = images.join("pixel.png");
+        std::fs::write(&file, png([255, 0, 0, 255])).unwrap();
+        let scene = directory.path().join("scene.usda");
+        std::fs::write(&scene, r#"#usda 1.0
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Texture.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Texture" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @images/pixel.png@
+        float3 outputs:rgb
+    }
+}
+"#).unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin,
+            super::super::EditorPlugin, EditorTextureWatchPlugin));
+        app.insert_resource(Assets::<Image>::default());
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(scene.to_string_lossy().into_owned())).unwrap();
+        app.update();
+        let id = bridge.view().unwrap().document.document_id;
+        let before = app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap();
+        let pixels = |world: &World| {
+            let handle = world.resource::<crate::asset::SnapshotTextures>().0.values().next().unwrap();
+            world.resource::<Assets<Image>>().get(handle).unwrap().data.clone().unwrap()
+        };
+        assert_eq!(pixels(app.world()), [255, 0, 0, 255]);
+        assert!(app.world().resource::<WatchState>().watchers.is_empty());
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(&images).unwrap();
+        app.update();
+        assert!(app.world().resource::<EditorTextureWatchStatus>().error.is_some());
+        assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 0);
+        bridge.send(EditorCommand::Select(Some("/Mat".into()))).unwrap();
+        app.update();
+        std::fs::create_dir(&images).unwrap();
+        std::fs::write(&file, png([0, 0, 255, 255])).unwrap();
+        tick_until(&mut app, |world| pixels(world) == [0, 0, 255, 255]);
+        assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 1);
+        assert!(app.world().resource::<EditorTextureWatchStatus>().error.is_none());
+        let view = bridge.view().unwrap();
+        assert_eq!(view.document.document_id, id);
+        assert_eq!(view.document.selected.as_deref(), Some("/Mat"));
+        assert_eq!(view.status, "Ready");
+        assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), before);
+    }
+
+    #[test]
+    #[ignore = "requires native filesystem events"]
     fn native_editor_texture_watch_preserves_document_and_recovers() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("pixel.png");

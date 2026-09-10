@@ -72,7 +72,8 @@ USD_WATCH_TEXTURES=1 make run APP_TARGET='--bin usdview --features file_watcher'
 
 The viewer logs watcher setup errors and active file counts. Native tests cover
 atomic image replacement, deletion/recreation, unrelated-file filtering, document
-switching, failed Open and cleanup. The inspected viewer capture confirms an
+switching, failed Open, setup-retry refresh of missed image edits and cleanup.
+The inspected viewer capture confirms an
 automatic red-to-blue update with selection retained. Package image refresh
 still reads the opened package snapshot, not a replaced package on disk.
 

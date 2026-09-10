@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### End-to-end watcher recovery refresh
+
+A native editor regression now loads a red texture, removes its directory before
+the first watcher setup, observes the setup failure, and restores a blue image
+before retry. With no watcher present to observe that write, the retry's recovery
+refresh must update installed pixels. The test verifies the same document ID,
+selection, unchanged authored root and Ready status after recovery.
+
+The initial fixture used a disconnected texture shader and loaded no image;
+that was an invalid fixture for this test, not a watcher failure. It now connects
+the texture to a PreviewSurface output. Failure and corrected evidence:
+`/tmp/editor-recovered-pixels.log`, `/tmp/editor-recovered-pixels-recheck.log`.
+The corrected native test passes with the real app schedule and retry clock;
+this is headless pixel-data evidence, not another rendered viewer capture.
+
+All 454 feature-enabled workspace tests pass (12 ignored, including the native
+test separately executed above), plus check-all, viewer build and whitespace
+checks. Logs: `/tmp/editor-recovered-pixels-{feature,check,build}.log`.
+
 ### Editor watcher setup recovery
 
 Failed texture watcher directories now remain pending and retry at one-second

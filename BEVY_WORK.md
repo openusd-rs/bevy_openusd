@@ -25,6 +25,24 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Verify scalar material updates on independent live clocks
+
+The scalar fixture now includes sampled scale coefficients and an independent
+file-switched reference whose precomputed texels represent times 0 and 10.
+Its test verifies both endpoint transforms and reference asset selections.
+`scripts/check_live_clocks.sh` includes this fifth case: mapped roots start at
+0/10, reverse after 30 ready frames, and compare with fresh reference roots at
+10/0. The references validate endpoints, not intermediate-time GPU interpolation.
+
+All five native cases (UV, texture file, color space, morph, scalar) pass at
+zero changed RGB pixels out of 921600. Scalar metadata confirms two visible
+meshes, final clocks 10/0 and the live reversal. Both scalar images and the four
+other live images were visually inspected. The scalar spheres retain visibly
+different opacity/shading after reversal, matching their reference.
+Evidence: `target/live-scalar-regression/`, `/tmp/scalar-live-gpu.log`.
+All 487 ordinary tests pass (13 ignored), check-all/build and shell syntax/
+whitespace checks pass: `/tmp/scalar-live-{tests,check,build}.log`.
+
 ### Apply scalar texture scale/bias in Bevy materials
 
 The shade reader now records the selected UsdUVTexture channel's sampled float4

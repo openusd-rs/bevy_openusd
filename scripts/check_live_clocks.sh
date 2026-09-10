@@ -24,6 +24,7 @@ run_example() {
 
 run_options=(RUN_WITH=)
 run_example uv_transform_fixture "$output/fixture" > "$output/fixture.log" 2>&1
+run_example scalar_texture_fixture "$output/scalar-fixture" > "$output/scalar-fixture.log" 2>&1
 printf 'case\tstatus\n' > "$output/results.tsv"
 
 run_case() {
@@ -53,12 +54,13 @@ run_case() {
 }
 
 status=0
-for name in uv texture colorspace morph; do
+for name in uv texture colorspace morph scalar; do
     case "$name" in
         uv) live="$output/fixture/mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         texture) live="$output/fixture/file_samples.usda"; reference="$output/fixture/file_reference.usda"; cpu=0 ;;
         colorspace) live="$output/fixture/color_space_samples.usda"; reference=$live; cpu=0 ;;
         morph) live="$root/assets/morph_animation.usda"; reference=$live; cpu=1 ;;
+        scalar) live="$output/scalar-fixture/animated.usda"; reference="$output/scalar-fixture/animated_reference.usda"; cpu=0 ;;
     esac
     if run_case "$name" "$live" "$reference" "$cpu"; then result=ok; else result=failed; status=1; fi
     printf '%s\t%s\n' "$name" "$result" | tee -a "$output/results.tsv"

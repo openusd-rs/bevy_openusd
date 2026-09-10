@@ -3,16 +3,21 @@ use bevy::{prelude::Image, render::render_resource::TextureFormat};
 
 fn write_fixture(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir(directory)?;
-    for (name, bytes) in [("source", [64, 128, 192, 255]), ("reference", [191, 64, 129, 89])] {
+    for (name, bytes) in [("source", [64, 128, 192, 255]), ("reference", [191, 64, 129, 89]), ("end", [255, 0, 0, 26])] {
         let mut image = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
         image.data = Some(bytes.to_vec());
         image.try_into_dynamic()?.save(directory.join(format!("{name}.png")))?;
     }
-    for variant in ["mapped", "reference", "control"] {
+    for variant in ["mapped", "reference", "control", "animated", "animated_reference"] {
         let texture = if variant == "reference" { "reference" } else { "source" };
         let transform = if variant == "mapped" {
             "float4 inputs:scale = (-1, 0.5, 2, 0.25)\n        float4 inputs:bias = (1, 0, -1, 0.1)"
+        } else if variant == "animated" {
+            "float4 inputs:scale.timeSamples = {0: (-1, 0.5, 2, 0.25), 10: (0, 0, 0, 0)}\n        float4 inputs:bias = (1, 0, -1, 0.1)"
         } else { "" };
+        let file = if variant == "animated_reference" {
+            "asset inputs:file.timeSamples = {0: @reference.png@, 10: @end.png@}".to_owned()
+        } else { format!("asset inputs:file = @{texture}.png@") };
         let scene = format!(r#"#usda 1.0
 ( upAxis = "Y" )
 def Sphere "Model" {{
@@ -32,7 +37,7 @@ def Material "Material" {{
     }}
     def Shader "Tex" {{
         uniform token info:id = "UsdUVTexture"
-        asset inputs:file = @{texture}.png@
+        {file}
         token inputs:sourceColorSpace = "raw"
         {transform}
     }}
@@ -60,5 +65,18 @@ fn scalar_fixture_preserves_files_and_declares_transform() {
         let stage = usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap();
         let read = usd_bevy::read::shade::read_preview_material(&stage, &openusd::sdf::path("/Material").unwrap()).unwrap().unwrap();
         assert_eq!(read.scalar_texture_transform("roughness"), transform);
+    }
+    for variant in ["animated", "animated_reference"] {
+        let path = directory.join(format!("{variant}.usda"));
+        let stage = usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap();
+        for time in [0.0, 10.0] {
+            let read = usd_bevy::read::shade::read_preview_material_at(&stage, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
+            if variant == "animated" {
+                assert_eq!(read.scalar_texture_transform("roughness"), [if time == 0.0 { -1.0 } else { 0.0 }, 1.0]);
+            } else {
+                assert_eq!(read.scalar_texture_transform("roughness"), [1.0, 0.0]);
+                assert!(read.roughness_texture.unwrap().ends_with(if time == 0.0 { "reference.png" } else { "end.png" }));
+            }
+        }
     }
 }

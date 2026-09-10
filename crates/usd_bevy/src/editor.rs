@@ -6,6 +6,9 @@ use bevy::prelude::*;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+#[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+pub mod texture_watch;
+
 #[derive(Debug, Clone)]
 pub enum EditorCommand {
     Open(String),

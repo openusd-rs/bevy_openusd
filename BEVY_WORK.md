@@ -25,6 +25,33 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Native editor texture watcher plugin
+
+Added opt-in `editor::texture_watch::EditorTextureWatchPlugin` under the existing
+file_watcher feature. It groups installed external texture paths by parent
+directory, owns Bevy FileWatchers and queues one RefreshTextures command per
+frame with matching file events. Paths are rebuilt only when the document or
+installed image resource changes; unchanged sets retain their watchers. Events
+for unrelated files are ignored. Removing the editor document drops watchers.
+`EditorTextureWatchStatus` exposes active file count and setup errors; failed
+setup retries when the document or path set changes.
+
+The native regression uses actual atomic replacement, deletion and recreation,
+without simulated events or manual refresh. It checks decoded red/blue/green
+pixels, failed-load retention, unchanged authored USD text/document ID/selection
+and available undo history. An unrelated file write must not modify the image
+snapshot resource's change tick. Removing EditorSession clears all watcher
+handles and the active file count. This tests installed external images in a
+source-backed editor, not USD layers, package-root replacement, folder changes,
+watching missing images from a failed initial Open, or native GPU/UI acceptance.
+The viewer executable does not install this plugin yet.
+
+Validation: the native editor-watch test passes three consecutive Linux runs,
+`/tmp/editor-watch-repeat-{1,2,3}.log`. All 436 ordinary workspace tests pass
+(seven native export tests ignored), plus check-all, build and whitespace checks.
+The watcher-enabled library suite passes 378 tests (ten native tests ignored).
+Logs: `/tmp/editor-watch-{tests,default-check,build,feature}.log`.
+
 ### Reject unresolved asset byte reads
 
 A regression reproduced the source byte reader opening the process working

@@ -206,6 +206,19 @@ visual acceptance limits.
 The editor loads PNG/JPEG material images from filesystem and USDZ documents,
 refreshes them after edits, and preserves the previous document if opening fails.
 This direct editor path does not yet automatically watch filesystem image changes.
+Library applications can opt in by enabling `usd_bevy/file_watcher` and adding
+`usd_bevy::editor::texture_watch::EditorTextureWatchPlugin` alongside
+`EditorPlugin`. It watches installed external images and sends RefreshTextures
+on native file events. `EditorTextureWatchStatus` reports active file count and
+setup errors. Watched paths update with the document/image set; idle frames do
+not reread images or rescan USD materials. Package entries, USD layers and folder
+replacement are not watched. Setup failures retry when the document or watched
+file set changes. The viewer executable does not enable this plugin yet.
+
+```sh
+make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch
+```
+
 Applications can send `EditorCommand::RefreshTextures` through `EditorBridge`
 to reread source-backed images without reopening the USD document. Successful
 refreshes preserve selection, unsaved edits, runtime entities and undo/redo;

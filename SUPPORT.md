@@ -14,17 +14,17 @@ Passing data tests do not establish rendered fidelity or production performance.
 | Area | Implemented integration | Limits / outstanding acceptance |
 | --- | --- | --- |
 | Asset loading | Source-backed USD and in-memory USDZ; relative layer and image dependencies through AssetServer | Nested packages unsupported; dependency discovery follows composed variant selections |
-| Reloads | Tracked AssetServer dependencies; last-good projection on failure | Direct editor file watching is not implemented |
+| Reloads | Tracked AssetServer dependencies; last-good projection on failure; explicit editor texture refresh and opt-in native texture watching in the viewer | Native watching requires file_watcher; AssetServer removal handling uses the explicit file_source adapter. Editor watching covers installed external images, not USD layers, package-root/folder replacement or images missing during a failed initial Open; setup retries require document/path changes |
 | Instances | Independent stages, clocks, playback, variants and attribute overrides | Direct stage edits are transient across asset reload |
 | Identity | Same-asset reconciliation preserves matching prim entities; editor namespace commands remap entities | External namespace edits do not infer identity; deletion loses runtime state |
 | Ordinary transforms | Affine residual propagation, USD reset-stack prefix/ancestor exclusion, preserved scene placement/up-axis; runtime descendants follow corrected globals; malformed matrix edits retain last-good globals and recover through the stage change sink; half scalar/vector/quaternion decoding; scalar-axis ops and adjacent inverse cancellation | Affine and Z-up reset fixtures captured against explicit geometry; quaternion conversion checked against native axis-angle cases. Scalar-axis inverse scale follows native 25.05.01 negation, not vector-scale reciprocal behavior. Singular lighting, broader animated/native coverage and propagation performance remain unverified. Non-finite orientations, overflowing axis lengths and uncancelled singular matrix/vector-scale inverses produce diagnostics. Point-prototype hierarchy limits below still apply |
 | Schema lifecycle | Geometry, point-instancer, camera/light/dome, audio/volume, render-settings/procedural/backdrop and physics markers clean up after schema removal | Backend teardown still requires acceptance; runtime replacement of the same owned component type is not separately tracked |
 | Materials | Preview surface channels; scalar/opacity packing; explicit raw/sRGB; constant-valued MaterialX multiply/add/subtract/mix; graph fallback diagnostics | Textured graph arithmetic still approximated; color management, auto inference and per-texture UV semantics incomplete |
 | Material binding | Upstream inherited/direct/collection resolution, binding strength, preview purpose with all-purpose fallback | Binding-resolution performance and broader rendered corpus remain unverified |
-| Material animation | Sampled numeric/color inputs, supported constant graph arithmetic and UV transforms; bound-graph animation detection for ordinary and point-prototype materials | Graphs are rescanned with a 256-node detection bound; texture-node file inputs remain default-time; animated texture dependency discovery and rendered fidelity remain incomplete |
+| Material animation | Sampled numeric/color inputs, supported constant graph arithmetic, composed affine UV chains and sampled texture filenames; per-material reachable file-sample discovery; independent live-clock UV/file captures against baked references | Animation detection retains a 256-node bound; file-time discovery has a separate 4096-node bound. Filename-pattern expansion, animated color-space tokens, different per-texture UV transforms and arbitrary shader networks remain unsupported or incomplete; fixture fidelity is not general renderer equivalence |
 | Display primvars | Meshes/primitives, curves, point clouds and point prototypes inherit authored nonblocked constant display color/opacity; curves project indexed uniform/vertex/varying color/opacity with cubic vertex versus linear varying interpolation; point clouds project indexed vertex/varying color/opacity; meshes and mesh point prototypes inherit constant st/st0 UVs; local overrides, owner-local sampled indices and parent-edit invalidation | General shader primvar-reader networks and arbitrary per-texture UV sets remain incomplete; face-varying curve primvars and arbitrary nonconstant shape primvars are not projected |
 | Texture packing | PNG/JPEG; content-cached scalar and opacity output | Matching resolutions and default samplers required; CPU cost not profiled |
-| Geometry sharing | Content-checked mesh cache; native instance-proxy projection; bounded equality-checked material sharing | CPU geometry is reconstructed before interning; shared assets require cloning for entity-local runtime mutation; production performance unverified |
+| Geometry sharing | Content-checked mesh cache; native instance-proxy projection; bounded equality-checked standard and flat-normal material sharing; eight independent morph stages use one converted material versus eight with conversion caching disabled | CPU geometry is reconstructed before interning; flat conversions share by base-material asset ID, not across distinct equal base IDs; shared assets require cloning for entity-local runtime mutation; asset counts do not prove GPU speedups or production performance |
 | Points and curves | Sampled point-cloud positions and BasisCurves positions/counts with independent clocks; periodic linear closure within each curve; CPU cubic tessellation with periodic Bezier/Bspline/Catmull-Rom closure tests; pinned Bspline/Catmull-Rom phantom endpoints including two-point curves; unbound point/line preview materials are unlit | One-pixel point/line rasterization and fixed eight-sample cubic segments, not width-aware USD surfaces; strict topology validation, curve display primvars and bound-material shading fidelity remain incomplete |
 | Mesh time sampling | Points, topology, normals, UVs/indices, display color/opacity and extent; local or inherited constant `primvars:normals` takes precedence over `normals`, including sampled values/indices and parent edit refresh; independent normal clocks/edits validated on ordinary meshes, direct point prototypes and subsets; sampled base points and joint indices/weights feed CPU and GPU skinning | CPU mesh reconstruction; inherited-normal grazing-angle striping/reference parity and influence-animation rendered/multi-instance acceptance remain open |
 | Generated mesh normals | Flat triangle normals for missing normals on `none`/`bilinear` meshes; GPU skinning uses geometric fragment normals; authored normals preserved; subdivision fallback remains smooth; triangle-corner layout shared with GPU influence mapping | More vertices for flat shading; subdivision limit normals, normal-mapped/deferred/double-sided GPU cases remain unverified; CPU/GPU captures are not pixel-identical |
@@ -36,14 +36,14 @@ Passing data tests do not establish rendered fidelity or production performance.
 | Domes | Sampled data and HDR textures; explicit per-camera ambient or runtime-filtered IBL with ownership restoration; standalone directional IBL captures | No implicit global mutation; filtering requires six device storage textures and compute support. The current Mara shared device requests only four, so embedded IBL is unavailable; EXR and broader fidelity remain open |
 | Point instancers | Direct mesh and bounded Xform/Scope/SkelRoot/mesh/primitive hierarchies with shared preview materials/subsets and CPU skin/morph geometry; Cube, Sphere, Cylinder, Capsule, Cone and Plane use the ordinary shape tessellation path, including sampled dimensions; sampled descendant transforms and inputs; stable instance IDs and prototype-path nodes; independent clocks, malformed-update suppression/recovery, sampled transforms/IDs/masks, composed typed inactiveIds | Hierarchies reject reset stacks, per-prim shear/perspective/singular transforms, unsupported node types, depth >=256 and >4096 projected nodes. Primitive tessellation is approximate; primitive face subsets are not projected. GPU prototype deformation, full hierarchy/deformation/reference parity and velocity/angular-velocity motion remain incomplete. Dependency edits reconcile the full stage; upstream USDA parsing rejects prepend/delete inactiveIds |
 | Skinning | Optional classic-linear GPU skinning, CPU fallback; vertex and constant influence sets with time-sampled indices/weights, including samples without defaults; material subsets share a palette; compatible morph targets combine before skinning | GPU limit: four normalized influences, 256 joints; unsupported morph normal modes use fallback; broader fidelity/performance remain open |
-| Morph targets | GPU position targets with generated flat normals or indexed vertex/varying authored normal deltas; standalone and combined classic-linear skinning; sparse shapes/inbetweens, cached buffers and material subsets | Face-varying normals and generated smooth-normal deltas remain incomplete; target count capped at 256 and texture-backend vertex capacity; normal-map tangents and broader fidelity/performance unverified |
+| Morph targets | GPU position targets with generated flat normals or indexed vertex/varying authored normal deltas; standalone and combined classic-linear skinning; sparse shapes/inbetweens, cached buffers and material subsets; live independent-clock reversal captured against a CPU reference | Face-varying normals and generated smooth-normal deltas remain incomplete; target count capped at 256 and texture-backend vertex capacity; normal-map tangents and broader fidelity/performance unverified. The covered live 10,0 endpoint is pixel-identical; the separate 0,10 comparison differs by one RGB level at one pixel |
 | Instancer validation | Array lengths, prototype indices, finite transforms and nonzero quaternion checks; half/float/double quaternion decoding; last-valid projection on malformed updates | Missing prototype lists retain placeholders; unsupported prototype content still needs broader diagnostics |
 | Editor | Selection, typed property edits, variants, layers, payload controls, namespace edits, undo/redo | UI interaction acceptance incomplete; history retention currently unbounded |
 | Viewer timeline | EditorBridge seek/play commands; Timeline pane with play/pause, stepping, start and typed seek; shared playback math with independent instances | Headless command/loop tests pass; timeline pane click and overlay captures remain unverified |
 | Persistence | Explicit root-layer, edit-layer and flattened export through same-directory staging, file sync, atomic replacement and Unix directory sync; existing file permissions retained | Final symlinks, directories and read-only targets rejected; inode identity/ownership/ACL preservation and concurrent-writer conflict detection are not provided. Export modes have different composition semantics; no universal lossless flattened round trip claimed |
 | Viewer | Studio directional lighting, infinite presentation grid, automatic scene framing | No full IBL acceptance; animated bounds and broader asset corpus need validation |
 | Animation showcase | Bundled animation_showcase.usda; inspected Vulkan viewport captures at times 0 and 10 show shape/prototype growth and material changes | Separate fixed-time launches, not live playback or UI acceptance; no reference-renderer comparison |
-| Authoring | Safe snippets, typed references, canonical transaction-backed EditorSession | General reusable typed scene-building API remains incomplete |
+| Authoring | Safe snippets, typed references, canonical transaction-backed EditorSession with nested atomic batches; typed schema/component and reusable editor-assembly examples | General reusable typed scene-building API remains incomplete; these APIs are not full BSN equivalence |
 
 ## Runnable evidence
 
@@ -60,6 +60,34 @@ the surviving entity. It exits nonzero if an assertion or asset load fails, and
 is also exercised by `make test-all`.
 
 `BEVY_WORK.md` records the larger acceptance checklist and visual evidence limits.
+
+## Native watching and live rendering evidence
+
+The direct viewer/editor and AssetServer are separate loading paths. Enable
+viewer texture watching with:
+
+```sh
+USD_WATCH_TEXTURES=1 make run APP_TARGET='--bin usdview --features file_watcher' ARGS='path/to/scene.usda'
+```
+
+The viewer logs watcher setup errors and active file counts. Native tests cover
+atomic image replacement, deletion/recreation, unrelated-file filtering, document
+switching, failed Open and cleanup. The inspected viewer capture confirms an
+automatic red-to-blue update with selection retained. Package image refresh
+still reads the opened package snapshot, not a replaced package on disk.
+
+For repeatable native GPU evidence using bundled/generated fixtures:
+
+```sh
+make --eval='check-live-clocks:; @bash scripts/check_live_clocks.sh target/live-clock-check' check-live-clocks
+```
+
+The output directory must be new. This checks live UV-chain animation, sampled
+texture filenames and GPU morph clock reversal against independent endpoint
+references. The verified 0,10 -> 10,0 cases pass strict zero-RGB-tolerance
+comparisons; metadata and renderer diagnostics are also checked. The script
+retains PNG/RGBA output, logs and results.tsv. Other times, cameras, renderers,
+normal maps and sustained playback performance remain outside this suite.
 
 ## Projection benchmark
 

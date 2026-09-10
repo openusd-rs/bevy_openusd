@@ -25,6 +25,18 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reconcile the current support matrix
+
+SUPPORT.md no longer claims that direct editor watching is absent or that texture
+filenames are default-time-only. Its reload, material-animation, sharing, morph
+and authoring rows now reflect the implemented paths and their bounded evidence.
+It distinguishes AssetServer from editor watching, explicit sampled filenames
+from filename-pattern expansion, and asset sharing from GPU performance. Native
+watching and the repeatable live-clock suite have runnable entries. General
+typed scene-building/BSN equivalence and the broad acceptance checklist remain
+open. This is a source/evidence-backed documentation correction, not a new
+runtime validation or a production-readiness claim.
+
 ### Repeatable live-clock rendering regression suite
 
 Added scripts/check_live_clocks.sh, invoked through Make with a new output

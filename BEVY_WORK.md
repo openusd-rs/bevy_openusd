@@ -25,6 +25,22 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Native batch assembly package interoperability
+
+The native export lane now verifies a diskless source batch containing default
+and explicit Sphere references and a captured relative opaque asset. It exports
+USDZ, relocates the package and invokes native OpenUSD usdcat --flatten. Native
+output must have no stderr diagnostics and retain both prim types, radius values
+and asset paths into the relocated package. Reading those entries proves the
+captured payload bytes survive and both mounts resolve to the same packaged
+entry. The input directory remains empty and the original root has no merged
+dependencies. This is package/composition evidence, not image-rendering parity.
+
+All eight native export tests pass with the installed OpenUSD 25.05.01 usdcat;
+log: `/tmp/native-reference-batch.log`.
+All 453 ordinary workspace tests pass (eight ignored), plus check-all, viewer
+build and whitespace checks; `/tmp/native-reference-batch-{tests,check,build}.log`.
+
 ### End-to-end watcher recovery refresh
 
 A native editor regression now loads a red texture, removes its directory before

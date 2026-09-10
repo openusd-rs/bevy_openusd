@@ -132,6 +132,10 @@ usd_bevy::editor::EditorSession::new(assembly.open_stage()?)
     .save("assembly.usdz", usd_bevy::editor::SaveMode::RootLayer)?;
 ```
 
+The native export test lane verifies a relocated diskless batch assembly with
+default and explicit targets, including its captured opaque asset bytes, through
+OpenUSD `usdcat --flatten`.
+
 Ordinary USDA/USDC root-layer export retains references but does not write their
 in-memory dependencies to disk. Such an export cannot reopen independently when
 the referenced files do not exist. Flattened export removes composition arcs,

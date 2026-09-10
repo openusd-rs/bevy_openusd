@@ -78,15 +78,21 @@ pub(crate) fn prepare(
             Ok(None) => (default_material.clone(), Vec::new()),
             Err(error) => (default_material.clone(), vec![error.to_string()]),
         };
-        let mut mesh = source.clone();
-        mesh.insert_indices(crate::mesh::mesh_from_usd_subset(read, Some(&subset.indices)).indices().unwrap().clone());
+        let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &subset.indices));
         prepared.parts.push((subset.name.clone(), super::cache::intern_mesh(world, mesh), material, warnings));
     }
     let remaining: Vec<i32> = assigned.iter().enumerate().filter_map(|(face, assigned)| (!assigned).then_some(face as i32)).collect();
-    let mut mesh = source.clone();
-    mesh.insert_indices(crate::mesh::mesh_from_usd_subset(read, Some(&remaining)).indices().unwrap().clone());
+    let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &remaining));
     prepared.remainder = Some(super::cache::intern_mesh(world, mesh));
     prepared
+}
+
+fn subset_mesh(source: &Mesh, indices: bevy::mesh::Indices) -> Mesh {
+    crate::mesh::compact::compact(source, &indices).unwrap_or_else(|| {
+        let mut mesh = source.clone();
+        mesh.insert_indices(indices);
+        mesh
+    })
 }
 
 pub(crate) fn apply(world: &mut World, entity: Entity, prepared: &PreparedSubsets) {
@@ -150,10 +156,17 @@ mod tests {
 
     #[test]
     fn gpu_morph_subsets_follow_independent_clocks_and_cpu_cleanup() {
+        use bevy::mesh::VertexAttributeValues;
         use bevy::mesh::morph::MeshMorphWeights;
         use super::super::{gpu_morph::UsdGpuMorph, gpu_skin::GpuSkinningEnabled, flat_material::FlatMaterial};
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/morph_subsets.usda");
         let source = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap();
+        let reference_stage = source.open_stage().unwrap();
+        let reference_path = openusd::sdf::path("/Test/Face").unwrap();
+        let reference_ctx = RouteCtx::at(&reference_stage, &reference_path, Some(0.0));
+        let reference_read = crate::read::geom::read_mesh_at(&reference_stage, &reference_path, Some(0.0)).unwrap().unwrap();
+        let mut reference = crate::mesh::mesh_from_usd(&reference_read);
+        super::super::gpu_morph::prepare(&reference_ctx, &reference_read, &mut reference).unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
         app.init_resource::<Assets<Mesh>>();
@@ -176,8 +189,14 @@ mod tests {
             let assets = world.resource::<Assets<Mesh>>();
             let p = assets.get(&world.get::<Mesh3d>(parent).unwrap().0).unwrap();
             let c = assets.get(&world.get::<Mesh3d>(child).unwrap().0).unwrap();
-            assert_eq!(p.get_morph_targets(), c.get_morph_targets());
-            assert_eq!(c.indices().unwrap().iter().collect::<Vec<_>>(), indices);
+            assert_eq!(p.count_vertices(), 3);
+            assert_eq!(c.count_vertices(), 3);
+            assert_eq!(c.indices().unwrap().iter().collect::<Vec<_>>(), [0,1,2]);
+            let VertexAttributeValues::Float32x3(full_positions) = reference.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!() };
+            let VertexAttributeValues::Float32x3(positions) = c.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!() };
+            assert_eq!(positions, &indices.iter().map(|&index| full_positions[index]).collect::<Vec<_>>());
+            let targets = reference.get_morph_targets().unwrap();
+            assert_eq!(c.get_morph_targets().unwrap(), indices.iter().map(|&index| targets[index]).collect::<Vec<_>>());
         };
         validate(app.world(), pa, ca, 0.0, vec![0,1,2]);
         validate(app.world(), pb, cb, 1.0, vec![3,4,5]);
@@ -386,9 +405,13 @@ def Material "Mat" {
             let handle = &world.get::<Mesh3d>(entity).unwrap().0;
             world.resource::<Assets<Mesh>>().get(handle).unwrap().indices().unwrap().iter().collect::<Vec<_>>()
         };
+        let renderable = |world: &World, entity| {
+            let handle = &world.get::<Mesh3d>(entity).unwrap().0;
+            world.resource::<Assets<Mesh>>().get(handle).unwrap().asset_usage.contains(bevy::asset::RenderAssetUsages::RENDER_WORLD)
+        };
         assert_eq!(indices(app.world(), ca), [0,1,2]);
-        assert_eq!(indices(app.world(), pa), [0,3,1]);
-        assert_eq!(indices(app.world(), cb), [0,3,1]);
+        assert_eq!(indices(app.world(), pa), [0,2,1]);
+        assert_eq!(indices(app.world(), cb), [0,2,1]);
         assert_eq!(indices(app.world(), pb), [0,1,2]);
         for (child, color) in [(ca, Color::linear_rgb(1.0,0.0,0.0)), (cb, Color::linear_rgb(0.0,0.0,1.0))] {
             let handle = &app.world().get::<MeshMaterial3d<StandardMaterial>>(child).unwrap().0;
@@ -405,12 +428,15 @@ def Material "Mat" {
         assert_eq!(children(app.world(), pa)[0].0, ca);
         assert!(app.world().get::<Runtime>(ca).is_some());
         assert!(indices(app.world(), ca).is_empty());
+        assert!(!renderable(app.world(), ca));
+        assert!(renderable(app.world(), cb));
         assert_eq!(indices(app.world(), pa).len(), 6);
-        assert_eq!(indices(app.world(), cb), [0,3,1]);
+        assert_eq!(indices(app.world(), cb), [0,2,1]);
         app.world_mut().get_mut::<UsdInstanceTime>(a).unwrap().current = 5.0;
         app.update();
         assert_eq!(indices(app.world(), ca), [0,1,2]);
         let handle = &app.world().get::<MeshMaterial3d<StandardMaterial>>(ca).unwrap().0;
+        assert!(renderable(app.world(), ca));
         assert_eq!(app.world().resource::<Assets<StandardMaterial>>().get(handle).unwrap().base_color, Color::linear_rgb(0.5,0.0,0.5));
         app.world_mut().despawn(a);
         app.update();

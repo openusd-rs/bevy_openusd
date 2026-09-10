@@ -9,6 +9,22 @@ use bevy::prelude::*;
 use super::{PrimRoute, RouteCtx};
 use crate::read::xform::{Transform3, read_transform_at};
 
+mod propagation;
+
+/// Exact linear transform and USD inheritance reset applied after Bevy propagation.
+#[derive(Component, Clone, Debug)]
+pub struct UsdTransformOverride { residual: Mat4, reset: bool }
+
+/// Invalid authored transform that left the last projected pose unchanged.
+#[derive(Component, Clone, Debug)]
+pub struct UsdTransformError(pub String);
+
+/// Updates USD affine globals before camera frusta and GPU joint palettes.
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UsdTransformSystems { Propagate }
+
+pub(crate) fn configure(app: &mut App) { propagation::configure(app); }
+
 /// Maps an `xformOp` stack to [`Transform`]. Applies to every prim — an
 /// unauthored transform reads as identity, matching USD's Xformable fallback.
 pub struct XformRoute;
@@ -37,10 +53,7 @@ impl PrimRoute for XformRoute {
     }
 
     fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        let t = transform_of(ctx);
-        if let Ok(mut e) = world.get_entity_mut(entity) {
-            e.insert(t);
-        }
+        propagation::project(ctx, world, entity);
     }
 
     fn patch(&self, ctx: &RouteCtx, world: &mut World, entity: Entity, changed: &[&str]) {
@@ -53,11 +66,6 @@ impl PrimRoute for XformRoute {
         if !touches_xform {
             return;
         }
-        let t = transform_of(ctx);
-        if let Some(mut tr) = world.get_mut::<Transform>(entity) {
-            *tr = t;
-        } else if let Ok(mut e) = world.get_entity_mut(entity) {
-            e.insert(t);
-        }
+        self.project(ctx, world, entity);
     }
 }

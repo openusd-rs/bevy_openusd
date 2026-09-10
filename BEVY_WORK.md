@@ -25,6 +25,252 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Preserve affine transforms on direct mesh point prototypes
+
+Direct mesh prototype baking now uses the authored composed matrix, not its
+lossy TRS decomposition. Positions retain shear; normals use inverse transpose,
+tangent directions use the linear matrix and tangent handedness tracks its
+determinant. Double-precision directional calculations avoid determinant
+underflow at small but valid scales. Non-finite, singular and projective matrices
+still reject the prototype rather than publishing invalid geometry.
+
+Unit coverage checks sheared positions, perpendicular unit normal/tangent
+frames, reflections, tiny scales and invalid matrices. Integration coverage
+compares rendered triangle corners and normal directions against explicit
+reference points, preserving the source triangulation, and checks shared subset
+handles across three instances plus unchanged source-layer data. The initial
+reference test needed the same triangulation basis: triangulating already
+sheared quads can select a different diagonal without changing the surface.
+
+Fixtures: `assets/point_affine.usda`, `assets/point_affine_reference.usda`.
+The hierarchy path still rejects per-node shear; ordinary transform projection
+and GPU point-prototype deformation are not changed by this slice.
+
+All 395 ordinary tests, check-all, build and whitespace checks pass; logs:
+`/tmp/prototype-affine-final-tests.log`, `/tmp/prototype-affine-final2-check.log`,
+`/tmp/prototype-affine-final-build.log`. Captures `target/prototype-affine.png`
+and `target/prototype-affine-reference.png` were inspected at time 0 with eye
+(12,7,16), focus (0,1,0). They differ at 6 of 921,600 pixels, maximum RGB error
+1 and mean 0.000002; zero tolerance correctly fails. Renderer logs contain no
+warnings/errors (`/tmp/prototype-affine-{capture,reference,compare}.log`). This
+is an explicit-geometry reference in Bevy, not a native USD renderer comparison.
+
+### Repeatable multi-time CPU/GPU image comparisons
+
+Added `scripts/compare_deformation.sh`, using make for both capture modes and
+pixel comparisons. It retains per-time images, raw readbacks, metadata, renderer
+logs, difference images and a TSV ledger; failures do not stop later pairs.
+Tolerance is explicit, output directories must be new, diagnostics fail the run,
+and metadata must show GPU deformation in the GPU case and none in the CPU case.
+Component counts do not certify every draw or GPU performance.
+
+Five combined skin/morph/subset samples differ at 2–14 pixels with maximum RGB
+error 1, so the zero-tolerance sweep correctly fails. Three authored-normal/
+nonuniform-skinning samples match exactly and pass. All sixteen images were
+inspected, with no renderer warnings/errors. A static negative control has
+identical images but correctly fails for missing GPU deformation. Invalid
+tolerance and existing-output preservation checks pass. Commands, raw metrics,
+artifact locations and limitations are in `benchmarks/deformation-captures.md`.
+No Rust source changed in this slice; validation covers the new script and
+actual captures rather than claiming another run of the ordinary Rust suite.
+
+### Distinguish directory aliases from package-layer anchors when saving
+
+Ordinary save relocation now compares canonical directory identities when
+available. Saving through `..` or a directory symlink into the source directory
+preserves authored asset spelling, including patterns that would reject actual
+cross-directory relocation. A regression checks both aliases while retaining
+the existing real-relocation failure/publication-preservation check.
+
+Conversely, a layer inside a USDZ must be re-anchored even when its ordinary
+export sits beside that archive: the package entry, not the filesystem directory,
+is the original dependency anchor. The native fixture now unwraps both package
+root and nested edit layers into USDA, USDC and USD, checking referenced values
+and exact texture bytes through the retained external archive. The ordinary
+output still depends on that archive; it is not independently portable.
+
+All 393 ordinary tests, check-all, build and six optional native export tests
+pass (`/tmp/save-anchor-identity-final2-{tests,check,build,native}.log`). The
+extended native fixture covers six additional packaged-root/edit ordinary
+export combinations. Whitespace checks pass. Vendored code and environment
+configuration are unchanged in this slice.
+
+### Anchor dependencies for ordinary cross-directory root/edit saves
+
+Ordinary root/edit exports to another directory now serialize an anchored copy
+through the stage's resolver. Sublayers, references, payloads, all reference/
+payload list buckets, typed asset arrays, dictionaries and time samples are
+rewritten without modifying live layer data or identifiers. Same-directory
+exports preserve authored spelling. Dependencies remain external, unlike USDZ
+packaging. The implementation is recorded in
+`patches/openusd-layer-reanchoring.patch` with the vendored source.
+
+The regression exports both the root and a nested edit layer into another
+directory in USDA, USDC and USD. Reopened values and texture bytes survive;
+explicit-relative unresolved asset samples retain their source directory in the
+exported edit layer. Root and weak live-layer serializations remain unchanged.
+Unsupported asset expressions, tile/sequence patterns and clip templates fail
+before publication; the test preserves an existing destination on such failure.
+Anonymous flattened nested-asset metadata and arbitrary custom-resolver
+portability remain unverified. This does not save unsaved edits in other layers
+or make ordinary exports self-contained.
+
+All 393 ordinary tests, check-all and build pass
+(`/tmp/save-reanchor-final2-{tests,check,build}.log`). All six optional native
+export tests pass (`/tmp/save-reanchor-native.log`), including six new
+cross-directory mode/format combinations. The temporary upstream validation
+checkout passes 1,589 library tests and strict library clippy
+(`/tmp/save-reanchor-upstream-final3-tests.log`,
+`/tmp/save-reanchor-upstream-clippy.log`). Validation required the existing
+writable Cargo cache and a trailing slash in CARGO_WORKSPACE_DIR for fixture
+paths; earlier setup failures are not counted as product test results. All five
+vendored patches pass reverse-application checks; whitespace checks pass.
+
+### Fit viewer and capture bounds to evaluated deformation
+
+`usd_bevy::mesh::bounds::MeshBounds` samples world-space bounds from current
+render vertices, target-major morph data and joint global transforms multiplied
+by inverse bind poses. Morph offsets precede skinning. Referenced MorphWeights
+components are supported, unreferenced vertices and empty subsets are excluded,
+and malformed/non-finite inputs return no bounds. Static meshes use available
+vertex data, with transformed Aabb fallback when their CPU asset is unavailable.
+The sampler does not change Bevy's culling bounds or skinning implementation.
+
+Viewer opening now uses this sampler once per document instead of undeformed
+Aabbs, retaining the existing rule that subsequent camera input is preserved.
+The standalone capture fits its grid in Last, after joint globals update, using
+the same sampler. GPU deformation remains enabled: CPU evaluation here is for
+explicit bounds sampling, not replacement of the rendering path. No per-frame
+viewer resampling or automatic camera movement during playback was added.
+
+Regressions check morph-before-skin ordering, ignored undrawn vertices, malformed
+inputs, shared morph references, inverse bind poses, missing joints and five
+times of combined USD skin/morph deformation against CPU-evaluated points under
+a rotated, nonuniformly scaled transform.
+
+All 392 ordinary tests, check-all, build and whitespace checks pass; logs are
+`/tmp/deformed-bounds-final3-{tests,check,build}.log`. Private-Weston viewer
+captures `target/viewer-ui-captures/deformed-framing-{gpu,cpu}.png` were inspected:
+both now frame the deformed bar at matching size and position. Embedded viewport
+readbacks differ at 318 of 1,324,800 pixels, maximum RGB error 2, mean 0.000114
+(`/tmp/deformed-framing-compare.log`). This is a near-match, not pixel equality.
+The UI logs still report the environment's missing Mesa device-select layer,
+clipboard connection and shared-device SSAO limit; no claim of warning-free UI
+startup or full environment parity is made.
+Final fixed-camera captures `target/deformed-bounds-final-{gpu,cpu}.png` were
+also inspected. They differ at 6 of 921,600 pixels, maximum RGB error 1, mean
+0.000002; the zero-tolerance comparison correctly exits nonzero. Logs:
+`/tmp/deformed-bounds-final-{gpu,cpu,compare}.log`. Both standalone renderer logs
+contain no warnings/errors. These results cover the named fixture at time 30,
+not all assets, times, material modes or native USD visual equivalence.
+
+### Build compact subsets directly from borrowed source data
+
+Subset construction now borrows the original mesh and selected indices rather
+than cloning the full source before discarding unreferenced attributes. Only
+retained attribute and morph entries are copied into compact outputs. The
+all-vertices-selected path still clones the required full data, and malformed
+inputs retain the previous conservative full-layout fallback. Source assets
+are never mutated; different subsets remain independent.
+
+An additional regression checks two independent selections from an unindexed
+source, per-corner positions and both morph targets, source immutability and the
+all-selected path. All 389 ordinary tests, check-all and build pass in
+`/tmp/subset-borrow-final-{tests,check,build}.log`. CPU and GPU captures at time
+30 were inspected and their RGBA payloads match the corresponding pre-change
+`subset-empty` captures byte-for-byte. Logs `/tmp/subset-borrow-{gpu,cpu}.log`
+contain no warnings/errors; images are `target/subset-borrow-{gpu,cpu}.png`.
+Release ANYmal opens measured 476–506 ms with all retained payload/entity counts
+unchanged. The earlier compacted-source samples were 616–680 ms; these are not
+interleaved controlled timings. Raw samples and limits are recorded in
+`benchmarks/editor-assets.md` and `/tmp/subset-borrow-anymal.log`.
+
+### Compact subset vertices and keep empty assets out of GPU uploads
+
+`cffdd62` compacts each material subset and the unassigned remainder, applying
+one stable vertex remapping to every attribute and every target-major morph
+block. Invalid inputs retain their original layout without partial mutation.
+Regression tests compare indexed attributes byte-for-byte and preserve skin,
+morph, independent-clock, subdivision and instancer behavior. ANYmal's retained
+vertex payload drops to 19,969,120 bytes from 720,548,416–771,589,120, with the
+same 296 mesh entities and 231 subset entities. Raw before/after samples and
+CPU-only measurement limits are in `benchmarks/editor-assets.md`.
+
+Native fixed-camera captures exposed two allocator errors for the empty parent
+remainder in both CPU and GPU deformation modes. Bevy 0.19.1's mesh allocator
+skips zero-byte vertex allocation but still attempts the vertex/index uploads.
+Empty compacted assets now omit RENDER_WORLD usage while retaining their CPU
+data and entity identity. Animated subsets regain renderable assets when faces
+return; a regression checks this transition and isolation from another root.
+Empty morph data also stays absent, avoiding the image-backed morph allocator's
+division by zero for zero vertices.
+
+All 388 ordinary tests, check-all, build and whitespace checks pass. Logs:
+`/tmp/subset-empty-final-{tests,check}.log`, `/tmp/subset-empty-build.log`.
+Both fixed-camera captures at time 30 complete without logged warnings/errors:
+`target/subset-empty-{gpu,cpu}.png` and `/tmp/subset-empty-{gpu,cpu}.log`.
+Each raw RGBA file is byte-identical to its corresponding pre-upload-fix
+`target/subset-compact-fixed-{gpu,cpu}.rgba`; removing empty uploads does not
+change those rendered pixels. Both output images were visually inspected.
+
+Source cache payload and transient full-source clones remain. Automatic grid
+fitting and viewer framing differ between CPU- and GPU-deformed bounds; fixed
+camera captures isolate geometry from framing but do not prove full visual
+parity or matched native USD rendering. The broad acceptance checklist remains
+open.
+
+### Measure real editor opens and retained subset payload
+
+Added examples/editor_benchmark.rs using the real EditorCommand::Open path,
+Bevy asset tracking, 100 idle updates and settled asset-payload counters. It
+reports open/idle time, mesh/subset entity counts, unique retained mesh assets,
+stored/unreferenced vertices, attribute/index/morph bytes and decoded image bytes.
+Failed opens, invalid projected indices and document replacement while idle fail
+the run. The bundled subset regression checks exact payload/count results and
+failure handling. An initial untracked-assets prototype was corrected before
+recording the final baseline; pending handle cleanup must not be counted as
+settled memory.
+
+Release runs of real ANYmal and Spot completed. ANYmal retains 720,548,416–
+771,589,120 vertex-attribute bytes, with over 98% of stored vertices absent from
+their mesh's indices; Spot retains 451,232 bytes with none unreferenced. This
+points to subset vertex compaction as substantive remaining memory work. Joint
+and morph data must be remapped with positions, not silently discarded.
+Raw samples, commands and measurement boundaries are in
+`benchmarks/editor-assets.md`. These are CPU payload counts, not VRAM/RSS,
+rendered performance or a before/after speedup claim.
+
+All 386 ordinary tests, check-all, build and whitespace checks pass
+(`/tmp/editor-benchmark-final-{tests,check,build}.log`). Final release logs:
+`/tmp/editor-benchmark-{anymal,spot}-tracked.log`. No collection or sibling files
+were modified.
+
+### Build material-subset indices without discarded vertex attributes
+
+Subset preparation previously called mesh_from_usd_subset for each material part
+and the remainder, retained only its indices, and discarded newly computed
+positions, normals, UVs, colors and tangents. It now uses an index-only helper
+that preserves the full source mesh's render-vertex layout. Indexed and expanded
+layouts reuse the existing triangulator; flat geometry shares the canonical
+triangle-selection mapping with the full builder. Reference triangulation points,
+hole filtering and authored winding remain unchanged. Source meshes are still
+cloned for their existing attributes, including deformation data.
+
+A 432-case differential regression compares direct indices against the full
+builder over six layouts, both windings, hole configurations, empty/reordered/
+duplicate/invalid face selections and deformed positions with reference topology.
+Existing fixed flat-index expectations and GPU skin/morph/subset tests also pass.
+All 385 ordinary tests, check-all, build and whitespace checks pass
+(`/tmp/subset-indices-{tests,check,build}.log`).
+
+Inspected `target/viewer-ui-captures/anymal-subset-indices.png` against the previous
+healthy ANYmal capture: the robot and material regions remain visible without an
+observed regression; no reproduced GPU validation errors are logged. This is a
+qualitative rendered regression check, not pixel-identical or reference-renderer
+acceptance. No controlled CPU speedup measurement was made for this change.
+Per-subset vertex-buffer duplication remains, so the device-bounded mesh allocator
+is still required; this change does not establish reduced GPU memory or draw calls.
+
 ### Surface stopped-renderer diagnostics in the viewer
 
 Installed a viewer-owned Bevy RenderErrorHandler that retains the first error in

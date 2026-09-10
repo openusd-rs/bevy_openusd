@@ -17,6 +17,7 @@ Changes from the base source are recorded in these patches in the project root:
 - `patches/openusd-token-vector-fields.patch`
 - `patches/openusd-stage-packaging.patch`
 - `patches/openusd-reference-diagnostics.patch`
+- `patches/openusd-layer-reanchoring.patch`
 
 The binary metadata patch includes sublayer StringVector encoding as well as
 token-vector child/order fields and variant-set StringListOp encoding.
@@ -29,6 +30,11 @@ The reference diagnostic patch reports missing external root and sub-root target
 Sub-root targets are checked after composition tasks finish, retaining targets
 whose opinions come from variants. Broader ancestral/relocation combinations
 remain outside the current acceptance evidence.
+The layer-reanchoring patch adds resolver-aware copies for cross-directory
+ordinary root/edit exports. It anchors sublayers, reference/payload list buckets
+and nested typed asset values without editing the live layer. Dependencies stay
+external; asset expressions, tile/sequence patterns and clip templates fail
+explicitly rather than being silently relocated.
 
 The root Cargo patch table redirects all three Git dependency packages here.
 The usd_bevy and usd_macro manifests also use direct relative paths to this

@@ -114,6 +114,17 @@ The subsequent [reload comparison](benchmarks/reload-animation.md) measures redu
 CPU reload cost from skipping an unused animation-index scan, with clock-isolation
 regressions. It does not establish GPU or frame-rate improvements.
 
+`editor_benchmark ASSET [SAMPLES]` measures the actual editor Open path and retained
+mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
+includes file reading and texture decoding, but excludes GPU work and the UI:
+
+```sh
+make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/material_subsets.usda'
+```
+
+The [real-asset baseline](benchmarks/editor-assets.md) records ANYmal and Spot
+measurements. Payload bytes are not resident-memory or VRAM measurements.
+
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
 time-code range; otherwise it uses the stage's authored start/end and rate.
@@ -692,6 +703,26 @@ Arguments are asset, PNG output, USD time code, then optional eye XYZ and target
 XYZ. The default eye is `(6,4,8)` looking at `(0,1,0)`. No orbit input or automatic
 camera framing is used. The grid fits below visible mesh bounds using the viewer's
 shared height/scale/fade calculation; this does not move the USD scene or camera.
+Both grid fitting and initial viewer framing sample current morph and skin
+deformation through `usd_bevy::mesh::bounds::MeshBounds`. This on-demand CPU
+bounds calculation leaves vertex rendering on the GPU and does not replace
+Bevy's culling bounds. Viewer framing still runs only once per opened document.
+
+For a repeatable deformation sweep, use a fresh output directory and an explicit
+RGB tolerance (0 requests pixel equality):
+
+```sh
+make --eval='compare-deformation:; @/bin/bash scripts/compare_deformation.sh assets/skel_morph_subsets.usda target/deformation-check 0 0 15 30 45 60' compare-deformation
+```
+
+The script saves both PNG/RGBA captures, metadata, renderer logs, difference
+images and `results.tsv` for every time, continuing after a failed pair. It
+returns nonzero for capture/comparison failure, renderer warnings/errors, missing
+GPU-deformation components in the GPU run, or GPU-deformation components in the
+CPU control. Component counts are coverage checks, not proof of every draw or
+GPU performance. Existing output directories are rejected. Inspect the images;
+a chosen nonzero tolerance is not automatic evidence of visual fidelity.
+
 Set `USD_CAPTURE_CAMERA=/Scene/Camera` to copy a projected USD camera's world
 transform and projection instead of using eye/target arguments. Metadata records
 the selected path; missing cameras wait until the capture timeout. The tool does
@@ -816,11 +847,25 @@ already occurred, but durability could not be confirmed.
 Existing file permissions are retained. Final symlinks, directories and read-only
 destinations are rejected. Replacement creates a new inode; ownership, ACLs and
 hard-link identity are not preserved. Concurrent saves use last-writer-wins,
-without conflict detection. Save As does not rebase relative asset paths or
-change the stage's source identifier. Root/edit-layer exports retain their layer
-opinions; flattened export has different composition semantics.
+without conflict detection. Cross-directory ordinary root/edit saves anchor
+external sublayers, references, payloads and typed asset values through the
+stage's resolver without changing its source identifier or live layers. The
+dependencies remain external; use USDZ for dependency bundling. Same-directory
+saves retain authored path spelling, including directory aliases. Layers inside
+a USDZ are re-anchored even when exported beside it, retaining the archive as an
+external dependency. Asset expressions, tile/sequence patterns
+and clip templates currently reject cross-directory relocation before replacing
+the destination. Flattened export has different composition semantics; nested
+asset metadata in anonymous flattened layers remains a separate limitation.
 
 ### Hierarchical point prototypes
+
+Direct mesh prototypes bake their full invertible affine matrix into positions,
+inverse-transpose normals and tangent frames, including shear. Material subsets
+and repeated instances still share the baked assets. `assets/point_affine.usda`
+and `assets/point_affine_reference.usda` provide matrix versus explicit-vertex
+comparison scenes. This does not add shear support to ordinary Transform
+projection or to the multi-node hierarchy path described below.
 
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset
@@ -894,7 +939,9 @@ remaining compatibility findings.
 
 A second native fixture checks sublayers and external references in all three
 save modes and four formats. These checks keep exports beside their dependencies;
-they do not certify cross-directory Save As or self-contained USDZ packaging.
+they do not alone certify cross-directory Save As or self-contained USDZ packaging.
+A separate native fixture now checks cross-directory root and nested edit-layer
+exports in USDA, USDC and USD, retaining referenced values and external textures.
 
 The native gate also removes the source directory before checking exported
 packages. All three save modes now pass that regression, including an asset

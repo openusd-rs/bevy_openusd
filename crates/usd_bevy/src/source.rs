@@ -101,9 +101,11 @@ impl UsdSource {
             {
                 continue;
             }
-            if let Some(material) = crate::read::shade::read_preview_material(stage, &path)
-                .map_err(|error| error.to_string())?
-            {
+            let texture_times = crate::read::shade::material_texture_sample_times(stage, &path)
+                .map_err(|error| error.to_string())?;
+            for time in std::iter::once(None).chain(texture_times.into_iter().map(Some)) {
+                let Some(material) = crate::read::shade::read_preview_material_at(stage, &path, time)
+                    .map_err(|error| error.to_string())? else { continue; };
                 for (path, srgb) in [
                     (&material.diffuse_texture, material.texture_srgb("diffuse")),
                     (&material.emissive_texture, material.texture_srgb("emissive")),

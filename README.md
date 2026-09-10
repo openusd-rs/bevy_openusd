@@ -47,9 +47,41 @@ an explicit filename without creating that file. `UsdSource` also opens root
 bytes (including USDZ) as independent stages. Ongoing Bevy integration work is
 tracked in `BEVY_WORK.md`. The AssetServer loader now uses dependency snapshots
 and exposes `UsdSceneState` (Loading/Ready/Failed). Snapshot PNG/JPEG textures are
-tracked labeled assets with color/data color spaces. Dependency-change events
+tracked labeled assets with color/data color spaces. Time-sampled material
+`inputs:file` paths are supported: texture samples reachable through each
+material's connections are decoded into the snapshot, and each instance selects the image at its own
+clock. This supports explicit asset-path samples, not filename sequence patterns.
+Dependency-change events
 reload their owning USD asset. Each root retains an independent live stage;
 matching prim entities and runtime-only components survive source reloads.
+For native filesystem events, enable the optional `usd_bevy/file_watcher`
+feature and set `AssetPlugin::watch_for_changes_override` to `Some(true)`.
+Without that feature, dependency tracking alone does not install an OS watcher.
+This applies to AssetServer-loaded scenes, not the viewer's direct editor Open
+path. Run the explicit OS-event regression with:
+
+```sh
+make --eval='test-file-watcher:; @$(CARGO) test -p usd_bevy --features file_watcher native_file_watcher -- --ignored --nocapture' test-file-watcher
+```
+
+Bevy 0.19.1's default source reloads modified/replaced dependencies but does not
+invalidate them when a file is deleted. To report missing dependencies as Failed
+and recover when they reappear, register the read-only removal-aware source
+**before** adding `AssetPlugin` (or `DefaultPlugins`):
+
+```rust,ignore
+app.register_asset_source(
+    bevy::asset::io::AssetSourceId::Default,
+    usd_bevy::watcher::file_source("assets"),
+);
+```
+
+The adapter retains Bevy's file reader and debounced watcher, forwarding removal
+events as dependency invalidations as well. It supports unprocessed native file
+sources; folder removal and processed assets remain unsupported. Registration
+does not override the AssetPlugin runtime watch setting. Its event worker is
+closed and joined when the source is dropped.
+
 Before publishing a source or override revision, Bevy traverses the active
 composition, reads default attribute values and asset time samples, and checks
 reported composition errors. Failure retains any previous projection and reports
@@ -742,6 +774,18 @@ USD_CAPTURE_CAMERA=/Scene/Camera make run APP_TARGET='--example viewer_capture' 
 ```
 
 Set `USD_CPU_SKINNING=1` to compare the ordinary CPU skin path.
+Set `USD_CAPTURE_INSTANCE_TIMES=0,10` to mount the same asset at independent
+time codes in one capture. One to sixteen finite values are accepted; roots are
+centered along X with 2.5-unit spacing. Use the fixed camera arguments to frame
+the group; authored-camera selection is rejected for multiple roots. The default
+remains one root at the positional TIME argument. Instance times and spacing
+are written to capture metadata, and capture waits for every root to be Ready.
+For the generated UV-transform fixture, use eye `(0,1,8)` and focus `(0,1,0)`:
+
+```bash
+USD_CAPTURE_INSTANCE_TIMES=0,10 USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='target/uv_transform_probe/mapped.usda target/two-clocks.png 0 0 1 8 0 1 0'
+```
+
 Set `USD_CAPTURE_SHADOWS=off` to disable directional, point and spot shadow maps
 for an isolated rendering comparison. The default `scene` preserves each light's
 shadow setting. This diagnostic is recorded in metadata and does not edit USD.
@@ -926,6 +970,30 @@ The 8-bit map uses raw color space and scale/bias (2,-1), following the
 Bevy's tangent generation already compensates the relevant handedness change;
 adding a second normal-map Y flip would break this fixture. This checks a static
 constant map, not arbitrary texture transforms, scale/bias or deformed tangents.
+
+`UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
+before becoming Bevy's UV transform. Generate the animated comparison fixture:
+`make run RUN_WITH= APP_TARGET='--example uv_transform_fixture' ARGS='target/uv_transform_probe'`.
+Its mapped and explicit-UV scenes are equivalent at times 0 and 10; intermediate
+times are not reference baselines because interpolating coordinates differs from
+interpolating rotation. Different per-texture coordinate transforms remain unsupported.
+The same generator writes `shear_mapped.usda`, `shear_reference.usda` and
+`shear_lossy.usda`: a nonuniform-scale/37-degree-rotation chain, independently
+baked vertex UVs, and a deliberately lossy SRT control. Capture at time 0 with
+eye `(0,1,5)`, focus `(0,1,0)` and `USD_CAPTURE_SHADOWS=off`. On the tested Vulkan
+renderer, mapped versus baked differs in 7 of 921,600 pixels (maximum RGB error
+2); the lossy control differs in 120,136 pixels (maximum error 91). These are
+recorded strict-zero comparison results, not a claim of bit-identical rendering.
+UV transforms are read from connected texture-coordinate paths, including nodes
+outside the material's immediate children; disconnected nodes have no effect.
+Different transforms across a material's texture channels, non-finite transforms
+and over-budget coordinate graphs produce explicit
+errors instead of silently choosing the first material child.
+Connected `UsdTransform2d` chains compose in order without decomposing the result,
+including nonorthogonal affine axes from nonuniform scales and rotations.
+`ReadPreviewMaterial::uv_transform` now contains `bevy::math::Affine2` in USD UV
+coordinates; the old `UvTransform` struct was removed. Construct single-node
+values with `Affine2::from_scale_angle_translation` (angle in radians).
 
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a

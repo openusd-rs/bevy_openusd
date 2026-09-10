@@ -25,6 +25,258 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Material-local texture sample discovery
+
+Texture discovery now collects sample times per material graph instead of using
+the entire stage's texture-time union for every material. It seeds traversal
+from the material and resolved surface (including child-shader fallback),
+follows attribute connections across namespaces, visits each prim once, and
+sorts/deduplicates inputs:file times. Disconnected children and other materials'
+graphs no longer add evaluation times. A 4096-node traversal budget reports an
+explicit error rather than allowing unbounded graph walks.
+
+Regression coverage checks two separate materials, external texture nodes,
+surface fallback without outputs:surface, disconnected sampled children, a
+cycle, a texture shared across graphs and duplicate sample times. This removes
+the stage-wide material/time cross-product structurally; no wall-time or memory
+speedup is claimed without a representative benchmark.
+
+Validation: 433 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/texture-graphs-{tests,check,build}.log`.
+
+### Time-sampled material texture assets
+
+An AssetServer regression reproduced zero decoded images for a material whose
+UsdUVTexture inputs:file is authored only as time samples. Texture graph reads
+were dropping the requested time, and snapshot image discovery only evaluated
+default materials. The reader now resolves the file at the requested TimeCode;
+snapshot discovery unions Shader inputs:file sample times, evaluates materials
+at default plus those times, and deduplicates texture/color-space requests.
+This also captures connected shader nodes outside a material's own subtree.
+
+The regression uses two independent roots and two PNGs, each consumed as both
+sRGB diffuse and raw normal images. It checks four decoded texture entries,
+actual image bytes at independent clocks, clock swapping, held values before,
+between and after authored times, and a simulated dependency-change event that
+updates the later image without changing the other root's current pixels.
+Before/fixed focused logs: `/tmp/texture-times-{before,after}.log`.
+This is real AssetServer decoding with an injected watcher event, not native
+filesystem or GPU image acceptance. Snapshot discovery evaluates every material
+at the stage's union of texture sample times; large animated-material performance
+remains unbenchmarked. Filename sequences and animated color-space tokens are
+not implemented by this change.
+
+Validation: 432 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/texture-times-{tests,check,build}.log`.
+
+### Simultaneous multi-instance GPU capture
+
+The low-level capture tool accepts `USD_CAPTURE_INSTANCE_TIMES`, a bounded list
+of one to sixteen finite clock values. It mounts one shared asset repeatedly
+with independent UsdInstanceTime values and centered 2.5-unit X spacing, waits
+for the expected number of Ready roots, and records the clocks and spacing.
+Single-root default behavior remains unchanged. Multiple roots reject authored
+camera selection to avoid ambiguous duplicate camera paths. Parser tests cover
+defaults, whitespace, negative/fractional times, nonfinite/invalid values and
+the root-count limit, preserving previous configuration after a failed parse.
+
+Rendered the UV-chain fixture and explicit-UV reference with clocks 0/10 and
+10/0 on NVIDIA/Vulkan, eye (0,1,8), focus (0,1,0), shadows off. Inspected all four
+captures: red/purple panels exchange places when the clocks are swapped. Both
+mapped/reference comparisons match all 921,600 pixels at strict zero RGB
+tolerance. Images: `target/multi_uv_{mapped,reference}_{0_10,10_0}.png`; logs:
+`/tmp/multi-uv-{mapped,reference,compare}-{0_10,10_0}.log`.
+This establishes simultaneous multi-root GPU endpoint acceptance, not live
+clock swapping or filesystem reload during one capture run.
+
+Validation: 431 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/multi-capture-{tests,check,build}.log`.
+
+### Rendered affine UV shear acceptance
+
+Extended `uv_transform_fixture` with a two-node UV chain applying a 37-degree
+rotation followed by scale (2,3) and translation (0.4,0.1). The vertex-varying
+UV fixture has nonorthogonal affine axes. An independent scalar formula bakes
+reference UVs; a separate lossy SRT approximation provides a negative control.
+The regression checks nonorthogonality, mapped-versus-baked coordinates, no
+connected transform in the reference, and a distinguishable lossy result.
+
+Captured and inspected all three scenes on NVIDIA/Vulkan at 1280x720, time 0,
+eye (0,1,5), focus (0,1,0), shadows disabled. Mapped versus baked changes 7 pixels,
+maximum RGB difference 2 and mean 0.000003; strict-zero comparison exits nonzero.
+Mapped versus lossy changes 120,136 pixels, maximum difference 91 and mean
+2.709799, with a visibly shifted gradient. No comparison tolerance was increased.
+This adds actual GPU evidence for affine UV shear, not normal-mapped/deformed
+tangent acceptance or other render backends. Images:
+`target/uv_shear_{mapped,reference,lossy}.png`; logs:
+`/tmp/uv-shear-{mapped,reference,compare,lossy,lossy-compare}.log`.
+`target/uv_shear_fixture_v2` adds the negative control; its mapped/reference
+source files were verified identical to the first captured fixture with cmp.
+
+Validation: 430 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/uv-shear-{tests,check,build}.log`.
+
+### Public transform path semantics
+
+Current upstream inspection disproved the suspected property-path panic:
+`Stage::prim` converts an already parsed property path to its owning prim. The
+transform reader now propagates the upstream Result instead of asserting it,
+without introducing a stricter local path policy. Module documentation states
+the owner-resolution behavior. A regression covers all five public transform
+entry points, authored and unauthored property names, default and numeric times,
+and missing owners returning None. This is a documented compatibility contract,
+not a claim that the previous implementation had a reproduced panic.
+
+Validation: 429 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks. Logs:
+`/tmp/xform-path-{tests,check,build}.log`.
+
+### Atomic saves and deleted dependency recovery
+
+Extended native event acceptance to replace both a sublayer and a PNG via
+temporary-file rename, verifying changed geometry/pixels and stable runtime
+identity in two mounts. Stock Bevy 0.19.1 passes these atomic-save cases.
+Deleting a loaded sublayer exposed a separate failure: its AssetServer handles
+RemovedAsset by refreshing folders only, leaving loader dependents marked Ready.
+The failing native test is recorded in `/tmp/native-watcher-removal.log`.
+
+Added opt-in `watcher::file_source`, a read-only AssetSourceBuilder retaining
+Bevy's native reader and debounced FileWatcher. Its owned event worker forwards
+file removal as ModifiedAsset plus the original event, so AssetServer reloads
+the dependency owners, reports Failed and retains their last good projections.
+Recreating the layer restores Ready without manual reload. The worker closes
+its input and joins on source drop; setup errors are logged. Applications must
+register this source before AssetPlugin; no default sources are replaced
+implicitly. This adapter is for unprocessed native file sources, not folder
+deletion, processed pipelines or the direct editor Open path.
+
+Separate native tests preserve stock watcher coverage and exercise the adapter's
+deletion/recreation behavior. Both passed three consecutive runs on Linux:
+`/tmp/native-watcher-lifecycle-{1,2,3}.log`. These are filesystem and projected
+asset checks, not GPU screenshot acceptance during reload.
+
+Validation: 428 ordinary workspace tests pass (seven native export tests ignored),
+plus check-all, build and whitespace checks. The watcher-enabled library suite
+passes 374 tests (nine explicit native tests ignored). Logs:
+`/tmp/watcher-removal-{tests,check,build,feature}.log`.
+
+### Native filesystem watching
+
+Added opt-in `usd_bevy/file_watcher` support, forwarding Bevy's native watcher
+feature without enabling it for default consumers. A filesystem-backed test
+mounts one composed scene twice, writes its sublayer and PNG dependency directly,
+and checks changed projected geometry and decoded pixels in both instances.
+It then writes a malformed sublayer, verifies Failed states retain the last good
+projection, and restores the layer to recover Ready states. Runtime entity IDs,
+names and child parenting survive; projected meshes remain shared. Labeled image
+handles remain stable while their pixels update, as Bevy reloads them in place.
+
+The regression uses no injected asset events or explicit reload calls. It is
+feature-gated and ignored by default because it requires native filesystem
+events; README includes its explicit Make invocation. This does not implement
+watching for the viewer's direct editor Open path or prove other OS backends,
+atomic-save rename behavior, or GPU image fidelity during reload.
+
+Validation: 428 ordinary workspace tests pass (seven native export tests ignored),
+plus check-all, build and whitespace checks. The watcher-enabled library suite
+passes 374 tests (eight ignored), and the explicit native watcher test passes
+once plus three consecutive repeats on Linux. Logs:
+`/tmp/native-watcher-{tests,check,build,feature,test}.log` and
+`/tmp/native-watcher-repeat-{1,2,3}.log`.
+
+### AssetServer UV-chain instance clocks
+
+Extended the UV fixture regression through the real file-backed AssetServer and
+USD dependency loader. Two scene roots share the source and texture while taking
+independent clocks through 0/10, 10/0, 2.5/7.5, 5/5 and 10/10. The test checks
+the resulting StandardMaterial affine matrices against independent expected
+values and verifies actual decoded quadrant image bytes, shared mesh handles,
+distinct material handles at different times and shared handles at equal times.
+Projected entities, runtime names and runtime-child parenting survive sampling;
+both root layers retain identical authored text throughout.
+
+This exercises loaded textures and instance resampling in a headless Bevy
+schedule. The earlier GPU endpoint captures remain separate evidence; this test
+does not claim OS watcher reloads or simultaneous multi-root GPU image acceptance.
+All 428 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks. Logs: `/tmp/uv-instance-{tests,check,build}.log`.
+
+### Affine UV-transform chains
+
+Connected `UsdTransform2d` chains now compose outer-to-inner as affine matrices,
+retaining nonorthogonal axes rather than decomposing the result into one SRT.
+The material still conjugates the composed matrix through the mesh V-flip.
+`ReadPreviewMaterial::uv_transform` now exposes canonical `bevy::math::Affine2`;
+removed the old local `UvTransform` struct without a shim and documented the API
+migration. Different channel transforms remain explicit errors; the traversal
+budget still bounds cycles and overly deep graphs.
+
+Regressions cover chain order and a nonuniform-scale/37-degree-rotation composition
+with nonorthogonal axes, using independent point calculations. Updated the UV
+fixture to split its animated linear transform and translation across two nodes;
+its explicit endpoint coordinates remain unchanged. This supersedes the previous
+chain-rejection limitation, not the remaining per-texture UV-set limitations.
+All 427 ordinary tests pass (seven native export tests ignored), plus check-all,
+build, fixture generation and whitespace checks. Logs:
+`/tmp/uv-chain-{tests,check,build,fixture}.log`. The two-node chain was captured
+and inspected at time 0/10, eye (0,1,5), focus (0,1,0), shadows off:
+`target/uv_chain_{0,10}.png`. Both match the validated single-node/explicit-UV
+endpoint renders across all 921,600 pixels at strict zero RGB tolerance, with
+CAPTURE_OK and no WARN/ERROR entries. Logs: `/tmp/uv-chain-{capture,compare}-{0,10}.log`.
+Nonorthogonal chain composition is unit-tested; this endpoint capture pair is
+not a rendered shear or normal-map-transform acceptance claim.
+
+### Connected texture-coordinate discovery
+
+The material reader now retains each resolved texture node and follows its
+connected `inputs:st` path instead of scanning for the first transform child.
+Disconnected transforms no longer affect shading; connected transforms outside
+the material's immediate children are discovered. Texture channels must agree on
+the material-wide transform. Conflicting transforms, multiple input connections,
+chained transform nodes, non-finite values and graphs beyond 16 connections
+return explicit errors rather than silently choosing an unrelated node.
+
+The existing reader regression now demonstrates an ignored disconnected node,
+a connected local node, a connected external node and explicit chain rejection.
+A new graph regression covers conflicting/common transforms, non-finite inputs
+and cycles. The independent-instance material animation test previously expected
+an unconnected transform to apply; it now expects identity while still validating
+animated color/opacity/roughness and instance isolation. Arbitrary per-texture UV
+sets and composed multi-transform chains are not implemented by this change.
+All 426 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks (`/tmp/connected-uv-{tests,check,build}.log`). Both
+animated UV endpoints were recaptured and inspected at the earlier fixed camera,
+time 0/10, shadows off: `target/connected_uv_{0,10}.png`. Both remain identical
+to their validated pre-change captures across all 921,600 pixels at strict-zero
+RGB tolerance, with CAPTURE_OK and no WARN/ERROR entries. Logs:
+`/tmp/connected-uv-{capture,compare}-{0,10}.log`.
+
+### Correct UV-transform coordinate conversion
+
+Confirmed a material rendering bug: USD UV transforms were applied directly to
+already V-flipped mesh coordinates. StandardMaterial now receives `F * T * F`,
+where F maps `(u,v)` to `(u,1-v)`, preserving USD scale/rotation/translation in
+the renderer's coordinate basis. The unit regression independently evaluates
+the transformed coordinates for identity, translation, nonuniform/negative
+scales and rotations at several UV points.
+
+Added `examples/uv_transform_fixture.rs`: a quadrant texture, animated mapped UVs
+and explicit endpoint references. Before the fix, time 0 rendered blue instead
+of red; 121,104 pixels differed, maximum RGB error 194, mean 15.526238.
+Both baseline captures were inspected: `target/uv_transform_before_{mapped,reference}.png`.
+Logs: `/tmp/uv-transform-before-{mapped,reference,compare}.log`.
+The fixture's source-level test checks both endpoint transforms against the
+explicit UVs and refuses directory overwrites. Intermediate-time explicit-UV
+interpolation is not a reference for interpolated rotation. Per-texture transform
+chains and normal-map tangent behavior under arbitrary UV transforms remain open.
+After the fix, both endpoint comparisons are pixel-identical across all 921,600
+pixels at strict zero RGB tolerance. Fixed images were inspected:
+`target/uv_transform_after_{mapped_0,mapped_10,reference_10}.png`; time 0 uses the
+unchanged earlier explicit reference. Captures report CAPTURE_OK without
+WARN/ERROR entries. Logs: `/tmp/uv-transform-after-{mapped-0,mapped-10,reference-10,compare-0,compare-10}.log`.
+All 425 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks (`/tmp/uv-transform-{tests,check,build}.log`).
+
 ### Normal-map orientation probe
 
 Added `examples/normal_fixture.rs`, which generates a raw 8-bit tangent-normal

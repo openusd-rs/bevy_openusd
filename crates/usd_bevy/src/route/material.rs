@@ -85,14 +85,10 @@ fn to_standard_material(
     if let Some(ior) = read.ior {
         m.ior = ior;
     }
-    // UsdTransform2d on the st chain → StandardMaterial UV transform. USD applies
-    // `st' = rotate(scale·st) + translation`, matching glam's T·R·S composition.
+    // Convert the USD UV transform through the mesh's V-flipped coordinate basis.
     if let Some(uv) = &read.uv_transform {
-        m.uv_transform = bevy::math::Affine2::from_scale_angle_translation(
-            Vec2::from(uv.scale),
-            uv.rotation_deg.to_radians(),
-            Vec2::from(uv.translation),
-        );
+        let flip = bevy::math::Affine2::from_scale_angle_translation(Vec2::new(1.0, -1.0), 0.0, Vec2::Y);
+        m.uv_transform = flip * *uv * flip;
     }
     let texture = |path: &Option<String>, srgb: bool| -> Option<Handle<Image>> {
         let path = path.as_ref()?;
@@ -274,7 +270,7 @@ def Shader "External" {
                 let material = world.resource::<Assets<StandardMaterial>>().get(handle).unwrap();
                 assert_eq!(material.base_color, Color::linear_rgba(1.0-t, 0.0, t, 0.25+0.75*t));
                 assert!((material.perceptual_roughness - (0.2+0.6*t)).abs() < 1e-6);
-                assert_eq!(material.uv_transform.translation, Vec2::new(2.0*t, 0.0));
+                assert_eq!(material.uv_transform.translation, Vec2::ZERO);
                 assert_eq!(material.alpha_mode, if t < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque });
             }
         };
@@ -340,6 +336,24 @@ def Material "Mat" {
         assert!(assets.get(a).unwrap().cull_mode.is_none());
         assert!(!assets.get(b).unwrap().double_sided);
         assert_eq!(assets.get(b).unwrap().cull_mode, Some(bevy::render::render_resource::Face::Back));
+    }
+
+    #[test]
+    fn uv_transforms_preserve_usd_coordinates_after_v_flip() {
+        for (scale, rotation_deg, translation) in [([1.0,1.0], 0.0_f32, [0.0,0.0]),
+            ([1.0,1.0], 0.0, [0.0,0.5]), ([0.5,1.5], 90.0, [0.75,0.25]), ([-1.5,0.75], 37.0, [-0.2,0.6])] {
+            let uv = bevy::math::Affine2::from_scale_angle_translation(scale.into(), rotation_deg.to_radians(), translation.into());
+            let read = ReadPreviewMaterial { uv_transform: Some(uv), ..default() };
+            let material = to_standard_material(&read, None, None);
+            let (sin, cos) = rotation_deg.to_radians().sin_cos();
+            for st in [Vec2::ZERO, Vec2::ONE, Vec2::new(0.25, 0.75), Vec2::new(-0.5, 1.25)] {
+                let scaled = st * Vec2::from(scale);
+                let transformed = Vec2::new(cos * scaled.x - sin * scaled.y, sin * scaled.x + cos * scaled.y) + Vec2::from(translation);
+                let expected = Vec2::new(transformed.x, 1.0 - transformed.y);
+                let actual = material.uv_transform.transform_point2(Vec2::new(st.x, 1.0 - st.y));
+                assert!(actual.abs_diff_eq(expected, 1e-6), "{actual:?} != {expected:?}");
+            }
+        }
     }
 
     #[test]

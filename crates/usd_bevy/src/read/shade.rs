@@ -36,29 +36,8 @@ pub struct ReadPreviewMaterial {
     pub texture_color_spaces: std::collections::BTreeMap<String, bool>,
     pub warnings: Vec<String>,
 
-    /// `UsdTransform2d` on the texture-coordinate chain (scale/rotate/translate
-    /// of `st`), if the network has one. Applied to `StandardMaterial::uv_transform`.
-    pub uv_transform: Option<UvTransform>,
-}
-
-/// A 2D texture-coordinate transform read from a `UsdTransform2d` node:
-/// USD applies it as `st' = rotate(scale * st) + translation`, with rotation in
-/// degrees, counter-clockwise about the origin.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UvTransform {
-    pub translation: [f32; 2],
-    pub rotation_deg: f32,
-    pub scale: [f32; 2],
-}
-
-impl Default for UvTransform {
-    fn default() -> Self {
-        Self {
-            translation: [0.0, 0.0],
-            rotation_deg: 0.0,
-            scale: [1.0, 1.0],
-        }
-    }
+    /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
+    pub uv_transform: Option<bevy::math::Affine2>,
 }
 
 /// Resolves preview-purpose material binding, falling back to all-purpose.
@@ -100,6 +79,26 @@ pub(crate) fn bound_material_is_time_varying(stage: &Stage, prim: &Path) -> bool
         }
     }
     false
+}
+
+/// Sorted texture-file sample times reachable from a material and its surface.
+pub(crate) fn material_texture_sample_times(stage: &Stage, material: &Path) -> anyhow::Result<Vec<f64>> {
+    let mut pending = vec![material.clone()];
+    if let Some((shader, _)) = resolve_surface_shader(stage, material)? { pending.push(shader); }
+    let mut seen = std::collections::HashSet::new();
+    let mut times = Vec::new();
+    while let Some(path) = pending.pop() {
+        if !seen.insert(path.clone()) { continue; }
+        anyhow::ensure!(seen.len() <= 4096, "texture discovery exceeds the 4096-node traversal budget");
+        let node = stage.prim(&path)?;
+        times.extend(node.attribute("inputs:file").time_sample_times()?);
+        for attribute in node.attributes()? {
+            pending.extend(attribute.connections()?.into_iter().map(|connection| connection.prim_path()));
+        }
+    }
+    times.sort_by(f64::total_cmp);
+    times.dedup();
+    Ok(times)
 }
 
 /// Resolve preview inputs at a USD time code, or their default values.
@@ -146,9 +145,11 @@ pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64
     };
 
     let mut out = ReadPreviewMaterial::default();
+    let mut textures = Vec::new();
     for (channel, bind_colour, bind_scalar, bind_texture) in channels {
         let (value, texture) = resolve_channel(stage, material, &shader, channel, &mut out.warnings, time)?;
         if let Some(tex) = texture {
+            if !textures.contains(&tex.3) { textures.push(tex.3.clone()); }
             bind_texture(&mut out, tex);
         }
         match value {
@@ -157,33 +158,49 @@ pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64
             None => {}
         }
     }
-    out.uv_transform = read_uv_transform(stage, material, time)?;
+    out.uv_transform = read_uv_transform(stage, &textures, time)?;
     out.warnings.sort();
     out.warnings.dedup();
     Ok(Some(out))
 }
 
-/// Find a `UsdTransform2d` node in the material's shader network and read its
-/// `scale` / `rotation` / `translation` inputs. USD materials generally share a
-/// single st transform across textures, so the first one found is applied
-/// material-wide. `None` when the network has no transform (identity `st`).
 fn sampled_value(stage: &Stage, path: &Path, time: Option<f64>) -> anyhow::Result<Option<Value>> {
     let Some((prim, name)) = path.split_property() else { return Ok(None) };
     Ok(stage.prim(prim)?.attribute(name)
         .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?)
 }
 
-fn read_uv_transform(stage: &Stage, material: &Path, time: Option<f64>) -> anyhow::Result<Option<UvTransform>> {
-    for child in stage
-        .prim(material.clone()).expect("validated USD path")
-        .child_names()
-        .unwrap_or_default()
-    {
-        let node = material.append_path(child.as_str())?;
-        if read_token_or_string(stage, &node, "info:id")?.as_deref() != Some("UsdTransform2d") {
-            continue;
+fn read_uv_transform(stage: &Stage, textures: &[Path], time: Option<f64>) -> anyhow::Result<Option<bevy::math::Affine2>> {
+    let mut common = None;
+    let mut authored = false;
+    for texture in textures {
+        let mut current = texture.append_property("inputs:st")?;
+        let mut transform = bevy::math::Affine2::IDENTITY;
+        for depth in 0..=16 {
+            let connections = connections_at(stage, &current)?;
+            anyhow::ensure!(connections.len() <= 1, "multiple texture-coordinate connections at {current}");
+            let Some(next) = connections.into_iter().next() else { break; };
+            anyhow::ensure!(depth < 16, "texture-coordinate graph exceeds 16 connections");
+            let node = next.prim_path();
+            if read_token_or_string(stage, &node, "info:id")?.as_deref() == Some("UsdTransform2d") {
+                transform *= read_uv_node(stage, &node, time)?;
+                authored = true;
+                current = node.append_property("inputs:in")?;
+            } else {
+                current = next;
+            }
         }
-        let mut t = UvTransform::default();
+        anyhow::ensure!(transform.is_finite(), "non-finite composed UV transform");
+        if let Some(common) = common { anyhow::ensure!(transform == common, "different per-texture UV transforms are unsupported"); }
+        else { common = Some(transform); }
+    }
+    Ok(if authored { common } else { None })
+}
+
+fn read_uv_node(stage: &Stage, node: &Path, time: Option<f64>) -> anyhow::Result<bevy::math::Affine2> {
+        let mut scale = bevy::math::Vec2::ONE;
+        let mut translation = bevy::math::Vec2::ZERO;
+        let mut rotation_deg = 0.0_f32;
         let vector = |name| -> anyhow::Result<Option<[f32; 2]>> {
             Ok(match sampled_value(stage, &node.append_property(name)?, time)? {
                 Some(Value::Vec2f(value)) => Some([value.x, value.y]),
@@ -192,22 +209,22 @@ fn read_uv_transform(stage: &Stage, material: &Path, time: Option<f64>) -> anyho
             })
         };
         if let Some(s) = vector("inputs:scale")? {
-            t.scale = s;
+            scale = s.into();
         }
         if let Some(tr) = vector("inputs:translation")? {
-            t.translation = tr;
+            translation = tr.into();
         }
         if let Some(Value::Float(r)) = sampled_value(stage, &node.append_property("inputs:rotation")?, time)?
         {
-            t.rotation_deg = r;
+            rotation_deg = r;
         } else if let Some(Value::Double(r)) =
             sampled_value(stage, &node.append_property("inputs:rotation")?, time)?
         {
-            t.rotation_deg = r as f32;
+            rotation_deg = r as f32;
         }
-        return Ok(Some(t));
-    }
-    Ok(None)
+        let matrix = bevy::math::Affine2::from_scale_angle_translation(scale, rotation_deg.to_radians(), translation);
+        anyhow::ensure!(matrix.is_finite(), "non-finite UV transform at {node}");
+        Ok(matrix)
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -270,7 +287,7 @@ fn resolve_surface_shader(
 
 type ColourSetter = fn(&mut ReadPreviewMaterial, [f32; 3]);
 type ScalarSetter = fn(&mut ReadPreviewMaterial, f32);
-type TextureInput = (String, usize, Option<bool>);
+type TextureInput = (String, usize, Option<bool>, Path);
 type TextureSetter = fn(&mut ReadPreviewMaterial, TextureInput);
 
 impl ReadPreviewMaterial {
@@ -574,7 +591,7 @@ fn resolve_attr_chain_inner(
                         None | Some("auto") => None,
                         Some(other) => anyhow::bail!("unsupported texture sourceColorSpace: {other}"),
                     };
-                    return Ok((None, read_texture_file(stage, &prim)?.map(|path| (path, channel, srgb))));
+                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim))));
                 }
                 ShaderKind::NormalMap => {
                     cur = prim.append_property("inputs:in")?;
@@ -614,8 +631,8 @@ fn resolve_attr_chain_inner(
         }
         let default = sampled_value(stage, &cur, time)?;
         match default.clone() {
-            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None)))),
-            Some(Value::String(s)) => return Ok((None, Some((s, 0, None)))),
+            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path())))),
+            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path())))),
             _ => {}
         }
         return Ok((default.and_then(value_to_preview), None));
@@ -664,8 +681,13 @@ fn shader_kind(stage: &Stage, prim: &Path) -> anyhow::Result<ShaderKind> {
     })
 }
 
-fn read_texture_file(stage: &Stage, tex_prim: &Path) -> anyhow::Result<Option<String>> {
-    read_asset_path(stage, tex_prim, "inputs:file")
+fn read_texture_file(stage: &Stage, tex_prim: &Path, time: Option<f64>) -> anyhow::Result<Option<String>> {
+    Ok(match stage.prim(tex_prim)?.attribute("inputs:file").get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+        Some(Value::AssetPath(path)) => Some(path.resolved_path().unwrap_or(path.as_str()).to_owned()),
+        Some(Value::String(path)) => Some(path),
+        Some(Value::Token(path)) => Some(path.as_str().to_owned()),
+        _ => None,
+    })
 }
 
 fn value_to_preview(v: Value) -> Option<ResolvedValue> {
@@ -680,6 +702,37 @@ fn value_to_preview(v: Value) -> Option<ResolvedValue> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn texture_times_follow_each_material_graph_and_surface_fallback() {
+        use openusd::sdf::{Path, Value};
+        let stage = openusd::usd::Stage::builder().in_memory("texture-graphs.usda").unwrap();
+        for (name, times) in [("A", [0.0, 10.0]), ("B", [10.0, 20.0])] {
+            stage.define_prim(format!("/{name}")).unwrap().set_type_name("Material").unwrap();
+            stage.define_prim(format!("/{name}/Surface")).unwrap().set_type_name("Shader").unwrap();
+            stage.create_attribute(format!("/{name}/Surface.info:id"), "token").unwrap()
+                .set(Value::Token("UsdPreviewSurface".into())).unwrap();
+            stage.define_prim(format!("/Texture{name}")).unwrap().set_type_name("Shader").unwrap();
+            stage.create_attribute(format!("/{name}/Surface.inputs:diffuseColor"), "color3f").unwrap()
+                .set_connections([Path::new(&format!("/Texture{name}.outputs:rgb")).unwrap()]).unwrap();
+            let mut file = stage.create_attribute(format!("/Texture{name}.inputs:file"), "asset").unwrap();
+            for time in times {
+                file = file.set_at(Value::AssetPath(openusd::sdf::AssetPath::new("pixel.png")), openusd::usd::TimeCode::new(time)).unwrap();
+            }
+        }
+        stage.define_prim("/A/Unused").unwrap().set_type_name("Shader").unwrap();
+        stage.create_attribute("/A/Unused.inputs:file", "asset").unwrap()
+            .set_at(Value::AssetPath(openusd::sdf::AssetPath::new("unused.png")), openusd::usd::TimeCode::new(999.0)).unwrap();
+        stage.create_attribute("/TextureA.inputs:cycle", "float").unwrap()
+            .set_connections([Path::new("/A/Surface.outputs:surface").unwrap()]).unwrap();
+        let a = Path::new("/A").unwrap();
+        let b = Path::new("/B").unwrap();
+        assert_eq!(super::material_texture_sample_times(&stage, &a).unwrap(), [0.0, 10.0]);
+        assert_eq!(super::material_texture_sample_times(&stage, &b).unwrap(), [10.0, 20.0]);
+        stage.create_attribute("/A/Surface.inputs:emissiveColor", "color3f").unwrap()
+            .set_connections([Path::new("/TextureB.outputs:rgb").unwrap()]).unwrap();
+        assert_eq!(super::material_texture_sample_times(&stage, &a).unwrap(), [0.0, 10.0, 20.0]);
+    }
+
     use super::*;
 
     #[test]
@@ -858,13 +911,71 @@ def Material "Mat" {
             .set(Value::Float(90.0))
             .unwrap();
 
+        assert!(read_preview_material(&stage, &Path::new("/Mat").unwrap()).unwrap().unwrap().uv_transform.is_none());
+        stage.define_prim("/Mat/Tex").unwrap().set_type_name("Shader").unwrap();
+        stage.create_attribute("/Mat/Tex.info:id", "token").unwrap().set(Value::Token("UsdUVTexture".into())).unwrap();
+        stage.create_attribute("/Mat/Tex.inputs:file", "asset").unwrap().set(Value::AssetPath(openusd::sdf::AssetPath::new("pixel.png"))).unwrap();
+        stage.create_attribute("/Mat/Surface.inputs:diffuseColor", "color3f").unwrap()
+            .set_connections([Path::new("/Mat/Tex.outputs:rgb").unwrap()]).unwrap();
+        stage.create_attribute("/Mat/Tex.inputs:st", "float2").unwrap()
+            .set_connections([Path::new("/Mat/Xf.outputs:result").unwrap()]).unwrap();
+
         let read = read_preview_material(&stage, &Path::new("/Mat").unwrap())
             .unwrap()
             .expect("material");
         let uv = read.uv_transform.expect("uv transform");
-        assert_eq!(uv.scale, [2.0, 3.0]);
-        assert_eq!(uv.translation, [0.5, 0.25]);
-        assert_eq!(uv.rotation_deg, 90.0);
+        let expected = bevy::math::Affine2::from_scale_angle_translation([2.0, 3.0].into(), 90_f32.to_radians(), [0.5, 0.25].into());
+        assert!(uv.abs_diff_eq(expected, 1e-6));
+
+        stage.define_prim("/Elsewhere").unwrap().set_type_name("Shader").unwrap();
+        stage.create_attribute("/Elsewhere.info:id", "token").unwrap().set(Value::Token("UsdTransform2d".into())).unwrap();
+        stage.create_attribute("/Elsewhere.inputs:translation", "float2").unwrap().set(Value::Vec2f([0.1, 0.2].into())).unwrap();
+        stage.attribute("/Mat/Tex.inputs:st").unwrap().set_connections([Path::new("/Elsewhere.outputs:result").unwrap()]).unwrap();
+        assert_eq!(read_preview_material(&stage, &Path::new("/Mat").unwrap()).unwrap().unwrap().uv_transform.unwrap().translation, bevy::math::Vec2::new(0.1, 0.2));
+        stage.create_attribute("/Elsewhere.inputs:in", "float2").unwrap().set_connections([Path::new("/Mat/Xf.outputs:result").unwrap()]).unwrap();
+        let chain = read_preview_material(&stage, &Path::new("/Mat").unwrap()).unwrap().unwrap().uv_transform.unwrap();
+        assert!(chain.transform_point2(bevy::math::Vec2::splat(0.25)).abs_diff_eq(bevy::math::Vec2::new(-0.15, 0.95), 1e-6));
+    }
+
+    #[test]
+    fn coordinate_graph_rejects_cycles_and_conflicting_texture_transforms() {
+        let stage = Stage::builder().in_memory("uv-graphs.usda").unwrap();
+        for path in ["/A", "/B", "/Transform", "/Graph"] { stage.define_prim(path).unwrap(); }
+        stage.create_attribute("/Transform.info:id", "token").unwrap().set(Value::Token("UsdTransform2d".into())).unwrap();
+        stage.create_attribute("/Transform.inputs:translation", "float2").unwrap().set(Value::Vec2f([0.0, 0.5].into())).unwrap();
+        stage.create_attribute("/A.inputs:st", "float2").unwrap().set_connections([Path::new("/Transform.outputs:result").unwrap()]).unwrap();
+        let textures = [Path::new("/A").unwrap(), Path::new("/B").unwrap()];
+        assert!(read_uv_transform(&stage, &textures, None).unwrap_err().to_string().contains("per-texture"));
+        stage.create_attribute("/B.inputs:st", "float2").unwrap().set_connections([Path::new("/Transform.outputs:result").unwrap()]).unwrap();
+        assert_eq!(read_uv_transform(&stage, &textures, None).unwrap().unwrap().translation, bevy::math::Vec2::new(0.0, 0.5));
+        stage.attribute("/Transform.inputs:translation").unwrap().set(Value::Vec2f([f32::NAN, 0.0].into())).unwrap();
+        assert!(read_uv_transform(&stage, &textures, None).unwrap_err().to_string().contains("non-finite"));
+        stage.attribute("/A.inputs:st").unwrap().set_connections([Path::new("/Graph.outputs:st").unwrap()]).unwrap();
+        stage.create_attribute("/Graph.outputs:st", "float2").unwrap().set_connections([Path::new("/A.inputs:st").unwrap()]).unwrap();
+        assert!(read_uv_transform(&stage, &textures[..1], None).unwrap_err().to_string().contains("16 connections"));
+    }
+
+    #[test]
+    fn uv_transform_chains_preserve_nonorthogonal_affine_axes() {
+        use bevy::math::{Affine2, Vec2};
+        let stage = Stage::builder().in_memory("uv-shear.usda").unwrap();
+        for path in ["/Texture", "/Outer", "/Inner"] { stage.define_prim(path).unwrap(); }
+        for path in ["/Outer", "/Inner"] {
+            stage.create_attribute(format!("{path}.info:id"), "token").unwrap().set(Value::Token("UsdTransform2d".into())).unwrap();
+        }
+        stage.create_attribute("/Outer.inputs:scale", "float2").unwrap().set(Value::Vec2f([2.0, 3.0].into())).unwrap();
+        stage.create_attribute("/Inner.inputs:rotation", "float").unwrap().set(Value::Float(37.0)).unwrap();
+        stage.create_attribute("/Texture.inputs:st", "float2").unwrap().set_connections([Path::new("/Outer.outputs:result").unwrap()]).unwrap();
+        stage.create_attribute("/Outer.inputs:in", "float2").unwrap().set_connections([Path::new("/Inner.outputs:result").unwrap()]).unwrap();
+        let actual = read_uv_transform(&stage, &[Path::new("/Texture").unwrap()], None).unwrap().unwrap();
+        let expected = Affine2::from_scale(Vec2::new(2.0, 3.0)) * Affine2::from_angle(37_f32.to_radians());
+        assert!(actual.abs_diff_eq(expected, 1e-6));
+        assert!(actual.matrix2.x_axis.dot(actual.matrix2.y_axis).abs() > 1.0);
+        for point in [Vec2::ZERO, Vec2::ONE, Vec2::new(-0.5, 0.25)] {
+            let (sin, cos) = 37_f32.to_radians().sin_cos();
+            let expected = Vec2::new((cos * point.x - sin * point.y) * 2.0, (sin * point.x + cos * point.y) * 3.0);
+            assert!(actual.transform_point2(point).abs_diff_eq(expected, 1e-6));
+        }
     }
 
     #[test]

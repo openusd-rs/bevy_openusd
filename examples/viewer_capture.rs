@@ -35,6 +35,7 @@ struct Capture {
     asset: PathBuf,
     output: PathBuf,
     time: f64,
+    instance_times: Vec<f64>,
     eye: Vec3,
     focus: Vec3,
     started: Instant,
@@ -83,7 +84,18 @@ impl Capture {
         let output = PathBuf::from(&args[1]);
         if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
         Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
-            started: Instant::now(), ready_frames: 0, requested: false, mesh_report: String::new() })
+            instance_times: vec![time], started: Instant::now(), ready_frames: 0, requested: false, mesh_report: String::new() })
+    }
+
+    fn set_instance_times(&mut self, value: &str) -> Result<(), String> {
+        let times = value.split(',').map(|part| part.trim().parse::<f64>()
+            .map_err(|_| "USD_CAPTURE_INSTANCE_TIMES requires comma-separated time codes".to_owned()))
+            .collect::<Result<Vec<_>, _>>()?;
+        if times.len() > 16 || times.iter().any(|time| !time.is_finite()) {
+            return Err("USD_CAPTURE_INSTANCE_TIMES requires 1 to 16 finite time codes".into());
+        }
+        self.instance_times = times;
+        Ok(())
     }
 }
 
@@ -104,6 +116,14 @@ fn main() -> AppExit {
         Err(error) => { eprintln!("asset: {error}"); return AppExit::error(); }
     };
     capture.camera_path = std::env::var("USD_CAPTURE_CAMERA").ok();
+    if let Ok(times) = std::env::var("USD_CAPTURE_INSTANCE_TIMES") {
+        if let Err(error) = capture.set_instance_times(&times) {
+            eprintln!("{error}"); return AppExit::error();
+        }
+    }
+    if capture.instance_times.len() > 1 && capture.camera_path.is_some() {
+        eprintln!("multi-instance capture requires a fixed camera"); return AppExit::error();
+    }
     capture.shadow_maps = match std::env::var("USD_CAPTURE_SHADOWS").as_deref().unwrap_or("scene") {
         "scene" => true,
         "off" => false,
@@ -182,7 +202,11 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
         camera.insert(bevy::core_pipeline::prepass::DeferredPrepass);
     }
     let scene: Handle<UsdScene> = server.load(capture.asset.file_name().unwrap().to_string_lossy().into_owned());
-    commands.spawn((UsdSceneRoot(scene), usd_bevy::instance::UsdInstanceTime { current: capture.time }));
+    for (index, current) in capture.instance_times.iter().copied().enumerate() {
+        let x = (index as f32 - (capture.instance_times.len() - 1) as f32 * 0.5) * 2.5;
+        commands.spawn((UsdSceneRoot(scene.clone()), usd_bevy::instance::UsdInstanceTime { current },
+            Transform::from_xyz(x, 0.0, 0.0)));
+    }
 }
 
 fn fit_capture_grid(
@@ -255,7 +279,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
             _ => return,
         }
     }
-    if states.is_empty() || capture.requested { return; }
+    if states.iter().count() != capture.instance_times.len() || capture.requested { return; }
     if !capture.camera_ready { return; }
     if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, _, _, transform)| transform.map(|error| (prim, error))) {
         eprintln!("capture failed: transform {}: {}", prim.path, error.0);
@@ -348,7 +372,8 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
     let report = format!("asset={asset}\ntime={time}\neye={eye:?}\ntarget={target:?}\nwidth=1280\nheight=720\nformat=rgba8-srgb\nrow_bytes=5120\nbytes={bytes}\nready_frames={frames}\ncpu_skinning={cpu}\n",
         asset = capture.asset.display(), time = capture.time, eye = capture.eye, target = capture.focus,
         bytes = rgba.len(), frames = capture.ready_frames, cpu = std::env::var_os("USD_CPU_SKINNING").is_some());
-    let report = report + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
+    let report = report + &format!("instance_times={:?}\ninstance_spacing=2.5\n", capture.instance_times)
+        + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
         capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &capture.mesh_report;
     std::fs::write(capture.output.with_extension("capture.txt"), report).map_err(|error| format!("metadata write: {error}"))?;
     std::fs::rename(&temporary, &capture.output).map_err(|error| format!("PNG publish: {error}"))?;
@@ -358,6 +383,20 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn instance_time_lists_are_finite_bounded_and_atomic() {
+        let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "3".into()]).unwrap();
+        assert_eq!(capture.instance_times, [3.0]);
+        capture.set_instance_times("0, 10, -2.5").unwrap();
+        assert_eq!(capture.instance_times, [0.0, 10.0, -2.5]);
+        for invalid in ["", "0,", "NaN", "inf", "1e999", "0,nope"] {
+            assert!(capture.set_instance_times(invalid).is_err());
+            assert_eq!(capture.instance_times, [0.0, 10.0, -2.5]);
+        }
+        assert!(capture.set_instance_times(&vec!["0"; 17].join(",")).is_err());
+        capture.set_instance_times(&vec!["0"; 16].join(",")).unwrap();
+        assert_eq!(capture.instance_times.len(), 16);
+    }
     #[test]
     fn authored_camera_selection_waits_for_the_requested_prim() {
         let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();

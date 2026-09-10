@@ -27,10 +27,12 @@ run_example uv_transform_fixture "$output/fixture" > "$output/fixture.log" 2>&1
 run_example scalar_texture_fixture "$output/scalar-fixture" > "$output/scalar-fixture.log" 2>&1
 run_example emissive_texture_fixture "$output/emissive-fixture" > "$output/emissive-fixture.log" 2>&1
 run_example color_texture_fixture "$output/rgb-fixture" > "$output/rgb-fixture.log" 2>&1
+run_example normal_fixture "$output/normal-fixture" > "$output/normal-fixture.log" 2>&1
 printf 'case\tstatus\n' > "$output/results.tsv"
 
 run_case() {
-    local name=$1 live=$2 reference=$3 cpu=$4
+    local name=$1 live=$2 reference=$3 cpu=$4 tolerance=0
+    if [[ "$name" == normal_interface ]]; then tolerance=1; fi
     run_options=()
     unset USD_CPU_SKINNING
     export USD_CAPTURE_INSTANCE_TIMES=0,10 USD_CAPTURE_SWAP_CLOCKS=1
@@ -52,11 +54,11 @@ run_case() {
         grep -qx 'hierarchy_visible_gpu_morph_meshes=0' "$output/$name-reference.capture.txt" || return 1
     fi
     run_options=(RUN_WITH=)
-    run_example capture_compare "$output/$name-live.rgba" "$output/$name-reference.rgba" 0 1280 "$output/$name-diff.png" > "$output/$name-compare.log" 2>&1 || return 1
+    run_example capture_compare "$output/$name-live.rgba" "$output/$name-reference.rgba" "$tolerance" 1280 "$output/$name-diff.png" > "$output/$name-compare.log" 2>&1 || return 1
 }
 
 status=0
-for name in uv texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha; do
+for name in uv texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface; do
     case "$name" in
         uv) live="$output/fixture/mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         texture) live="$output/fixture/file_samples.usda"; reference="$output/fixture/file_reference.usda"; cpu=0 ;;
@@ -68,6 +70,7 @@ for name in uv texture colorspace morph scalar scalar_interface file_interface c
         colorspace_interface) live="$output/scalar-fixture/colorspace_interface_animated.usda"; reference="$output/scalar-fixture/colorspace_reference.usda"; cpu=0 ;;
         emissive) live="$output/emissive-fixture/animated.usda"; reference="$output/emissive-fixture/animated_reference.usda"; cpu=0 ;;
         rgb_emissive|rgb_diffuse|rgb_alpha) semantic=${name#rgb_}; live="$output/rgb-fixture/${semantic}_interface_animated.usda"; reference="$output/rgb-fixture/${semantic}_animated_reference.usda"; cpu=0 ;;
+        normal_interface) live="$output/normal-fixture/interface_animated.usda"; reference="$output/normal-fixture/animated_reference.usda"; cpu=0 ;;
     esac
     if run_case "$name" "$live" "$reference" "$cpu"; then result=ok; else result=failed; status=1; fi
     printf '%s\t%s\n' "$name" "$result" | tee -a "$output/results.tsv"

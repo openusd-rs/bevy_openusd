@@ -52,6 +52,16 @@ def Material "Material" {{
 "#);
         std::fs::write(directory.join(format!("{variant}.usda")), text)?;
     }
+    let mapped = std::fs::read_to_string(directory.join("scaled_mapped.usda"))?
+        .replace("def Material \"Material\" {", "def Material \"Material\" {\n float4 inputs:normal_gain.timeSamples = {0: (0,0.5,0.5,1), 10: (0,-0.5,0.5,1)}")
+        .replace("float4 inputs:scale = (0,0.5,0.5,1)", "float4 inputs:scale.connect = </Material.inputs:normal_gain>");
+    let reference = std::fs::read_to_string(directory.join("scaled_reference.usda"))?;
+    let normal = Vec3::new(0.0, 0.5, 0.5).normalize();
+    let reference = reference.replace(
+        &format!("normal3f[] normals = [({},{},{})] (interpolation = \"constant\")", normal.x, normal.y, normal.z),
+        &format!("normal3f[] normals (interpolation = \"constant\")\n normal3f[] normals.timeSamples = {{0: [(0,{},{})], 10: [(0,{},{})]}}", normal.y, normal.z, -normal.y, normal.z));
+    std::fs::write(directory.join("interface_animated.usda"), mapped)?;
+    std::fs::write(directory.join("animated_reference.usda"), reference)?;
     Ok(())
 }
 
@@ -105,5 +115,26 @@ fn signed_transform_is_limited_to_preview_surface_texture_normals() {
         let stage = usd_bevy::UsdSource::snapshot("normal.usda", text.as_bytes()).unwrap().open_stage().unwrap();
         let read = usd_bevy::read::shade::read_preview_material_at(&stage, &openusd::sdf::path("/Material").unwrap(), None).unwrap().unwrap();
         assert_eq!(read.normal_texture_transform, expected);
+    }
+}
+
+#[test]
+fn animated_normal_interfaces_match_geometry_directions() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("fixture");
+    write_fixture(&directory).unwrap();
+    let open = |name: &str| {
+        let path = directory.join(name);
+        usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap()
+    };
+    let mapped = open("interface_animated.usda");
+    let reference = open("animated_reference.usda");
+    for (time, y) in [(0.0, 0.5), (5.0, 0.0), (10.0, -0.5), (0.0, 0.5)] {
+        let read = usd_bevy::read::shade::read_preview_material_at(&mapped, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
+        assert_eq!(read.normal_texture_transform, Some([[0.0, y, 0.5], [0.0; 3]]));
+        let read = usd_bevy::read::geom::read_mesh_at(&reference, &openusd::sdf::path("/Quad").unwrap(), Some(time)).unwrap().unwrap();
+        let mesh = usd_bevy::mesh::mesh_from_usd(&read);
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
+        for normal in normals { assert!(Vec3::from(*normal).normalize().abs_diff_eq(Vec3::new(0.0, y, 0.5).normalize(), 1e-6)); }
     }
 }

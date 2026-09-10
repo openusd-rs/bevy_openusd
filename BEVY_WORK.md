@@ -25,6 +25,36 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Verify live signed normal interfaces
+
+The normal fixture now generates animated Material normal_gain coefficients and
+an independent animated geometry-normal reference. Its unit test checks normal
+directions at 0/5/10/backward 0. The live-clock suite includes this thirteenth
+case, reversing two existing roots from 0/10 to 10/0 after 30 ready frames.
+All thirteen cases pass: the previous twelve retain strict RGB-zero comparisons;
+normal_interface uses RGB tolerance 1, consistent with the independently computed
+geometry-normal static baseline. A separate strict-zero comparison reports two
+changed pixels of 921600, maximum RGB error 1, not pixel-exact parity.
+Evidence: `target/live-normal-fixed-regression/`, `/tmp/normal-live-fixed-gpu.log`,
+`/tmp/normal-live-strict-compare.log`. Both normal endpoint images were inspected.
+
+An additional manual Make pair reverses 5/10 to 10/5 and compares fresh geometry
+normals at the same clocks. It matches exactly at RGB zero. Both images were
+inspected; metadata confirms two visible meshes and the 30-frame live reversal.
+Evidence: `target/live-normal-fixed-regression/normal-mid-*`,
+`/tmp/normal-mid-{live,reference,compare}.log`. No renderer warnings/errors occurred.
+The midpoint pair is not an additional default suite case.
+
+The first fixture authored interpolation metadata after a timeSamples map, which
+the USDA parser correctly rejected. The generator now authors a separate normal
+attribute declaration for interpolation metadata. Failed evidence is preserved
+in `target/live-normal-regression/` and `/tmp/normal-live-tests.log`.
+All 504 ordinary tests pass (13 ignored), make check-all/build, shell syntax and
+git diff --check pass: `/tmp/normal-live-tests-final.log`,
+`/tmp/normal-live-{check,build}.log`. The full acceptance checklist, general normal
+graph/deformation fidelity, performance evidence and host black-window issue
+remain open.
+
 ### Verify live RGB interfaces and interpolated transforms
 
 The RGB fixture now generates sampled Material rgb_gain interfaces and independent

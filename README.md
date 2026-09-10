@@ -1266,16 +1266,17 @@ mutates the existing roots without reopening the source. The default is 0; other
 values and single-root reversal requests are rejected. Metadata records the
 final clock order and whether the live reversal happened.
 
-Run the strict live-clock GPU regression suite into a new directory:
+Run the live-clock GPU regression suite into a new directory:
 
 ```bash
 make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/live-clock-check' check-live-clocks
 ```
 
-It generates fresh UV/texture/scalar fixtures and compares live clock reversals
-against baked UV, fixed-image, CPU-morph and precomputed scalar-map references.
-All twelve comparisons use zero RGB
-tolerance. Metadata must confirm the reversal and two visible mesh entities;
+It generates fresh UV/texture/scalar/color/normal fixtures and compares live clock
+reversals against independent references. Twelve comparisons use zero RGB
+tolerance; the normal-interface case uses RGB tolerance 1 for the independently
+animated geometry-normal reference, matching the static fixture's precision bound.
+Metadata must confirm the reversal and two visible mesh entities;
 the morph case also verifies shared GPU material use. Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain
 in the output directory, including on failure. This requires native GPU access
@@ -1475,6 +1476,9 @@ RGB scale/bias. Signed normal results are encoded for Bevy as `(value + 1) / 2`
 in a linear float16 texture; canonical scale/bias (2,-1) reuses the original.
 Sampled scale/bias interfaces are read at the requested clock. Other surface
 dialects and `ND_normalmap` wrappers retain their previous handling.
+`interface_animated.usda` animates the normal gain through a Material input;
+`animated_reference.usda` independently animates the geometry normal. The fixture
+test checks directions at times 0/5/10 and backward to 0.
 The scaled mapped/reference capture differs at six pixels by at most RGB 1;
 the canonical case retains its two-pixel RGB-1 difference. Neither is pixel-exact
 reference parity, and general MaterialX normal processing remains unsupported.

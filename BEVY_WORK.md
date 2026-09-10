@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Establish a release-profile editor seek baseline
+
+Built the current editor benchmark with the repository release profile and
+repeated three alternating fresh-process CPU/GPU-prepared pairs after compilation.
+Each run verifies profile=release, document/clock continuity and prepared morph
+counts. Median seek times were 565.161–582.677 us for CPU and
+529.111–589.169 us for GPU-prepared on the two-triangle morph/subset fixture.
+p95 spans 855.684–1222.401 us across both modes. Retained payload counts match
+the debug baseline; this is not GPU execution time, a causal speedup comparison
+or evidence for representative production-scene performance.
+
+Exact release numbers, source revision, methodology and limitations are recorded
+in `benchmarks/morph-tangent-seek.md`. Logs:
+`/tmp/editor-seek-release-build.log`,
+`/tmp/editor-seek-release-{cpu,gpu-prepared}-{1,2,3}.log`.
+No agent-started tests/builds overlapped the measured runs; ambient load was not
+controlled. All three editor benchmark tests pass in release mode afterward:
+`/tmp/editor-seek-release-tests.log`. Documentation-only changes pass diff checks;
+the preceding unchanged source baseline passed 508 ordinary tests/check/build.
+Representative scenes, sustained unique clocks, allocation/RSS/VRAM accounting
+and real rendered frame latency remain open, along with the full checklist.
+
 ### Measure headless editor seek cost and retained morph payload
 
 editor_benchmark accepts an optional `seek` argument: four warmup updates followed

@@ -44,3 +44,31 @@ sampling, routing, cache lookups or editor inspection. They cannot establish
 an optimization benefit or production frame budget. Next measurements need
 release builds, larger authored-UV deformation scenes, sustained clock streams,
 allocation/RSS tracking and actual GPU/frame measurements.
+
+## Release profile follow-up
+
+The optimized build at source commit `ad97199` completed through
+`make build CARGO='cargo --offline' APP_TARGET='--release --example editor_benchmark'`.
+Toolchain: rustc 1.96.0 (ac68faa20), Linux 7.0.0-30-generic. Build log:
+`/tmp/editor-seek-release-build.log`. Each result reports `profile=release`.
+The same three fresh-process alternating pairs and clock sequence were repeated
+with `--release --example editor_benchmark`, after compilation had completed.
+No agent-started tests/builds overlapped the six measured runs; ambient host load
+was not controlled. Logs: `/tmp/editor-seek-release-{cpu,gpu-prepared}-{1,2,3}.log`.
+
+| Mode | Pair | Median us | p95 us | Max us |
+|---|---:|---:|---:|---:|
+| CPU | 1 | 565.161 | 993.687 | 1066.407 |
+| CPU | 2 | 567.792 | 855.684 | 1113.823 |
+| CPU | 3 | 582.677 | 1222.401 | 1339.846 |
+| GPU-prepared | 1 | 589.169 | 1011.783 | 1457.538 |
+| GPU-prepared | 2 | 529.111 | 874.623 | 987.480 |
+| GPU-prepared | 3 | 557.115 | 1041.921 | 1312.512 |
+
+All retained asset/payload counts match the debug runs above. GPU morph entity
+counts remain 0 for CPU and 2 for GPU-prepared. CPU open times were
+6.424/8.006/8.947 ms; GPU-prepared open times were 6.200/6.164/6.308 ms.
+These measurements establish an optimized small-fixture baseline, not a causal
+CPU/GPU-prepared speed comparison. The GPU-prepared route still performs work on
+the CPU and does not execute GPU commands here. Larger scenes, unique sustained
+clocks, allocation/RSS tracking and end-to-end rendering remain unmeasured.

@@ -349,7 +349,7 @@ post-seek retained payloads. Command enqueue and result validation are outside t
 timer. GPU morph entity counts distinguish prepared morphs from CPU fallback.
 These are headless editor update timings, not GPU frame latency or VRAM use.
 The initial [morph-tangent seek measurements](benchmarks/morph-tangent-seek.md)
-record debug-profile CPU and GPU-prepared runs with explicit limitations.
+record debug and release CPU/GPU-prepared runs with explicit limitations.
 
 The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
 GPU deformation routing and measures its retained CPU-side mesh/morph payloads;

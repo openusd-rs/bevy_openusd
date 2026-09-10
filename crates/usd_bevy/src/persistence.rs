@@ -40,6 +40,45 @@ mod tests {
 
     #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_preserves_sublayers_and_external_references() {
+        use crate::editor::{EditorSession, SaveMode};
+        use std::process::Command;
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("weak.usda"), "#usda 1.0\ndef Scope \"Layered\" {\n double score = 11\n}\n").unwrap();
+        fs::write(directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n}\n").unwrap();
+        let source = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Referenced\" (\n prepend references = @model.usda@</Model>\n) {}\n";
+        let original = directory.path().join("source.usda");
+        fs::write(&original, source).unwrap();
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let check = |path: &Path| -> Result<()> {
+            let output = Command::new(&native).arg("--flatten").arg(path).output().context("launch native USD reader")?;
+            ensure!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let stage = crate::UsdSource::new(directory.path().join("native.usda"), output.stdout)?.open_stage()?;
+            for (prim, expected) in [("/Layered", 11.0), ("/Referenced", 23.0)] {
+                let value = stage.prim(prim)?.attribute("score").get::<f64>()?;
+                ensure!(value == Some(expected), "{prim}: expected {expected}, got {value:?}");
+            }
+            Ok(())
+        };
+        check(&original).expect("native source control");
+        let stage = crate::UsdSource::new(&original, source.as_slice()).unwrap().open_stage().unwrap();
+        let editor = EditorSession::new(stage);
+        let mut failures = Vec::new();
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            for extension in ["usda", "usdc", "usd", "usdz"] {
+                let destination = directory.path().join(format!("{name}.{extension}"));
+                editor.save(destination.to_str().unwrap(), mode).unwrap();
+                if let Err(error) = check(&destination) {
+                    failures.push(format!("{name}.{extension}: {error:#}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "native composition failures:\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_preserves_hierarchy_values_and_api_metadata() {
         use crate::editor::{EditorSession, SaveMode};
         use std::process::Command;

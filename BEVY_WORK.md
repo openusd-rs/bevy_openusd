@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Extended native persistence coverage to sublayers and external references in all
+12 root/edit/flattened x usda/usdc/usd/usdz combinations. Before the fix, native
+composition lost the sublayer in root/edit binary exports. Corrected the vendored
+writer to emit subLayers as non-array StringVector; ordinary string arrays are
+unchanged. Updated the binary patch artifact and provenance. Wire regressions
+cover 0/1/3 items. Upstream validation passes 1,585 core tests and 56 binary fixture
+roundtrips; the expanded native gate passes both fixtures, totaling 24 save checks.
+Logs: `/tmp/native-layered-gate.log` (failure before fix),
+`/tmp/native-layered-packages.log` (pass after), `/tmp/upstream-sublayer-tests.log`.
+These exports remain beside their external dependencies: portable packaging and
+cross-directory Save As have not been certified by these tests.
+
+Repository validation: 361 ordinary tests pass with two optional native tests
+ignored; check-all, build and whitespace checks pass. Logs:
+`/tmp/native-layered-{tests,check,build}.log`. Both recorded patch files pass
+reverse-apply checks against the integrated source.
+
 Integrated both writer patches through the root Cargo patch table and the new
 `vendor/openusd` snapshot (389 files, approximately 7.5 MiB on disk). The base is
 still upstream HEAD b7df5ad, rechecked on 2026-09-10. All three packages resolve

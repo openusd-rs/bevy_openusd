@@ -16,6 +16,9 @@ Changes from the base source are exactly the two patches in the project root:
 - `patches/openusd-singleton-listops.patch`
 - `patches/openusd-token-vector-fields.patch`
 
+The binary metadata patch includes sublayer StringVector encoding as well as
+token-vector child/order fields and variant-set StringListOp encoding.
+
 The root Cargo patch table redirects all three Git dependency packages here.
 Keep the Git revision declarations: they record the baseline for removing this
 override when the fixes become available upstream. The patches are applied to

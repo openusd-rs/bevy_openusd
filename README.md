@@ -811,3 +811,7 @@ temporary overrides. Ordinary Rust self-reopen tests are not a replacement.
 The fixture covers selected scene data, not arbitrary lossless interchange.
 See `vendor/openusd/VENDORED.md` for provenance and `OPENUSD_UPGRADE.md` for the
 remaining compatibility findings.
+
+A second native fixture checks sublayers and external references in all three
+save modes and four formats. These checks keep exports beside their dependencies;
+they do not certify cross-directory Save As or self-contained USDZ packaging.

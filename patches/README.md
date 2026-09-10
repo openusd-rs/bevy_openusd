@@ -45,13 +45,14 @@ interpretation is correct. That discrepancy remains open.
 `openusd-token-vector-fields.patch` applies to the same revision and is independent
 of the text patch. It encodes the eight native token-vector fields (child lists
 and ordering) as non-array TokenVector values, while ordinary token arrays keep
-their array representation. It also emits variantSetNames token list operations
+their array representation. Sublayer paths use non-array StringVector values,
+while ordinary string arrays retain their array representation. It also emits variantSetNames token list operations
 as native StringListOp values with string-table indices. These types follow the
 [native schema definitions](https://github.com/PixarAnimationStudios/OpenUSD/blob/v25.05/pxr/usd/sdf/schema.cpp).
 
-Wire-format regressions cover empty, singleton and multi-item vectors, ordinary
-token arrays, and all six variant-set list operations. Both patches together pass
-1,584 upstream core tests and 56 binary fixture roundtrips.
+Wire-format regressions cover empty, singleton and multi-item token/string
+vectors, ordinary arrays, and all six variant-set list operations. Both patches
+together pass 1,585 upstream core tests and 56 binary fixture roundtrips.
 
 With both patches temporarily supplied to the actual Bevy workspace, the native
 editor gate passes all 12 save-mode/format combinations, including selected
@@ -59,6 +60,11 @@ variant composition from `assets/native_save.usda`. The text patch fixes both
 root/edit and flattened singleton API metadata; those native errors did not
 require separate text fixes. These results do not establish arbitrary layer,
 reference, payload, animation or material interchange.
+
+After integration, the native gate also covers sublayers and external references
+in the same directory across all 12 save-mode/format combinations. Combined with
+the variant fixture, this is 24 native save checks. It does not prove that USDZ
+contains its external dependencies or remains portable when moved away from them.
 
 The normal `make test-native` now uses both fixes without command-line overrides.
 To review them independently, apply both to a separate checkout of the recorded

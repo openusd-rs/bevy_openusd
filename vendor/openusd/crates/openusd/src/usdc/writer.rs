@@ -128,6 +128,7 @@ impl<'w, W: Write + Seek> Packer<'w, W> {
                         name
                     };
                     let rep = match (&*token, &value) {
+                        ("subLayers", Value::StringVec(items)) => self.write_string_vec(Type::StringVector, items)?,
                         ("variantSetNames", Value::TokenListOp(op)) => {
                             self.write_listop(Type::StringListOp, op, |writer, items| {
                                 writer.write_count(items.len() as u64)?;
@@ -846,7 +847,7 @@ impl<'w, W: Write + Seek> Packer<'w, W> {
             let sidx = self.intern_string(s.as_ref());
             self.write_pod(&sidx)?;
         }
-        Ok(rep_heap(ty, off, true))
+        Ok(rep_heap(ty, off, ty != Type::StringVector))
     }
 
     fn write_dictionary(&mut self, d: &HashMap<String, Value>) -> Result<ValueRep, FormatError> {
@@ -1178,6 +1179,35 @@ mod tests {
     use super::*;
     use crate::sdf::{Data, SpecType};
     use std::io::Cursor;
+
+    #[test]
+    fn sublayer_paths_use_string_vectors_not_arrays() {
+        for count in [0, 1, 3] {
+            let mut data = Data::new();
+            let root = Path::abs_root();
+            data.create_spec(root.clone(), SpecType::PseudoRoot);
+            let paths: Vec<String> = (0..count).map(|i| format!("layer{i}.usda")).collect();
+            data.set_field(&root, "subLayers", Value::StringVec(paths.clone()));
+            data.set_field(&root, "customStrings", Value::StringVec(paths.clone()));
+            let mut output = Cursor::new(Vec::new());
+            CrateWriter::write(&data, &mut output).unwrap();
+            let bytes = output.into_inner();
+            let file = super::super::CrateFile::open(Cursor::new(&bytes)).unwrap();
+            for field in &file.fields {
+                let array = file.tokens[field.token_index] == "customStrings";
+                assert_eq!(
+                    field.value_rep.ty().unwrap(),
+                    if array { Type::String } else { Type::StringVector }
+                );
+                assert_eq!(field.value_rep.is_array(), array);
+            }
+            let reopened = super::super::CrateData::open(Cursor::new(bytes), true).unwrap();
+            assert_eq!(
+                reopened.get_field(&root, "subLayers").unwrap().into_owned(),
+                Value::StringVec(paths)
+            );
+        }
+    }
 
     #[test]
     fn variant_set_names_use_string_listops() {

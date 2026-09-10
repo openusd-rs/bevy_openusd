@@ -2,6 +2,17 @@
 
 ## Integrated writer fixes
 
+Native layered-scene checks exposed and fixed an additional binary mismatch:
+subLayers must use a non-array StringVector, not a string array. Root/edit USDC
+and USD exports previously lost the weak layer under native composition. The
+updated binary patch includes this correction with 0/1/3-element wire regressions
+and checks that ordinary string arrays remain arrays. Native tests now pass
+24 save checks: 12 for hierarchy/variants/API metadata and 12 for sublayers and
+external references, all saved beside their dependencies. USDZ portable bundling
+and cross-directory asset-path preservation remain separate acceptance work.
+Logs: `/tmp/native-layered-gate.log` (before),
+`/tmp/native-layered-packages.log` (after), `/tmp/upstream-sublayer-tests.log`.
+
 The root Cargo patch table now uses the additive `vendor/openusd` snapshot for
 all three OpenUSD packages. Its upstream baseline remains b7df5ad, rechecked as
 upstream HEAD on 2026-09-10. Only the two recorded writer patches differ from

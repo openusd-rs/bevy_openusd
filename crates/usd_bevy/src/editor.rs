@@ -205,7 +205,8 @@ fn process_commands(world: &mut World) {
             }
         }
     }
-    let document = session.as_ref().map(EditorSession::snapshot).transpose();
+    let time = world.resource::<crate::route::StageTime>().current;
+    let document = session.as_ref().map(|session| session.snapshot_at(Some(time))).transpose();
     if let Ok(mut state) = bridge.0.lock() {
         match document {
             Ok(Some(document)) => state.view.document = document,
@@ -362,6 +363,7 @@ pub struct AttributeSnapshot {
     pub name: String,
     pub type_name: String,
     pub value: Option<Value>,
+    pub sampled_matrix: Option<[f64; 16]>,
     pub source: String,
     pub source_summary: String,
     pub sample_times: Vec<f64>,
@@ -371,6 +373,7 @@ pub struct AttributeSnapshot {
 #[derive(Debug, Clone, Default)]
 pub struct EditorSnapshot {
     pub document_id: u64,
+    pub sample_time: Option<f64>,
     pub asset_info: Option<crate::read::geom::CustomDict>,
     pub render_issues: Vec<String>,
     pub reflect_issues: Vec<crate::route::reflect::ReflectIssue>,
@@ -515,8 +518,15 @@ impl EditorSession {
     }
 
     pub fn snapshot(&self) -> anyhow::Result<EditorSnapshot> {
+        self.snapshot_at(None)
+    }
+
+    /// Inspects defaults and optionally samples scalar matrix attributes at scene time.
+    pub fn snapshot_at(&self, time: Option<f64>) -> anyhow::Result<EditorSnapshot> {
+        anyhow::ensure!(time.is_none_or(f64::is_finite), "inspection time must be finite");
         let mut snapshot = EditorSnapshot {
             document_id: self.document_id,
+            sample_time: time,
             layers: self.stage.layer_stack(),
             edit_layer: self.stage.edit_target().layer_identifier().to_string(),
             selected: self.selected.clone(),
@@ -559,10 +569,18 @@ impl EditorSession {
             snapshot.relationships.sort_by(|a, b| a.0.cmp(&b.0));
             for attribute in prim.attributes()? {
                 let info = attribute.resolve_info_at(None)?;
+                let type_name = attribute.type_name()?.map(|ty| ty.to_string()).unwrap_or_default();
+                let sampled_matrix = if type_name == "matrix4d" && time.is_some() {
+                    match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+                        Some(Value::Matrix4d(matrix)) => Some(matrix.0),
+                        _ => None,
+                    }
+                } else { None };
                 snapshot.attributes.push(AttributeSnapshot {
                     name: attribute.path().as_str().rsplit('.').next().unwrap_or_default().to_string(),
-                    type_name: attribute.type_name()?.map(|ty| ty.to_string()).unwrap_or_default(),
+                    type_name,
                     value: attribute.get::<Value>()?,
+                    sampled_matrix,
                     source: format!("{:?}: {:?}", info.source(), info.node()),
                     source_summary: match info.node() {
                         Some(node) => format!("{:?} / {:?}\n{}", info.source(), node.arc(), node.path()),
@@ -601,6 +619,49 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_matrix_inspection_maps_scene_time_without_authoring() {
+        let stage = crate::UsdSource::new("sampled-matrix-inspection.usda", include_bytes!("../../../assets/xform_animation.usda").as_slice())
+            .unwrap().open_stage().unwrap();
+        stage.define_prim("/M").unwrap().set_type_name("Xform").unwrap();
+        crate::authoring::set_references(&stage, "/M", &[openusd::sdf::Reference {
+            prim_path: openusd::sdf::path("/Affine").unwrap(),
+            layer_offset: openusd::sdf::LayerOffset { offset: 10.0, scale: 2.0 },
+            ..Default::default()
+        }]).unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        editor.select(Some("/M".into())).unwrap();
+        let defaults = editor.snapshot().unwrap();
+        assert_eq!(defaults.sample_time, None);
+        assert!(defaults.attributes.iter().all(|attribute| attribute.sampled_matrix.is_none()));
+        for (time, shear) in [(10.0, 0.0), (15.0, 0.5), (20.0, 1.0)] {
+            let snapshot = editor.snapshot_at(Some(time)).unwrap();
+            assert_eq!(snapshot.sample_time, Some(time));
+            let attribute = snapshot.attributes.iter().find(|attribute| attribute.name == "xformOp:transform").unwrap();
+            assert_eq!(attribute.value, None);
+            assert_eq!(attribute.sample_times, vec![10.0, 20.0, 30.0]);
+            assert_eq!(attribute.sampled_matrix.unwrap(), [1.0,0.0,0.5 * shear,0.0, 0.75 * shear,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0]);
+        }
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(editor.snapshot_at(Some(invalid)).is_err());
+        }
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(!editor.snapshot().unwrap().can_undo);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.insert_non_send(editor);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Seek(15.0)).unwrap();
+        app.update();
+        let published = bridge.view().unwrap();
+        assert_eq!(published.document.sample_time, Some(15.0));
+        assert_eq!(published.timeline.current, 15.0);
+        let sampled = published.document.attributes.iter().find(|attribute| attribute.name == "xformOp:transform").unwrap().sampled_matrix.unwrap();
+        assert_eq!(sampled[2], 0.25);
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
 
     #[test]
     fn matrix_edit_restores_exact_animated_stack_on_undo() {

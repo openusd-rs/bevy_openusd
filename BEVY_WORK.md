@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Sampled matrix inspection and draft loading
+
+`EditorSession::snapshot_at` optionally resolves scalar `matrix4d` attributes at
+a labelled scene time while preserving the separate default-value snapshot.
+The editor bridge supplies its timeline time. Other attribute types, including
+large matrix arrays, are not additionally sampled by this path.
+The matrix inspector's Load sampled matrix action copies that value into the
+draft and sets the apply-sample time field without sending an authoring command.
+Drafts are not automatically replaced during playback.
+
+Tests cover internal-reference time offset/scale mapping, interpolation, absent
+defaults, invalid inspection times, unchanged authored source/history and bridge
+publication after Seek. Native clicking of the draft-load action remains open;
+the snapshot and existing parse/authoring tests do not certify native input.
+The time-5 inspector state was captured and inspected at
+`target/viewer-ui-captures/matrix-sample-load5.png`: the load action displays
+time 5, while the untouched identity draft remains separate. The capture-time
+environment setting requires `USD_SCREENSHOT`; the initial UI-only run did not
+set it and stayed at time 0. Corrected log: `/tmp/matrix-sample-load5-ui.log`.
+All 407 ordinary tests pass, seven native tests ignored; check-all, build and
+whitespace checks pass. Logs: `/tmp/matrix-sample-inspection-{tests,check,build}.log`.
+
 ### Four-row matrix attribute inspector
 
 The inspector now edits `matrix4d` values in four USD rows, with an explicit

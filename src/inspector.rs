@@ -150,6 +150,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     let mut matrix_pods = Vec::new();
     for attribute in &snapshot.attributes {
         let matrix_attribute = attribute.type_name == "matrix4d";
+        let sampled_time = snapshot.sample_time;
         let key = format!("{}:{}:{path}:{}", snapshot.document_id, snapshot.edit_layer, attribute.name);
         let attribute = attribute.clone();
         let path = path.clone();
@@ -159,22 +160,34 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let summary_lines = path_lines(&attribute.source_summary);
         let expanded = drafts.2.lock().ok().and_then(|states| states.get(&key).copied()).unwrap_or(false);
         let sample_lines = path_lines(&sample_summary(&attribute.sample_times));
-        let units = 16 + summary_lines.len() + sample_lines.len() + if expanded { source_lines.len() } else { 0 } + if matrix_attribute { 5 } else { 0 };
+        let units = 16 + summary_lines.len() + sample_lines.len() + if expanded { source_lines.len() } else { 0 } + if matrix_attribute { 6 } else { 0 };
         let destination = if matrix_attribute { &mut matrix_pods } else { &mut pods };
         destination.push(Pod::new(Id::new(&key)).with_custom_units(units, move |ui| {
             ui.label(&format!("{} ({})", attribute.name, attribute.type_name));
             if matrix_attribute {
-                if attribute.value.is_none() { ui.label("No default: identity draft, not sampled pose"); }
+                if attribute.value.is_none() { ui.label("No authored default; edits are a draft"); }
                 let value = attribute.value.clone().or_else(|| value_template("matrix4d")).unwrap();
                 let Some(current) = editable_text(&value) else { ui.label("Invalid matrix value"); return };
                 let Ok(mut state) = drafts.0.lock() else { return };
                 let draft = state.entry(key.clone()).or_insert_with(|| (current.clone(), current.clone(), String::new()));
                 if draft.0 != current { *draft = (current.clone(), current, String::new()); }
+                let mut loaded = None;
+                if let Some((time, matrix)) = sampled_time.zip(attribute.sampled_matrix) {
+                    if ui.button(&format!("Load sampled matrix at {time}")).clicked {
+                        draft.1 = editable_text(&Value::Matrix4d(openusd::gf::Matrix4d(matrix))).unwrap();
+                        draft.2.clear();
+                        loaded = Some(time);
+                    }
+                }
                 ui.label("USD rows; translation is in row 4");
                 let mut rows: Vec<String> = draft.1.split('\n').map(str::to_owned).collect();
                 rows.resize(4, String::new());
                 for (index, row) in rows.iter_mut().enumerate() { ui.text_input(row, &format!("Row {}: four numbers", index + 1)); }
                 draft.1 = rows.join("\n");
+                drop(state);
+                if let Some(time) = loaded {
+                    if let Ok(mut times) = drafts.1.lock() { times.insert(key.clone(), (time.to_string(), String::new())); }
+                }
             }
             ui.label("Source");
             for line in summary_lines { ui.label(&line); }

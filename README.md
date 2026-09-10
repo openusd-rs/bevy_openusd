@@ -891,7 +891,9 @@ The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a
 default or a time sample using the ordinary attribute controls; these edits keep
 the existing transform-op order. Sample-only attributes start with an explicitly
-labelled identity draft, not the evaluated timeline pose. Use the separate
+labelled identity draft, not the evaluated timeline pose. “Load sampled matrix”
+copies the matrix at the labelled scene time into the draft and sets the sample
+time field; loading alone does not author USD. Use the separate
 `TransformMatrix` API only when replacing the complete stack is intended.
 
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves

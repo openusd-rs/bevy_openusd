@@ -884,8 +884,48 @@ For grouped, matrix-preserving editor undo, use
 with a static matrix and explicit reset state, clearing local samples on its
 matrix/order attributes. Other op attributes remain authored but inactive.
 Undo restores the previous authored fields and samples rather than decomposing
-the old transform into TRS. The legacy `live::TransformHistory` still stores
-decomposed TRS and is not suitable for exact affine/animated-stack restoration.
+the old transform into TRS. The lossy `live::TransformHistory` API has been
+removed; use the same `EditorSession` for transform and other document edits.
+For Bevy TRS input, convert `transform.to_matrix().to_cols_array().map(f64::from)`
+to the command's matrix field and choose the reset state explicitly.
+
+`EditorEdit::Batch(Vec<EditorEdit>)` applies a sequence, including nested batches,
+as one undo step. A failed child edit rolls back preceding changes in the batch;
+empty batches leave undo/redo intact. Selection follows namespace edits in order,
+and the editor bridge remaps existing Bevy entities in reverse order during undo.
+For example, group a `Define`, its `Attribute` edits and a `TransformMatrix` to
+create a configured assembly with a single history entry. All children use the
+session's current edit target. This groups history and rollback, not stage-sink
+notifications: upstream still emits each constituent transaction.
+
+Run the assembly walkthrough with:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example editor_assembly' ARGS='target/editor_assembly.usda'
+make run ARGS='target/editor_assembly.usda'
+```
+
+It builds a typed Sphere source in memory, composes two colored reference sites
+through a reusable batch function, verifies one-step undo/redo and a live affine
+edit, then saves and reopens a flattened scene. The optional output also supports
+USDC and USDZ. Reference sites stay typeless so they inherit the model's schema.
+This is an executable composition recipe, not a new typed scene DSL.
+
+TRS-only reads (`read_transform` / `read_transform_at`) reject shear, projective
+matrices and degenerate decompositions instead of returning misleading TRS.
+Use `read_transform_stack_at` or `read_transform_stack_f64_at` for full matrices.
+The renderer still preserves finite affine shear/singular transforms through its
+residual path. `live::current_transform` returns `None` on a TRS read error;
+`route::xform::transform_of` retains its documented identity-on-error fallback.
+
+`make run RUN_WITH= APP_TARGET='--example normal_fixture' ARGS='target/normal_probe'`
+creates a new directory containing a normal-mapped quad, an equivalent
+explicit-normal reference and an opposite-Y control. It refuses overwrites.
+The 8-bit map uses raw color space and scale/bias (2,-1), following the
+[UsdPreviewSurface normal specification](https://openusd.org/24.08/spec_usdpreviewsurface.html).
+Bevy's tangent generation already compensates the relevant handedness change;
+adding a second normal-map Y flip would break this fixture. This checks a static
+constant map, not arbitrary texture transforms, scale/bias or deformed tangents.
 
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a
@@ -901,6 +941,23 @@ matrix widgets through `USD_UI_REPLAY` in the fixed 1600x1000 private capture
 layout. The edit/undo sequences reload the time sample after applying or undoing
 it, checking the authored result rather than only the text draft. See
 `BEVY_WORK.md` for capture settings and inspected evidence.
+
+`assets/xform_half.usda` exercises half-precision translation, rotation and scale
+against `assets/xform_half_reference.usda` using double-precision attributes.
+Unsupported op kinds or value types now produce transform diagnostics instead
+of disappearing into identity. Half-quaternion orientation is covered by
+`assets/xform_quath.usda` and its native-USD-derived matrix reference. Quaternion
+conversion preserves the real-component angle and normalizes the imaginary axis;
+it does not normalize the entire quaternion. Scalar-axis translation/scale ops
+are exercised by `assets/xform_scalar_axes.usda`. Adjacent op/inverse pairs
+cancel before evaluation. For compatibility with native OpenUSD 25.05.01,
+an unpaired inverse scalar-axis scale negates its value; vector-scale inverses
+instead use reciprocals. These two forms are not interchangeable.
+
+Local op stacks compose in double precision before final conversion for Bevy.
+`read::xform::read_transform_stack_f64_at` exposes that result directly;
+`assets/xform_precision.usda` demonstrates large offsets cancelling to a one-unit
+translation. This does not provide double-precision world/hierarchy transforms.
 
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset

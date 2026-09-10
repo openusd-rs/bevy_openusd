@@ -5813,6 +5813,7 @@ dependencies = [
  "openusd",
  "openusd-schemas",
  "rfd",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "usd_bevy",

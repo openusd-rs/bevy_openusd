@@ -25,6 +25,239 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Normal-map orientation probe
+
+Added `examples/normal_fixture.rs`, which generates a raw 8-bit tangent-normal
+map, its equivalent explicit-normal quad and an opposite-Y control in a new
+directory. The source follows the canonical USD PreviewSurface scale/bias rule:
+https://openusd.org/24.08/spec_usdpreviewsurface.html . The CPU regression verifies
+the actual generated tangent basis maps the sampled vector to the expected world
+normal and that an extra Y flip produces a different vector. Bevy 0.19.1's
+`bevy_mesh/src/mikktspace.rs` already negates tangent handedness after generation;
+no renderer flip or other speculative material change was made.
+
+All three GPU captures were inspected at eye (0,1,5), focus (0,1,0), time 0,
+shadows off: `target/normal_before_{mapped,reference}.png` and
+`target/normal_opposite.png`. Mapped vs equivalent differs at only two of 921,600
+pixels, maximum RGB error 1 (strict-zero comparison exits nonzero). The opposite
+control changes 121,104 pixels, maximum 163, mean RGB error 19.492016, visibly
+darkening the quad. All captures have CAPTURE_OK without WARN/ERROR entries.
+Logs: `/tmp/normal-before-{mapped,reference,compare}.log`,
+`/tmp/normal-opposite-{capture,compare}.log`.
+
+All 423 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and generator execution (`/tmp/normal-fixture-{tests,check,build,run}.log`).
+This verifies a static constant normal map and orientation-sensitive reference,
+not arbitrary shader scale/bias, UV transforms, deformed tangent fidelity or
+native-renderer image parity.
+
+### Guarded public TRS reads
+
+Moved the renderer's guarded TRS decomposition into one internal reader helper.
+Public `read_transform`/`read_transform_at` now use the same checks and return an
+explicit matrix-API diagnostic for shear, projective or degenerate matrices,
+rather than silently returning a lossy/invalid decomposition. Reflection and
+ordinary rotated TRS still round-trip within the existing float tolerance.
+The renderer retains its finite-affine residual fallback, including singular and
+tiny scales; full-matrix reader behavior is unchanged.
+
+The new regression exercises public reads with shear, zero/tiny scale, projective
+and reflected/rotated matrices. Existing runtime propagation and reset/history
+tests exercise the shared implementation. `live::current_transform` maps these
+errors to None and `transform_of` maps them to identity as documented; neither
+helper is an exact full-matrix API.
+All 422 ordinary tests pass (seven native export tests ignored), plus clean
+check-all, build and whitespace checks (`/tmp/trs-reader-{tests,check,build}.log`).
+The assembly was recaptured and inspected at the same fixed camera:
+`target/trs_guard_assembly.png`. All 921,600 RGB pixels match the pre-refactor
+capture at zero tolerance; CAPTURE_OK without WARN/ERROR entries. Logs:
+`/tmp/trs-guard-{capture,compare}.log`.
+
+### Shared captured-asset read handles
+
+Captured root/dependency asset opens now retain an Arc-backed read cursor rather
+than cloning the entire byte payload into a new Vec. Handles have independent
+seek positions and remain usable after the resolver/source is dropped, including
+transfer to another thread. The regression verifies the exact shared-ownership
+count for root and dependency handles, cursor independence, EOF/rewind/end-relative
+seeks, invalid backward seeks and source-lifetime independence.
+
+This removes one full-buffer copy per captured asset handle, not all parser or
+texture copies. `read_all` still allocates its output, and ZIP entry extraction
+still allocates bounded decompressed bytes. No end-to-end speedup or peak-RSS
+reduction is claimed without a separate measurement.
+All 421 ordinary tests and all seven optional native export tests pass, plus
+check-all, build and whitespace checks. Logs:
+`/tmp/shared-source-{tests,native,check,build}.log`.
+
+### Runnable grouped assembly walkthrough
+
+Added `examples/editor_assembly.rs`: a reusable batch recipe composes two colored
+reference sites from a canonical typed Sphere source captured entirely in memory.
+It verifies creation, one-step undo/redo, inherited schema/radius, live affine
+editing with entity/runtime-name preservation, and optional flattened export.
+The regression saves and reopens USDA, USDC and USDZ, checking both transforms,
+radii and colors. Root dev-dependency `tempfile` supplies isolated test outputs;
+the scene's composition itself does not materialize source files.
+
+All 420 ordinary tests pass (seven native export tests ignored), plus check-all,
+build, the runnable example and whitespace checks. Logs:
+`/tmp/editor-assembly-{tests,check,build,run}.log`. The generated
+`target/editor_assembly.usda` was captured on NVIDIA/Vulkan at time 0 with eye
+(6,4,8), focus (0,1,0). `target/editor_assembly.png` was inspected: the warm sphere
+and cool sheared/elongated sphere have the expected distinct poses and colors.
+Capture reports CAPTURE_OK without WARN/ERROR entries
+(`/tmp/editor-assembly-capture.log`). This is a focused executable walkthrough,
+not the complete flagship showcase, native-renderer parity or a new typed DSL.
+
+### Grouped editor commands
+
+Added `EditorEdit::Batch(Vec<EditorEdit>)` for ordered, nested command groups with
+one canonical history entry. Failure rolls back completed child transactions;
+empty groups preserve redo. Selection changes compose in child order. The bridge
+now collects all namespace movements and reverses both direction and order for
+undo, preserving runtime entities across chained renames/moves.
+
+Tests build a configured assembly through a nested batch, compare exact layer
+data after undo/redo, verify failed-batch rollback without losing prior redo,
+and exercise nested namespace batches through the real editor/live Bevy schedule
+while checking selection, entity identity and runtime children. Groups use one
+edit target; stage sinks still observe constituent transactions. This is grouped
+document authoring, not a completed typed scene DSL or observer-isolated commit.
+All 419 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks. Logs: `/tmp/editor-batch-{tests,check,build}.log`.
+
+### One canonical transform history
+
+Removed `live::TransformHistory` and its TRS snapshot/inverse-edit implementation.
+Transform undo now has the same public owner as other document edits:
+`EditorSession::edit(EditorEdit::TransformMatrix { prim, matrix, reset })`.
+This is an API removal, with a migration recipe in README and no compatibility
+shim. Low-level `live::author_transform` remains a non-undoable TRS writer;
+`live::current_transform` remains a lossy TRS read, not an undo snapshot API.
+
+The former two-edit history regression now uses the canonical session and checks
+exact layer text before/after full undo/redo. A new real Bevy propagation test
+edits a reset-stack shear into an inherited translation, then undo/redo/undo
+restores the correct global matrix, reset override and exact layer data while
+retaining the projected entity and its runtime name. Existing animated-stack,
+mapped-edit-target and save/reopen history regressions remain in the full suite.
+This does not add a gizmo widget or native OS input acceptance.
+All 418 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks. Logs: `/tmp/canonical-transform-{tests,check,build}.log`.
+
+### Range-safe vector-scale inverses
+
+Inverse vector scale ops now use component reciprocals rather than a generic
+matrix determinant/inverse. This accepts finite scales such as 1e-200 and 1e200
+whose determinants underflow or overflow while their reciprocals remain finite.
+Zero components, non-finite input and overflowing reciprocals remain errors.
+Scalar-axis inverse behavior is unchanged. Arbitrary matrix-op inversion still
+uses the generic matrix inverse and does not gain this range guarantee.
+
+The regression checks positive/negative components at both extremes and the
+invalid cases. Native OpenUSD 25.05.01 returns the same reciprocal matrices for
+both extremes (`/tmp/native-inverse-range.log`).
+All 417 ordinary tests pass (seven native export tests ignored), together with
+check-all, build and whitespace checks. Gate logs:
+`/tmp/xform-inverse-range-{tests,check,build}.log`.
+
+### Double-precision local transform composition
+
+The reader now composes local op matrices in f64 and converts only the final
+matrix to Bevy's f32 representation. `read_transform_stack_f64_at` exposes the
+double result and reset flag; the existing float API diagnoses final values
+outside f32 range. This preserves small residuals such as 100000001 - 100000000
+and allows individually large/small scale ops whose product fits the renderer.
+It does not make Bevy hierarchy/global propagation double precision or eliminate
+precision loss between separately projected parent/child transforms.
+
+Tests cover the one-unit residual, a sub-f32 residual retained by the f64 API,
+large/small finite scale composition and explicit final-range rejection. Existing
+half, quaternion, scalar-axis and inverse tests continue to exercise the reader.
+Native OpenUSD 25.05.01 confirms the one-unit local result for
+`assets/xform_precision.usda` (`/tmp/native-double-stack.log`). Its reference is
+`assets/xform_precision_reference.usda`, which authors a direct translation.
+Both fixed-camera captures were inspected and have identical RGB pixels at
+strict zero tolerance (921,600 pixels), CAPTURE_OK and no WARN/ERROR entries.
+Images: `target/xform_precision{,_reference}.png`; comparison:
+`/tmp/xform-precision-compare.log`. The original precision gates passed:
+`/tmp/xform-double-{tests,check,build}.log`.
+
+### Scalar-axis transforms and adjacent inverse cancellation
+
+Added translateX/Y/Z and scaleX/Y/Z with half/float/double scalar decoding.
+Adjacent op/inverse pairs cancel before evaluating either op, including singular
+scales and inverse-first pairs. Non-adjacent pairs are not recursively removed.
+Native OpenUSD 25.05.01 probes confirm cancellation and its unusual unpaired
+scalar-axis inverse-scale behavior: negate the scalar, unlike reciprocal vector
+scale. The reader follows that native behavior explicitly rather than claiming
+these forms are interchangeable. Probe logs:
+`/tmp/native-axis-inverses-final.log`, `/tmp/native-singular-pair.log`.
+
+Tests compare the mixed-precision `assets/xform_scalar_axes.usda` stack against
+the existing double-vector fixture, verify per-axis inverse values, and exercise
+singular/direct/inverse-first cancellation. Broader animated/native-version
+compatibility of the scalar-axis inverse behavior remains open.
+Both scalar-axis and vector reference captures were inspected at time 0, eye
+(6,4,8), focus (0,1,0): `target/scalar-xform_{scalar_axes,half_reference}.png`.
+All 921,600 pixels match at strict zero tolerance, with CAPTURE_OK and no
+WARN/ERROR entries in the capture logs. Logs:
+`/tmp/scalar-xform_{scalar_axes,half_reference}-capture.log`,
+`/tmp/scalar-axes-compare.log`. All 414 ordinary tests pass (seven native export
+tests ignored), with check-all, build and whitespace checks passing. Gate logs:
+`/tmp/scalar-axes-{tests,check,build}.log`.
+
+### Native-compatible quaternion conversion and half orientations
+
+The earlier unit-length rejection was too strict: native OpenUSD derives an
+axis-angle rotation from the real component and normalized imaginary axis, not
+from a normalized whole quaternion. Conversion now preserves this behavior in
+double precision before producing the float render matrix and accepts quath,
+quatf and quatd. Imaginary-axis lengths at or below 1e-10 produce identity;
+non-finite values and overflowing axis lengths remain diagnostic failures.
+
+Native OpenUSD 25.05.01 probes through its Python bindings (validation only,
+no file edits) checked zero/non-unit quaternions, rounded half values, small-axis
+thresholds and large magnitudes. `UsdGeom.XformOp.GetOpTransform` produced the
+reference for `assets/xform_quath_reference.usda`; `assets/xform_quath.usda`
+authors the corresponding half quaternion. Probe logs:
+`/tmp/native-orient-probe.log`, `/tmp/native-orient-limits.log`,
+`/tmp/native-quath-op.log`. Unit tests retain these native cases and check the
+fixture's composed matrix and inverse. Very large finite axes that overflow
+length computation are rejected rather than reproducing native's identity
+fallback; broader malformed-data and animated quaternion parity remain open.
+Both fixtures were captured at time 0, eye (6,4,8), focus (0,1,0), and inspected:
+`target/xform_quath{,_reference}.png`. All 921,600 pixels match at strict zero
+RGB tolerance; capture logs have CAPTURE_OK without WARN/ERROR entries. This
+compares Bevy rendering against a native-derived matrix, not native rendering.
+Logs: `/tmp/xform_quath{,_reference}-capture.log`, `/tmp/xform-quath-compare.log`.
+All 412 ordinary tests, check-all, build and whitespace checks pass (seven native
+export tests ignored). Logs: `/tmp/xform-quath-{tests,check,build}.log`.
+
+### Half-precision transform values and explicit unsupported-op errors
+
+Transform reading now decodes half scalars and half3 vectors for the existing
+rotation/translation/scale routes. Wrong value types, malformed op-order types
+and unsupported authored op kinds return diagnostics rather than silently
+substituting identity. Missing op values retain the existing identity fallback.
+Ordinary projection surfaces these errors through `UsdTransformError` and keeps
+the previous valid pose. Scalar-axis translation/scale and half orientations
+were added in the later slices above.
+
+The supported half scalar/vector forms were checked against the official
+[OpenUSD xform-op implementation](https://raw.githubusercontent.com/PixarAnimationStudios/OpenUSD/release/pxr/usd/usdGeom/xformOp.cpp).
+Reader tests compare a half stack to a double stack and an independently
+constructed matrix, check inverse operations, and verify wrong-type/unknown-op
+diagnostics. Fixtures `assets/xform_half{,_reference}.usda` render identically at
+time 0 with eye (6,4,8), focus (0,1,0): zero changed pixels of 921,600 at strict
+zero RGB tolerance. Both `target/xform_half{,_reference}.png` were inspected;
+capture logs have CAPTURE_OK without WARN/ERROR entries. This is a Bevy
+half-versus-double reference, not native USD renderer parity. Logs:
+`/tmp/xform_half{,_reference}-capture.log`, `/tmp/xform-half-compare.log`.
+All 410 ordinary tests pass, seven native tests ignored; check-all, build and
+whitespace checks pass. Logs: `/tmp/xform-half-{tests,check,build}.log`.
+
 ### Matrix widget input replay
 
 The existing `USD_UI_REPLAY` hook now has checked-in matrix load/edit/undo
@@ -199,13 +432,13 @@ The fixture regression brings the ordinary test total to 398 passing, with six
 native tests ignored. Check-all, build and whitespace checks pass; logs:
 `/tmp/xform-fixtures-{tests,check,build}.log`.
 
-Transform-op reading rejects non-finite/non-unit orientation quaternions before
+The initial transform-op guard rejected non-finite/non-unit quaternions before
 matrix construction and singular inverse ops before inversion. Inversion uses
 double precision before converting back to finite float matrices, avoiding
 determinant underflow for tiny invertible scales. Reader tests check malformed
 orientations, identity recovery, singular inverses and a 1e-20 scale inverse.
-Non-unit authored orientations are diagnosed rather than normalized; broader
-native quaternion semantics and animated orientation parity remain unverified.
+The later native-compatible quaternion slice above replaces its non-unit
+rejection; broader animated orientation parity remains unverified.
 All 400 ordinary tests pass, with six native tests ignored; check-all, build
 and whitespace checks pass. Logs: `/tmp/xform-recovery-final-{tests,check,build}.log`.
 

@@ -1,7 +1,7 @@
 //! Byte-backed root layers with filesystem-relative dependency resolution.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Cursor, Read};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -211,15 +211,26 @@ struct SourceResolver {
     requests: Arc<Mutex<BTreeSet<String>>>,
 }
 
+struct SharedAsset(Cursor<Arc<[u8]>>);
+
+impl Read for SharedAsset {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> { self.0.read(buffer) }
+}
+
+impl Seek for SharedAsset {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> { self.0.seek(position) }
+}
+
+impl Asset for SharedAsset {
+    fn size(&self) -> io::Result<u64> { Ok(self.0.get_ref().len() as u64) }
+}
+
 impl SourceResolver {
-    fn bytes(&self, identifier: &str) -> Option<&[u8]> {
+    fn bytes(&self, identifier: &str) -> Option<&Arc<[u8]>> {
         if identifier == self.source.identifier {
             Some(&self.source.bytes)
         } else {
-            self.source
-                .files
-                .get(identifier)
-                .map(|bytes| bytes.as_ref())
+            self.source.files.get(identifier)
         }
     }
 
@@ -230,7 +241,7 @@ impl SourceResolver {
         let Some(bytes) = self.bytes(&package) else {
             return false;
         };
-        zip::ZipArchive::new(Cursor::new(bytes))
+        zip::ZipArchive::new(Cursor::new(bytes.as_ref()))
             .map(|mut archive| archive.by_name(&inner).is_ok())
             .unwrap_or(false)
     }
@@ -242,7 +253,7 @@ impl SourceResolver {
         let Some(bytes) = self.bytes(&package) else {
             return Ok(None);
         };
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(io::Error::other)?;
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_ref())).map_err(io::Error::other)?;
         let entry = archive.by_name(&inner).map_err(io::Error::other)?;
         const LIMIT: u64 = 256 * 1024 * 1024;
         if entry.size() > LIMIT {
@@ -308,7 +319,7 @@ impl Resolver for SourceResolver {
 
     fn open_asset(&self, path: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
         if let Some(bytes) = self.bytes(&path.to_string_lossy()) {
-            Ok(Box::new(Cursor::new(bytes.to_vec())))
+            Ok(Box::new(SharedAsset(Cursor::new(Arc::clone(bytes)))))
         } else if let Some(bytes) = self.packaged_bytes(&path.to_string_lossy())? {
             Ok(Box::new(Cursor::new(bytes)))
         } else if self.source.filesystem {
@@ -346,6 +357,38 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_asset_handles_share_bytes_with_independent_cursors() {
+        let root: Arc<[u8]> = Arc::from(b"root contents".as_slice());
+        let dependency: Arc<[u8]> = Arc::from(b"dependency contents".as_slice());
+        let source = UsdSource::snapshot("shared/root.usda", root.clone()).unwrap()
+            .with_dependency(&UsdSource::snapshot("shared/data.bin", dependency.clone()).unwrap()).unwrap();
+        let resolver = SourceResolver { source, fallback: DefaultResolver::new(), requests: Arc::default() };
+        for (identifier, bytes) in [(resolver.source.identifier(), &root), (resolver.source.dependencies().next().unwrap(), &dependency)] {
+            let before = Arc::strong_count(bytes);
+            let mut first = resolver.open_asset(&ResolvedPath::new(identifier)).unwrap();
+            let mut second = resolver.open_asset(&ResolvedPath::new(identifier)).unwrap();
+            assert_eq!(Arc::strong_count(bytes), before + 2);
+            assert_eq!(first.size().unwrap(), bytes.len() as u64);
+            let mut prefix = [0; 4];
+            first.read_exact(&mut prefix).unwrap();
+            assert_eq!(&prefix, &bytes[..4]);
+            assert_eq!(second.read_all().unwrap(), bytes.as_ref());
+            assert_eq!(first.read_all().unwrap(), &bytes[4..]);
+            first.seek(SeekFrom::End(-3)).unwrap();
+            assert_eq!(first.read_all().unwrap(), &bytes[bytes.len() - 3..]);
+            first.rewind().unwrap();
+            assert_eq!(first.read_all().unwrap(), bytes.as_ref());
+            assert!(first.seek(SeekFrom::Current(-1000)).is_err());
+            drop((first, second));
+            assert_eq!(Arc::strong_count(bytes), before);
+        }
+        let identifier = resolver.source.identifier().to_string();
+        let mut asset = resolver.open_asset(&ResolvedPath::new(identifier)).unwrap();
+        drop(resolver);
+        assert_eq!(std::thread::spawn(move || asset.read_all().unwrap()).join().unwrap(), root.as_ref());
+    }
 
     #[test]
     fn composition_validation_follows_active_variant_selection() {

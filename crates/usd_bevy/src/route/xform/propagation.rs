@@ -31,23 +31,9 @@ pub(super) fn project(ctx: &RouteCtx, world: &mut World, entity: Entity) {
 
 fn representation(matrix: Mat4) -> Option<(Transform, Mat4)> {
     if !matrix.is_finite() || matrix.row(3) != Vec4::W { return None; }
-    let axes = [matrix.x_axis.truncate(), matrix.y_axis.truncate(), matrix.z_axis.truncate()];
-    let normalized = axes.map(Vec3::try_normalize);
-    let orthogonal = match normalized {
-        [Some(x), Some(y), Some(z)] => x.dot(y).abs() < 1e-6 && x.dot(z).abs() < 1e-6 && y.dot(z).abs() < 1e-6,
-        _ => false,
-    };
-    let determinant = matrix.determinant();
-    let transform = if orthogonal && determinant.is_finite() && determinant != 0.0 {
-        Transform::from_matrix(matrix)
-    } else {
-        Transform::from_translation(matrix.w_axis.truncate())
-    };
-    let rebuilt = if transform.rotation.is_finite() && transform.rotation.is_normalized() && transform.scale.is_finite() { transform.to_matrix() } else { Mat4::ZERO };
-    let close = [matrix.x_axis, matrix.y_axis, matrix.z_axis].into_iter()
-        .zip([rebuilt.x_axis, rebuilt.y_axis, rebuilt.z_axis]).all(|(a,b)|
-            a.abs_diff_eq(b, a.abs().max_element().max(f32::MIN_POSITIVE) * 1e-5));
-    if rebuilt.is_finite() && rebuilt.w_axis.w == 1.0 && close { return Some((transform, Mat4::IDENTITY)); }
+    if let Some(transform) = crate::read::xform::decompose_trs(matrix.to_cols_array()) {
+        return Some((super::to_bevy_transform(transform), Mat4::IDENTITY));
+    }
     let mut residual = matrix;
     residual.w_axis = Vec4::W;
     Some((Transform::from_translation(matrix.w_axis.truncate()), residual))
@@ -146,6 +132,50 @@ mod tests {
         assert_eq!(app.world().get::<GlobalTransform>(entity).unwrap().to_matrix(), recovered);
         assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime");
         assert_eq!(map.entity("/Foo"), Some(entity));
+    }
+
+    #[test]
+    fn editor_history_reprojects_affine_reset_without_replacing_entities() {
+        use crate::editor::{EditorEdit, EditorSession};
+        use crate::live::{LiveStage, PrimEntities, project_stage, apply_changes};
+        use openusd::sdf::Value;
+        let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .in_memory("history-projection.usda").unwrap();
+        stage.define_prim("/Parent").unwrap().set_type_name("Xform").unwrap();
+        stage.define_prim("/Parent/Child").unwrap().set_type_name("Xform").unwrap();
+        crate::live::author_transform(&stage, "/Parent", &Transform::from_xyz(10.0, 0.0, 0.0)).unwrap();
+        stage.create_attribute("/Parent/Child.xformOp:transform", "matrix4d").unwrap()
+            .set(Value::Matrix4d(openusd::gf::Matrix4d(shear().to_cols_array().map(f64::from)))).unwrap();
+        stage.create_attribute("/Parent/Child.xformOpOrder", "token[]").unwrap()
+            .set(Value::TokenVec(vec!["!resetXformStack!".into(), "xformOp:transform".into()])).unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let live = LiveStage::new(stage);
+        let mut app = App::new();
+        app.add_plugins(bevy::transform::TransformPlugin);
+        configure(&mut app);
+        let mut map = PrimEntities::default();
+        project_stage(app.world_mut(), &live, &mut map);
+        let entity = map.entity("/Parent/Child").unwrap();
+        app.world_mut().entity_mut(entity).insert(Name::new("runtime"));
+        app.update();
+        assert!(app.world().get::<GlobalTransform>(entity).unwrap().to_matrix().abs_diff_eq(shear(), 1e-6));
+        editor.edit(EditorEdit::TransformMatrix { prim: "/Parent/Child".into(),
+            matrix: Mat4::from_translation(Vec3::X * 3.0).to_cols_array().map(f64::from), reset: false }).unwrap();
+        let after = live.stage.root_layer().export_to_string().unwrap();
+        for edited in [true, false, true, false] {
+            if !edited { assert!(editor.undo().unwrap()); }
+            else if !editor.snapshot().unwrap().can_undo { assert!(editor.redo().unwrap()); }
+            apply_changes(app.world_mut(), &live, &mut map);
+            app.update();
+            let expected = if edited { Mat4::from_translation(Vec3::X * 13.0) } else { shear() };
+            assert!(app.world().get::<GlobalTransform>(entity).unwrap().to_matrix().abs_diff_eq(expected, 1e-6));
+            assert_eq!(app.world().get::<UsdTransformOverride>(entity).is_some(), !edited);
+            assert!(app.world().get::<UsdTransformError>(entity).is_none());
+            assert_eq!(map.entity("/Parent/Child"), Some(entity));
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime");
+            assert_eq!(live.stage.root_layer().export_to_string().unwrap(), if edited { &after } else { &before }.as_str());
+        }
     }
 
     #[test]

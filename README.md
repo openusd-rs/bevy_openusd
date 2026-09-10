@@ -50,6 +50,31 @@ and exposes `UsdSceneState` (Loading/Ready/Failed). Snapshot PNG/JPEG textures a
 tracked labeled assets with color/data color spaces. Dependency-change events
 reload their owning USD asset. Each root retains an independent live stage;
 matching prim entities and runtime-only components survive source reloads.
+Before publishing a source or override revision, Bevy traverses the active
+composition, reads default attribute values and asset time samples, and checks
+reported composition errors. Failure retains any previous projection and reports
+`UsdSceneState::Failed`. Unselected variant branches are not eagerly validated.
+`UsdSource::open_stage` itself retains upstream's permissive partial-stage behavior.
+
+For reusable in-memory assemblies, `UsdSource::snapshot(path, bytes)` disables
+filesystem fallback. `root.with_dependency(&model)` returns a new source containing
+the model and its captured dependencies, retaining each filename as its relative
+asset anchor. Identical bytes deduplicate; conflicting bytes at the same identifier
+return an error without changing either source. The root source controls filesystem
+fallback; merging a filesystem-backed dependency does not enable it on a snapshot.
+Supply opaque assets such as textures as dependency snapshots too. A merge captures
+only supplied bytes, not files reachable on disk. Rebuild an assembly from its root
+when replacing a dependency revision; this merge API never silently overwrites one.
+
+`examples/composed_sources.rs` combines an inline `usd!` assembly with a model
+authored through the upstream typed Sphere schema. It verifies projection under
+two independent Bevy roots, shared meshes and isolated edits without source files.
+It also exercises captured dependency replacement, persistent overrides,
+runtime-only component preservation, malformed-root failure/recovery and cleanup:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example composed_sources'
+```
 
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
@@ -520,7 +545,11 @@ USD_UI_REPLAY=scripts/replays/open_dialog.replay \
 nix shell nixpkgs#weston -c /bin/bash scripts/capture_viewer_ui.sh assets/editor_samples.usda target/native-picker.png
 ```
 
-`save_dialog.replay` opens the root-layer save picker instead. These replays only
+`save_dialog.replay` opens the root-layer save picker instead;
+`save_edit_dialog.replay` and `save_flattened_dialog.replay` open the other save modes.
+The filename extension selects `.usda`, `.usdc`, `.usd`, or `.usdz` output;
+the defaults are `scene.usda`, `edit-layer.usda`, and `flattened.usda`, respectively.
+Unsupported or missing extensions are rejected without writing a file. These replays only
 open the chooser; they neither select a file nor save one. Their coordinates are
 specific to the 1600x1000 capture layout. Private-bus cleanup stops the viewer's
 session and removes its temporary XDG directories. Native dialogs currently lack
@@ -816,7 +845,9 @@ A second native fixture checks sublayers and external references in all three
 save modes and four formats. These checks keep exports beside their dependencies;
 they do not certify cross-directory Save As or self-contained USDZ packaging.
 
-The native gate now also removes the source directory before checking exported
-packages. That regression currently fails for root/edit-layer USDZ: dependencies
-are not bundled. `PACKAGING.md` records the failure and implementation boundary.
-The gate is therefore not fully green despite the 24 earlier checks passing.
+The native gate also removes the source directory before checking exported
+packages. All three save modes now pass that regression, including an asset
+payload. USDZ persistence uses the stage-aware dependency packager described in
+`PACKAGING.md`. Single-level package inputs and package-relative assets can be
+re-exported; genuinely nested packages, expressions and tile/sequence patterns
+currently produce explicit errors. This does not certify arbitrary interchange.

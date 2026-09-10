@@ -478,14 +478,14 @@ impl EditorSession {
 
     pub fn save(&self, filename: &str, mode: SaveMode) -> anyhow::Result<()> {
         match mode {
-            SaveMode::RootLayer => crate::persistence::export_layer(&self.stage.root_layer(), filename)?,
+            SaveMode::RootLayer => crate::persistence::export_layer(&self.stage, &self.stage.root_layer(), filename)?,
             SaveMode::EditLayer => {
                 let target = self.stage.edit_target();
                 let layer = self.stage.layer(target.layer_identifier())
                     .ok_or_else(|| anyhow::anyhow!("edit layer is unavailable"))?;
-                crate::persistence::export_layer(&layer, filename)?;
+                crate::persistence::export_layer(&self.stage, &layer, filename)?;
             }
-            SaveMode::Flattened => crate::persistence::export_layer(&self.stage.flatten()?, filename)?,
+            SaveMode::Flattened => crate::persistence::export_layer(&self.stage, &self.stage.flatten()?, filename)?,
         }
         Ok(())
     }

@@ -25,6 +25,214 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Deferred sub-root target diagnostics
+
+Extended the recorded reference-diagnostic patch to absent external sub-root
+targets. Candidates retain their grafted node and are checked only after the
+composition task queue drains, so a target supplied by variant opinions remains
+valid. Internal cyclic-target handling is unchanged. Native usdcat independently
+reports the missing sub-root reference (`/tmp/native-missing-subroot.log`).
+
+The core regression now checks references and payloads at both root and sub-root
+depths. The actual AssetServer regression checks missing reference targets at
+both depths, while a new positive case composes a sub-root supplied entirely by
+an ancestor's selected variant, verifying its value and absence of diagnostics.
+This extends the previous checkpoint's root-only coverage; it does not establish
+all ancestral, relocation or late-variant composition combinations.
+Validation: 375 ordinary tests, five native tests (44 export checks), check-all,
+build and whitespace checks pass (`/tmp/subroot-validation-{tests,native,check,build}.log`).
+Upstream passes 1,588 core tests, 56 binary roundtrips and strict Clippy
+(`/tmp/upstream-subroot-diagnostics-{tests,clippy}.log`). All four recorded patches
+pass reverse-apply checks against the vendored source.
+
+### Composition diagnostics gate before publication
+
+Reproduced a direct-source reload that reported Ready and replaced valid entities
+despite an unresolved reference layer (`/tmp/composition-failure-before.log`).
+Bevy now validates the active composition after applying root overrides and before
+publishing/reconciling a new stage. The same validation serves AssetServer dependency
+probing: prim traversal, default attribute reads, asset time-sample reads and
+upstream composition diagnostics. A failed revision retains the previous live
+stage/entities; a failed first load publishes no live instance. Recovery is tested.
+
+An existing-layer/missing-prim regression exposed another upstream gap: absent
+external root-prim targets emitted diagnostics for payloads but not references.
+Native usdcat reports the reference error (`/tmp/native-missing-reference.log`).
+The fourth recorded patch, `openusd-reference-diagnostics.patch`, adds the missing
+reference diagnostic without changing node culling or composition. Core coverage
+checks both arc types, and a real memory AssetServer test verifies visible failure.
+An unselected variant's unresolved branch is accepted; selecting it fails validation
+and returning to the valid branch clears the error.
+
+Validation runs on source/override publication, not every frame. It is not a full
+USD correctness validator: sub-root reference target diagnostics remain incomplete
+upstream, arbitrary future numeric samples are not exhaustively evaluated, and
+renderer-specific asset/geometry errors are separate. `UsdSource::open_stage`
+retains upstream's permissive partial-stage semantics for direct callers.
+Validation: 374 ordinary tests and all five optional native tests (44 export
+checks) pass, as do check-all, build and the composed_sources example. Logs:
+`/tmp/composition-validation-{tests,native,check,build,example}.log`. Upstream
+passes 1,588 core tests, 56 binary roundtrips and strict Clippy
+(`/tmp/upstream-reference-diagnostics-{tests,clippy}.log`). All four recorded
+patches pass reverse-apply checks; whitespace checks pass.
+
+### Composed-source lifecycle showcase
+
+Extended `examples/composed_sources.rs` through captured dependency replacement,
+root-local persistent radius overrides, malformed-root failure and recovery,
+override removal, root-component removal and root despawn. Matching entities and
+a runtime-only component survive replacement and recovery. Unmodified mounts
+adopt the new typed source radius and share a mesh; removing the persistent
+override restores the new source radius and shared mesh on that mount too.
+
+Both roots report Failed for malformed root bytes while retaining their previous
+live projections, then return to Ready when valid captured sources are restored.
+Removing one UsdSceneRoot leaves its caller-owned root entity and the second
+instance alive; despawning the second root leaves no projected UsdPrimRef entities
+or registered live instances. No runtime implementation change was required.
+
+Validation: all 371 ordinary tests, check-all, build, the runnable example and
+whitespace checks pass (`/tmp/composed-lifecycle-{tests,check,build,example}.log`).
+This is programmatic source replacement, not an AssetServer watcher or GUI test;
+the failure case is malformed root data, not every possible composition failure.
+It does not prove GPU allocation reclamation or rendered fidelity.
+
+### Public immutable source composition
+
+Exposed `UsdSource::snapshot` with filesystem fallback disabled and added
+`with_dependency`, which returns an immutable merged source containing another
+source's root and transitive captured bytes. Existing identifiers require identical
+bytes; collisions fail without changing either input. Duplicate merges preserve
+the source revision, while new captured assets generate a new revision. The root's
+filesystem policy is retained, not inherited from dependencies.
+
+Regression coverage composes a nested sublayer and parent-relative opaque asset
+at two reference sites with no source files, then packages and reopens the assembly
+from bytes after removing its saved archive. It checks transitive byte capture,
+deduplication, collisions (including normalized aliases and root collisions),
+receiver filesystem policy and immutable inputs. Fixed snapshot construction to
+anchor relative paths before normalization so leading `..` is not discarded.
+
+The runnable `composed_sources` example combines an inline assembly with canonical
+upstream typed Sphere authoring. Two Bevy roots project distinct entities with
+shared meshes; changing one mount's radius preserves its entity and leaves the
+other mount/root unchanged. Typeless reference-site definitions preserve the
+referenced Sphere type; a local Xform type would instead override it.
+
+This is reusable source composition, not a complete BSN-style typed scene DSL or
+automatic capture of filesystem dependencies. The broader checklist stays open.
+Validation: 371 ordinary tests, five optional native tests (44 export checks),
+check-all, build, the composed_sources runnable example and whitespace checks
+pass. Logs: `/tmp/source-composition-{tests,native,check,build,example}.log`.
+
+### Variant payload and cyclic asset package acceptance
+
+Added a fixture with two variant-selected payload layers, distinct binary assets,
+and asset-valued backlinks forming a two-layer cycle. An ordinary regression
+checks that saving with the selected payload unloaded includes both branches,
+exact asset bytes and only five archive entries, without changing the root layer.
+
+Ten new native checks export root/edit layers with payloads loaded and unloaded,
+plus the explicitly flattened loaded scene. After deleting the source directory,
+fresh native usdcat processes select both variants in each authored-layer output;
+the flattened output retains its chosen branch even with a different variant
+selection override. Composed scores,
+asset bytes, backlink layer values and deduplicated archive counts are verified.
+This proves an asset-dependency cycle, not a cyclic composition arc. The original
+compact fixture syntax was rejected by native USD and was corrected before the
+acceptance run; Rust parsing alone was insufficient fixture validation.
+
+Validation: 366 ordinary tests, five optional native tests (44 export checks),
+check-all, build and whitespace checks pass. Logs:
+`/tmp/package-variants-{tests,native,check,build}.log`. No runtime implementation
+change was needed. Nested packages, patterns, broader composition combinations
+and rendered texture fidelity remain open.
+
+### Viewer save-format acceptance
+
+The native save chooser exposes USDA, binary USD and USDZ output, with distinct
+root/edit/flattened default filenames. Filename validation retains the selected
+path and stale-document checks; uppercase `.USDZ` uses the dependency packager.
+All 365 ordinary tests, check-all and build pass
+(`/tmp/save-format-{tests,check,build}.log`). The four optional native tests pass
+again (`/tmp/save-formats-native.log`), covering 34 export checks.
+
+Inspected isolated GTK captures for all three modes:
+`target/viewer-ui-captures/save-formats-root.png`, `save-formats-edit.png`, and
+`save-formats.png` (flattened). Each shows the correct default filename and a
+readable filter listing all four extensions. The old root-picker replay actually
+clicked flattened export; corrected its coordinates and added explicit edit and
+flattened replays. These checks prove chooser presentation, not native file
+selection, cancellation, overwrite confirmation or save/reopen interaction.
+GTK does not display the requested explanatory dialog title in this layout.
+
+### Single-level package re-export checkpoint
+
+Added single-level USDZ input/re-export support to the stage-aware packager.
+Package-relative layer and asset paths resolve through the existing stage context;
+source containers are cached, while container bytes and extracted entry bytes
+both count against the input budget. Entry sizes and bounded reads constrain
+extraction. Bare-package references map to their default root, and bare/default
+root identities share an output entry. Input extensions are case-insensitive.
+Genuinely nested packages still return explicit errors.
+
+Native coverage adds seven save checks: all three modes from a never-written
+snapshot-only USDZ, a second re-export for each after deleting the first output,
+and a wrapper referring to the same bare package twice. Composed values and asset
+bytes survive, and the wrapper has the expected deduplicated four entries.
+An uppercase input USDZ extension is covered. A new upstream unit test verifies
+that an archive entry exceeding the remaining input budget is refused and nested
+entry syntax is rejected. Logs: `/tmp/repackage-case-native.log`,
+`/tmp/upstream-repackage-final-tests.log`, `/tmp/upstream-repackage-final-clippy.log`.
+
+Validation: 34 native save checks pass across four optional tests. All 364
+ordinary tests pass with those four native tests ignored; check-all, build and
+whitespace checks pass (`/tmp/repackage-accepted-{tests,check,build}.log`). Upstream
+validation passes 1,587 core tests, 56 binary fixture roundtrips and strict core
+Clippy. All three recorded patches pass reverse-apply checks against the vendor
+source. The wider packaging and Bevy acceptance checklists remain open.
+
+### Initial packager checkpoint
+
+Implemented the initial stage-aware USDZ dependency packager. The new upstream
+Stage::write_usdz_package uses the stage's existing registry and live layer graph,
+preserves root/edit semantics, rewrites authored asset locations and includes
+ordinary layer and non-layer dependencies. Bevy's USDZ persistence routes it
+through existing atomic staging/publication. Missing dependencies and entry/byte
+budget failures report errors before replacing the destination. Limits are 4096
+entries, 256 MiB of serialized payloads and 256 MiB of newly read input bytes;
+these are not total process-memory limits. Unsupported package-relative inputs,
+expressions, tile/sequence patterns and clip templates fail explicitly.
+
+Native portability now passes all three save modes after source deletion,
+including verifying asset payload bytes reached through native package-relative
+paths. Added ordinary tests for snapshot-only dependencies, live unsaved sublayer
+edits, deterministic output, repeated paths, a root self asset cycle, same-basename
+assets, stored/aligned archive entries, unchanged source/undo behavior, missing
+asset cleanup and entry-budget rejection. The limited serializer has an upstream
+wire-buffer growth test. PACKAGING.md keeps the full remaining requirements.
+
+The changes are recorded in `patches/openusd-stage-packaging.patch` in addition
+to the existing writer patches. usd_bevy and usd_macro now reference the vendor
+crates directly: external path consumers do not inherit a workspace root's Cargo
+patch table, so a root-only override is insufficient for this new API dependency.
+The root viewer Git declarations still record the upstream baseline.
+
+Validation: 27 native save checks across three optional tests pass, including
+removal of source files and asset-payload verification. All 364 ordinary tests
+pass (three native tests ignored), check-all and build pass. Logs:
+`/tmp/package-accepted-native.log`,
+`/tmp/package-consumer-final-{tests,check,build}.log`. Upstream full-checkout
+validation: 1,586 core tests and 56 binary fixture roundtrips pass; strict core
+Clippy passes (`/tmp/upstream-package-tests.log`, `/tmp/upstream-package-clippy.log`).
+An independent path consumer compiles and resolves one local OpenUSD package
+without a root patch table (`/tmp/package-external-consumer.log`,
+`/tmp/package-external-tree.log`). All three recorded patches pass reverse-apply
+checks against the integrated source. The full packaging requirements remain
+open where PACKAGING.md names unsupported inputs or missing acceptance evidence.
+
+### Earlier packaging checkpoints
+
 Added a native USDZ portability regression: save into a separate directory,
 close/delete the owned source directory, then decode with fresh native processes.
 Root/edit packages lose sublayer and referenced values; flattened preserves

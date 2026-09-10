@@ -8,8 +8,8 @@ repository = "https://github.com/bresilla/bevy_openusd"
 
 [dependencies]
 usd_macro = { path = "../usd_macro" }
-openusd = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0" }
-openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
+openusd = { path = "../../vendor/openusd/crates/openusd" }
+openusd-schemas = { path = "../../vendor/openusd/crates/openusd-schemas", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
 glam = "0.30"
 anyhow = "1"
 log = "0.4"

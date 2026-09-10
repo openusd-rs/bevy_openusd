@@ -177,8 +177,9 @@ Flattened editor saves also reject scenes carrying `clips` metadata before
 writing any output: upstream does not yet bake clip schedules and values.
 This conservative check includes empty clip dictionaries. Root/edit-layer saves
 remain available to preserve authored composition; full clip baking is unfinished.
-The headless example verifies distinct projected entities sharing one mesh handle
-and cleanup after root despawn:
+The headless example verifies two same-timing mounts sharing a mesh and a third
+retimed mount using the correct sampled geometry. It checks forward/backward
+clock changes, stable entities/runtime names and cleanup after root despawn:
 
 ```sh
 make run RUN_WITH= APP_TARGET='--example instanceable_sources'

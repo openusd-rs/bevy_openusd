@@ -25,6 +25,20 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Retimed native-instance mesh isolation
+
+The instanceable_sources example now mounts an animated Cube source three times:
+two identity references share a native prototype, while offset 10/scale 2 uses a
+distinct prototype. At stage times 10, 20, 30 and back to 10, projected edge sizes
+are checked as 3/3/1, 3/3/2, 3/3/3 and 3/3/1. The identity pair must retain shared
+mesh handles; differently sized geometry must not share a handle. Equality of
+handles at coincident sizes is not required. Entity identities and a runtime name
+remain intact throughout, and root despawn cleans up all three proxy entities.
+This is headless mesh/state evidence, not a GPU image or speedup measurement.
+All 466 ordinary workspace tests pass (ten ignored), as do check-all, build,
+the runnable example and whitespace validation:
+`/tmp/retimed-instance-{tests,check,build,example}.log`.
+
 ### Reject lossy value-clip flattening
 
 EditorSession::save now checks the same ALL prim traversal used by the upstream

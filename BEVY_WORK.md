@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Retimed reference assembly
+
+UsdSource::with_offset_references accepts batches with canonical sdf::LayerOffset
+values. Existing with_references delegates with identity offsets. Finite offsets
+and positive finite scales are required; invalid entries fail atomically before
+publication. Default-prim targeting, captured dependencies and authored reference
+arcs remain preserved. This is reference retiming, not a general scene DSL.
+
+The source regression checks offset 10/scale 2 samples at stage times 10, 20 and
+30, retained default-prim arcs and offset metadata, deduplicated dependencies and
+invalid late entries without input mutation. The runnable retimed_sources example
+checks actual Bevy mesh radii and entity/runtime-name preservation across those
+clock changes. Native export interoperability for this new API remains unverified.
+All 463 ordinary workspace tests pass (eight ignored), as do check-all, build,
+the runnable example and whitespace checks:
+`/tmp/offset-reference-{tests,check,build,example}.log`.
+
 ### Texture folder recovery evidence
 
 The native AssetServer regression now also renames the texture directory away,

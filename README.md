@@ -165,6 +165,18 @@ make run RUN_WITH= APP_TARGET='--example reference_benchmark' ARGS='32 3'
 It reports assembly time only, not Bevy projection, rendering or disk I/O.
 For release measurements, append `--release` to `APP_TARGET`.
 
+`with_offset_references` accepts `(destination, source, target, LayerOffset)`
+entries using `openusd::sdf::LayerOffset`. It preserves reference arcs while
+retiming samples; offsets must be finite and scales finite and positive.
+The existing `with_references` API uses identity offsets. Invalid entries reject
+the whole batch without changing inputs. `examples/retimed_sources.rs` demonstrates
+one animated source mounted twice with different timing and checks projected mesh
+radii and stable entities across clock changes:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example retimed_sources'
+```
+
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under
 two independent Bevy roots, typed reference composition, shared meshes and isolated edits without source files.

@@ -78,7 +78,8 @@ fn publish_projection_issues(
     issues: Query<&crate::route::reflect::UsdReflectIssues>,
     rendering: Query<(Option<&crate::route::subdivision::UsdSubdivisionError>,
         Option<&crate::route::skel::UsdDeformationError>, Option<&crate::route::instancer::UsdInstancerWarning>,
-        Option<&crate::route::shapes::UsdShapeError>, Option<&crate::route::curves::UsdCurveError>)>,
+        Option<&crate::route::shapes::UsdShapeError>, Option<&crate::route::curves::UsdCurveError>,
+        Option<&crate::route::xform::UsdTransformError>)>,
 ) {
     let Ok(mut state) = bridge.0.lock() else { return };
     state.view.document.reflect_issues = state.view.document.selected.as_deref()
@@ -88,12 +89,13 @@ fn publish_projection_issues(
     state.view.document.render_issues = state.view.document.selected.as_deref()
         .and_then(|path| prims.as_ref()?.entity(path))
         .and_then(|entity| rendering.get(entity).ok())
-        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve)| {
+        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve, transform)| {
             [subdivision.map(|error| format!("Subdivision: {}", error.0)),
                 deformation.map(|error| format!("Deformation: {}", error.0)),
                 instancer.map(|error| format!("Point instancer: {}", error.0)),
                 shape.map(|error| format!("Shape: {}", error.0)),
-                curve.map(|error| format!("Curve: {}", error.0))]
+                curve.map(|error| format!("Curve: {}", error.0)),
+                transform.map(|error| format!("Transform: {}", error.0))]
                 .into_iter().flatten().collect()
         });
 }
@@ -203,7 +205,8 @@ fn process_commands(world: &mut World) {
             }
         }
     }
-    let document = session.as_ref().map(EditorSession::snapshot).transpose();
+    let time = world.resource::<crate::route::StageTime>().current;
+    let document = session.as_ref().map(|session| session.snapshot_at(Some(time))).transpose();
     if let Ok(mut state) = bridge.0.lock() {
         match document {
             Ok(Some(document)) => state.view.document = document,
@@ -250,6 +253,8 @@ fn install_textures(world: &mut World, prepared: PreparedTextures) -> anyhow::Re
 /// An undoable document edit.
 #[derive(Debug, Clone)]
 pub enum EditorEdit {
+    /// Replaces the local stack with a static affine matrix and explicit reset state.
+    TransformMatrix { prim: String, matrix: [f64; 16], reset: bool },
     AttributeSample { prim: String, name: String, type_name: String, value: Value, time: f64 },
     ClearAttributeSample { prim: String, name: String, time: f64 },
     ClearAttributeValues { prim: String, name: String },
@@ -279,6 +284,22 @@ impl EditorEdit {
     fn apply(&self, stage: &Stage) -> anyhow::Result<()> {
         use crate::authoring;
         match self {
+            Self::TransformMatrix { prim, matrix, reset } => {
+                let value = bevy::math::DMat4::from_cols_array(matrix);
+                anyhow::ensure!(value.is_finite() && value.row(3) == bevy::math::DVec4::W
+                    && value.as_mat4().is_finite(), "transform must be a finite affine matrix representable as f32");
+                let owner = stage.prim(openusd::sdf::path(prim)?)?;
+                anyhow::ensure!(owner.is_valid()?, "transform owner does not exist");
+                let path = openusd::sdf::path(prim)?.append_property("xformOp:transform")?;
+                let attribute = stage.create_attribute(path, "matrix4d")?;
+                attribute.clear()?.set(Value::Matrix4d(openusd::gf::Matrix4d(*matrix)))?;
+                let mut order = Vec::new();
+                if *reset { order.push("!resetXformStack!".into()); }
+                order.push("xformOp:transform".into());
+                stage.create_attribute(openusd::sdf::path(prim)?.append_property("xformOpOrder")?, "token[]")?
+                    .clear()?.set(Value::TokenVec(order))?;
+                Ok(())
+            }
             Self::AttributeSample { prim, name, type_name, value, time } =>
                 authoring::set_attribute_sample(stage, prim, name, type_name, value.clone(), *time),
             Self::ClearAttributeSample { prim, name, time } => authoring::clear_attribute_sample(stage, prim, name, *time),
@@ -342,6 +363,7 @@ pub struct AttributeSnapshot {
     pub name: String,
     pub type_name: String,
     pub value: Option<Value>,
+    pub sampled_matrix: Option<[f64; 16]>,
     pub source: String,
     pub source_summary: String,
     pub sample_times: Vec<f64>,
@@ -351,6 +373,7 @@ pub struct AttributeSnapshot {
 #[derive(Debug, Clone, Default)]
 pub struct EditorSnapshot {
     pub document_id: u64,
+    pub sample_time: Option<f64>,
     pub asset_info: Option<crate::read::geom::CustomDict>,
     pub render_issues: Vec<String>,
     pub reflect_issues: Vec<crate::route::reflect::ReflectIssue>,
@@ -495,8 +518,15 @@ impl EditorSession {
     }
 
     pub fn snapshot(&self) -> anyhow::Result<EditorSnapshot> {
+        self.snapshot_at(None)
+    }
+
+    /// Inspects defaults and optionally samples scalar matrix attributes at scene time.
+    pub fn snapshot_at(&self, time: Option<f64>) -> anyhow::Result<EditorSnapshot> {
+        anyhow::ensure!(time.is_none_or(f64::is_finite), "inspection time must be finite");
         let mut snapshot = EditorSnapshot {
             document_id: self.document_id,
+            sample_time: time,
             layers: self.stage.layer_stack(),
             edit_layer: self.stage.edit_target().layer_identifier().to_string(),
             selected: self.selected.clone(),
@@ -539,10 +569,18 @@ impl EditorSession {
             snapshot.relationships.sort_by(|a, b| a.0.cmp(&b.0));
             for attribute in prim.attributes()? {
                 let info = attribute.resolve_info_at(None)?;
+                let type_name = attribute.type_name()?.map(|ty| ty.to_string()).unwrap_or_default();
+                let sampled_matrix = if type_name == "matrix4d" && time.is_some() {
+                    match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+                        Some(Value::Matrix4d(matrix)) => Some(matrix.0),
+                        _ => None,
+                    }
+                } else { None };
                 snapshot.attributes.push(AttributeSnapshot {
                     name: attribute.path().as_str().rsplit('.').next().unwrap_or_default().to_string(),
-                    type_name: attribute.type_name()?.map(|ty| ty.to_string()).unwrap_or_default(),
+                    type_name,
                     value: attribute.get::<Value>()?,
+                    sampled_matrix,
                     source: format!("{:?}: {:?}", info.source(), info.node()),
                     source_summary: match info.node() {
                         Some(node) => format!("{:?} / {:?}\n{}", info.source(), node.arc(), node.path()),
@@ -581,6 +619,155 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_matrix_inspection_maps_scene_time_without_authoring() {
+        let stage = crate::UsdSource::new("sampled-matrix-inspection.usda", include_bytes!("../../../assets/xform_animation.usda").as_slice())
+            .unwrap().open_stage().unwrap();
+        stage.define_prim("/M").unwrap().set_type_name("Xform").unwrap();
+        crate::authoring::set_references(&stage, "/M", &[openusd::sdf::Reference {
+            prim_path: openusd::sdf::path("/Affine").unwrap(),
+            layer_offset: openusd::sdf::LayerOffset { offset: 10.0, scale: 2.0 },
+            ..Default::default()
+        }]).unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        editor.select(Some("/M".into())).unwrap();
+        let defaults = editor.snapshot().unwrap();
+        assert_eq!(defaults.sample_time, None);
+        assert!(defaults.attributes.iter().all(|attribute| attribute.sampled_matrix.is_none()));
+        for (time, shear) in [(10.0, 0.0), (15.0, 0.5), (20.0, 1.0)] {
+            let snapshot = editor.snapshot_at(Some(time)).unwrap();
+            assert_eq!(snapshot.sample_time, Some(time));
+            let attribute = snapshot.attributes.iter().find(|attribute| attribute.name == "xformOp:transform").unwrap();
+            assert_eq!(attribute.value, None);
+            assert_eq!(attribute.sample_times, vec![10.0, 20.0, 30.0]);
+            assert_eq!(attribute.sampled_matrix.unwrap(), [1.0,0.0,0.5 * shear,0.0, 0.75 * shear,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0]);
+        }
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(editor.snapshot_at(Some(invalid)).is_err());
+        }
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(!editor.snapshot().unwrap().can_undo);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.insert_non_send(editor);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Seek(15.0)).unwrap();
+        app.update();
+        let published = bridge.view().unwrap();
+        assert_eq!(published.document.sample_time, Some(15.0));
+        assert_eq!(published.timeline.current, 15.0);
+        let sampled = published.document.attributes.iter().find(|attribute| attribute.name == "xformOp:transform").unwrap().sampled_matrix.unwrap();
+        assert_eq!(sampled[2], 0.25);
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
+
+    #[test]
+    fn matrix_edit_restores_exact_animated_stack_on_undo() {
+        let stage = crate::UsdSource::new("matrix-edit.usda", include_bytes!("../../../assets/xform_animation.usda").as_slice())
+            .unwrap().open_stage().unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut editor = EditorSession::new(stage);
+        let matrix = [1.0,0.0,0.5,0.0, 0.75,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 3.0,4.0,5.0,1.0];
+        editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix, reset: true }).unwrap();
+        let path = openusd::sdf::path("/Affine").unwrap();
+        for time in [0.0, 2.5, 5.0, 10.0] {
+            let (actual, reset) = crate::read::xform::read_transform_stack_at(editor.stage(), &path, Some(time)).unwrap().unwrap();
+            assert_eq!(actual, matrix.map(|value| value as f32));
+            assert!(reset);
+        }
+        let after = editor.stage().root_layer().export_to_string().unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), after);
+        assert!(editor.undo().unwrap());
+        for invalid in [f64::NAN, f64::INFINITY, f64::MAX] {
+            let mut bad = matrix;
+            bad[0] = invalid;
+            assert!(editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix: bad, reset: false }).is_err());
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        }
+        let mut projective = matrix;
+        projective[3] = 0.25;
+        assert!(editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix: projective, reset: false }).is_err());
+        assert!(editor.edit(EditorEdit::TransformMatrix { prim: "/Missing".into(), matrix, reset: false }).is_err());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), after);
+    }
+
+    #[test]
+    fn matrix_edit_undo_reveals_weaker_animation_without_changing_its_layer() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/xform_animation.usda");
+        let stage = crate::UsdSource::new("matrix-overlay.usda", format!("#usda 1.0\n( subLayers = [@{fixture}@] )\n").into_bytes())
+            .unwrap().open_stage().unwrap();
+        let root_before = stage.root_layer().export_to_string().unwrap();
+        let path = openusd::sdf::path("/Affine").unwrap();
+        let original = crate::read::xform::read_transform_stack_at(&stage, &path, Some(5.0)).unwrap();
+        let layers_before: Vec<_> = stage.layer_identifiers().into_iter().map(|identifier| {
+            let text = stage.layer(&identifier).unwrap().export_to_string().unwrap();
+            (identifier, text)
+        }).collect();
+        let mut editor = EditorSession::new(stage);
+        let matrix = bevy::math::DMat4::from_translation(bevy::math::DVec3::new(9.0, 8.0, 7.0)).to_cols_array();
+        editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix, reset: false }).unwrap();
+        assert_eq!(crate::read::xform::read_transform_stack_at(editor.stage(), &path, Some(5.0)).unwrap(), Some((matrix.map(|v| v as f32), false)));
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), root_before);
+        assert_eq!(crate::read::xform::read_transform_stack_at(editor.stage(), &path, Some(5.0)).unwrap(), original);
+        for (identifier, before) in layers_before {
+            let layer = editor.stage().layer(&identifier).unwrap();
+            assert_eq!(layer.export_to_string().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn matrix_edit_maps_reference_target_and_survives_save_reopen() {
+        let stage = crate::UsdSource::new("mapped-matrix.usda", br#"#usda 1.0
+def Xform "Source" {
+    double3 xformOp:translate.timeSamples = {0: (1,2,3), 10: (4,5,6)}
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+def Xform "M" {}
+"#.as_slice()).unwrap().open_stage().unwrap();
+        crate::authoring::set_references(&stage, "/M", &[openusd::sdf::Reference {
+            prim_path: openusd::sdf::path("/Source").unwrap(),
+            layer_offset: openusd::sdf::LayerOffset { offset: 10.0, scale: 2.0 },
+            ..Default::default()
+        }]).unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let path = openusd::sdf::path("/M").unwrap();
+        let root_target = stage.edit_target();
+        stage.set_edit_target(stage.edit_target_for_node(&path, openusd::usd::EditTargetArc::Reference).unwrap()).unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let matrix = [1.0,0.0,0.5,0.0, 0.75,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 3.0,4.0,5.0,1.0];
+        editor.edit(EditorEdit::TransformMatrix { prim: "/M".into(), matrix, reset: true }).unwrap();
+        assert!(!stage.root_layer().data().has_spec(&path.append_property("xformOp:transform").unwrap()));
+        let source_path = openusd::sdf::path("/Source").unwrap();
+        assert!(stage.root_layer().data().has_spec(&source_path.append_property("xformOp:transform").unwrap()));
+        let after = stage.root_layer().export_to_string().unwrap();
+        stage.set_edit_target(root_target.clone()).unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(stage.edit_target(), root_target);
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), after);
+        let directory = tempfile::tempdir().unwrap();
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            for extension in ["usda", "usdc", "usd"] {
+                let output = directory.path().join(format!("{name}.{extension}"));
+                editor.save(output.to_str().unwrap(), mode).unwrap();
+                let reopened = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(output.to_str().unwrap()).unwrap();
+                for prim in [&path, &source_path] {
+                    for time in [0.0, 10.0, 20.0, 30.0] {
+                        assert_eq!(crate::read::xform::read_transform_stack_at(&reopened, prim, Some(time)).unwrap(), Some((matrix.map(|v| v as f32), true)));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn sample_edits_map_reference_time_and_preserve_defaults() {
@@ -771,18 +958,19 @@ def Xform "Model" (
     #[test]
     fn selected_render_failures_publish_and_clear() {
         use crate::route::{subdivision::UsdSubdivisionError, skel::UsdDeformationError, instancer::UsdInstancerWarning, shapes::UsdShapeError, curves::UsdCurveError};
+        use crate::route::xform::UsdTransformError;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, EditorPlugin));
         app.init_resource::<crate::live::PrimEntities>();
         let entity = app.world_mut().spawn((UsdSubdivisionError("unsupported holes".into()),
-            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()))).id();
+            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()), UsdTransformError("projective matrix".into()))).id();
         app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Prim", entity);
         let bridge = app.world().resource::<EditorBridge>().clone();
         bridge.0.lock().unwrap().view.document.selected = Some("/Prim".into());
         app.update();
         assert_eq!(bridge.view().unwrap().document.render_issues,
-            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts"]);
-        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError)>();
+            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts", "Transform: projective matrix"]);
+        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError, UsdTransformError)>();
         app.update();
         assert!(bridge.view().unwrap().document.render_issues.is_empty());
         app.world_mut().entity_mut(entity).insert(UsdSubdivisionError("unsupported holes".into()));

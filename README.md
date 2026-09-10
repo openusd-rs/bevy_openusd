@@ -864,8 +864,43 @@ Direct mesh prototypes bake their full invertible affine matrix into positions,
 inverse-transpose normals and tangent frames, including shear. Material subsets
 and repeated instances still share the baked assets. `assets/point_affine.usda`
 and `assets/point_affine_reference.usda` provide matrix versus explicit-vertex
-comparison scenes. This does not add shear support to ordinary Transform
-projection or to the multi-node hierarchy path described below.
+comparison scenes. The multi-node hierarchy path described below still rejects
+per-node shear.
+
+Ordinary prim transforms separately preserve affine residuals after Bevy's
+transform propagation. USD reset stacks discard preceding operations and USD
+ancestor transforms while retaining scene placement and up-axis conversion.
+`assets/xform_affine.usda` and `assets/xform_reset.usda` have corresponding
+`_reference.usda` fixtures for fixed-camera capture comparisons. Invalid
+projective/non-finite transforms retain the previous pose and attach
+`route::xform::UsdTransformError`; capture fails on that diagnostic.
+`make run ARGS='assets/xform_animation.usda'` shows a Z-up cube transitioning
+from identity through shear to translation at times 0, 5 and 10, beside a blue
+reset-stack cube following its own translation without inheriting the shear.
+
+For grouped, matrix-preserving editor undo, use
+`EditorSession::edit(EditorEdit::TransformMatrix { prim, matrix, reset })`.
+`matrix` is a column-major `[f64; 16]`; this command replaces the local stack
+with a static matrix and explicit reset state, clearing local samples on its
+matrix/order attributes. Other op attributes remain authored but inactive.
+Undo restores the previous authored fields and samples rather than decomposing
+the old transform into TRS. The legacy `live::TransformHistory` still stores
+decomposed TRS and is not suitable for exact affine/animated-stack restoration.
+
+The inspector exposes `matrix4d` attributes in a Matrix attributes section with
+four USD rows (translation in row 4), preserving f64 input precision. Apply a
+default or a time sample using the ordinary attribute controls; these edits keep
+the existing transform-op order. Sample-only attributes start with an explicitly
+labelled identity draft, not the evaluated timeline pose. “Load sampled matrix”
+copies the matrix at the labelled scene time into the draft and sets the sample
+time field; loading alone does not author USD. Use the separate
+`TransformMatrix` API only when replacing the complete stack is intended.
+
+`scripts/replays/matrix_sample_{load,edit,undo}.replay` exercise the actual
+matrix widgets through `USD_UI_REPLAY` in the fixed 1600x1000 private capture
+layout. The edit/undo sequences reload the time sample after applying or undoing
+it, checking the authored result rather than only the text draft. See
+`BEVY_WORK.md` for capture settings and inspected evidence.
 
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset

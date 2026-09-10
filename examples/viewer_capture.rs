@@ -239,7 +239,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     deformation_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::skel::UsdDeformationError)>,
     subdivision_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::subdivision::UsdSubdivisionError)>,
     instancer_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>,
-    geometry_errors: Query<(&usd_bevy::UsdPrimRef, Option<&usd_bevy::route::shapes::UsdShapeError>, Option<&usd_bevy::route::curves::UsdCurveError>)>,
+    geometry_errors: Query<(&usd_bevy::UsdPrimRef, Option<&usd_bevy::route::shapes::UsdShapeError>, Option<&usd_bevy::route::curves::UsdCurveError>, Option<&usd_bevy::route::xform::UsdTransformError>)>,
     mut exit: MessageWriter<AppExit>) {
     if capture.started.elapsed() > Duration::from_secs(60) {
         eprintln!("capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}", capture.camera_path, capture.camera_ready, progress.0.lock().unwrap());
@@ -257,12 +257,17 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     }
     if states.is_empty() || capture.requested { return; }
     if !capture.camera_ready { return; }
-    if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, _, curve)| curve.map(|error| (prim, error))) {
+    if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, _, _, transform)| transform.map(|error| (prim, error))) {
+        eprintln!("capture failed: transform {}: {}", prim.path, error.0);
+        exit.write(AppExit::error());
+        return;
+    }
+    if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, _, curve, _)| curve.map(|error| (prim, error))) {
         eprintln!("capture failed: curve {}: {}", prim.path, error.0);
         exit.write(AppExit::error());
         return;
     }
-    if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, shape, _)| shape.map(|error| (prim, error))) {
+    if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, shape, _, _)| shape.map(|error| (prim, error))) {
         eprintln!("capture failed: shape {}: {}", prim.path, error.0);
         exit.write(AppExit::error());
         return;

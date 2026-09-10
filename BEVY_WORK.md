@@ -25,6 +25,208 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Matrix widget input replay
+
+The existing `USD_UI_REPLAY` hook now has checked-in matrix load/edit/undo
+sequences, plus parser regression coverage. Events enter the real egui widget
+input stream in the native viewer; these are not direct editor-command calls,
+but they do bypass physical keyboard/mouse and compositor input delivery.
+
+Using `/Affine` in `assets/xform_animation.usda` at time 5:
+
+- `matrix_sample_load.replay` clicks Load sampled matrix; the draft displays
+  the authored shear (0.5 and 0.75) instead of identity.
+- `matrix_sample_edit.replay` clears/types row 4, scrolls, clicks Apply sample,
+  then scrolls back and reloads the sampled matrix. Row 4 remains `2 0 0 1`,
+  demonstrating that the value reached the authored sample, not just the draft.
+- `matrix_sample_undo.replay` additionally clicks the Undo toolbar control and
+  reloads the sample. Row 4 returns to `0 0 0 1`, retaining the shear rows.
+
+All three end states were captured and inspected:
+`target/viewer-ui-captures/matrix-widget-load.png`,
+`matrix-widget-edit-reload.png` and `matrix-widget-undo-reload.png` in the same
+directory. Replay events are recorded in the adjacent viewer logs. The scripts
+use fixed coordinates for the 1600x1000 private capture layout, inspector open,
+selected `/Affine`, `USD_CAPTURE_TIME=5` with `USD_SCREENSHOT` enabled; edit/undo
+captures used `USD_UI_CAPTURE_WAIT=25`. Logs:
+`/tmp/matrix-widget-{load,edit-reload,undo-reload}.log`.
+Native OS input, redo-button and file-picker acceptance remain separate.
+All 408 ordinary tests pass, with seven native export tests ignored; check-all,
+build and whitespace checks pass. Logs: `/tmp/matrix-widget-{tests,check,build}.log`.
+
+### Sampled matrix inspection and draft loading
+
+`EditorSession::snapshot_at` optionally resolves scalar `matrix4d` attributes at
+a labelled scene time while preserving the separate default-value snapshot.
+The editor bridge supplies its timeline time. Other attribute types, including
+large matrix arrays, are not additionally sampled by this path.
+The matrix inspector's Load sampled matrix action copies that value into the
+draft and sets the apply-sample time field without sending an authoring command.
+Drafts are not automatically replaced during playback.
+
+Tests cover internal-reference time offset/scale mapping, interpolation, absent
+defaults, invalid inspection times, unchanged authored source/history and bridge
+publication after Seek. The widget replay above subsequently exercised loading,
+editing, applying and undo; the snapshot tests alone do not certify input.
+The time-5 inspector state was captured and inspected at
+`target/viewer-ui-captures/matrix-sample-load5.png`: the load action displays
+time 5, while the untouched identity draft remains separate. The capture-time
+environment setting requires `USD_SCREENSHOT`; the initial UI-only run did not
+set it and stayed at time 0. Corrected log: `/tmp/matrix-sample-load5-ui.log`.
+All 407 ordinary tests pass, seven native tests ignored; check-all, build and
+whitespace checks pass. Logs: `/tmp/matrix-sample-inspection-{tests,check,build}.log`.
+
+### Four-row matrix attribute inspector
+
+The inspector now edits `matrix4d` values in four USD rows, with an explicit
+translation-row label and lossless f64 text round trips. Matrix attributes have
+their own section, retaining the existing provenance, default/sample, block and
+clear controls. These are ordinary attribute edits, not whole-stack replacement;
+the transform-op order remains unchanged. A missing default is labelled as an
+identity draft rather than an evaluated animated pose. Attribute draft keys now
+include document and edit-layer identity to avoid reusing drafts across them.
+
+Tests cover exact double-precision row formatting/parsing, wrong-length and
+non-finite rejection, matrix templates, and a parsed matrix time-sample edit
+with unchanged default/op-order and exact undo. The actual static matrix section
+was captured and inspected at
+`target/viewer-ui-captures/matrix-inspector.png` using `/Panels` in
+`assets/xform_affine.usda`. The four rows and authored shear values are visible.
+Native button/keyboard interaction is not yet acceptance-tested; parser/model
+coverage and screenshot inspection are not a substitute for that interaction.
+The sample-only `/Affine` case was also captured and inspected at
+`target/viewer-ui-captures/matrix-inspector-sampled.png`; the identity-draft
+warning, four rows and sample times 0/5/10 are visible. Capture logs:
+`/tmp/matrix-inspector-ui.log`, `/tmp/matrix-inspector-sampled-ui.log`.
+Known desktop/shared-device warnings remain; the private capture sessions exited.
+All 406 ordinary tests pass, seven native tests ignored; final check-all, build
+and whitespace checks pass. Logs: `/tmp/matrix-inspector-final-tests.log`,
+`/tmp/matrix-inspector-final2-check.log`, `/tmp/matrix-inspector-final-build.log`.
+
+### Visible transform diagnostics
+
+The selected prim's `UsdTransformError` now joins the inspector's rendering
+issues, rather than being visible only to low-level capture. The publication
+regression includes transform errors and checks clearing after component removal
+and selection changes. `assets/xform_invalid.usda` supplies a projective matrix
+over the material-panel fixture.
+
+The actual inspector was captured and inspected at
+`target/viewer-ui-captures/xform-invalid-inspector.png` with `/Panels` selected.
+It visibly reports `Transform: non-finite or projective USD transform` while the
+fallback pose remains displayed. The private compositor/viewer was cleaned up;
+known UI SSAO/shared-device and desktop integration warnings remain.
+Low-level capture of the same fixture returned a nonzero exit with the prim path
+and transform error, no CAPTURE_OK and no output PNG. Evidence:
+`/tmp/xform-invalid-ui.log`, `/tmp/xform-invalid-capture.log` and the UI capture's
+adjacent viewer/compositor logs. This does not add a matrix-editing inspector
+widget or scene-wide error summary.
+All 404 ordinary tests pass (seven optional native tests ignored), with check-all,
+build and whitespace checks passing. Logs:
+`/tmp/xform-diagnostics-{tests,check,build}.log`.
+
+### Matrix-preserving editor command
+
+`EditorEdit::TransformMatrix` accepts a finite affine column-major f64 matrix
+representable by the renderer and an explicit reset flag. It replaces the local
+stack with a static matrix, clearing matrix/order local samples and retaining
+other op attributes as inactive opinions. `EditorSession` groups its authored
+transactions into one undo command and uses the existing layer-diff history,
+not TRS decomposition. This is an editor API; no new inspector matrix widget or
+gizmo wiring is claimed, and the legacy `live::TransformHistory` remains lossy.
+
+Tests verify exact root-layer restoration of an animated matrix stack, static
+replacement at four times, reset preservation, redo and invalid-edit rejection
+without losing redo. A layered case verifies that undo removes the stronger
+override, reveals the weaker animation and restores every loaded layer's
+serialized authored data.
+All 403 ordinary tests pass, with six native tests ignored; check-all, build
+and whitespace checks pass. Logs: `/tmp/editor-matrix-{tests,check,build}.log`.
+
+A mapped-target regression now authors through an internal reference with a time
+offset, verifies the matrix is authored on `/Source` rather than `/M`, switches
+back to the root edit target and checks exact undo/redo plus target preservation.
+Root/edit/flattened output in USDA/USDC/USD reopens with the same matrix and reset
+at four times on both composed paths. These modes share one physical layer in
+this mapped fixture; external reference-layer and variant-target matrix-command
+coverage remain open.
+
+An optional native export test sends all nine mode/format combinations through
+native `usdcat --flatten`, then checks the returned composed data for the static
+affine matrix/reset, absence of stale matrix samples and retained children.
+This verifies native parse/composition interoperability, not native renderer
+fidelity or native file-picker interaction.
+All 404 ordinary tests and all seven optional native export tests pass, along
+with check-all, build and whitespace checks. Logs:
+`/tmp/editor-mapped-{tests,check,build,native}.log`.
+
+### Ordinary affine transform propagation: validation in progress
+
+Ordinary prim projection now retains affine linear residuals and applies USD
+stack resets after Bevy transform propagation, before frusta and GPU joint
+updates. Resets preserve the nearest USD pseudo-root placement and up-axis
+conversion. Runtime Transform edits on an affine prim multiply its residual;
+descendants retain their existing hierarchy. Invalid non-finite or projective
+samples retain the previous pose with `UsdTransformError`; capture rejects that
+diagnostic instead of recording an apparently successful image.
+
+Decomposition is guarded by nonzero finite determinant and orthogonal axes;
+singular, tiny and sheared affine matrices use the residual path. Unit tests
+cover representation, a runtime descendant under shear, runtime translation
+edits and nested reset behavior under a rotated scene root and translated mount.
+An authored reset regression also checks prefix exclusion, override removal on
+reprojection, runtime-name preservation and unchanged source-layer data.
+Live edit coverage now sends projective and NaN matrices through the stage
+change sink and `apply_changes`, verifies last-good affine globals, then restores
+TRS and checks error/override removal, unchanged entity identity and runtime
+name preservation. Broader animated coverage remains pending. This does not
+complete the integration acceptance checklist.
+
+All 397 ordinary tests pass (six native export tests ignored), alongside
+check-all, build and whitespace checks. Logs:
+`/tmp/affine-validation-{tests,check,build}.log`.
+
+Rendered fixtures `assets/xform_affine{,_reference}.usda` and
+`assets/xform_reset{,_reference}.usda` were captured at time 0, eye (6,4,8),
+focus (0,1,0), 1280x720. All four images in `target/xform_*.png` were inspected.
+The affine pair differs at two of 921,600 pixels, maximum RGB error 1, mean
+0.000001; strict zero tolerance correctly fails. The Z-up reset pair is pixel
+identical, despite the authored parent translation and pre-reset translation.
+All four capture logs have CAPTURE_OK and no WARN/ERROR entries. Logs:
+`/tmp/xform*-capture.log`, `/tmp/xform_{affine,reset}-compare.log`. These are
+Bevy geometry references, not comparison with a native USD renderer.
+The fixture regression brings the ordinary test total to 398 passing, with six
+native tests ignored. Check-all, build and whitespace checks pass; logs:
+`/tmp/xform-fixtures-{tests,check,build}.log`.
+
+Transform-op reading rejects non-finite/non-unit orientation quaternions before
+matrix construction and singular inverse ops before inversion. Inversion uses
+double precision before converting back to finite float matrices, avoiding
+determinant underflow for tiny invertible scales. Reader tests check malformed
+orientations, identity recovery, singular inverses and a 1e-20 scale inverse.
+Non-unit authored orientations are diagnosed rather than normalized; broader
+native quaternion semantics and animated orientation parity remain unverified.
+All 400 ordinary tests pass, with six native tests ignored; check-all, build
+and whitespace checks pass. Logs: `/tmp/xform-recovery-final-{tests,check,build}.log`.
+
+`assets/xform_animation.usda` exercises identity → shear → translated TRS under
+Z-up, with one following cube and one independently translating reset cube.
+An AssetPlugin/UsdAssetPlugin integration test loads two placed instances of the
+same source, scrubs six pairs of independent clocks including interpolated times
+2.5 and 7.5, and compares globals against independently interpolated matrices.
+It verifies affine override insertion/removal, reset exclusion, stable prim IDs
+and preserved runtime children/local transforms/names. The focused and full
+workspace gates pass; all 401 ordinary tests, check-all, build and whitespace
+checks pass, with six native tests ignored. Logs:
+`/tmp/xform-clocks-{tests,check,build}.log`.
+
+Native fixed-camera captures at times 0, 5 and 10 were inspected:
+`target/xform-animation-{0,5,10}.png`, eye (8,5,10), focus (2,1,0).
+The orange cube shears then returns to a translated cube; the blue reset cube
+retains its shape and follows its own translation. Logs
+`/tmp/xform-animation-{0,5,10}.log` have CAPTURE_OK without WARN/ERROR entries.
+These are visual transition checks, not native-USD reference or performance proof.
+
 ### Preserve affine transforms on direct mesh point prototypes
 
 Direct mesh prototype baking now uses the authored composed matrix, not its

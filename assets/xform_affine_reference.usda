@@ -1,0 +1,9 @@
+#usda 1.0
+(
+    subLayers = [@xform_affine.usda@]
+)
+over "Panels" {
+    uniform token[] xformOpOrder = []
+    point3f[] points = [(-2,0,-1), (0,0,0), (2.25,3,0), (0.25,3,-1), (0,0,-2), (2.25,3,-2)]
+    normal3f[] normals = [(-0.5,0.375,1), (1,-0.75,0)] (interpolation = "uniform")
+}

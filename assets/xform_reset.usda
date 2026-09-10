@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    upAxis = "Z"
+)
+def Xform "Parent" {
+    double3 xformOp:translate = (20,30,40)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    def Cube "Reset" {
+        double size = 2
+        double3 xformOp:translate:ignored = (100,200,300)
+        double3 xformOp:translate = (0,0,1)
+        uniform token[] xformOpOrder = ["xformOp:translate:ignored", "!resetXformStack!", "xformOp:translate"]
+        color3f[] primvars:displayColor = [(0.9,0.16,0.025)]
+    }
+}

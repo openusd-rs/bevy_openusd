@@ -3,6 +3,59 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Spot visual recheck after material fixes
+
+Rechecked at `f709355` using the original collection asset
+`../usd_collection/oems/spot_boston_dynamics/spot_base_urdf/spot.usdc`.
+Its SHA-256 is
+`3d450917a26f3bb89c32f2872cf7b8be2bffac15954c0dbca6330ec780f9365b`.
+No collection files were modified.
+
+Both forward-rendered captures use time 0, shadows off, eye (1.6,0.8,1.8),
+target (0,-0.15,0), 1280x720 and 60 ready frames. Each reports 13 visible
+meshes and CAPTURE_OK. Both images were inspected:
+
+- `target/spot-material-framed.png`: subdivision disabled; visible faceting
+  and seams remain after the material/tangent fixes.
+- `target/spot-material-subdiv1.png`: finite subdivision level 1; dark seam
+  details on the lower legs are more conspicuous, not a visual repair.
+- Logs: `/tmp/spot-material-{framed,subdiv1}.log`.
+
+The current `scene_report ASSET 0 1` completed for 26 traversed meshes,
+including library geometry, not 26 visible meshes. The base mesh preserves
+all 3,368 authored vertex normals exactly. Its 1,296 source triangles have
+no degenerate/duplicate triangles or reversed normal corners; the minimum
+face/normal dot is 0.999808. Thus its source normals are almost face-aligned.
+The indexed boundary count is 3,368 versus 55 position-welded boundaries;
+position welding also exposes one nonmanifold edge. The subdivision scheme
+is the unauthored Catmull-Clark fallback. At level 1 the base has 8,292 points,
+3,888 quads and eight reversed normal corners in the triangulated result.
+These are diagnostics, not proof of their contribution to each visible seam.
+Log: `/tmp/spot-material-scene-report.log`.
+
+Native `make capture-reference` with Embree, GPU disabled and image width
+1280 again writes a completely black image for the original binary.
+`capture_inspect` rejects it: zero nonblack pixels out of 1,195,520.
+The initial inspection used an incorrect height of 960 and failed bounds
+validation; the corrected height is 934. Evidence:
+`target/spot-native-current.png`, `/tmp/spot-native-current.log`,
+`/tmp/spot-native-inspect-final.log`.
+
+A fresh diagnostic root export (`USD_REPORT_EXPORT_LAYER` with scene_report)
+to `target/spot-material-native.usda` renders visibly through native Embree:
+`target/spot-native-reexport.png`, inspected directly. Faceting is also
+visible there. Logs: `/tmp/spot-material-native-export.log` and
+`/tmp/spot-native-reexport.log`. Native warnings explicitly exclude Material
+prim support and GPU-disabled color correction. Camera, lighting and
+refinement are not matched to Bevy; this is not a material or pixel-parity
+test. The diagnostic export does not rebase relative assets.
+
+Next: obtain a matched-camera geometry reference with explicit refinement
+before changing smoothing or topology. Do not weld the source or enable
+subdivision globally merely to conceal these artifacts. Full visual fidelity
+and the intermittent black editor-window issue remain open. This checkpoint
+changes documentation only; no workspace test/build rerun is claimed.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

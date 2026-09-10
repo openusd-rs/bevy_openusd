@@ -25,6 +25,22 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Verify independent live emissive textures
+
+The emissive fixture now includes two filename samples and a constant-color
+endpoint reference. The ninth check_live_clocks case loads two existing roots
+at times 0/10, reverses them after 30 ready frames and compares against fresh
+reference roots at 10/0. All nine cases pass at zero RGB tolerance. Emission
+metadata confirms two visible meshes and the reversed clocks; both emission
+images were visually inspected and match exactly (0 of 921600 changed pixels).
+
+Evidence: `target/live-emissive-regression/`, `/tmp/emissive-live-gpu.log`.
+The fixture unit regression checks both endpoints and backward reads. All 497
+ordinary tests pass (13 ignored), check-all/build and shell syntax/whitespace
+checks pass: `/tmp/emissive-live-{tests,check,build}.log`. This tests endpoint
+updates and cache behavior, not intermediate-time parity: filenames are held,
+whereas the constant-color reference interpolates between its endpoints.
+
 ### Restore texture-only emissive output
 
 Bevy StandardMaterial defaults its emissive multiplier to black. The material

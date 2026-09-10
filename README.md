@@ -593,6 +593,11 @@ make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example capture_compare
 Texture-only emission uses a white Bevy emissive multiplier when an image handle
 is bound. Explicit emissive colors retain their multiplier, including black;
 untextured defaults remain non-emissive. This does not add RGB texture scale/bias.
+The same generator writes `animated.usda` (emissive filename samples) and
+`animated_reference.usda` (constant-color samples). The live-clock regression
+compares their endpoints after reversing two existing instance clocks. Filename
+selection is held, while the constant-color reference interpolates, so this
+comparison does not claim agreement at intermediate times.
 
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:
@@ -1244,7 +1249,7 @@ make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/
 
 It generates fresh UV/texture/scalar fixtures and compares live clock reversals
 against baked UV, fixed-image, CPU-morph and precomputed scalar-map references.
-All eight comparisons use zero RGB
+All nine comparisons use zero RGB
 tolerance. Metadata must confirm the reversal and two visible mesh entities;
 the morph case also verifies shared GPU material use. Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain

@@ -25,6 +25,7 @@ run_example() {
 run_options=(RUN_WITH=)
 run_example uv_transform_fixture "$output/fixture" > "$output/fixture.log" 2>&1
 run_example scalar_texture_fixture "$output/scalar-fixture" > "$output/scalar-fixture.log" 2>&1
+run_example emissive_texture_fixture "$output/emissive-fixture" > "$output/emissive-fixture.log" 2>&1
 printf 'case\tstatus\n' > "$output/results.tsv"
 
 run_case() {
@@ -54,7 +55,7 @@ run_case() {
 }
 
 status=0
-for name in uv texture colorspace morph scalar scalar_interface file_interface colorspace_interface; do
+for name in uv texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive; do
     case "$name" in
         uv) live="$output/fixture/mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         texture) live="$output/fixture/file_samples.usda"; reference="$output/fixture/file_reference.usda"; cpu=0 ;;
@@ -64,6 +65,7 @@ for name in uv texture colorspace morph scalar scalar_interface file_interface c
         scalar_interface) live="$output/scalar-fixture/interface_animated.usda"; reference="$output/scalar-fixture/animated_reference.usda"; cpu=0 ;;
         file_interface) live="$output/scalar-fixture/file_interface_animated.usda"; reference="$output/scalar-fixture/animated_reference.usda"; cpu=0 ;;
         colorspace_interface) live="$output/scalar-fixture/colorspace_interface_animated.usda"; reference="$output/scalar-fixture/colorspace_reference.usda"; cpu=0 ;;
+        emissive) live="$output/emissive-fixture/animated.usda"; reference="$output/emissive-fixture/animated_reference.usda"; cpu=0 ;;
     esac
     if run_case "$name" "$live" "$reference" "$cpu"; then result=ok; else result=failed; status=1; fi
     printf '%s\t%s\n' "$name" "$result" | tee -a "$output/results.tsv"

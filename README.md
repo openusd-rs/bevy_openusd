@@ -1490,6 +1490,11 @@ and retain the geometric-normal fallback. This requires the mesh's tangent frame
 missing UV/tangent data and deformed-tangent fidelity remain separate limitations.
 The normal fixture includes `constant.usda` and `constant_animated.usda`; the latter
 animates the signed normal directly rather than through a texture scale input.
+`constant_no_uv.usda` omits UVs and exercises the missing-tangent diagnostic.
+Normal-mapped ordinary meshes, material subsets and point-instancer prototypes
+carry `UsdMaterialWarning` when the projected mesh lacks tangents. Bevy then uses
+geometric shading normals; the diagnostic does not invent a UV/tangent basis or
+validate the numerical quality of existing tangents.
 
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:

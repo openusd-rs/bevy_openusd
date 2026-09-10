@@ -69,7 +69,7 @@ pub(crate) fn prepare(
     for subset in &read.subsets {
         let Ok(path) = ctx.path.append_path(subset.name.as_str()) else { continue };
         let subset_ctx = RouteCtx::at(ctx.stage, &path, ctx.time);
-        let (material, warnings) = match super::material::resolve_material(&subset_ctx, world) {
+        let (material, mut warnings) = match super::material::resolve_material(&subset_ctx, world) {
             Ok(Some((handle, warnings))) => {
                 let mut material = world.resource::<Assets<StandardMaterial>>().get(&handle).unwrap().clone();
                 super::material::apply_sidedness(ctx, &mut material);
@@ -79,6 +79,9 @@ pub(crate) fn prepare(
             Err(error) => (default_material.clone(), vec![error.to_string()]),
         };
         let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &subset.indices));
+        if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
+            super::material::warn_missing_tangents(&mesh, material, &mut warnings);
+        }
         prepared.parts.push((subset.name.clone(), super::cache::intern_mesh(world, mesh), material, warnings));
     }
     let remaining: Vec<i32> = assigned.iter().enumerate().filter_map(|(face, assigned)| (!assigned).then_some(face as i32)).collect();

@@ -25,6 +25,31 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Diagnose ignored normal mapping without tangents
+
+Bevy 0.19.1's pbr_fragment.wgsl guards normal mapping with VERTEX_TANGENTS;
+the projection previously attached normal textures without exposing that missing
+mesh tangents would make them ineffective. A shared material diagnostic now adds
+UsdMaterialWarning on ordinary meshes, material subsets and point-instancer
+mesh/shape prototypes when their material has a normal map but the projected
+mesh has no tangent attribute. It does not invent UVs, mutate shared materials,
+or validate numerical quality of existing/deformed tangent frames.
+
+The integration test projects ordinary/subset/instancer material entities both
+without UVs and with a valid authored UV frame, requiring the warning only for
+the missing-tangent case. normal_fixture now generates constant_no_uv.usda.
+GPU captures of this fixture and the valid constant-normal control were inspected:
+both render, the missing-UV case emits the expected warning exactly once, and
+their images differ across 121104 of 921600 pixels, maximum RGB error 26. The
+valid control has no WARN/ERROR. This is evidence that the ignored input is now
+diagnosed, not a fix for missing UV/tangent data.
+Evidence: `target/normal-tangent-fixture/`,
+`/tmp/normal-tangent-{constant,constant_no_uv,compare}.log`.
+
+All 506 ordinary tests pass (13 ignored), make check-all/build and git diff --check
+pass: `/tmp/normal-tangent-tests.log`, `/tmp/normal-tangent-check-final.log`,
+`/tmp/normal-tangent-build.log`. The full Bevy acceptance checklist remains open.
+
 ### Render authored constant Preview Surface normals
 
 The normal color setter previously discarded resolved normal3f values. The read

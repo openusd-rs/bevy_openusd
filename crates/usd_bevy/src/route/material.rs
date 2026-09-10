@@ -17,6 +17,12 @@ pub struct MaterialRoute;
 #[derive(Component, Debug)]
 pub struct UsdMaterialWarning(pub String);
 
+pub(crate) fn warn_missing_tangents(mesh: &Mesh, material: &StandardMaterial, warnings: &mut Vec<String>) {
+    if material.normal_map_texture.is_some() && mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none() {
+        warnings.push("normal mapping is ignored because the mesh has no tangent frame; provide nondegenerate UVs".into());
+    }
+}
+
 pub(crate) fn apply_sidedness(ctx: &RouteCtx, material: &mut StandardMaterial) {
     let double_sided = ctx.stage.prim(ctx.path.clone()).ok()
         .and_then(|prim| prim.attribute("doubleSided").get::<bool>().ok().flatten()).unwrap_or(false);
@@ -162,11 +168,16 @@ impl PrimRoute for MaterialRoute {
         if world.get::<Mesh3d>(entity).is_none() || world.get_resource::<Assets<StandardMaterial>>().is_none() {
             return;
         }
-        let (handle, warnings) = match resolve_material(ctx, world) {
+        let (handle, mut warnings) = match resolve_material(ctx, world) {
             Ok(Some(material)) => material,
             Ok(None) => { world.entity_mut(entity).remove::<UsdMaterialWarning>(); return; }
             Err(error) => { warn_material(world, entity, ctx, error.to_string()); return; }
         };
+        if let Some(mesh) = world.get::<Mesh3d>(entity)
+            .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
+            && let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&handle) {
+            warn_missing_tangents(mesh, material, &mut warnings);
+        }
         if warnings.is_empty() {
             world.entity_mut(entity).remove::<UsdMaterialWarning>();
         } else {
@@ -184,6 +195,59 @@ impl PrimRoute for MaterialRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normal_tangent_diagnostics_cover_mesh_subsets_and_prototypes() {
+        for uv in [false, true] {
+            let coords = if uv { "texCoord2f[] primvars:st = [(0,0),(1,0),(0,1)] (interpolation = \"vertex\")" } else { "" };
+            let mesh = format!(r#"
+    uniform token subdivisionScheme = "none"
+    point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    {coords}
+    rel material:binding = </Mat>
+    def GeomSubset "Part" {{
+        uniform token elementType = "face"
+        uniform token familyName = "materialBind"
+        int[] indices = [0]
+        rel material:binding = </Mat>
+    }}
+"#);
+            let text = format!(r#"#usda 1.0
+def Mesh "Plain" {{ {mesh} }}
+def Mesh "Proto" {{ {mesh} }}
+def PointInstancer "Copies" {{
+    rel prototypes = [</Proto>]
+    int[] protoIndices = [0]
+    point3f[] positions = [(2,0,0)]
+}}
+def Material "Mat" {{
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {{
+        uniform token info:id = "UsdPreviewSurface"
+        normal3f inputs:normal = (0,0.5,0.5)
+        token outputs:surface
+    }}
+}}
+"#);
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
+            app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>().init_resource::<Assets<Image>>();
+            let source = crate::UsdSource::snapshot("normal.usda", text.as_bytes()).unwrap();
+            let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
+            app.world_mut().spawn(crate::UsdSceneRoot(handle));
+            app.update();
+            let mut count = 0;
+            let mut query = app.world_mut().query::<(&Mesh3d, &MeshMaterial3d<StandardMaterial>, Option<&UsdMaterialWarning>)>();
+            for (_, material, warning) in query.iter(app.world()) {
+                if app.world().resource::<Assets<StandardMaterial>>().get(&material.0).unwrap().normal_map_texture.is_none() { continue; }
+                count += 1;
+                assert_eq!(warning.is_some_and(|warning| warning.0.contains("no tangent frame")), !uv);
+            }
+            assert!(count >= 4, "expected ordinary, subset and instanced material entities, got {count}");
+        }
+    }
 
     #[test]
     fn fallback_opacity_tracks_independent_mesh_shape_and_prototype_clocks() {

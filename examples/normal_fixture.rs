@@ -65,6 +65,8 @@ def Material "Material" {{
     let constant = std::fs::read_to_string(directory.join("scaled_mapped.usda"))?
         .replace("normal3f inputs:normal.connect = </Material/Texture.outputs:rgb>", "normal3f inputs:normal = (0,0.5,0.5)");
     std::fs::write(directory.join("constant.usda"), &constant)?;
+    std::fs::write(directory.join("constant_no_uv.usda"), constant.replace(
+        "texCoord2f[] primvars:st = [(0,0), (1,0), (1,1), (0,1)] (interpolation = \"vertex\")", ""))?;
     std::fs::write(directory.join("constant_animated.usda"), constant.replace(
         "normal3f inputs:normal = (0,0.5,0.5)",
         "normal3f inputs:normal.timeSamples = {0: (0,0.5,0.5), 10: (0,-0.5,0.5)}"))?;

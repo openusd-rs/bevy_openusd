@@ -564,6 +564,28 @@ Log: `/tmp/spot-limit-normals-full.log`.
 No Rust production code changed in this extension; the prior 520-pass/13-ignored
 suite was not rerun. `git diff --check` passes.
 
+## Exact regular limit-tangent weights
+
+Added a regression for a collapsed regular interior fan with edge offsets
+`[X, Z, X, Y]` and zero diagonal offsets. Its exact first limit tangent is zero,
+so it has no defined unit normal. The generic cosine formula instead produced
+`(0,-7.347880794884119e-16,2.4492935982947064e-16)`, which could be normalized
+into a spurious normal after crossing with the other tangent. The regression
+failed before the fix: `/tmp/limit-normal-collapsed-before.log`.
+
+The regular valence-four branch now uses exact integer edge/diagonal weights,
+consistent with the native reference's regular case, rather than computing
+cosines of multiples of pi/2. Extraordinary and boundary formulas are unchanged.
+No epsilon threshold or arbitrary fallback normal was added.
+
+Validation: 521 ordinary tests pass, 13 ignored; check-all, viewer build and
+`git diff --check` pass. Logs: `/tmp/limit-normal-exact-{tests,check,build}.log`.
+Regenerated both collection probes in `target/subdivision-native-exact-regression`:
+UR5 and Spot still have zero native normal mismatches, with maximum component
+errors 5.94309e-8 and 5.89307e-8 respectively. The native gate completes with
+SUBDIVISION_ASSET_CHECK_OK in `/tmp/subdivision-native-exact-assets.log`.
+No new screenshot-based improvement is claimed for this degeneracy fix.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

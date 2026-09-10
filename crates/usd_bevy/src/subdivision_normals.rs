@@ -60,6 +60,10 @@ fn tangents(e: &[DVec3], f: &[DVec3], boundary: bool) -> (DVec3,DVec3) {
         return (u,v);
     }
     if n==2 { return (e[0],e[1]); }
+    if n==4 {
+        return ((e[0]-e[2])*4.0+f[0]-f[1]-f[2]+f[3],
+            (e[1]-e[3])*4.0+f[0]+f[1]-f[2]-f[3]);
+    }
     let theta = std::f64::consts::TAU/n as f64;
     let c = theta.cos();
     let lambda = (5.0+c+(theta*0.5).cos()*(2.0*(9.0+c)).sqrt())/16.0;
@@ -77,6 +81,14 @@ fn tangents(e: &[DVec3], f: &[DVec3], boundary: bool) -> (DVec3,DVec3) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn regular_collapsed_tangent_does_not_invent_a_normal() {
+        let e = [DVec3::X,DVec3::Z,DVec3::X,DVec3::Y];
+        let (u,v) = tangents(&e,&[DVec3::ZERO;4],false);
+        assert_eq!(u,DVec3::ZERO);
+        assert_eq!(v,4.0*(DVec3::Z-DVec3::Y));
+        assert_eq!(u.cross(v).normalize_or_zero(),DVec3::ZERO);
+    }
     #[test]
     fn nonplanar_limit_normal_is_independent_of_ring_start() {
         for n in [3,4,5,8] {

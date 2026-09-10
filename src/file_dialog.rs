@@ -1,6 +1,16 @@
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc, task::{Context, Poll, Wake, Waker}};
+use std::{future::Future, path::{Path, PathBuf}, pin::Pin, sync::Arc, task::{Context, Poll, Wake, Waker}};
 use eframe::egui;
 use usd_bevy::editor::{EditorCommand, EditorSnapshot, SaveMode};
+
+const USD_EXTENSIONS: &[&str] = &["usd", "usda", "usdc", "usdz"];
+
+fn save_labels(mode: SaveMode) -> (&'static str, &'static str) {
+    match mode {
+        SaveMode::RootLayer => ("Save root layer — extension selects USD format", "scene.usda"),
+        SaveMode::EditLayer => ("Save edit layer — extension selects USD format", "edit-layer.usda"),
+        SaveMode::Flattened => ("Save flattened scene — extension selects USD format", "flattened.usda"),
+    }
+}
 
 #[derive(Clone)]
 pub enum Request {
@@ -17,7 +27,13 @@ impl Request {
         let filename = path.into_os_string().into_string().map_err(|_| "USD paths must be UTF-8".to_owned())?;
         Ok(match self {
             Self::Open => EditorCommand::Open(filename),
-            Self::Save { mode, document_id, edit_layer } => EditorCommand::SaveChecked { filename, mode, document_id, edit_layer },
+            Self::Save { mode, document_id, edit_layer } => {
+                let extension = Path::new(&filename).extension().and_then(|value| value.to_str()).unwrap_or("");
+                if !USD_EXTENSIONS.iter().any(|supported| extension.eq_ignore_ascii_case(supported)) {
+                    return Err("Save filename must end in .usda, .usdc, .usd or .usdz".into());
+                }
+                EditorCommand::SaveChecked { filename, mode, document_id, edit_layer }
+            }
         })
     }
 }
@@ -46,11 +62,13 @@ impl FileDialogs {
         let dialog = rfd::AsyncFileDialog::new();
         let future: Selection = match &request {
             Request::Open => {
-                let selection = dialog.add_filter("USD", &["usd", "usda", "usdc", "usdz"]).pick_file();
+                let selection = dialog.add_filter("USD", USD_EXTENSIONS).pick_file();
                 Box::pin(async move { selection.await.map(|file| file.path().to_owned()) })
             }
-            Request::Save { .. } => {
-                let selection = dialog.add_filter("USD ASCII", &["usda"]).save_file();
+            Request::Save { mode, .. } => {
+                let (title, filename) = save_labels(*mode);
+                let selection = dialog.set_title(title).set_file_name(filename)
+                    .add_filter("USD ASCII / binary / package (.usda, .usdc, .usd, .usdz)", USD_EXTENSIONS).save_file();
                 Box::pin(async move { selection.await.map(|file| file.path().to_owned()) })
             }
         };
@@ -139,6 +157,24 @@ mod tests {
         let snapshot = EditorSnapshot { document_id: 42, edit_layer: "weak.usda".into(), ..Default::default() };
         let command = Request::save(SaveMode::EditLayer, &snapshot).command("output.usda".into()).unwrap();
         assert!(matches!(command, EditorCommand::SaveChecked { document_id: 42, edit_layer, mode: SaveMode::EditLayer, .. } if edit_layer == "weak.usda"));
+    }
+
+    #[test]
+    fn save_formats_are_explicit_and_keep_the_selected_path() {
+        let snapshot = EditorSnapshot { document_id: 42, edit_layer: "weak.usda".into(), ..Default::default() };
+        for extension in ["usda", "usdc", "usd", "usdz", "USDZ"] {
+            let path = format!("path with spaces/scene.{extension}");
+            let command = Request::save(SaveMode::RootLayer, &snapshot).command(path.clone().into()).unwrap();
+            assert!(matches!(command, EditorCommand::SaveChecked { filename, document_id: 42, .. } if filename == path));
+        }
+        for path in ["scene", "scene.", "scene.png"] {
+            assert!(Request::save(SaveMode::RootLayer, &snapshot).command(path.into()).is_err());
+        }
+        for mode in [SaveMode::RootLayer, SaveMode::EditLayer, SaveMode::Flattened] {
+            let (title, filename) = save_labels(mode);
+            assert!(title.contains("extension selects"));
+            assert!(filename.ends_with(".usda"));
+        }
     }
 
     #[cfg(unix)]

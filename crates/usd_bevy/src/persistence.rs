@@ -5,7 +5,8 @@ use std::{fs, path::Path};
 
 pub(crate) fn export_layer(stage: &openusd::usd::Stage, layer: &openusd::sdf::Layer, filename: &str) -> Result<()> {
     write_atomic(filename, |temporary| {
-        if Path::new(filename).extension().is_some_and(|extension| extension == "usdz") {
+        if Path::new(filename).extension().and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("usdz")) {
             let mut output = fs::File::create(temporary)?;
             stage.write_usdz_package(layer, &mut output)?;
         } else {
@@ -119,7 +120,7 @@ mod tests {
         let root_before = editor.stage().root_layer().export_to_string().unwrap();
         let weak_before = editor.stage().layer(weak.to_str().unwrap()).unwrap().export_to_string().unwrap();
         let undo_before = editor.snapshot().unwrap().can_undo;
-        let output = directory.path().join("saved.usdz");
+        let output = directory.path().join("saved.USDZ");
         editor.save(output.to_str().unwrap(), SaveMode::RootLayer).unwrap();
         let first = fs::read(&output).unwrap();
         editor.save(output.to_str().unwrap(), SaveMode::RootLayer).unwrap();

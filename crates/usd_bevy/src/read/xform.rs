@@ -69,8 +69,16 @@ pub fn read_transform_stack_at(stage: &Stage, prim: &Path, time: Option<f64>) ->
 
     let mut m = Mat4::IDENTITY;
     let reset = order.iter().rposition(|op| op == "!resetXformStack!");
-    for op in &order[reset.map_or(0, |index| index + 1)..] {
+    let mut index = reset.map_or(0, |index| index + 1);
+    while index < order.len() {
+        let op = &order[index];
+        if order.get(index + 1).is_some_and(|next|
+            op.strip_prefix("!invert!") == Some(next.as_str()) || next.strip_prefix("!invert!") == Some(op.as_str())) {
+            index += 2;
+            continue;
+        }
         m *= build_op_matrix(stage, prim, op, tc)?;
+        index += 1;
     }
 
     Ok(Some((m.to_cols_array(), reset.is_some())))
@@ -101,6 +109,14 @@ fn build_op_matrix(
             Mat4::from_translation(Vec3::from(value_to_vec3f(&raw).ok_or_else(invalid)?))
         }
         "scale" => Mat4::from_scale(Vec3::from(value_to_vec3f(&raw).ok_or_else(invalid)?)),
+        "translateX" | "translateY" | "translateZ" | "scaleX" | "scaleY" | "scaleZ" => {
+            let scalar = value_to_scalar_f32(&raw).ok_or_else(invalid)?;
+            let scale = kind.starts_with("scale");
+            let axis = match kind.as_bytes().last() { Some(b'X') => 0, Some(b'Y') => 1, _ => 2 };
+            let mut vector = if scale { Vec3::ONE } else { Vec3::ZERO };
+            vector[axis] = if scale && inverted { -scalar } else { scalar };
+            if scale { Mat4::from_scale(vector) } else { Mat4::from_translation(vector) }
+        }
         "orient" => {
             let q = value_to_quat_wxyz(&raw).ok_or_else(invalid)?;
             orientation_matrix(q).ok_or_else(|| anyhow::anyhow!("invalid orientation in {op_token}"))?
@@ -128,7 +144,7 @@ fn build_op_matrix(
     };
 
     anyhow::ensure!(m.is_finite(), "non-finite transform in {op_token}");
-    if !inverted { return Ok(m); }
+    if !inverted || matches!(kind, "scaleX" | "scaleY" | "scaleZ") { return Ok(m); }
     let matrix = m.as_dmat4();
     anyhow::ensure!(matrix.determinant() != 0.0, "singular inverse transform in {op_token}");
     let inverse = matrix.inverse().as_mat4();
@@ -187,6 +203,45 @@ fn value_to_quat_wxyz(v: &Value) -> Option<[f64; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_axis_stack_matches_vector_reference_and_native_inverse_values() {
+        let open = |file| Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .open(&format!("{}/../../assets/{file}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let stage = open("xform_scalar_axes.usda");
+        let reference = open("xform_half_reference.usda");
+        let path = openusd::sdf::path("/Panels").unwrap();
+        assert_eq!(read_transform_matrix_at(&stage, &path, None).unwrap(), read_transform_matrix_at(&reference, &path, None).unwrap());
+        for (axis, suffix, scale, translate) in [(0,"X",1.5,1.0), (1,"Y",0.5,0.5), (2,"Z",2.0,-2.0)] {
+            let inverse_scale = build_op_matrix(&stage, &path, &format!("!invert!xformOp:scale{suffix}"), None).unwrap();
+            let mut expected = Vec3::ONE;
+            expected[axis] = -scale;
+            assert_eq!(inverse_scale, Mat4::from_scale(expected));
+            let inverse_translate = build_op_matrix(&stage, &path, &format!("!invert!xformOp:translate{suffix}"), None).unwrap();
+            let mut expected = Vec3::ZERO;
+            expected[axis] = -translate;
+            assert_eq!(inverse_translate, Mat4::from_translation(expected));
+        }
+    }
+
+    #[test]
+    fn adjacent_inverse_pairs_cancel_before_evaluating_singular_ops() {
+        let stage = Stage::builder().in_memory("cancel-inverse.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        stage.create_attribute("/Root.xformOp:scale", "double3").unwrap()
+            .set(Value::Vec3d(openusd::gf::Vec3d::from([0.0,1.0,1.0]))).unwrap();
+        stage.create_attribute("/Root.xformOp:scaleX", "double").unwrap().set(Value::Double(2.0)).unwrap();
+        let mut order = stage.create_attribute("/Root.xformOpOrder", "token[]").unwrap();
+        let path = openusd::sdf::path("/Root").unwrap();
+        for name in ["scale", "scaleX"] {
+            for inverted_first in [false, true] {
+                let mut ops = vec![format!("xformOp:{name}"), format!("!invert!xformOp:{name}")];
+                if inverted_first { ops.reverse(); }
+                order = order.set(Value::TokenVec(ops.into_iter().map(Into::into).collect())).unwrap();
+                assert_eq!(read_transform_matrix_at(&stage, &path, None).unwrap(), Some(Mat4::IDENTITY.to_cols_array()));
+            }
+        }
+    }
 
     #[test]
     fn quaternion_conversion_matches_native_axis_angle_cases() {

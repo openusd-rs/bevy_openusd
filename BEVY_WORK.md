@@ -25,6 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Scalar-axis transforms and adjacent inverse cancellation
+
+Added translateX/Y/Z and scaleX/Y/Z with half/float/double scalar decoding.
+Adjacent op/inverse pairs cancel before evaluating either op, including singular
+scales and inverse-first pairs. Non-adjacent pairs are not recursively removed.
+Native OpenUSD 25.05.01 probes confirm cancellation and its unusual unpaired
+scalar-axis inverse-scale behavior: negate the scalar, unlike reciprocal vector
+scale. The reader follows that native behavior explicitly rather than claiming
+these forms are interchangeable. Probe logs:
+`/tmp/native-axis-inverses-final.log`, `/tmp/native-singular-pair.log`.
+
+Tests compare the mixed-precision `assets/xform_scalar_axes.usda` stack against
+the existing double-vector fixture, verify per-axis inverse values, and exercise
+singular/direct/inverse-first cancellation. Broader animated/native-version
+compatibility of the scalar-axis inverse behavior remains open.
+Both scalar-axis and vector reference captures were inspected at time 0, eye
+(6,4,8), focus (0,1,0): `target/scalar-xform_{scalar_axes,half_reference}.png`.
+All 921,600 pixels match at strict zero tolerance, with CAPTURE_OK and no
+WARN/ERROR entries in the capture logs. Logs:
+`/tmp/scalar-xform_{scalar_axes,half_reference}-capture.log`,
+`/tmp/scalar-axes-compare.log`. All 414 ordinary tests pass (seven native export
+tests ignored), with check-all, build and whitespace checks passing. Gate logs:
+`/tmp/scalar-axes-{tests,check,build}.log`.
+
 ### Native-compatible quaternion conversion and half orientations
 
 The earlier unit-length rejection was too strict: native OpenUSD derives an
@@ -59,9 +83,8 @@ rotation/translation/scale routes. Wrong value types, malformed op-order types
 and unsupported authored op kinds return diagnostics rather than silently
 substituting identity. Missing op values retain the existing identity fallback.
 Ordinary projection surfaces these errors through `UsdTransformError` and keeps
-the previous valid pose. Scalar-axis translation/scale ops remain unsupported;
-they are no longer silently ignored. Half orientations were added in the slice
-above.
+the previous valid pose. Scalar-axis translation/scale and half orientations
+were added in the later slices above.
 
 The supported half scalar/vector forms were checked against the official
 [OpenUSD xform-op implementation](https://raw.githubusercontent.com/PixarAnimationStudios/OpenUSD/release/pxr/usd/usdGeom/xformOp.cpp).

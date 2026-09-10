@@ -908,8 +908,11 @@ Unsupported op kinds or value types now produce transform diagnostics instead
 of disappearing into identity. Half-quaternion orientation is covered by
 `assets/xform_quath.usda` and its native-USD-derived matrix reference. Quaternion
 conversion preserves the real-component angle and normalizes the imaginary axis;
-it does not normalize the entire quaternion. Scalar-axis translation/scale
-support remains open.
+it does not normalize the entire quaternion. Scalar-axis translation/scale ops
+are exercised by `assets/xform_scalar_axes.usda`. Adjacent op/inverse pairs
+cancel before evaluation. For compatibility with native OpenUSD 25.05.01,
+an unpaired inverse scalar-axis scale negates its value; vector-scale inverses
+instead use reciprocals. These two forms are not interchangeable.
 
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset

@@ -39,10 +39,52 @@ use usd_bevy::editor::{EditorBridge, EditorCommand, EditorPlugin, SaveMode};
 const LOG_FILE: &str = "/tmp/usdview.log";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let watch = match std::env::var("USD_WATCH_TEXTURES") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(error.into()),
+    };
+    texture_watch_enabled(
+        watch.as_deref(),
+        cfg!(all(feature = "file_watcher", not(target_arch = "wasm32"))),
+    )?;
     init_tracing();
     install_panic_logger();
     tracing::info!(target: "usdview", "usdview starting — full log at {LOG_FILE}");
     mara::window::run::<UsdApp>()
+}
+
+fn texture_watch_enabled(value: Option<&str>, supported: bool) -> Result<bool, String> {
+    match value {
+        None | Some("0") => Ok(false),
+        Some("1") if supported => Ok(true),
+        Some("1") => Err("USD_WATCH_TEXTURES=1 requires the file_watcher build feature".into()),
+        _ => Err("USD_WATCH_TEXTURES must be 0 or 1".into()),
+    }
+}
+
+#[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+fn report_texture_watch(status: Res<usd_bevy::editor::texture_watch::EditorTextureWatchStatus>) {
+    if !status.is_changed() {
+        return;
+    }
+    if let Some(error) = &status.error {
+        tracing::error!("{error}");
+    } else {
+        tracing::info!(files = status.files, "editor texture watcher active");
+    }
+}
+
+#[test]
+fn texture_watch_configuration_is_explicit() {
+    for supported in [false, true] {
+        assert_eq!(texture_watch_enabled(None, supported), Ok(false));
+        assert_eq!(texture_watch_enabled(Some("0"), supported), Ok(false));
+        assert!(texture_watch_enabled(Some("true"), supported).is_err());
+        assert!(texture_watch_enabled(Some(""), supported).is_err());
+    }
+    assert!(texture_watch_enabled(Some("1"), false).is_err());
+    assert_eq!(texture_watch_enabled(Some("1"), true), Ok(true));
 }
 
 /// Tracing to BOTH stderr and [`LOG_FILE`]. The embedded Bevy app has no
@@ -513,6 +555,13 @@ fn configure_usd_app(app: &mut App, editor: EditorBridge) {
             setup_camera.after(mara_bevy::BevyViewportSet::SetupTarget),
         )
         .add_systems(Update, mara_bevy::apply_viewport_camera_input_system);
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    if texture_watch_enabled(std::env::var("USD_WATCH_TEXTURES").ok().as_deref(), true)
+        .unwrap_or(false)
+    {
+        app.add_plugins(usd_bevy::editor::texture_watch::EditorTextureWatchPlugin)
+            .add_systems(Update, report_texture_watch);
+    }
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }

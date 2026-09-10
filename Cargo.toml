@@ -20,6 +20,9 @@ repository = "https://github.com/bresilla/bevy_openusd"
 name = "usdview"
 path = "src/main.rs"
 
+[features]
+file_watcher = ["usd_bevy/file_watcher"]
+
 [dependencies]
 # The live USD editor: stage projection, sync, authoring, persistence.
 usd_bevy = { path = "crates/usd_bevy" }

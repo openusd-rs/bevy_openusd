@@ -25,6 +25,31 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Opt-in native texture watching in the viewer
+
+The root file_watcher feature forwards the library feature. USD_WATCH_TEXTURES=1
+installs EditorTextureWatchPlugin in the embedded editor; absent/0 stays off.
+Invalid values and feature-disabled requests fail before window startup.
+The viewer logs active file counts and setup failures. Configuration tests cover
+supported/unsupported builds and invalid values.
+
+An isolated native viewer opened a generated red-texture document, reported two
+watched files, then received an atomic red.png replacement containing blue pixels.
+No UI replay or refresh click was used. The inspected capture
+`target/viewer-ui-captures/native-texture-watch.png` shows the blue quad, Ready
+status and preserved /Quad selection. Logs: `/tmp/viewer-watch-ui.log` and the
+adjacent capture viewer log. This proves automatic external-image refresh in the
+viewer, not layer reload, package replacement or broader rendering fidelity.
+Existing clipboard/Vulkan/SSAO environment warnings remain.
+
+Validation: all 437 ordinary workspace tests pass with default features (seven
+ignored) and with file_watcher (ten ignored). Default check-all/build pass. A
+default-feature make run with USD_WATCH_TEXTURES=1 exits before UI startup with
+the expected feature-required error. Logs: `/tmp/viewer-watch-tests.log`,
+`/tmp/viewer-watch-check.log`, `/tmp/viewer-watch-default-build.log`,
+`/tmp/viewer-watch-feature-tests-recheck.log` and
+`/tmp/viewer-watch-disabled-guard.log`.
+
 ### Native editor texture watcher plugin
 
 Added opt-in `editor::texture_watch::EditorTextureWatchPlugin` under the existing
@@ -44,7 +69,7 @@ snapshot resource's change tick. Removing EditorSession clears all watcher
 handles and the active file count. This tests installed external images in a
 source-backed editor, not USD layers, package-root replacement, folder changes,
 watching missing images from a failed initial Open, or native GPU/UI acceptance.
-The viewer executable does not install this plugin yet.
+Viewer integration and its separate GPU/UI acceptance are recorded above.
 
 Validation: the native editor-watch test passes three consecutive Linux runs,
 `/tmp/editor-watch-repeat-{1,2,3}.log`. All 436 ordinary workspace tests pass

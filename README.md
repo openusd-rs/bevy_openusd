@@ -205,7 +205,15 @@ visual acceptance limits.
 
 The editor loads PNG/JPEG material images from filesystem and USDZ documents,
 refreshes them after edits, and preserves the previous document if opening fails.
-This direct editor path does not yet automatically watch filesystem image changes.
+The viewer can automatically watch installed external textures on native builds:
+
+```sh
+USD_WATCH_TEXTURES=1 make run APP_TARGET='--bin usdview --features file_watcher' ARGS='path/to/scene.usda'
+```
+
+Watching is off by default (`USD_WATCH_TEXTURES=0` also disables it). Requesting
+it without the build feature, or providing a value other than 0/1, fails before
+opening the viewer. The viewer logs active file counts and watcher setup errors.
 Library applications can opt in by enabling `usd_bevy/file_watcher` and adding
 `usd_bevy::editor::texture_watch::EditorTextureWatchPlugin` alongside
 `EditorPlugin`. It watches installed external images and sends RefreshTextures
@@ -213,7 +221,7 @@ on native file events. `EditorTextureWatchStatus` reports active file count and
 setup errors. Watched paths update with the document/image set; idle frames do
 not reread images or rescan USD materials. Package entries, USD layers and folder
 replacement are not watched. Setup failures retry when the document or watched
-file set changes. The viewer executable does not enable this plugin yet.
+file set changes. Images missing during a failed initial Open are not watched.
 
 ```sh
 make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch

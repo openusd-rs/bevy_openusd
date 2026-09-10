@@ -771,6 +771,86 @@ def Xform "Model" (
         }
     }
 
+    #[test]
+    fn numeric_clip_dependency_reloads_preserve_independent_roots() {
+        let (app, directory, changed) = watched_memory_app();
+        exercise_clip_reload(app, "fixture://root.usda", |path, text|
+            directory.insert_asset_text(Path::new(path), text), changed);
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_numeric_clip_dependency_reloads() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.register_asset_source(bevy::asset::io::AssetSourceId::Default,
+            crate::watcher::file_source(directory.path()));
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: directory.path().to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true), ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>();
+        app.finish();
+        app.cleanup();
+        exercise_clip_reload(app, "root.usda", |path, text|
+            std::fs::write(directory.path().join(path), text).unwrap(), |_| {});
+    }
+
+    fn exercise_clip_reload(mut app: App, source: &str, write: impl Fn(&str, &str), changed: impl Fn(&str)) {
+        write("root.usda", r#"#usda 1.0
+def Sphere "Model" (
+    clips = {
+        dictionary default = {
+            asset[] assetPaths = [@clip.usda@]
+            double2[] active = [(0, 0)]
+            double2[] times = [(0, 0), (20, 10)]
+            string primPath = "/Model"
+        }
+    }
+) { double radius }
+"#);
+        let clip = |end| format!("#usda 1.0\ndef Sphere \"Model\" {{ double radius.timeSamples = {{0: 1, 10: {end}}} }}\n");
+        write("clip.usda", &clip(3));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load(source.to_owned());
+        let roots = [10.0, 20.0].map(|current|
+            app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+            && world.resource::<AssetServer>().is_loaded_with_dependencies(handle.id()));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Model"));
+        for entity in entities { app.world_mut().entity_mut(entity).insert(Name::new("runtime name")); }
+        let radii = |world: &World| entities.map(|entity| {
+            let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
+            positions.iter().map(|position| Vec3::from_array(*position).length()).fold(0.0_f32, f32::max)
+        });
+        let matches = |actual: [f32; 2], expected: [f32; 2]| actual.into_iter().zip(expected).all(|(a, b)| (a - b).abs() < 0.0001);
+        assert!(matches(radii(app.world()), [2.0, 3.0]));
+        write("clip.usda", &clip(5));
+        changed("clip.usda");
+        tick_until(&mut app, |world| matches(radii(world), [3.0, 5.0]));
+        let retained = entities.map(|entity| app.world().get::<Mesh3d>(entity).unwrap().0.clone());
+        write("clip.usda", "#usda 1.0\ndef Sphere \"Model\" {");
+        changed("clip.usda");
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+        assert_eq!(entities.map(|entity| app.world().get::<Mesh3d>(entity).unwrap().0.clone()), retained);
+        assert!(matches(radii(app.world()), [3.0, 5.0]));
+        write("clip.usda", &clip(3));
+        changed("clip.usda");
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)) && matches(radii(world), [2.0, 3.0]));
+        for (root, entity) in roots.into_iter().zip(entities) {
+            assert_eq!(instance_entity(app.world(), root, "/Model"), entity);
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+        }
+        for (root, current) in roots.into_iter().zip([20.0, 10.0]) {
+            app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = current;
+        }
+        tick_until(&mut app, |world| matches(radii(world), [3.0, 2.0]));
+    }
+
     #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
     #[test]
     #[ignore = "requires native filesystem events"]

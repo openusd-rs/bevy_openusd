@@ -25,6 +25,21 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Numeric clip dependency reload and recovery
+
+Two AssetServer regressions now exercise the clip dependency lifecycle: a named
+in-memory asset source with injected ModifiedAsset events and an actual native
+filesystem watcher. Both run the same sequence with roots at times 10 and 20:
+initial radii 2/3, a clip-only edit producing 3/5, a malformed clip causing both
+roots to fail while retaining mesh handles, and restoration recovering 2/3.
+Entity IDs and runtime names survive; reversing clocks after recovery yields 3/2.
+The native lane passes without manually emitting events or reloading the root.
+All 474 ordinary workspace tests pass (ten ignored), the native clip watcher
+regression passes, and check-all/build/whitespace validation pass:
+`/tmp/clip-reload-{tests,native,check,build}.log`.
+This covers dependency mutation/corruption/recovery, not active clip switching
+or missing-sample semantics within a multi-clip schedule.
+
 ### Discover numeric value-clip dependencies before projection
 
 The file-loaded GPU clip fixture exposed a loader bug that the explicitly

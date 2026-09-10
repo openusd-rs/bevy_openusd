@@ -248,6 +248,13 @@ make --eval='check-clips:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW
 
 This checks sampled Bevy-frame equivalence, not native-renderer parity, clip
 switching or flattened clip baking.
+Clip dependency reload regressions also check independent clocks, malformed-layer
+failure with retained mesh handles, recovery, stable entities and runtime names.
+The native filesystem event lane runs explicitly:
+
+```sh
+make test APP_TARGET='-p usd_bevy --features file_watcher native_numeric_clip_dependency_reloads -- --ignored --nocapture'
+```
 
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under

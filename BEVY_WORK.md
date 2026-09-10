@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Ordinary affine transform propagation: validation in progress
+
+Ordinary prim projection now retains affine linear residuals and applies USD
+stack resets after Bevy transform propagation, before frusta and GPU joint
+updates. Resets preserve the nearest USD pseudo-root placement and up-axis
+conversion. Runtime Transform edits on an affine prim multiply its residual;
+descendants retain their existing hierarchy. Invalid non-finite or projective
+samples retain the previous pose with `UsdTransformError`; capture rejects that
+diagnostic instead of recording an apparently successful image.
+
+Decomposition is guarded by nonzero finite determinant and orthogonal axes;
+singular, tiny and sheared affine matrices use the residual path. Unit tests
+cover representation, a runtime descendant under shear, runtime translation
+edits and nested reset behavior under a rotated scene root and translated mount.
+Reader/edit recovery coverage and rendered affine/reset reference comparisons
+remain pending. This does not complete the integration acceptance checklist.
+
+All 397 ordinary tests pass (six native export tests ignored), alongside
+check-all, build and whitespace checks. Logs:
+`/tmp/affine-validation-{tests,check,build}.log`.
+
 ### Preserve affine transforms on direct mesh point prototypes
 
 Direct mesh prototype baking now uses the authored composed matrix, not its

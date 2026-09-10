@@ -1,8 +1,7 @@
 //! Transform route: any prim's composed local transform → Bevy [`Transform`].
 //!
-//! The composed *world* transform comes from Bevy's transform propagation up
-//! the projected prim hierarchy (see [`crate::live::project_stage`]); this
-//! route only reads the prim-local transform.
+//! Bevy propagates ordinary TRS transforms through the projected hierarchy.
+//! A post-propagation pass applies affine residuals and USD stack resets.
 
 use bevy::prelude::*;
 

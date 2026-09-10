@@ -31,8 +31,19 @@ pub(super) fn project(ctx: &RouteCtx, world: &mut World, entity: Entity) {
 
 fn representation(matrix: Mat4) -> Option<(Transform, Mat4)> {
     if !matrix.is_finite() || matrix.row(3) != Vec4::W { return None; }
-    let transform = Transform::from_matrix(matrix);
-    let rebuilt = if transform.rotation.is_finite() && transform.scale.is_finite() { transform.to_matrix() } else { Mat4::ZERO };
+    let axes = [matrix.x_axis.truncate(), matrix.y_axis.truncate(), matrix.z_axis.truncate()];
+    let normalized = axes.map(Vec3::try_normalize);
+    let orthogonal = match normalized {
+        [Some(x), Some(y), Some(z)] => x.dot(y).abs() < 1e-6 && x.dot(z).abs() < 1e-6 && y.dot(z).abs() < 1e-6,
+        _ => false,
+    };
+    let determinant = matrix.determinant();
+    let transform = if orthogonal && determinant.is_finite() && determinant != 0.0 {
+        Transform::from_matrix(matrix)
+    } else {
+        Transform::from_translation(matrix.w_axis.truncate())
+    };
+    let rebuilt = if transform.rotation.is_finite() && transform.rotation.is_normalized() && transform.scale.is_finite() { transform.to_matrix() } else { Mat4::ZERO };
     let close = [matrix.x_axis, matrix.y_axis, matrix.z_axis].into_iter()
         .zip([rebuilt.x_axis, rebuilt.y_axis, rebuilt.z_axis]).all(|(a,b)|
             a.abs_diff_eq(b, a.abs().max_element().max(f32::MIN_POSITIVE) * 1e-5));
@@ -40,6 +51,51 @@ fn representation(matrix: Mat4) -> Option<(Transform, Mat4)> {
     let mut residual = matrix;
     residual.w_axis = Vec4::W;
     Some((Transform::from_translation(matrix.w_axis.truncate()), residual))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shear() -> Mat4 {
+        Mat4::from_cols(Vec4::new(1.0, 0.0, 0.5, 0.0), Vec4::new(0.75, 1.0, 0.0, 0.0), Vec4::Z, Vec4::W)
+    }
+
+    #[test]
+    fn representation_preserves_affine_and_singular_matrices() {
+        for matrix in [shear(), Mat4::from_scale(Vec3::ZERO), Mat4::from_scale(Vec3::splat(1e-20)),
+            Mat4::from_scale_rotation_translation(Vec3::new(-2.0, 3.0, 4.0), Quat::from_rotation_y(0.7), Vec3::ONE)] {
+            let (transform, residual) = representation(matrix).unwrap();
+            assert!((transform.to_matrix() * residual).abs_diff_eq(matrix, 1e-6));
+        }
+        assert!(representation(Mat4::from_cols(Vec4::splat(f32::NAN), Vec4::Y, Vec4::Z, Vec4::W)).is_none());
+        assert!(representation(Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0)).is_none());
+    }
+
+    #[test]
+    fn affine_globals_follow_runtime_edits_and_reset_to_scene_basis() {
+        let mut app = App::new();
+        app.add_plugins(bevy::transform::TransformPlugin);
+        configure(&mut app);
+        let world = app.world_mut();
+        let mount = world.spawn(Transform::from_xyz(10.0, 0.0, 0.0)).id();
+        let basis = Transform::from_rotation(Quat::from_rotation_x(0.5));
+        let scene = world.spawn((basis, UsdPrimRef::new("/"), ChildOf(mount))).id();
+        let local = Transform::from_xyz(0.0, 3.0, 0.0);
+        let affine = world.spawn((local, UsdTransformOverride { residual: shear(), reset: false }, ChildOf(scene))).id();
+        let child_local = Transform::from_xyz(2.0, 0.0, 0.0);
+        let child = world.spawn((child_local, ChildOf(affine))).id();
+        let reset = world.spawn((child_local, UsdTransformOverride { residual: Mat4::IDENTITY, reset: true }, ChildOf(child))).id();
+        for offset in [3.0, 7.0] {
+            app.world_mut().get_mut::<Transform>(affine).unwrap().translation.y = offset;
+            app.update();
+            let world = app.world();
+            let scene_global = world.get::<GlobalTransform>(scene).unwrap().to_matrix();
+            let expected = scene_global * world.get::<Transform>(affine).unwrap().to_matrix() * shear() * child_local.to_matrix();
+            assert!(world.get::<GlobalTransform>(child).unwrap().to_matrix().abs_diff_eq(expected, 1e-5));
+            assert!(world.get::<GlobalTransform>(reset).unwrap().to_matrix().abs_diff_eq(scene_global * child_local.to_matrix(), 1e-5));
+        }
+    }
 }
 
 fn parent(world: &World, entity: Entity) -> Option<Entity> { world.get::<ChildOf>(entity).map(ChildOf::parent) }

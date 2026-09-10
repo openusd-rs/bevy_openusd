@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Discover numeric value-clip dependencies before projection
+
+The file-loaded GPU clip fixture exposed a loader bug that the explicitly
+captured example could not: at time 10 its sphere stayed at radius 1 instead of
+2. The failed comparison changed 381,118 of 921,600 pixels, retained under
+`target/clipped-sphere-regression/`. A focused probe regression also failed with
+an empty missing-dependency set (`/tmp/clip-probe-before.log`). Validation only
+queried numeric attributes at default time, leaving their clip layers undiscovered.
+It now queries sample times for every attribute; sampled asset values are still
+read separately. The clip layer enters the existing captured dependency pipeline.
+
+The focused test verifies discovery and interpolation after inserting the layer.
+`scripts/check_clipped_sphere.sh` loads through AssetServer and compares an
+independently authored direct-sample reference at 0/10/20 and two live roots
+reversed from 10/20 to 20/10. All four comparisons have zero RGB differences;
+the fixed midpoint, endpoint and both live-clock images were visually inspected,
+with separated unobscured spheres. Artifacts: `target/clipped-sphere-fixed-regression/`.
+This is sampled Bevy-renderer equivalence, not native-renderer parity, clip
+switching or flattened clip baking. All 473 ordinary tests pass (ten ignored),
+ten native export tests pass, and check-all/build/shell syntax/whitespace pass:
+`/tmp/clip-load-{tests,native,check,build}.log`, `/tmp/clipped-sphere-fixed-gpu.log`.
+
 ### Re-arm replaced editor texture directories on Unix
 
 Editor texture watching now checks watched directory device/inode identities at

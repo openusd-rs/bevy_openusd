@@ -234,6 +234,21 @@ switching or flattened clip baking.
 make run RUN_WITH= APP_TARGET='--example clipped_sources'
 ```
 
+The AssetServer loader queries sample times on numeric attributes as well as
+asset-valued attributes so their value-clip layers enter captured dependencies.
+`assets/clipped_sphere.usda` exercises this file-loading path. Its independent
+reference authors sphere radius samples directly at stage times 0 and 20.
+The GPU regression compares times 0/10/20 and two live roots whose clocks reverse
+from 10/20 to 20/10, requiring zero RGB differences and the expected visible-mesh
+counts. It retains captures, metadata and diffs in a new output directory:
+
+```sh
+make --eval='check-clips:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW-clip-images' check-clips
+```
+
+This checks sampled Bevy-frame equivalence, not native-renderer parity, clip
+switching or flattened clip baking.
+
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under
 two independent Bevy roots, typed reference composition, shared meshes and isolated edits without source files.

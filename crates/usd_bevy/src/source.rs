@@ -292,8 +292,9 @@ impl UsdSource {
             }
             for attribute in prim.attributes()? {
                 attribute.get::<openusd::sdf::Value>()?;
+                let times = attribute.time_sample_times()?;
                 if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
-                    for time in attribute.time_sample_times()? {
+                    for time in times {
                         attribute.get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(time)))?;
                     }
                 }
@@ -479,6 +480,35 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn probe_discovers_numeric_value_clip_layers() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut source = super::UsdSource::snapshot(directory.path().join("root.usda"),
+            br#"#usda 1.0
+def Sphere "Model" (
+    clips = {
+        dictionary default = {
+            asset[] assetPaths = [@clipped_sphere_values.usda@]
+            double2[] active = [(0, 0)]
+            double2[] times = [(0, 0), (20, 10)]
+            string primPath = "/Model"
+        }
+    }
+) { double radius }
+"#.as_slice()).unwrap();
+        let clip = directory.path().join("clipped_sphere_values.usda").to_string_lossy().into_owned();
+        let (_, missing) = source.probe();
+        assert!(missing.contains(&clip), "numeric clip not discovered: {missing:?}");
+        source.insert_dependency(clip, br#"#usda 1.0
+def Sphere "Model" { double radius.timeSamples = {0: 1, 10: 3} }
+"#.to_vec());
+        let (result, missing) = source.probe();
+        result.unwrap();
+        assert!(missing.is_empty());
+        let stage = source.open_stage().unwrap();
+        assert_eq!(stage.attribute("/Model.radius").unwrap().get_at::<f64>(Some(openusd::usd::TimeCode::new(10.0))).unwrap(), Some(2.0));
+    }
+
     use super::*;
 
     #[test]

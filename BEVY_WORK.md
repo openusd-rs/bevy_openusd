@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Paced viewer repaint requests
+
+The viewer now requests its next repaint after 1/60 second through the public
+Mara view context instead of requesting an immediate repaint on every update.
+Input and UI animation can still request earlier frames; this is not a hard FPS
+cap or measured CPU/GPU improvement. No sibling host code changed.
+
+All 461 ordinary tests pass (eight ignored), as do check-all and build:
+`/tmp/paced-viewer-{tests,check,build}.log`. Visually inspected
+`target/viewer-ui-captures/paced-static.png` shows the curve scene and Rendering
+controls. The first playback capture, `paced-play.png`, is black across the whole
+application, including UI, and correctly fails the near-black guard. Its logs
+still show geometry updates after the final replay event; scheduling alone does
+not resolve the intermittent presentation/capture failure.
+
+A separate 35-second capture, `paced-play-recheck.png`, passes and was visually
+inspected: upright UI, animated geometry, time code 0.869 and Pause button.
+Geometry updates continue over 23 seconds after the last injected input event.
+This verifies playback continues without replay-driven immediate repaint requests,
+not consistent capture reliability. Both successful and failed artifacts remain.
+
 ### Compositor backend capture comparison
 
 Ran three GL and three Vulkan captures in alternating order with the same static

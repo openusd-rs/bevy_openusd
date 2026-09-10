@@ -222,7 +222,6 @@ impl WindowApp for UsdApp {
     }
 
     fn update(&mut self, host: &mut MaraHostCtx<'_>) {
-        host.request_repaint();
         let Self {
             bevy_view,
             workspace,
@@ -245,6 +244,7 @@ impl WindowApp for UsdApp {
         // Viewport (root, behind the ribbon-avoiding panes).
         {
             let mut vctx = host.view_ctx(workspace, accent, RibbonAvoidance::all());
+            vctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / 60.0));
             bevy_view.show(&mut vctx, host.gpu(), accent);
         }
 

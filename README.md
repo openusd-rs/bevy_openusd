@@ -767,6 +767,9 @@ not validated alternatives. Three local GL captures were vertically inverted
 despite passing the near-black check, so GL emits an orientation warning. Three
 paired Vulkan captures were correctly oriented, but this small comparison did
 not reproduce or resolve the intermittent black-window failure.
+Pixman also emits a warning: a native playback attempt failed during window
+creation with wgpu reporting incompatible Vulkan and GL surface backends. No
+frame or PNG was produced; software compositing is not a working fallback here.
 
 The low-level inspector also accepts explicit PNG regions:
 

@@ -19,7 +19,8 @@ delay=${USD_UI_CAPTURE_WAIT:-20}
 }
 renderer=${USD_UI_COMPOSITOR_RENDERER:-vulkan}
 case "$renderer" in
-    vulkan|pixman) ;;
+    vulkan) ;;
+    pixman) echo "warning: pixman failed wgpu surface compatibility in local validation; this is not a validated fallback" >&2 ;;
     gl) echo "warning: GL compositor screenshots were vertically inverted in local validation; inspect orientation" >&2 ;;
     *) echo "USD_UI_COMPOSITOR_RENDERER must be vulkan, gl or pixman" >&2; exit 2 ;;
 esac

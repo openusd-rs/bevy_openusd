@@ -25,6 +25,20 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Software compositor capture failure
+
+A Pixman-compositor playback attempt terminates before the first UI update:
+Mara's surface attachment reports RequestAdapterError with incompatible surface
+backends VULKAN and GL. The compositor itself starts, but no PNG is produced.
+Evidence: `/tmp/pixman-play-1.log` and
+`target/viewer-ui-captures/pixman-play-1.{viewer,weston}.log`. This rules out Pixman
+as a working fallback on this machine; it does not locate or fix the intermittent
+black output under Vulkan. The script now warns explicitly when Pixman is selected,
+while retaining the diagnostic option and Vulkan default. No host changes made.
+The warning-path recheck reproduces the startup failure without creating a PNG
+(`/tmp/pixman-warning.log`, companion viewer log); shell syntax and whitespace
+checks pass. No Rust sources changed, so Rust build/test gates were not rerun.
+
 ### Native retimed package export
 
 The new native regression exports a diskless retimed assembly as USDZ in RootLayer,

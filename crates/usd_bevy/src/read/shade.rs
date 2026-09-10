@@ -34,6 +34,8 @@ pub struct ReadPreviewMaterial {
     pub occlusion_texture: Option<String>,
     pub occlusion_channel: usize,
     pub texture_color_spaces: std::collections::BTreeMap<String, bool>,
+    /// Selected-channel [scale, bias] for scalar texture semantics.
+    pub scalar_texture_transforms: std::collections::BTreeMap<String, [f32; 2]>,
     pub warnings: Vec<String>,
 
     /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
@@ -167,6 +169,22 @@ pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64
     Ok(Some(out))
 }
 
+fn texture_value_transform(stage: &Stage, prim: &Path, channel: usize, time: Option<f64>) -> anyhow::Result<[f32; 2]> {
+    if read_token_or_string(stage, prim, "info:id")?.as_deref() != Some("UsdUVTexture") { return Ok([1.0, 0.0]); }
+    let mut result = [1.0, 0.0];
+    for (index, name) in ["inputs:scale", "inputs:bias"].into_iter().enumerate() {
+        let path = prim.append_property(name)?;
+        anyhow::ensure!(connections_at(stage, &path)?.is_empty(), "connected texture scale/bias is unsupported at {path}");
+        if let Some(value) = sampled_value(stage, &path, time)? {
+            let Value::Vec4f(value) = value else { anyhow::bail!("texture scale/bias must be float4 at {path}"); };
+            let values = [value.x, value.y, value.z, value.w];
+            anyhow::ensure!(values.iter().all(|value| value.is_finite()), "nonfinite texture scale/bias at {path}");
+            result[index] = values[channel];
+        }
+    }
+    Ok(result)
+}
+
 fn sampled_value(stage: &Stage, path: &Path, time: Option<f64>) -> anyhow::Result<Option<Value>> {
     let Some((prim, name)) = path.split_property() else { return Ok(None) };
     Ok(stage.prim(prim)?.attribute(name)
@@ -290,10 +308,14 @@ fn resolve_surface_shader(
 
 type ColourSetter = fn(&mut ReadPreviewMaterial, [f32; 3]);
 type ScalarSetter = fn(&mut ReadPreviewMaterial, f32);
-type TextureInput = (String, usize, Option<bool>, Path);
+type TextureInput = (String, usize, Option<bool>, Path, [f32; 2]);
 type TextureSetter = fn(&mut ReadPreviewMaterial, TextureInput);
 
 impl ReadPreviewMaterial {
+    pub fn scalar_texture_transform(&self, semantic: &str) -> [f32; 2] {
+        self.scalar_texture_transforms.get(semantic).copied().unwrap_or([1.0, 0.0])
+    }
+
     pub fn texture_srgb(&self, semantic: &str) -> bool {
         self.texture_color_spaces.get(semantic).copied().unwrap_or(matches!(semantic, "diffuse" | "emissive"))
     }
@@ -317,6 +339,7 @@ fn set_opacity_s(o: &mut ReadPreviewMaterial, s: f32) {
     o.opacity = Some(s);
 }
 fn set_opacity_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("opacity".into(), s.4);
     set_color_space(o, "opacity", s.2);
     o.opacity_channel = s.1;
     o.opacity_texture = Some(s.0);
@@ -331,6 +354,7 @@ fn set_rough_s(o: &mut ReadPreviewMaterial, s: f32) {
     o.roughness = Some(s);
 }
 fn set_rough_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("roughness".into(), s.4);
     set_color_space(o, "roughness", s.2);
     o.roughness_texture = Some(s.0);
     o.roughness_channel = s.1;
@@ -340,6 +364,7 @@ fn set_metal_s(o: &mut ReadPreviewMaterial, s: f32) {
     o.metallic = Some(s);
 }
 fn set_metal_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("metallic".into(), s.4);
     set_color_space(o, "metallic", s.2);
     o.metallic_texture = Some(s.0);
     o.metallic_channel = s.1;
@@ -366,6 +391,7 @@ fn set_normal_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
 fn set_occlusion_c(_: &mut ReadPreviewMaterial, _: [f32; 3]) {}
 fn set_occlusion_s(_: &mut ReadPreviewMaterial, _: f32) {}
 fn set_occlusion_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("occlusion".into(), s.4);
     set_color_space(o, "occlusion", s.2);
     o.occlusion_channel = s.1;
     o.occlusion_texture = Some(s.0);
@@ -568,7 +594,7 @@ fn resolve_attr_chain(
     warnings: &mut Vec<String>,
     time: Option<f64>,
 ) -> anyhow::Result<(Option<ResolvedValue>, Option<TextureInput>)> {
-    resolve_attr_chain_inner(stage, attr_path, &mut 256, warnings, time)
+    resolve_attr_chain_inner(stage, attr_path, &mut 256, warnings, time, 0)
 }
 
 fn resolve_attr_chain_inner(
@@ -577,7 +603,9 @@ fn resolve_attr_chain_inner(
     remaining: &mut usize,
     warnings: &mut Vec<String>,
     time: Option<f64>,
+    depth: usize,
 ) -> anyhow::Result<(Option<ResolvedValue>, Option<TextureInput>)> {
+    anyhow::ensure!(depth < 32, "material graph exceeds the 32-level recursive traversal budget");
     let mut cur = attr_path.clone();
     for _ in 0..16 {
         anyhow::ensure!(*remaining > 0, "material graph exceeds the 256-input traversal budget");
@@ -594,7 +622,8 @@ fn resolve_attr_chain_inner(
                         None | Some("auto") => None,
                         Some(other) => anyhow::bail!("unsupported texture sourceColorSpace: {other}"),
                     };
-                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim))));
+                    let transform = texture_value_transform(stage, &prim, channel, time)?;
+                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim, transform))));
                 }
                 ShaderKind::NormalMap => {
                     cur = prim.append_property("inputs:in")?;
@@ -602,11 +631,11 @@ fn resolve_attr_chain_inner(
                 }
                 ShaderKind::Constant => {
                     let v_path = prim.append_property("inputs:value")?;
-                    return resolve_attr_chain_inner(stage, &v_path, remaining, warnings, time);
+                    return resolve_attr_chain_inner(stage, &v_path, remaining, warnings, time, depth + 1);
                 }
                 ShaderKind::Multiply | ShaderKind::Add | ShaderKind::Subtract => {
-                    let a = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in1")?, remaining, warnings, time)?;
-                    let b = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in2")?, remaining, warnings, time)?;
+                    let a = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in1")?, remaining, warnings, time, depth + 1)?;
+                    let b = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in2")?, remaining, warnings, time, depth + 1)?;
                     if let (Some(a), Some(b)) = (&a.0, &b.0) {
                         let op = match kind { ShaderKind::Multiply => |a, b| a * b, ShaderKind::Add => |a, b| a + b, _ => |a, b| a - b };
                         return Ok((Some(combine(a, b, op)?), None));
@@ -615,9 +644,9 @@ fn resolve_attr_chain_inner(
                     return Ok(a);
                 }
                 ShaderKind::Mix => {
-                    let fg = resolve_attr_chain_inner(stage, &prim.append_property("inputs:fg")?, remaining, warnings, time)?;
-                    let bg = resolve_attr_chain_inner(stage, &prim.append_property("inputs:bg")?, remaining, warnings, time)?;
-                    let weight = resolve_attr_chain_inner(stage, &prim.append_property("inputs:mix")?, remaining, warnings, time)?;
+                    let fg = resolve_attr_chain_inner(stage, &prim.append_property("inputs:fg")?, remaining, warnings, time, depth + 1)?;
+                    let bg = resolve_attr_chain_inner(stage, &prim.append_property("inputs:bg")?, remaining, warnings, time, depth + 1)?;
+                    let weight = resolve_attr_chain_inner(stage, &prim.append_property("inputs:mix")?, remaining, warnings, time, depth + 1)?;
                     if let (Some(fg), Some(bg), Some(weight)) = (&fg.0, &bg.0, &weight.0) {
                         let difference = combine(fg, bg, |a, b| a - b)?;
                         let weighted = combine(&difference, weight, |a, b| a * b)?;
@@ -634,8 +663,8 @@ fn resolve_attr_chain_inner(
         }
         let default = sampled_value(stage, &cur, time)?;
         match default.clone() {
-            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path())))),
-            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path())))),
+            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path(), [1.0, 0.0])))),
+            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path(), [1.0, 0.0])))),
             _ => {}
         }
         return Ok((default.and_then(value_to_preview), None));

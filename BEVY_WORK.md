@@ -25,6 +25,41 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Apply scalar texture scale/bias in Bevy materials
+
+The shade reader now records the selected UsdUVTexture channel's sampled float4
+scale/bias for roughness, metallic, opacity and occlusion. Scalar packing applies
+the transform after color-space decoding and before existing clamping/8-bit
+quantization. Content-keyed packed images distinguish transformed values and
+reuse prior results after backward time reads. Nonfinite coefficients/results,
+wrong coefficient types and connected scale/bias inputs return errors.
+Diffuse/emissive/normal transforms remain outside this packing path. Per-texel
+clamping before filtering is not exact shader parity for arbitrary float maps.
+
+Tests cover all four semantics, sampled coefficients/interpolation, cache reuse,
+sRGB versus alpha decoding, clamping and invalid inputs. The expanded resolver
+also exposed a stack overflow in the existing cyclic arithmetic graph regression
+(`/tmp/scalar-transform-all-tests.log`). A separate 32-level recursive traversal
+limit now fails before exhausting the stack; the 256-input total budget remains.
+The original cycle regression passes without increasing thread stack size.
+
+`examples/scalar_texture_fixture.rs` generates a mapped sphere, precomputed
+RGBA reference and untransformed control. All three GPU captures were inspected.
+Mapped/reference compare at zero changed RGB pixels out of 921600; the negative
+control differs in 60646 pixels, maximum error 152. Captures have no WARN/ERROR
+diagnostics. Evidence: `target/scalar-transform-fixture-v2/`,
+`/tmp/scalar-{reference,control}-compare.log`,
+`/tmp/scalar-{mapped,reference,control}-gpu-final.log`.
+The initial fixture generator used an unsupported Image dynamic-conversion
+format; the corrected PNG encoder container is sRGB while the USD input remains
+explicitly raw. The failed output directory was retained.
+
+All 487 ordinary tests pass (13 ignored), all 13 native export tests pass, and
+check-all/build/whitespace validation pass:
+`/tmp/scalar-transform-{all-tests-final,check-final,build,native}.log`.
+This is scalar packing and a constant-map GPU regression, not full texture-node
+support or proof of live animated GPU scale/bias updates.
+
 ### Validate embedded capture options before window creation
 
 Capture configuration now rejects malformed/non-finite USD_CAPTURE_TIME values

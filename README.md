@@ -535,6 +535,27 @@ the callback.
 The standalone `viewer_capture` example below has explicit readiness checks and
 process exit status. Use `scripts/capture_viewer_ui.sh` to capture UI composition.
 
+Scalar UsdUVTexture inputs now apply the selected channel's `scale` and `bias`
+when packing roughness, metallic, occlusion and opacity. Values are transformed
+after color-space decoding, then clamped/quantized into the existing 8-bit packed
+images. Sampled transforms participate in material time updates; packed content
+keys distinguish changed results. Connected scale/bias inputs are rejected;
+diffuse, emissive and normal-map scale/bias are not implemented by this packing
+path. Out-of-range values are clamped before GPU filtering, so this is not exact
+shader parity for arbitrary filtered float textures.
+Material graph evaluation has a 256-input traversal budget and a separate
+32-level recursion limit for arithmetic/constant nodes; exceeding either reports
+an error rather than continuing unbounded recursion.
+The operation follows the
+[USD texture-reader specification](https://openusd.org/release/spec_usdpreviewsurface.html#texture-reader).
+
+`scalar_texture_fixture` creates a mapped sphere, an independently precomputed
+texture reference and an untransformed negative control in a new directory:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example scalar_texture_fixture' ARGS='target/NEW-scalar-fixture'
+```
+
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:
 

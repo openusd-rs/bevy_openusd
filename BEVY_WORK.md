@@ -25,6 +25,37 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Composition diagnostics gate before publication
+
+Reproduced a direct-source reload that reported Ready and replaced valid entities
+despite an unresolved reference layer (`/tmp/composition-failure-before.log`).
+Bevy now validates the active composition after applying root overrides and before
+publishing/reconciling a new stage. The same validation serves AssetServer dependency
+probing: prim traversal, default attribute reads, asset time-sample reads and
+upstream composition diagnostics. A failed revision retains the previous live
+stage/entities; a failed first load publishes no live instance. Recovery is tested.
+
+An existing-layer/missing-prim regression exposed another upstream gap: absent
+external root-prim targets emitted diagnostics for payloads but not references.
+Native usdcat reports the reference error (`/tmp/native-missing-reference.log`).
+The fourth recorded patch, `openusd-reference-diagnostics.patch`, adds the missing
+reference diagnostic without changing node culling or composition. Core coverage
+checks both arc types, and a real memory AssetServer test verifies visible failure.
+An unselected variant's unresolved branch is accepted; selecting it fails validation
+and returning to the valid branch clears the error.
+
+Validation runs on source/override publication, not every frame. It is not a full
+USD correctness validator: sub-root reference target diagnostics remain incomplete
+upstream, arbitrary future numeric samples are not exhaustively evaluated, and
+renderer-specific asset/geometry errors are separate. `UsdSource::open_stage`
+retains upstream's permissive partial-stage semantics for direct callers.
+Validation: 374 ordinary tests and all five optional native tests (44 export
+checks) pass, as do check-all, build and the composed_sources example. Logs:
+`/tmp/composition-validation-{tests,native,check,build,example}.log`. Upstream
+passes 1,588 core tests, 56 binary roundtrips and strict Clippy
+(`/tmp/upstream-reference-diagnostics-{tests,clippy}.log`). All four recorded
+patches pass reverse-apply checks; whitespace checks pass.
+
 ### Composed-source lifecycle showcase
 
 Extended `examples/composed_sources.rs` through captured dependency replacement,

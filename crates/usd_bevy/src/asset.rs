@@ -230,6 +230,7 @@ fn spawn_usd_scenes(world: &mut World) {
         }
         let opened = source.open_stage().map_err(anyhow::Error::from).and_then(|stage| {
             overrides.apply(&stage)?;
+            UsdSource::validate_composition(&stage)?;
             Ok(stage)
         });
         match opened {
@@ -325,6 +326,34 @@ def Xform "Old" {}
 
     fn instance_entity(world: &World, root: Entity, path: &str) -> Entity {
         world.non_send::<UsdInstances>().entity(root, path).unwrap()
+    }
+
+    #[test]
+    fn incomplete_composed_source_fails_before_replacing_live_entities() {
+        let (mut world, handle) = instance_world();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let old = instance_entity(&world, root, "/Old");
+        let good = world.resource::<Assets<UsdScene>>().get(&handle).unwrap().source.clone();
+        let directory = tempfile::tempdir().unwrap();
+        let broken = UsdSource::snapshot(directory.path().join("root.usda"),
+            &b"#usda 1.0\ndef Xform \"Broken\" (prepend references = @missing.usda@</Model>) {}\n"[..]).unwrap();
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = broken;
+        spawn_usd_scenes(&mut world);
+        let Some(UsdSceneState::Failed(error)) = world.get::<UsdSceneState>(root) else { panic!("missing composition must fail") };
+        assert!(error.contains("missing.usda"), "{error}");
+        assert_eq!(instance_entity(&world, root, "/Old"), old);
+        assert!(world.non_send::<UsdInstances>().entity(root, "/Broken").is_none());
+        let fresh = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        assert!(matches!(world.get::<UsdSceneState>(fresh), Some(UsdSceneState::Failed(_))));
+        assert!(world.non_send::<UsdInstances>().stage(fresh).is_none());
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = good;
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        assert_eq!(instance_entity(&world, root, "/Old"), old);
+        assert_eq!(world.get::<UsdSceneState>(fresh), Some(&UsdSceneState::Ready));
+        assert_ne!(instance_entity(&world, fresh, "/Old"), old);
     }
 
     #[test]
@@ -990,6 +1019,22 @@ def Material "Mat" {
                 Some(UsdSceneState::Failed(_))
             )
         });
+        assert!(app.world().get::<UsdSceneInstance>(root).is_none());
+    }
+
+    #[test]
+    fn existing_layer_with_missing_reference_target_fails_asset_loading() {
+        let (mut app, directory) = memory_app();
+        directory.insert_asset_text(Path::new("model.usda"), "#usda 1.0\ndef Scope \"Present\" {}\n");
+        directory.insert_asset_text(Path::new("broken-target.usda"),
+            "#usda 1.0\ndef Scope \"Mounted\" (prepend references = @model.usda@</Absent>) {}\n");
+        let handle = app.world().resource::<AssetServer>().load("fixture://broken-target.usda");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
+        tick_until(&mut app, |world| matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_) | UsdSceneState::Ready)));
+        let Some(UsdSceneState::Failed(error)) = app.world().get::<UsdSceneState>(root) else {
+            panic!("missing prim target state: {:?}", app.world().get::<UsdSceneState>(root));
+        };
+        assert!(error.contains("Absent"), "{error}");
         assert!(app.world().get::<UsdSceneInstance>(root).is_none());
     }
 

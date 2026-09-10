@@ -50,6 +50,11 @@ and exposes `UsdSceneState` (Loading/Ready/Failed). Snapshot PNG/JPEG textures a
 tracked labeled assets with color/data color spaces. Dependency-change events
 reload their owning USD asset. Each root retains an independent live stage;
 matching prim entities and runtime-only components survive source reloads.
+Before publishing a source or override revision, Bevy traverses the active
+composition, reads default attribute values and asset time samples, and checks
+reported composition errors. Failure retains any previous projection and reports
+`UsdSceneState::Failed`. Unselected variant branches are not eagerly validated.
+`UsdSource::open_stage` itself retains upstream's permissive partial-stage behavior.
 
 For reusable in-memory assemblies, `UsdSource::snapshot(path, bytes)` disables
 filesystem fallback. `root.with_dependency(&model)` returns a new source containing

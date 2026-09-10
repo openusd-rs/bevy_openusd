@@ -2,6 +2,12 @@
 
 ## Integrated writer fixes
 
+Bevy source publication now checks discovered composition diagnostics rather
+than treating a successfully parsed but incomplete stage as Ready. A fourth
+local patch adds the upstream diagnostic missing for external references to
+absent root prims. Native USD reports that case; sub-root target diagnostics
+remain an upstream gap. See `patches/openusd-reference-diagnostics.patch`.
+
 Packaging now accepts single-level source USDZ archives and package-relative
 layers/assets. Native tests cover snapshot-only inputs, a second re-export after
 deleting the first file, and a wrapper referring to one bare package twice.

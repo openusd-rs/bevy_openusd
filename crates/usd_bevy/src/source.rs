@@ -160,23 +160,9 @@ impl UsdSource {
 
     pub(crate) fn probe(&self) -> (Result<(), String>, BTreeSet<String>) {
         let requests = Arc::new(Mutex::new(BTreeSet::new()));
-        let result = (|| -> openusd::Result<()> {
+        let result = (|| -> anyhow::Result<()> {
             let stage = self.open_tracked(requests.clone())?;
-            let mut paths = Vec::new();
-            stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| {
-                paths.push(path.clone());
-            })?;
-            for path in paths {
-                for attribute in stage.prim(path)?.attributes()? {
-                    attribute.get::<openusd::sdf::Value>()?;
-                    if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
-                        for time in attribute.time_sample_times()? {
-                            attribute.get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(time)))?;
-                        }
-                    }
-                }
-            }
-            Ok(())
+            Self::validate_composition(&stage)
         })()
         .map_err(|error| error.to_string());
         let missing = std::mem::take(&mut *requests.lock().expect("dependency requests"));
@@ -186,6 +172,25 @@ impl UsdSource {
     /// Open an independent stage from this snapshot.
     pub fn open_stage(&self) -> openusd::Result<Stage> {
         self.open_tracked(Arc::default())
+    }
+
+    pub(crate) fn validate_composition(stage: &Stage) -> anyhow::Result<()> {
+        let mut paths = Vec::new();
+        stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| paths.push(path.clone()))?;
+        for path in paths {
+            for attribute in stage.prim(path)?.attributes()? {
+                attribute.get::<openusd::sdf::Value>()?;
+                if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
+                    for time in attribute.time_sample_times()? {
+                        attribute.get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(time)))?;
+                    }
+                }
+            }
+        }
+        let errors = stage.composition_errors();
+        anyhow::ensure!(errors.is_empty(), "USD composition failed: {}",
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "));
+        Ok(())
     }
 
     fn open_tracked(&self, requests: Arc<Mutex<BTreeSet<String>>>) -> openusd::Result<Stage> {
@@ -341,6 +346,35 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composition_validation_follows_active_variant_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = UsdSource::snapshot(directory.path().join("variants.usda"), &br#"#usda 1.0
+def Scope "Model" (
+    prepend variantSets = ["choice"]
+    variants = { string choice = "good" }
+) {
+    variantSet "choice" = {
+        "good" {
+            def Scope "Content" {}
+        }
+        "bad" {
+            def Scope "Content" (prepend references = @missing.usda@</Model>) {}
+        }
+    }
+}
+"#[..]).unwrap();
+        let (result, missing) = source.probe();
+        result.unwrap();
+        assert!(missing.is_empty());
+        let stage = source.open_stage().unwrap();
+        crate::authoring::set_variant(&stage, "/Model", "choice", "bad").unwrap();
+        let error = UsdSource::validate_composition(&stage).unwrap_err();
+        assert!(error.to_string().contains("missing.usda"));
+        crate::authoring::set_variant(&stage, "/Model", "choice", "good").unwrap();
+        UsdSource::validate_composition(&stage).unwrap();
+    }
 
     #[test]
     fn snapshot_anchors_parent_relative_paths_before_normalizing() {

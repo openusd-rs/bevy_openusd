@@ -905,8 +905,11 @@ it, checking the authored result rather than only the text draft. See
 `assets/xform_half.usda` exercises half-precision translation, rotation and scale
 against `assets/xform_half_reference.usda` using double-precision attributes.
 Unsupported op kinds or value types now produce transform diagnostics instead
-of disappearing into identity. Half-quaternion orientation and scalar-axis
-translation/scale support remain open.
+of disappearing into identity. Half-quaternion orientation is covered by
+`assets/xform_quath.usda` and its native-USD-derived matrix reference. Quaternion
+conversion preserves the real-component angle and normalizes the imaginary axis;
+it does not normalize the entire quaternion. Scalar-axis translation/scale
+support remains open.
 
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset

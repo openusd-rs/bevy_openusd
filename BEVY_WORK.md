@@ -25,6 +25,33 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Native-compatible quaternion conversion and half orientations
+
+The earlier unit-length rejection was too strict: native OpenUSD derives an
+axis-angle rotation from the real component and normalized imaginary axis, not
+from a normalized whole quaternion. Conversion now preserves this behavior in
+double precision before producing the float render matrix and accepts quath,
+quatf and quatd. Imaginary-axis lengths at or below 1e-10 produce identity;
+non-finite values and overflowing axis lengths remain diagnostic failures.
+
+Native OpenUSD 25.05.01 probes through its Python bindings (validation only,
+no file edits) checked zero/non-unit quaternions, rounded half values, small-axis
+thresholds and large magnitudes. `UsdGeom.XformOp.GetOpTransform` produced the
+reference for `assets/xform_quath_reference.usda`; `assets/xform_quath.usda`
+authors the corresponding half quaternion. Probe logs:
+`/tmp/native-orient-probe.log`, `/tmp/native-orient-limits.log`,
+`/tmp/native-quath-op.log`. Unit tests retain these native cases and check the
+fixture's composed matrix and inverse. Very large finite axes that overflow
+length computation are rejected rather than reproducing native's identity
+fallback; broader malformed-data and animated quaternion parity remain open.
+Both fixtures were captured at time 0, eye (6,4,8), focus (0,1,0), and inspected:
+`target/xform_quath{,_reference}.png`. All 921,600 pixels match at strict zero
+RGB tolerance; capture logs have CAPTURE_OK without WARN/ERROR entries. This
+compares Bevy rendering against a native-derived matrix, not native rendering.
+Logs: `/tmp/xform_quath{,_reference}-capture.log`, `/tmp/xform-quath-compare.log`.
+All 412 ordinary tests, check-all, build and whitespace checks pass (seven native
+export tests ignored). Logs: `/tmp/xform-quath-{tests,check,build}.log`.
+
 ### Half-precision transform values and explicit unsupported-op errors
 
 Transform reading now decodes half scalars and half3 vectors for the existing
@@ -32,8 +59,9 @@ rotation/translation/scale routes. Wrong value types, malformed op-order types
 and unsupported authored op kinds return diagnostics rather than silently
 substituting identity. Missing op values retain the existing identity fallback.
 Ordinary projection surfaces these errors through `UsdTransformError` and keeps
-the previous valid pose. Half quaternion orientations and scalar-axis
-translation/scale ops remain unsupported; they are no longer silently ignored.
+the previous valid pose. Scalar-axis translation/scale ops remain unsupported;
+they are no longer silently ignored. Half orientations were added in the slice
+above.
 
 The supported half scalar/vector forms were checked against the official
 [OpenUSD xform-op implementation](https://raw.githubusercontent.com/PixarAnimationStudios/OpenUSD/release/pxr/usd/usdGeom/xformOp.cpp).
@@ -222,13 +250,13 @@ The fixture regression brings the ordinary test total to 398 passing, with six
 native tests ignored. Check-all, build and whitespace checks pass; logs:
 `/tmp/xform-fixtures-{tests,check,build}.log`.
 
-Transform-op reading rejects non-finite/non-unit orientation quaternions before
+The initial transform-op guard rejected non-finite/non-unit quaternions before
 matrix construction and singular inverse ops before inversion. Inversion uses
 double precision before converting back to finite float matrices, avoiding
 determinant underflow for tiny invertible scales. Reader tests check malformed
 orientations, identity recovery, singular inverses and a 1e-20 scale inverse.
-Non-unit authored orientations are diagnosed rather than normalized; broader
-native quaternion semantics and animated orientation parity remain unverified.
+The later native-compatible quaternion slice above replaces its non-unit
+rejection; broader animated orientation parity remains unverified.
 All 400 ordinary tests pass, with six native tests ignored; check-all, build
 and whitespace checks pass. Logs: `/tmp/xform-recovery-final-{tests,check,build}.log`.
 

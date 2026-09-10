@@ -1,7 +1,7 @@
 //! Xform reader — compose `xformOpOrder` into a single 4×4 and decompose to
 //! TRS, read from the composed stage via openusd.
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{DMat4, DVec3, Mat4, Vec3};
 use openusd::sdf::{Path, Value};
 use openusd::usd::{Stage, TimeCode};
 
@@ -103,9 +103,7 @@ fn build_op_matrix(
         "scale" => Mat4::from_scale(Vec3::from(value_to_vec3f(&raw).ok_or_else(invalid)?)),
         "orient" => {
             let q = value_to_quat_wxyz(&raw).ok_or_else(invalid)?;
-            let q = Quat::from_xyzw(q[1], q[2], q[3], q[0]);
-            anyhow::ensure!(q.is_finite() && q.is_normalized(), "invalid orientation in {op_token}");
-            Mat4::from_quat(q)
+            orientation_matrix(q).ok_or_else(|| anyhow::anyhow!("invalid orientation in {op_token}"))?
         }
         "rotateX" => Mat4::from_rotation_x(value_to_scalar_f32(&raw).ok_or_else(invalid)?.to_radians()),
         "rotateY" => Mat4::from_rotation_y(value_to_scalar_f32(&raw).ok_or_else(invalid)?.to_radians()),
@@ -168,10 +166,20 @@ fn value_to_scalar_f32(v: &Value) -> Option<f32> {
     }
 }
 
-fn value_to_quat_wxyz(v: &Value) -> Option<[f32; 4]> {
+fn orientation_matrix(q: [f64; 4]) -> Option<Mat4> {
+    if !q.iter().all(|value| value.is_finite()) { return None; }
+    let axis = DVec3::new(q[1], q[2], q[3]);
+    let length = axis.length();
+    if !length.is_finite() { return None; }
+    if length <= 1e-10 { return Some(Mat4::IDENTITY); }
+    Some(DMat4::from_axis_angle(axis / length, 2.0 * q[0].clamp(-1.0, 1.0).acos()).as_mat4())
+}
+
+fn value_to_quat_wxyz(v: &Value) -> Option<[f64; 4]> {
     match v {
-        Value::Quatf(q) => Some([q.w, q.x, q.y, q.z]),
-        Value::Quatd(q) => Some([q.w as f32, q.x as f32, q.y as f32, q.z as f32]),
+        Value::Quatf(q) => Some([q.w as f64, q.x as f64, q.y as f64, q.z as f64]),
+        Value::Quatd(q) => Some([q.w, q.x, q.y, q.z]),
+        Value::Quath(q) => Some([q.w.to_f64(), q.x.to_f64(), q.y.to_f64(), q.z.to_f64()]),
         _ => None,
     }
 }
@@ -179,6 +187,38 @@ fn value_to_quat_wxyz(v: &Value) -> Option<[f32; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quaternion_conversion_matches_native_axis_angle_cases() {
+        for q in [[0.0,0.0,0.0,0.0], [2.0,0.0,0.0,0.0], [0.5,0.0,0.0,1e-10]] {
+            assert_eq!(orientation_matrix(q), Some(Mat4::IDENTITY));
+        }
+        let native = Mat4::from_cols_array(&[-0.00021362304687522204,0.9999999771825967,0.0,0.0,
+            -0.9999999771825967,-0.00021362304687522204,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0]);
+        assert!(orientation_matrix([0.70703125,0.0,0.0,0.70703125]).unwrap().abs_diff_eq(native, 1e-7));
+        let non_unit = Mat4::from_rotation_z(120_f32.to_radians());
+        for length in [1e-9, 2.0, 1e100] {
+            assert!(orientation_matrix([0.5,0.0,0.0,length]).unwrap().abs_diff_eq(non_unit, 1e-6));
+        }
+        for q in [[f64::NAN,0.0,0.0,1.0], [0.5,f64::INFINITY,0.0,0.0], [0.5,0.0,0.0,1e300]] {
+            assert!(orientation_matrix(q).is_none());
+        }
+    }
+
+    #[test]
+    fn half_quaternion_fixture_matches_native_matrix_reference() {
+        let open = |file| Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .open(&format!("{}/../../assets/{file}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let stage = open("xform_quath.usda");
+        let reference = open("xform_quath_reference.usda");
+        let path = openusd::sdf::path("/Panels").unwrap();
+        let actual = Mat4::from_cols_array(&read_transform_matrix_at(&stage, &path, None).unwrap().unwrap());
+        let expected = Mat4::from_cols_array(&read_transform_matrix_at(&reference, &path, None).unwrap().unwrap());
+        assert!(actual.abs_diff_eq(expected, 1e-7));
+        let direct = build_op_matrix(&stage, &path, "xformOp:orient", None).unwrap();
+        let inverse = build_op_matrix(&stage, &path, "!invert!xformOp:orient", None).unwrap();
+        assert!((direct * inverse).abs_diff_eq(Mat4::IDENTITY, 1e-6));
+    }
 
     #[test]
     fn half_precision_stack_matches_double_reference() {
@@ -221,7 +261,7 @@ mod tests {
         stage.define_prim("/Root").unwrap();
         let path = openusd::sdf::path("/Root").unwrap();
         let mut orientation = stage.create_attribute("/Root.xformOp:orient", "quatf").unwrap();
-        for w in [0.0, 2.0, f32::NAN, f32::INFINITY] {
+        for w in [f32::NAN, f32::INFINITY] {
             orientation = orientation.set(Value::Quatf(openusd::gf::Quatf { w, x: 0.0, y: 0.0, z: 0.0 })).unwrap();
             assert!(build_op_matrix(&stage, &path, "xformOp:orient", None).is_err());
         }

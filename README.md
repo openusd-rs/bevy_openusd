@@ -825,6 +825,11 @@ centered along X with 2.5-unit spacing. Use the fixed camera arguments to frame
 the group; authored-camera selection is rejected for multiple roots. The default
 remains one root at the positional TIME argument. Instance times and spacing
 are written to capture metadata, and capture waits for every root to be Ready.
+Set `USD_CAPTURE_SWAP_CLOCKS=1` with multiple instances to reverse their clocks
+after 30 render-ready frames, then wait another capture settling period. It
+mutates the existing roots without reopening the source. The default is 0; other
+values and single-root reversal requests are rejected. Metadata records the
+final clock order and whether the live reversal happened.
 For the generated UV-transform fixture, use eye `(0,1,8)` and focus `(0,1,0)`:
 
 ```bash

@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Live independent-clock reversal with GPU readback
+
+viewer_capture now supports USD_CAPTURE_SWAP_CLOCKS=1 for multiple roots. After
+30 render-ready frames it reverses the existing UsdInstanceTime values, resets
+the settling counter, then captures after another 60 ready frames. It does not
+reload the source or respawn roots. Metadata records the final times and whether
+the reversal occurred. The focused regression checks delayed activation, the
+same root entity IDs, counter reset and exactly-once mutation.
+
+A native Vulkan run started morph_animation at 0,10 and logged reversal to 10,0.
+The inspected `target/shared_morph_live_swap.png` shows the deformed left quad
+and undeformed right quad. Its metadata confirms two GPU morph meshes and one
+shared flat material. Comparison against the independently CPU-deformed 10,0
+reference is pixel-identical across 921600 pixels at strict zero tolerance.
+Logs: `/tmp/live-clock-capture.log` and `/tmp/live-clock-compare.log`.
+This verifies one live endpoint reversal, not sustained playback performance,
+all animation types or preservation of arbitrary projected runtime components.
+All 443 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/live-clock-{tests,check,build}.log`.
+
 ### GPU capture of shared morph materials and independent clocks
 
 The fixed-camera capture now records hierarchy-visible flat-material entity

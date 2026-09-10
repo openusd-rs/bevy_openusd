@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Timeline typed-seek UI acceptance
+
+Added checked-in timeline_seek and timeline_invalid egui replay scripts, plus
+parser coverage. In the isolated 1600x1000 desktop viewer with the Timeline pane
+open, typing 10 and clicking Seek and pause changes the readout to 10.000 and
+visibly deforms the morph_animation quad. A separate run typing NaN leaves time
+at 0.000 and the quad undeformed, displaying Enter a finite USD time code.
+The baseline, valid seek and invalid seek images were inspected:
+`target/viewer-ui-captures/timeline-{baseline-16,seek-10,invalid}.png`.
+Logs: `/tmp/timeline-{baseline-16,seek-10,invalid}.log` and adjacent viewer logs.
+
+These are injected egui input events, not OS mouse/keyboard acceptance. The
+fixture has an authored/default loop range 0–0, so it is not playback evidence.
+Play/pause, stepping and Go to start remain separate checks. An initial script
+invocation used a local bash wrapper that rejects nullglob; /bin/bash works.
+A three-second capture was black; the inspected baseline used 16 seconds and
+replays used 18 seconds. UI_UPDATED is not sufficient render readiness. Existing
+clipboard, Vulkan-loader and shared-device SSAO diagnostics remain.
+All 446 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/timeline-ui-{tests,check,build}.log`.
+
 ### Live shader-connection edits rebuild animation membership
 
 A new LiveStagePlugin regression projects a bound cube with a disconnected

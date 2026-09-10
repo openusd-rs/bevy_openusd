@@ -618,6 +618,11 @@ camera (`0 2 6` looking at `0 0 0`), forward renderer and shadows disabled, then
 compare their RGBA files at zero RGB tolerance. Semantics are `diffuse`,
 `emissive` and `alpha`. The alpha reference includes the existing scalar
 8-bit quantization followed by float16 rounding; it is not ideal float opacity.
+The generator also writes `<semantic>_interface_animated.usda`, with sampled
+RGB gain supplied through a Material input, and `<semantic>_animated_reference.usda`,
+with independent constant-color samples. The live-clock suite tests all three
+semantics after reversing two existing instance clocks. Fixture source tests also
+check interpolated midpoint values and backward reads.
 
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:
@@ -1269,7 +1274,7 @@ make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/
 
 It generates fresh UV/texture/scalar fixtures and compares live clock reversals
 against baked UV, fixed-image, CPU-morph and precomputed scalar-map references.
-All nine comparisons use zero RGB
+All twelve comparisons use zero RGB
 tolerance. Metadata must confirm the reversal and two visible mesh entities;
 the morph case also verifies shared GPU material use. Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain

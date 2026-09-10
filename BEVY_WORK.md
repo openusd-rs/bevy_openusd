@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Verify live RGB interfaces and interpolated transforms
+
+The RGB fixture now generates sampled Material rgb_gain interfaces and independent
+constant-color references for emissive, diffuse and opacity-combined diffuse.
+The twelve-case live-clock suite adds these three paths. All twelve cases pass
+at zero RGB tolerance; new metadata confirms two existing meshes, clocks reversed
+from 0/10 to 10/0 after 30 ready frames. Both images for each new case were
+visually inspected. Evidence: `target/live-rgb-regression/`, `/tmp/rgb-live-gpu.log`.
+
+Three additional GPU comparisons start at 5/10 and reverse to 10/5. All three
+interpolated results match fresh constant-color references exactly (0 of 921600
+changed pixels), with two meshes and the same 30-frame reversal confirmed.
+All six midpoint images were inspected; logs contain no renderer warnings/errors.
+Evidence: `target/live-rgb-regression/rgb_*-mid-*`,
+`/tmp/rgb-mid-{emissive,diffuse,alpha}-{live,reference,compare}.log`.
+These midpoint runs are additional manual Make captures, not extra default suite
+cases. The fixture unit test checks endpoints, midpoint and backward reads.
+
+All 501 ordinary tests pass (13 ignored), check-all/build and shell syntax/
+whitespace checks pass: `/tmp/rgb-live-{tests,check,build}.log`. This verifies live
+RGB changes for these representable HDR values; arbitrary float16 precision,
+filtered-texture parity and performance claims remain unproven.
+
 ### Apply diffuse and emissive RGB texture scale/bias
 
 Canonical UsdShade float4 producer resolution now retains all RGBA coefficients;

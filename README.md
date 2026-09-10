@@ -835,7 +835,9 @@ without conflict detection. Cross-directory ordinary root/edit saves anchor
 external sublayers, references, payloads and typed asset values through the
 stage's resolver without changing its source identifier or live layers. The
 dependencies remain external; use USDZ for dependency bundling. Same-directory
-saves retain authored path spelling. Asset expressions, tile/sequence patterns
+saves retain authored path spelling, including directory aliases. Layers inside
+a USDZ are re-anchored even when exported beside it, retaining the archive as an
+external dependency. Asset expressions, tile/sequence patterns
 and clip templates currently reject cross-directory relocation before replacing
 the destination. Flattened export has different composition semantics; nested
 asset metadata in anonymous flattened layers remains a separate limitation.

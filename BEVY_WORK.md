@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Distinguish directory aliases from package-layer anchors when saving
+
+Ordinary save relocation now compares canonical directory identities when
+available. Saving through `..` or a directory symlink into the source directory
+preserves authored asset spelling, including patterns that would reject actual
+cross-directory relocation. A regression checks both aliases while retaining
+the existing real-relocation failure/publication-preservation check.
+
+Conversely, a layer inside a USDZ must be re-anchored even when its ordinary
+export sits beside that archive: the package entry, not the filesystem directory,
+is the original dependency anchor. The native fixture now unwraps both package
+root and nested edit layers into USDA, USDC and USD, checking referenced values
+and exact texture bytes through the retained external archive. The ordinary
+output still depends on that archive; it is not independently portable.
+
+All 393 ordinary tests, check-all, build and six optional native export tests
+pass (`/tmp/save-anchor-identity-final2-{tests,check,build,native}.log`). The
+extended native fixture covers six additional packaged-root/edit ordinary
+export combinations. Whitespace checks pass. Vendored code and environment
+configuration are unchanged in this slice.
+
 ### Anchor dependencies for ordinary cross-directory root/edit saves
 
 Ordinary root/edit exports to another directory now serialize an anchored copy

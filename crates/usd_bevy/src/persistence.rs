@@ -10,9 +10,11 @@ pub(crate) fn export_layer(stage: &openusd::usd::Stage, layer: &openusd::sdf::La
             let mut output = fs::File::create(temporary)?;
             stage.write_usdz_package(layer, &mut output)?;
         } else {
-            let source_directory = layer.resolved_path().and_then(|path| Path::new(path).parent());
+            let source_location = layer.resolved_path();
+            let source_directory = source_location.and_then(|path| Path::new(path).parent()).map(directory_identity);
             let destination = std::path::absolute(filename)?;
-            if source_directory.is_some_and(|source| Some(source) != destination.parent()) {
+            if source_location.is_some_and(openusd::ar::is_package_relative_path)
+                || source_directory.is_some_and(|source| Some(source) != destination.parent().map(directory_identity)) {
                 stage.anchored_layer(layer)?.export(temporary)?;
             } else {
                 layer.export(temporary)?;
@@ -20,6 +22,10 @@ pub(crate) fn export_layer(stage: &openusd::usd::Stage, layer: &openusd::sdf::La
         }
         Ok(())
     })
+}
+
+fn directory_identity(path: &Path) -> std::path::PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Result<()> {
@@ -103,6 +109,18 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
         let error = editor.save(target.to_str().unwrap(), SaveMode::EditLayer).unwrap_err();
         assert!(format!("{error:#}").contains("unsupported relocated asset"));
         assert_eq!(fs::read(target).unwrap(), b"existing destination");
+        fs::create_dir(source.path().join("layers/alias")).unwrap();
+        let same_directory = source.path().join("layers/alias/../same.usda");
+        editor.save(same_directory.to_str().unwrap(), SaveMode::EditLayer).unwrap();
+        assert!(fs::read_to_string(same_directory).unwrap().contains("@./tile.<UDIM>.png@"));
+        #[cfg(unix)]
+        {
+            let alias = source.path().join("linked-layers");
+            std::os::unix::fs::symlink(source.path().join("layers"), &alias).unwrap();
+            let path = alias.join("same-linked.usda");
+            editor.save(path.to_str().unwrap(), SaveMode::EditLayer).unwrap();
+            assert!(fs::read_to_string(path).unwrap().contains("@./tile.<UDIM>.png@"));
+        }
     }
 
     #[test]
@@ -127,6 +145,32 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
                     .get::<openusd::sdf::Value>().unwrap().unwrap() else { panic!() };
                 assert_eq!(fs::read(texture.resolved_path().unwrap()).unwrap(), b"external texture");
             }
+        }
+        fs::write(source.path().join("layers/future.bin"), b"future texture").unwrap();
+        let package = output.path().join("input.usdz");
+        editor.save(package.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        let packaged = crate::editor::EditorSession::new(crate::UsdSource::new(&package, fs::read(&package).unwrap()).unwrap().open_stage().unwrap());
+        assert!(openusd::ar::is_package_relative_path(packaged.stage().root_layer().resolved_path().unwrap()));
+        let root = packaged.stage().root_layer().identifier().to_owned();
+        let weak = packaged.stage().layer_stack().into_iter().find(|identifier| identifier != &root).unwrap();
+        packaged.set_edit_layer(&weak).unwrap();
+        for (mode, extension) in [SaveMode::RootLayer, SaveMode::EditLayer].into_iter()
+            .flat_map(|mode| ["usda", "usdc", "usd"].map(|extension| (mode, extension))) {
+            let path = output.path().join(format!("unwrapped.{extension}"));
+            packaged.save(path.to_str().unwrap(), mode).unwrap();
+            let result = std::process::Command::new(&native).arg("--flatten").arg(&path).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            assert!(!String::from_utf8_lossy(&result.stderr).contains("Could not open"));
+            let stage = crate::UsdSource::new(output.path().join("native.usda"), result.stdout).unwrap().open_stage().unwrap();
+            assert_eq!(stage.prim("/Model").unwrap().attribute("score").get::<f64>().unwrap(), Some(29.0));
+            let openusd::sdf::Value::AssetPath(texture) = stage.prim("/Model").unwrap().attribute("texture")
+                .get::<openusd::sdf::Value>().unwrap().unwrap() else { panic!() };
+            let (outer, entry) = openusd::ar::split_package_relative_path_outer(&texture.authored_path).unwrap();
+            assert_eq!(Path::new(&outer), package.as_path());
+            let mut archive = zip::ZipArchive::new(fs::File::open(outer).unwrap()).unwrap();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut archive.by_name(&entry).unwrap(), &mut bytes).unwrap();
+            assert_eq!(bytes, b"external texture");
         }
     }
 

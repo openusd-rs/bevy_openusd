@@ -615,6 +615,29 @@ and `/tmp/decayed-normal-image-compare.log`.
 Remaining nonzero sharpness still uses the documented finite-normal path;
 this does not implement full semi-sharp limit derivatives.
 
+## Live crease-normal layout transition gate
+
+Added `subdivision_creases` to `scripts/check_live_clocks.sh`. At subdivision
+level 1, two existing roots start at independent clocks 1 and 3, then reverse
+to 3 and 1 after 30 ready frames. This changes one mesh from decayed-sharpness
+vertex normals to permanent-crease face-varying normals, and the other in the
+opposite direction. The final image is compared with fresh roots at 3/1.
+Per-case subdivision settings are reset to avoid affecting the other cases.
+
+All 18 GPU cases pass in `target/live-subdivision-crease-regression`;
+log: `/tmp/live-subdivision-crease-regression.log`. The new case has zero changed
+pixels out of 921,600 at strict RGB tolerance 0. Metadata confirms two visible
+meshes, subdivision level 1, final clocks [3,1], live reversal after frame 30,
+and no reversal for the fresh reference. Both new PNGs were inspected: the sharp
+cube and rounded smoothly shaded shape are visible and agree. This checks final
+state after normal-layout transitions, not transient frame pacing or performance.
+
+README now describes the 18-case suite accurately: sixteen strict comparisons
+and two normal-material comparisons with tolerance 1. No Rust production code
+changed here, so the prior 521-pass/13-ignored unit suite was not rerun.
+`git diff --check` passes. Broader rendering and independent-instance acceptance
+remain open beyond this regression.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

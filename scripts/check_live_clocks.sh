@@ -34,6 +34,11 @@ run_case() {
     local name=$1 live=$2 reference=$3 cpu=$4 tolerance=0 meshes=2
     local initial_times=0,10 final_times=10,0
     if [[ "$name" == uv_interface_mid ]]; then initial_times=5,10; final_times=10,5; fi
+    unset USD_SUBDIVISION_LEVELS
+    if [[ "$name" == subdivision_creases ]]; then
+        initial_times=1,3; final_times=3,1
+        export USD_SUBDIVISION_LEVELS=1
+    fi
     if [[ "$name" == normal_interface || "$name" == normal_constant ]]; then tolerance=1; fi
     if [[ "$name" == morph_tangents ]]; then meshes=4; fi
     run_options=()
@@ -48,6 +53,10 @@ run_case() {
     for mode in live reference; do
         local expected_times='instance_times=[10.0, 0.0]'
         if [[ "$name" == uv_interface_mid ]]; then expected_times='instance_times=[10.0, 5.0]'; fi
+        if [[ "$name" == subdivision_creases ]]; then
+            expected_times='instance_times=[3.0, 1.0]'
+            grep -qx 'subdivision_levels=1' "$output/$name-$mode.capture.txt" || return 1
+        fi
         grep -Fxq "$expected_times" "$output/$name-$mode.capture.txt" || return 1
         grep -qx "hierarchy_visible_meshes=$meshes" "$output/$name-$mode.capture.txt" || return 1
         if grep -Eq '(^|[[:space:]])(ERROR|WARN)([[:space:]]|$)' "$output/$name-$mode.log"; then return 1; fi
@@ -68,7 +77,7 @@ run_case() {
 }
 
 status=0
-for name in uv uv_interface uv_interface_mid texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface normal_constant morph_tangents; do
+for name in uv uv_interface uv_interface_mid texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface normal_constant morph_tangents subdivision_creases; do
     case "$name" in
         uv) live="$output/fixture/mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         uv_interface) live="$output/fixture/interface_mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
@@ -85,6 +94,7 @@ for name in uv uv_interface uv_interface_mid texture colorspace morph scalar sca
         normal_interface) live="$output/normal-fixture/interface_animated.usda"; reference="$output/normal-fixture/animated_reference.usda"; cpu=0 ;;
         normal_constant) live="$output/normal-fixture/constant_animated.usda"; reference="$output/normal-fixture/animated_reference.usda"; cpu=0 ;;
         morph_tangents) live="$root/assets/morph_tangent_normals.usda"; reference=$live; cpu=2 ;;
+        subdivision_creases) live="$root/assets/subdivision_creases.usda"; reference=$live; cpu=0 ;;
     esac
     if run_case "$name" "$live" "$reference" "$cpu"; then result=ok; else result=failed; status=1; fi
     printf '%s\t%s\n' "$name" "$result" | tee -a "$output/results.tsv"

@@ -476,6 +476,8 @@ impl EditorSession {
 
     pub fn stage(&self) -> &Stage { &self.stage }
 
+    pub fn document_id(&self) -> u64 { self.document_id }
+
     pub fn select(&mut self, path: Option<String>) -> anyhow::Result<()> {
         if let Some(path) = &path {
             let path = openusd::sdf::path(path)?;

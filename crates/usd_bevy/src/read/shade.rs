@@ -7,7 +7,7 @@ use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
 
 use super::util::{
-    connections_at, read_asset_path, read_token_or_string, read_token_or_string_at,
+    connections_at, read_asset_path, read_token_or_string,
 };
 
 /// Decoded UsdPreviewSurface material. Each channel is `None` (unauthored),
@@ -34,6 +34,8 @@ pub struct ReadPreviewMaterial {
     pub occlusion_texture: Option<String>,
     pub occlusion_channel: usize,
     pub texture_color_spaces: std::collections::BTreeMap<String, bool>,
+    /// Selected-channel [scale, bias] for scalar texture semantics.
+    pub scalar_texture_transforms: std::collections::BTreeMap<String, [f32; 2]>,
     pub warnings: Vec<String>,
 
     /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
@@ -95,6 +97,13 @@ pub(crate) fn material_texture_sample_times(stage: &Stage, material: &Path) -> a
         let node = stage.prim(&path)?;
         times.extend(node.attribute("inputs:file").time_sample_times()?);
         times.extend(node.attribute("inputs:sourceColorSpace").time_sample_times()?);
+        if matches!(shader_kind(stage, &path)?, ShaderKind::Texture) {
+            for name in ["file", "sourceColorSpace"] {
+                if let Some(attribute) = texture_input_attribute(stage, &path, name)? {
+                    times.extend(attribute.time_sample_times()?);
+                }
+            }
+        }
         for attribute in node.attributes()? {
             pending.extend(attribute.connections()?.into_iter().map(|connection| connection.prim_path()));
         }
@@ -167,10 +176,76 @@ pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64
     Ok(Some(out))
 }
 
+fn texture_value_transform(stage: &Stage, prim: &Path, channel: usize, time: Option<f64>) -> anyhow::Result<[f32; 2]> {
+    use openusd_schemas::shade::{Connectable, ProducerFilter, Shader};
+    if read_token_or_string(stage, prim, "info:id")?.as_deref() != Some("UsdUVTexture") { return Ok([1.0, 0.0]); }
+    let mut result = [1.0, 0.0];
+    let shader = Shader::new(stage.prim(prim)?);
+    for (index, name) in ["scale", "bias"].into_iter().enumerate() {
+        let input = shader.input(name);
+        let path = input.path();
+        let connections = input.connected_sources()?;
+        anyhow::ensure!(connections.invalid_source_paths().is_empty(), "connected texture scale/bias has invalid sources at {path}");
+        let producers = input.value_producing_attributes(ProducerFilter::Any)?;
+        anyhow::ensure!(producers.len() <= 1, "multiple texture scale/bias value producers at {path}");
+        let value = producers.first().map(|source| source.attribute()
+            .get_at::<Value>(time.map(openusd::usd::TimeCode::new))).transpose()?.flatten();
+        let sampled_default = value.is_none() && time.is_none() && producers.first()
+            .map(|source| source.attribute().time_sample_times()).transpose()?.is_some_and(|times| !times.is_empty());
+        anyhow::ensure!(connections.sources().is_empty() || value.is_some() || sampled_default,
+            "connected texture scale/bias has no readable value at {path}");
+        if let Some(value) = value {
+            let Value::Vec4f(value) = value else { anyhow::bail!("texture scale/bias must be float4 at {path}"); };
+            let values = [value.x, value.y, value.z, value.w];
+            anyhow::ensure!(values.iter().all(|value| value.is_finite()), "nonfinite texture scale/bias at {path}");
+            result[index] = values[channel];
+        }
+    }
+    Ok(result)
+}
+
 fn sampled_value(stage: &Stage, path: &Path, time: Option<f64>) -> anyhow::Result<Option<Value>> {
     let Some((prim, name)) = path.split_property() else { return Ok(None) };
     Ok(stage.prim(prim)?.attribute(name)
         .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?)
+}
+
+#[test]
+fn texture_scale_bias_resolves_sampled_container_interfaces() {
+    let source = crate::UsdSource::snapshot("interface.usda", br#"#usda 1.0
+def Material "Mat" {
+    float4 inputs:scale.timeSamples = {0: (2,3,4,5), 10: (4,5,6,7)}
+    float4 inputs:bias = (0.1,0.2,0.3,0.4)
+    def NodeGraph "Graph" {
+        float4 outputs:scale.connect = </Mat.inputs:scale>
+        float4 outputs:cycle.connect = </Mat/Graph.outputs:cycle>
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        float4 inputs:scale.connect = </Mat/Graph.outputs:scale>
+        float4 inputs:bias.connect = </Mat.inputs:bias>
+    }
+}
+"#.as_slice()).unwrap();
+    let stage = source.open_stage().unwrap();
+    let prim = openusd::sdf::path("/Mat/Tex").unwrap();
+    let before = stage.root_layer().export_to_string().unwrap();
+    assert_eq!(texture_value_transform(&stage, &prim, 0, None).unwrap(), [1.0, 0.1]);
+    for (time, first) in [(0.0, 2.0), (5.0, 3.0), (10.0, 4.0), (0.0, 2.0)] {
+        for (channel, bias) in [0.1, 0.2, 0.3, 0.4].into_iter().enumerate() {
+            assert_eq!(texture_value_transform(&stage, &prim, channel, Some(time)).unwrap(), [first + channel as f32, bias]);
+        }
+    }
+    assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    let scale = stage.attribute("/Mat/Tex.inputs:scale").unwrap();
+    scale.clone().set_connections([openusd::sdf::path("/Mat/Graph.outputs:cycle").unwrap()]).unwrap();
+    assert!(texture_value_transform(&stage, &prim, 0, Some(0.0)).unwrap_err().to_string().contains("no readable value"));
+    scale.clone().set(Value::Vec4f([-9.0; 4].into())).unwrap();
+    assert_eq!(texture_value_transform(&stage, &prim, 0, Some(0.0)).unwrap(), [-9.0, 0.1]);
+    scale.clone().set_connections([openusd::sdf::path("/Mat.inputs:scale").unwrap(), openusd::sdf::path("/Mat.inputs:bias").unwrap()]).unwrap();
+    assert!(texture_value_transform(&stage, &prim, 0, Some(0.0)).unwrap_err().to_string().contains("multiple texture scale/bias"));
+    scale.set_connections([openusd::sdf::path("/Mat.inputs:scale").unwrap()]).unwrap();
+    assert_eq!(texture_value_transform(&stage, &prim, 0, Some(0.0)).unwrap(), [2.0, 0.1]);
 }
 
 fn read_uv_transform(stage: &Stage, textures: &[Path], time: Option<f64>) -> anyhow::Result<Option<bevy::math::Affine2>> {
@@ -290,10 +365,14 @@ fn resolve_surface_shader(
 
 type ColourSetter = fn(&mut ReadPreviewMaterial, [f32; 3]);
 type ScalarSetter = fn(&mut ReadPreviewMaterial, f32);
-type TextureInput = (String, usize, Option<bool>, Path);
+type TextureInput = (String, usize, Option<bool>, Path, [f32; 2]);
 type TextureSetter = fn(&mut ReadPreviewMaterial, TextureInput);
 
 impl ReadPreviewMaterial {
+    pub fn scalar_texture_transform(&self, semantic: &str) -> [f32; 2] {
+        self.scalar_texture_transforms.get(semantic).copied().unwrap_or([1.0, 0.0])
+    }
+
     pub fn texture_srgb(&self, semantic: &str) -> bool {
         self.texture_color_spaces.get(semantic).copied().unwrap_or(matches!(semantic, "diffuse" | "emissive"))
     }
@@ -317,6 +396,7 @@ fn set_opacity_s(o: &mut ReadPreviewMaterial, s: f32) {
     o.opacity = Some(s);
 }
 fn set_opacity_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("opacity".into(), s.4);
     set_color_space(o, "opacity", s.2);
     o.opacity_channel = s.1;
     o.opacity_texture = Some(s.0);
@@ -331,6 +411,7 @@ fn set_rough_s(o: &mut ReadPreviewMaterial, s: f32) {
     o.roughness = Some(s);
 }
 fn set_rough_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("roughness".into(), s.4);
     set_color_space(o, "roughness", s.2);
     o.roughness_texture = Some(s.0);
     o.roughness_channel = s.1;
@@ -340,6 +421,7 @@ fn set_metal_s(o: &mut ReadPreviewMaterial, s: f32) {
     o.metallic = Some(s);
 }
 fn set_metal_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("metallic".into(), s.4);
     set_color_space(o, "metallic", s.2);
     o.metallic_texture = Some(s.0);
     o.metallic_channel = s.1;
@@ -366,6 +448,7 @@ fn set_normal_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
 fn set_occlusion_c(_: &mut ReadPreviewMaterial, _: [f32; 3]) {}
 fn set_occlusion_s(_: &mut ReadPreviewMaterial, _: f32) {}
 fn set_occlusion_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("occlusion".into(), s.4);
     set_color_space(o, "occlusion", s.2);
     o.occlusion_channel = s.1;
     o.occlusion_texture = Some(s.0);
@@ -568,7 +651,7 @@ fn resolve_attr_chain(
     warnings: &mut Vec<String>,
     time: Option<f64>,
 ) -> anyhow::Result<(Option<ResolvedValue>, Option<TextureInput>)> {
-    resolve_attr_chain_inner(stage, attr_path, &mut 256, warnings, time)
+    resolve_attr_chain_inner(stage, attr_path, &mut 256, warnings, time, 0)
 }
 
 fn resolve_attr_chain_inner(
@@ -577,7 +660,9 @@ fn resolve_attr_chain_inner(
     remaining: &mut usize,
     warnings: &mut Vec<String>,
     time: Option<f64>,
+    depth: usize,
 ) -> anyhow::Result<(Option<ResolvedValue>, Option<TextureInput>)> {
+    anyhow::ensure!(depth < 32, "material graph exceeds the 32-level recursive traversal budget");
     let mut cur = attr_path.clone();
     for _ in 0..16 {
         anyhow::ensure!(*remaining > 0, "material graph exceeds the 256-input traversal budget");
@@ -588,13 +673,9 @@ fn resolve_attr_chain_inner(
             match kind {
                 ShaderKind::Texture => {
                     let channel = match next.as_str().rsplit(':').next() { Some("g") => 1, Some("b") => 2, Some("a") => 3, _ => 0 };
-                    let srgb = match read_token_or_string_at(stage, &prim, "inputs:sourceColorSpace", time)?.as_deref() {
-                        Some("raw") => Some(false),
-                        Some("sRGB") => Some(true),
-                        None | Some("auto") => None,
-                        Some(other) => anyhow::bail!("unsupported texture sourceColorSpace: {other}"),
-                    };
-                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim))));
+                    let srgb = read_texture_color_space(stage, &prim, time)?;
+                    let transform = texture_value_transform(stage, &prim, channel, time)?;
+                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim, transform))));
                 }
                 ShaderKind::NormalMap => {
                     cur = prim.append_property("inputs:in")?;
@@ -602,11 +683,11 @@ fn resolve_attr_chain_inner(
                 }
                 ShaderKind::Constant => {
                     let v_path = prim.append_property("inputs:value")?;
-                    return resolve_attr_chain_inner(stage, &v_path, remaining, warnings, time);
+                    return resolve_attr_chain_inner(stage, &v_path, remaining, warnings, time, depth + 1);
                 }
                 ShaderKind::Multiply | ShaderKind::Add | ShaderKind::Subtract => {
-                    let a = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in1")?, remaining, warnings, time)?;
-                    let b = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in2")?, remaining, warnings, time)?;
+                    let a = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in1")?, remaining, warnings, time, depth + 1)?;
+                    let b = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in2")?, remaining, warnings, time, depth + 1)?;
                     if let (Some(a), Some(b)) = (&a.0, &b.0) {
                         let op = match kind { ShaderKind::Multiply => |a, b| a * b, ShaderKind::Add => |a, b| a + b, _ => |a, b| a - b };
                         return Ok((Some(combine(a, b, op)?), None));
@@ -615,9 +696,9 @@ fn resolve_attr_chain_inner(
                     return Ok(a);
                 }
                 ShaderKind::Mix => {
-                    let fg = resolve_attr_chain_inner(stage, &prim.append_property("inputs:fg")?, remaining, warnings, time)?;
-                    let bg = resolve_attr_chain_inner(stage, &prim.append_property("inputs:bg")?, remaining, warnings, time)?;
-                    let weight = resolve_attr_chain_inner(stage, &prim.append_property("inputs:mix")?, remaining, warnings, time)?;
+                    let fg = resolve_attr_chain_inner(stage, &prim.append_property("inputs:fg")?, remaining, warnings, time, depth + 1)?;
+                    let bg = resolve_attr_chain_inner(stage, &prim.append_property("inputs:bg")?, remaining, warnings, time, depth + 1)?;
+                    let weight = resolve_attr_chain_inner(stage, &prim.append_property("inputs:mix")?, remaining, warnings, time, depth + 1)?;
                     if let (Some(fg), Some(bg), Some(weight)) = (&fg.0, &bg.0, &weight.0) {
                         let difference = combine(fg, bg, |a, b| a - b)?;
                         let weighted = combine(&difference, weight, |a, b| a * b)?;
@@ -634,8 +715,8 @@ fn resolve_attr_chain_inner(
         }
         let default = sampled_value(stage, &cur, time)?;
         match default.clone() {
-            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path())))),
-            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path())))),
+            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path(), [1.0, 0.0])))),
+            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path(), [1.0, 0.0])))),
             _ => {}
         }
         return Ok((default.and_then(value_to_preview), None));
@@ -684,13 +765,117 @@ fn shader_kind(stage: &Stage, prim: &Path) -> anyhow::Result<ShaderKind> {
     })
 }
 
+fn texture_input_attribute(stage: &Stage, tex_prim: &Path, name: &str) -> anyhow::Result<Option<openusd::usd::Attribute>> {
+    use openusd_schemas::shade::{Connectable, ProducerFilter, Shader};
+    let input = Shader::new(stage.prim(tex_prim)?).input(name);
+    let connections = input.connected_sources()?;
+    anyhow::ensure!(connections.invalid_source_paths().is_empty(), "invalid texture {name} connection at {}", input.path());
+    let producers = input.value_producing_attributes(ProducerFilter::Any)?;
+    anyhow::ensure!(producers.len() <= 1, "multiple texture {name} value producers at {}", input.path());
+    anyhow::ensure!(connections.sources().is_empty() || !producers.is_empty(), "texture {name} connection has no value producer at {}", input.path());
+    Ok(producers.first().map(|source| source.attribute().clone()))
+}
+
 fn read_texture_file(stage: &Stage, tex_prim: &Path, time: Option<f64>) -> anyhow::Result<Option<String>> {
-    Ok(match stage.prim(tex_prim)?.attribute("inputs:file").get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+    let Some(attribute) = texture_input_attribute(stage, tex_prim, "file")? else { return Ok(None); };
+    Ok(match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
         Some(Value::AssetPath(path)) => Some(path.resolved_path().unwrap_or(path.as_str()).to_owned()),
         Some(Value::String(path)) => Some(path),
         Some(Value::Token(path)) => Some(path.as_str().to_owned()),
-        _ => None,
+        None if time.is_none() && !attribute.time_sample_times()?.is_empty() => None,
+        _ => anyhow::bail!("texture file producer has no readable asset value at {}", attribute.path()),
     })
+}
+
+fn read_texture_color_space(stage: &Stage, tex_prim: &Path, time: Option<f64>) -> anyhow::Result<Option<bool>> {
+    let Some(attribute) = texture_input_attribute(stage, tex_prim, "sourceColorSpace")? else { return Ok(None); };
+    let value = match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+        Some(Value::Token(value)) => value.as_str().to_owned(),
+        Some(Value::String(value)) => value,
+        None if time.is_none() && !attribute.time_sample_times()?.is_empty() => return Ok(None),
+        _ => anyhow::bail!("texture sourceColorSpace producer has no readable token at {}", attribute.path()),
+    };
+    match value.as_str() {
+        "raw" => Ok(Some(false)),
+        "sRGB" => Ok(Some(true)),
+        "auto" => Ok(None),
+        _ => anyhow::bail!("unsupported texture sourceColorSpace: {value}"),
+    }
+}
+
+#[test]
+fn color_space_interfaces_discover_and_resolve_sampled_tokens() {
+    let source = crate::UsdSource::snapshot("spaces.usda", br#"#usda 1.0
+def Material "Mat" {
+    token inputs:encoding.timeSamples = {0: "raw", 10: "sRGB", 20: "auto"}
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def NodeGraph "Graph" {
+        token outputs:encoding.connect = </Mat.inputs:encoding>
+        token outputs:cycle.connect = </Mat/Graph.outputs:cycle>
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @pixel.png@
+        token inputs:sourceColorSpace.connect = </Mat/Graph.outputs:encoding>
+    }
+}
+"#.as_slice()).unwrap();
+    let stage = source.open_stage().unwrap();
+    let material = openusd::sdf::path("/Mat").unwrap();
+    let texture = openusd::sdf::path("/Mat/Tex").unwrap();
+    assert_eq!(material_texture_sample_times(&stage, &material).unwrap(), [0.0, 10.0, 20.0]);
+    assert_eq!(read_texture_color_space(&stage, &texture, None).unwrap(), None);
+    for (time, expected) in [(0.0, Some(false)), (5.0, Some(false)), (10.0, Some(true)), (20.0, None), (0.0, Some(false))] {
+        assert_eq!(read_texture_color_space(&stage, &texture, Some(time)).unwrap(), expected);
+    }
+    stage.attribute("/Mat.inputs:encoding").unwrap().set_at(Value::Token("acescg".into()), openusd::usd::TimeCode::new(10.0)).unwrap();
+    assert!(read_texture_color_space(&stage, &texture, Some(10.0)).unwrap_err().to_string().contains("unsupported texture sourceColorSpace"));
+    stage.attribute("/Mat/Tex.inputs:sourceColorSpace").unwrap().set_connections([openusd::sdf::path("/Mat/Graph.outputs:cycle").unwrap()]).unwrap();
+    assert!(read_texture_color_space(&stage, &texture, Some(0.0)).unwrap_err().to_string().contains("no value producer"));
+}
+
+#[test]
+fn texture_file_interfaces_discover_arbitrarily_named_samples() {
+    let source = crate::UsdSource::snapshot("files.usda", br#"#usda 1.0
+def Material "Mat" {
+    asset inputs:image.timeSamples = {0: @a.png@, 10: @b.png@}
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def NodeGraph "Graph" {
+        asset outputs:image.connect = </Mat.inputs:image>
+        asset outputs:cycle.connect = </Mat/Graph.outputs:cycle>
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file.connect = </Mat/Graph.outputs:image>
+    }
+}
+"#.as_slice()).unwrap();
+    let stage = source.open_stage().unwrap();
+    let material = openusd::sdf::path("/Mat").unwrap();
+    let texture = openusd::sdf::path("/Mat/Tex").unwrap();
+    assert_eq!(material_texture_sample_times(&stage, &material).unwrap(), [0.0, 10.0]);
+    assert!(read_texture_file(&stage, &texture, None).unwrap().is_none());
+    for (time, name) in [(0.0, "a.png"), (5.0, "a.png"), (10.0, "b.png"), (0.0, "a.png")] {
+        assert!(read_texture_file(&stage, &texture, Some(time)).unwrap().unwrap().ends_with(name));
+    }
+    let file = stage.attribute("/Mat/Tex.inputs:file").unwrap();
+    file.clone().set_connections([openusd::sdf::path("/Mat/Graph.outputs:cycle").unwrap()]).unwrap();
+    assert!(read_texture_file(&stage, &texture, Some(0.0)).unwrap_err().to_string().contains("no value producer"));
+    file.clone().set_connections([openusd::sdf::path("/Mat.inputs:missing").unwrap()]).unwrap();
+    assert!(read_texture_file(&stage, &texture, Some(0.0)).unwrap_err().to_string().contains("invalid texture file connection"));
+    stage.create_attribute("/Mat.inputs:other", "asset").unwrap().set(Value::AssetPath(openusd::sdf::AssetPath::new("c.png"))).unwrap();
+    file.set_connections([openusd::sdf::path("/Mat.inputs:image").unwrap(), openusd::sdf::path("/Mat.inputs:other").unwrap()]).unwrap();
+    assert!(read_texture_file(&stage, &texture, Some(0.0)).unwrap_err().to_string().contains("multiple texture file value producers"));
 }
 
 fn value_to_preview(v: Value) -> Option<ResolvedValue> {

@@ -21,6 +21,16 @@ capture_timeout=${USD_UI_CAPTURE_TIMEOUT:-15}
 [[ "$capture_timeout" =~ ^[1-9][0-9]*$ && "$capture_timeout" -le 120 ]] || {
     echo "USD_UI_CAPTURE_TIMEOUT must be 1..120 seconds" >&2; exit 2;
 }
+paired=${USD_UI_CAPTURE_VIEWPORT:-0}
+[[ "$paired" == 0 || "$paired" == 1 ]] || {
+    echo "USD_UI_CAPTURE_VIEWPORT must be 0 or 1" >&2; exit 2;
+}
+viewport="${output%.png}.viewport.png"
+if [[ "$paired" == 1 ]]; then
+    for path in "$viewport" "${viewport%.png}.rgba" "${viewport%.png}.capture.txt" "${viewport%.png}.inspect.log"; do
+        [[ ! -e "$path" && ! -L "$path" ]] || { echo "viewport companion must be new: $path" >&2; exit 2; }
+    done
+fi
 scene_graph=${USD_UI_CAPTURE_SCENE_GRAPH:-0}
 [[ "$scene_graph" == 0 || "$scene_graph" == 1 ]] || {
     echo "USD_UI_CAPTURE_SCENE_GRAPH must be 0 or 1" >&2; exit 2;
@@ -43,6 +53,7 @@ printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutp
     "$renderer" "$delay" > "${output%.png}.settings.txt"
 printf 'scene_graph_requested=%s\n' "$scene_graph" >> "${output%.png}.settings.txt"
 printf 'capture_timeout_seconds=%s\n' "$capture_timeout" >> "${output%.png}.settings.txt"
+printf 'viewport_requested=%s\n' "$paired" >> "${output%.png}.settings.txt"
 runtime=$(mktemp -d /dev/shm/usd-viewer-ui.XXXXXX)
 chmod 700 "$runtime"
 compositor_pid=
@@ -73,6 +84,9 @@ done
 [[ -S "$runtime/$WAYLAND_DISPLAY" ]] || { echo "compositor startup timed out" >&2; exit 1; }
 cd "$root"
 viewer=(env USD_UI_CAPTURE_HANDSHAKE=1 make run WAYLAND_DISPLAY="$WAYLAND_DISPLAY" CARGO="${CARGO:-cargo --offline}" ARGS="$(printf '%q' "$asset")")
+if [[ "$paired" == 1 ]]; then
+    viewer=(env "USD_SCREENSHOT=$viewport" "${viewer[@]}")
+fi
 if [[ ${USD_UI_CAPTURE_PRIVATE_BUS:-0} == 1 ]]; then
     command -v dbus-run-session >/dev/null || { echo "missing command: dbus-run-session" >&2; exit 2; }
     viewer=(dbus-run-session -- "${viewer[@]}")
@@ -89,6 +103,30 @@ for ((i=0; i<delay; i++)); do
     kill -0 "$viewer_pid" 2>/dev/null || { echo "viewer exited before capture" >&2; exit 1; }
     sleep 1
 done
+viewport_ok=1
+if [[ "$paired" == 1 ]]; then
+    viewport_ok=0
+    for ((i=0; i<capture_timeout; i++)); do
+        grep -Fxq "VIEWPORT_CAPTURE_OK $viewport" "${output%.png}.viewer.log" && break
+        grep -Fq "VIEWPORT_CAPTURE_ERROR $viewport:" "${output%.png}.viewer.log" && break
+        kill -0 "$viewer_pid" 2>/dev/null || break
+        sleep 1
+    done
+    if grep -Fxq "VIEWPORT_CAPTURE_OK $viewport" "${output%.png}.viewer.log"; then
+        width= height=
+        while IFS='=' read -r key value; do
+            case "$key" in width) width=$value ;; height) height=$value ;; esac
+        done < "${viewport%.png}.capture.txt"
+        if [[ "$width" =~ ^[1-9][0-9]*$ && "$height" =~ ^[1-9][0-9]*$ ]]; then
+            if make run RUN_WITH= CARGO="${CARGO:-cargo --offline}" APP_TARGET='--example capture_inspect' \
+                ARGS="$(printf '%q' "$viewport") 0 0 $width $height" > "${viewport%.png}.inspect.log" 2>&1; then
+                viewport_ok=1
+            fi
+        fi
+    fi
+    printf 'viewport_inspection_passed=%s\n' "$viewport_ok" >> "${output%.png}.settings.txt"
+    [[ "$viewport_ok" == 1 ]] || echo "warning: viewport readback missing or failed inspection; continuing compositor capture" >&2
+fi
 if [[ "$scene_graph" == 1 ]]; then
     if timeout --kill-after=1 5 weston-debug scene-graph > "${output%.png}.scene-graph.log" 2>&1; then
         echo 'scene_graph_status=ok' >> "${output%.png}.settings.txt"
@@ -116,4 +154,5 @@ make run RUN_WITH= CARGO="${CARGO:-cargo --offline}" APP_TARGET='--example captu
     ARGS="$(printf '%q' "$output") 110 110 1400 800" > "${output%.png}.inspect.log" 2>&1 || {
     echo "viewer capture failed region inspection; image and logs retained: $output" >&2; exit 1;
 }
+[[ "$viewport_ok" == 1 ]] || { echo "paired viewport capture failed; artifacts retained" >&2; exit 1; }
 echo "UI_CAPTURE_OK $output (inspect image; fixed wait is not render readiness)"

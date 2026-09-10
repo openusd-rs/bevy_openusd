@@ -517,13 +517,68 @@ USD_SCREENSHOT=target/showcase-t10.png USD_CAPTURE_TIME=10 make run ARGS='assets
 ```
 
 `USD_SCREENSHOT` reads the actual embedded viewport GPU texture, without the UI.
+When capture is enabled, the viewer rejects non-PNG destination names and
+non-finite or malformed `USD_CAPTURE_TIME` values before constructing the window.
+Negative and fractional finite time codes are accepted. Without USD_SCREENSHOT,
+USD_CAPTURE_TIME does not enable capture or set the editor clock.
 It writes the PNG plus tightly packed `.rgba` pixels and `.capture.txt` containing
 dimensions, source texture format and row length. `VIEWPORT_CAPTURE_OK` in stderr
 means all three files were written; `VIEWPORT_CAPTURE_ERROR` reports a failure.
-The viewer stays open. Capture is requested once after 120 update frames and a
-camera is available; this delay does not guarantee asset/pipeline readiness.
+The viewer stays open. Capture is requested once after 120 consecutive updates
+with the same open editor document and an active camera. Losing the camera or
+replacing the document resets that count. A 60-second deadline, checked on each
+update, reports an error if those conditions were not met; an invalid initial
+open no longer produces a grid-only success. This does not guarantee GPU
+pipeline readiness, completed uploads or correct projection. The deadline ends
+when readback is requested; the paired script separately bounds its wait for
+the callback.
 The standalone `viewer_capture` example below has explicit readiness checks and
 process exit status. Use `scripts/capture_viewer_ui.sh` to capture UI composition.
+
+Scalar UsdUVTexture inputs now apply the selected channel's `scale` and `bias`
+when packing roughness, metallic, occlusion and opacity. Values are transformed
+after color-space decoding, then clamped/quantized into the existing 8-bit packed
+images. Sampled transforms participate in material time updates; packed content
+keys distinguish changed results. Connected Material/NodeGraph scale/bias
+interfaces resolve through upstream UsdShade value-producing attributes,
+including sampled values. Multiple producers, invalid direct sources and
+connections with no readable value reject the material read. Authored fallback
+values follow the upstream resolver's rules; arbitrary shader computation is
+not evaluated for these float4 inputs.
+Diffuse, emissive and normal-map scale/bias are not implemented by this packing
+path. Out-of-range values are clamped before GPU filtering, so this is not exact
+shader parity for arbitrary filtered float textures.
+Material graph evaluation has a 256-input traversal budget and a separate
+32-level recursion limit for arithmetic/constant nodes; exceeding either reports
+an error rather than continuing unbounded recursion.
+The operation follows the
+[USD texture-reader specification](https://openusd.org/release/spec_usdpreviewsurface.html#texture-reader).
+
+`scalar_texture_fixture` creates a mapped sphere, an independently precomputed
+texture reference and an untransformed negative control in a new directory:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example scalar_texture_fixture' ARGS='target/NEW-scalar-fixture'
+```
+
+It also writes `animated.usda` with sampled scale values and
+`animated_reference.usda` with precomputed texture files at times 0 and 10.
+The live-clock regression includes these two scenes, reversing the mapped roots
+from 0/10 to 10/0 and comparing against fresh reference roots at 10/0. The
+file-switched reference establishes endpoint equivalence, not intermediate-time
+GPU interpolation or arbitrary texture-filtering parity.
+`interface_animated.usda` supplies the same sampled coefficients through a
+Material input and a NodeGraph output and runs as a separate live-clock case.
+`file_interface_animated.usda` instead supplies sampled texture filenames through
+those interfaces. File reads use the canonical value-producing attribute, and
+texture discovery gathers its sample times even when the interface input is not
+named `file`. Invalid/ambiguous connections and unreadable producer values fail
+explicitly; sampled-only filenames remain unset during default-time discovery.
+Connected `sourceColorSpace` inputs use the same producer resolution and sample
+discovery. `colorspace_interface_animated.usda` switches raw/sRGB interpretation
+through a Material/NodeGraph interface; `colorspace_reference.usda` switches
+between precomputed raw linear bytes instead. This is an explicit color-space
+test, not implementation of metadata-based `auto` color-space detection.
 
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:
@@ -663,7 +718,7 @@ flat normals independently of authored normals. Capture without shadow maps:
 USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='assets/normal_scale.usda target/normal-scale.png 0 0 0 6 0 0 0'
 ```
 
-The capture command saves the viewport after 120 frames and leaves the viewer
+The capture command saves the viewport after 120 document/camera-ready updates and leaves the viewer
 open. Set `USD_CAPTURE_TIME=0` for the starting state. These fixed-time captures
 do not demonstrate interactive playback or inspector controls.
 
@@ -887,6 +942,44 @@ regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
 the failure. This catches the observed black-window case, not arbitrary incorrect
 rendering or incomplete uploads.
 
+Set `USD_UI_CAPTURE_VIEWPORT=1` to additionally retain the embedded Bevy readback
+as `.viewport.png`, `.viewport.rgba` and `.viewport.capture.txt`. Its dimensions
+drive a separate full-image near-black check in `.viewport.inspect.log`. The
+script waits up to `USD_UI_CAPTURE_TIMEOUT` additional seconds for the readback
+after the UI delay; missing/failed readback is recorded in settings and fails
+the run, but does not suppress the compositor screenshot attempt. Existing
+viewport companions are rejected before launch.
+
+These are two capture paths, not synchronized frames: Bevy requests its readback
+after 120 document/camera-ready updates, whereas Weston captures after the UI delay. A healthy viewport
+with a black host image narrows the failure to host presentation/composition or
+compositor readback, not necessarily to Weston itself. Neither near-black check
+proves scene fidelity or completed asset uploads.
+
+`examples/host_capture_probe.rs` draws colored panels and text with the same
+Mara native runner, without constructing a Bevy app or loading USD. Use it to
+isolate host/compositor failures (the script's required asset argument is ignored
+by this example):
+
+```sh
+USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example host_capture_probe' --eval='capture-host:; @/bin/bash scripts/capture_viewer_ui.sh assets/retimed_instances.usda target/NEW-host-only.png' capture-host
+```
+
+Use the Weston-enabled environment described above. This is a diagnostic, not
+the viewer or proof of its rendering fidelity.
+
+`examples/bridge_capture_probe.rs` adds only the Bevy viewport bridge, a blue
+clear color and an orange unlit cube, with a white egui label over the viewport.
+It has no USD plugins, stage, lights or editor. Compare it with the host-only
+probe to isolate failures that require the embedded Bevy renderer:
+
+```sh
+USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example bridge_capture_probe' --eval='capture-bridge:; @/bin/bash scripts/capture_viewer_ui.sh assets/retimed_instances.usda target/NEW-bridge-only.png' capture-bridge
+```
+
+The asset argument is ignored. Inspect both the cube and the egui label; a
+nonblack background alone does not prove that the bridge rendered correctly.
+
 The `.settings.txt` companion records compositor backend, output/inspection
 dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's
 one-shot surface/buffer dump in `.scene-graph.log` immediately before capture.
@@ -1101,11 +1194,12 @@ final clock order and whether the live reversal happened.
 Run the strict live-clock GPU regression suite into a new directory:
 
 ```bash
-make --eval='check-live-clocks:; @bash scripts/check_live_clocks.sh target/live-clock-check' check-live-clocks
+make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/live-clock-check' check-live-clocks
 ```
 
-It generates fresh UV/texture fixtures and compares live clock reversals against
-baked UV, fixed-image and CPU-morph references. All comparisons use zero RGB
+It generates fresh UV/texture/scalar fixtures and compares live clock reversals
+against baked UV, fixed-image, CPU-morph and precomputed scalar-map references.
+All eight comparisons use zero RGB
 tolerance. Metadata must confirm the reversal and two visible mesh entities;
 the morph case also verifies shared GPU material use. Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain

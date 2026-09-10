@@ -25,6 +25,254 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reproduce black presentation without USD
+
+`examples/bridge_capture_probe.rs` runs the canonical Mara/Bevy viewport bridge
+with only one camera, an orange unlit cube and a blue clear color. A foreground
+egui label independently marks the host UI. It registers no USD plugins and
+loads no stage, editor, scene textures or lighting. The headless unit regression
+checks its camera, mesh and material setup.
+
+Three fresh private Vulkan Weston runs produced two healthy images followed by
+one wholly black application surface, including the egui label and host chrome.
+All three images were inspected. The failed run has only 50 nonblack pixels in
+the 1120000-pixel inspection region and correctly fails the capture script.
+This reproduces the symptom without USD content; it does not identify whether
+the bridge, shared GPU state, host presentation or compositor readback is faulty.
+Earlier host-only successes are not proof that the host cannot fail.
+
+Evidence: `target/viewer-ui-captures/bridge-only-{1,2,3}*` and
+`/tmp/bridge-probe-gpu.log`; the failed third capture is preserved, not retried
+into success. All 491 ordinary tests pass (13 ignored), check-all/build and
+whitespace checks pass: `/tmp/bridge-probe-{tests,check,build}.log`.
+No sibling Mara implementation or compositor configuration was changed.
+
+### Resolve connected texture color spaces
+
+Texture sourceColorSpace now resolves canonical UsdShade value-producing
+attributes, including sampled Material inputs routed through NodeGraph outputs.
+Sample discovery follows the producer even when its input name is encoding.
+Sampled-only defaults remain unset; raw/sRGB/auto retain their existing meanings.
+Invalid, ambiguous, cyclic-without-value and unreadable inputs fail explicitly.
+This does not implement metadata-based auto detection or arbitrary shader math.
+
+The unit regression covers held tokens, backward reads, sample discovery,
+unsupported tokens and cycles. The eighth GPU live-clock case compares a
+connected raw/sRGB switch against independently precomputed linear texture
+bytes. All eight cases pass with zero changed RGB pixels out of 921600.
+Both new images were visually inspected: two spheres, clocks reversed to 10/0
+after 30 ready frames, matching the fresh reference scene exactly.
+Evidence: `target/live-colorspace-interface-regression/` and
+`/tmp/colorspace-interface-gpu.log`. All 490 ordinary tests pass (13 ignored),
+and check-all/build pass: `/tmp/colorspace-interface-{tests,check,build}.log`.
+All 13 native export tests pass: `/tmp/colorspace-interface-native.log`.
+This establishes endpoint scalar packing parity, not general texture filtering
+or floating-point color-space fidelity.
+
+### Resolve and discover connected texture filenames
+
+Texture file reads now use the canonical UsdShade value-producing attribute
+instead of only reading inputs:file directly. Material/NodeGraph interfaces can
+supply asset/string/token filenames, including time samples. Discovery queries
+that producer's sample times, so inputs named image (rather than file) are still
+loaded at their authored endpoints. Invalid direct sources, ambiguous producers,
+cycles without producers and unreadable producer values return explicit errors.
+Sampled-only file inputs remain unset at default time while their numeric-time
+samples are discovered. Arbitrary shader computation remains unsupported.
+
+The source regression covers differently named interface samples, held file
+selection, backward reads, cycles, invalid connections and multiple producers.
+The fixture adds file_interface_animated.usda and the seventh live-clock case.
+All seven GPU cases pass with zero changed RGB pixels out of 921600; the new
+case confirms two meshes and clocks reversed to 10/0 after 30 ready frames.
+Both new file-interface images were visually inspected and match the reference.
+Evidence: `target/live-file-interface-regression/`, `/tmp/file-interface-gpu.log`.
+All 489 ordinary tests pass (13 ignored), check-all/build and shell syntax/
+whitespace checks pass: `/tmp/file-interface-{tests,check,build}.log`.
+All 13 native export tests also pass: `/tmp/file-interface-native.log`.
+This verifies interface filename loading and endpoint rendering, not all
+resolver contexts, shader graphs or texture-node behaviors.
+
+### Resolve scale/bias through typed UsdShade interfaces
+
+Texture scale/bias now uses canonical Shader/Input value_producing_attributes
+with ProducerFilter::Any instead of rejecting every connection. Sampled
+Material inputs reached through NodeGraph outputs work without a duplicate
+downstream connection walker. Multiple producers, invalid direct sources and
+connected terminals with no readable value fail explicitly. Authored fallback
+behavior follows the upstream resolver; shader computation is not evaluated.
+The regression covers interpolation/backward reads, no root-layer mutation,
+cycles without values, authored fallback, ambiguous producers and upstream
+values overriding a local fallback.
+
+The first native interface capture failed in AssetServer's default-time material
+discovery despite timed reads passing: sampled-only producers have no default
+value. Default-time reads now retain the coefficient fallback when a real
+producer has time samples, without treating missing producers as valid.
+Evidence of failure is retained in `target/live-scalar-interface-regression/`.
+The new interface_animated fixture runs as a sixth live-clock GPU case against
+the precomputed texture reference. All six cases pass with zero changed RGB
+pixels out of 921600, including the reversed interface roots. Both interface
+images and the other five live images were visually inspected.
+Evidence: `target/live-scalar-interface-fixed-regression/`,
+`/tmp/scalar-interface-gpu-fixed.log`.
+All 488 ordinary tests pass (13 ignored), all 13 native export tests pass,
+check-all/build and shell syntax/whitespace checks pass:
+`/tmp/scalar-interface-{tests-verified,check-verified,build-verified,native}.log`.
+This is interface-value resolution and endpoint GPU evidence, not arbitrary
+shader-graph evaluation or complete native texture-node parity.
+
+### Verify scalar material updates on independent live clocks
+
+The scalar fixture now includes sampled scale coefficients and an independent
+file-switched reference whose precomputed texels represent times 0 and 10.
+Its test verifies both endpoint transforms and reference asset selections.
+`scripts/check_live_clocks.sh` includes this fifth case: mapped roots start at
+0/10, reverse after 30 ready frames, and compare with fresh reference roots at
+10/0. The references validate endpoints, not intermediate-time GPU interpolation.
+
+All five native cases (UV, texture file, color space, morph, scalar) pass at
+zero changed RGB pixels out of 921600. Scalar metadata confirms two visible
+meshes, final clocks 10/0 and the live reversal. Both scalar images and the four
+other live images were visually inspected. The scalar spheres retain visibly
+different opacity/shading after reversal, matching their reference.
+Evidence: `target/live-scalar-regression/`, `/tmp/scalar-live-gpu.log`.
+All 487 ordinary tests pass (13 ignored), check-all/build and shell syntax/
+whitespace checks pass: `/tmp/scalar-live-{tests,check,build}.log`.
+
+### Apply scalar texture scale/bias in Bevy materials
+
+The shade reader now records the selected UsdUVTexture channel's sampled float4
+scale/bias for roughness, metallic, opacity and occlusion. Scalar packing applies
+the transform after color-space decoding and before existing clamping/8-bit
+quantization. Content-keyed packed images distinguish transformed values and
+reuse prior results after backward time reads. Nonfinite coefficients/results,
+wrong coefficient types and connected scale/bias inputs return errors.
+Diffuse/emissive/normal transforms remain outside this packing path. Per-texel
+clamping before filtering is not exact shader parity for arbitrary float maps.
+
+Tests cover all four semantics, sampled coefficients/interpolation, cache reuse,
+sRGB versus alpha decoding, clamping and invalid inputs. The expanded resolver
+also exposed a stack overflow in the existing cyclic arithmetic graph regression
+(`/tmp/scalar-transform-all-tests.log`). A separate 32-level recursive traversal
+limit now fails before exhausting the stack; the 256-input total budget remains.
+The original cycle regression passes without increasing thread stack size.
+
+`examples/scalar_texture_fixture.rs` generates a mapped sphere, precomputed
+RGBA reference and untransformed control. All three GPU captures were inspected.
+Mapped/reference compare at zero changed RGB pixels out of 921600; the negative
+control differs in 60646 pixels, maximum error 152. Captures have no WARN/ERROR
+diagnostics. Evidence: `target/scalar-transform-fixture-v2/`,
+`/tmp/scalar-{reference,control}-compare.log`,
+`/tmp/scalar-{mapped,reference,control}-gpu-final.log`.
+The initial fixture generator used an unsupported Image dynamic-conversion
+format; the corrected PNG encoder container is sRGB while the USD input remains
+explicitly raw. The failed output directory was retained.
+
+All 487 ordinary tests pass (13 ignored), all 13 native export tests pass, and
+check-all/build/whitespace validation pass:
+`/tmp/scalar-transform-{all-tests-final,check-final,build,native}.log`.
+This is scalar packing and a constant-map GPU regression, not full texture-node
+support or proof of live animated GPU scale/bias updates.
+
+### Validate embedded capture options before window creation
+
+Capture configuration now rejects malformed/non-finite USD_CAPTURE_TIME values
+when USD_SCREENSHOT is set instead of silently leaving the clock unchanged.
+It also rejects non-PNG output names and trailing directory separators before
+initializing the native window. Finite negative/fractional time codes remain
+valid; no output option means capture/time override remain disabled.
+
+Parser tests cover missing options, malformed numbers, infinities/NaN, finite
+negative/fractional/large values, file extensions and trailing separators.
+The first regression exposed Path::extension treating `frame.png/` as a PNG
+name; explicit separator validation fixes that case. Native headless CLI probes
+for NaN time and JPG output both fail before `usdview starting`, creating no
+output files: `/tmp/capture-config-invalid-{time,output}.log`.
+All 484 ordinary tests pass (13 ignored), check-all/build and whitespace pass:
+`/tmp/capture-config-{all-tests,check,build}.log`.
+This changes option validation, not GPU rendering or black-host behavior.
+
+### Reject embedded captures without an open document
+
+The embedded screenshot gate now counts 120 consecutive updates with the same
+EditorSession document identity and an active Camera3d. Losing either resets
+the count; replacing the document also restarts it. The editor exposes its
+existing document_id directly so capture does not clone the UI snapshot each
+frame. A 60-second pre-request deadline emits one VIEWPORT_CAPTURE_ERROR instead
+of producing a grid-only success after an invalid initial Open. It is checked
+on updates, not by an independent watchdog, and stops once readback is requested.
+The paired script separately bounds waiting for a readback callback.
+
+Gate tests cover no document, camera/document loss, identity replacement,
+the 120-update boundary and one-shot timeout/request behavior. All 482 ordinary
+tests pass (13 ignored), all 13 native export tests pass, and check-all/build
+and whitespace validation pass:
+`/tmp/capture-gate-{all-tests,native,check,build}.log`.
+
+Native failure evidence: `target/viewer-ui-captures/gated-invalid-document*`
+and `/tmp/capture-gate-invalid-ui.log`. The deliberately invalid initial file
+produced the timeout error, no viewport PNG and a failing paired command; its
+retained full-window screenshot visibly shows the parser error over the grid.
+Native success evidence: `target/viewer-ui-captures/gated-valid-document*`
+and `/tmp/capture-gate-valid-ui.log`. Both captures pass and were visually
+inspected with all three cubes visible. This gate does not establish GPU
+pipeline/upload readiness, projection correctness or fix black host captures.
+
+### Isolate the native host from Bevy and USD
+
+`examples/host_capture_probe.rs` uses the same Mara native runner but constructs
+no Bevy app, viewport or USD stage. It paints three colored panels and a label,
+and emits the UI handshake consumed by the existing capture script. A headless
+egui test verifies panel geometry/colors and the presence of text.
+
+Three separate Vulkan/Weston runs passed the near-black guard; all three images
+were visually inspected with upright text and expected RGB panels. The black
+failure did not recur in this small sample: this neither excludes Mara/Weston
+nor establishes a Bevy-specific cause. Their scene graphs sampled 504/647/713
+committed frames per second versus 60 painted frames, despite the probe's
+request_repaint_after(1/60). That call is not a runner-level frame-rate cap.
+No sibling Mara files were changed. Its current native runner hardcodes
+AutoNoVsync and does not process egui screenshot requests, so a host GPU readback
+would require runner integration rather than merely sending a viewport command.
+
+Evidence: `target/viewer-ui-captures/host-only-{1,2,3}*`,
+`/tmp/host-only-gpu.log`, `/tmp/host-probe-test-final.log`.
+The full suite passed 480 tests (13 ignored), check-all and build passed:
+`/tmp/host-probe-{tests,check,build}.log`.
+For pipeline context, the official
+[Wayland architecture description](https://wayland.freedesktop.org/docs/book/Architecture.html)
+describes client dma-buf submission and compositor import; the previous paired
+Spot capture cannot distinguish which side produced the black host buffer.
+
+### Pair embedded readback with full-window captures
+
+`USD_UI_CAPTURE_VIEWPORT=1` adds the existing Bevy GPU readback to the isolated
+Weston script, retaining PNG/raw bytes/dimensions and independently inspecting
+the full viewport. It validates new companion paths before launch and bounds
+the additional readback wait by USD_UI_CAPTURE_TIMEOUT. Missing or failed
+readback does not suppress the compositor attempt, but prevents overall success.
+Bevy's 120-update readback and Weston's delayed capture are not synchronized.
+
+The native `paired-retimed` run passed both checks; all three cubes are visible
+in the embedded image while the rendering pane obscures them in the UI image.
+The native `paired-spot` run reproduced the black full-window failure using
+`../usd_collection/oems/spot_boston_dynamics/spot_base_urdf/spot.usdc`:
+the embedded 1440x920 readback visibly contains the yellow robot and grid
+(1324800/1324800 nonblack pixels), while the full host interior has only
+50/1120000 nonblack pixels. The script correctly fails and retains both.
+Weston's scene graph reports the 1440x920 XRGB8888 NVIDIA block-linear dmabuf
+with 125 committed / 60 painted frames per second at that sampled instant.
+This narrows the investigation to host presentation/composition or compositor
+readback; it does not establish the faulty component or fix the failure.
+
+Evidence: `target/viewer-ui-captures/paired-{retimed,spot}*`,
+`/tmp/paired-{retimed,spot}-ui.log`. Both image pairs were visually inspected.
+Invalid option and dangling companion symlink checks reject before launch and
+preserve the symlink. All 479 ordinary tests pass (13 ignored), check-all/build
+and shell syntax/whitespace validation pass:
+`/tmp/paired-capture-{tests,check,build}.log`.
+
 ### Render flattened clip exports against direct samples
 
 `examples/flatten_scene.rs` exports a filesystem scene through the editor's

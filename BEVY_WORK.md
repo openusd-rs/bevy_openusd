@@ -74,6 +74,24 @@ native quaternion semantics and animated orientation parity remain unverified.
 All 400 ordinary tests pass, with six native tests ignored; check-all, build
 and whitespace checks pass. Logs: `/tmp/xform-recovery-final-{tests,check,build}.log`.
 
+`assets/xform_animation.usda` exercises identity → shear → translated TRS under
+Z-up, with one following cube and one independently translating reset cube.
+An AssetPlugin/UsdAssetPlugin integration test loads two placed instances of the
+same source, scrubs six pairs of independent clocks including interpolated times
+2.5 and 7.5, and compares globals against independently interpolated matrices.
+It verifies affine override insertion/removal, reset exclusion, stable prim IDs
+and preserved runtime children/local transforms/names. The focused and full
+workspace gates pass; all 401 ordinary tests, check-all, build and whitespace
+checks pass, with six native tests ignored. Logs:
+`/tmp/xform-clocks-{tests,check,build}.log`.
+
+Native fixed-camera captures at times 0, 5 and 10 were inspected:
+`target/xform-animation-{0,5,10}.png`, eye (8,5,10), focus (2,1,0).
+The orange cube shears then returns to a translated cube; the blue reset cube
+retains its shape and follows its own translation. Logs
+`/tmp/xform-animation-{0,5,10}.log` have CAPTURE_OK without WARN/ERROR entries.
+These are visual transition checks, not native-USD reference or performance proof.
+
 ### Preserve affine transforms on direct mesh point prototypes
 
 Direct mesh prototype baking now uses the authored composed matrix, not its

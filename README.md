@@ -874,6 +874,9 @@ ancestor transforms while retaining scene placement and up-axis conversion.
 `_reference.usda` fixtures for fixed-camera capture comparisons. Invalid
 projective/non-finite transforms retain the previous pose and attach
 `route::xform::UsdTransformError`; capture fails on that diagnostic.
+`make run ARGS='assets/xform_animation.usda'` shows a Z-up cube transitioning
+from identity through shear to translation at times 0, 5 and 10, beside a blue
+reset-stack cube following its own translation without inheriting the shear.
 
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset

@@ -62,6 +62,53 @@ mod tests {
     }
 
     #[test]
+    fn independent_clocks_transition_between_affine_and_trs() {
+        use crate::instance::{UsdInstances, UsdInstanceTime};
+        let source = crate::UsdSource::new("xform-animation.usda", include_bytes!("../../../../../assets/xform_animation.usda").as_slice()).unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::transform::TransformPlugin, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene { source, textures: default() });
+        let roots = [0, 1].map(|i| app.world_mut().spawn((crate::UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 },
+            Transform::from_xyz(i as f32 * 20.0, 2.0, 0.0))).id());
+        app.update();
+        let lookup = |world: &World, root, path| world.get_non_send::<UsdInstances>().unwrap().entity(root, path).unwrap();
+        let entities = roots.map(|root| ["/Affine", "/Affine/Following", "/Affine/Reset"].map(|path| lookup(app.world(), root, path)));
+        let runtime_local = Transform::from_xyz(1.0, 2.0, 3.0);
+        let children = entities.map(|nodes| app.world_mut().spawn((Name::new("runtime child"), runtime_local, ChildOf(nodes[1]))).id());
+        for times in [[0.0, 5.0], [2.5, 7.5], [5.0, 10.0], [10.0, 0.0], [5.0, 5.0], [0.0, 10.0]] {
+            for (root, current) in roots.into_iter().zip(times) {
+                app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = current;
+            }
+            app.update();
+            for (index, (root, time)) in roots.into_iter().zip(times).enumerate() {
+                let world = app.world();
+                let basis = world.get::<GlobalTransform>(lookup(world, root, "/")).unwrap().to_matrix();
+                let (start, end, weight) = if time <= 5.0 {
+                    (Mat4::IDENTITY, shear(), time as f32 / 5.0)
+                } else {
+                    (shear(), Mat4::from_translation(Vec3::X * 2.0), (time as f32 - 5.0) / 5.0)
+                };
+                let a = start.to_cols_array();
+                let b = end.to_cols_array();
+                let local = Mat4::from_cols_array(&std::array::from_fn(|i| a[i] + (b[i] - a[i]) * weight));
+                let following = basis * local * Mat4::from_translation(Vec3::Z);
+                let reset = basis * Mat4::from_translation(Vec3::new(3.0 + time as f32 / 5.0, 0.0, 1.0));
+                for (kind, path) in ["/Affine", "/Affine/Following", "/Affine/Reset"].into_iter().enumerate() {
+                    assert_eq!(lookup(world, root, path), entities[index][kind]);
+                }
+                assert_eq!(world.get::<UsdTransformOverride>(entities[index][0]).is_some(), time > 0.0 && time < 10.0);
+                assert!(world.get::<GlobalTransform>(entities[index][1]).unwrap().to_matrix().abs_diff_eq(following, 1e-5));
+                assert!(world.get::<GlobalTransform>(entities[index][2]).unwrap().to_matrix().abs_diff_eq(reset, 1e-5));
+                assert!(world.get::<GlobalTransform>(children[index]).unwrap().to_matrix().abs_diff_eq(following * runtime_local.to_matrix(), 1e-5));
+                assert_eq!(world.get::<Name>(children[index]).unwrap().as_str(), "runtime child");
+                assert_eq!(world.get::<ChildOf>(children[index]).unwrap().parent(), entities[index][1]);
+            }
+        }
+    }
+
+    #[test]
     fn live_malformed_matrix_edits_keep_last_pose_and_recover() {
         use crate::live::{LiveStage, PrimEntities, project_stage, apply_changes};
         use openusd::{usd::Stage, sdf::Value, gf::Matrix4d};

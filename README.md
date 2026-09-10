@@ -761,7 +761,16 @@ the failure. This catches the observed black-window case, not arbitrary incorrec
 rendering or incomplete uploads.
 
 The `.settings.txt` companion records compositor backend, output/inspection
-dimensions and wait time. Vulkan remains the default. `USD_UI_COMPOSITOR_RENDERER`
+dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's
+one-shot surface/buffer dump in `.scene-graph.log` immediately before capture.
+This opt-in diagnostic requires `weston-debug` and `timeout`; it has a five-second
+timeout followed by a one-second kill grace. Failure is recorded in settings and
+does not suppress the screenshot. The dump describes submitted surfaces, not
+their pixel correctness or rendering readiness. See
+[Weston's debug scopes](https://wayland.pages.freedesktop.org/weston/toc/libweston/log.html).
+
+The `.settings.txt` companion also records whether the diagnostic was requested.
+Vulkan remains the default. `USD_UI_COMPOSITOR_RENDERER`
 accepts `vulkan`, `gl` or `pixman` for diagnostic experiments; the latter two are
 not validated alternatives. Three local GL captures were vertically inverted
 despite passing the near-black check, so GL emits an orientation warning. Three

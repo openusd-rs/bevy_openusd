@@ -17,6 +17,15 @@ delay=${USD_UI_CAPTURE_WAIT:-20}
 [[ "$delay" =~ ^[1-9][0-9]*$ && "$delay" -le 300 ]] || {
     echo "USD_UI_CAPTURE_WAIT must be 1..300 seconds" >&2; exit 2;
 }
+scene_graph=${USD_UI_CAPTURE_SCENE_GRAPH:-0}
+[[ "$scene_graph" == 0 || "$scene_graph" == 1 ]] || {
+    echo "USD_UI_CAPTURE_SCENE_GRAPH must be 0 or 1" >&2; exit 2;
+}
+if [[ "$scene_graph" == 1 ]]; then
+    for command in weston-debug timeout; do
+        command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 2; }
+    done
+fi
 renderer=${USD_UI_COMPOSITOR_RENDERER:-vulkan}
 case "$renderer" in
     vulkan) ;;
@@ -28,6 +37,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 mkdir -p "$(dirname "$output")"
 printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutput_height=1000\ninspection_region=110,110,1400,800\nvalidation=near-black-only\n' \
     "$renderer" "$delay" > "${output%.png}.settings.txt"
+printf 'scene_graph_requested=%s\n' "$scene_graph" >> "${output%.png}.settings.txt"
 runtime=$(mktemp -d /dev/shm/usd-viewer-ui.XXXXXX)
 chmod 700 "$runtime"
 compositor_pid=
@@ -74,6 +84,15 @@ for ((i=0; i<delay; i++)); do
     kill -0 "$viewer_pid" 2>/dev/null || { echo "viewer exited before capture" >&2; exit 1; }
     sleep 1
 done
+if [[ "$scene_graph" == 1 ]]; then
+    if timeout --kill-after=1 5 weston-debug scene-graph > "${output%.png}.scene-graph.log" 2>&1; then
+        echo 'scene_graph_status=ok' >> "${output%.png}.settings.txt"
+    else
+        status=$?
+        printf 'scene_graph_status=failed:%s\n' "$status" >> "${output%.png}.settings.txt"
+        echo "warning: scene graph diagnostic failed ($status); continuing capture" >&2
+    fi
+fi
 cd "$runtime"
 weston-screenshooter > "${output%.png}.capture.log" 2>&1
 shopt -s nullglob

@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Compositor surface diagnostics
+
+Added opt-in USD_UI_CAPTURE_SCENE_GRAPH=1 to the isolated capture script. It
+collects Weston's one-shot scene-graph scope before the screenshot, with a
+five-second timeout and one-second kill grace, and records success/failure in
+settings. Diagnostic failure does not suppress capture. Invalid flags reject
+before compositor startup. This uses the existing private debug-enabled compositor,
+not the user's desktop, and does not modify Mara or Bevy rendering.
+
+The live playback capture `target/viewer-ui-captures/scene-graph-play.png` passes
+the guard and was visually inspected: upright UI, time 3.617/Pause and visible
+animated geometry. Its dump shows a 1440x920 XRGB8888 dmabuf with an NVIDIA block
+linear modifier and a normal output transform. The one-second sample reports 92
+commits and 47 paints per second, confirming delayed repaint requests are not a
+hard 60 FPS cap. This successful sample does not explain the black failure.
+Logs: `/tmp/scene-graph-play.log`, companion scene-graph/settings files. Invalid
+flag rejection (`/tmp/invalid-scene-graph.log`), shell syntax and whitespace pass.
+No Rust changes were made; Rust gates were not rerun for this script-only change.
+
 ### Software compositor capture failure
 
 A Pixman-compositor playback attempt terminates before the first UI update:

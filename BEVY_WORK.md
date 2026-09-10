@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Isolate the native host from Bevy and USD
+
+`examples/host_capture_probe.rs` uses the same Mara native runner but constructs
+no Bevy app, viewport or USD stage. It paints three colored panels and a label,
+and emits the UI handshake consumed by the existing capture script. A headless
+egui test verifies panel geometry/colors and the presence of text.
+
+Three separate Vulkan/Weston runs passed the near-black guard; all three images
+were visually inspected with upright text and expected RGB panels. The black
+failure did not recur in this small sample: this neither excludes Mara/Weston
+nor establishes a Bevy-specific cause. Their scene graphs sampled 504/647/713
+committed frames per second versus 60 painted frames, despite the probe's
+request_repaint_after(1/60). That call is not a runner-level frame-rate cap.
+No sibling Mara files were changed. Its current native runner hardcodes
+AutoNoVsync and does not process egui screenshot requests, so a host GPU readback
+would require runner integration rather than merely sending a viewport command.
+
+Evidence: `target/viewer-ui-captures/host-only-{1,2,3}*`,
+`/tmp/host-only-gpu.log`, `/tmp/host-probe-test-final.log`.
+The full suite passed 480 tests (13 ignored), check-all and build passed:
+`/tmp/host-probe-{tests,check,build}.log`.
+For pipeline context, the official
+[Wayland architecture description](https://wayland.freedesktop.org/docs/book/Architecture.html)
+describes client dma-buf submission and compositor import; the previous paired
+Spot capture cannot distinguish which side produced the black host buffer.
+
 ### Pair embedded readback with full-window captures
 
 `USD_UI_CAPTURE_VIEWPORT=1` adds the existing Bevy GPU readback to the isolated

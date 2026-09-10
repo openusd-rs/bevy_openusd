@@ -901,6 +901,18 @@ with a black host image narrows the failure to host presentation/composition or
 compositor readback, not necessarily to Weston itself. Neither near-black check
 proves scene fidelity or completed asset uploads.
 
+`examples/host_capture_probe.rs` draws colored panels and text with the same
+Mara native runner, without constructing a Bevy app or loading USD. Use it to
+isolate host/compositor failures (the script's required asset argument is ignored
+by this example):
+
+```sh
+USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example host_capture_probe' --eval='capture-host:; @/bin/bash scripts/capture_viewer_ui.sh assets/retimed_instances.usda target/NEW-host-only.png' capture-host
+```
+
+Use the Weston-enabled environment described above. This is a diagnostic, not
+the viewer or proof of its rendering fidelity.
+
 The `.settings.txt` companion records compositor backend, output/inspection
 dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's
 one-shot surface/buffer dump in `.scene-graph.log` immediately before capture.

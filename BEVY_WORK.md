@@ -25,6 +25,34 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Pair embedded readback with full-window captures
+
+`USD_UI_CAPTURE_VIEWPORT=1` adds the existing Bevy GPU readback to the isolated
+Weston script, retaining PNG/raw bytes/dimensions and independently inspecting
+the full viewport. It validates new companion paths before launch and bounds
+the additional readback wait by USD_UI_CAPTURE_TIMEOUT. Missing or failed
+readback does not suppress the compositor attempt, but prevents overall success.
+Bevy's 120-update readback and Weston's delayed capture are not synchronized.
+
+The native `paired-retimed` run passed both checks; all three cubes are visible
+in the embedded image while the rendering pane obscures them in the UI image.
+The native `paired-spot` run reproduced the black full-window failure using
+`../usd_collection/oems/spot_boston_dynamics/spot_base_urdf/spot.usdc`:
+the embedded 1440x920 readback visibly contains the yellow robot and grid
+(1324800/1324800 nonblack pixels), while the full host interior has only
+50/1120000 nonblack pixels. The script correctly fails and retains both.
+Weston's scene graph reports the 1440x920 XRGB8888 NVIDIA block-linear dmabuf
+with 125 committed / 60 painted frames per second at that sampled instant.
+This narrows the investigation to host presentation/composition or compositor
+readback; it does not establish the faulty component or fix the failure.
+
+Evidence: `target/viewer-ui-captures/paired-{retimed,spot}*`,
+`/tmp/paired-{retimed,spot}-ui.log`. Both image pairs were visually inspected.
+Invalid option and dangling companion symlink checks reject before launch and
+preserve the symlink. All 479 ordinary tests pass (13 ignored), check-all/build
+and shell syntax/whitespace validation pass:
+`/tmp/paired-capture-{tests,check,build}.log`.
+
 ### Render flattened clip exports against direct samples
 
 `examples/flatten_scene.rs` exports a filesystem scene through the editor's

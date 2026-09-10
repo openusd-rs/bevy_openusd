@@ -887,6 +887,20 @@ regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
 the failure. This catches the observed black-window case, not arbitrary incorrect
 rendering or incomplete uploads.
 
+Set `USD_UI_CAPTURE_VIEWPORT=1` to additionally retain the embedded Bevy readback
+as `.viewport.png`, `.viewport.rgba` and `.viewport.capture.txt`. Its dimensions
+drive a separate full-image near-black check in `.viewport.inspect.log`. The
+script waits up to `USD_UI_CAPTURE_TIMEOUT` additional seconds for the readback
+after the UI delay; missing/failed readback is recorded in settings and fails
+the run, but does not suppress the compositor screenshot attempt. Existing
+viewport companions are rejected before launch.
+
+These are two capture paths, not synchronized frames: Bevy requests its readback
+after 120 updates, whereas Weston captures after the UI delay. A healthy viewport
+with a black host image narrows the failure to host presentation/composition or
+compositor readback, not necessarily to Weston itself. Neither near-black check
+proves scene fidelity or completed asset uploads.
+
 The `.settings.txt` companion records compositor backend, output/inspection
 dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's
 one-shot surface/buffer dump in `.scene-graph.log` immediately before capture.

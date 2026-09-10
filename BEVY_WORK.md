@@ -25,6 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Add a direct eframe GPU-readback control
+
+`examples/eframe_capture_probe.rs` draws colored panels and text with eframe's
+wgpu runner, without Mara, Bevy or USD initialization. Vsync is disabled in its
+native options. `USD_HOST_PROBE_SCREENSHOT` requests a direct egui Screenshot
+readback into a new PNG; exclusive file creation preserves existing outputs.
+The unit test decodes RGBA bytes and verifies overwrite refusal. The compositor
+harness does not validate this optional readback, so its log/file must be checked
+separately. Callback timeout is UI-update-driven, not an independent watchdog.
+
+Initial delayed-readback runs 1/2 produced healthy compositor and GPU images;
+run 3 showed a healthy compositor image but no readback before capture teardown.
+That missing-readback failure is preserved. The probe now requests readback in
+its first painted pass, rather than relying on a later three-second UI update.
+New runs 4/5/6 all produced healthy compositor images and direct 1440x920 GPU
+readbacks. All available images were visually inspected. No black eframe-only
+surface was reproduced in these six runs; this sample does not prove reliability
+or assign the Mara host failures to a specific implementation difference.
+
+Evidence: `target/viewer-ui-captures/eframe-only-{1,2,3,4,5,6}*`,
+`/tmp/eframe-probe-gpu.log`, `/tmp/eframe-probe-gpu-final.log`. All 494 ordinary
+tests pass (13 ignored), check-all/build and whitespace checks pass:
+`/tmp/eframe-probe-{tests,check,build}-final.log`. No viewer/host default changed.
+
 ### Reproduce the black surface in the host-only control
 
 Four alternating fresh-compositor pairs used the paced native bridge and the

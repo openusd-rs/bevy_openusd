@@ -994,6 +994,21 @@ zero; accepted values are integer milliseconds from 0 to 1000. This bounds the
 probe's update rate independently of egui repaint requests, but blocks input
 handling too: it is a timing diagnostic, not production frame pacing.
 
+`examples/eframe_capture_probe.rs` removes the Mara runner as well, drawing only
+colored panels and text with eframe's wgpu backend (vsync disabled). Set
+`USD_HOST_PROBE_SCREENSHOT` to a new PNG path for eframe's direct GPU screenshot:
+
+```sh
+USD_HOST_PROBE_SCREENSHOT="$PWD/target/NEW-eframe.host.png" USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example eframe_capture_probe' --eval='capture-eframe:; @/bin/bash scripts/capture_viewer_ui.sh assets/retimed_instances.usda target/NEW-eframe.png' capture-eframe
+```
+
+The example requests readback in its first painted UI pass and logs `HOST_READBACK_OK`
+or `HOST_READBACK_ERROR`; callback timeout is checked on UI updates after thirty
+seconds. The compositor script does not validate this additional readback: check
+the log and inspect both PNGs. The readback and compositor capture are not the
+same frame. Existing direct-readback files are never overwritten. This isolates
+host paths; it is not a replacement viewer or proof of USD rendering fidelity.
+
 The `.settings.txt` companion records compositor backend, output/inspection
 dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's
 one-shot surface/buffer dump in `.scene-graph.log` immediately before capture.

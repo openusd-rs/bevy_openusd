@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Editor watcher setup recovery
+
+Failed texture watcher directories now remain pending and retry at one-second
+intervals while the app updates. Successful watchers remain installed, avoiding
+unnecessary gaps and duplicate file counts. A recovered directory queues the
+existing document-preserving RefreshTextures operation to cover edits missed
+while unavailable. Document/path changes reset pending work and retry deadlines.
+Idle frames do not mark public watcher status changed.
+
+A native regression starts with one existing and one missing directory, checks
+the failure status and retry deadline, creates the missing directory, and proves
+recovery without replacing the successful watcher's event channel. Repeated calls
+do not duplicate watchers or recount files. An ordinary feature test checks idle
+status change ticks. This does not detect lost watches after folder replacement,
+watch USD layers/packages, or recover images from a failed initial Open.
+
+Validation: 453 default workspace tests (seven ignored), 454 feature-enabled
+workspace tests (11 ignored), and all three watcher-focused tests including both
+native cases pass. Default check-all/build and the feature-enabled viewer build
+pass. Logs: `/tmp/editor-watch-retry-{default,feature-final,final,check,build,viewer}.log`.
+
 ### Reference assembly measurements
 
 The runnable reference_benchmark compares sequential and batch source-reference

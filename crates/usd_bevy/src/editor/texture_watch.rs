@@ -5,7 +5,7 @@ use bevy::{
     asset::io::{AssetSourceEvent, file::FileWatcher},
     prelude::*,
 };
-use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, time::{Duration, Instant}};
 
 /// Watches installed external textures and queues document-preserving refreshes.
 /// Requires EditorPlugin. Package entries and USD layers are not watched.
@@ -22,11 +22,36 @@ pub struct EditorTextureWatchStatus {
 struct WatchState {
     document: Option<u64>,
     paths: BTreeSet<PathBuf>,
+    pending: BTreeSet<PathBuf>,
+    next_attempt: Option<Instant>,
     watchers: Vec<(
         PathBuf,
         async_channel::Receiver<AssetSourceEvent>,
         FileWatcher,
     )>,
+}
+
+fn install_watchers(state: &mut WatchState, status: &mut EditorTextureWatchStatus, now: Instant) -> bool {
+    if state.pending.is_empty() || state.next_attempt.is_some_and(|next| now < next) { return false; }
+    let retry = state.next_attempt.is_some();
+    let mut recovered = false;
+    status.error = None;
+    for parent in std::mem::take(&mut state.pending) {
+        let (sender, receiver) = async_channel::unbounded();
+        match FileWatcher::new(parent.clone(), sender, Duration::from_millis(300)) {
+            Ok(watcher) => {
+                status.files += state.paths.iter().filter(|path| path.parent() == Some(parent.as_path())).count();
+                state.watchers.push((parent, receiver, watcher));
+                recovered |= retry;
+            }
+            Err(error) => {
+                status.error = Some(format!("texture watcher {}: {error}", parent.display()));
+                state.pending.insert(parent);
+            }
+        }
+    }
+    state.next_attempt = (!state.pending.is_empty()).then_some(now + Duration::from_secs(1));
+    recovered
 }
 
 impl Plugin for EditorTextureWatchPlugin {
@@ -66,31 +91,19 @@ fn watch_textures(
             state.paths = paths;
             status.files = 0;
             status.error = None;
-            let parents: BTreeSet<_> = state
+            state.next_attempt = None;
+            state.pending = state
                 .paths
                 .iter()
                 .filter_map(|path| path.parent().map(ToOwned::to_owned))
                 .collect();
-            for parent in parents {
-                let (sender, receiver) = async_channel::unbounded();
-                match FileWatcher::new(parent.clone(), sender, Duration::from_millis(300)) {
-                    Ok(watcher) => {
-                        status.files += state
-                            .paths
-                            .iter()
-                            .filter(|path| path.parent() == Some(parent.as_path()))
-                            .count();
-                        state.watchers.push((parent, receiver, watcher));
-                    }
-                    Err(error) => {
-                        status.error =
-                            Some(format!("texture watcher {}: {error}", parent.display()))
-                    }
-                }
-            }
         }
     }
+    let now = Instant::now();
     let mut changed = false;
+    if !state.pending.is_empty() && state.next_attempt.is_none_or(|next| now >= next) {
+        changed = install_watchers(&mut state, &mut status, now);
+    }
     for (parent, receiver, _) in &state.watchers {
         while let Ok(event) = receiver.try_recv() {
             let matches = |path: &std::path::Path| state.paths.contains(&parent.join(path));
@@ -117,6 +130,48 @@ fn watch_textures(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_editor_watch_keeps_status_change_tick() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, super::super::EditorPlugin, EditorTextureWatchPlugin));
+        app.update();
+        let tick = app.world().get_resource_ref::<EditorTextureWatchStatus>().unwrap().last_changed();
+        for _ in 0..3 { app.update(); }
+        assert_eq!(app.world().get_resource_ref::<EditorTextureWatchStatus>().unwrap().last_changed(), tick);
+    }
+
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_editor_texture_watch_retries_only_failed_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        let missing = directory.path().join("missing");
+        std::fs::create_dir(&ready).unwrap();
+        let mut state = WatchState {
+            paths: [ready.join("a.png"), missing.join("b.png")].into(),
+            pending: [ready.clone(), missing.clone()].into(),
+            ..default()
+        };
+        let mut status = EditorTextureWatchStatus::default();
+        let now = Instant::now();
+        assert!(!install_watchers(&mut state, &mut status, now));
+        assert_eq!(status.files, 1);
+        assert!(status.error.as_ref().unwrap().contains("missing"));
+        assert_eq!(state.pending, [missing.clone()].into());
+        let retained = state.watchers[0].1.clone();
+        std::fs::create_dir(&missing).unwrap();
+        assert!(!install_watchers(&mut state, &mut status, now + Duration::from_millis(999)));
+        assert_eq!(status.files, 1);
+        assert!(install_watchers(&mut state, &mut status, now + Duration::from_secs(1)));
+        assert_eq!(status.files, 2);
+        assert!(status.error.is_none());
+        assert!(state.pending.is_empty() && state.next_attempt.is_none());
+        assert_eq!(state.watchers.len(), 2);
+        assert!(retained.same_channel(&state.watchers[0].1));
+        assert!(!install_watchers(&mut state, &mut status, now + Duration::from_secs(2)));
+        assert_eq!(status.files, 2);
+    }
 
     fn png(pixel: [u8; 4]) -> Vec<u8> {
         let mut bytes = Vec::new();

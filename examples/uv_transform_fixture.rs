@@ -63,13 +63,80 @@ def Material "Material" {{
 "#);
         std::fs::write(directory.join(if reference { "reference.usda" } else { "mapped.usda" }), text)?;
     }
+    let source = std::fs::read_to_string(directory.join("mapped.usda"))?
+        .replace("float2 inputs:translation.timeSamples = {0: (0,0.5), 10: (0.75,0.25)}",
+            "float2 inputs:translation = (0.4,0.1)\n        float2 inputs:scale = (2,3)")
+        .replace("float2 inputs:scale.timeSamples = {0: (1,1), 10: (0.5,1.5)}", "float2 inputs:scale = (1,1)")
+        .replace("float inputs:rotation.timeSamples = {0: 0, 10: 90}", "float inputs:rotation = 37");
+    let coordinates = [[0.0,0.0], [0.2,0.0], [0.2,0.2], [0.0,0.2]];
+    for reference in [false, true] {
+        let values = coordinates.map(|uv| if reference { shear_uv(uv) } else { uv })
+            .map(|[u,v]| format!("({u:.9},{v:.9})")).join(", ");
+        let mut text = source.replace(
+            "texCoord2f[] primvars:st = [(0.25,0.25)] (interpolation = \"constant\")",
+            &format!("texCoord2f[] primvars:st = [{values}] (interpolation = \"vertex\")"));
+        if reference {
+            text = text.replace("float2 inputs:st.connect = </Material/Transform.outputs:result>",
+                "float2 inputs:st.connect = </Material/Reader.outputs:result>");
+        }
+        std::fs::write(directory.join(if reference { "shear_reference.usda" } else { "shear_mapped.usda" }), text)?;
+    }
+    let values = coordinates.map(lossy_uv).map(|[u,v]| format!("({u:.9},{v:.9})")).join(", ");
+    let text = source.replace(
+        "texCoord2f[] primvars:st = [(0.25,0.25)] (interpolation = \"constant\")",
+        &format!("texCoord2f[] primvars:st = [{values}] (interpolation = \"vertex\")"))
+        .replace("float2 inputs:st.connect = </Material/Transform.outputs:result>",
+            "float2 inputs:st.connect = </Material/Reader.outputs:result>");
+    std::fs::write(directory.join("shear_lossy.usda"), text)?;
     Ok(())
+}
+
+fn shear_uv([u,v]: [f32; 2]) -> [f32; 2] {
+    let (sin, cos) = 37_f32.to_radians().sin_cos();
+    [0.4 + 2.0 * (cos*u - sin*v), 0.1 + 3.0 * (sin*u + cos*v)]
+}
+
+fn lossy_uv([u,v]: [f32; 2]) -> [f32; 2] {
+    let (sin, cos) = 37_f32.to_radians().sin_cos();
+    let x = Vec2::new(2.0*cos, 3.0*sin);
+    let y = Vec2::new(-2.0*sin, 3.0*cos);
+    let (sin, cos) = x.y.atan2(x.x).sin_cos();
+    [0.4 + cos*x.length()*u - sin*y.length()*v,
+     0.1 + sin*x.length()*u + cos*y.length()*v]
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() != 1 { return Err("usage: uv_transform_fixture NEW_DIRECTORY".into()); }
     write_fixture(Path::new(&args[0]))
+}
+
+#[test]
+fn sheared_uv_chain_matches_baked_vertex_coordinates() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("fixture");
+    write_fixture(&directory).unwrap();
+    let open = |name| {
+        let path = directory.join(name);
+        usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap()
+    };
+    let mapped = open("shear_mapped.usda");
+    let reference = open("shear_reference.usda");
+    let material = openusd::sdf::path("/Material").unwrap();
+    let transform = usd_bevy::read::shade::read_preview_material_at(&mapped, &material, None).unwrap().unwrap().uv_transform.unwrap();
+    assert!(transform.matrix2.x_axis.dot(transform.matrix2.y_axis).abs() > 1.0);
+    assert!(!Vec2::from(shear_uv([0.2,0.2])).abs_diff_eq(Vec2::from(lossy_uv([0.2,0.2])), 0.01));
+    assert!(usd_bevy::read::shade::read_preview_material_at(&reference, &material, None).unwrap().unwrap().uv_transform.is_none());
+    let mesh_path = openusd::sdf::path("/Quad").unwrap();
+    let a = usd_bevy::read::geom::read_mesh_at(&mapped, &mesh_path, None).unwrap().unwrap();
+    let b = usd_bevy::read::geom::read_mesh_at(&reference, &mesh_path, None).unwrap().unwrap();
+    let actual = a.uvs.unwrap().values;
+    let expected = b.uvs.unwrap().values;
+    assert_eq!(actual.len(), 4);
+    assert_eq!(expected.len(), 4);
+    for (uv, expected) in actual.iter().zip(expected) {
+        assert!(transform.transform_point2(Vec2::from(*uv)).abs_diff_eq(Vec2::from(expected), 1e-6));
+    }
 }
 
 #[test]

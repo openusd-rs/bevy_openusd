@@ -25,6 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Rendered affine UV shear acceptance
+
+Extended `uv_transform_fixture` with a two-node UV chain applying a 37-degree
+rotation followed by scale (2,3) and translation (0.4,0.1). The vertex-varying
+UV fixture has nonorthogonal affine axes. An independent scalar formula bakes
+reference UVs; a separate lossy SRT approximation provides a negative control.
+The regression checks nonorthogonality, mapped-versus-baked coordinates, no
+connected transform in the reference, and a distinguishable lossy result.
+
+Captured and inspected all three scenes on NVIDIA/Vulkan at 1280x720, time 0,
+eye (0,1,5), focus (0,1,0), shadows disabled. Mapped versus baked changes 7 pixels,
+maximum RGB difference 2 and mean 0.000003; strict-zero comparison exits nonzero.
+Mapped versus lossy changes 120,136 pixels, maximum difference 91 and mean
+2.709799, with a visibly shifted gradient. No comparison tolerance was increased.
+This adds actual GPU evidence for affine UV shear, not normal-mapped/deformed
+tangent acceptance or other render backends. Images:
+`target/uv_shear_{mapped,reference,lossy}.png`; logs:
+`/tmp/uv-shear-{mapped,reference,compare,lossy,lossy-compare}.log`.
+`target/uv_shear_fixture_v2` adds the negative control; its mapped/reference
+source files were verified identical to the first captured fixture with cmp.
+
+Validation: 430 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/uv-shear-{tests,check,build}.log`.
+
 ### Public transform path semantics
 
 Current upstream inspection disproved the suspected property-path panic:

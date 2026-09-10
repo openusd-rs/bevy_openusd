@@ -961,6 +961,13 @@ before becoming Bevy's UV transform. Generate the animated comparison fixture:
 Its mapped and explicit-UV scenes are equivalent at times 0 and 10; intermediate
 times are not reference baselines because interpolating coordinates differs from
 interpolating rotation. Different per-texture coordinate transforms remain unsupported.
+The same generator writes `shear_mapped.usda`, `shear_reference.usda` and
+`shear_lossy.usda`: a nonuniform-scale/37-degree-rotation chain, independently
+baked vertex UVs, and a deliberately lossy SRT control. Capture at time 0 with
+eye `(0,1,5)`, focus `(0,1,0)` and `USD_CAPTURE_SHADOWS=off`. On the tested Vulkan
+renderer, mapped versus baked differs in 7 of 921,600 pixels (maximum RGB error
+2); the lossy control differs in 120,136 pixels (maximum error 91). These are
+recorded strict-zero comparison results, not a claim of bit-identical rendering.
 UV transforms are read from connected texture-coordinate paths, including nodes
 outside the material's immediate children; disconnected nodes have no effect.
 Different transforms across a material's texture channels, non-finite transforms

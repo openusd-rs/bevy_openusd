@@ -532,6 +532,38 @@ level 1, forward renderer, time 0, 31 visible mesh entities and the authored
 `/tmp/ur5-rust-limit-bevy.log`, `/tmp/ur5-limit-normals-full-bevy.log`.
 This is a bounded production shading improvement, not full asset fidelity.
 
+## Two-asset native limit-normal regression
+
+Added `scripts/check_subdivision_assets.sh`, invoked through Make as documented
+in README. It regenerates cage and level-1 probes from the UR5 shoulder and Spot
+base, records each source SHA-256 and checks positions plus limit normals using
+the independently compiled OpenSubdiv diagnostic. A new output directory is
+required and failure artifacts remain intact. No SDK or collection download is
+performed, and the gate is separate from the ordinary Rust test suite.
+
+The completed gate at `target/subdivision-native-regression-final` reports:
+
+| Mesh | Refined vertices | Max position component error | Max normal component error | Normal mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| UR5 shoulder | 46,817 | 3.72529e-9 | 5.94309e-8 | 0 |
+| Spot base | 8,292 | 1.49012e-8 | 5.89307e-8 | 0 |
+
+Log: `/tmp/subdivision-native-assets-final.log`; it ends with
+SUBDIVISION_ASSET_CHECK_OK. The initial script attempt incorrectly passed level
+0 explicitly to a tool whose optional level accepts only 1..6; the script now
+omits that argument for the cage. Original failure artifacts remain in
+`target/subdivision-native-regression` and `/tmp/subdivision-native-assets.log`.
+
+Also rendered and inspected `target/spot-limit-normals-full.png` against the
+previous `target/spot-material-subdiv1.png`. The whole robot is visible in both;
+the source-associated faceting/seams remain, without an obvious large visual
+regression at this framing. This is not pixel-equivalence or full Spot fidelity.
+New metadata confirms 13 visible meshes, subdivision level 1, time 0, eye
+(1.6,0.8,1.8), forward rendering and CAPTURE_OK. Shadows were disabled.
+Log: `/tmp/spot-limit-normals-full.log`.
+No Rust production code changed in this extension; the prior 520-pass/13-ignored
+suite was not rerun. `git diff --check` passes.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

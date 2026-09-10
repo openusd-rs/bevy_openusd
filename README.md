@@ -851,6 +851,18 @@ inputs through Make:
 make --eval='check-osd:; @/bin/bash scripts/check_subdivision_reference.sh target/compare-osd' check-osd
 ```
 
+From the repository root, the optional collection regression generates fresh
+UR5 shoulder and Spot base probes, records source hashes, then compares both
+positions and limit normals against the compiled native tool:
+
+```bash
+make --eval='check-osd-assets:; @/bin/bash scripts/check_subdivision_assets.sh target/compare-osd ../usd_collection target/NEW_NATIVE_CHECK' check-osd-assets
+```
+
+The output directory must be new. Logs and generated assets remain there on
+failure. This gate requires the collection and OpenSubdiv SDK; it is separate
+from the ordinary Rust test suite and does not perform image acceptance.
+
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
 flat normals independently of authored normals. Capture without shadow maps:

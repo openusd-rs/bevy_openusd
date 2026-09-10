@@ -141,8 +141,18 @@ only if the whole batch succeeds. It opens one assembly stage, exports its root
 once, and reuses a validation stage for repeated mounts of the same source
 snapshot. An empty batch preserves the original revision and bytes. The
 single-reference method delegates to this batch path. Dependency merges and USD
-composition still have costs; no bulk speedup has been measured, and this is not
-a complete typed scene DSL.
+composition still have costs, and this is not a complete typed scene DSL.
+
+`reference_benchmark` compares sequential and batch assembly of a captured shared
+Cube model. It warms both modes, alternates their order, and verifies equivalent
+exported roots and composed values outside the timed region:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example reference_benchmark' ARGS='32 3'
+```
+
+It reports assembly time only, not Bevy projection, rendering or disk I/O.
+For release measurements, append `--release` to `APP_TARGET`.
 
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under

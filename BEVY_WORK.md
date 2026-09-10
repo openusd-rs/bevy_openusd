@@ -25,6 +25,24 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reference assembly measurements
+
+The runnable reference_benchmark compares sequential and batch source-reference
+assembly with identical captured inputs. Each mode has an untimed warmup, sample
+order alternates, and post-timing checks verify every composed Cube value,
+dependency count, identical exported roots and unchanged input root. Inputs and
+verification are excluded from timing, along with Bevy projection, GPU and disk
+I/O. A regression runs both orders with three mounts.
+
+One local debug run with 32 mounts and three samples measured sequential assembly
+at 260.687, 329.162 and 245.916 ms, versus batch at 23.078, 38.142 and 18.523 ms.
+Both outputs were 4032 bytes. These are bounded shared-Cube authoring measurements,
+not release performance, large production assemblies or viewer frame timings.
+Evidence: `/tmp/reference-benchmark-run.log`.
+
+All 453 ordinary workspace tests pass (seven ignored), plus check-all, build and
+diff whitespace checks. Logs: `/tmp/reference-benchmark-{tests,check,build}.log`.
+
 ### Atomic source-reference batches
 
 UsdSource::with_references mounts an iterator of destination/source/target tuples

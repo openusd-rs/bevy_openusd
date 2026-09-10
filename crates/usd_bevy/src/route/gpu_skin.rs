@@ -27,7 +27,8 @@ impl Plugin for UsdGpuSkinningPlugin {
         }
         app.init_resource::<GpuSkinningEnabled>().add_systems(
             PostUpdate,
-            update_joint_globals.after(bevy::transform::TransformSystems::Propagate),
+            update_joint_globals.after(bevy::transform::TransformSystems::Propagate)
+                .after(super::xform::UsdTransformSystems::Propagate),
         );
     }
 }

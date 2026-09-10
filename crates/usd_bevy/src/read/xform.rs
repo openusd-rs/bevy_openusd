@@ -47,6 +47,11 @@ pub fn read_transform_at(
 
 /// Composed local matrix in column-major order before TRS decomposition.
 pub fn read_transform_matrix_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<Option<[f32; 16]>> {
+    Ok(read_transform_stack_at(stage, prim, time)?.map(|(matrix, _)| matrix))
+}
+
+/// Composed local matrix and inheritance-reset flag at the requested time.
+pub fn read_transform_stack_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<Option<([f32; 16], bool)>> {
     let tc = time.map(TimeCode::new);
     let Some(raw) = attr_value(stage, prim, "xformOpOrder", tc)? else {
         return Ok(None);
@@ -63,11 +68,12 @@ pub fn read_transform_matrix_at(stage: &Stage, prim: &Path, time: Option<f64>) -
     };
 
     let mut m = Mat4::IDENTITY;
-    for op in &order {
+    let reset = order.iter().rposition(|op| op == "!resetXformStack!");
+    for op in &order[reset.map_or(0, |index| index + 1)..] {
         m *= build_op_matrix(stage, prim, op, tc)?;
     }
 
-    Ok(Some(m.to_cols_array()))
+    Ok(Some((m.to_cols_array(), reset.is_some())))
 }
 
 fn build_op_matrix(

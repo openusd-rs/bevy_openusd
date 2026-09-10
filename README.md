@@ -932,12 +932,17 @@ before becoming Bevy's UV transform. Generate the animated comparison fixture:
 `make run RUN_WITH= APP_TARGET='--example uv_transform_fixture' ARGS='target/uv_transform_probe'`.
 Its mapped and explicit-UV scenes are equivalent at times 0 and 10; intermediate
 times are not reference baselines because interpolating coordinates differs from
-interpolating rotation. Arbitrary per-texture transform chains remain unsupported.
+interpolating rotation. Different per-texture coordinate transforms remain unsupported.
 UV transforms are read from connected texture-coordinate paths, including nodes
 outside the material's immediate children; disconnected nodes have no effect.
-Different transforms across a material's texture channels, chained transform
-nodes, non-finite transforms and over-budget coordinate graphs produce explicit
+Different transforms across a material's texture channels, non-finite transforms
+and over-budget coordinate graphs produce explicit
 errors instead of silently choosing the first material child.
+Connected `UsdTransform2d` chains compose in order without decomposing the result,
+including nonorthogonal affine axes from nonuniform scales and rotations.
+`ReadPreviewMaterial::uv_transform` now contains `bevy::math::Affine2` in USD UV
+coordinates; the old `UvTransform` struct was removed. Construct single-node
+values with `Affine2::from_scale_angle_translation` (angle in radians).
 
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a

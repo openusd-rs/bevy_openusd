@@ -36,29 +36,8 @@ pub struct ReadPreviewMaterial {
     pub texture_color_spaces: std::collections::BTreeMap<String, bool>,
     pub warnings: Vec<String>,
 
-    /// `UsdTransform2d` on the texture-coordinate chain (scale/rotate/translate
-    /// of `st`), if the network has one. Applied to `StandardMaterial::uv_transform`.
-    pub uv_transform: Option<UvTransform>,
-}
-
-/// A 2D texture-coordinate transform read from a `UsdTransform2d` node:
-/// USD applies it as `st' = rotate(scale * st) + translation`, with rotation in
-/// degrees, counter-clockwise about the origin.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UvTransform {
-    pub translation: [f32; 2],
-    pub rotation_deg: f32,
-    pub scale: [f32; 2],
-}
-
-impl Default for UvTransform {
-    fn default() -> Self {
-        Self {
-            translation: [0.0, 0.0],
-            rotation_deg: 0.0,
-            scale: [1.0, 1.0],
-        }
-    }
+    /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
+    pub uv_transform: Option<bevy::math::Affine2>,
 }
 
 /// Resolves preview-purpose material binding, falling back to all-purpose.
@@ -171,12 +150,12 @@ fn sampled_value(stage: &Stage, path: &Path, time: Option<f64>) -> anyhow::Resul
         .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?)
 }
 
-fn read_uv_transform(stage: &Stage, textures: &[Path], time: Option<f64>) -> anyhow::Result<Option<UvTransform>> {
+fn read_uv_transform(stage: &Stage, textures: &[Path], time: Option<f64>) -> anyhow::Result<Option<bevy::math::Affine2>> {
     let mut common = None;
     let mut authored = false;
     for texture in textures {
         let mut current = texture.append_property("inputs:st")?;
-        let mut transform = None;
+        let mut transform = bevy::math::Affine2::IDENTITY;
         for depth in 0..=16 {
             let connections = connections_at(stage, &current)?;
             anyhow::ensure!(connections.len() <= 1, "multiple texture-coordinate connections at {current}");
@@ -184,23 +163,24 @@ fn read_uv_transform(stage: &Stage, textures: &[Path], time: Option<f64>) -> any
             anyhow::ensure!(depth < 16, "texture-coordinate graph exceeds 16 connections");
             let node = next.prim_path();
             if read_token_or_string(stage, &node, "info:id")?.as_deref() == Some("UsdTransform2d") {
-                anyhow::ensure!(transform.is_none(), "chained UsdTransform2d nodes are unsupported");
-                transform = Some(read_uv_node(stage, &node, time)?);
+                transform *= read_uv_node(stage, &node, time)?;
+                authored = true;
                 current = node.append_property("inputs:in")?;
             } else {
                 current = next;
             }
         }
-        authored |= transform.is_some();
-        let transform = transform.unwrap_or_default();
+        anyhow::ensure!(transform.is_finite(), "non-finite composed UV transform");
         if let Some(common) = common { anyhow::ensure!(transform == common, "different per-texture UV transforms are unsupported"); }
         else { common = Some(transform); }
     }
     Ok(if authored { common } else { None })
 }
 
-fn read_uv_node(stage: &Stage, node: &Path, time: Option<f64>) -> anyhow::Result<UvTransform> {
-        let mut t = UvTransform::default();
+fn read_uv_node(stage: &Stage, node: &Path, time: Option<f64>) -> anyhow::Result<bevy::math::Affine2> {
+        let mut scale = bevy::math::Vec2::ONE;
+        let mut translation = bevy::math::Vec2::ZERO;
+        let mut rotation_deg = 0.0_f32;
         let vector = |name| -> anyhow::Result<Option<[f32; 2]>> {
             Ok(match sampled_value(stage, &node.append_property(name)?, time)? {
                 Some(Value::Vec2f(value)) => Some([value.x, value.y]),
@@ -209,21 +189,22 @@ fn read_uv_node(stage: &Stage, node: &Path, time: Option<f64>) -> anyhow::Result
             })
         };
         if let Some(s) = vector("inputs:scale")? {
-            t.scale = s;
+            scale = s.into();
         }
         if let Some(tr) = vector("inputs:translation")? {
-            t.translation = tr;
+            translation = tr.into();
         }
         if let Some(Value::Float(r)) = sampled_value(stage, &node.append_property("inputs:rotation")?, time)?
         {
-            t.rotation_deg = r;
+            rotation_deg = r;
         } else if let Some(Value::Double(r)) =
             sampled_value(stage, &node.append_property("inputs:rotation")?, time)?
         {
-            t.rotation_deg = r as f32;
+            rotation_deg = r as f32;
         }
-        anyhow::ensure!(t.scale.iter().chain(&t.translation).all(|value| value.is_finite()) && t.rotation_deg.is_finite(), "non-finite UV transform at {node}");
-        Ok(t)
+        let matrix = bevy::math::Affine2::from_scale_angle_translation(scale, rotation_deg.to_radians(), translation);
+        anyhow::ensure!(matrix.is_finite(), "non-finite UV transform at {node}");
+        Ok(matrix)
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -887,17 +868,17 @@ def Material "Mat" {
             .unwrap()
             .expect("material");
         let uv = read.uv_transform.expect("uv transform");
-        assert_eq!(uv.scale, [2.0, 3.0]);
-        assert_eq!(uv.translation, [0.5, 0.25]);
-        assert_eq!(uv.rotation_deg, 90.0);
+        let expected = bevy::math::Affine2::from_scale_angle_translation([2.0, 3.0].into(), 90_f32.to_radians(), [0.5, 0.25].into());
+        assert!(uv.abs_diff_eq(expected, 1e-6));
 
         stage.define_prim("/Elsewhere").unwrap().set_type_name("Shader").unwrap();
         stage.create_attribute("/Elsewhere.info:id", "token").unwrap().set(Value::Token("UsdTransform2d".into())).unwrap();
         stage.create_attribute("/Elsewhere.inputs:translation", "float2").unwrap().set(Value::Vec2f([0.1, 0.2].into())).unwrap();
         stage.attribute("/Mat/Tex.inputs:st").unwrap().set_connections([Path::new("/Elsewhere.outputs:result").unwrap()]).unwrap();
-        assert_eq!(read_preview_material(&stage, &Path::new("/Mat").unwrap()).unwrap().unwrap().uv_transform.unwrap().translation, [0.1, 0.2]);
+        assert_eq!(read_preview_material(&stage, &Path::new("/Mat").unwrap()).unwrap().unwrap().uv_transform.unwrap().translation, bevy::math::Vec2::new(0.1, 0.2));
         stage.create_attribute("/Elsewhere.inputs:in", "float2").unwrap().set_connections([Path::new("/Mat/Xf.outputs:result").unwrap()]).unwrap();
-        assert!(read_preview_material(&stage, &Path::new("/Mat").unwrap()).unwrap_err().to_string().contains("chained"));
+        let chain = read_preview_material(&stage, &Path::new("/Mat").unwrap()).unwrap().unwrap().uv_transform.unwrap();
+        assert!(chain.transform_point2(bevy::math::Vec2::splat(0.25)).abs_diff_eq(bevy::math::Vec2::new(-0.15, 0.95), 1e-6));
     }
 
     #[test]
@@ -910,12 +891,35 @@ def Material "Mat" {
         let textures = [Path::new("/A").unwrap(), Path::new("/B").unwrap()];
         assert!(read_uv_transform(&stage, &textures, None).unwrap_err().to_string().contains("per-texture"));
         stage.create_attribute("/B.inputs:st", "float2").unwrap().set_connections([Path::new("/Transform.outputs:result").unwrap()]).unwrap();
-        assert_eq!(read_uv_transform(&stage, &textures, None).unwrap().unwrap().translation, [0.0, 0.5]);
+        assert_eq!(read_uv_transform(&stage, &textures, None).unwrap().unwrap().translation, bevy::math::Vec2::new(0.0, 0.5));
         stage.attribute("/Transform.inputs:translation").unwrap().set(Value::Vec2f([f32::NAN, 0.0].into())).unwrap();
         assert!(read_uv_transform(&stage, &textures, None).unwrap_err().to_string().contains("non-finite"));
         stage.attribute("/A.inputs:st").unwrap().set_connections([Path::new("/Graph.outputs:st").unwrap()]).unwrap();
         stage.create_attribute("/Graph.outputs:st", "float2").unwrap().set_connections([Path::new("/A.inputs:st").unwrap()]).unwrap();
         assert!(read_uv_transform(&stage, &textures[..1], None).unwrap_err().to_string().contains("16 connections"));
+    }
+
+    #[test]
+    fn uv_transform_chains_preserve_nonorthogonal_affine_axes() {
+        use bevy::math::{Affine2, Vec2};
+        let stage = Stage::builder().in_memory("uv-shear.usda").unwrap();
+        for path in ["/Texture", "/Outer", "/Inner"] { stage.define_prim(path).unwrap(); }
+        for path in ["/Outer", "/Inner"] {
+            stage.create_attribute(format!("{path}.info:id"), "token").unwrap().set(Value::Token("UsdTransform2d".into())).unwrap();
+        }
+        stage.create_attribute("/Outer.inputs:scale", "float2").unwrap().set(Value::Vec2f([2.0, 3.0].into())).unwrap();
+        stage.create_attribute("/Inner.inputs:rotation", "float").unwrap().set(Value::Float(37.0)).unwrap();
+        stage.create_attribute("/Texture.inputs:st", "float2").unwrap().set_connections([Path::new("/Outer.outputs:result").unwrap()]).unwrap();
+        stage.create_attribute("/Outer.inputs:in", "float2").unwrap().set_connections([Path::new("/Inner.outputs:result").unwrap()]).unwrap();
+        let actual = read_uv_transform(&stage, &[Path::new("/Texture").unwrap()], None).unwrap().unwrap();
+        let expected = Affine2::from_scale(Vec2::new(2.0, 3.0)) * Affine2::from_angle(37_f32.to_radians());
+        assert!(actual.abs_diff_eq(expected, 1e-6));
+        assert!(actual.matrix2.x_axis.dot(actual.matrix2.y_axis).abs() > 1.0);
+        for point in [Vec2::ZERO, Vec2::ONE, Vec2::new(-0.5, 0.25)] {
+            let (sin, cos) = 37_f32.to_radians().sin_cos();
+            let expected = Vec2::new((cos * point.x - sin * point.y) * 2.0, (sin * point.x + cos * point.y) * 3.0);
+            assert!(actual.transform_point2(point).abs_diff_eq(expected, 1e-6));
+        }
     }
 
     #[test]

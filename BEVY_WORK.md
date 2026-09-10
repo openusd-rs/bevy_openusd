@@ -25,6 +25,31 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Affine UV-transform chains
+
+Connected `UsdTransform2d` chains now compose outer-to-inner as affine matrices,
+retaining nonorthogonal axes rather than decomposing the result into one SRT.
+The material still conjugates the composed matrix through the mesh V-flip.
+`ReadPreviewMaterial::uv_transform` now exposes canonical `bevy::math::Affine2`;
+removed the old local `UvTransform` struct without a shim and documented the API
+migration. Different channel transforms remain explicit errors; the traversal
+budget still bounds cycles and overly deep graphs.
+
+Regressions cover chain order and a nonuniform-scale/37-degree-rotation composition
+with nonorthogonal axes, using independent point calculations. Updated the UV
+fixture to split its animated linear transform and translation across two nodes;
+its explicit endpoint coordinates remain unchanged. This supersedes the previous
+chain-rejection limitation, not the remaining per-texture UV-set limitations.
+All 427 ordinary tests pass (seven native export tests ignored), plus check-all,
+build, fixture generation and whitespace checks. Logs:
+`/tmp/uv-chain-{tests,check,build,fixture}.log`. The two-node chain was captured
+and inspected at time 0/10, eye (0,1,5), focus (0,1,0), shadows off:
+`target/uv_chain_{0,10}.png`. Both match the validated single-node/explicit-UV
+endpoint renders across all 921,600 pixels at strict zero RGB tolerance, with
+CAPTURE_OK and no WARN/ERROR entries. Logs: `/tmp/uv-chain-{capture,compare}-{0,10}.log`.
+Nonorthogonal chain composition is unit-tested; this endpoint capture pair is
+not a rendered shear or normal-map-transform acceptance claim.
+
 ### Connected texture-coordinate discovery
 
 The material reader now retains each resolved texture node and follows its

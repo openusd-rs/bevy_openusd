@@ -13,10 +13,15 @@ fn write_fixture(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let transform = if reference { "" } else { r#"
     def Shader "Transform" {
         uniform token info:id = "UsdTransform2d"
+        float2 inputs:in.connect = </Material/Linear.outputs:result>
+        float2 inputs:translation.timeSamples = {0: (0,0.5), 10: (0.75,0.25)}
+        float2 outputs:result
+    }
+    def Shader "Linear" {
+        uniform token info:id = "UsdTransform2d"
         float2 inputs:in.connect = </Material/Reader.outputs:result>
         float2 inputs:scale.timeSamples = {0: (1,1), 10: (0.5,1.5)}
         float inputs:rotation.timeSamples = {0: 0, 10: 90}
-        float2 inputs:translation.timeSamples = {0: (0,0.5), 10: (0.75,0.25)}
         float2 outputs:result
     }
 "# };
@@ -81,8 +86,7 @@ fn fixture_samples_match_explicit_uv_endpoints() {
     let reference = open("reference.usda");
     for time in [0.0, 10.0] {
         let read = usd_bevy::read::shade::read_preview_material_at(&mapped, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
-        let uv = read.uv_transform.unwrap();
-        let transform = bevy::math::Affine2::from_scale_angle_translation(Vec2::from(uv.scale), uv.rotation_deg.to_radians(), Vec2::from(uv.translation));
+        let transform = read.uv_transform.unwrap();
         let mesh = usd_bevy::read::geom::read_mesh_at(&reference, &openusd::sdf::path("/Quad").unwrap(), Some(time)).unwrap().unwrap();
         assert!(transform.transform_point2(Vec2::splat(0.25)).abs_diff_eq(Vec2::from(mesh.uvs.unwrap().values[0]), 1e-6));
     }

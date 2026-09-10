@@ -92,3 +92,23 @@ ranges overlap and this is not a controlled CPU speedup experiment.
 Raw after-compaction log: `/tmp/subset-compact-anymal.log`. Empty compacted
 assets subsequently became CPU-only to avoid uploading zero-vertex buffers;
 that upload policy is outside this CPU payload benchmark.
+
+## Borrowed-source subset construction
+
+The next implementation constructs compact outputs directly from borrowed source
+attributes and indices, eliminating the full-layout clone before selection. It
+still clones required data when all vertices are selected and preserves the
+full-layout fallback for invalid input. Same release command and asset:
+
+```csv
+sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes
+0,505.728,26.534,296,231,109,624035,310045,19969120,7244184,0,10240000
+1,476.335,26.510,296,231,109,624035,310045,19969120,7244184,0,10240000
+2,477.400,26.416,296,231,109,624035,310045,19969120,7244184,0,10240000
+```
+
+All retained payload/entity counts match the previous compacted implementation.
+Observed opens are 476–506 ms versus the earlier 616–680 ms; runs were not
+interleaved or isolated from other work, so this is not a controlled speedup
+estimate. Peak memory remains unmeasured. Raw log:
+`/tmp/subset-borrow-anymal.log`.

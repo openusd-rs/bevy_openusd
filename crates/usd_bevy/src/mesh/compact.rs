@@ -1,18 +1,21 @@
 use bevy::mesh::{Indices, Mesh, VertexAttributeValues};
 
-/// Removes unreferenced vertices and remaps attributes and target-major morph data.
-pub(crate) fn compact(mesh: &mut Mesh) -> bool {
+/// Builds a mesh from selected indices, remapping attributes and target-major morph data.
+pub(crate) fn compact(mesh: &Mesh, indices: &Indices) -> Option<Mesh> {
     let count = mesh.count_vertices();
-    let Some(indices) = mesh.indices() else { return false };
     if indices.iter().any(|index| index >= count)
         || mesh.attributes().any(|(_, values)| values.len() != count)
         || mesh.get_morph_targets().is_some_and(|targets|
             if count == 0 { !targets.is_empty() } else { targets.len() % count != 0 })
-    { return false; }
+    { return None; }
     let mut used = vec![false; count];
     for index in indices.iter() { used[index] = true; }
     let retained: Vec<_> = used.iter().enumerate().filter_map(|(index, used)| used.then_some(index)).collect();
-    if retained.len() == count { return true; }
+    if retained.len() == count {
+        let mut output = mesh.clone();
+        output.insert_indices(indices.clone());
+        return Some(output);
+    }
     let mut remap = vec![0_u32; count];
     for (new, &old) in retained.iter().enumerate() { remap[old] = new as u32; }
     let indices = Indices::U32(indices.iter().map(|old| remap[old]).collect());
@@ -26,8 +29,7 @@ pub(crate) fn compact(mesh: &mut Mesh) -> bool {
     output.insert_indices(indices);
     if !retained.is_empty() && let Some(morph) = morph { output.set_morph_targets(morph); }
     if let Some(names) = mesh.morph_target_names() { output.set_morph_target_names(names.to_vec()); }
-    *mesh = output;
-    true
+    Some(output)
 }
 
 fn select(values: &VertexAttributeValues, retained: &[usize]) -> VertexAttributeValues {
@@ -49,6 +51,40 @@ fn select(values: &VertexAttributeValues, retained: &[usize]) -> VertexAttribute
 mod tests {
     use super::*;
     use bevy::{asset::RenderAssetUsages, math::Vec3, mesh::{PrimitiveTopology, morph::MorphAttributes}};
+
+    fn compact(mesh: &mut Mesh) -> bool {
+        let Some(indices) = mesh.indices().cloned() else { return false };
+        let Some(output) = super::compact(mesh, &indices) else { return false };
+        *mesh = output;
+        true
+    }
+
+    #[test]
+    fn borrowed_source_supports_independent_selections_without_mutation() {
+        let mut source = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        source.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0;3], [1.0;3], [2.0;3], [3.0;3]]);
+        source.set_morph_targets((0..8).map(|index| MorphAttributes::new(Vec3::splat(index as f32), Vec3::ZERO, Vec3::ZERO)).collect());
+        let before = source.clone();
+        for selected in [[3,1,3], [0,2,0]] {
+            let indices = Indices::U32(selected.to_vec());
+            let result = super::compact(&source, &indices).unwrap();
+            assert_eq!(result.count_vertices(), 2);
+            let VertexAttributeValues::Float32x3(positions) = result.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!() };
+            for (&old, new) in selected.iter().zip(result.indices().unwrap().iter()) {
+                assert_eq!(positions[new], [old as f32;3]);
+                for target in 0..2 {
+                    assert_eq!(result.get_morph_targets().unwrap()[target*2+new], before.get_morph_targets().unwrap()[target*4+old as usize]);
+                }
+            }
+        }
+        assert_eq!(source.attribute(Mesh::ATTRIBUTE_POSITION), before.attribute(Mesh::ATTRIBUTE_POSITION));
+        assert_eq!(source.get_morph_targets(), before.get_morph_targets());
+        assert!(source.indices().is_none());
+        let all = super::compact(&source, &Indices::U16(vec![3,2,1,0])).unwrap();
+        assert_eq!(all.count_vertices(), 4);
+        assert_eq!(all.indices().unwrap().iter().collect::<Vec<_>>(), [3,2,1,0]);
+        assert_eq!(all.get_morph_targets(), source.get_morph_targets());
+    }
 
     #[test]
     fn compaction_preserves_indexed_attributes_and_each_morph_target() {

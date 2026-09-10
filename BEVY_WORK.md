@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Build compact subsets directly from borrowed source data
+
+Subset construction now borrows the original mesh and selected indices rather
+than cloning the full source before discarding unreferenced attributes. Only
+retained attribute and morph entries are copied into compact outputs. The
+all-vertices-selected path still clones the required full data, and malformed
+inputs retain the previous conservative full-layout fallback. Source assets
+are never mutated; different subsets remain independent.
+
+An additional regression checks two independent selections from an unindexed
+source, per-corner positions and both morph targets, source immutability and the
+all-selected path. All 389 ordinary tests, check-all and build pass in
+`/tmp/subset-borrow-final-{tests,check,build}.log`. CPU and GPU captures at time
+30 were inspected and their RGBA payloads match the corresponding pre-change
+`subset-empty` captures byte-for-byte. Logs `/tmp/subset-borrow-{gpu,cpu}.log`
+contain no warnings/errors; images are `target/subset-borrow-{gpu,cpu}.png`.
+Release ANYmal opens measured 476–506 ms with all retained payload/entity counts
+unchanged. The earlier compacted-source samples were 616–680 ms; these are not
+interleaved controlled timings. Raw samples and limits are recorded in
+`benchmarks/editor-assets.md` and `/tmp/subset-borrow-anymal.log`.
+
 ### Compact subset vertices and keep empty assets out of GPU uploads
 
 `cffdd62` compacts each material subset and the unassigned remainder, applying

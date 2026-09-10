@@ -78,17 +78,21 @@ pub(crate) fn prepare(
             Ok(None) => (default_material.clone(), Vec::new()),
             Err(error) => (default_material.clone(), vec![error.to_string()]),
         };
-        let mut mesh = source.clone();
-        mesh.insert_indices(crate::mesh::mesh_indices_for_faces(read, &subset.indices));
-        crate::mesh::compact::compact(&mut mesh);
+        let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &subset.indices));
         prepared.parts.push((subset.name.clone(), super::cache::intern_mesh(world, mesh), material, warnings));
     }
     let remaining: Vec<i32> = assigned.iter().enumerate().filter_map(|(face, assigned)| (!assigned).then_some(face as i32)).collect();
-    let mut mesh = source.clone();
-    mesh.insert_indices(crate::mesh::mesh_indices_for_faces(read, &remaining));
-    crate::mesh::compact::compact(&mut mesh);
+    let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &remaining));
     prepared.remainder = Some(super::cache::intern_mesh(world, mesh));
     prepared
+}
+
+fn subset_mesh(source: &Mesh, indices: bevy::mesh::Indices) -> Mesh {
+    crate::mesh::compact::compact(source, &indices).unwrap_or_else(|| {
+        let mut mesh = source.clone();
+        mesh.insert_indices(indices);
+        mesh
+    })
 }
 
 pub(crate) fn apply(world: &mut World, entity: Entity, prepared: &PreparedSubsets) {

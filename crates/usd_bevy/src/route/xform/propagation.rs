@@ -62,6 +62,29 @@ mod tests {
     }
 
     #[test]
+    fn authored_reset_discards_prefix_and_reprojection_clears_override() {
+        let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/xform_reset.usda")).unwrap();
+        let reference = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/xform_reset_reference.usda")).unwrap();
+        let path = openusd::sdf::path("/Parent/Reset").unwrap();
+        let reference_path = openusd::sdf::path("/Reset").unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let (matrix, reset) = crate::read::xform::read_transform_stack_at(&stage, &path, None).unwrap().unwrap();
+        assert!(reset);
+        assert_eq!(Mat4::from_cols_array(&matrix), Mat4::from_translation(Vec3::Z));
+        let mut world = World::new();
+        let entity = world.spawn(Name::new("runtime name")).id();
+        project(&RouteCtx::new(&stage, &path), &mut world, entity);
+        assert!(world.get::<UsdTransformOverride>(entity).unwrap().reset);
+        project(&RouteCtx::new(&reference, &reference_path), &mut world, entity);
+        assert!(world.get::<UsdTransformOverride>(entity).is_none());
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation, Vec3::Z);
+        assert_eq!(world.get::<Name>(entity).unwrap().as_str(), "runtime name");
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
+
+    #[test]
     fn representation_preserves_affine_and_singular_matrices() {
         for matrix in [shear(), Mat4::from_scale(Vec3::ZERO), Mat4::from_scale(Vec3::splat(1e-20)),
             Mat4::from_scale_rotation_translation(Vec3::new(-2.0, 3.0, 4.0), Quat::from_rotation_y(0.7), Vec3::ONE)] {

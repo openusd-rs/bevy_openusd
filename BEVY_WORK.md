@@ -39,12 +39,27 @@ Decomposition is guarded by nonzero finite determinant and orthogonal axes;
 singular, tiny and sheared affine matrices use the residual path. Unit tests
 cover representation, a runtime descendant under shear, runtime translation
 edits and nested reset behavior under a rotated scene root and translated mount.
-Reader/edit recovery coverage and rendered affine/reset reference comparisons
-remain pending. This does not complete the integration acceptance checklist.
+An authored reset regression also checks prefix exclusion, override removal on
+reprojection, runtime-name preservation and unchanged source-layer data.
+Malformed-edit recovery and broader animated coverage remain pending. This does
+not complete the integration acceptance checklist.
 
 All 397 ordinary tests pass (six native export tests ignored), alongside
 check-all, build and whitespace checks. Logs:
 `/tmp/affine-validation-{tests,check,build}.log`.
+
+Rendered fixtures `assets/xform_affine{,_reference}.usda` and
+`assets/xform_reset{,_reference}.usda` were captured at time 0, eye (6,4,8),
+focus (0,1,0), 1280x720. All four images in `target/xform_*.png` were inspected.
+The affine pair differs at two of 921,600 pixels, maximum RGB error 1, mean
+0.000001; strict zero tolerance correctly fails. The Z-up reset pair is pixel
+identical, despite the authored parent translation and pre-reset translation.
+All four capture logs have CAPTURE_OK and no WARN/ERROR entries. Logs:
+`/tmp/xform*-capture.log`, `/tmp/xform_{affine,reset}-compare.log`. These are
+Bevy geometry references, not comparison with a native USD renderer.
+The fixture regression brings the ordinary test total to 398 passing, with six
+native tests ignored. Check-all, build and whitespace checks pass; logs:
+`/tmp/xform-fixtures-{tests,check,build}.log`.
 
 ### Preserve affine transforms on direct mesh point prototypes
 

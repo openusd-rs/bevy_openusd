@@ -864,8 +864,16 @@ Direct mesh prototypes bake their full invertible affine matrix into positions,
 inverse-transpose normals and tangent frames, including shear. Material subsets
 and repeated instances still share the baked assets. `assets/point_affine.usda`
 and `assets/point_affine_reference.usda` provide matrix versus explicit-vertex
-comparison scenes. This does not add shear support to ordinary Transform
-projection or to the multi-node hierarchy path described below.
+comparison scenes. The multi-node hierarchy path described below still rejects
+per-node shear.
+
+Ordinary prim transforms separately preserve affine residuals after Bevy's
+transform propagation. USD reset stacks discard preceding operations and USD
+ancestor transforms while retaining scene placement and up-axis conversion.
+`assets/xform_affine.usda` and `assets/xform_reset.usda` have corresponding
+`_reference.usda` fixtures for fixed-camera capture comparisons. Invalid
+projective/non-finite transforms retain the previous pose and attach
+`route::xform::UsdTransformError`; capture fails on that diagnostic.
 
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset

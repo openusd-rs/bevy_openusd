@@ -25,6 +25,24 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject unsupported reverse-time reference authoring
+
+The lower-level set_references helper accepted negative scales while the new
+assembly APIs required positive ones. A native usdcat probe confirms offset 10,
+scale -1 reverses samples from 1/3 to 3/1, with a deprecation warning:
+`/tmp/negative-reference-native.log`. The pinned Rust implementation instead
+returns 1 at stage time 0; the attempted parity regression fails:
+`/tmp/reference-scales-focused.log`. Therefore set_references now also requires
+positive finite scales, rejecting unsupported reverse-time authoring before
+mutation. This is a validation fix, not implemented reverse-time playback or a
+comprehensive check of negative mappings in externally loaded stages.
+
+The final regression verifies supported offset 10/scale 2 interpolation and
+atomic rejection of a late negative, zero, signed-zero, NaN or infinite scale,
+leaving the previously authored root unchanged.
+All 468 ordinary workspace tests pass (ten ignored), as do check-all, build and
+whitespace validation: `/tmp/reference-scales-{tests,check,build}.log`.
+
 ### Typed assembly lifecycle measurements
 
 source_benchmark now prepares both source revisions through

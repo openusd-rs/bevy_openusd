@@ -206,7 +206,13 @@ default remains 2.5, and the selected spacing is recorded in capture metadata.
 entries using `openusd::sdf::LayerOffset`. It preserves reference arcs while
 retiming samples; offsets must be finite and scales finite and positive.
 The existing `with_references` API uses identity offsets. Invalid entries reject
-the whole batch without changing inputs. `examples/retimed_sources.rs` demonstrates
+the whole batch without changing inputs. The lower-level
+`authoring::set_references` also requires positive finite scales. Native OpenUSD
+supports negative scales with a deprecation warning, but the pinned Rust reader
+failed a reversed-sample probe; newly authored negative mappings are rejected
+rather than silently interpreted incorrectly. This does not validate all
+negative mappings in externally loaded scenes.
+`examples/retimed_sources.rs` demonstrates
 one animated source mounted twice with different timing and checks projected mesh
 radii and stable entities across clock changes:
 

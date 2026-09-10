@@ -479,7 +479,10 @@ the resource restores eight samples. This does not add width-aware curve surface
 
 For the viewer and fixed-camera capture tool, set `USD_CURVE_STEPS=1..64` before
 launch (default eight). Invalid values fail before renderer startup. Capture
-metadata records `curve_steps`:
+metadata records `curve_steps`.
+
+The Rendering pane's **Cubic curves** section switches live between 1, 8, 32
+and 64 samples, shows the effective setting, and lists curve projection errors.
 
 ```sh
 USD_CURVE_STEPS=32 make run ARGS='assets/curve_gradients.usda'

@@ -4,10 +4,13 @@ use bevy::render::{RenderApp, RenderStartup, mesh::allocator::MeshAllocatorSetti
 use bevy::render::error_handler::{RenderError, RenderErrorHandler, RenderErrorPolicy};
 use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
 use usd_bevy::route::subdivision::{UsdSubdivisionApplied, UsdSubdivisionError, UsdSubdivisionSettings};
+use usd_bevy::route::curves::{UsdCurveSettings, UsdCurveError};
 
 #[derive(Clone, Default)]
 struct State {
     requested: Option<u32>,
+    requested_curve_steps: Option<usize>,
+    curve_steps: usize,
     level: u32,
     refined: usize,
     errors: Vec<String>,
@@ -57,19 +60,25 @@ fn bound_mesh_slabs(settings: &mut MeshAllocatorSettings, device_limit: u64) {
 
 fn apply(world: &mut World) {
     let bridge = world.resource::<RenderSettingsBridge>().clone();
-    let Some(level) = bridge.0.lock().ok().and_then(|mut state| state.requested.take()) else { return };
-    if level == 0 { world.remove_resource::<UsdSubdivisionSettings>(); }
-    else if let Ok(settings) = UsdSubdivisionSettings::new(level) { world.insert_resource(settings); }
+    let Some((level, steps)) = bridge.0.lock().ok().map(|mut state| (state.requested.take(), state.requested_curve_steps.take())) else { return };
+    if let Some(level) = level {
+        if level == 0 { world.remove_resource::<UsdSubdivisionSettings>(); }
+        else if let Ok(settings) = UsdSubdivisionSettings::new(level) { world.insert_resource(settings); }
+    }
+    if let Some(steps) = steps && let Ok(settings) = UsdCurveSettings::new(steps) { world.insert_resource(settings); }
 }
 
 fn publish(world: &mut World) {
     let bridge = world.resource::<RenderSettingsBridge>().clone();
     let Ok(mut state) = bridge.0.lock() else { return };
     state.level = world.get_resource::<UsdSubdivisionSettings>().map_or(0, |settings| settings.levels());
+    state.curve_steps = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().cubic_steps();
     state.refined = world.query::<&UsdSubdivisionApplied>().iter(world).count();
     state.errors = world.query::<(&usd_bevy::UsdPrimRef, &UsdSubdivisionError)>().iter(world)
         .map(|(prim, error)| format!("{}: {}", prim.path, error.0)).collect();
     state.errors.extend(world.query::<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>().iter(world)
+        .map(|(prim, error)| format!("{}: {}", prim.path, error.0)));
+    state.errors.extend(world.query::<(&usd_bevy::UsdPrimRef, &UsdCurveError)>().iter(world)
         .map(|(prim, error)| format!("{}: {}", prim.path, error.0)));
     state.errors.sort();
     state.errors.dedup();
@@ -100,6 +109,21 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
         }));
     }
     body.add_normal("rendering.subdivision", "Subdivision", "options", pods);
+    let mut curve_pods = vec![
+        Pod::new("rendering.curves.status").with_custom_units(2, move |ui| {
+            ui.label(&format!("Samples per segment: {}", state.curve_steps));
+            ui.label("Fixed sampling; one-pixel lines");
+        }),
+    ];
+    for steps in [1, 8, 32, 64] {
+        let bridge = bridge.clone();
+        curve_pods.push(Pod::new(Id::new(("rendering.curves.steps", steps))).with_custom_units(1, move |ui| {
+            if ui.button(&format!("Samples: {steps}")).clicked && let Ok(mut state) = bridge.0.lock() {
+                state.requested_curve_steps = Some(steps);
+            }
+        }));
+    }
+    body.add_normal("rendering.curves", "Cubic curves", "options", curve_pods);
     if state.errors.is_empty() { return; }
     let errors = state.errors.into_iter().enumerate().map(|(index, error)| {
         let lines = super::lighting::status_lines(&error);
@@ -166,6 +190,30 @@ mod tests {
         assert_eq!(settings.max_slab_size, 16 * 1024);
         assert_eq!(settings.min_slab_size, 16 * 1024);
         assert_eq!(settings.large_threshold, 16 * 1024);
+    }
+
+    #[test]
+    fn curve_controls_preserve_startup_quality_and_publish_errors() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let bridge = RenderSettingsBridge::default();
+        configure(&mut app, bridge.clone());
+        app.insert_resource(UsdCurveSettings::new(32).unwrap());
+        app.update();
+        assert_eq!(bridge.0.lock().unwrap().curve_steps, 32);
+        bridge.0.lock().unwrap().requested_curve_steps = Some(1);
+        app.update();
+        assert_eq!(app.world().resource::<UsdCurveSettings>().cubic_steps(), 1);
+        assert_eq!(bridge.0.lock().unwrap().curve_steps, 1);
+        let prim = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/Curve"), UsdCurveError("curve budget exceeded".into()))).id();
+        app.update();
+        assert_eq!(bridge.0.lock().unwrap().errors, ["/Curve: curve budget exceeded"]);
+        bridge.0.lock().unwrap().requested_curve_steps = Some(64);
+        app.world_mut().entity_mut(prim).remove::<UsdCurveError>();
+        app.update();
+        assert_eq!(bridge.0.lock().unwrap().curve_steps, 64);
+        assert!(bridge.0.lock().unwrap().errors.is_empty());
+        assert!(!app.world().contains_resource::<UsdSubdivisionSettings>());
     }
 
     #[test]

@@ -25,6 +25,38 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Rendering-pane curve controls
+
+The Rendering pane now exposes 1/8/32/64 sample presets and the current effective
+curve quality. Requests use the render-settings bridge and canonical settings
+resource; library quality-change systems update the existing curves. Curve
+projection errors join the existing sorted, deduplicated diagnostics. Bridge
+tests verify preservation of startup settings, requested changes, published
+errors/recovery and unchanged subdivision settings.
+
+The first native capture exposed clipped horizontal presets (only one button
+visible), so each preset now has its own row. Low/high checked-in egui replays
+exercise the one-sample switch and subsequent return to 64 without reopening.
+The low capture shows sample count one and straight gradient chords. This uses
+injected egui input, not OS-level mouse input; one-pixel lines and fixed-rate
+approximation remain unchanged.
+
+Inspected one-, 32- and 64-sample interaction captures and the invalid-layout
+error panel in `target/viewer-ui-captures/curve-controls-{low,medium,high,errors-recheck}.png`.
+The original error-panel attempt timed out starting Weston and was rerun only
+after its script exited. A return-to-eight screenshot was black despite all
+replay events appearing in the log and continuous host repaint enabled. Thus the
+earlier repaint change is not a complete solution for intermittent black host
+captures; UI_UPDATED and executed input remain insufficient visual acceptance.
+
+The 35-second default-quality recheck succeeds and shows eight samples with the
+expected faceted arcs after a one-to-eight transition:
+`target/viewer-ui-captures/curve-controls-default-recheck.png` (inspected).
+All four presets and the error panel now have inspected interaction/state
+captures. Known clipboard/Vulkan-loader/SSAO environment diagnostics remain.
+All 459 ordinary workspace tests pass (eight ignored), plus check-all, build and
+whitespace checks; `/tmp/curve-controls-verified-{tests,check,build}.log`.
+
 ### Live curve quality changes
 
 LiveStagePlugin and independent UsdSceneRoot runtimes now track the effective

@@ -73,13 +73,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checked_in_timeline_controls_replays_are_valid() {
+    fn checked_in_control_replays_are_valid() {
         for (script, count, last) in [
             (include_str!("../scripts/replays/timeline_play.replay"), 4, 14000),
             (include_str!("../scripts/replays/timeline_pause.replay"), 7, 14000),
             (include_str!("../scripts/replays/timeline_next.replay"), 4, 14000),
             (include_str!("../scripts/replays/timeline_previous.replay"), 11, 15000),
             (include_str!("../scripts/replays/timeline_start.replay"), 11, 15000),
+            (include_str!("../scripts/replays/curve_quality_low.replay"), 4, 14000),
+            (include_str!("../scripts/replays/curve_quality_high.replay"), 7, 15000),
+            (include_str!("../scripts/replays/curve_quality_medium.replay"), 4, 14000),
+            (include_str!("../scripts/replays/curve_quality_default.replay"), 7, 15000),
         ] {
             let events = parse(script).unwrap();
             assert_eq!(events.len(), count);

@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Atomic source-reference batches
+
+UsdSource::with_references mounts an iterator of destination/source/target tuples
+in order, opens one assembly stage and exports its root once. Validation stages
+are reused by source revision, not merely identifier, so conflicting snapshots
+cannot bypass dependency conflict checks. The single-reference method delegates
+to the batch path. Empty batches preserve identity and shared root bytes; failed
+batches return no partially assembled source and leave all inputs unchanged.
+
+The regression compares batch and sequential exported bytes, dependency lists
+and composed types; checks repeated source use, empty-batch identity, late
+destination collisions and conflicting source revisions. The composed_sources
+example now batches its default and explicit target mounts while retaining its
+independent-root, reload, failure-recovery and cleanup assertions. This avoids
+repeated root export per mount, but does not establish measured speedup or finish
+the general typed scene DSL.
+
+All 452 ordinary workspace tests pass (seven ignored), plus check-all, build,
+the composed_sources executable and diff whitespace checks. Logs:
+`/tmp/batch-reference-{tests,check,build,example}.log`.
+
 ### Default-prim source references
 
 UsdSource::with_reference now accepts the canonical empty typed Path as a target

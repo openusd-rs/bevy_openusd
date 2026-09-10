@@ -23,8 +23,10 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
 "#);
     let root_source = UsdSource::snapshot("composed_sources/root.usda", assembly.text().as_bytes())?;
     let compose = |model: &UsdSource| -> Result<UsdSource, Box<dyn std::error::Error>> {
-        Ok(root_source.with_reference("/First", model, openusd::sdf::Path::default())?
-            .with_reference("/Second", model, "/Model")?)
+        Ok(root_source.with_references([
+            ("/First", model, openusd::sdf::Path::default()),
+            ("/Second", model, openusd::sdf::path("/Model")?),
+        ])?)
     };
     let source = compose(&model)?;
     let mut app = App::new();

@@ -109,9 +109,10 @@ when replacing a dependency revision; this merge API never silently overwrites o
 the typed USD API and validates the composed result, returning a new snapshot:
 
 ```rust
-let assembly = root
-    .with_reference("/First", &model, "/Model")?
-    .with_reference("/Second", &model, "/Model")?;
+let assembly = root.with_references([
+    ("/First", &model, "/Model"),
+    ("/Second", &model, "/Model"),
+])?;
 ```
 
 The receiver must have a `.usda` identifier. Destinations and explicit targets
@@ -135,8 +136,13 @@ Ordinary USDA/USDC root-layer export retains references but does not write their
 in-memory dependencies to disk. Such an export cannot reopen independently when
 the referenced files do not exist. Flattened export removes composition arcs,
 but does not bundle external textures; it is not a substitute for USDZ packaging.
-This operation opens and serializes a stage per call;
-it is not a constant-cost bulk builder or complete typed scene DSL.
+`with_references` mounts entries in iterator order and publishes a new snapshot
+only if the whole batch succeeds. It opens one assembly stage, exports its root
+once, and reuses a validation stage for repeated mounts of the same source
+snapshot. An empty batch preserves the original revision and bytes. The
+single-reference method delegates to this batch path. Dependency merges and USD
+composition still have costs; no bulk speedup has been measured, and this is not
+a complete typed scene DSL.
 
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under

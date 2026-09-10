@@ -77,15 +77,6 @@ impl UsdSource {
                 paths.push(path.clone());
             })
             .map_err(|error| error.to_string())?;
-        let mut texture_times = Vec::new();
-        for path in &paths {
-            let prim = stage.prim(path).map_err(|error| error.to_string())?;
-            if prim.type_name().map_err(|error| error.to_string())?.as_deref() == Some("Shader") {
-                texture_times.extend(prim.attribute("inputs:file").time_sample_times().map_err(|error| error.to_string())?);
-            }
-        }
-        texture_times.sort_by(f64::total_cmp);
-        texture_times.dedup();
         let mut requests = BTreeSet::new();
         for path in paths {
             let prim = stage.prim(&path).map_err(|error| error.to_string())?;
@@ -110,7 +101,9 @@ impl UsdSource {
             {
                 continue;
             }
-            for time in std::iter::once(None).chain(texture_times.iter().copied().map(Some)) {
+            let texture_times = crate::read::shade::material_texture_sample_times(stage, &path)
+                .map_err(|error| error.to_string())?;
+            for time in std::iter::once(None).chain(texture_times.into_iter().map(Some)) {
                 let Some(material) = crate::read::shade::read_preview_material_at(stage, &path, time)
                     .map_err(|error| error.to_string())? else { continue; };
                 for (path, srgb) in [

@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Material-local texture sample discovery
+
+Texture discovery now collects sample times per material graph instead of using
+the entire stage's texture-time union for every material. It seeds traversal
+from the material and resolved surface (including child-shader fallback),
+follows attribute connections across namespaces, visits each prim once, and
+sorts/deduplicates inputs:file times. Disconnected children and other materials'
+graphs no longer add evaluation times. A 4096-node traversal budget reports an
+explicit error rather than allowing unbounded graph walks.
+
+Regression coverage checks two separate materials, external texture nodes,
+surface fallback without outputs:surface, disconnected sampled children, a
+cycle, a texture shared across graphs and duplicate sample times. This removes
+the stage-wide material/time cross-product structurally; no wall-time or memory
+speedup is claimed without a representative benchmark.
+
+Validation: 433 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/texture-graphs-{tests,check,build}.log`.
+
 ### Time-sampled material texture assets
 
 An AssetServer regression reproduced zero decoded images for a material whose

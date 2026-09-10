@@ -81,6 +81,26 @@ pub(crate) fn bound_material_is_time_varying(stage: &Stage, prim: &Path) -> bool
     false
 }
 
+/// Sorted texture-file sample times reachable from a material and its surface.
+pub(crate) fn material_texture_sample_times(stage: &Stage, material: &Path) -> anyhow::Result<Vec<f64>> {
+    let mut pending = vec![material.clone()];
+    if let Some((shader, _)) = resolve_surface_shader(stage, material)? { pending.push(shader); }
+    let mut seen = std::collections::HashSet::new();
+    let mut times = Vec::new();
+    while let Some(path) = pending.pop() {
+        if !seen.insert(path.clone()) { continue; }
+        anyhow::ensure!(seen.len() <= 4096, "texture discovery exceeds the 4096-node traversal budget");
+        let node = stage.prim(&path)?;
+        times.extend(node.attribute("inputs:file").time_sample_times()?);
+        for attribute in node.attributes()? {
+            pending.extend(attribute.connections()?.into_iter().map(|connection| connection.prim_path()));
+        }
+    }
+    times.sort_by(f64::total_cmp);
+    times.dedup();
+    Ok(times)
+}
+
 /// Resolve preview inputs at a USD time code, or their default values.
 pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64>) -> anyhow::Result<Option<ReadPreviewMaterial>> {
     let Some((shader, dialect)) = resolve_surface_shader(stage, material)? else {
@@ -682,6 +702,37 @@ fn value_to_preview(v: Value) -> Option<ResolvedValue> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn texture_times_follow_each_material_graph_and_surface_fallback() {
+        use openusd::sdf::{Path, Value};
+        let stage = openusd::usd::Stage::builder().in_memory("texture-graphs.usda").unwrap();
+        for (name, times) in [("A", [0.0, 10.0]), ("B", [10.0, 20.0])] {
+            stage.define_prim(format!("/{name}")).unwrap().set_type_name("Material").unwrap();
+            stage.define_prim(format!("/{name}/Surface")).unwrap().set_type_name("Shader").unwrap();
+            stage.create_attribute(format!("/{name}/Surface.info:id"), "token").unwrap()
+                .set(Value::Token("UsdPreviewSurface".into())).unwrap();
+            stage.define_prim(format!("/Texture{name}")).unwrap().set_type_name("Shader").unwrap();
+            stage.create_attribute(format!("/{name}/Surface.inputs:diffuseColor"), "color3f").unwrap()
+                .set_connections([Path::new(&format!("/Texture{name}.outputs:rgb")).unwrap()]).unwrap();
+            let mut file = stage.create_attribute(format!("/Texture{name}.inputs:file"), "asset").unwrap();
+            for time in times {
+                file = file.set_at(Value::AssetPath(openusd::sdf::AssetPath::new("pixel.png")), openusd::usd::TimeCode::new(time)).unwrap();
+            }
+        }
+        stage.define_prim("/A/Unused").unwrap().set_type_name("Shader").unwrap();
+        stage.create_attribute("/A/Unused.inputs:file", "asset").unwrap()
+            .set_at(Value::AssetPath(openusd::sdf::AssetPath::new("unused.png")), openusd::usd::TimeCode::new(999.0)).unwrap();
+        stage.create_attribute("/TextureA.inputs:cycle", "float").unwrap()
+            .set_connections([Path::new("/A/Surface.outputs:surface").unwrap()]).unwrap();
+        let a = Path::new("/A").unwrap();
+        let b = Path::new("/B").unwrap();
+        assert_eq!(super::material_texture_sample_times(&stage, &a).unwrap(), [0.0, 10.0]);
+        assert_eq!(super::material_texture_sample_times(&stage, &b).unwrap(), [10.0, 20.0]);
+        stage.create_attribute("/A/Surface.inputs:emissiveColor", "color3f").unwrap()
+            .set_connections([Path::new("/TextureB.outputs:rgb").unwrap()]).unwrap();
+        assert_eq!(super::material_texture_sample_times(&stage, &a).unwrap(), [0.0, 10.0, 20.0]);
+    }
+
     use super::*;
 
     #[test]

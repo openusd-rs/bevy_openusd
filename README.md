@@ -743,6 +743,14 @@ regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
 the failure. This catches the observed black-window case, not arbitrary incorrect
 rendering or incomplete uploads.
 
+The `.settings.txt` companion records compositor backend, output/inspection
+dimensions and wait time. Vulkan remains the default. `USD_UI_COMPOSITOR_RENDERER`
+accepts `vulkan`, `gl` or `pixman` for diagnostic experiments; the latter two are
+not validated alternatives. Three local GL captures were vertically inverted
+despite passing the near-black check, so GL emits an orientation warning. Three
+paired Vulkan captures were correctly oriented, but this small comparison did
+not reproduce or resolve the intermittent black-window failure.
+
 The low-level inspector also accepts explicit PNG regions:
 
 ```sh

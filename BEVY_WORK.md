@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Compositor backend capture comparison
+
+Ran three GL and three Vulkan captures in alternating order with the same static
+gradient scene, Rendering pane, 20-second wait and no input replay. All six passed
+the near-black guard, but visual inspection found all GL outputs vertically
+inverted (including desktop chrome); all Vulkan outputs were correctly oriented.
+Both sets measured 99.999375 percent nonblack in the inspected region. Thus neither
+the guard nor a successful screenshot exit can establish orientation/fidelity.
+The black failure did not recur in this small comparison; it is not resolved.
+
+Vulkan remains the default. The script now validates the backend name, warns
+about the observed GL orientation problem and writes backend/wait/region metadata
+to a settings.txt companion. GL/pixman remain explicit diagnostic options, not
+validated replacements. Evidence: `target/viewer-ui-captures/backend-{gl,vulkan}-{1,2,3}.png`
+(all inspected), companion inspector/Weston/viewer logs, and `/tmp/backend-*.log`.
+
+A subsequent default-backend run produces the expected settings companion and a
+correctly oriented image (`target/viewer-ui-captures/backend-metadata.png`,
+inspected). Invalid backend names reject before compositor startup. Shell syntax,
+all 461 ordinary workspace tests (eight ignored), check-all, build and whitespace
+checks pass; `/tmp/backend-probe-{tests,check,build}.log`,
+`/tmp/capture-invalid-backend.log`, `/tmp/capture-backend-metadata.log`.
+
 ### Black-window capture rejection
 
 Added a low-level capture_inspect example that decodes a bounded static PNG,

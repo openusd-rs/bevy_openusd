@@ -169,14 +169,21 @@ For release measurements, append `--release` to `APP_TARGET`.
 `with_offset_references` and marks every mount instanceable. OpenUSD determines
 prototype sharing; descendant prims become instance proxies, not independently
 editable copies. The ordinary reference APIs do not mark mounts instanceable.
-Native relocated-USDZ tests retain shared instances in root/edit-layer saves.
-Flattened saves currently expand instances into independent geometry copies:
-the upstream flattener removes instanceable metadata and does not emit shared
-prototype references. Use a composition-preserving save to retain instancing.
-Flattened editor saves also reject scenes carrying `clips` metadata before
-writing any output: upstream does not yet bake clip schedules and values.
-This conservative check includes empty clip dictionaries. Root/edit-layer saves
-remain available to preserve authored composition; full clip baking is unfinished.
+Native relocated-USDZ tests retain shared instances in root/edit-layer and
+flattened editor saves. The editor rebuilds shared prototype subtrees as internal
+references after upstream flattening, retaining instance-root opinions and
+processing nested instances before their parents. Generated prototype names avoid
+existing prims. Retimed instances keep their baked stage-time samples. The
+intermediate upstream layer still expands instances, so this does not reduce peak
+flattening memory; direct upstream `Stage::flatten` still expands instances.
+Flattened editor saves bake clip-resolved values before rebuilding instances.
+They sample stage-time keys and their immediately preceding representable times
+to retain boundary behavior, including value blocks. Asset values are anchored;
+USDZ saves package their dependencies. Clip-sourced `timecode`/`timecode[]` values,
+unresolved clip assets and more than one million attempted baked samples are
+rejected before publishing output. Root/edit-layer saves retain authored clips.
+Native export tests cover scalar switching, value blocks, packaged asset values
+and nested retimed instances; they do not establish every clip schedule or type.
 The headless example verifies two same-timing mounts sharing a mesh and a third
 retimed mount using the correct sampled geometry. It checks forward/backward
 clock changes, stable entities/runtime names and cleanup after root despawn:
@@ -213,14 +220,74 @@ failed a reversed-sample probe; newly authored negative mappings are rejected
 rather than silently interpreted incorrectly. Source validation also rejects
 invalid time offsets in composed reference and payload lists on traversed prims, including
 the internal-reference case that did not surface a composition error. Rejected
-reloads retain the last valid projection. Sublayer offsets and unselected
-branches are not covered by this additional arc-metadata check.
+reloads retain the last valid projection. Authored sublayer offsets in loaded,
+unmuted layers are checked too; absent offsets retain identity timing. This does
+not eagerly inspect unselected branches or layers that composition has not loaded.
 `examples/retimed_sources.rs` demonstrates
 one animated source mounted twice with different timing and checks projected mesh
 radii and stable entities across clock changes:
 
 ```sh
 make run RUN_WITH= APP_TARGET='--example retimed_sources'
+```
+
+`examples/clipped_sources.rs` captures a value-clip dependency in memory and
+checks two independent Bevy clocks against projected sphere radii. It exercises
+retimed endpoints, interpolation, backward clock changes, stable entity IDs,
+runtime names and root cleanup. This single-clip example does not cover clip
+switching or flattened clip baking.
+
+```sh
+make run RUN_WITH= APP_TARGET='--example clipped_sources'
+```
+
+The AssetServer loader queries sample times on numeric attributes as well as
+asset-valued attributes so their value-clip layers enter captured dependencies.
+`assets/clipped_sphere.usda` exercises this file-loading path. Its independent
+reference authors sphere radius samples directly at stage times 0 and 20.
+The GPU regression compares times 0/5/10/20 and two live roots whose clocks reverse
+from 10/20 to 20/10, requiring zero RGB differences and the expected visible-mesh
+counts. It retains captures, metadata and diffs in a new output directory:
+
+```sh
+make --eval='check-clips:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW-clip-images' check-clips
+```
+
+This checks sampled Bevy-frame equivalence, not native-renderer parity, clip
+switching or flattened clip baking.
+The `switching_clips` fixture additionally checks two active clips against
+native-verified direct samples. It uses wider cameras and root spacing to keep
+the larger spheres separated:
+
+```sh
+make --eval='check-switches:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW-switch-images switching_clips' check-switches
+```
+
+Add `flattened` to export a new USDZ first and compare its rendered animation
+against the same direct-sample reference, including reversed independent clocks:
+
+```sh
+make --eval='check-baked:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW-baked-images switching_clips flattened' check-baked
+```
+
+The standalone exporter accepts an input scene and a new destination path:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example flatten_scene' ARGS='assets/switching_clips.usda target/NEW-baked.usdz'
+```
+
+It refuses an already-existing output path at its initial check. This is not
+exclusive publication against another process creating that path concurrently.
+
+The local upstream patch corrects interpolation toward a subsequent clip's
+activation value and preserves value-block boundaries. These sampled cases do
+not establish all clip schedules, asset-valued clips or timecode-value parity.
+Clip dependency reload regressions also check independent clocks, malformed-layer
+failure with retained mesh handles, recovery, stable entities and runtime names.
+The native filesystem event lane runs explicitly:
+
+```sh
+make test APP_TARGET='-p usd_bevy --features file_watcher native_numeric_clip_dependency_reloads -- --ignored --nocapture'
 ```
 
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
@@ -337,7 +404,7 @@ visual acceptance limits.
 
 The editor loads PNG/JPEG material images from filesystem and USDZ documents,
 refreshes them after edits, and preserves the previous document if opening fails.
-The viewer can automatically watch installed external textures on native builds:
+The viewer can automatically watch requested external textures on native builds:
 
 ```sh
 USD_WATCH_TEXTURES=1 make run APP_TARGET='--bin usdview --features file_watcher' ARGS='path/to/scene.usda'
@@ -348,14 +415,23 @@ it without the build feature, or providing a value other than 0/1, fails before
 opening the viewer. The viewer logs active file counts and watcher setup errors.
 Library applications can opt in by enabling `usd_bevy/file_watcher` and adding
 `usd_bevy::editor::texture_watch::EditorTextureWatchPlugin` alongside
-`EditorPlugin`. It watches installed external images and sends RefreshTextures
+`EditorPlugin`. It watches requested external images and sends RefreshTextures
 on native file events. `EditorTextureWatchStatus` reports active file count and
 setup errors. Watched paths update with the document/image set; idle frames do
-not reread images or rescan USD materials. Package entries, USD layers and folder
-replacement are not watched. Failed watcher setups retry once per second while
+not reread images or rescan USD materials. On Unix, directory device/inode
+identities are checked at most once per second; removed or replaced directories
+re-arm only their own watchers and queue a texture refresh. Package entries and
+USD layers are not watched; directory replacement recovery is not implemented
+on non-Unix platforms. Failed watcher setups retry once per second while
 the app updates, without restarting successful watchers. Recovery queues a texture
 refresh to catch edits made while unavailable. Document/path changes reset the
 retry state. Images missing during a failed initial Open are not watched.
+An edit that requests a missing or undecodable image keeps the previous image
+handles while registering the requested paths. Unresolved relative paths are
+watched conservatively under loaded filesystem layer directories; these candidate
+paths can trigger extra refreshes and are not custom-resolver/search-path support.
+Creating a missing parent directory is handled by the watcher setup retry.
+Successful loading replaces candidate paths with resolved image paths.
 
 ```sh
 make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch
@@ -749,6 +825,10 @@ also include `lighting`, `timeline` and the default outliner.
 The Rendering pane (`USD_VIEWER_PANE=rendering`) switches between the control cage
 and subdivision levels 1–6 at runtime, reports refined mesh prim counts, and lists
 subdivision/point-instancer errors. These controls do not author USD opinions.
+Its Scene assets section counts USD mesh entities and distinct referenced mesh
+and StandardMaterial handles, including hidden entities but excluding viewer
+helpers. These are handle counts, not draw calls or GPU memory measurements;
+custom material types are not included in the StandardMaterial count.
 `assets/subdivision_cube.usda` and `scripts/replays/subdivision_toggle.replay`
 exercise level 2 at five seconds and restore the control cage at fourteen seconds;
 capture at eleven or twenty seconds respectively to inspect the two states.

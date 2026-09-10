@@ -25,6 +25,232 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Render flattened clip exports against direct samples
+
+`examples/flatten_scene.rs` exports a filesystem scene through the editor's
+Flattened save path. Its test verifies reopening USDZ, refusal of an existing
+output and invalid-input failure without creating output. The initial existence
+check is not exclusive publication against concurrent writers.
+`scripts/check_clipped_sphere.sh` now accepts a third argument, `flattened`,
+which exports USDZ before loading that package through the capture AssetServer.
+
+Both retimed single-clip and switching-clip exports match their independent
+direct-sample references at 0/5/10/20 and after two live roots reverse clocks:
+all ten comparisons have zero changed RGB pixels out of 921600. Captured mesh
+counts, actual clocks and reversal metadata pass; all baked static images and
+both live/reference pairs were visually inspected without overlays. Evidence:
+`target/baked-retimed-clips-regression/`,
+`target/baked-switching-clips-regression/`, and
+`/tmp/baked-{retimed,switching}-clips-gpu.log`.
+All 479 ordinary tests pass (13 ignored), all 13 native export tests pass, and
+check-all/build/whitespace and shell syntax validation pass:
+`/tmp/baked-gpu-{tests,native,check,build}.log`.
+This establishes sampled baked-export frame equivalence, not native-renderer
+parity, complete clip schedule coverage or full viewer/compositor acceptance.
+
+### Bake clip-resolved attributes in flattened editor saves
+
+The editor now bakes attributes whose proximal source is ValueClips into the
+flattened layer before shared instance subtrees are rebuilt. It queries sample
+keys and immediately preceding representable times, writes explicit value blocks
+where resolution is blocked, and anchors asset samples to resolved identifiers.
+Missing nonempty asset resolutions, clip-sourced timecode/timecode[] values and
+more than one million attempted sample entries reject the save before publication.
+Direct upstream Stage::flatten is unchanged. Root/edit saves retain clip metadata.
+
+Rust and native relocated-export tests cover scalar interpolation/switching and
+value-block boundaries across USDA/USDC/USD/USDZ. A separate moved-USDZ case
+verifies clip-selected asset bytes remain embedded and readable; omitting an
+asset leaves an existing destination unchanged. The nested/retimed instance
+fixture now sources its geometry size from a captured clip and verifies baked
+samples together with prototype sharing, root opinions and relationship targets.
+The former blanket clip-rejection test now checks unsupported timecode clips
+and untouched destinations in all four formats.
+All 478 ordinary tests pass (13 ignored), all 13 native export tests pass, and
+check-all/build/whitespace validation pass without warnings:
+`/tmp/clip-bake-{tests-final,native-final,check-final,build-final}.log`.
+This slice established export/value evidence; the later GPU comparisons above
+extend coverage without proving every clip type/schedule. Timecode retiming remains
+unresolved upstream; peak flattening memory still includes expanded instances.
+
+### Correct interpolation across active clip boundaries
+
+Native OpenUSD 25.05.01 probes (`/tmp/native-clip-switch-values.log`) show a
+two-clip schedule returning 3.5 at stage time 5; the Rust source regression
+returned 1.5 before the fix (`/tmp/clip-switch-before.log`). The vendored resolver
+now interpolates non-asset values between composed stage-time sample boundaries
+instead of using only the active clip's local sample map. An upcoming value block
+holds the preceding value until its boundary, as verified separately against
+native OpenUSD (`/tmp/native-clip-held-values.log`). Asset-valued resolution is
+unchanged. Downstream clip baking was subsequently added as described above;
+full schedule/timecode parity is not claimed.
+
+The review patch includes an upstream regression and passes reverse-apply check.
+All 55 upstream clip tests pass (`/tmp/clip-switch-upstream-complete.log`). Those
+tests used the vendored implementation, a temporary writable Cargo cache and the
+existing xtra external fixture pack read-only; generated vendor Cargo.lock was
+removed. No fixture checkout or Cargo configuration was modified.
+All 476 ordinary tests pass (11 ignored), 11 native export tests pass, and
+check-all/build/shell syntax/whitespace validation pass:
+`/tmp/clip-switch-{tests,native-exports,check,build}.log`.
+The switching-clips GPU fixture matches its native-verified direct-sample
+reference with zero RGB differences at 0/5/10/20 and after live clock reversal.
+All fixed-time clipped images, the midpoint reference and the live clipped image
+were visually inspected; spheres are unobscured. Artifacts:
+`target/switching-clips-regression/`, `/tmp/clip-switch-gpu.log`.
+
+### Preserve native instances in flattened editor saves
+
+Native USD output (`/tmp/native-instance-flat.usda.log`) establishes the shape:
+non-defining prototype roots, internal references from instance roots, and baked
+stage-time samples for retimed prototypes. The editor's flatten path now rebuilds
+that sharing after upstream flattening, grouping by canonical prototype identity
+and processing nested instance dependencies first. Namespace-aware spec copying
+remaps subtree paths; instance-root properties/opinions stay on each instance.
+Prototype names avoid existing prims. The original stage is not edited.
+
+The basic moved-USDZ native contract now requires shared instances for all three
+save modes, including Flattened. A nested/retimed fixture compares visible paths,
+root transforms, root properties, default/sampled values and relationship targets
+before/after; same-time roots share and retimed roots retain distinct prototypes.
+An existing Flattened_Prototype_1 prim survives. The same fixture passes through
+native OpenUSD after USDZ relocation, without diagnostics.
+All 475 ordinary tests pass (11 ignored), all 11 native export tests pass, and
+check-all/build/whitespace validation pass without warnings:
+`/tmp/instance-flatten-{tests,native-all,check,build}.log`.
+Direct upstream Stage::flatten still expands instances, as does the intermediate
+layer here: this preserves saved-file sharing, not peak export memory. The later
+clip-baking work above replaces this slice's blanket rejection of value clips.
+
+### Numeric clip dependency reload and recovery
+
+Two AssetServer regressions now exercise the clip dependency lifecycle: a named
+in-memory asset source with injected ModifiedAsset events and an actual native
+filesystem watcher. Both run the same sequence with roots at times 10 and 20:
+initial radii 2/3, a clip-only edit producing 3/5, a malformed clip causing both
+roots to fail while retaining mesh handles, and restoration recovering 2/3.
+Entity IDs and runtime names survive; reversing clocks after recovery yields 3/2.
+The native lane passes without manually emitting events or reloading the root.
+All 474 ordinary workspace tests pass (ten ignored), the native clip watcher
+regression passes, and check-all/build/whitespace validation pass:
+`/tmp/clip-reload-{tests,native,check,build}.log`.
+This covers dependency mutation/corruption/recovery, not active clip switching
+or missing-sample semantics within a multi-clip schedule.
+
+### Discover numeric value-clip dependencies before projection
+
+The file-loaded GPU clip fixture exposed a loader bug that the explicitly
+captured example could not: at time 10 its sphere stayed at radius 1 instead of
+2. The failed comparison changed 381,118 of 921,600 pixels, retained under
+`target/clipped-sphere-regression/`. A focused probe regression also failed with
+an empty missing-dependency set (`/tmp/clip-probe-before.log`). Validation only
+queried numeric attributes at default time, leaving their clip layers undiscovered.
+It now queries sample times for every attribute; sampled asset values are still
+read separately. The clip layer enters the existing captured dependency pipeline.
+
+The focused test verifies discovery and interpolation after inserting the layer.
+`scripts/check_clipped_sphere.sh` loads through AssetServer and compares an
+independently authored direct-sample reference at 0/10/20 and two live roots
+reversed from 10/20 to 20/10. All four comparisons have zero RGB differences;
+the fixed midpoint, endpoint and both live-clock images were visually inspected,
+with separated unobscured spheres. Artifacts: `target/clipped-sphere-fixed-regression/`.
+This is sampled Bevy-renderer equivalence, not native-renderer parity, clip
+switching or flattened clip baking. All 473 ordinary tests pass (ten ignored),
+ten native export tests pass, and check-all/build/shell syntax/whitespace pass:
+`/tmp/clip-load-{tests,native,check,build}.log`, `/tmp/clipped-sphere-fixed-gpu.log`.
+
+### Re-arm replaced editor texture directories on Unix
+
+Editor texture watching now checks watched directory device/inode identities at
+most once per second on Unix. Changed or unavailable directories drop only their
+own watcher, enter the existing setup retry path and queue a texture refresh.
+Identity is checked before and after installation to reject a directory changed
+during setup. This polls directory metadata, not image bytes or material graphs.
+Non-Unix directory replacement recovery remains unimplemented.
+
+Native regressions rename a watched directory and create its replacement without
+an intervening app update, verify recovered pixels and then another pixel edit,
+and preserve document identity/authored edits. Separate identity checks verify
+the one-second interval and retention of an unaffected watcher's receiver.
+The full feature suite caught an initial idle status change-tick regression
+(`/tmp/editor-directory-feature.log`); polling now mutates status only when a
+watcher actually needs re-arming.
+Final validation: 472 ordinary tests pass (ten ignored), 402 file-watcher tests
+pass (15 ignored), all three native editor watcher tests pass, and build/check
+and whitespace validation pass without warnings:
+`/tmp/editor-directory-{tests,feature-final,native-verified,check,build}.log`.
+
+### Watch failed texture requests after editor edits
+
+Editor texture refreshes now track requested paths separately from installed
+image handles. Failed reads/decodes retain the old images but update watch
+requests; successful document opens replace requests only after preparation
+succeeds. Unresolved relative paths require conservative candidate watches under
+loaded filesystem layer directories: the first native attempt exposed that the
+reader returns the unresolved relative spelling, which the watcher excluded
+(`/tmp/requested-texture-native-recheck.log`). Candidates may trigger extra
+refreshes; custom resolver/search paths and failed initial Open remain unsupported.
+Successful image loading replaces candidates with resolved paths.
+
+The native regression edits a live material to an image in a missing directory,
+checks retained pixels and failure status, creates the directory/image, verifies
+automatic recovery without changing document identity, selection or authored
+edits, then checks another pixel change is observed. A deterministic regression
+checks failed refresh retains image handles, records paths and clears requests
+when an empty image set is installed.
+All 472 ordinary tests pass (ten ignored), 402 file-watcher tests pass (15 ignored),
+and all three native editor watcher tests pass. Build/check and whitespace checks
+pass without warnings in the final logs:
+`/tmp/requested-texture-{tests-final,feature,all-native,check,build}.log`.
+
+### Captured value clips with independent Bevy clocks
+
+`examples/clipped_sources.rs` verifies a diskless root and captured clip layer
+with a 0..10 clip schedule mapped to stage times 0..20. Two Bevy roots share the
+source but independently sample endpoints and interpolation while moving both
+forward and backward. Mesh vertex radii, stable entity IDs, runtime names,
+Ready state and despawn cleanup are checked. The canonical attribute returns no
+time_samples map for the clip but does expose its stage-time sample keys;
+existing live projection handles this case without an implementation change.
+This is CPU-side projected geometry evidence for one clip, not GPU fidelity,
+clip switching, missing-sample behavior or flattened clip baking.
+The runnable example and all 471 ordinary tests pass (ten ignored), with
+check-all, build and whitespace validation:
+`/tmp/clipped-source-{focused,tests,check,build,example}.log`.
+
+### Viewer scene asset counts
+
+The Rendering pane now reports USD mesh entities and distinct referenced Mesh
+and StandardMaterial handles. Hidden entities count; non-USD helpers do not.
+Custom materials are excluded from the explicitly labeled StandardMaterial count.
+These are not loaded-asset, draw-call, GPU-memory or performance measurements.
+The regression checks shared handles, distinct handles, hidden entities, absent
+materials, non-mesh USD prims, helper exclusion, material changes and cleanup.
+All 470 ordinary tests pass (ten ignored), as do check-all and build:
+`/tmp/scene-count-{tests,check,build}.log`.
+The native UI capture `target/viewer-ui-captures/scene-counts.png` was inspected:
+all three sections are upright and readable, and the retimed-instance fixture
+reports three mesh entities sharing one mesh and one StandardMaterial at time zero.
+The pane obscures much of the model; this is UI evidence, not geometry acceptance
+or a resolution of the intermittent black-capture issue.
+
+### Reject invalid sublayer time offsets
+
+The same Bevy-world regression found a negative sublayer scale could also reach
+Ready (`/tmp/sublayer-offset-focused.log`). Source validation now checks authored
+sublayer offsets in all loaded, unmuted layers after traversal. It checks only
+entries corresponding to authored sublayer paths; missing entries keep identity
+defaults, and trailing offsets without a corresponding path are ignored.
+This does not eagerly load unselected branches or unloaded layers.
+
+The regression now covers negative and zero scales on references, payloads and
+sublayers. Existing roots retain their entities/runtime names on failure; fresh
+roots publish no geometry, and restoring the valid source recovers Ready with
+stable identities. The focused recheck passes: `/tmp/sublayer-offset-recheck.log`.
+All 469 ordinary workspace tests pass (ten ignored), as do ten native export
+tests, check-all, build and whitespace validation:
+`/tmp/sublayer-offset-{tests,native,check,build}.log`.
+
 ### Reject invalid payload time offsets
 
 The expanded Bevy-world regression reproduces the same silent identity-timing
@@ -149,6 +375,8 @@ the runnable example and whitespace validation:
 `/tmp/retimed-instance-{tests,check,build,example}.log`.
 
 ### Reject lossy value-clip flattening
+
+Historical guard, superseded by the clip-baking implementation above.
 
 EditorSession::save now checks the same ALL prim traversal used by the upstream
 flattener and rejects Flattened saves when composed clips metadata is present.

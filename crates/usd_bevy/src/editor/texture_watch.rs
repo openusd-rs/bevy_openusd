@@ -7,7 +7,7 @@ use bevy::{
 };
 use std::{collections::BTreeSet, path::PathBuf, time::{Duration, Instant}};
 
-/// Watches installed external textures and queues document-preserving refreshes.
+/// Watches requested external textures and queues document-preserving refreshes.
 /// Requires EditorPlugin. Package entries and USD layers are not watched.
 pub struct EditorTextureWatchPlugin;
 
@@ -24,6 +24,10 @@ struct WatchState {
     paths: BTreeSet<PathBuf>,
     pending: BTreeSet<PathBuf>,
     next_attempt: Option<Instant>,
+    #[cfg(unix)]
+    next_identity_check: Option<Instant>,
+    #[cfg(unix)]
+    identities: std::collections::BTreeMap<PathBuf, (u64, u64)>,
     watchers: Vec<(
         PathBuf,
         async_channel::Receiver<AssetSourceEvent>,
@@ -37,9 +41,20 @@ fn install_watchers(state: &mut WatchState, status: &mut EditorTextureWatchStatu
     let mut recovered = false;
     status.error = None;
     for parent in std::mem::take(&mut state.pending) {
+        #[cfg(unix)]
+        let identity = directory_identity(&parent);
         let (sender, receiver) = async_channel::unbounded();
         match FileWatcher::new(parent.clone(), sender, Duration::from_millis(300)) {
             Ok(watcher) => {
+                #[cfg(unix)]
+                {
+                    if identity.is_none() || directory_identity(&parent) != identity {
+                        status.error = Some(format!("texture watcher directory changed during setup: {}", parent.display()));
+                        state.pending.insert(parent);
+                        continue;
+                    }
+                    state.identities.insert(parent.clone(), identity.unwrap());
+                }
                 status.files += state.paths.iter().filter(|path| path.parent() == Some(parent.as_path())).count();
                 state.watchers.push((parent, receiver, watcher));
                 recovered |= retry;
@@ -54,6 +69,30 @@ fn install_watchers(state: &mut WatchState, status: &mut EditorTextureWatchStatu
     recovered
 }
 
+#[cfg(unix)]
+fn directory_identity(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    metadata.is_dir().then(|| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(unix)]
+fn rearm_replaced_directories(state: &mut WatchState, now: Instant) -> Option<usize> {
+    if state.next_identity_check.is_some_and(|next| now < next) { return None; }
+    state.next_identity_check = Some(now + Duration::from_secs(1));
+    let replaced: BTreeSet<_> = state.watchers.iter().filter_map(|(parent, _, _)| {
+        (directory_identity(parent).as_ref() != state.identities.get(parent)).then(|| parent.clone())
+    }).collect();
+    if replaced.is_empty() { return None; }
+    state.watchers.retain(|(parent, _, _)| !replaced.contains(parent));
+    for parent in &replaced { state.identities.remove(parent); }
+    state.pending.extend(replaced);
+    let files = state.paths.iter().filter(|path|
+        state.watchers.iter().any(|(parent, _, _)| path.parent() == Some(parent.as_path()))).count();
+    state.next_attempt = Some(now);
+    Some(files)
+}
+
 impl Plugin for EditorTextureWatchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WatchState>()
@@ -64,7 +103,7 @@ impl Plugin for EditorTextureWatchPlugin {
 
 fn watch_textures(
     editor: Option<NonSend<EditorSession>>,
-    textures: Option<Res<crate::asset::SnapshotTextures>>,
+    textures: Option<Res<super::EditorTextureRequests>>,
     bridge: Res<EditorBridge>,
     mut state: ResMut<WatchState>,
     mut status: ResMut<EditorTextureWatchStatus>,
@@ -80,13 +119,18 @@ fn watch_textures(
             .as_ref()
             .filter(|_| document.is_some())
             .into_iter()
-            .flat_map(|textures| textures.0.keys())
-            .filter(|(path, _)| !openusd::ar::is_package_relative_path(path))
-            .map(|(path, _)| PathBuf::from(path))
+            .flat_map(|textures| textures.0.iter())
+            .filter(|path| !openusd::ar::is_package_relative_path(path))
+            .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .collect();
         if state.document != document || state.paths != paths {
             state.watchers.clear();
+            #[cfg(unix)]
+            {
+                state.identities.clear();
+                state.next_identity_check = None;
+            }
             state.document = document;
             state.paths = paths;
             status.files = 0;
@@ -101,8 +145,13 @@ fn watch_textures(
     }
     let now = Instant::now();
     let mut changed = false;
+    #[cfg(unix)]
+    if let Some(files) = rearm_replaced_directories(&mut state, now) {
+        status.files = files;
+        changed = true;
+    }
     if !state.pending.is_empty() && state.next_attempt.is_none_or(|next| now >= next) {
-        changed = install_watchers(&mut state, &mut status, now);
+        changed |= install_watchers(&mut state, &mut status, now);
     }
     for (parent, receiver, _) in &state.watchers {
         while let Ok(event) = receiver.try_recv() {
@@ -171,6 +220,21 @@ mod tests {
         assert!(retained.same_channel(&state.watchers[0].1));
         assert!(!install_watchers(&mut state, &mut status, now + Duration::from_secs(2)));
         assert_eq!(status.files, 2);
+        #[cfg(unix)]
+        {
+            assert_eq!(rearm_replaced_directories(&mut state, now + Duration::from_secs(2)), None);
+            std::fs::rename(&missing, directory.path().join("old-missing")).unwrap();
+            std::fs::create_dir(&missing).unwrap();
+            assert_eq!(rearm_replaced_directories(&mut state, now + Duration::from_millis(2999)), None);
+            status.files = rearm_replaced_directories(&mut state, now + Duration::from_secs(3)).unwrap();
+            assert_eq!(status.files, 1);
+            assert_eq!(state.pending, [missing.clone()].into());
+            assert!(retained.same_channel(&state.watchers[0].1));
+            assert!(install_watchers(&mut state, &mut status, now + Duration::from_secs(3)));
+            assert_eq!(status.files, 2);
+            assert!(retained.same_channel(&state.watchers[0].1));
+            assert_eq!(rearm_replaced_directories(&mut state, now + Duration::from_secs(4)), None);
+        }
     }
 
     fn png(pixel: [u8; 4]) -> Vec<u8> {
@@ -261,6 +325,41 @@ def Material "Mat" {
         assert_eq!(view.document.selected.as_deref(), Some("/Mat"));
         assert_eq!(view.status, "Ready");
         assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), before);
+        bridge.send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
+            prim: "/Mat/Texture".into(), name: "inputs:file".into(), type_name: "asset".into(),
+            value: openusd::sdf::Value::AssetPath(openusd::sdf::AssetPath::new("new-images/later.png")),
+        })).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.contains("Texture loading failed"));
+        assert_eq!(pixels(app.world()), [0, 0, 255, 255]);
+        let requested = directory.path().join("new-images/later.png");
+        assert!(app.world().resource::<super::super::EditorTextureRequests>().0.contains(requested.to_str().unwrap()), "requests={:?}; status={}", app.world().resource::<super::super::EditorTextureRequests>().0, bridge.view().unwrap().status);
+        let edited = app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 0);
+        assert!(app.world().resource::<EditorTextureWatchStatus>().error.is_some());
+        std::fs::create_dir(requested.parent().unwrap()).unwrap();
+        std::fs::write(&requested, png([0, 255, 0, 255])).unwrap();
+        tick_until(&mut app, |world| pixels(world) == [0, 255, 0, 255]);
+        assert_eq!(bridge.view().unwrap().document.document_id, id);
+        assert_eq!(bridge.view().unwrap().document.selected.as_deref(), Some("/Mat"));
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), edited);
+        std::fs::write(&requested, png([255, 255, 0, 255])).unwrap();
+        tick_until(&mut app, |world| pixels(world) == [255, 255, 0, 255]);
+        #[cfg(unix)]
+        {
+            let parent = requested.parent().unwrap();
+            let moved = directory.path().join("replaced-images");
+            std::fs::rename(parent, &moved).unwrap();
+            std::fs::create_dir(parent).unwrap();
+            std::fs::write(&requested, png([255, 0, 255, 255])).unwrap();
+            tick_until(&mut app, |world| pixels(world) == [255, 0, 255, 255]);
+            std::fs::write(&requested, png([0, 255, 255, 255])).unwrap();
+            tick_until(&mut app, |world| pixels(world) == [0, 255, 255, 255]);
+            assert_eq!(bridge.view().unwrap().document.document_id, id);
+            assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), edited);
+        }
     }
 
     #[test]

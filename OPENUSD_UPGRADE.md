@@ -1,5 +1,23 @@
 # OpenUSD upgrade and capability reassessment
 
+## Editor clip baking
+
+The Bevy editor now bakes clip-resolved attributes during flattened saves before
+rebuilding shared instance subtrees. This is downstream export logic, not a
+change to upstream Stage::flatten. It anchors asset samples, preserves blocks
+and rejects clip-sourced timecode values, unresolved assets and excessive sample
+counts. Root/edit-layer saves remain composition-preserving. See README.md and
+BEVY_WORK.md for native export coverage and remaining scope.
+
+## Clip activation interpolation
+
+`patches/openusd-clip-activation-samples.patch` corrects non-asset interpolation
+across active-clip boundaries in the vendored baseline. Native OpenUSD probes
+and the containing Bevy regression distinguish interpolation toward the next
+activation value from interpolation solely inside the active clip. Value-block
+boundaries retain the preceding value until the boundary; asset resolution is
+unchanged. This is a prerequisite for faithful clip baking, not baking support.
+
 ## Integrated writer fixes
 
 The fifth local patch, `patches/openusd-layer-reanchoring.patch`, adds

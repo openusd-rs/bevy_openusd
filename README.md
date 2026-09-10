@@ -224,6 +224,16 @@ radii and stable entities across clock changes:
 make run RUN_WITH= APP_TARGET='--example retimed_sources'
 ```
 
+`examples/clipped_sources.rs` captures a value-clip dependency in memory and
+checks two independent Bevy clocks against projected sphere radii. It exercises
+retimed endpoints, interpolation, backward clock changes, stable entity IDs,
+runtime names and root cleanup. This single-clip example does not cover clip
+switching or flattened clip baking.
+
+```sh
+make run RUN_WITH= APP_TARGET='--example clipped_sources'
+```
+
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under
 two independent Bevy roots, typed reference composition, shared meshes and isolated edits without source files.

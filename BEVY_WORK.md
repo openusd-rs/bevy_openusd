@@ -25,6 +25,21 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Captured value clips with independent Bevy clocks
+
+`examples/clipped_sources.rs` verifies a diskless root and captured clip layer
+with a 0..10 clip schedule mapped to stage times 0..20. Two Bevy roots share the
+source but independently sample endpoints and interpolation while moving both
+forward and backward. Mesh vertex radii, stable entity IDs, runtime names,
+Ready state and despawn cleanup are checked. The canonical attribute returns no
+time_samples map for the clip but does expose its stage-time sample keys;
+existing live projection handles this case without an implementation change.
+This is CPU-side projected geometry evidence for one clip, not GPU fidelity,
+clip switching, missing-sample behavior or flattened clip baking.
+The runnable example and all 471 ordinary tests pass (ten ignored), with
+check-all, build and whitespace validation:
+`/tmp/clipped-source-{focused,tests,check,build,example}.log`.
+
 ### Viewer scene asset counts
 
 The Rendering pane now reports USD mesh entities and distinct referenced Mesh

@@ -78,7 +78,8 @@ fn publish_projection_issues(
     issues: Query<&crate::route::reflect::UsdReflectIssues>,
     rendering: Query<(Option<&crate::route::subdivision::UsdSubdivisionError>,
         Option<&crate::route::skel::UsdDeformationError>, Option<&crate::route::instancer::UsdInstancerWarning>,
-        Option<&crate::route::shapes::UsdShapeError>, Option<&crate::route::curves::UsdCurveError>)>,
+        Option<&crate::route::shapes::UsdShapeError>, Option<&crate::route::curves::UsdCurveError>,
+        Option<&crate::route::xform::UsdTransformError>)>,
 ) {
     let Ok(mut state) = bridge.0.lock() else { return };
     state.view.document.reflect_issues = state.view.document.selected.as_deref()
@@ -88,12 +89,13 @@ fn publish_projection_issues(
     state.view.document.render_issues = state.view.document.selected.as_deref()
         .and_then(|path| prims.as_ref()?.entity(path))
         .and_then(|entity| rendering.get(entity).ok())
-        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve)| {
+        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve, transform)| {
             [subdivision.map(|error| format!("Subdivision: {}", error.0)),
                 deformation.map(|error| format!("Deformation: {}", error.0)),
                 instancer.map(|error| format!("Point instancer: {}", error.0)),
                 shape.map(|error| format!("Shape: {}", error.0)),
-                curve.map(|error| format!("Curve: {}", error.0))]
+                curve.map(|error| format!("Curve: {}", error.0)),
+                transform.map(|error| format!("Transform: {}", error.0))]
                 .into_iter().flatten().collect()
         });
 }
@@ -895,18 +897,19 @@ def Xform "Model" (
     #[test]
     fn selected_render_failures_publish_and_clear() {
         use crate::route::{subdivision::UsdSubdivisionError, skel::UsdDeformationError, instancer::UsdInstancerWarning, shapes::UsdShapeError, curves::UsdCurveError};
+        use crate::route::xform::UsdTransformError;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, EditorPlugin));
         app.init_resource::<crate::live::PrimEntities>();
         let entity = app.world_mut().spawn((UsdSubdivisionError("unsupported holes".into()),
-            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()))).id();
+            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()), UsdTransformError("projective matrix".into()))).id();
         app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Prim", entity);
         let bridge = app.world().resource::<EditorBridge>().clone();
         bridge.0.lock().unwrap().view.document.selected = Some("/Prim".into());
         app.update();
         assert_eq!(bridge.view().unwrap().document.render_issues,
-            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts"]);
-        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError)>();
+            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts", "Transform: projective matrix"]);
+        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError, UsdTransformError)>();
         app.update();
         assert!(bridge.view().unwrap().document.render_issues.is_empty());
         app.world_mut().entity_mut(entity).insert(UsdSubdivisionError("unsupported holes".into()));

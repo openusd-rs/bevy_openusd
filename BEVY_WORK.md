@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Visible transform diagnostics
+
+The selected prim's `UsdTransformError` now joins the inspector's rendering
+issues, rather than being visible only to low-level capture. The publication
+regression includes transform errors and checks clearing after component removal
+and selection changes. `assets/xform_invalid.usda` supplies a projective matrix
+over the material-panel fixture.
+
+The actual inspector was captured and inspected at
+`target/viewer-ui-captures/xform-invalid-inspector.png` with `/Panels` selected.
+It visibly reports `Transform: non-finite or projective USD transform` while the
+fallback pose remains displayed. The private compositor/viewer was cleaned up;
+known UI SSAO/shared-device and desktop integration warnings remain.
+Low-level capture of the same fixture returned a nonzero exit with the prim path
+and transform error, no CAPTURE_OK and no output PNG. Evidence:
+`/tmp/xform-invalid-ui.log`, `/tmp/xform-invalid-capture.log` and the UI capture's
+adjacent viewer/compositor logs. This does not add a matrix-editing inspector
+widget or scene-wide error summary.
+All 404 ordinary tests pass (seven optional native tests ignored), with check-all,
+build and whitespace checks passing. Logs:
+`/tmp/xform-diagnostics-{tests,check,build}.log`.
+
 ### Matrix-preserving editor command
 
 `EditorEdit::TransformMatrix` accepts a finite affine column-major f64 matrix

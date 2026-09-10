@@ -95,6 +95,15 @@ make run RUN_WITH= APP_TARGET='--example source_benchmark' ARGS=128
 make run RUN_WITH= APP_TARGET='--release --example source_benchmark' ARGS=128
 ```
 
+Set `USD_PROFILE_SOURCES=1` to report opening, override application, composition
+validation and projection/reconciliation separately. Add `USD_PROFILE_ROUTES=1`
+for route matching/application counters per load/reload phase. Profiling output
+goes to stderr; CSV timings remain on stdout. Both instruments add timing overhead.
+Apps can opt in directly with `usd_bevy::asset::UsdSceneTimings`; its cumulative
+attempt/failure counters and durations can be read or reset. Failures counted here
+occur during stage opening, overrides or validation, not earlier AssetServer I/O.
+No clock reads are added to source publication when this resource is absent.
+
 The separate `projection_benchmark` measures direct LiveStage projection and edits,
 not the source-root publication path. Its timings are not interchangeable with
 the lifecycle benchmark. Debug timings are diagnostic, not production guarantees.

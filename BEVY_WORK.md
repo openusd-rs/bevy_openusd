@@ -25,6 +25,33 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Opt-in source publication phase profiling
+
+Added `asset::UsdSceneTimings`, an optional resource accumulating stage-open,
+override, validation and projection/reconciliation durations plus attempt/failure
+counts. The timing helper bypasses clock reads when disabled; the resource is not
+installed by default. Cached/idle roots do not add attempts. Failed opens and
+validation failures are counted before returning the existing projection; earlier
+AssetServer load failures and texture/resource bookkeeping are outside these
+phase counters.
+
+The source benchmark exposes USD_PROFILE_SOURCES and the existing USD_PROFILE_ROUTES,
+reporting and resetting each phase's counters outside its wall-clock measurement.
+Tests exercise enabled/disabled measurement, expected root counts, no idle attempts
+or route callbacks, and failure counts in the existing recovery regression.
+
+Source-only debug profiling (`/tmp/source-phase-profile.log`) at four roots x 128
+native instances measured reload validation 357.982–410.243ms versus projection
+860.684–912.952ms; opening was 7.837–11.265ms. With route timing also enabled
+(`/tmp/source-route-profile.log`), ShapesRoute application was 175.786–210.888ms,
+MaterialRoute 68.281–82.753ms and VisibilityRoute 57.579–66.092ms. Projection as a
+whole was 886.685–1025.285ms, leaving substantial work outside those callbacks.
+These are noisy debug measurements with instrumentation overhead, not independent
+CPU speedup evidence or release/rendered performance acceptance.
+
+All 378 ordinary tests, check-all, build and the profiled 128-instance benchmark
+pass (`/tmp/source-phase-{tests,check,build}.log`); whitespace checks pass.
+
 ### End-to-end source-root performance baseline
 
 Added `examples/source_benchmark.rs` to exercise actual UsdSceneRoot publication,

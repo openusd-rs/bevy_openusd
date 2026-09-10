@@ -25,6 +25,34 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### GPU capture of shared morph materials and independent clocks
+
+The fixed-camera capture now records hierarchy-visible flat-material entity
+counts and unique material IDs alongside the existing GPU morph counts. A native
+Vulkan capture of morph_animation with independent clocks 0,10 reports two GPU
+morph meshes, two flat-material entities and one unique flat material. The
+inspected image shows an undeformed left quad and deformed right quad. Swapping
+the clocks to 10,0 swaps those shapes in a separate captured run; this is not a
+live clock-change acceptance test.
+
+Artifacts: `target/shared_morph_gpu_verified.png`,
+`target/shared_morph_gpu_swapped.png`, their adjacent capture.txt reports and
+CPU references `target/shared_morph_cpu.png` / `target/shared_morph_cpu_swapped.png`.
+Camera eye=(0,1,8), target=(0,1,0), shadow maps disabled. The 0,10 CPU comparison
+has one changed pixel, maximum RGB error one; strict zero tolerance fails. No
+threshold was relaxed. This is a bounded fixture result, not arbitrary morph,
+normal-map, shadow or renderer equivalence.
+
+The 10,0 comparison is pixel-identical at strict zero tolerance across all
+921600 pixels. Both GPU metadata reports confirm two morph meshes and one shared
+flat material. All four final CPU/GPU images were inspected. Comparison logs:
+`/tmp/shared-morph-verified-compare.log` and
+`/tmp/shared-morph-swapped-compare-final.log`. An earlier swapped comparison ran
+before its CPU capture finished and reported a missing file; only the rerun
+after CAPTURE_OK supplies the swapped comparison result.
+All 442 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/shared-morph-{tests,check,build}.log`.
+
 ### Shared flat-normal materials for independent GPU morph instances
 
 GPU deformation plugin setup now installs a private flat-material cache keyed by

@@ -253,7 +253,7 @@ fn select_authored_camera(mut capture: ResMut<Capture>,
 fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     progress: Res<PipelineProgress>,
     states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
-    meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>), With<Mesh3d>>,
+    meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>, Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>), With<Mesh3d>>,
     camera: Query<&RenderTarget, With<CaptureCamera>>,
     environments: Query<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState, With<CaptureCamera>>,
     environment_lights: Query<&bevy::light::EnvironmentMapLight, With<CaptureCamera>>,
@@ -332,10 +332,14 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     capture.ready_frames += 1;
     if capture.ready_frames < 60 { return; }
     let Ok(target) = camera.single() else { return };
-    let visible = meshes.iter().filter(|(_, visibility, _, _, _)| visibility.get()).count();
-    let gpu = meshes.iter().filter(|(_, visibility, skin, _, _)| visibility.get() && skin.is_some()).count();
-    let morph = meshes.iter().filter(|(_, visibility, _, _, morph)| visibility.get() && morph.is_some()).count();
+    let visible = meshes.iter().filter(|(_, visibility, _, _, _, _)| visibility.get()).count();
+    let gpu = meshes.iter().filter(|(_, visibility, skin, _, _, _)| visibility.get() && skin.is_some()).count();
+    let morph = meshes.iter().filter(|(_, visibility, _, _, morph, _)| visibility.get() && morph.is_some()).count();
+    let flat_handles: Vec<_> = meshes.iter().filter(|(_, visibility, _, _, _, _)| visibility.get())
+        .filter_map(|(_, _, _, _, _, material)| material.map(|material| material.0.id())).collect();
+    let flat_unique: std::collections::HashSet<_> = flat_handles.iter().copied().collect();
     capture.mesh_report = format!("hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n");
+    capture.mesh_report.push_str(&format!("hierarchy_visible_flat_material_entities={}\nhierarchy_visible_unique_flat_materials={}\n", flat_handles.len(), flat_unique.len()));
     capture.mesh_report.push_str(&format!("studio_baseline_lux={:?}\n", studio_lights.iter().map(|light| light.0).collect::<Vec<_>>()));
     if let Ok(dome) = std::env::var("USD_CAPTURE_DOME") {
         capture.mesh_report.push_str(&format!("dome={dome}\ndome_maps_attached=true\ndirectional_lights_disabled=true\ncamera_ambient_disabled=true\n"));
@@ -345,7 +349,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
         capture.mesh_report.push_str(&format!("active_environment_generators={}\nrecorded_environment_generations={}\n",
             generators.iter().count(), dome_diagnostics.as_ref().map_or(0, |d| d.recorded_generations)));
     }
-    for (entity, visibility, _, fallback, _) in &meshes {
+    for (entity, visibility, _, fallback, _, _) in &meshes {
         if visibility.get() && let Some(fallback) = fallback {
             capture.mesh_report.push_str(&format!("cpu_fallback[{entity:?}]={}\n", fallback.0));
         }

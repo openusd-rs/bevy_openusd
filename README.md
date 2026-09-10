@@ -979,6 +979,12 @@ USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example bridge_capture_probe' --eva
 
 The asset argument is ignored. Inspect both the cube and the egui label; a
 nonblack background alone does not prove that the bridge rendered correctly.
+The probe defaults to `USD_BRIDGE_PROBE_TRANSFER=native`, sharing the host wgpu
+device and registering the Bevy texture directly. Set
+`USD_BRIDGE_PROBE_TRANSFER=cpu` to construct an independent Bevy device and use
+Mara's existing CPU readback/egui texture upload path. Both construction and
+per-frame drawing omit the host render state in CPU mode. This diagnostic does
+not change the viewer's transfer path or establish a production fallback.
 
 The `.settings.txt` companion records compositor backend, output/inspection
 dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's

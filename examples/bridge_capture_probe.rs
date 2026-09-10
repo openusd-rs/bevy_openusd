@@ -8,16 +8,28 @@ struct Probe {
     workspace: WorkspaceStack,
     context: eframe::egui::Context,
     announced: bool,
+    cpu_readback: bool,
+}
+
+fn cpu_readback(value: Option<&str>) -> Result<bool, &'static str> {
+    match value {
+        None | Some("native") => Ok(false),
+        Some("cpu") => Ok(true),
+        _ => Err("USD_BRIDGE_PROBE_TRANSFER must be native or cpu"),
+    }
 }
 
 impl WindowApp for Probe {
     fn new(ctx: CreationContext<'_>) -> Self {
-        eprintln!("BRIDGE_CAPTURE_PROBE Bevy viewport, no USD plugins or editor");
+        let cpu_readback = cpu_readback(std::env::var("USD_BRIDGE_PROBE_TRANSFER").ok().as_deref()).unwrap();
+        eprintln!("BRIDGE_CAPTURE_PROBE Bevy viewport, no USD plugins or editor, cpu_readback={cpu_readback}");
         Self {
-            viewport: mara_bevy::MaraBevyViewport::with_render_state_and_content(ctx.gpu(), configure),
+            viewport: if cpu_readback { mara_bevy::MaraBevyViewport::with_content(configure) }
+                else { mara_bevy::MaraBevyViewport::with_render_state_and_content(ctx.gpu(), configure) },
             workspace: WorkspaceStack::new("bridge-probe"),
             context: ctx.__internal_egui_ctx().clone(),
             announced: false,
+            cpu_readback,
         }
     }
 
@@ -26,7 +38,7 @@ impl WindowApp for Probe {
         let accent = active_accent();
         let mut view = host.view_ctx(&mut self.workspace, accent, RibbonAvoidance::all());
         view.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / 60.0));
-        self.viewport.show(&mut view, host.gpu(), accent);
+        self.viewport.show(&mut view, if self.cpu_readback { None } else { host.gpu() }, accent);
         let painter = self.context.layer_painter(eframe::egui::LayerId::new(
             eframe::egui::Order::Foreground, eframe::egui::Id::new("bridge-probe-label")));
         painter.text(eframe::egui::pos2(32.0, 32.0), eframe::egui::Align2::LEFT_TOP,
@@ -56,7 +68,22 @@ fn setup(mut commands: Commands, target: Res<mara_bevy::BevyViewportRenderTarget
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let transfer = std::env::var("USD_BRIDGE_PROBE_TRANSFER");
+    if matches!(transfer, Err(std::env::VarError::NotUnicode(_))) {
+        return Err("USD_BRIDGE_PROBE_TRANSFER must be Unicode".into());
+    }
+    cpu_readback(transfer.ok().as_deref())?;
     mara::window::run::<Probe>()
+}
+
+#[test]
+fn bridge_transfer_modes_are_explicit() {
+    assert_eq!(cpu_readback(None), Ok(false));
+    assert_eq!(cpu_readback(Some("native")), Ok(false));
+    assert_eq!(cpu_readback(Some("cpu")), Ok(true));
+    for invalid in ["", "true", "CPU", "gpu"] {
+        assert!(cpu_readback(Some(invalid)).is_err());
+    }
 }
 
 #[test]

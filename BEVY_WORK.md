@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Compare native sharing with CPU viewport transfer
+
+The bridge probe accepts `USD_BRIDGE_PROBE_TRANSFER=native|cpu` (native default).
+CPU mode uses canonical Mara with_content and passes no render state to show,
+so Bevy creates its own device and sends CPU-readback pixels through egui upload.
+Unknown/non-Unicode modes fail before window creation. No viewer default changed.
+
+Three fresh private Vulkan Weston CPU-mode captures all passed inspection; all
+three images show the orange cube, blue viewport and upright white egui label.
+Evidence: `target/viewer-ui-captures/bridge-cpu-{1,2,3}*` and
+`/tmp/bridge-transfer-gpu.log`. Logs confirm cpu_readback=true. Sampled compositor
+commit/paint rates were 27/19, 23/17 and 35/19 Hz, unlike the native run's 667/60.
+This comparison changes both device sharing and frame cadence; three successes
+do not establish causality, reliability or an acceptable production fallback.
+The native black-window reproducer remains unresolved and preserved.
+
+All 492 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/bridge-transfer-{tests,check,build}.log`. The new option unit test
+covers defaults, both modes and invalid values.
+
 ### Reproduce black presentation without USD
 
 `examples/bridge_capture_probe.rs` runs the canonical Mara/Bevy viewport bridge

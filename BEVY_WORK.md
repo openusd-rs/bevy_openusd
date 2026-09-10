@@ -5664,3 +5664,33 @@ support or guarantee diagnostics for every unsupported prototype shape.
 
 Validation: make test-all (192 tests), make check-all, make build with offline
 Cargo and git diff --check pass; /tmp/usd-instancer-validation-{tests,check,build}.log.
+
+## Signed Preview Surface normal texture transforms
+
+Preview Surface UsdUVTexture normals now retain full RGB scale/bias, including
+sampled material interfaces, and encode the signed result for Bevy with
+`(sample * scale + bias + 1) / 2`. Nonidentity conversions use the bounded linear
+RGBA16Float texture cache; canonical scale 2/bias -1 retains the original image.
+Other surface dialects and ND_normalmap wrappers retain previous handling rather
+than applying an additional signed decode. General MaterialX processing, deformed
+tangents and per-texture UV transforms are not completed by this change.
+
+The normal fixture includes white-texture scale (0,0.5,0.5), zero bias, an
+independent geometry-normal reference and opposite-Y control. All six generated
+images were inspected at eye (0,1,5), focus (0,1,0), forward rendering, shadows
+off. Evidence: `target/normal-transform-fixture/`,
+`/tmp/normal-transform-{scaled_mapped,scaled_reference,scaled_opposite,mapped,reference,opposite}.log`.
+All captures report CAPTURE_OK without WARN/ERROR. Strict-zero comparison fails:
+scaled mapped/reference differs at six of 921600 pixels, max RGB error 1;
+canonical mapped/reference retains its two-pixel, max RGB-1 difference.
+Both opposite controls differ at 121104 pixels, max RGB error 163. Logs:
+`/tmp/normal-transform-*-compare.log`. This is near-reference constant-normal
+evidence, not pixel-exact parity or filtered/deformed-normal acceptance.
+
+Validation: 503 ordinary tests pass, 13 native tests ignored; make check-all,
+make build and git diff --check pass. Logs:
+`/tmp/normal-transform-tests-final.log`, `/tmp/normal-transform-{check,build}.log`.
+Tests cover signed encoding, canonical identity reuse, animated interface reads
+at 0/5/10/backward 0, shader/wrapper exclusions and source preservation.
+Live rendered normal-interface reversal remains to be verified; the full Bevy
+acceptance checklist and intermittent black host-window issue remain open.

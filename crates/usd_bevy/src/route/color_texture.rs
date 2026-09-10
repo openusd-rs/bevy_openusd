@@ -17,9 +17,12 @@ pub(super) fn append_rgba(data: &mut Vec<u8>, rgba: [f32; 4]) -> anyhow::Result<
 }
 
 pub(super) fn transformed(world: &mut World, read: &ReadPreviewMaterial, semantic: &str) -> anyhow::Result<Option<Handle<Image>>> {
-    let [scale, bias] = read.color_texture_transform(semantic);
+    let [scale, bias] = if semantic == "normal" {
+        let Some([scale, bias]) = read.normal_texture_transform else { return Ok(None); };
+        [scale.map(|v| v * 0.5), bias.map(|v| v * 0.5 + 0.5)]
+    } else { read.color_texture_transform(semantic) };
     if scale == [1.0; 3] && bias == [0.0; 3] { return Ok(None); }
-    let path = match semantic { "diffuse" => &read.diffuse_texture, "emissive" => &read.emissive_texture,
+    let path = match semantic { "diffuse" => &read.diffuse_texture, "emissive" => &read.emissive_texture, "normal" => &read.normal_texture,
         _ => anyhow::bail!("unsupported color texture semantic: {semantic}") };
     let Some(path) = path else { return Ok(None); };
     anyhow::ensure!(scale.iter().chain(&bias).all(|v| v.is_finite()), "nonfinite color texture scale/bias");
@@ -106,6 +109,21 @@ mod tests {
     }
 
     #[test]
+    fn signed_normal_transforms_encode_for_bevy_without_double_decoding() {
+        let mut world = world_with_pixel(false, [255; 4]);
+        let mut read = ReadPreviewMaterial { normal_texture: Some("color.png".into()), ..default() };
+        assert!(transformed(&mut world, &read, "normal").unwrap().is_none());
+        read.normal_texture_transform = Some([[2.0; 3], [-1.0; 3]]);
+        assert!(transformed(&mut world, &read, "normal").unwrap().is_none());
+        read.normal_texture_transform = Some([[0.0, 0.5, 0.5], [0.0; 3]]);
+        let handle = transformed(&mut world, &read, "normal").unwrap().unwrap();
+        assert_eq!(pixel(&world, &handle), [0.5, 0.75, 0.75, 1.0]);
+        read.normal_texture_transform = Some([[1.0; 3], [0.0; 3]]);
+        let handle = transformed(&mut world, &read, "normal").unwrap().unwrap();
+        assert_eq!(pixel(&world, &handle), [1.0; 4]);
+    }
+
+    #[test]
     fn opacity_packing_preserves_transformed_hdr_rgb() {
         let mut world = world_with_pixel(false, [255,255,255,64]);
         let mut read = ReadPreviewMaterial { diffuse_texture: Some("color.png".into()),
@@ -130,6 +148,7 @@ def Material "Mat" {
         uniform token info:id = "UsdPreviewSurface"
         color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
         color3f inputs:emissiveColor.connect = </Mat/Tex.outputs:rgb>
+        normal3f inputs:normal.connect = </Mat/Tex.outputs:rgb>
         token outputs:surface
     }
     def Shader "Tex" {
@@ -147,6 +166,7 @@ def Material "Mat" {
             for semantic in ["diffuse", "emissive"] {
                 assert_eq!(read.color_texture_transform(semantic), [[gain, gain + 1.0, gain + 2.0], [0.1,0.2,0.3]]);
             }
+            assert_eq!(read.normal_texture_transform, Some([[gain, gain + 1.0, gain + 2.0], [0.1,0.2,0.3]]));
         }
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
     }

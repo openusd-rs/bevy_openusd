@@ -38,6 +38,8 @@ pub struct ReadPreviewMaterial {
     pub scalar_texture_transforms: std::collections::BTreeMap<String, [f32; 2]>,
     /// RGB [scale, bias] for diffuse and emissive textures.
     pub color_texture_transforms: std::collections::BTreeMap<String, [[f32; 3]; 2]>,
+    /// Signed tangent-space RGB transform for Preview Surface UsdUVTexture normals.
+    pub normal_texture_transform: Option<[[f32; 3]; 2]>,
     pub warnings: Vec<String>,
 
     /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
@@ -173,6 +175,9 @@ pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64
         }
     }
     out.uv_transform = read_uv_transform(stage, &textures, time)?;
+    if !matches!(shader_id.as_deref(), None | Some("UsdPreviewSurface") | Some("ND_UsdPreviewSurface_surfaceshader")) {
+        out.normal_texture_transform = None;
+    }
     out.warnings.sort();
     out.warnings.dedup();
     Ok(Some(out))
@@ -373,7 +378,7 @@ fn resolve_surface_shader(
 
 type ColourSetter = fn(&mut ReadPreviewMaterial, [f32; 3]);
 type ScalarSetter = fn(&mut ReadPreviewMaterial, f32);
-type TextureInput = (String, usize, Option<bool>, Path, [f32; 2], [[f32; 3]; 2]);
+type TextureInput = (String, usize, Option<bool>, Path, [f32; 2], [[f32; 3]; 2], bool);
 type TextureSetter = fn(&mut ReadPreviewMaterial, TextureInput);
 
 impl ReadPreviewMaterial {
@@ -456,6 +461,7 @@ fn set_ior_tex(_: &mut ReadPreviewMaterial, _: TextureInput) {}
 fn set_normal_c(_: &mut ReadPreviewMaterial, _: [f32; 3]) {}
 fn set_normal_s(_: &mut ReadPreviewMaterial, _: f32) {}
 fn set_normal_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.normal_texture_transform = s.6.then_some(s.5);
     set_color_space(o, "normal", s.2);
     o.normal_texture = Some(s.0);
 }
@@ -691,11 +697,12 @@ fn resolve_attr_chain_inner(
                     let rgba = texture_rgba_transform(stage, &prim, time)?;
                     let transform = [rgba[0][channel], rgba[1][channel]];
                     let rgb = rgba.map(|value| [value[0], value[1], value[2]]);
-                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim, transform, rgb))));
+                    let signed_normal = read_token_or_string(stage, &prim, "info:id")?.as_deref() == Some("UsdUVTexture");
+                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim, transform, rgb, signed_normal))));
                 }
                 ShaderKind::NormalMap => {
-                    cur = prim.append_property("inputs:in")?;
-                    continue;
+                    let (value, texture) = resolve_attr_chain_inner(stage, &prim.append_property("inputs:in")?, remaining, warnings, time, depth + 1)?;
+                    return Ok((value, texture.map(|mut texture| { texture.6 = false; texture })));
                 }
                 ShaderKind::Constant => {
                     let v_path = prim.append_property("inputs:value")?;
@@ -731,8 +738,8 @@ fn resolve_attr_chain_inner(
         }
         let default = sampled_value(stage, &cur, time)?;
         match default.clone() {
-            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path(), [1.0, 0.0], [[1.0; 3], [0.0; 3]])))),
-            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path(), [1.0, 0.0], [[1.0; 3], [0.0; 3]])))),
+            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path(), [1.0, 0.0], [[1.0; 3], [0.0; 3]], false)))),
+            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path(), [1.0, 0.0], [[1.0; 3], [0.0; 3]], false)))),
             _ => {}
         }
         return Ok((default.and_then(value_to_preview), None));

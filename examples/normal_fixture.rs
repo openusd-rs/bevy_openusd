@@ -6,10 +6,17 @@ fn write_fixture(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut image = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
     image.data = Some(vec![128, 218, 218, 255]);
     image.try_into_dynamic()?.save(directory.join("normal.png"))?;
+    let mut image = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
+    image.data = Some(vec![255; 4]);
+    image.try_into_dynamic()?.save(directory.join("white.png"))?;
     let normal = Vec3::new(1.0, 181.0, 181.0).normalize();
-    for variant in ["mapped", "reference", "opposite"] {
-        let reference = variant != "mapped";
-        let normal = if variant == "opposite" { normal * Vec3::new(1.0, -1.0, 1.0) } else { normal };
+    for variant in ["mapped", "reference", "opposite", "scaled_mapped", "scaled_reference", "scaled_opposite"] {
+        let scaled = variant.starts_with("scaled_");
+        let reference = !variant.ends_with("mapped");
+        let normal = if scaled { Vec3::new(0.0, 0.5, 0.5).normalize() } else { normal };
+        let normal = if variant.ends_with("opposite") { normal * Vec3::new(1.0, -1.0, 1.0) } else { normal };
+        let (file, scale, bias) = if scaled { ("white.png", "0,0.5,0.5,1", "0,0,0,0") }
+            else { ("normal.png", "2,2,2,1", "-1,-1,-1,0") };
         let normals = if reference { format!("normal3f[] normals = [({},{},{})] (interpolation = \"constant\")", normal.x, normal.y, normal.z) }
             else { "normal3f[] normals = [(0,0,1)] (interpolation = \"constant\")".into() };
         let connection = if reference { "" } else { "normal3f inputs:normal.connect = </Material/Texture.outputs:rgb>" };
@@ -35,10 +42,10 @@ def Material "Material" {{
     }}
     def Shader "Texture" {{
         uniform token info:id = "UsdUVTexture"
-        asset inputs:file = @normal.png@
+        asset inputs:file = @{file}@
         token inputs:sourceColorSpace = "raw"
-        float4 inputs:scale = (2,2,2,1)
-        float4 inputs:bias = (-1,-1,-1,0)
+        float4 inputs:scale = ({scale})
+        float4 inputs:bias = ({bias})
         float3 outputs:rgb
     }}
 }}
@@ -64,6 +71,7 @@ fn fixture_uses_linear_normal_data_and_refuses_overwrite() {
     let stage = usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap();
     let material = usd_bevy::read::shade::read_preview_material_at(&stage, &openusd::sdf::path("/Material").unwrap(), None).unwrap().unwrap();
     assert!(!material.texture_srgb("normal"));
+    assert_eq!(material.normal_texture_transform, Some([[2.0; 3], [-1.0; 3]]));
     assert!(material.normal_texture.unwrap().ends_with("normal.png"));
     let read = usd_bevy::read::geom::read_mesh_at(&stage, &openusd::sdf::path("/Quad").unwrap(), None).unwrap().unwrap();
     let mesh = usd_bevy::mesh::mesh_from_usd(&read);
@@ -77,5 +85,25 @@ fn fixture_uses_linear_normal_data_and_refuses_overwrite() {
         assert!(world.abs_diff_eq(sample, 1e-6));
         let flipped = (t.truncate() * sample.x - t.w * n.cross(t.truncate()) * sample.y + n * sample.z).normalize();
         assert!((world - flipped).length() > 1.0);
+    }
+}
+
+#[test]
+fn signed_transform_is_limited_to_preview_surface_texture_normals() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("fixture");
+    write_fixture(&directory).unwrap();
+    let text = std::fs::read_to_string(directory.join("scaled_mapped.usda")).unwrap();
+    let wrapper = text.replace("inputs:normal.connect = </Material/Texture.outputs:rgb>", "inputs:normal.connect = </Material/Normal.outputs:out>")
+        .replace("def Shader \"Texture\"", "def Shader \"Normal\" { uniform token info:id = \"ND_normalmap\"\n float3 inputs:in.connect = </Material/Texture.outputs:rgb>\n float3 outputs:out\n }\n def Shader \"Texture\"");
+    for (text, expected) in [
+        (text.clone(), Some([[0.0, 0.5, 0.5], [0.0; 3]])),
+        (text.replace("UsdPreviewSurface", "ND_standard_surface_surfaceshader"), None),
+        (text.replace("UsdUVTexture", "ND_image_color3"), None),
+        (wrapper, None),
+    ] {
+        let stage = usd_bevy::UsdSource::snapshot("normal.usda", text.as_bytes()).unwrap().open_stage().unwrap();
+        let read = usd_bevy::read::shade::read_preview_material_at(&stage, &openusd::sdf::path("/Material").unwrap(), None).unwrap().unwrap();
+        assert_eq!(read.normal_texture_transform, expected);
     }
 }

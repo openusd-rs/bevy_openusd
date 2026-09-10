@@ -1463,13 +1463,21 @@ residual path. `live::current_transform` returns `None` on a TRS read error;
 `route::xform::transform_of` retains its documented identity-on-error fallback.
 
 `make run RUN_WITH= APP_TARGET='--example normal_fixture' ARGS='target/normal_probe'`
-creates a new directory containing a normal-mapped quad, an equivalent
-explicit-normal reference and an opposite-Y control. It refuses overwrites.
+creates a new directory containing normal-mapped quads, equivalent
+explicit-normal references and opposite-Y controls. It refuses overwrites.
 The 8-bit map uses raw color space and scale/bias (2,-1), following the
 [UsdPreviewSurface normal specification](https://openusd.org/24.08/spec_usdpreviewsurface.html).
 Bevy's tangent generation already compensates the relevant handedness change;
 adding a second normal-map Y flip would break this fixture. This checks a static
-constant map, not arbitrary texture transforms, scale/bias or deformed tangents.
+constant map, not arbitrary texture transforms or deformed tangents.
+The `scaled_*` variants exercise noncanonical Preview Surface `UsdUVTexture`
+RGB scale/bias. Signed normal results are encoded for Bevy as `(value + 1) / 2`
+in a linear float16 texture; canonical scale/bias (2,-1) reuses the original.
+Sampled scale/bias interfaces are read at the requested clock. Other surface
+dialects and `ND_normalmap` wrappers retain their previous handling.
+The scaled mapped/reference capture differs at six pixels by at most RGB 1;
+the canonical case retains its two-pixel RGB-1 difference. Neither is pixel-exact
+reference parity, and general MaterialX normal processing remains unsupported.
 
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:

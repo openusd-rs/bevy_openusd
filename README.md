@@ -185,6 +185,18 @@ clock changes, stable entities/runtime names and cleanup after root despawn:
 make run RUN_WITH= APP_TARGET='--example instanceable_sources'
 ```
 
+`assets/retimed_instances.usda` places three native instances side by side;
+the third uses offset 10 and scale 2. Its independently authored baked reference
+is `assets/retimed_instances_reference.usda`. The GPU regression checks times
+10/20/30 at a fixed camera, three visible meshes and zero RGB pixel differences:
+
+```sh
+make --eval='check-retimed-images:; @/bin/bash scripts/check_retimed_instances.sh target/NEW-retimed-images' check-retimed-images
+```
+
+The output directory must be new. Logs, metadata, raw pixels and diff images are
+retained. This is sampled-frame equivalence, not a live-clock or performance test.
+
 `with_offset_references` accepts `(destination, source, target, LayerOffset)`
 entries using `openusd::sdf::LayerOffset`. It preserves reference arcs while
 retiming samples; offsets must be finite and scales finite and positive.

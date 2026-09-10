@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Retimed native-instance GPU reference regression
+
+Added a three-instance fixture with internal references to an abstract model,
+two identity mounts and one offset 10/scale 2 mount. Its independent reference
+authors the corresponding Cube samples directly without instances or arcs.
+scripts/check_retimed_instances.sh renders both at times 10/20/30 with the same
+fixed camera and forward/shadows-off configuration, checks three visible meshes,
+the sampled time and absence of renderer warnings, then compares RGB at tolerance 0.
+The script requires a new output directory and retains all evidence on failure.
+
+All three pairs match exactly: zero changed pixels out of 921600 per frame.
+The instanced images were visually inspected at each time: the right cube grows
+through sizes 1/2/3 while the first two stay size 3. Evidence:
+`target/retimed-instance-regression/`, `/tmp/retimed-instance-regression.log`.
+This is sampled GPU equivalence for the fixture, not native-renderer parity,
+general material fidelity, live-clock validation or a performance measurement.
+All 466 ordinary workspace tests pass (ten ignored); check-all, build, shell
+syntax and whitespace validation pass: `/tmp/retimed-images-{tests,check,build,shell}.log`.
+
 ### Retimed native-instance mesh isolation
 
 The instanceable_sources example now mounts an animated Cube source three times:

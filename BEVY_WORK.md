@@ -25,6 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Measure headless editor seek cost and retained morph payload
+
+editor_benchmark accepts an optional `seek` argument: four warmup updates followed
+by 100 seeks at clocks 0/5/10/5. Each seek checks document identity, Ready status
+and current clock; nearest-rank median/p95/max measure App::update only. Retained
+payload statistics now label their after-idle/after-seeks phase, and GPU morph
+entity counts distinguish actual preparation from CPU fallback. This does not
+instantiate a renderer, measure GPU time or account for RSS/VRAM.
+
+Three alternating fresh-process CPU/GPU-prepared pairs ran on the normal-mapped
+morph/subset fixture. Debug median seek times were 6700.692–6803.963 us for CPU
+and 6433.609–6529.049 us for GPU-prepared. Timing variation and concurrent host
+work preclude a speedup claim. Retained CPU payload counts differ (8 versus 10
+mesh assets; 0 versus 1440 morph bytes), while morph entity counts are 0 versus 2.
+Full numbers and exclusions: `benchmarks/morph-tangent-seek.md`,
+`/tmp/editor-seek-{cpu,gpu-prepared}-{1,2,3}.log`.
+
+All 508 ordinary tests pass (13 ignored), check-all/build and git diff --check
+pass: `/tmp/editor-seek-tests.log`, `/tmp/editor-seek-check-final.log`,
+`/tmp/editor-seek-build.log`. The new test exercises both CPU and GPU-prepared
+seek paths, their morph counts, payloads and ordered timing percentiles.
+Release/representative-scene benchmarks, sustained allocation behavior, real GPU
+latency and the full Bevy acceptance checklist remain open.
+
 ### Verify live morph tangents and constant normals in the GPU suite
 
 The repeatable live-clock suite now has fifteen cases. It adds constant-normal

@@ -332,14 +332,24 @@ The subsequent [reload comparison](benchmarks/reload-animation.md) measures redu
 CPU reload cost from skipping an unused animation-index scan, with clock-isolation
 regressions. It does not establish GPU or frame-rate improvements.
 
-`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared]` measures the actual editor Open path and retained
+`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek]` measures the actual editor Open path and retained
 mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
 includes file reading and texture decoding, but excludes GPU work and the UI:
 
 ```sh
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/material_subsets.usda'
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/morph_animation.usda 3 gpu-prepared'
+make run RUN_WITH= APP_TARGET='--example editor_benchmark' ARGS='assets/morph_tangent_normals.usda 3 gpu-prepared seek'
 ```
+
+Optional `seek` cycles clocks 0/5/10/5 for four warmup updates and 100 measured
+updates. It checks document identity, Ready status and the requested clock after
+each update, then reports nearest-rank median/p95/max `App::update` duration and
+post-seek retained payloads. Command enqueue and result validation are outside the
+timer. GPU morph entity counts distinguish prepared morphs from CPU fallback.
+These are headless editor update timings, not GPU frame latency or VRAM use.
+The initial [morph-tangent seek measurements](benchmarks/morph-tangent-seek.md)
+record debug-profile CPU and GPU-prepared runs with explicit limitations.
 
 The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
 GPU deformation routing and measures its retained CPU-side mesh/morph payloads;

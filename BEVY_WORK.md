@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Repeatable live-clock rendering regression suite
+
+Added scripts/check_live_clocks.sh, invoked through Make with a new output
+directory. It generates its own UV/texture fixtures, performs live 0,10 -> 10,0
+clock reversals, then captures independently prepared endpoint references for
+animated UV chains, sample-only texture filenames and GPU morphing. Comparisons
+use strict zero RGB tolerance. The script checks transition metadata, final clock
+values, two hierarchy-visible meshes, GPU morph counts and flat-material sharing.
+Renderer warnings/errors fail a case. It preserves artifacts and aggregates
+case results into results.tsv, continuing other cases after a capture mismatch.
+
+Initial targeted UV and texture-file live-update comparisons both matched their
+references across all 921600 pixels at zero tolerance. The suite replaces those
+one-off invocations with fresh generated fixtures and retained per-case logs;
+it does not certify other cameras, times, renderer modes or sustained playback.
+
+The final suite passes all three cases in `target/live-clock-suite-2/results.tsv`;
+each comparison reports zero changed pixels across 921600 pixels. All six
+live/reference PNGs were inspected. Full log: `/tmp/live-clock-suite-final.log`.
+Bash syntax and usage/existing-output rejection checks pass. All 443 ordinary
+workspace tests pass (seven ignored), plus check-all, build and whitespace checks:
+`/tmp/live-clock-suite-{tests,check,build}.log`.
+
 ### Live independent-clock reversal with GPU readback
 
 viewer_capture now supports USD_CAPTURE_SWAP_CLOCKS=1 for multiple roots. After

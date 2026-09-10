@@ -379,6 +379,36 @@ Validation: 518 ordinary tests pass, 13 ignored; check-all, viewer build and
 git diff --check pass. Logs: `/tmp/normal-fans-{all-tests,check,build}.log`.
 Full Bevy rendering acceptance remains open.
 
+## Native OpenSubdiv position and limit-tangent check
+
+Compared the existing UR5 shoulder cage and level-1 isolation files using the
+installed OpenSubdiv 3.7.0 CPU library. The retained diagnostic is
+`scripts/compare_subdivision_reference.cpp`; README has the build/run command.
+It uses Catmull-Clark, edge-and-corner boundary interpolation, one uniform level,
+double-precision primvar weights and float-rounded input positions. Child IDs
+are explicitly mapped through native vertex/face/edge child accessors rather
+than assuming OpenSubdiv shares our point ordering.
+
+All 46,817 refined positions match within an absolute per-component tolerance
+of `1e-7`. Maximum error is `3.72529e-9` at vertex 10092. The folded fan's
+vertex 17054 is also reproduced: native position
+(-0.0142817469314,-0.0560196364919,-0.0598999559879).
+Thus this fixture does not support changing our finite subdivision positions.
+This is one uncreased triangle cage, not general subdivision parity.
+
+Native limit evaluation at the same vertex yields tangent cross-product
+(-0.0000577627031206,-0.000217048956678,-0.00000837977029767), which is nonzero
+despite our finite triangle-angle normal cancelling. This distinguishes the
+limit-surface derivative from the finite polygon-fan average. It motivates a
+limit-normal rendering experiment, not an arbitrary replacement axis, and does
+not establish visual acceptance or validate derivative orientation yet.
+
+Validation: compiled the standalone diagnostic with `-Wall -Wextra` through
+Make, then ran the full position comparison and five requested limit witnesses.
+Log: `/tmp/ur5-osd-limit-compare-final.log`. No viewer/Rust production code changed;
+the prior 518-test Rust result was not rerun for this native diagnostic.
+Full Bevy rendering acceptance remains open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

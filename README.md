@@ -812,6 +812,26 @@ nonmanifold edges and inconsistent winding, and count disconnected fans without
 position welding. Zero-normal witnesses print at most eight referenced vertices
 and twelve incident triangles each, including face directions and corner angles.
 
+For an independent one-level position check, the optional native diagnostic
+`scripts/compare_subdivision_reference.cpp` uses an installed OpenSubdiv SDK:
+
+```bash
+OSD_INCLUDE=/path/to/include OSD_LIB=/path/to/lib make \
+  --eval='compare-osd:; @$(CXX) -std=c++17 -O2 -I$${OSD_INCLUDE} scripts/compare_subdivision_reference.cpp -L$${OSD_LIB} -Wl,-rpath,$${OSD_LIB} -losdCPU -o target/compare-osd && target/compare-osd $(ARGS)' \
+  compare-osd ARGS='CAGE/with_normals.usda LEVEL1/with_normals.usda 17054'
+```
+
+Inputs must be uncreased triangle-cage and level-1 files from `normal_isolation`,
+with unchanged point indexing and edge-and-corner boundary interpolation. This
+is a reader for that tool's single-line arrays, not a general USDA parser.
+The comparison maps OpenSubdiv child vertices to our vertex/face/sorted-edge
+ordering, checks all positions with absolute component tolerance `1e-7`, and
+optionally prints native limit-tangent cross-products at requested vertex indices.
+Exit codes are 0 for matching positions, 1 for mismatch, and 2 for invalid inputs.
+It does not compare refined topology, materials, authored normals, creases or
+rendered images. Native limit tangents are diagnostic only, not installed into
+the viewer. OpenSubdiv is not a new viewer build dependency.
+
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
 flat normals independently of authored normals. Capture without shadow maps:

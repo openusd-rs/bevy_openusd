@@ -102,6 +102,13 @@ def Material "Material" {{
     let reference = std::fs::read_to_string(directory.join("reference.usda"))?
         .replace("10: [(0.375,0.375)]", "10: [(0.25,0.25)]");
     std::fs::write(directory.join("file_reference.usda"), reference)?;
+    let mut gray = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
+    gray.data = Some(vec![128,128,128,255]);
+    gray.try_into_dynamic()?.save(directory.join("gray.png"))?;
+    let color = std::fs::read_to_string(directory.join("file_samples.usda"))?
+        .replace("asset inputs:file.timeSamples = {0: @red.png@, 10: @blue.png@}", "asset inputs:file = @gray.png@")
+        .replace("token inputs:sourceColorSpace = \"sRGB\"", "token inputs:sourceColorSpace.timeSamples = {0: \"raw\", 10: \"sRGB\" }");
+    std::fs::write(directory.join("color_space_samples.usda"), color)?;
     Ok(())
 }
 

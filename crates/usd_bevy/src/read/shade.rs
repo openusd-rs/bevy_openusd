@@ -7,7 +7,7 @@ use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
 
 use super::util::{
-    connections_at, read_asset_path, read_token_or_string,
+    connections_at, read_asset_path, read_token_or_string, read_token_or_string_at,
 };
 
 /// Decoded UsdPreviewSurface material. Each channel is `None` (unauthored),
@@ -83,7 +83,7 @@ pub(crate) fn bound_material_is_time_varying(stage: &Stage, prim: &Path) -> bool
     false
 }
 
-/// Sorted texture-file sample times reachable from a material and its surface.
+/// Sorted texture-file and color-space sample times reachable from a material.
 pub(crate) fn material_texture_sample_times(stage: &Stage, material: &Path) -> anyhow::Result<Vec<f64>> {
     let mut pending = vec![material.clone()];
     if let Some((shader, _)) = resolve_surface_shader(stage, material)? { pending.push(shader); }
@@ -94,6 +94,7 @@ pub(crate) fn material_texture_sample_times(stage: &Stage, material: &Path) -> a
         anyhow::ensure!(seen.len() <= 4096, "texture discovery exceeds the 4096-node traversal budget");
         let node = stage.prim(&path)?;
         times.extend(node.attribute("inputs:file").time_sample_times()?);
+        times.extend(node.attribute("inputs:sourceColorSpace").time_sample_times()?);
         for attribute in node.attributes()? {
             pending.extend(attribute.connections()?.into_iter().map(|connection| connection.prim_path()));
         }
@@ -587,7 +588,7 @@ fn resolve_attr_chain_inner(
             match kind {
                 ShaderKind::Texture => {
                     let channel = match next.as_str().rsplit(':').next() { Some("g") => 1, Some("b") => 2, Some("a") => 3, _ => 0 };
-                    let srgb = match read_token_or_string(stage, &prim, "inputs:sourceColorSpace")?.as_deref() {
+                    let srgb = match read_token_or_string_at(stage, &prim, "inputs:sourceColorSpace", time)?.as_deref() {
                         Some("raw") => Some(false),
                         Some("sRGB") => Some(true),
                         None | Some("auto") => None,

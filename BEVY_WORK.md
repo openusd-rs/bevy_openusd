@@ -25,6 +25,36 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Sampled texture color-space interpretation
+
+Texture channels now read explicit sourceColorSpace tokens at the instance's USD
+time rather than default time. Reachable texture discovery includes color-space
+sample times alongside file samples, so required raw and sRGB image variants are
+available before playback. A shared sampled token/string reader preserves the
+existing default-time helper. Unsupported color-space names still fail explicitly;
+auto inference and broader color management are unchanged.
+
+The AssetServer regression uses a fixed gray image, raw default and raw/sRGB
+samples. Independent roots choose different image formats and scalar-channel
+packing (128 raw versus 55 after sRGB decoding), then swap clocks without entity
+replacement. An intermediate time checks held token values. Both interpretations
+must be captured even though the default requests raw only.
+
+The generated color_space_samples fixture and live-clock suite add a rendered
+clock-reversal comparison against freshly loaded endpoint instances of the same
+source. Unlike the UV/file/morph reference cases, this checks update consistency,
+not independent color-management fidelity.
+
+All four native GPU live-clock cases pass strict zero RGB tolerance across
+921600 pixels each in `target/live-clock-color-space/`. Inspected both color-space
+images and the UV/file/morph live captures; the color-space endpoint shows darker
+sRGB on the left and brighter raw on the right after reversal. Metadata verifies
+the reversal occurs after 30 ready frames, with two visible meshes and no logged
+renderer warnings/errors. Suite log: `/tmp/sampled-color-space-captures.log`.
+All 454 ordinary workspace tests pass (eight ignored), plus check-all and build;
+the final strengthened default-raw AssetServer test passes separately. Logs:
+`/tmp/sampled-color-space-{tests,check,build,final}.log`.
+
 ### Native batch assembly package interoperability
 
 The native export lane now verifies a diskless source batch containing default

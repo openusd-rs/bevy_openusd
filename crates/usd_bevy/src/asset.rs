@@ -1000,6 +1000,37 @@ def Material "Mat" {
 "#;
 
     #[test]
+    fn sampled_texture_color_spaces_follow_independent_clocks() {
+        let (mut app, directory) = memory_app();
+        let text = TEXTURED.replace("normal3f inputs:normal.connect = </Mat/Tex.outputs:rgb>",
+            "float inputs:roughness.connect = </Mat/Tex.outputs:r>")
+            .replace("float3 outputs:rgb", "float3 outputs:rgb\n        float outputs:r\n        token inputs:sourceColorSpace = \"raw\"\n        token inputs:sourceColorSpace.timeSamples = { 0: \"raw\", 10: \"sRGB\" }");
+        directory.insert_asset_text(Path::new("models/color-time.usda"), &text);
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([128, 128, 128, 255]));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://models/color-time.usda");
+        let a = app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 })).id();
+        let b = app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 10.0 })).id();
+        tick_until(&mut app, |world| [a, b].into_iter().all(|root| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)));
+        let entities = [instance_entity(app.world(), a, "/Mesh"), instance_entity(app.world(), b, "/Mesh")];
+        let check = |world: &World, entity, srgb, expected| {
+            let material = world.resource::<Assets<StandardMaterial>>().get(&world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+            let images = world.resource::<Assets<Image>>();
+            assert_eq!(images.get(material.base_color_texture.as_ref().unwrap()).unwrap().texture_descriptor.format.is_srgb(), srgb);
+            assert_eq!(images.get(material.metallic_roughness_texture.as_ref().unwrap()).unwrap().data.as_deref(), Some([255, expected, 255, 255].as_slice()));
+        };
+        assert_eq!(app.world().resource::<Assets<UsdScene>>().get(&handle).unwrap().textures.len(), 2);
+        check(app.world(), entities[0], false, 128);
+        check(app.world(), entities[1], true, 55);
+        app.world_mut().get_mut::<UsdInstanceTime>(a).unwrap().current = 10.0;
+        app.world_mut().get_mut::<UsdInstanceTime>(b).unwrap().current = 5.0;
+        app.update();
+        assert_eq!(instance_entity(app.world(), a, "/Mesh"), entities[0]);
+        assert_eq!(instance_entity(app.world(), b, "/Mesh"), entities[1]);
+        check(app.world(), entities[0], true, 55);
+        check(app.world(), entities[1], false, 128);
+    }
+
+    #[test]
     fn explicit_texture_color_spaces_override_usage_defaults() {
         for (space, srgb, expected) in [("raw", false, 128), ("sRGB", true, 55)] {
             let (mut app, directory) = memory_app();

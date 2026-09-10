@@ -68,7 +68,12 @@ pub fn read_token_or_string(
     prim: &Path,
     name: &str,
 ) -> anyhow::Result<Option<String>> {
-    Ok(match attr_default(stage, prim, name)? {
+    read_token_or_string_at(stage, prim, name, None)
+}
+
+/// A composed `token` or `string` scalar at a USD time code.
+pub fn read_token_or_string_at(stage: &Stage, prim: &Path, name: &str, time: Option<f64>) -> anyhow::Result<Option<String>> {
+    Ok(match stage.prim(prim)?.attribute(name).get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
         Some(Value::Token(s)) => Some(s.as_str().to_string()),
         Some(Value::String(s)) => Some(s),
         _ => None,

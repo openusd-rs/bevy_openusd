@@ -50,7 +50,9 @@ and exposes `UsdSceneState` (Loading/Ready/Failed). Snapshot PNG/JPEG textures a
 tracked labeled assets with color/data color spaces. Time-sampled material
 `inputs:file` paths are supported: texture samples reachable through each
 material's connections are decoded into the snapshot, and each instance selects the image at its own
-clock. This supports explicit asset-path samples, not filename sequence patterns.
+clock. Explicit `inputs:sourceColorSpace` raw/sRGB samples also follow that clock;
+snapshot discovery includes their sample times and loads each required image
+interpretation. This supports explicit asset-path samples, not filename sequence patterns.
 Dependency-change events
 reload their owning USD asset. Each root retains an independent live stage;
 matching prim entities and runtime-only components survive source reloads.
@@ -1105,6 +1107,7 @@ renderer, mapped versus baked differs in 7 of 921,600 pixels (maximum RGB error
 recorded strict-zero comparison results, not a claim of bit-identical rendering.
 The generator also writes `file_samples.usda` (sample-only red/blue texture
 files) and `file_reference.usda` (fixed quadrant texture with explicit UV samples).
+`color_space_samples.usda` uses one gray image with raw/sRGB token samples.
 Capture both with `USD_CAPTURE_INSTANCE_TIMES=0,10`, shadows off, eye `(0,1,8)`
 and focus `(0,1,0)`. The tested Vulkan captures match all 921,600 pixels at strict
 zero RGB tolerance. This checks simultaneous texture selection, not a live reload.

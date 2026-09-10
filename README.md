@@ -878,6 +878,15 @@ projective/non-finite transforms retain the previous pose and attach
 from identity through shear to translation at times 0, 5 and 10, beside a blue
 reset-stack cube following its own translation without inheriting the shear.
 
+For grouped, matrix-preserving editor undo, use
+`EditorSession::edit(EditorEdit::TransformMatrix { prim, matrix, reset })`.
+`matrix` is a column-major `[f64; 16]`; this command replaces the local stack
+with a static matrix and explicit reset state, clearing local samples on its
+matrix/order attributes. Other op attributes remain authored but inactive.
+Undo restores the previous authored fields and samples rather than decomposing
+the old transform into TRS. The legacy `live::TransformHistory` still stores
+decomposed TRS and is not suitable for exact affine/animated-stack restoration.
+
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset
 handles are shared across copies. Nested transforms remain on generated entities

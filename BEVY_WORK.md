@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Matrix-preserving editor command
+
+`EditorEdit::TransformMatrix` accepts a finite affine column-major f64 matrix
+representable by the renderer and an explicit reset flag. It replaces the local
+stack with a static matrix, clearing matrix/order local samples and retaining
+other op attributes as inactive opinions. `EditorSession` groups its authored
+transactions into one undo command and uses the existing layer-diff history,
+not TRS decomposition. This is an editor API; no new inspector matrix widget or
+gizmo wiring is claimed, and the legacy `live::TransformHistory` remains lossy.
+
+Tests verify exact root-layer restoration of an animated matrix stack, static
+replacement at four times, reset preservation, redo and invalid-edit rejection
+without losing redo. A layered case verifies that undo removes the stronger
+override, reveals the weaker animation and restores every loaded layer's
+serialized authored data. Native save/reopen and mapped-target transform-command
+acceptance remain open.
+All 403 ordinary tests pass, with six native tests ignored; check-all, build
+and whitespace checks pass. Logs: `/tmp/editor-matrix-{tests,check,build}.log`.
+
 ### Ordinary affine transform propagation: validation in progress
 
 Ordinary prim projection now retains affine linear residuals and applies USD

@@ -250,6 +250,8 @@ fn install_textures(world: &mut World, prepared: PreparedTextures) -> anyhow::Re
 /// An undoable document edit.
 #[derive(Debug, Clone)]
 pub enum EditorEdit {
+    /// Replaces the local stack with a static affine matrix and explicit reset state.
+    TransformMatrix { prim: String, matrix: [f64; 16], reset: bool },
     AttributeSample { prim: String, name: String, type_name: String, value: Value, time: f64 },
     ClearAttributeSample { prim: String, name: String, time: f64 },
     ClearAttributeValues { prim: String, name: String },
@@ -279,6 +281,22 @@ impl EditorEdit {
     fn apply(&self, stage: &Stage) -> anyhow::Result<()> {
         use crate::authoring;
         match self {
+            Self::TransformMatrix { prim, matrix, reset } => {
+                let value = bevy::math::DMat4::from_cols_array(matrix);
+                anyhow::ensure!(value.is_finite() && value.row(3) == bevy::math::DVec4::W
+                    && value.as_mat4().is_finite(), "transform must be a finite affine matrix representable as f32");
+                let owner = stage.prim(openusd::sdf::path(prim)?)?;
+                anyhow::ensure!(owner.is_valid()?, "transform owner does not exist");
+                let path = openusd::sdf::path(prim)?.append_property("xformOp:transform")?;
+                let attribute = stage.create_attribute(path, "matrix4d")?;
+                attribute.clear()?.set(Value::Matrix4d(openusd::gf::Matrix4d(*matrix)))?;
+                let mut order = Vec::new();
+                if *reset { order.push("!resetXformStack!".into()); }
+                order.push("xformOp:transform".into());
+                stage.create_attribute(openusd::sdf::path(prim)?.append_property("xformOpOrder")?, "token[]")?
+                    .clear()?.set(Value::TokenVec(order))?;
+                Ok(())
+            }
             Self::AttributeSample { prim, name, type_name, value, time } =>
                 authoring::set_attribute_sample(stage, prim, name, type_name, value.clone(), *time),
             Self::ClearAttributeSample { prim, name, time } => authoring::clear_attribute_sample(stage, prim, name, *time),
@@ -581,6 +599,66 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matrix_edit_restores_exact_animated_stack_on_undo() {
+        let stage = crate::UsdSource::new("matrix-edit.usda", include_bytes!("../../../assets/xform_animation.usda").as_slice())
+            .unwrap().open_stage().unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut editor = EditorSession::new(stage);
+        let matrix = [1.0,0.0,0.5,0.0, 0.75,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 3.0,4.0,5.0,1.0];
+        editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix, reset: true }).unwrap();
+        let path = openusd::sdf::path("/Affine").unwrap();
+        for time in [0.0, 2.5, 5.0, 10.0] {
+            let (actual, reset) = crate::read::xform::read_transform_stack_at(editor.stage(), &path, Some(time)).unwrap().unwrap();
+            assert_eq!(actual, matrix.map(|value| value as f32));
+            assert!(reset);
+        }
+        let after = editor.stage().root_layer().export_to_string().unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), after);
+        assert!(editor.undo().unwrap());
+        for invalid in [f64::NAN, f64::INFINITY, f64::MAX] {
+            let mut bad = matrix;
+            bad[0] = invalid;
+            assert!(editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix: bad, reset: false }).is_err());
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        }
+        let mut projective = matrix;
+        projective[3] = 0.25;
+        assert!(editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix: projective, reset: false }).is_err());
+        assert!(editor.edit(EditorEdit::TransformMatrix { prim: "/Missing".into(), matrix, reset: false }).is_err());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), after);
+    }
+
+    #[test]
+    fn matrix_edit_undo_reveals_weaker_animation_without_changing_its_layer() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/xform_animation.usda");
+        let stage = crate::UsdSource::new("matrix-overlay.usda", format!("#usda 1.0\n( subLayers = [@{fixture}@] )\n").into_bytes())
+            .unwrap().open_stage().unwrap();
+        let root_before = stage.root_layer().export_to_string().unwrap();
+        let path = openusd::sdf::path("/Affine").unwrap();
+        let original = crate::read::xform::read_transform_stack_at(&stage, &path, Some(5.0)).unwrap();
+        let layers_before: Vec<_> = stage.layer_identifiers().into_iter().map(|identifier| {
+            let text = stage.layer(&identifier).unwrap().export_to_string().unwrap();
+            (identifier, text)
+        }).collect();
+        let mut editor = EditorSession::new(stage);
+        let matrix = bevy::math::DMat4::from_translation(bevy::math::DVec3::new(9.0, 8.0, 7.0)).to_cols_array();
+        editor.edit(EditorEdit::TransformMatrix { prim: "/Affine".into(), matrix, reset: false }).unwrap();
+        assert_eq!(crate::read::xform::read_transform_stack_at(editor.stage(), &path, Some(5.0)).unwrap(), Some((matrix.map(|v| v as f32), false)));
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), root_before);
+        assert_eq!(crate::read::xform::read_transform_stack_at(editor.stage(), &path, Some(5.0)).unwrap(), original);
+        for (identifier, before) in layers_before {
+            let layer = editor.stage().layer(&identifier).unwrap();
+            assert_eq!(layer.export_to_string().unwrap(), before);
+        }
+    }
 
     #[test]
     fn sample_edits_map_reference_time_and_preserve_defaults() {

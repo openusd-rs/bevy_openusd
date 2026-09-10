@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Measure real editor opens and retained subset payload
+
+Added examples/editor_benchmark.rs using the real EditorCommand::Open path,
+Bevy asset tracking, 100 idle updates and settled asset-payload counters. It
+reports open/idle time, mesh/subset entity counts, unique retained mesh assets,
+stored/unreferenced vertices, attribute/index/morph bytes and decoded image bytes.
+Failed opens, invalid projected indices and document replacement while idle fail
+the run. The bundled subset regression checks exact payload/count results and
+failure handling. An initial untracked-assets prototype was corrected before
+recording the final baseline; pending handle cleanup must not be counted as
+settled memory.
+
+Release runs of real ANYmal and Spot completed. ANYmal retains 720,548,416–
+771,589,120 vertex-attribute bytes, with over 98% of stored vertices absent from
+their mesh's indices; Spot retains 451,232 bytes with none unreferenced. This
+points to subset vertex compaction as substantive remaining memory work. Joint
+and morph data must be remapped with positions, not silently discarded.
+Raw samples, commands and measurement boundaries are in
+`benchmarks/editor-assets.md`. These are CPU payload counts, not VRAM/RSS,
+rendered performance or a before/after speedup claim.
+
+All 386 ordinary tests, check-all, build and whitespace checks pass
+(`/tmp/editor-benchmark-final-{tests,check,build}.log`). Final release logs:
+`/tmp/editor-benchmark-{anymal,spot}-tracked.log`. No collection or sibling files
+were modified.
+
 ### Build material-subset indices without discarded vertex attributes
 
 Subset preparation previously called mesh_from_usd_subset for each material part

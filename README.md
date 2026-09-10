@@ -114,6 +114,17 @@ The subsequent [reload comparison](benchmarks/reload-animation.md) measures redu
 CPU reload cost from skipping an unused animation-index scan, with clock-isolation
 regressions. It does not establish GPU or frame-rate improvements.
 
+`editor_benchmark ASSET [SAMPLES]` measures the actual editor Open path and retained
+mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
+includes file reading and texture decoding, but excludes GPU work and the UI:
+
+```sh
+make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/material_subsets.usda'
+```
+
+The [real-asset baseline](benchmarks/editor-assets.md) records ANYmal and Spot
+measurements. Payload bytes are not resident-memory or VRAM measurements.
+
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
 time-code range; otherwise it uses the stage's authored start/end and rate.

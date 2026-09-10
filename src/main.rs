@@ -156,6 +156,7 @@ const ACTION_REDO: &str = "usd_action_redo";
 const ACTION_FLATTEN: &str = "usd_action_flatten";
 const ACTION_SAVE_LAYER: &str = "usd_action_save_layer";
 const ACTION_REFRESH_TEXTURES: &str = "usd_action_refresh_textures";
+const ACTION_FRAME: &str = "usd_action_frame";
 
 fn ribbon_action(id: &'static str) -> RibbonAction {
     RibbonAction::Command(MaraId::new(id))
@@ -177,6 +178,7 @@ struct UsdApp {
     timeline_draft: timeline::Draft,
     lighting: lighting::LightingBridge,
     rendering: render_settings::RenderSettingsBridge,
+    framing: framing::FrameRequest,
     file_dialogs: file_dialog::FileDialogs,
     capture_handshake: bool,
 }
@@ -196,10 +198,13 @@ impl WindowApp for UsdApp {
         let lighting_bridge = lighting.clone();
         let rendering = render_settings::RenderSettingsBridge::default();
         let rendering_bridge = rendering.clone();
+        let framing = framing::FrameRequest::default();
+        let framing_bridge = framing.clone();
         let bevy_view = mara_bevy::MaraBevyViewport::with_render_state_and_content(
             ctx.gpu(),
             move |app: &mut App| {
                 configure_usd_app(app, bridge.clone());
+                app.insert_resource(framing_bridge.clone());
                 lighting::configure(app, lighting_bridge.clone());
                 render_settings::configure(app, rendering_bridge.clone());
             },
@@ -218,6 +223,7 @@ impl WindowApp for UsdApp {
             timeline_draft: Default::default(),
             lighting,
             rendering,
+            framing,
             file_dialogs: file_dialog::FileDialogs::new(ctx.__internal_egui_ctx()),
             capture_handshake,
         }
@@ -232,6 +238,7 @@ impl WindowApp for UsdApp {
             timeline_draft,
             lighting,
             rendering,
+            framing,
             file_dialogs,
             capture_handshake,
             ..
@@ -308,8 +315,10 @@ impl WindowApp for UsdApp {
             .action(ACTION_FLATTEN, "document", "Export flattened…", ribbon_action(ACTION_FLATTEN))
             .action(ACTION_UNDO, "arrow-left", "Undo", ribbon_action(ACTION_UNDO))
             .action(ACTION_REDO, "arrow-right", "Redo", ribbon_action(ACTION_REDO))
-            .action(ACTION_REFRESH_TEXTURES, "image", "Refresh textures", ribbon_action(ACTION_REFRESH_TEXTURES));
+            .action(ACTION_REFRESH_TEXTURES, "image", "Refresh textures", ribbon_action(ACTION_REFRESH_TEXTURES))
+            .action(ACTION_FRAME, "maximize", "Frame visible scene", ribbon_action(ACTION_FRAME));
         for click in host.show_ribbon_rail(rail, accent) {
+            if click.action == ribbon_action(ACTION_FRAME) { framing.request(); }
             if click.action == ribbon_action(ACTION_SAVE) || click.action == ribbon_action(ACTION_SAVE_LAYER)
                 || click.action == ribbon_action(ACTION_FLATTEN) {
                 let mode = if click.action == ribbon_action(ACTION_SAVE_LAYER) { SaveMode::EditLayer }

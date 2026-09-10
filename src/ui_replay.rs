@@ -77,6 +77,7 @@ mod tests {
         for (script, count, last) in [
             (include_str!("../scripts/replays/timeline_play.replay"), 4, 14000),
             (include_str!("../scripts/replays/visibility_toggle.replay"), 4, 14000),
+            (include_str!("../scripts/replays/visibility_frame.replay"), 7, 14000),
             (include_str!("../scripts/replays/timeline_pause.replay"), 7, 14000),
             (include_str!("../scripts/replays/timeline_next.replay"), 4, 14000),
             (include_str!("../scripts/replays/timeline_previous.replay"), 11, 15000),

@@ -123,6 +123,33 @@ remains partly clipped by the existing initial framing). Metadata records
 `/tmp/embedded-camera-ui.log`. The intermittent black host-window failure is
 not fixed or disproved by this successful run. Full acceptance remains open.
 
+## Explicit frame-visible-scene action
+
+Added a Frame visible scene ribbon action with the maximize icon. A cloned
+atomic request resource connects the host to the existing Bevy bounds/framing
+system without authoring USD or adding editor history. Requests are coalesced
+and consumed once. The fit includes visible generated children belonging to the
+current document, resets camera distance/clipping and fits the grid. Visibility
+changes alone retain the existing camera; subsequent navigation remains intact.
+No valid bounds or compatible perspective chase camera means no framing change.
+This is whole-visible-document framing, not frame-selection or automatic tracking.
+
+A regression reveals a previously hidden distant mesh, checks that ordinary
+updates preserve framing, then verifies explicit reframe and subsequent user
+distance preservation. `scripts/replays/visibility_frame.replay` reveals Animated
+at time 10 and clicks Frame visible scene two seconds later. Both host and GPU
+viewport captures were inspected: the two cubes are fully framed, unlike the
+earlier clipped visibility-only capture. Final-icon evidence:
+`target/viewer-ui-captures/visibility-frame-final*`,
+`/tmp/frame-visible-ui-final.log`; all seven replay events precede readback.
+Metadata records scene time 10, ready delay 15026 ms and effective camera eye
+(2.0361855,2.2087922,4.2152243). The first working capture is retained separately
+under `visibility-frame*` without the final suffix.
+
+Validation: 513 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Final logs: `/tmp/frame-visible-{tests,check,build}-icon.log`.
+The full acceptance checklist and intermittent host presentation issue remain open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

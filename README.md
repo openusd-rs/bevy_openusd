@@ -537,6 +537,10 @@ USD_SCREENSHOT=target/showcase-t10.png USD_CAPTURE_TIME=10 make run ARGS='assets
 ```
 
 `USD_SCREENSHOT` reads the actual embedded viewport GPU texture, without the UI.
+The **Frame visible scene** ribbon action refits the current visible document
+geometry, camera clipping range and grid. Use it after revealing objects or
+changing the scene; ordinary visibility changes do not reset camera navigation.
+Framing is a viewer-only operation and does not author USD or add undo entries.
 When capture is enabled, the viewer rejects non-PNG destination names and
 non-finite or malformed `USD_CAPTURE_TIME` values before constructing the window.
 Negative and fractional finite time codes are accepted. Without USD_SCREENSHOT,

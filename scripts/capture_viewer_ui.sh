@@ -56,11 +56,11 @@ fi
 setsid "${viewer[@]}" > "${output%.png}.viewer.log" 2>&1 &
 viewer_pid=$!
 for ((i=0; i<300; i++)); do
-    grep -qx 'USD_VIEWER_STARTED' "${output%.png}.viewer.log" && break
+    grep -qx 'USD_VIEWER_UI_UPDATED' "${output%.png}.viewer.log" && break
     kill -0 "$viewer_pid" 2>/dev/null || { echo "viewer exited during startup" >&2; exit 1; }
     sleep 1
 done
-grep -qx 'USD_VIEWER_STARTED' "${output%.png}.viewer.log" || { echo "viewer startup timed out" >&2; exit 1; }
+grep -qx 'USD_VIEWER_UI_UPDATED' "${output%.png}.viewer.log" || { echo "viewer first UI update timed out" >&2; exit 1; }
 for ((i=0; i<delay; i++)); do
     kill -0 "$viewer_pid" 2>/dev/null || { echo "viewer exited before capture" >&2; exit 1; }
     sleep 1

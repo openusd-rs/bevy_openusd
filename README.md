@@ -563,9 +563,17 @@ USD_VIEWER_DOME=/Env USD_VIEWER_PANE=lighting nix shell nixpkgs#weston -c /bin/b
 
 Choose a new output filename. Companion `.viewer.log`, `.weston.log` and
 `.capture.log` files are retained. The script waits up to 300 seconds for the
-viewer startup handshake, then `USD_UI_CAPTURE_WAIT` sets a 1–300 second delay
-(default 20). Build-lock waits do not consume that delay. The handshake marks
-viewport construction, not scene/pipeline readiness; inspect the screenshot.
+viewer's first completed UI update, then `USD_UI_CAPTURE_WAIT` sets a 1–300 second
+delay (default 20). Build-lock waits and synchronous first-update projection do
+not consume that delay. `USD_VIEWER_STARTED` marks viewport construction;
+`USD_VIEWER_UI_UPDATED` starts the delay. Neither proves GPU pipeline readiness
+or final texture upload completion; inspect the screenshot.
+At render startup the viewer caps mesh allocator slabs at half the shared device's
+maximum buffer size, retaining smaller configured limits. This leaves allocation
+rounding headroom and avoids growing pooled buffers beyond the host's limit.
+It is not a total-memory budget or support for individual meshes exceeding the
+device limit. Large scenes can still spend substantial time projecting before
+the first UI update.
 Use real `/bin/bash`, not the local `bash` wrapper. Weston uses its Vulkan renderer
 by default (`USD_UI_COMPOSITOR_RENDERER` overrides it); on this machine the GL
 capture was vertically inverted and Pixman could not host the viewer GPU surface.

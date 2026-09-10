@@ -25,6 +25,41 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Render ANYmal within the embedded device's buffer limit
+
+Actual collection inspection exposed two separate failures. The first capture,
+`target/viewer-ui-captures/anymal-texture-acceptance.png`, contained only the
+private desktop: the old 20-second delay began at viewport construction while
+ANYmal was still projecting. The viewer now emits USD_VIEWER_UI_UPDATED after
+its first complete host UI update, and the capture script starts its bounded
+delay at that marker. Startup still has a 300-second timeout. This is not a
+GPU-readiness handshake; screenshots still require inspection.
+
+The next capture, `anymal-ui-update.png`, showed Ready but only the renderer's
+warming-up placeholder. Its log identified pooled mesh buffers of 453,496,320
+and 536,870,912 bytes exceeding the shared device's 268,435,456-byte limit.
+At RenderStartup, the viewer now bounds MeshAllocatorSettings to half the actual
+device max_buffer_size, including compatible minimum and large-allocation
+thresholds. Smaller configured limits and the growth factor are preserved.
+The half-limit leaves room for allocator slot rounding; individual oversized
+meshes and total CPU/GPU memory budgets remain separate concerns. No Mara,
+Bevy dependency source, collection assets or environment configuration changed.
+
+Inspected `target/viewer-ui-captures/anymal-bounded-slabs.png`: the actual ANYmal
+robot, distinct material regions and studio grid render. Its log contains none
+of the reproduced Bevy render-validation errors. The source report traverses 25
+meshes, and the viewer projects 424 prims. The source JPEG and material graph
+confirm a carbon-fibre diffuse texture, but this camera/capture does not establish
+texture orientation, normal fidelity or matched reference-renderer appearance.
+Ready currently describes the document, not renderer health; surfacing renderer
+failures rather than an indefinite warm-up placeholder remains open.
+
+All 383 ordinary tests, check-all, build, shell syntax and whitespace checks pass.
+The new unit test covers the 256MiB device, smaller caller settings and lower
+limits. Logs: `/tmp/mesh-slab-limit-{tests,check,build}.log`; native export tests
+were not rerun for these viewer-only changes. All captures used a private Weston
+compositor and cleaned up only their own process groups.
+
 ### Refresh live animation membership after sparse edits
 
 Reproduced time-sample authoring on an already-projected static Xform leaving it

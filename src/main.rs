@@ -131,6 +131,7 @@ struct UsdApp {
     lighting: lighting::LightingBridge,
     rendering: render_settings::RenderSettingsBridge,
     file_dialogs: file_dialog::FileDialogs,
+    capture_handshake: bool,
 }
 
 impl WindowApp for UsdApp {
@@ -157,7 +158,8 @@ impl WindowApp for UsdApp {
             },
         );
 
-        if std::env::var_os("USD_UI_CAPTURE_HANDSHAKE").is_some() {
+        let capture_handshake = std::env::var_os("USD_UI_CAPTURE_HANDSHAKE").is_some();
+        if capture_handshake {
             eprintln!("USD_VIEWER_STARTED");
         }
 
@@ -170,6 +172,7 @@ impl WindowApp for UsdApp {
             lighting,
             rendering,
             file_dialogs: file_dialog::FileDialogs::new(ctx.__internal_egui_ctx()),
+            capture_handshake,
         }
     }
 
@@ -183,6 +186,7 @@ impl WindowApp for UsdApp {
             lighting,
             rendering,
             file_dialogs,
+            capture_handshake,
             ..
         } = self;
         if let Some(command) = file_dialogs.poll() { send(editor, command); }
@@ -268,6 +272,10 @@ impl WindowApp for UsdApp {
             } else if click.action == ribbon_action(ACTION_OPEN) {
                 file_dialogs.start(file_dialog::Request::Open);
             }
+        }
+        if *capture_handshake {
+            eprintln!("USD_VIEWER_UI_UPDATED");
+            *capture_handshake = false;
         }
     }
 }

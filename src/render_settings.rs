@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 use bevy::prelude::*;
+use bevy::render::{RenderApp, RenderStartup, mesh::allocator::MeshAllocatorSettings, renderer::RenderDevice};
 use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
 use usd_bevy::route::subdivision::{UsdSubdivisionApplied, UsdSubdivisionError, UsdSubdivisionSettings};
 
@@ -16,6 +17,20 @@ pub struct RenderSettingsBridge(Arc<Mutex<State>>);
 
 pub fn configure(app: &mut App, bridge: RenderSettingsBridge) {
     app.insert_resource(bridge).add_systems(PreUpdate, apply).add_systems(Last, publish);
+    if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+        render_app.add_systems(RenderStartup, limit_mesh_slabs);
+    }
+}
+
+fn limit_mesh_slabs(device: Res<RenderDevice>, mut settings: ResMut<MeshAllocatorSettings>) {
+    bound_mesh_slabs(&mut settings, device.limits().max_buffer_size);
+}
+
+fn bound_mesh_slabs(settings: &mut MeshAllocatorSettings, device_limit: u64) {
+    let maximum = (device_limit / 2).max(1);
+    settings.max_slab_size = settings.max_slab_size.min(maximum);
+    settings.min_slab_size = settings.min_slab_size.min(settings.max_slab_size);
+    settings.large_threshold = settings.large_threshold.min(settings.max_slab_size);
 }
 
 fn apply(world: &mut World) {
@@ -68,6 +83,26 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_slabs_respect_shared_device_limits_and_smaller_settings() {
+        let mut settings = MeshAllocatorSettings::default();
+        bound_mesh_slabs(&mut settings, 256 * 1024 * 1024);
+        assert_eq!(settings.max_slab_size, 128 * 1024 * 1024);
+        assert_eq!(settings.min_slab_size, 1024 * 1024);
+        assert_eq!(settings.large_threshold, 128 * 1024 * 1024);
+        assert_eq!(settings.growth_factor, 1.5);
+        settings.max_slab_size = 64 * 1024;
+        settings.large_threshold = 32 * 1024;
+        bound_mesh_slabs(&mut settings, 256 * 1024 * 1024);
+        assert_eq!(settings.max_slab_size, 64 * 1024);
+        assert_eq!(settings.min_slab_size, 64 * 1024);
+        assert_eq!(settings.large_threshold, 32 * 1024);
+        bound_mesh_slabs(&mut settings, 32 * 1024);
+        assert_eq!(settings.max_slab_size, 16 * 1024);
+        assert_eq!(settings.min_slab_size, 16 * 1024);
+        assert_eq!(settings.large_threshold, 16 * 1024);
+    }
 
     #[test]
     fn controls_preserve_initial_settings_and_publish_recovery() {

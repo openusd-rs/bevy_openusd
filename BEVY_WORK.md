@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### One canonical transform history
+
+Removed `live::TransformHistory` and its TRS snapshot/inverse-edit implementation.
+Transform undo now has the same public owner as other document edits:
+`EditorSession::edit(EditorEdit::TransformMatrix { prim, matrix, reset })`.
+This is an API removal, with a migration recipe in README and no compatibility
+shim. Low-level `live::author_transform` remains a non-undoable TRS writer;
+`live::current_transform` remains a lossy TRS read, not an undo snapshot API.
+
+The former two-edit history regression now uses the canonical session and checks
+exact layer text before/after full undo/redo. A new real Bevy propagation test
+edits a reset-stack shear into an inherited translation, then undo/redo/undo
+restores the correct global matrix, reset override and exact layer data while
+retaining the projected entity and its runtime name. Existing animated-stack,
+mapped-edit-target and save/reopen history regressions remain in the full suite.
+This does not add a gizmo widget or native OS input acceptance.
+All 418 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks. Logs: `/tmp/canonical-transform-{tests,check,build}.log`.
+
 ### Range-safe vector-scale inverses
 
 Inverse vector scale ops now use component reciprocals rather than a generic

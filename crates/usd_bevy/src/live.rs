@@ -861,78 +861,6 @@ pub fn current_transform(stage: &Stage, prim_path: &str) -> Option<Transform> {
         .map(to_bevy_transform)
 }
 
-fn clear_transform(stage: &Stage, prim_path: &str) -> anyhow::Result<()> {
-    let prim = openusd::sdf::path(prim_path)?;
-    let _ = stage.remove_property(prim.append_property("xformOp:transform")?);
-    let _ = stage.remove_property(prim.append_property("xformOpOrder")?);
-    Ok(())
-}
-
-// ─── Undo / redo for transform edits (RETHINK P6, gizmo slice) ───────
-//
-// Typed-action history: each edit captures the prim's transform before +
-// after, so undo re-authors the prior state (or clears it if there was
-// none) and redo re-applies. General attribute / namespace undo via
-// openusd `Diff` inverses is the next layer.
-
-struct TransformEdit {
-    prim: String,
-    before: Option<Transform>,
-    after: Transform,
-}
-
-/// Undo/redo stack for transform edits.
-#[derive(Default)]
-pub struct TransformHistory {
-    undo: Vec<TransformEdit>,
-    redo: Vec<TransformEdit>,
-}
-
-impl TransformHistory {
-    /// Author `after` onto `prim`, recording the prior transform for undo.
-    pub fn author(&mut self, stage: &Stage, prim: &str, after: Transform) -> anyhow::Result<()> {
-        let before = current_transform(stage, prim);
-        author_transform(stage, prim, &after)?;
-        self.undo.push(TransformEdit {
-            prim: prim.to_string(),
-            before,
-            after,
-        });
-        self.redo.clear();
-        Ok(())
-    }
-
-    /// Undo the most recent edit. Returns `false` if nothing to undo.
-    pub fn undo(&mut self, stage: &Stage) -> anyhow::Result<bool> {
-        let Some(edit) = self.undo.pop() else {
-            return Ok(false);
-        };
-        match &edit.before {
-            Some(t) => author_transform(stage, &edit.prim, t)?,
-            None => clear_transform(stage, &edit.prim)?,
-        }
-        self.redo.push(edit);
-        Ok(true)
-    }
-
-    /// Redo the most recently undone edit. Returns `false` if nothing to redo.
-    pub fn redo(&mut self, stage: &Stage) -> anyhow::Result<bool> {
-        let Some(edit) = self.redo.pop() else {
-            return Ok(false);
-        };
-        author_transform(stage, &edit.prim, &edit.after)?;
-        self.undo.push(edit);
-        Ok(true)
-    }
-
-    pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-    pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1254,51 +1182,56 @@ def NodeGraph "Graph" {}
         );
     }
 
-    /// Undo/redo walks the transform history: undo restores the prior value
-    /// (or clears it when there was none), redo re-applies.
     #[test]
     fn transform_undo_redo() {
+        use crate::editor::{EditorEdit, EditorSession};
         let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("undo.usda").unwrap();
         stage
             .define_prim("/Foo")
             .unwrap()
             .set_type_name("Xform")
             .unwrap();
-        let mut hist = TransformHistory::default();
-
-        hist.author(&stage, "/Foo", Transform::from_xyz(1.0, 0.0, 0.0))
-            .unwrap();
-        hist.author(&stage, "/Foo", Transform::from_xyz(2.0, 0.0, 0.0))
-            .unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut hist = EditorSession::new(stage.clone());
+        for x in [1.0, 2.0] {
+            hist.edit(EditorEdit::TransformMatrix {
+                prim: "/Foo".into(),
+                matrix: bevy::math::DMat4::from_translation(bevy::math::DVec3::new(x, 0.0, 0.0)).to_cols_array(),
+                reset: false,
+            }).unwrap();
+        }
+        let after = stage.root_layer().export_to_string().unwrap();
         assert_eq!(tx(&stage, "/Foo"), Some(Vec3::new(2.0, 0.0, 0.0)));
 
-        assert!(hist.undo(&stage).unwrap());
+        assert!(hist.undo().unwrap());
         assert_eq!(
             tx(&stage, "/Foo"),
             Some(Vec3::new(1.0, 0.0, 0.0)),
             "undo → previous"
         );
-        assert!(hist.undo(&stage).unwrap());
+        assert!(hist.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
         assert_eq!(
             tx(&stage, "/Foo"),
             None,
             "undo past the first edit clears the transform"
         );
-        assert!(!hist.undo(&stage).unwrap(), "nothing left to undo");
+        assert!(!hist.undo().unwrap(), "nothing left to undo");
 
-        assert!(hist.redo(&stage).unwrap());
+        assert!(hist.redo().unwrap());
         assert_eq!(
             tx(&stage, "/Foo"),
             Some(Vec3::new(1.0, 0.0, 0.0)),
             "redo → first edit"
         );
-        assert!(hist.redo(&stage).unwrap());
+        assert!(hist.redo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), after);
         assert_eq!(
             tx(&stage, "/Foo"),
             Some(Vec3::new(2.0, 0.0, 0.0)),
             "redo → second edit"
         );
-        assert!(!hist.redo(&stage).unwrap(), "nothing left to redo");
+        assert!(!hist.redo().unwrap(), "nothing left to redo");
     }
 
     /// The plugin wires it together: projecting on load and reprojecting on

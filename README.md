@@ -884,8 +884,10 @@ For grouped, matrix-preserving editor undo, use
 with a static matrix and explicit reset state, clearing local samples on its
 matrix/order attributes. Other op attributes remain authored but inactive.
 Undo restores the previous authored fields and samples rather than decomposing
-the old transform into TRS. The legacy `live::TransformHistory` still stores
-decomposed TRS and is not suitable for exact affine/animated-stack restoration.
+the old transform into TRS. The lossy `live::TransformHistory` API has been
+removed; use the same `EditorSession` for transform and other document edits.
+For Bevy TRS input, convert `transform.to_matrix().to_cols_array().map(f64::from)`
+to the command's matrix field and choose the reset state explicitly.
 
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a

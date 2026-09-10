@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("model.usda")?;
     let sphere = Sphere::define(&stage, "/Model")?;
+    stage.set_default_prim("Model")?;
     sphere.create_radius_attr()?.set(1.5_f64)?;
     let model = UsdSource::snapshot("composed_sources/model.usda",
         stage.root_layer().export_to_string()?.into_bytes())?;
@@ -22,8 +23,10 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
 "#);
     let root_source = UsdSource::snapshot("composed_sources/root.usda", assembly.text().as_bytes())?;
     let compose = |model: &UsdSource| -> Result<UsdSource, Box<dyn std::error::Error>> {
-        Ok(root_source.with_reference("/First", model, "/Model")?
-            .with_reference("/Second", model, "/Model")?)
+        Ok(root_source.with_references([
+            ("/First", model, openusd::sdf::Path::default()),
+            ("/Second", model, openusd::sdf::path("/Model")?),
+        ])?)
     };
     let source = compose(&model)?;
     let mut app = App::new();

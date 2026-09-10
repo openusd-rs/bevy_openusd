@@ -125,6 +125,56 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
 
     #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_reopens_captured_reference_batch() {
+        use crate::{UsdSource, editor::{EditorSession, SaveMode}};
+        use std::io::Read;
+        let input = tempfile::tempdir().unwrap();
+        let root = UsdSource::snapshot(input.path().join("root.usda"), &b"#usda 1.0\n"[..]).unwrap();
+        let asset = UsdSource::snapshot(input.path().join("data/payload.bin"), &b"captured payload"[..]).unwrap();
+        let model = UsdSource::snapshot(input.path().join("model.usda"), &br#"#usda 1.0
+(defaultPrim = "Model")
+def Sphere "Model" {
+    double radius = 1.5
+    custom asset payload = @data/payload.bin@
+}
+"#[..]).unwrap().with_dependency(&asset).unwrap();
+        let assembly = root.with_references([
+            ("/Default", &model, openusd::sdf::Path::default()),
+            ("/Explicit", &model, openusd::sdf::path("/Model").unwrap()),
+        ]).unwrap();
+        let editor = EditorSession::new(assembly.open_stage().unwrap());
+        let output = tempfile::tempdir().unwrap();
+        let package = output.path().join("assembly.usdz");
+        editor.save(package.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        assert_eq!(fs::read_dir(input.path()).unwrap().count(), 0);
+        let relocated = tempfile::tempdir().unwrap();
+        let moved = relocated.path().join("moved.usdz");
+        fs::rename(&package, &moved).unwrap();
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let result = std::process::Command::new(native).arg("--flatten").arg(&moved).output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        assert!(result.stderr.is_empty(), "{}", String::from_utf8_lossy(&result.stderr));
+        let stage = UsdSource::snapshot(relocated.path().join("native.usda"), result.stdout).unwrap().open_stage().unwrap();
+        let mut entries = std::collections::BTreeSet::new();
+        for path in ["/Default", "/Explicit"] {
+            let prim = stage.prim(path).unwrap();
+            assert_eq!(prim.type_name().unwrap().as_deref(), Some("Sphere"));
+            assert_eq!(prim.attribute("radius").get::<f64>().unwrap(), Some(1.5));
+            let openusd::sdf::Value::AssetPath(asset) = prim.attribute("payload").get::<openusd::sdf::Value>().unwrap().unwrap() else { panic!() };
+            let (outer, entry) = openusd::ar::split_package_relative_path_outer(&asset.authored_path).unwrap();
+            assert_eq!(Path::new(&outer), moved.as_path());
+            let mut archive = zip::ZipArchive::new(fs::File::open(&outer).unwrap()).unwrap();
+            let mut bytes = Vec::new();
+            archive.by_name(&entry).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"captured payload");
+            entries.insert(entry);
+        }
+        assert_eq!(entries.len(), 1);
+        assert_eq!(root.dependencies().count(), 0);
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_preserves_editor_affine_reset_command() {
         use crate::editor::{EditorEdit, EditorSession, SaveMode};
         let stage = crate::UsdSource::new("native-matrix-edit.usda", include_bytes!("../../../assets/xform_animation.usda").as_slice())

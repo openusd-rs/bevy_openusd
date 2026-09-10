@@ -24,6 +24,8 @@ fn pipeline_progress(cache: Res<bevy::render::render_resource::PipelineCache>, p
 
 #[path = "../src/environment.rs"]
 mod environment;
+#[path = "../src/curve_quality.rs"]
+mod curve_quality;
 
 #[derive(Resource)]
 struct Capture {
@@ -32,6 +34,7 @@ struct Capture {
     renderer: CaptureRenderer,
     shadow_maps: bool,
     subdivision_levels: Option<u32>,
+    curve_steps: usize,
     asset: PathBuf,
     output: PathBuf,
     time: f64,
@@ -85,7 +88,7 @@ impl Capture {
         }
         let output = PathBuf::from(&args[1]);
         if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
-        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
+        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, curve_steps: 8, asset: PathBuf::from(&args[0]), output, time, eye, focus,
             instance_times: vec![time], swap_clocks: false, clocks_swapped: false,
             started: Instant::now(), ready_frames: 0, requested: false, mesh_report: String::new() })
     }
@@ -122,6 +125,10 @@ fn reverse_capture_clocks(mut capture: ResMut<Capture>,
 }
 
 fn main() -> AppExit {
+    let curve_settings = match curve_quality::from_env() {
+        Ok(settings) => settings,
+        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+    };
     let mut capture = match Capture::parse(&std::env::args().skip(1).collect::<Vec<_>>()) {
         Ok(capture) => capture,
         Err(error) => { eprintln!("{error}"); return AppExit::error(); }
@@ -155,6 +162,8 @@ fn main() -> AppExit {
     };
     let asset_dir = capture.asset.parent().unwrap().to_string_lossy().into_owned();
     let mut app = App::new();
+    capture.curve_steps = curve_settings.cubic_steps();
+    app.insert_resource(curve_settings);
     if capture.renderer == CaptureRenderer::Deferred {
         app.insert_resource(bevy::pbr::DefaultOpaqueRendererMethod::deferred());
     }
@@ -403,7 +412,7 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
     let report = report + &format!("instance_times={:?}\ninstance_spacing=2.5\n", capture.instance_times)
         + &format!("clocks_reversed_after_ready_frames={}\n", if capture.clocks_swapped { 30 } else { 0 })
         + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
-        capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &capture.mesh_report;
+        capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("curve_steps={}\n", capture.curve_steps) + &capture.mesh_report;
     std::fs::write(capture.output.with_extension("capture.txt"), report).map_err(|error| format!("metadata write: {error}"))?;
     std::fs::rename(&temporary, &capture.output).map_err(|error| format!("PNG publish: {error}"))?;
     Ok(())
@@ -510,9 +519,11 @@ mod tests {
         let image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
         for levels in [None, Some(2)] {
             capture.subdivision_levels = levels;
+            capture.curve_steps = if levels.is_some() { 32 } else { 8 };
             save(&image, &capture).unwrap();
             let report = std::fs::read_to_string(output.with_extension("capture.txt")).unwrap();
             assert!(report.contains(&format!("subdivision_levels={}\n", levels.unwrap_or(0))));
+            assert!(report.contains(&format!("curve_steps={}\n", capture.curve_steps)));
             assert_eq!(std::fs::metadata(output.with_extension("rgba")).unwrap().len(), 1280 * 720 * 4);
             assert!(output.is_file());
             assert!(!output.with_extension("partial.png").exists());

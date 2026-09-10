@@ -673,6 +673,9 @@ pub struct LiveStagePlugin;
 #[derive(Resource, Default)]
 struct AppliedSubdivision(Option<u32>);
 
+#[derive(Resource, Default)]
+struct AppliedCurveSteps(usize);
+
 impl Plugin for LiveStagePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PrimEntities>()
@@ -682,12 +685,14 @@ impl Plugin for LiveStagePlugin {
             .init_resource::<crate::route::DisplayPurposes>()
             .init_resource::<AppliedPurposes>()
             .init_resource::<AppliedSubdivision>()
+            .init_resource::<AppliedCurveSteps>()
             .add_systems(
                 Update,
                 (
                     project_on_load_system,
                     reproject_system,
                     apply_subdivision_settings_system,
+                    apply_curve_settings_system,
                     resample_animation_system,
                     apply_display_purposes_system,
                 )
@@ -716,6 +721,7 @@ fn project_on_load_system(world: &mut World) {
     project_stage(world, &live, &mut map);
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     world.resource_mut::<AppliedSubdivision>().0 = subdivision_levels;
+    world.resource_mut::<AppliedCurveSteps>().0 = crate::route::curves::current_steps(world);
     world.insert_resource(map);
     world.insert_non_send(live);
 }
@@ -729,6 +735,17 @@ fn apply_subdivision_settings_system(world: &mut World) {
     world.insert_resource(map);
     world.insert_non_send(live);
     world.resource_mut::<AppliedSubdivision>().0 = current;
+}
+
+fn apply_curve_settings_system(world: &mut World) {
+    let current = crate::route::curves::current_steps(world);
+    if world.resource::<AppliedCurveSteps>().0 == current { return; }
+    let Some(live) = world.remove_non_send::<LiveStage>() else { return };
+    let map = world.remove_resource::<PrimEntities>().unwrap_or_default();
+    crate::route::curves::refresh_geometry(world, &live.stage, &map);
+    world.insert_resource(map);
+    world.insert_non_send(live);
+    world.resource_mut::<AppliedCurveSteps>().0 = current;
 }
 
 /// Resample animated prims when [`StageTime`] moves. Only revisits the prims

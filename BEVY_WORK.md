@@ -25,6 +25,257 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Rendering-pane curve controls
+
+The Rendering pane now exposes 1/8/32/64 sample presets and the current effective
+curve quality. Requests use the render-settings bridge and canonical settings
+resource; library quality-change systems update the existing curves. Curve
+projection errors join the existing sorted, deduplicated diagnostics. Bridge
+tests verify preservation of startup settings, requested changes, published
+errors/recovery and unchanged subdivision settings.
+
+The first native capture exposed clipped horizontal presets (only one button
+visible), so each preset now has its own row. Low/high checked-in egui replays
+exercise the one-sample switch and subsequent return to 64 without reopening.
+The low capture shows sample count one and straight gradient chords. This uses
+injected egui input, not OS-level mouse input; one-pixel lines and fixed-rate
+approximation remain unchanged.
+
+Inspected one-, 32- and 64-sample interaction captures and the invalid-layout
+error panel in `target/viewer-ui-captures/curve-controls-{low,medium,high,errors-recheck}.png`.
+The original error-panel attempt timed out starting Weston and was rerun only
+after its script exited. A return-to-eight screenshot was black despite all
+replay events appearing in the log and continuous host repaint enabled. Thus the
+earlier repaint change is not a complete solution for intermittent black host
+captures; UI_UPDATED and executed input remain insufficient visual acceptance.
+
+The 35-second default-quality recheck succeeds and shows eight samples with the
+expected faceted arcs after a one-to-eight transition:
+`target/viewer-ui-captures/curve-controls-default-recheck.png` (inspected).
+All four presets and the error panel now have inspected interaction/state
+captures. Known clipboard/Vulkan-loader/SSAO environment diagnostics remain.
+All 459 ordinary workspace tests pass (eight ignored), plus check-all, build and
+whitespace checks; `/tmp/curve-controls-verified-{tests,check,build}.log`.
+
+### Live curve quality changes
+
+LiveStagePlugin and independent UsdSceneRoot runtimes now track the effective
+cubic sample count and reproject only BasisCurves when it changes. Removing the
+settings resource returns to the default eight samples. The existing registry
+patch path preserves entities/runtime state, and each independent stage refreshes
+under its own installed clock and texture context. Initial projection records the
+current setting; unchanged values do not trigger an additional quality refresh.
+
+A real App regression changes quality to two, then 64, then removes the override
+for both an editor-style live stage and two asset roots at different times. It
+checks mesh density, sampled endpoint heights, Ready states, entity identity and
+runtime-only names. Focused evidence: `/tmp/live-curve-quality-focused.log`.
+This enables runtime library quality changes; a live viewer UI control is still
+pending, and no adaptive tessellation or width-aware rendering is implied.
+
+All 458 ordinary workspace tests pass (eight ignored), plus check-all, viewer
+build and whitespace checks; `/tmp/live-curve-quality-{tests,check,build}.log`.
+
+### Viewer curve quality configuration
+
+The viewer and offscreen capture executable share startup parsing for
+USD_CURVE_STEPS (1–64, default eight) and install the canonical UsdCurveSettings
+resource before projection. Invalid integers, out-of-range values and non-UTF8
+environment values return errors before renderer startup. Capture metadata records
+the effective curve_steps, and the live-clock suite clears the override for
+repeatable defaults. This is a launch setting, not a live ribbon quality control.
+
+Shared parser tests cover defaults, both bounds, intermediate values, negative,
+fractional, oversized and nonnumeric inputs. Capture readback tests assert the
+quality metadata. Width-aware surfaces and adaptive tessellation remain open.
+
+Native offscreen captures at one and 64 steps show endpoint chords versus smooth
+gradient arcs, with matching curve_steps metadata:
+`target/curve-quality-captures/steps-{1,64}.png` (both inspected).
+An invalid 65-step viewer launch rejects before renderer startup through make;
+log: `/tmp/viewer-curve-quality-invalid-make.log`.
+
+Full-host captures exposed a separate repaint issue: both 18- and 40-second
+captures stayed black despite projected scene and UI_UPDATED logs. A replay with
+only a future event (none executed during capture) continuously requested frames
+and rendered the complete UI. The viewer now calls the public host.request_repaint
+each update, without changing the sibling Mara implementation. This keeps Bevy
+frames progressing for static startup as well as animation; idle rendering cost
+is not benchmarked. Before/control evidence:
+`target/viewer-ui-captures/curve-quality-64{,-recheck,-repaint}.png`.
+
+After the repaint change, an 18-second capture with USD_UI_REPLAY explicitly
+unset shows the complete Ready UI and all four smooth gradient arcs:
+`target/viewer-ui-captures/curve-quality-64-final.png` (inspected). The known
+clipboard, Vulkan-loader and unsupported-SSAO diagnostics remain; this is not a
+clean-environment claim. Final log: `/tmp/viewer-curve-quality-ui-final.log`.
+All 457 ordinary workspace tests pass (eight ignored), plus check-all/build and
+whitespace checks; `/tmp/viewer-curve-quality-final-{tests,check,build}.log`.
+
+### Configurable cubic curve quality
+
+The library now exposes canonical route::curves::UsdCurveSettings with validated
+1–64 samples per cubic segment and the existing default of eight. Projection
+uses the same setting in pre-allocation size validation, ordinary/pinned cubic
+tessellation and vertex/varying display-primvar interpolation. Linear topology
+is unchanged. Settings are read during projection; changing the resource alone
+does not schedule a resync and the viewer has no quality control yet.
+
+The regression projects indexed gradient curves at 1, 2, 16 and 64 steps, checks
+vertex/index counts, endpoints and common midpoint color/opacity. Output-limit
+coverage verifies the same control-point input is accepted at one step and
+rejected before tessellation at 64. Existing periodic/pinned/default-quality
+tests remain passing. This is numerical projection evidence, not new rendered
+quality acceptance, adaptive tessellation or width-aware surface support.
+
+All 455 ordinary workspace tests pass (eight ignored), plus check-all, build and
+whitespace checks. Logs: `/tmp/curve-quality-{tests,check,build}.log`; 22 focused
+curve tests also pass in `/tmp/curve-quality-focused.log`.
+
+### Sampled texture color-space interpretation
+
+Texture channels now read explicit sourceColorSpace tokens at the instance's USD
+time rather than default time. Reachable texture discovery includes color-space
+sample times alongside file samples, so required raw and sRGB image variants are
+available before playback. A shared sampled token/string reader preserves the
+existing default-time helper. Unsupported color-space names still fail explicitly;
+auto inference and broader color management are unchanged.
+
+The AssetServer regression uses a fixed gray image, raw default and raw/sRGB
+samples. Independent roots choose different image formats and scalar-channel
+packing (128 raw versus 55 after sRGB decoding), then swap clocks without entity
+replacement. An intermediate time checks held token values. Both interpretations
+must be captured even though the default requests raw only.
+
+The generated color_space_samples fixture and live-clock suite add a rendered
+clock-reversal comparison against freshly loaded endpoint instances of the same
+source. Unlike the UV/file/morph reference cases, this checks update consistency,
+not independent color-management fidelity.
+
+All four native GPU live-clock cases pass strict zero RGB tolerance across
+921600 pixels each in `target/live-clock-color-space/`. Inspected both color-space
+images and the UV/file/morph live captures; the color-space endpoint shows darker
+sRGB on the left and brighter raw on the right after reversal. Metadata verifies
+the reversal occurs after 30 ready frames, with two visible meshes and no logged
+renderer warnings/errors. Suite log: `/tmp/sampled-color-space-captures.log`.
+All 454 ordinary workspace tests pass (eight ignored), plus check-all and build;
+the final strengthened default-raw AssetServer test passes separately. Logs:
+`/tmp/sampled-color-space-{tests,check,build,final}.log`.
+
+### Native batch assembly package interoperability
+
+The native export lane now verifies a diskless source batch containing default
+and explicit Sphere references and a captured relative opaque asset. It exports
+USDZ, relocates the package and invokes native OpenUSD usdcat --flatten. Native
+output must have no stderr diagnostics and retain both prim types, radius values
+and asset paths into the relocated package. Reading those entries proves the
+captured payload bytes survive and both mounts resolve to the same packaged
+entry. The input directory remains empty and the original root has no merged
+dependencies. This is package/composition evidence, not image-rendering parity.
+
+All eight native export tests pass with the installed OpenUSD 25.05.01 usdcat;
+log: `/tmp/native-reference-batch.log`.
+All 453 ordinary workspace tests pass (eight ignored), plus check-all, viewer
+build and whitespace checks; `/tmp/native-reference-batch-{tests,check,build}.log`.
+
+### End-to-end watcher recovery refresh
+
+A native editor regression now loads a red texture, removes its directory before
+the first watcher setup, observes the setup failure, and restores a blue image
+before retry. With no watcher present to observe that write, the retry's recovery
+refresh must update installed pixels. The test verifies the same document ID,
+selection, unchanged authored root and Ready status after recovery.
+
+The initial fixture used a disconnected texture shader and loaded no image;
+that was an invalid fixture for this test, not a watcher failure. It now connects
+the texture to a PreviewSurface output. Failure and corrected evidence:
+`/tmp/editor-recovered-pixels.log`, `/tmp/editor-recovered-pixels-recheck.log`.
+The corrected native test passes with the real app schedule and retry clock;
+this is headless pixel-data evidence, not another rendered viewer capture.
+
+All 454 feature-enabled workspace tests pass (12 ignored, including the native
+test separately executed above), plus check-all, viewer build and whitespace
+checks. Logs: `/tmp/editor-recovered-pixels-{feature,check,build}.log`.
+
+### Editor watcher setup recovery
+
+Failed texture watcher directories now remain pending and retry at one-second
+intervals while the app updates. Successful watchers remain installed, avoiding
+unnecessary gaps and duplicate file counts. A recovered directory queues the
+existing document-preserving RefreshTextures operation to cover edits missed
+while unavailable. Document/path changes reset pending work and retry deadlines.
+Idle frames do not mark public watcher status changed.
+
+A native regression starts with one existing and one missing directory, checks
+the failure status and retry deadline, creates the missing directory, and proves
+recovery without replacing the successful watcher's event channel. Repeated calls
+do not duplicate watchers or recount files. An ordinary feature test checks idle
+status change ticks. This does not detect lost watches after folder replacement,
+watch USD layers/packages, or recover images from a failed initial Open.
+
+Validation: 453 default workspace tests (seven ignored), 454 feature-enabled
+workspace tests (11 ignored), and all three watcher-focused tests including both
+native cases pass. Default check-all/build and the feature-enabled viewer build
+pass. Logs: `/tmp/editor-watch-retry-{default,feature-final,final,check,build,viewer}.log`.
+
+### Reference assembly measurements
+
+The runnable reference_benchmark compares sequential and batch source-reference
+assembly with identical captured inputs. Each mode has an untimed warmup, sample
+order alternates, and post-timing checks verify every composed Cube value,
+dependency count, identical exported roots and unchanged input root. Inputs and
+verification are excluded from timing, along with Bevy projection, GPU and disk
+I/O. A regression runs both orders with three mounts.
+
+One local debug run with 32 mounts and three samples measured sequential assembly
+at 260.687, 329.162 and 245.916 ms, versus batch at 23.078, 38.142 and 18.523 ms.
+Both outputs were 4032 bytes. These are bounded shared-Cube authoring measurements,
+not release performance, large production assemblies or viewer frame timings.
+Evidence: `/tmp/reference-benchmark-run.log`.
+
+All 453 ordinary workspace tests pass (seven ignored), plus check-all, build and
+diff whitespace checks. Logs: `/tmp/reference-benchmark-{tests,check,build}.log`.
+
+### Atomic source-reference batches
+
+UsdSource::with_references mounts an iterator of destination/source/target tuples
+in order, opens one assembly stage and exports its root once. Validation stages
+are reused by source revision, not merely identifier, so conflicting snapshots
+cannot bypass dependency conflict checks. The single-reference method delegates
+to the batch path. Empty batches preserve identity and shared root bytes; failed
+batches return no partially assembled source and leave all inputs unchanged.
+
+The regression compares batch and sequential exported bytes, dependency lists
+and composed types; checks repeated source use, empty-batch identity, late
+destination collisions and conflicting source revisions. The composed_sources
+example now batches its default and explicit target mounts while retaining its
+independent-root, reload, failure-recovery and cleanup assertions. This avoids
+repeated root export per mount, but does not establish measured speedup or finish
+the general typed scene DSL.
+
+All 452 ordinary workspace tests pass (seven ignored), plus check-all, build,
+the composed_sources executable and diff whitespace checks. Logs:
+`/tmp/batch-reference-{tests,check,build,example}.log`.
+
+### Default-prim source references
+
+UsdSource::with_reference now accepts the canonical empty typed Path as a target
+to use the dependency's defaultPrim. It preserves that empty target in authored
+reference metadata instead of replacing it with today's resolved prim name.
+Destinations still require explicit absolute non-root paths. Missing defaults
+fail directly; invalid defaults fail composition validation before publishing.
+The upstream string parser rejects empty strings, so callers use Path::default().
+
+Tests verify projected default-target data, retained empty reference metadata,
+rebuilding against a changed defaultPrim, missing/invalid-default rejection and
+empty-destination rejection. The composed_sources example now uses a default
+reference for First and an explicit reference for Second, preserving its existing
+independent-root and reload checks. Focused source tests pass in
+`/tmp/default-reference-recheck.log`. General typed scene DSL work remains open.
+All 451 ordinary workspace tests pass (seven ignored), plus check-all, build and
+the composed_sources executable. Logs:
+`/tmp/default-reference-{tests,check,build,example}.log`.
+
 ### Source-reference assembly export contracts
 
 An attempted root-layer USDA relocation test failed because the referenced model

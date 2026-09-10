@@ -50,7 +50,9 @@ and exposes `UsdSceneState` (Loading/Ready/Failed). Snapshot PNG/JPEG textures a
 tracked labeled assets with color/data color spaces. Time-sampled material
 `inputs:file` paths are supported: texture samples reachable through each
 material's connections are decoded into the snapshot, and each instance selects the image at its own
-clock. This supports explicit asset-path samples, not filename sequence patterns.
+clock. Explicit `inputs:sourceColorSpace` raw/sRGB samples also follow that clock;
+snapshot discovery includes their sample times and loads each required image
+interpretation. This supports explicit asset-path samples, not filename sequence patterns.
 Dependency-change events
 reload their owning USD asset. Each root retains an independent live stage;
 matching prim entities and runtime-only components survive source reloads.
@@ -109,13 +111,19 @@ when replacing a dependency revision; this merge API never silently overwrites o
 the typed USD API and validates the composed result, returning a new snapshot:
 
 ```rust
-let assembly = root
-    .with_reference("/First", &model, "/Model")?
-    .with_reference("/Second", &model, "/Model")?;
+let assembly = root.with_references([
+    ("/First", &model, "/Model"),
+    ("/Second", &model, "/Model"),
+])?;
 ```
 
-The receiver must have a `.usda` identifier. Both paths must be absolute non-root
-prim paths; targets must exist and destinations must be new. Existing prim
+The receiver must have a `.usda` identifier. Destinations and explicit targets
+must be absolute non-root prim paths; targets must exist and destinations must be
+new. Pass `openusd::sdf::Path::default()` as the target to use the model's
+`defaultPrim`. The emitted reference retains its empty target rather than baking
+in the resolved name; a missing or unresolvable default fails. An empty typed
+path is distinct from an empty string, which the upstream path parser rejects.
+Existing prim
 patches remain explicit editor/authoring operations. Conflicting dependencies or
 composition errors fail without changing either input. References use the source
 identifier as an absolute asset anchor. For a self-contained assembly with
@@ -126,12 +134,31 @@ usd_bevy::editor::EditorSession::new(assembly.open_stage()?)
     .save("assembly.usdz", usd_bevy::editor::SaveMode::RootLayer)?;
 ```
 
+The native export test lane verifies a relocated diskless batch assembly with
+default and explicit targets, including its captured opaque asset bytes, through
+OpenUSD `usdcat --flatten`.
+
 Ordinary USDA/USDC root-layer export retains references but does not write their
 in-memory dependencies to disk. Such an export cannot reopen independently when
 the referenced files do not exist. Flattened export removes composition arcs,
 but does not bundle external textures; it is not a substitute for USDZ packaging.
-This operation opens and serializes a stage per call;
-it is not a constant-cost bulk builder or complete typed scene DSL.
+`with_references` mounts entries in iterator order and publishes a new snapshot
+only if the whole batch succeeds. It opens one assembly stage, exports its root
+once, and reuses a validation stage for repeated mounts of the same source
+snapshot. An empty batch preserves the original revision and bytes. The
+single-reference method delegates to this batch path. Dependency merges and USD
+composition still have costs, and this is not a complete typed scene DSL.
+
+`reference_benchmark` compares sequential and batch assembly of a captured shared
+Cube model. It warms both modes, alternates their order, and verifies equivalent
+exported roots and composed values outside the timed region:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example reference_benchmark' ARGS='32 3'
+```
+
+It reports assembly time only, not Bevy projection, rendering or disk I/O.
+For release measurements, append `--release` to `APP_TARGET`.
 
 `examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under
@@ -261,8 +288,10 @@ Library applications can opt in by enabling `usd_bevy/file_watcher` and adding
 on native file events. `EditorTextureWatchStatus` reports active file count and
 setup errors. Watched paths update with the document/image set; idle frames do
 not reread images or rescan USD materials. Package entries, USD layers and folder
-replacement are not watched. Setup failures retry when the document or watched
-file set changes. Images missing during a failed initial Open are not watched.
+replacement are not watched. Failed watcher setups retry once per second while
+the app updates, without restarting successful watchers. Recovery queues a texture
+refresh to catch edits made while unavailable. Document/path changes reset the
+retry state. Images missing during a failed initial Open are not watched.
 
 ```sh
 make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch
@@ -434,8 +463,32 @@ expanded equivalents on the right, with Bspline above Catmull-Rom:
 USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='assets/pinned_curves.usda target/pinned-curves.png 0 0 0.5 8 0 0.5 0'
 ```
 
-Each row should have matching shapes and endpoint heights. Tessellation remains
-eight samples per segment rather than adaptive or exact-limit rendering.
+Each row should have matching shapes and endpoint heights. Tessellation defaults
+to eight samples per segment rather than adaptive or exact-limit rendering.
+Library applications can choose 1–64 samples per cubic segment:
+
+```rust
+app.insert_resource(usd_bevy::route::curves::UsdCurveSettings::new(32)?);
+```
+
+The setting controls cubic positions and display-primvar interpolation together;
+linear curves are unchanged. Existing output-size limits still apply.
+`LiveStagePlugin` and `UsdAssetPlugin` reproject existing curve entities when the
+effective sample count changes, retaining independent instance clocks. Removing
+the resource restores eight samples. This does not add width-aware curve surfaces.
+
+For the viewer and fixed-camera capture tool, set `USD_CURVE_STEPS=1..64` before
+launch (default eight). Invalid values fail before renderer startup. Capture
+metadata records `curve_steps`.
+
+The Rendering pane's **Cubic curves** section switches live between 1, 8, 32
+and 64 samples, shows the effective setting, and lists curve projection errors.
+
+```sh
+USD_CURVE_STEPS=32 make run ARGS='assets/curve_gradients.usda'
+USD_CURVE_STEPS=32 make run APP_TARGET='--example viewer_capture' \
+  ARGS='assets/curve_gradients.usda target/curves-32.png 0 0 0 8 0 0 0'
+```
 
 `assets/periodic_bezier.usda` compares a three-control-point periodic Bezier
 with an explicitly closed four-point nonperiodic equivalent. Both render the
@@ -1078,6 +1131,7 @@ renderer, mapped versus baked differs in 7 of 921,600 pixels (maximum RGB error
 recorded strict-zero comparison results, not a claim of bit-identical rendering.
 The generator also writes `file_samples.usda` (sample-only red/blue texture
 files) and `file_reference.usda` (fixed quadrant texture with explicit UV samples).
+`color_space_samples.usda` uses one gray image with raw/sRGB token samples.
 Capture both with `USD_CAPTURE_INSTANCE_TIMES=0,10`, shadows off, eye `(0,1,8)`
 and focus `(0,1,0)`. The tested Vulkan captures match all 921,600 pixels at strict
 zero RGB tolerance. This checks simultaneous texture selection, not a live reload.

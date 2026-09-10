@@ -8,6 +8,7 @@ use bevy::camera::RenderTarget;
 use bevy::prelude::*;
 
 mod environment;
+mod curve_quality;
 mod lighting;
 mod inspector;
 mod capture;
@@ -39,6 +40,7 @@ use usd_bevy::editor::{EditorBridge, EditorCommand, EditorPlugin, SaveMode};
 const LOG_FILE: &str = "/tmp/usdview.log";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    curve_quality::from_env()?;
     let watch = match std::env::var("USD_WATCH_TEXTURES") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
@@ -220,6 +222,7 @@ impl WindowApp for UsdApp {
     }
 
     fn update(&mut self, host: &mut MaraHostCtx<'_>) {
+        host.request_repaint();
         let Self {
             bevy_view,
             workspace,
@@ -538,6 +541,7 @@ fn usd_tree_passes(nodes: &[UsdNode], i: usize, filter: &str) -> bool {
 // ─── Embedded Bevy viewport (the USD scene) ─────────────────────────
 
 fn configure_usd_app(app: &mut App, editor: EditorBridge) {
+    app.insert_resource(curve_quality::from_env().expect("validated USD_CURVE_STEPS"));
     app.insert_resource(editor);
     app.add_plugins((
         UsdPlugin,

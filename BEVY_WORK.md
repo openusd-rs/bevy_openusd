@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Shared captured-asset read handles
+
+Captured root/dependency asset opens now retain an Arc-backed read cursor rather
+than cloning the entire byte payload into a new Vec. Handles have independent
+seek positions and remain usable after the resolver/source is dropped, including
+transfer to another thread. The regression verifies the exact shared-ownership
+count for root and dependency handles, cursor independence, EOF/rewind/end-relative
+seeks, invalid backward seeks and source-lifetime independence.
+
+This removes one full-buffer copy per captured asset handle, not all parser or
+texture copies. `read_all` still allocates its output, and ZIP entry extraction
+still allocates bounded decompressed bytes. No end-to-end speedup or peak-RSS
+reduction is claimed without a separate measurement.
+All 421 ordinary tests and all seven optional native export tests pass, plus
+check-all, build and whitespace checks. Logs:
+`/tmp/shared-source-{tests,native,check,build}.log`.
+
 ### Runnable grouped assembly walkthrough
 
 Added `examples/editor_assembly.rs`: a reusable batch recipe composes two colored

@@ -25,6 +25,31 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Restore texture-only emissive output
+
+Bevy StandardMaterial defaults its emissive multiplier to black. The material
+route previously bound a texture-only USD emissive input without changing that
+multiplier, so the texture contributed no emission. The route now uses white
+only when an emissive image handle is bound and no explicit emissive color was
+decoded. Explicit colors (including black/HDR values), missing image handles
+and untextured defaults retain their existing behavior.
+
+`examples/emissive_texture_fixture.rs` generates a raw 1x1 RGB emission texture,
+a sphere using that texture, an independently authored constant-color reference
+and a dark control. Before the fix, texture/control images matched exactly,
+while texture/reference differed in 60646 of 921600 pixels (max RGB error 178).
+After the fix, texture/reference differ in zero RGB pixels. Before/after and
+reference images were visually inspected. Evidence:
+`target/emissive-texture-fixture/`, `/tmp/emissive-before-compare.log`,
+`/tmp/emissive-after-compare.log` and `/tmp/emissive-{before,after}-gpu.log`.
+
+The material regression checks white identity, explicit black/HDR multipliers,
+missing handles and default black. The fixture regression reopens authored USD
+and checks texture-vs-constant semantics and existing-directory refusal.
+All 497 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/emissive-{tests,check,build}.log`. This fixes emission mapping; RGB
+texture scale/bias and the independent black host-window issue remain open.
+
 ### Configure the actual wgpu presentation mode
 
 Corrected the eframe control: eframe 0.34.3 NativeOptions.vsync only applies to

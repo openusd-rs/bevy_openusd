@@ -580,6 +580,20 @@ through a Material/NodeGraph interface; `colorspace_reference.usda` switches
 between precomputed raw linear bytes instead. This is an explicit color-space
 test, not implementation of metadata-based `auto` color-space detection.
 
+The emissive fixture compares a texture-only
+emissive input against a constant linear-color reference and a non-emissive control:
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example emissive_texture_fixture' ARGS='target/NEW-emission'
+USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off make run CARGO='cargo --offline' APP_TARGET='--example viewer_capture' ARGS='target/NEW-emission/textured.usda target/NEW-emission/textured.png 0 0 2 6 0 0 0'
+USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off make run CARGO='cargo --offline' APP_TARGET='--example viewer_capture' ARGS='target/NEW-emission/reference.usda target/NEW-emission/reference.png 0 0 2 6 0 0 0'
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example capture_compare' ARGS='target/NEW-emission/textured.rgba target/NEW-emission/reference.rgba 0 1280 target/NEW-emission/diff.png'
+```
+
+Texture-only emission uses a white Bevy emissive multiplier when an image handle
+is bound. Explicit emissive colors retain their multiplier, including black;
+untextured defaults remain non-emissive. This does not add RGB texture scale/bias.
+
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:
 

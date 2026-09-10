@@ -210,8 +210,11 @@ the whole batch without changing inputs. The lower-level
 `authoring::set_references` also requires positive finite scales. Native OpenUSD
 supports negative scales with a deprecation warning, but the pinned Rust reader
 failed a reversed-sample probe; newly authored negative mappings are rejected
-rather than silently interpreted incorrectly. This does not validate all
-negative mappings in externally loaded scenes.
+rather than silently interpreted incorrectly. Source validation also rejects
+invalid time offsets in composed reference lists on traversed prims, including
+the internal-reference case that did not surface a composition error. Rejected
+reloads retain the last valid projection. Payload/sublayer offsets and unselected
+branches are not covered by this additional reference-metadata check.
 `examples/retimed_sources.rs` demonstrates
 one animated source mounted twice with different timing and checks projected mesh
 radii and stable entities across clock changes:

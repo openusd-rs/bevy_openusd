@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject invalid reference offsets during source publication
+
+The Rust composition code sanitizes nonpositive scales to identity, but an
+internal-reference load probe still reached Ready rather than surfacing an error
+(`/tmp/invalid-offset-load-focused.log`). Source validation now checks composed
+reference-list entries on traversed prims with LayerOffset::is_valid_composition
+before publication. It rejects invalid reference offsets explicitly; this is not
+a payload/sublayer-offset or unselected-branch validation implementation.
+
+The Bevy-world regression replaces a valid shared scene with internal references
+using scales -1 and 0. Both existing roots must fail while retaining their entities
+and runtime names; a fresh root must fail without installing geometry, and no
+/Invalid projection may appear. Restoring the valid source returns existing roots
+to Ready with their identities intact. The focused recheck passes:
+`/tmp/invalid-offset-load-recheck.log`.
+All 469 ordinary workspace tests pass (ten ignored), as do ten native export
+tests, check-all, build and whitespace validation:
+`/tmp/invalid-offset-{tests,native,check,build}.log`.
+
 ### Reject unsupported reverse-time reference authoring
 
 The lower-level set_references helper accepted negative scales while the new

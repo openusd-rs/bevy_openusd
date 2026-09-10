@@ -275,7 +275,15 @@ impl UsdSource {
         let mut paths = Vec::new();
         stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| paths.push(path.clone()))?;
         for path in paths {
-            for attribute in stage.prim(path)?.attributes()? {
+            let prim = stage.prim(&path)?;
+            if let Some(openusd::sdf::Value::ReferenceListOp(references)) = prim.get_metadata("references")? {
+                for reference in references.explicit_items.iter().chain(&references.prepended_items)
+                    .chain(&references.appended_items).chain(&references.added_items) {
+                    anyhow::ensure!(reference.layer_offset.is_valid_composition(),
+                        "unsupported reference time offset at {path}: {:?}", reference.layer_offset);
+                }
+            }
+            for attribute in prim.attributes()? {
                 attribute.get::<openusd::sdf::Value>()?;
                 if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
                     for time in attribute.time_sample_times()? {

@@ -512,6 +512,41 @@ def Xform "Old" {}
     }
 
     #[test]
+    fn invalid_reference_offsets_fail_without_installing_identity_fallback() {
+        let (mut world, handle) = instance_world();
+        let original = world.resource::<Assets<UsdScene>>().get(&handle).unwrap().source.clone();
+        let roots = [world.spawn(UsdSceneRoot(handle.clone())).id(), world.spawn(UsdSceneRoot(handle.clone())).id()];
+        spawn_usd_scenes(&mut world);
+        let entities = roots.map(|root| instance_entity(&world, root, "/Mover"));
+        for entity in entities { world.entity_mut(entity).insert(Name::new("runtime name")); }
+        for scale in [-1, 0] {
+            let text = format!("{ANIMATED}\nclass Xform \"Template\" {{ double score.timeSamples = {{0: 1, 10: 3}} }}\ndef Xform \"Invalid\" (prepend references = </Template> (offset = 10; scale = {scale})) {{}}\n");
+            world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+                UsdSource::snapshot("instances.usda", text.into_bytes()).unwrap();
+            let fresh = world.spawn(UsdSceneRoot(handle.clone())).id();
+            spawn_usd_scenes(&mut world);
+            for root in roots.into_iter().chain([fresh]) {
+                let Some(UsdSceneState::Failed(error)) = world.get::<UsdSceneState>(root) else { panic!("invalid offset accepted"); };
+                assert!(error.to_lowercase().contains("offset"), "{error}");
+                assert!(world.non_send::<UsdInstances>().entity(root, "/Invalid").is_none());
+            }
+            assert!(world.non_send::<UsdInstances>().entity(fresh, "/Mover").is_none());
+            world.despawn(fresh);
+            for (root, entity) in roots.into_iter().zip(entities) {
+                assert_eq!(instance_entity(&world, root, "/Mover"), entity);
+                assert_eq!(world.get::<Name>(entity).unwrap().as_str(), "runtime name");
+            }
+        }
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = original;
+        spawn_usd_scenes(&mut world);
+        for (root, entity) in roots.into_iter().zip(entities) {
+            assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+            assert_eq!(instance_entity(&world, root, "/Mover"), entity);
+            assert_eq!(world.get::<Name>(entity).unwrap().as_str(), "runtime name");
+        }
+    }
+
+    #[test]
     fn failed_reload_keeps_last_good_live_stage() {
         let (mut world, handle) = instance_world();
         let root = world.spawn(UsdSceneRoot(handle.clone())).id();

@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    subLayers = [@morph_normals.usda@]
+)
+over "Test"
+{
+    over "Face"
+    {
+        texCoord2f[] primvars:st = [(0,0),(1,0),(1,1),(0,1)] (interpolation = "vertex")
+        rel material:binding = </Normal>
+        over "Part"
+        {
+            rel material:binding = </Normal>
+        }
+    }
+}
+def Material "Normal"
+{
+    token outputs:surface.connect = </Normal/Surface.outputs:surface>
+    def Shader "Surface"
+    {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.5,0.5,0.5)
+        float inputs:roughness = 1
+        normal3f inputs:normal = (0.5,0.5,0.5)
+        token outputs:surface
+    }
+}

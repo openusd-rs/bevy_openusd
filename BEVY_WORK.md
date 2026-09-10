@@ -25,6 +25,45 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Rebuild GPU morph tangents at the sampled USD clock
+
+GPU morph preparation previously supplied zero tangent deltas while retaining
+rest tangents, despite changing positions and authored normals. The new CPU
+reference regression reproduced a mismatch at time 5: GPU tangent (1,0,0,1)
+versus approximately (0.973375,0.000135,-0.229217,1). The fixture has authored UVs,
+normal offsets, a constant tangent-space normal material and material subsets.
+Evidence: `/tmp/morph-tangent-before-fixed-test.log`.
+
+When UVs exist, preparation now builds sampled morph-space positions and normals,
+retains rest triangulation, regenerates tangents through the existing mesh builder
+and copies only the tangent attribute to the GPU base mesh. Position/normal
+offsets remain GPU morph attributes; skinning, when present, runs afterward.
+Nonfinite positions and changed vertex counts reject preparation. Missing
+generated tangents remove the stale attribute and reach the existing diagnostic.
+This intentionally adds CPU tangent generation and time-specific mesh data; no
+performance improvement or arbitrary post-skinning tangent parity is claimed.
+
+The unit regression passes at 0/5/10/backward 0 and verifies the reference really
+differs from rest tangents. Actual GPU and CPU captures at time 10 match exactly
+at zero RGB tolerance. Both were inspected; metadata confirms two GPU morph mesh
+entities in the GPU run and zero in the CPU reference, with two visible meshes
+in each. No renderer WARN/ERROR, both CAPTURE_OK.
+Evidence: `target/morph-tangent-after-{gpu,cpu,diff}.png`,
+`/tmp/morph-tangent-after-{gpu,cpu,compare}.log`.
+
+The first capture pair mistakenly set USD_CPU_SKINNING=0, which still selects
+CPU mode because the option is presence-based. Its metadata reports zero GPU
+morph meshes in both captures; `target/morph-tangent-before-*` is retained but
+is NOT GPU-before evidence. The corrected GPU run unsets the variable.
+An initial unit setup also tried setting an absent attribute spec; it was
+replaced by the explicit `assets/morph_tangent_normals.usda` fixture before the
+actual stale-tangent regression was reproduced.
+
+All 507 ordinary tests pass (13 ignored), make check-all/build and git diff --check
+pass: `/tmp/morph-tangent-{tests,check,build}.log`. Live rendered clock reversal,
+general skinning tangent fidelity, performance measurements and the full Bevy
+acceptance checklist remain open.
+
 ### Diagnose ignored normal mapping without tangents
 
 Bevy 0.19.1's pbr_fragment.wgsl guards normal mapping with VERTEX_TANGENTS;

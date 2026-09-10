@@ -54,7 +54,25 @@ pub(crate) fn prepare(ctx: &RouteCtx, read: &crate::read::geom::ReadMesh, mesh: 
     anyhow::ensure!(!mapping.is_empty() && mapping.len() == mesh.count_vertices(), "invalid morph vertex mapping");
     anyhow::ensure!(mapping.len() <= (MAX_TEXTURE_WIDTH as usize).pow(2) / MorphAttributes::COMPONENT_COUNT,
         "morph target exceeds Bevy texture-backend capacity");
-    if authored { crate::read::skel::morph_normals(read, &sample)?; }
+    let normals = if authored { Some(crate::read::skel::morph_normals(read, &sample)?.0) } else { None };
+    if read.uvs.is_some() {
+        let mut deformed = read.clone();
+        deformed.triangulation_points = Some(read.points.clone());
+        for (point, position) in deformed.points.iter_mut().enumerate() {
+            let mut value = Vec3::from(*position);
+            for (target, weight) in sample.targets.iter().zip(&sample.weights) {
+                value += Vec3::from(target[point]) * *weight;
+            }
+            anyhow::ensure!(value.is_finite(), "morphed tangent position is nonfinite");
+            *position = value.to_array();
+        }
+        deformed.normals = normals;
+        let tangent_mesh = crate::mesh::mesh_from_usd(&deformed);
+        anyhow::ensure!(tangent_mesh.count_vertices() == mesh.count_vertices(), "morphed tangent vertex mapping changed");
+        if let Some(tangents) = tangent_mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.clone());
+        } else { mesh.remove_attribute(Mesh::ATTRIBUTE_TANGENT); }
+    }
     let attributes = sample.targets.iter().zip(&sample.normal_targets).flat_map(|(target, normals)| mapping.iter().map(move |&point|
         MorphAttributes::new(target[point].into(), if authored { normals[point].into() } else { Vec3::ZERO }, Vec3::ZERO))).collect();
     mesh.set_morph_targets(attributes);
@@ -65,6 +83,31 @@ pub(crate) fn prepare(ctx: &RouteCtx, read: &crate::read::geom::ReadMesh, mesh: 
 mod tests {
     use super::*;
     use bevy::camera::visibility::NoFrustumCulling;
+
+    #[test]
+    fn sampled_morph_tangents_match_cpu_geometry() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/morph_tangent_normals.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        let mut changed = false;
+        for time in [0.0, 5.0, 10.0, 0.0] {
+            let ctx = RouteCtx::at(&stage, &path, Some(time));
+            let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+            let mut gpu = crate::mesh::mesh_from_usd(&read);
+            let rest = gpu.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().clone();
+            prepare(&ctx, &read, &mut gpu).unwrap();
+            let cpu = crate::mesh::mesh_from_usd(&super::super::skel::deformed_mesh(&ctx).unwrap().unwrap());
+            let bevy::mesh::VertexAttributeValues::Float32x4(actual) = gpu.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap() else { panic!("gpu tangents") };
+            let bevy::mesh::VertexAttributeValues::Float32x4(expected) = cpu.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap() else { panic!("cpu tangents") };
+            let bevy::mesh::VertexAttributeValues::Float32x4(rest) = rest else { panic!("rest tangents") };
+            assert_eq!(actual.len(), expected.len());
+            for ((actual, expected), rest) in actual.iter().zip(expected).zip(rest) {
+                changed |= !Vec4::from(*expected).abs_diff_eq(Vec4::from(rest), 1e-5);
+                assert!(Vec4::from(*actual).abs_diff_eq(Vec4::from(*expected), 1e-5), "tangent at {time}: {actual:?} != {expected:?}");
+            }
+        }
+        assert!(changed, "fixture must distinguish sampled and rest tangents");
+    }
 
     #[test]
     fn corner_normals_use_the_source_points_skin_influences() {

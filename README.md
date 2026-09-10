@@ -1344,6 +1344,15 @@ constant influence set shared by the entire mesh instead of per-vertex arrays.
 `assets/skel_material_subsets.usda` exercises shared-palette GPU skinning with
 orange/blue face materials. Capture time `30`, eye `(4,3,6)`, target `(0,1,0)`
 and compare against `USD_CPU_SKINNING=1` using the same camera.
+`assets/morph_tangent_normals.usda` exercises normal-mapped morphs with authored
+normal offsets and material subsets. GPU morph preparation regenerates the
+tangent frame on the CPU from sampled morphed positions/normals and authored UVs,
+while position/normal offsets remain GPU morph targets. Rest-pose triangulation
+is retained. This adds CPU work and time-specific mesh data; it is not a measured
+performance improvement or proof of tangent parity after arbitrary skinning.
+Set `USD_CPU_SKINNING=1` for the CPU reference and **unset** it for GPU rendering;
+the override is presence-based, so setting it to `0` still selects CPU mode.
+
 `assets/morph_animation.usda` exercises standalone GPU morph targets. Capture
 time `10`, eye `(2,2,4)`, target `(0.5,0.5,0)`; `USD_CPU_SKINNING=1` also disables
 the GPU morph route for comparison. Metadata reports GPU morph meshes separately

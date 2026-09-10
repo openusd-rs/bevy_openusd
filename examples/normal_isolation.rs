@@ -1,6 +1,56 @@
 use std::path::Path;
 use bevy::{mesh::{Mesh, VertexAttributeValues}, prelude::*};
 
+fn fan_report(normals: &[[f32;3]], indices: &[usize]) -> String {
+    fn root(parents: &mut [usize], mut i: usize) -> usize {
+        while parents[i] != i { parents[i] = parents[parents[i]]; i = parents[i]; }
+        i
+    }
+    let mut parents = (0..indices.len()).collect::<Vec<_>>();
+    let mut edges = std::collections::BTreeMap::<[usize;2], Vec<[usize;2]>>::new();
+    for (face, triangle) in indices.chunks_exact(3).enumerate() {
+        for i in 0..3 {
+            let j = (i+1)%3;
+            let a = triangle[i]; let b = triangle[j];
+            if a != b { edges.entry([a.min(b), a.max(b)]).or_default().push([face*3+i, face*3+j]); }
+        }
+    }
+    let nonmanifold = edges.values().filter(|edges| edges.len()>2).count();
+    let mut inconsistent = 0;
+    for edge in edges.values().filter(|edge| edge.len()==2) {
+        inconsistent += usize::from(indices[edge[0][0]] == indices[edge[1][0]]);
+        for corner in edge[0] {
+            let other = if indices[edge[1][0]] == indices[corner] { edge[1][0] } else { edge[1][1] };
+            let a = root(&mut parents, corner); let b = root(&mut parents, other);
+            parents[a] = b;
+        }
+    }
+    let mut fans = std::collections::BTreeMap::<usize, std::collections::BTreeSet<usize>>::new();
+    for (corner, point) in indices.iter().enumerate() { fans.entry(*point).or_default().insert(root(&mut parents, corner)); }
+    let disconnected = fans.values().filter(|fans| fans.len()>1).count();
+    let zero = fans.keys().filter(|i| normals[**i] == [0.0;3]).count();
+    let zero_disconnected = fans.iter().filter(|(i,fans)| normals[**i] == [0.0;3] && fans.len()>1).count();
+    format!("indexed_triangle_topology nonmanifold_edges={nonmanifold} inconsistent_winding_edges={inconsistent} disconnected_vertices={disconnected} zero_normal_vertices={zero} zero_normal_disconnected_vertices={zero_disconnected}")
+}
+
+fn zero_normal_witnesses(points: &[[f32;3]], normals: &[[f32;3]], indices: &[usize]) -> String {
+    let referenced = indices.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    let mut output = String::new();
+    for vertex in referenced.into_iter().filter(|i| normals[*i] == [0.0;3]).take(8) {
+        let incident = indices.chunks_exact(3).filter(|t| t.contains(&vertex)).collect::<Vec<_>>();
+        output.push_str(&format!("zero_normal_vertex={vertex} position={:?} incident_triangles={}\n", points[vertex], incident.len()));
+        for t in incident.into_iter().take(12) {
+            let p = [t[0],t[1],t[2]].map(|i| Vec3::from(points[i]).as_dvec3());
+            let normal = (p[1]-p[0]).cross(p[2]-p[0]).normalize_or_zero();
+            let corner = t.iter().position(|i| *i==vertex).unwrap();
+            let a = p[(corner+1)%3]-p[corner];
+            let b = p[(corner+2)%3]-p[corner];
+            output.push_str(&format!("  triangle={t:?} positions={p:?} face_normal={normal:?} corner_angle={}\n", a.cross(b).length().atan2(a.dot(b))));
+        }
+    }
+    output
+}
+
 fn triangle_quality(points: &[[f32;3]], normals: &[[f32;3]], indices: &[usize]) -> String {
     let thresholds = [0.0, 1e-8, 1e-6, 1e-4, 1e-2];
     let mut counts = [0usize;5];
@@ -63,6 +113,8 @@ fn write_probe(mesh: &Mesh, directory: &Path) -> Result<(), Box<dyn std::error::
     let indices = mesh.indices().map(|indices| indices.iter().collect::<Vec<_>>()).unwrap_or_else(|| (0..points.len()).collect());
     if indices.len() % 3 != 0 || indices.iter().any(|i| *i >= points.len()) { return Err("invalid triangle indices".into()); }
     println!("{}", triangle_quality(points, normals, &indices));
+    println!("{}", fan_report(normals, &indices));
+    print!("{}", zero_normal_witnesses(points, normals, &indices));
     print!("{}", filtered_normal_report(points, normals, &indices));
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
@@ -120,6 +172,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         read = usd_bevy::subdivision::refine_mesh(&read, &rules, levels)?;
     }
     write_probe(&usd_bevy::mesh::mesh_from_usd(&read), Path::new(&args[2]))
+}
+
+#[test]
+fn fan_report_separates_vertex_only_contacts_and_winding_errors() {
+    assert!(fan_report(&[[0.0;3];5], &[0,1,2,0,3,4]).contains("disconnected_vertices=1 zero_normal_vertices=5 zero_normal_disconnected_vertices=1"));
+    let joined = fan_report(&[[0.,0.,1.];4], &[0,1,2,1,0,3]);
+    assert!(joined.contains("inconsistent_winding_edges=0 disconnected_vertices=0"));
+    assert!(fan_report(&[[0.,0.,1.];4], &[0,1,2,0,1,3]).contains("inconsistent_winding_edges=1"));
+    assert!(fan_report(&[[0.,0.,1.];5], &[0,1,2,1,0,3,0,1,4]).contains("nonmanifold_edges=1"));
+    let points = [[2.,0.,0.], [0.,-1.,0.], [1.,-1.,0.], [1.,1.,0.], [0.,1.,0.]];
+    let indices = [0,1,2,0,2,3,0,3,4,0,4,1];
+    let mut normals = [[0.,0.,1.];5];
+    normals[0] = [0.0;3];
+    assert!(fan_report(&normals, &indices).contains("inconsistent_winding_edges=0 disconnected_vertices=0 zero_normal_vertices=1"));
+    let witness = zero_normal_witnesses(&points, &normals, &indices);
+    assert!(witness.contains("zero_normal_vertex=0 position=[2.0, 0.0, 0.0] incident_triangles=4"));
+    assert_eq!(witness.matches("face_normal=").count(), 4);
 }
 
 #[test]

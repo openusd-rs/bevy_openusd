@@ -807,6 +807,10 @@ The probe also reports scale-independent triangle-quality bins and diagnostic
 normal recomputations excluding very thin triangles at two thresholds. These
 report changed vectors, reversed normal corners and zero referenced normals;
 they do not modify the emitted normals or enable a production filtering rule.
+Indexed fan diagnostics join corners across exactly two-face edges, report
+nonmanifold edges and inconsistent winding, and count disconnected fans without
+position welding. Zero-normal witnesses print at most eight referenced vertices
+and twelve incident triangles each, including face directions and corner angles.
 
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated

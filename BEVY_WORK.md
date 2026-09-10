@@ -349,6 +349,36 @@ Validation: 517 ordinary tests pass, 13 ignored; check-all, viewer build and
 git diff --check pass. Logs: `/tmp/normal-quality-all-tests-final.log`,
 `/tmp/normal-quality-{check,build}-final.log`. Full fidelity remains open.
 
+## Refined zero-normal fan isolated
+
+The normal probe now reports indexed two-face-edge fan connectivity, inconsistent
+edge winding and nonmanifold edges, without welding positions. Bounded witnesses
+print up to eight zero-normal referenced vertices with at most twelve incident
+triangles each, their face normals and corner angles. Tests distinguish vertex-only
+contacts, connected fans, inconsistent winding, nonmanifold edges and a connected
+but geometrically folded planar fan. No production mesh generation is changed.
+
+Both UR5 shoulder probes have zero nonmanifold edges, inconsistent winding edges
+and disconnected vertices. Thus disconnected-fan averaging is not supported as
+the explanation for this example. Logs: `/tmp/ur5-normal-fans.log`,
+`/tmp/ur5-normal-fans-level1.log`.
+
+The refined mesh's zero normal is vertex 17054 at
+(-0.014281747,-0.056019638,-0.059899956). Its four incident triangles are coplanar:
+three face -Z with corner angles 0.03556024303213283, 3.0555491135658177 and
+0.035489099502675536; one faces +Z with angle 3.126598456100626. Their signed
+angle sum cancels. This is a geometrically folded triangle fan despite consistent
+topological winding, not an unexplained failure to normalize a nonzero vector.
+Full coordinates and indices: `/tmp/ur5-normal-witness-level1.log`.
+That identifies the finite-mesh cancellation but does not establish whether our
+refined positions or limit-normal approximation agree with OpenSubdiv. Do not
+label the original asset invalid or silently replace the zero with an arbitrary
+axis. Refined-position/limit-surface comparison remains necessary.
+
+Validation: 518 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/normal-fans-{all-tests,check,build}.log`.
+Full Bevy rendering acceptance remains open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

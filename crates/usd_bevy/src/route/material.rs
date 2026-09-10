@@ -85,14 +85,15 @@ fn to_standard_material(
     if let Some(ior) = read.ior {
         m.ior = ior;
     }
-    // UsdTransform2d on the st chain → StandardMaterial UV transform. USD applies
-    // `st' = rotate(scale·st) + translation`, matching glam's T·R·S composition.
+    // Convert the USD UV transform through the mesh's V-flipped coordinate basis.
     if let Some(uv) = &read.uv_transform {
-        m.uv_transform = bevy::math::Affine2::from_scale_angle_translation(
+        let flip = bevy::math::Affine2::from_scale_angle_translation(Vec2::new(1.0, -1.0), 0.0, Vec2::Y);
+        let usd = bevy::math::Affine2::from_scale_angle_translation(
             Vec2::from(uv.scale),
             uv.rotation_deg.to_radians(),
             Vec2::from(uv.translation),
         );
+        m.uv_transform = flip * usd * flip;
     }
     let texture = |path: &Option<String>, srgb: bool| -> Option<Handle<Image>> {
         let path = path.as_ref()?;
@@ -340,6 +341,26 @@ def Material "Mat" {
         assert!(assets.get(a).unwrap().cull_mode.is_none());
         assert!(!assets.get(b).unwrap().double_sided);
         assert_eq!(assets.get(b).unwrap().cull_mode, Some(bevy::render::render_resource::Face::Back));
+    }
+
+    #[test]
+    fn uv_transforms_preserve_usd_coordinates_after_v_flip() {
+        use crate::read::shade::UvTransform;
+        for uv in [UvTransform::default(),
+            UvTransform { scale: [1.0, 1.0], rotation_deg: 0.0, translation: [0.0, 0.5] },
+            UvTransform { scale: [0.5, 1.5], rotation_deg: 90.0, translation: [0.75, 0.25] },
+            UvTransform { scale: [-1.5, 0.75], rotation_deg: 37.0, translation: [-0.2, 0.6] }] {
+            let read = ReadPreviewMaterial { uv_transform: Some(uv.clone()), ..default() };
+            let material = to_standard_material(&read, None, None);
+            let (sin, cos) = uv.rotation_deg.to_radians().sin_cos();
+            for st in [Vec2::ZERO, Vec2::ONE, Vec2::new(0.25, 0.75), Vec2::new(-0.5, 1.25)] {
+                let scaled = st * Vec2::from(uv.scale);
+                let transformed = Vec2::new(cos * scaled.x - sin * scaled.y, sin * scaled.x + cos * scaled.y) + Vec2::from(uv.translation);
+                let expected = Vec2::new(transformed.x, 1.0 - transformed.y);
+                let actual = material.uv_transform.transform_point2(Vec2::new(st.x, 1.0 - st.y));
+                assert!(actual.abs_diff_eq(expected, 1e-6), "{actual:?} != {expected:?}");
+            }
+        }
     }
 
     #[test]

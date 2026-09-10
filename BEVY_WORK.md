@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Correct UV-transform coordinate conversion
+
+Confirmed a material rendering bug: USD UV transforms were applied directly to
+already V-flipped mesh coordinates. StandardMaterial now receives `F * T * F`,
+where F maps `(u,v)` to `(u,1-v)`, preserving USD scale/rotation/translation in
+the renderer's coordinate basis. The unit regression independently evaluates
+the transformed coordinates for identity, translation, nonuniform/negative
+scales and rotations at several UV points.
+
+Added `examples/uv_transform_fixture.rs`: a quadrant texture, animated mapped UVs
+and explicit endpoint references. Before the fix, time 0 rendered blue instead
+of red; 121,104 pixels differed, maximum RGB error 194, mean 15.526238.
+Both baseline captures were inspected: `target/uv_transform_before_{mapped,reference}.png`.
+Logs: `/tmp/uv-transform-before-{mapped,reference,compare}.log`.
+The fixture's source-level test checks both endpoint transforms against the
+explicit UVs and refuses directory overwrites. Intermediate-time explicit-UV
+interpolation is not a reference for interpolated rotation. Per-texture transform
+chains and normal-map tangent behavior under arbitrary UV transforms remain open.
+After the fix, both endpoint comparisons are pixel-identical across all 921,600
+pixels at strict zero RGB tolerance. Fixed images were inspected:
+`target/uv_transform_after_{mapped_0,mapped_10,reference_10}.png`; time 0 uses the
+unchanged earlier explicit reference. Captures report CAPTURE_OK without
+WARN/ERROR entries. Logs: `/tmp/uv-transform-after-{mapped-0,mapped-10,reference-10,compare-0,compare-10}.log`.
+All 425 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks (`/tmp/uv-transform-{tests,check,build}.log`).
+
 ### Normal-map orientation probe
 
 Added `examples/normal_fixture.rs`, which generates a raw 8-bit tangent-normal

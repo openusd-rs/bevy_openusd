@@ -927,6 +927,13 @@ Bevy's tangent generation already compensates the relevant handedness change;
 adding a second normal-map Y flip would break this fixture. This checks a static
 constant map, not arbitrary texture transforms, scale/bias or deformed tangents.
 
+`UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
+before becoming Bevy's UV transform. Generate the animated comparison fixture:
+`make run RUN_WITH= APP_TARGET='--example uv_transform_fixture' ARGS='target/uv_transform_probe'`.
+Its mapped and explicit-UV scenes are equivalent at times 0 and 10; intermediate
+times are not reference baselines because interpolating coordinates differs from
+interpolating rotation. Arbitrary per-texture transform chains remain unsupported.
+
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a
 default or a time sample using the ordinary attribute controls; these edits keep

@@ -2907,13 +2907,10 @@ impl<'a, 'f> Indexer<'a, 'f> {
             return Ok(());
         }
 
-        // An arc target authoring no spec is kept as a culled node (C++
-        // culling): visible to change tracking and dependency registration, but
-        // contributing no opinions to value resolution. A resolved-layer payload
-        // to such a prim is additionally an unresolved-prim-path error (C++
-        // `PcpErrorUnresolvedPrimPath`); the node is still culled.
+        // Empty external targets report unresolved prim paths and remain culled
+        // nodes for change tracking and dependency registration.
         let empty = !self.stack_has_spec(target_stack, &source);
-        if empty && !is_internal && arc == ArcType::Payload {
+        if empty && !is_internal && matches!(arc, ArcType::Reference | ArcType::Payload) {
             self.errors.report(CompositionDiagnostic::UnresolvedPrimPath {
                 arc,
                 target_layer: self.inputs.stack.layer(rep).identifier.clone(),

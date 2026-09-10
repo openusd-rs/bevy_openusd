@@ -80,3 +80,12 @@ See `PACKAGING.md` for resolver/snapshot behavior, bounds, unsupported inputs
 and the full acceptance requirements that remain open.
 The packaging patch also handles single-level input archives, bounded cached
 entry extraction and bare-package references; nested packages remain unsupported.
+
+## Missing external reference target diagnostics
+
+`openusd-reference-diagnostics.patch` adds UnresolvedPrimPath diagnostics for
+external references to absent root prims. The baseline only emitted that error
+for payloads. Native usdcat reports the missing reference target while still
+producing a partial stage (`/tmp/native-missing-reference.log`). The added core
+regression checks both reference and payload arcs. It does not alter culling or
+reference composition, and sub-root target diagnostics remain separate work.

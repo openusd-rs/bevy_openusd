@@ -16,6 +16,7 @@ Changes from the base source are recorded in these patches in the project root:
 - `patches/openusd-singleton-listops.patch`
 - `patches/openusd-token-vector-fields.patch`
 - `patches/openusd-stage-packaging.patch`
+- `patches/openusd-reference-diagnostics.patch`
 
 The binary metadata patch includes sublayer StringVector encoding as well as
 token-vector child/order fields and variant-set StringListOp encoding.
@@ -24,6 +25,9 @@ changing the layer-only ArchiveWriter contract. See the root PACKAGING.md for
 its limits and unsupported inputs.
 Single-level source archives are cached and their entry reads are bounded;
 package-relative dependencies are repackaged rather than retained externally.
+The reference diagnostic patch reports missing external root-prim reference
+targets, matching native USD's diagnostic for that case. Sub-root reference
+target diagnostics remain a separate upstream acceptance gap.
 
 The root Cargo patch table redirects all three Git dependency packages here.
 The usd_bevy and usd_macro manifests also use direct relative paths to this

@@ -898,6 +898,19 @@ create a configured assembly with a single history entry. All children use the
 session's current edit target. This groups history and rollback, not stage-sink
 notifications: upstream still emits each constituent transaction.
 
+Run the assembly walkthrough with:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example editor_assembly' ARGS='target/editor_assembly.usda'
+make run ARGS='target/editor_assembly.usda'
+```
+
+It builds a typed Sphere source in memory, composes two colored reference sites
+through a reusable batch function, verifies one-step undo/redo and a live affine
+edit, then saves and reopens a flattened scene. The optional output also supports
+USDC and USDZ. Reference sites stay typeless so they inherit the model's schema.
+This is an executable composition recipe, not a new typed scene DSL.
+
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a
 default or a time sample using the ordinary attribute controls; these edits keep

@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Runnable grouped assembly walkthrough
+
+Added `examples/editor_assembly.rs`: a reusable batch recipe composes two colored
+reference sites from a canonical typed Sphere source captured entirely in memory.
+It verifies creation, one-step undo/redo, inherited schema/radius, live affine
+editing with entity/runtime-name preservation, and optional flattened export.
+The regression saves and reopens USDA, USDC and USDZ, checking both transforms,
+radii and colors. Root dev-dependency `tempfile` supplies isolated test outputs;
+the scene's composition itself does not materialize source files.
+
+All 420 ordinary tests pass (seven native export tests ignored), plus check-all,
+build, the runnable example and whitespace checks. Logs:
+`/tmp/editor-assembly-{tests,check,build,run}.log`. The generated
+`target/editor_assembly.usda` was captured on NVIDIA/Vulkan at time 0 with eye
+(6,4,8), focus (0,1,0). `target/editor_assembly.png` was inspected: the warm sphere
+and cool sheared/elongated sphere have the expected distinct poses and colors.
+Capture reports CAPTURE_OK without WARN/ERROR entries
+(`/tmp/editor-assembly-capture.log`). This is a focused executable walkthrough,
+not the complete flagship showcase, native-renderer parity or a new typed DSL.
+
 ### Grouped editor commands
 
 Added `EditorEdit::Batch(Vec<EditorEdit>)` for ordered, nested command groups with

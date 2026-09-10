@@ -25,6 +25,233 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Source-reference assembly export contracts
+
+An attempted root-layer USDA relocation test failed because the referenced model
+exists only in the source snapshot. Inspection confirms ordinary root/edit-layer
+export anchors references but does not bundle dependency bytes; this was an
+incorrect test expectation, not a newly introduced export implementation defect.
+Failure evidence: `/tmp/reference-export-focused.log`. The README now explicitly
+directs self-contained source assemblies to USDZ instead of implying that every
+persistence export mode materializes captured dependencies.
+
+The regression checks flattened USDA/USDC and composition-preserving root-layer
+USDZ after moving their output directories. Both referenced sphere values must
+survive; only USDZ retains reference arcs. It separately verifies that ordinary
+root-layer USDA/USDC retains those arcs but cannot compose without the source
+files, and that the original source directory remains empty. Flattening textures
+is not bundling their bytes; this fixture is geometry-only. No save-mode semantics
+were silently changed and ordinary layer exports remain available for repair.
+The focused contract test and all 450 ordinary workspace tests pass (seven
+ignored), plus check-all, build and whitespace checks. Logs:
+`/tmp/reference-export-modes.log`, `/tmp/reference-export-{tests,check,build}.log`.
+
+### Immutable typed source-reference composition
+
+UsdSource::with_reference(destination, dependency, target) accepts canonical
+upstream IntoPath inputs, validates absolute non-root prim paths, merges captured
+dependencies, authors reference metadata through the existing authoring API and
+validates composition before returning a new root snapshot. It rejects existing
+destinations, missing targets, conflicting bytes and incomplete composition.
+Neither input is mutated. Captured source anchors and receiver filesystem policy
+are retained. The output root must be USDA; absolute reference identifiers are
+not a claim of portable relocation without the persistence export path.
+
+Tests cover a typed Sphere source mounted twice, retained transitive opaque
+assets, absence of created files, unchanged earlier snapshots and invalid paths,
+targets, conflicts and root formats. The composed_sources example now uses this
+API instead of interpolated reference metadata while retaining its independent
+root, shared-mesh, override, dependency-replacement, failure/recovery and cleanup
+checks. Its test and runnable invocation pass:
+`/tmp/reference-assembly-example-test.log`, `/tmp/reference-assembly-example.log`.
+This adds reusable source composition, not full BSN equivalence or a general
+typed scene DSL. Each call opens/serializes stages; bulk performance is unmeasured.
+All 449 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/reference-assembly-{tests,check,build}.log`.
+
+### Timeline playback and stepping UI acceptance
+
+Five checked-in replay scripts now exercise Play, Pause, Next time code, Previous
+time code and Go to start against animation_showcase.usda's authored 0–10 range.
+All five isolated native viewer captures were inspected. Play shows Pause and a
+nonzero time (9.139 in this run); Pause shows Play at 2.705 with the corresponding
+smaller/redder scene. Next from zero shows 1.000; Previous after typed seek to ten
+shows 9.000; Go to start after typed seek restores 0.000 and the initial small
+orange geometry. Playback times depend on scheduling and are not fixed expected
+values. Projection trace messages stop after the pause interaction settles.
+
+Artifacts: `target/viewer-ui-captures/timeline-{play,pause,next,previous,start}.png`,
+adjacent viewer logs and `/tmp/timeline-{play,pause,next,previous,start}.log`.
+These use injected egui events in a 1600x1000 isolated desktop, not OS-level
+input. Fixed capture waits and existing renderer-environment diagnostics retain
+the earlier limits; sustained playback/performance and full flagship acceptance
+are still open. Parser coverage checks all five replay files. All 447 ordinary
+workspace tests pass (seven ignored), plus check-all, build and whitespace checks:
+`/tmp/timeline-controls-{tests,check,build}.log`.
+
+### Timeline typed-seek UI acceptance
+
+Added checked-in timeline_seek and timeline_invalid egui replay scripts, plus
+parser coverage. In the isolated 1600x1000 desktop viewer with the Timeline pane
+open, typing 10 and clicking Seek and pause changes the readout to 10.000 and
+visibly deforms the morph_animation quad. A separate run typing NaN leaves time
+at 0.000 and the quad undeformed, displaying Enter a finite USD time code.
+The baseline, valid seek and invalid seek images were inspected:
+`target/viewer-ui-captures/timeline-{baseline-16,seek-10,invalid}.png`.
+Logs: `/tmp/timeline-{baseline-16,seek-10,invalid}.log` and adjacent viewer logs.
+
+These are injected egui input events, not OS mouse/keyboard acceptance. The
+fixture has an authored/default loop range 0–0, so it is not playback evidence.
+Play/pause, stepping and Go to start remain separate checks. An initial script
+invocation used a local bash wrapper that rejects nullglob; /bin/bash works.
+A three-second capture was black; the inspected baseline used 16 seconds and
+replays used 18 seconds. UI_UPDATED is not sufficient render readiness. Existing
+clipboard, Vulkan-loader and shared-device SSAO diagnostics remain.
+All 446 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/timeline-ui-{tests,check,build}.log`.
+
+### Live shader-connection edits rebuild animation membership
+
+A new LiveStagePlugin regression projects a bound cube with a disconnected
+animated shader, verifies the cube is absent from AnimatedPrims, then connects
+the shader through the real stage authoring API. The stage notice path adds the
+cube to the animation index. Clock updates sample projected material roughness
+at 0.2 and 0.8; disconnecting restores the authored 0.5 and removes the cube from
+the index. Further clock changes retain that static value. The same projected
+entity and its runtime Name survive every operation.
+
+This verifies live connection-edit invalidation after the graph-scan change,
+not merely direct detector queries. Focused test log:
+`/tmp/live-graph-membership-recheck.log`. It is headless material/state evidence,
+not an interactive shader editor or a new GPU screenshot.
+All 445 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/live-graph-{tests,check,build}.log`.
+
+### Scope material animation detection to connected shader graphs
+
+A regression reproduced bound geometry being classified as animated solely
+because a disconnected child shader had samples. The animation detector now
+seeds traversal with the material and resolved surface (including the existing
+child-shader fallback), follows attribute connections and no longer recursively
+walks all child namespaces. The 256-node conservative bound and cycle detection
+remain; surface-resolution errors conservatively request animation updates.
+
+Tests prove the disconnected case is static both in the material detector and
+prim_is_animated, connecting the node makes it animated, and removing the
+explicit surface output still discovers the sampled fallback surface graph.
+Existing external-connection/cycle coverage passes. This removes a false-positive
+update classification, not a measured frame-time improvement. Before/after logs:
+`/tmp/material-animation-before.log` and `/tmp/material-animation-focused.log`.
+All 444 ordinary workspace tests pass (seven ignored), plus check-all and build:
+`/tmp/material-animation-{tests,check,build}.log`. The native live-clock suite
+passes all three cases with zero differing pixels, retaining results and images
+in `target/live-clock-connected-graphs`; the three live images were inspected.
+Suite log: `/tmp/material-animation-live-suite.log`.
+
+### Reconcile the current support matrix
+
+SUPPORT.md no longer claims that direct editor watching is absent or that texture
+filenames are default-time-only. Its reload, material-animation, sharing, morph
+and authoring rows now reflect the implemented paths and their bounded evidence.
+It distinguishes AssetServer from editor watching, explicit sampled filenames
+from filename-pattern expansion, and asset sharing from GPU performance. Native
+watching and the repeatable live-clock suite have runnable entries. General
+typed scene-building/BSN equivalence and the broad acceptance checklist remain
+open. This is a source/evidence-backed documentation correction, not a new
+runtime validation or a production-readiness claim.
+
+### Repeatable live-clock rendering regression suite
+
+Added scripts/check_live_clocks.sh, invoked through Make with a new output
+directory. It generates its own UV/texture fixtures, performs live 0,10 -> 10,0
+clock reversals, then captures independently prepared endpoint references for
+animated UV chains, sample-only texture filenames and GPU morphing. Comparisons
+use strict zero RGB tolerance. The script checks transition metadata, final clock
+values, two hierarchy-visible meshes, GPU morph counts and flat-material sharing.
+Renderer warnings/errors fail a case. It preserves artifacts and aggregates
+case results into results.tsv, continuing other cases after a capture mismatch.
+
+Initial targeted UV and texture-file live-update comparisons both matched their
+references across all 921600 pixels at zero tolerance. The suite replaces those
+one-off invocations with fresh generated fixtures and retained per-case logs;
+it does not certify other cameras, times, renderer modes or sustained playback.
+
+The final suite passes all three cases in `target/live-clock-suite-2/results.tsv`;
+each comparison reports zero changed pixels across 921600 pixels. All six
+live/reference PNGs were inspected. Full log: `/tmp/live-clock-suite-final.log`.
+Bash syntax and usage/existing-output rejection checks pass. All 443 ordinary
+workspace tests pass (seven ignored), plus check-all, build and whitespace checks:
+`/tmp/live-clock-suite-{tests,check,build}.log`.
+
+### Live independent-clock reversal with GPU readback
+
+viewer_capture now supports USD_CAPTURE_SWAP_CLOCKS=1 for multiple roots. After
+30 render-ready frames it reverses the existing UsdInstanceTime values, resets
+the settling counter, then captures after another 60 ready frames. It does not
+reload the source or respawn roots. Metadata records the final times and whether
+the reversal occurred. The focused regression checks delayed activation, the
+same root entity IDs, counter reset and exactly-once mutation.
+
+A native Vulkan run started morph_animation at 0,10 and logged reversal to 10,0.
+The inspected `target/shared_morph_live_swap.png` shows the deformed left quad
+and undeformed right quad. Its metadata confirms two GPU morph meshes and one
+shared flat material. Comparison against the independently CPU-deformed 10,0
+reference is pixel-identical across 921600 pixels at strict zero tolerance.
+Logs: `/tmp/live-clock-capture.log` and `/tmp/live-clock-compare.log`.
+This verifies one live endpoint reversal, not sustained playback performance,
+all animation types or preservation of arbitrary projected runtime components.
+All 443 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/live-clock-{tests,check,build}.log`.
+
+### GPU capture of shared morph materials and independent clocks
+
+The fixed-camera capture now records hierarchy-visible flat-material entity
+counts and unique material IDs alongside the existing GPU morph counts. A native
+Vulkan capture of morph_animation with independent clocks 0,10 reports two GPU
+morph meshes, two flat-material entities and one unique flat material. The
+inspected image shows an undeformed left quad and deformed right quad. Swapping
+the clocks to 10,0 swaps those shapes in a separate captured run; this is not a
+live clock-change acceptance test.
+
+Artifacts: `target/shared_morph_gpu_verified.png`,
+`target/shared_morph_gpu_swapped.png`, their adjacent capture.txt reports and
+CPU references `target/shared_morph_cpu.png` / `target/shared_morph_cpu_swapped.png`.
+Camera eye=(0,1,8), target=(0,1,0), shadow maps disabled. The 0,10 CPU comparison
+has one changed pixel, maximum RGB error one; strict zero tolerance fails. No
+threshold was relaxed. This is a bounded fixture result, not arbitrary morph,
+normal-map, shadow or renderer equivalence.
+
+The 10,0 comparison is pixel-identical at strict zero tolerance across all
+921600 pixels. Both GPU metadata reports confirm two morph meshes and one shared
+flat material. All four final CPU/GPU images were inspected. Comparison logs:
+`/tmp/shared-morph-verified-compare.log` and
+`/tmp/shared-morph-swapped-compare-final.log`. An earlier swapped comparison ran
+before its CPU capture finished and reported a missing file; only the rerun
+after CAPTURE_OK supplies the swapped comparison result.
+All 442 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/shared-morph-{tests,check,build}.log`.
+
+### Shared flat-normal materials for independent GPU morph instances
+
+GPU deformation plugin setup now installs a private flat-material cache keyed by
+the canonical base StandardMaterial asset ID. Converted materials are reused
+across entities only when the current cached asset still matches the requested
+base, including cull_mode. Missing or externally changed assets are rejected.
+At most 1024 strong handles are cached; reaching the bound clears the cache,
+without removing materials still referenced by entities. Different base IDs are
+not deduplicated here; standard-material interning remains the earlier boundary.
+
+A headless real-scene regression opens eight independent morph_animation stage
+instances and compares cache-disabled/enabled setups: eight distinct converted
+materials versus one, with all eight scene roots Ready and eight material
+entities in both cases. Tests also cover externally mutated/removed cached
+assets and the retained-handle bound. Sharing follows ordinary Bevy asset
+semantics: clone before entity-local runtime mutation. This is asset-allocation
+evidence, not GPU timing, VRAM usage or a new screenshot-fidelity claim.
+All six focused conversion tests and all 442 ordinary workspace tests pass
+(seven ignored), plus check-all, build and whitespace checks. Logs:
+`/tmp/flat-sharing-final-focused.log` and `/tmp/flat-sharing-{tests,check,build}.log`.
+
 ### Preserve culling changes in flat-normal material conversion
 
 A new regression reproduced a base material changing from back-face culling to

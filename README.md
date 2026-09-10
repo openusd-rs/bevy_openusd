@@ -105,9 +105,37 @@ Supply opaque assets such as textures as dependency snapshots too. A merge captu
 only supplied bytes, not files reachable on disk. Rebuild an assembly from its root
 when replacing a dependency revision; this merge API never silently overwrites one.
 
-`examples/composed_sources.rs` combines an inline `usd!` assembly with a model
+`with_reference(destination, &model, target)` also authors the reference through
+the typed USD API and validates the composed result, returning a new snapshot:
+
+```rust
+let assembly = root
+    .with_reference("/First", &model, "/Model")?
+    .with_reference("/Second", &model, "/Model")?;
+```
+
+The receiver must have a `.usda` identifier. Both paths must be absolute non-root
+prim paths; targets must exist and destinations must be new. Existing prim
+patches remain explicit editor/authoring operations. Conflicting dependencies or
+composition errors fail without changing either input. References use the source
+identifier as an absolute asset anchor. For a self-contained assembly with
+captured dependencies, export USDZ through the editor:
+
+```rust
+usd_bevy::editor::EditorSession::new(assembly.open_stage()?)
+    .save("assembly.usdz", usd_bevy::editor::SaveMode::RootLayer)?;
+```
+
+Ordinary USDA/USDC root-layer export retains references but does not write their
+in-memory dependencies to disk. Such an export cannot reopen independently when
+the referenced files do not exist. Flattened export removes composition arcs,
+but does not bundle external textures; it is not a substitute for USDZ packaging.
+This operation opens and serializes a stage per call;
+it is not a constant-cost bulk builder or complete typed scene DSL.
+
+`examples/composed_sources.rs` combines inline `usd!` root metadata with a model
 authored through the upstream typed Sphere schema. It verifies projection under
-two independent Bevy roots, shared meshes and isolated edits without source files.
+two independent Bevy roots, typed reference composition, shared meshes and isolated edits without source files.
 It also exercises captured dependency replacement, persistent overrides,
 runtime-only component preservation, malformed-root failure/recovery and cleanup:
 
@@ -164,6 +192,11 @@ are excluded.
 
 The [real-asset baseline](benchmarks/editor-assets.md) records ANYmal and Spot
 measurements. Payload bytes are not resident-memory or VRAM measurements.
+
+GPU flat-normal materials share converted assets when entities use the same base
+material and its values match. The conversion cache retains at most 1024 handles
+and rejects missing or modified cached assets. As with other shared Bevy assets,
+clone a material before making entity-local runtime changes.
 
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
@@ -820,6 +853,25 @@ centered along X with 2.5-unit spacing. Use the fixed camera arguments to frame
 the group; authored-camera selection is rejected for multiple roots. The default
 remains one root at the positional TIME argument. Instance times and spacing
 are written to capture metadata, and capture waits for every root to be Ready.
+Set `USD_CAPTURE_SWAP_CLOCKS=1` with multiple instances to reverse their clocks
+after 30 render-ready frames, then wait another capture settling period. It
+mutates the existing roots without reopening the source. The default is 0; other
+values and single-root reversal requests are rejected. Metadata records the
+final clock order and whether the live reversal happened.
+
+Run the strict live-clock GPU regression suite into a new directory:
+
+```bash
+make --eval='check-live-clocks:; @bash scripts/check_live_clocks.sh target/live-clock-check' check-live-clocks
+```
+
+It generates fresh UV/texture fixtures and compares live clock reversals against
+baked UV, fixed-image and CPU-morph references. All comparisons use zero RGB
+tolerance. Metadata must confirm the reversal and two visible mesh entities;
+the morph case also verifies shared GPU material use. Renderer warnings/errors
+fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain
+in the output directory, including on failure. This requires native GPU access
+and uses offline Cargo through Make.
 For the generated UV-transform fixture, use eye `(0,1,8)` and focus `(0,1,0)`:
 
 ```bash

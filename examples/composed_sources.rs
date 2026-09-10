@@ -18,11 +18,14 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let model = UsdSource::snapshot("composed_sources/model.usda",
         stage.root_layer().export_to_string()?.into_bytes())?;
     let assembly = usd_bevy::usd!(r#"#usda 1.0
-def "First" (prepend references = @model.usda@</Model>) {}
-def "Second" (prepend references = @model.usda@</Model>) {}
+(upAxis = "Y")
 "#);
     let root_source = UsdSource::snapshot("composed_sources/root.usda", assembly.text().as_bytes())?;
-    let source = root_source.with_dependency(&model)?;
+    let compose = |model: &UsdSource| -> Result<UsdSource, Box<dyn std::error::Error>> {
+        Ok(root_source.with_reference("/First", model, "/Model")?
+            .with_reference("/Second", model, "/Model")?)
+    };
+    let source = compose(&model)?;
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, UsdAssetPlugin));
     app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
@@ -57,7 +60,7 @@ def "Second" (prepend references = @model.usda@</Model>) {}
     });
     sphere.create_radius_attr()?.set(3.0_f64)?;
     let replacement = UsdSource::snapshot("composed_sources/model.usda", stage.root_layer().export_to_string()?.into_bytes())?;
-    let replacement_source = root_source.with_dependency(&replacement)?;
+    let replacement_source = compose(&replacement)?;
     app.world_mut().resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = replacement_source.clone();
     app.update();
     assert_radius(&app, first_root, "/First", 4.0)?;

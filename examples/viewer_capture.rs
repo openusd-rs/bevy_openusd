@@ -36,6 +36,8 @@ struct Capture {
     output: PathBuf,
     time: f64,
     instance_times: Vec<f64>,
+    swap_clocks: bool,
+    clocks_swapped: bool,
     eye: Vec3,
     focus: Vec3,
     started: Instant,
@@ -84,7 +86,8 @@ impl Capture {
         let output = PathBuf::from(&args[1]);
         if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
         Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
-            instance_times: vec![time], started: Instant::now(), ready_frames: 0, requested: false, mesh_report: String::new() })
+            instance_times: vec![time], swap_clocks: false, clocks_swapped: false,
+            started: Instant::now(), ready_frames: 0, requested: false, mesh_report: String::new() })
     }
 
     fn set_instance_times(&mut self, value: &str) -> Result<(), String> {
@@ -101,6 +104,22 @@ impl Capture {
 
 #[derive(Component)]
 struct CaptureCamera;
+
+#[derive(Component)]
+struct CaptureInstance(usize);
+
+fn reverse_capture_clocks(mut capture: ResMut<Capture>,
+    mut roots: Query<(&CaptureInstance, &mut usd_bevy::instance::UsdInstanceTime)>) {
+    if !capture.swap_clocks || capture.clocks_swapped || capture.ready_frames < 30 { return; }
+    if roots.iter().count() != capture.instance_times.len() { return; }
+    capture.instance_times.reverse();
+    for (instance, mut time) in &mut roots {
+        time.current = capture.instance_times[instance.0];
+    }
+    capture.clocks_swapped = true;
+    capture.ready_frames = 0;
+    eprintln!("CAPTURE_CLOCKS_REVERSED {:?}", capture.instance_times);
+}
 
 fn main() -> AppExit {
     let mut capture = match Capture::parse(&std::env::args().skip(1).collect::<Vec<_>>()) {
@@ -124,6 +143,11 @@ fn main() -> AppExit {
     if capture.instance_times.len() > 1 && capture.camera_path.is_some() {
         eprintln!("multi-instance capture requires a fixed camera"); return AppExit::error();
     }
+    capture.swap_clocks = match std::env::var("USD_CAPTURE_SWAP_CLOCKS").as_deref().unwrap_or("0") {
+        "0" => false,
+        "1" if capture.instance_times.len() > 1 => true,
+        _ => { eprintln!("USD_CAPTURE_SWAP_CLOCKS must be 0, or 1 with multiple instances"); return AppExit::error(); }
+    };
     capture.shadow_maps = match std::env::var("USD_CAPTURE_SHADOWS").as_deref().unwrap_or("scene") {
         "scene" => true,
         "off" => false,
@@ -144,7 +168,7 @@ fn main() -> AppExit {
         .add_plugins((ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 60.0)),
             UsdPlugin, UsdAssetPlugin, environment::ViewerEnvironmentPlugin))
         .add_systems(Startup, setup)
-        .add_systems(Update, (select_authored_camera, capture_frame).chain())
+        .add_systems(Update, (select_authored_camera, reverse_capture_clocks, capture_frame).chain())
         .add_systems(PostUpdate, configure_shadow_maps)
         .add_systems(Last, fit_capture_grid);
     if std::env::var_os("USD_CAPTURE_DOME").is_some() {
@@ -204,7 +228,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
     let scene: Handle<UsdScene> = server.load(capture.asset.file_name().unwrap().to_string_lossy().into_owned());
     for (index, current) in capture.instance_times.iter().copied().enumerate() {
         let x = (index as f32 - (capture.instance_times.len() - 1) as f32 * 0.5) * 2.5;
-        commands.spawn((UsdSceneRoot(scene.clone()), usd_bevy::instance::UsdInstanceTime { current },
+        commands.spawn((UsdSceneRoot(scene.clone()), CaptureInstance(index), usd_bevy::instance::UsdInstanceTime { current },
             Transform::from_xyz(x, 0.0, 0.0)));
     }
 }
@@ -253,7 +277,7 @@ fn select_authored_camera(mut capture: ResMut<Capture>,
 fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     progress: Res<PipelineProgress>,
     states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
-    meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>), With<Mesh3d>>,
+    meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>, Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>), With<Mesh3d>>,
     camera: Query<&RenderTarget, With<CaptureCamera>>,
     environments: Query<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState, With<CaptureCamera>>,
     environment_lights: Query<&bevy::light::EnvironmentMapLight, With<CaptureCamera>>,
@@ -332,10 +356,14 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     capture.ready_frames += 1;
     if capture.ready_frames < 60 { return; }
     let Ok(target) = camera.single() else { return };
-    let visible = meshes.iter().filter(|(_, visibility, _, _, _)| visibility.get()).count();
-    let gpu = meshes.iter().filter(|(_, visibility, skin, _, _)| visibility.get() && skin.is_some()).count();
-    let morph = meshes.iter().filter(|(_, visibility, _, _, morph)| visibility.get() && morph.is_some()).count();
+    let visible = meshes.iter().filter(|(_, visibility, _, _, _, _)| visibility.get()).count();
+    let gpu = meshes.iter().filter(|(_, visibility, skin, _, _, _)| visibility.get() && skin.is_some()).count();
+    let morph = meshes.iter().filter(|(_, visibility, _, _, morph, _)| visibility.get() && morph.is_some()).count();
+    let flat_handles: Vec<_> = meshes.iter().filter(|(_, visibility, _, _, _, _)| visibility.get())
+        .filter_map(|(_, _, _, _, _, material)| material.map(|material| material.0.id())).collect();
+    let flat_unique: std::collections::HashSet<_> = flat_handles.iter().copied().collect();
     capture.mesh_report = format!("hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n");
+    capture.mesh_report.push_str(&format!("hierarchy_visible_flat_material_entities={}\nhierarchy_visible_unique_flat_materials={}\n", flat_handles.len(), flat_unique.len()));
     capture.mesh_report.push_str(&format!("studio_baseline_lux={:?}\n", studio_lights.iter().map(|light| light.0).collect::<Vec<_>>()));
     if let Ok(dome) = std::env::var("USD_CAPTURE_DOME") {
         capture.mesh_report.push_str(&format!("dome={dome}\ndome_maps_attached=true\ndirectional_lights_disabled=true\ncamera_ambient_disabled=true\n"));
@@ -345,7 +373,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
         capture.mesh_report.push_str(&format!("active_environment_generators={}\nrecorded_environment_generations={}\n",
             generators.iter().count(), dome_diagnostics.as_ref().map_or(0, |d| d.recorded_generations)));
     }
-    for (entity, visibility, _, fallback, _) in &meshes {
+    for (entity, visibility, _, fallback, _, _) in &meshes {
         if visibility.get() && let Some(fallback) = fallback {
             capture.mesh_report.push_str(&format!("cpu_fallback[{entity:?}]={}\n", fallback.0));
         }
@@ -373,6 +401,7 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
         asset = capture.asset.display(), time = capture.time, eye = capture.eye, target = capture.focus,
         bytes = rgba.len(), frames = capture.ready_frames, cpu = std::env::var_os("USD_CPU_SKINNING").is_some());
     let report = report + &format!("instance_times={:?}\ninstance_spacing=2.5\n", capture.instance_times)
+        + &format!("clocks_reversed_after_ready_frames={}\n", if capture.clocks_swapped { 30 } else { 0 })
         + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
         capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &capture.mesh_report;
     std::fs::write(capture.output.with_extension("capture.txt"), report).map_err(|error| format!("metadata write: {error}"))?;
@@ -382,6 +411,30 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_clock_reversal_waits_and_mutates_existing_roots_once() {
+        use super::*;
+        let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();
+        capture.set_instance_times("0,10").unwrap();
+        capture.swap_clocks = true;
+        capture.ready_frames = 29;
+        let mut app = App::new();
+        app.insert_resource(capture).add_systems(Update, reverse_capture_clocks);
+        let first = app.world_mut().spawn((CaptureInstance(0), usd_bevy::instance::UsdInstanceTime { current: 0.0 })).id();
+        let second = app.world_mut().spawn((CaptureInstance(1), usd_bevy::instance::UsdInstanceTime { current: 10.0 })).id();
+        app.update();
+        assert!(!app.world().resource::<Capture>().clocks_swapped);
+        app.world_mut().resource_mut::<Capture>().ready_frames = 30;
+        app.update();
+        assert_eq!(app.world().get::<usd_bevy::instance::UsdInstanceTime>(first).unwrap().current, 10.0);
+        assert_eq!(app.world().get::<usd_bevy::instance::UsdInstanceTime>(second).unwrap().current, 0.0);
+        assert_eq!(app.world().resource::<Capture>().ready_frames, 0);
+        assert!(app.world().resource::<Capture>().clocks_swapped);
+        app.world_mut().resource_mut::<Capture>().ready_frames = 60;
+        app.update();
+        assert_eq!(app.world().resource::<Capture>().instance_times, [10.0, 0.0]);
+    }
+
     use super::*;
     #[test]
     fn instance_time_lists_are_finite_bounded_and_atomic() {

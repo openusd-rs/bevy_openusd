@@ -60,7 +60,12 @@ pub fn read_preview_material(
 
 pub(crate) fn bound_material_is_time_varying(stage: &Stage, prim: &Path) -> bool {
     let Ok(Some(material)) = read_material_binding(stage, prim) else { return false };
-    let mut pending = vec![material];
+    let mut pending = vec![material.clone()];
+    match resolve_surface_shader(stage, &material) {
+        Ok(Some((surface, _))) => pending.push(surface),
+        Ok(None) => (),
+        Err(_) => return true,
+    }
     let mut seen = std::collections::HashSet::new();
     while let Some(path) = pending.pop() {
         if !seen.insert(path.to_string()) { continue; }
@@ -73,9 +78,6 @@ pub(crate) fn bound_material_is_time_varying(stage: &Stage, prim: &Path) -> bool
                     pending.extend(connections.into_iter().map(|connection| connection.prim_path()));
                 }
             }
-        }
-        if let Ok(children) = node.child_names() {
-            pending.extend(children.iter().filter_map(|name| path.append_path(name.as_str()).ok()));
         }
     }
     false
@@ -764,6 +766,36 @@ def Shader "External" {
         let read = read_preview_material_at(&stage, &Path::new("/Mat").unwrap(), Some(5.0)).unwrap().unwrap();
         assert_eq!(read.roughness, Some(0.5));
     }
+    #[test]
+    fn disconnected_shader_samples_do_not_animate_bound_geometry() {
+        let source = crate::UsdSource::new("disconnected-animation.usda", &br#"#usda 1.0
+def Cube "Box" { rel material:binding = </Mat> }
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        float inputs:roughness = 0.5
+        token outputs:surface
+    }
+    def Shader "Unused" {
+        uniform token info:id = "ND_constant_float"
+        float inputs:value.timeSamples = {0: 0.25, 10: 0.75}
+        float outputs:out
+    }
+}
+"#[..]).unwrap();
+        let stage = source.open_stage().unwrap();
+        let path = Path::new("/Box").unwrap();
+        assert!(!bound_material_is_time_varying(&stage, &path));
+        assert!(!crate::live::prim_is_animated(&stage, &path));
+        stage.prim("/Mat/Surface").unwrap().attribute("inputs:roughness")
+            .set_connections([Path::new("/Mat/Unused.outputs:out").unwrap()]).unwrap();
+        assert!(bound_material_is_time_varying(&stage, &path));
+        assert!(crate::live::prim_is_animated(&stage, &path));
+        stage.remove_property(Path::new("/Mat.outputs:surface").unwrap()).unwrap();
+        assert!(bound_material_is_time_varying(&stage, &path));
+    }
+
     use openusd::usd::Stage;
 
     #[test]

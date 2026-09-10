@@ -62,6 +62,12 @@ def Material "Material" {{
         &format!("normal3f[] normals (interpolation = \"constant\")\n normal3f[] normals.timeSamples = {{0: [(0,{},{})], 10: [(0,{},{})]}}", normal.y, normal.z, -normal.y, normal.z));
     std::fs::write(directory.join("interface_animated.usda"), mapped)?;
     std::fs::write(directory.join("animated_reference.usda"), reference)?;
+    let constant = std::fs::read_to_string(directory.join("scaled_mapped.usda"))?
+        .replace("normal3f inputs:normal.connect = </Material/Texture.outputs:rgb>", "normal3f inputs:normal = (0,0.5,0.5)");
+    std::fs::write(directory.join("constant.usda"), &constant)?;
+    std::fs::write(directory.join("constant_animated.usda"), constant.replace(
+        "normal3f inputs:normal = (0,0.5,0.5)",
+        "normal3f inputs:normal.timeSamples = {0: (0,0.5,0.5), 10: (0,-0.5,0.5)}"))?;
     Ok(())
 }
 
@@ -129,9 +135,13 @@ fn animated_normal_interfaces_match_geometry_directions() {
     };
     let mapped = open("interface_animated.usda");
     let reference = open("animated_reference.usda");
+    let constant = open("constant_animated.usda");
     for (time, y) in [(0.0, 0.5), (5.0, 0.0), (10.0, -0.5), (0.0, 0.5)] {
         let read = usd_bevy::read::shade::read_preview_material_at(&mapped, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
         assert_eq!(read.normal_texture_transform, Some([[0.0, y, 0.5], [0.0; 3]]));
+        let read = usd_bevy::read::shade::read_preview_material_at(&constant, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
+        assert_eq!(read.normal, Some([0.0, y, 0.5]));
+        assert!(read.normal_texture.is_none());
         let read = usd_bevy::read::geom::read_mesh_at(&reference, &openusd::sdf::path("/Quad").unwrap(), Some(time)).unwrap().unwrap();
         let mesh = usd_bevy::mesh::mesh_from_usd(&read);
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };

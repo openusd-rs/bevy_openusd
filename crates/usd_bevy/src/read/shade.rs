@@ -24,6 +24,7 @@ pub struct ReadPreviewMaterial {
 
     pub diffuse_texture: Option<String>,
     pub normal_texture: Option<String>,
+    pub normal: Option<[f32; 3]>,
     pub roughness_texture: Option<String>,
     pub metallic_texture: Option<String>,
     pub roughness_channel: usize,
@@ -177,6 +178,7 @@ pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64
     out.uv_transform = read_uv_transform(stage, &textures, time)?;
     if !matches!(shader_id.as_deref(), None | Some("UsdPreviewSurface") | Some("ND_UsdPreviewSurface_surfaceshader")) {
         out.normal_texture_transform = None;
+        out.normal = None;
     }
     out.warnings.sort();
     out.warnings.dedup();
@@ -458,7 +460,7 @@ fn set_ior_s(o: &mut ReadPreviewMaterial, s: f32) {
     o.ior = Some(s);
 }
 fn set_ior_tex(_: &mut ReadPreviewMaterial, _: TextureInput) {}
-fn set_normal_c(_: &mut ReadPreviewMaterial, _: [f32; 3]) {}
+fn set_normal_c(o: &mut ReadPreviewMaterial, value: [f32; 3]) { o.normal = Some(value); }
 fn set_normal_s(_: &mut ReadPreviewMaterial, _: f32) {}
 fn set_normal_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
     o.normal_texture_transform = s.6.then_some(s.5);

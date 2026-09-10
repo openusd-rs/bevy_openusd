@@ -25,6 +25,36 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Render authored constant Preview Surface normals
+
+The normal color setter previously discarded resolved normal3f values. The read
+model now retains them for Preview Surface, including sampled values, and the
+material route encodes them into shared 1x1 linear RGBA16Float images. The default
+(0,0,1) avoids allocating an image. This follows the signed tangent-space input
+contract: https://openusd.org/release/spec_usdpreviewsurface.html . Other surface
+dialects retain their existing behavior. Nonfinite, zero, out-of-range and vectors
+that collapse to zero at half precision return explicit material warnings rather
+than constructing invalid shader normals. Existing texture inputs take precedence.
+The texture cache implementation is shared with transformed RGB/normal images.
+
+Unit tests cover encoding, default identity, changed/backward cache handles,
+invalid vectors and sampled constant reads at 0/5/10/backward 0. The normal fixture
+now generates constant.usda and constant_animated.usda. A GPU pair reverses two
+constant-normal roots from 0/10 to 10/0 after 30 ready frames and compares fresh
+independent animated geometry normals at 10/0. Both images were inspected; the
+strict-zero comparison differs at two of 921600 pixels, max RGB error 1. It is
+near-reference evidence, not exact parity. Metadata confirms two visible meshes;
+both captures report CAPTURE_OK without WARN/ERROR.
+Evidence: `target/constant-normal-fixture/`,
+`/tmp/constant-normal-{live,reference,compare}.log`.
+
+All 505 ordinary tests pass (13 ignored), check-all/build and git diff --check
+pass: `/tmp/constant-normal-tests.log`, `/tmp/constant-normal-check-final.log`,
+`/tmp/constant-normal-build.log`. Meshes still require a valid UV-derived tangent
+frame; missing tangents, deformed tangent fidelity, broad shader graphs and the
+full acceptance checklist remain unresolved. This manual GPU pair is not yet a
+default live-clock suite case.
+
 ### Verify live signed normal interfaces
 
 The normal fixture now generates animated Material normal_gain coefficients and

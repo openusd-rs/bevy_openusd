@@ -1483,6 +1483,14 @@ The scaled mapped/reference capture differs at six pixels by at most RGB 1;
 the canonical case retains its two-pixel RGB-1 difference. Neither is pixel-exact
 reference parity, and general MaterialX normal processing remains unsupported.
 
+Authored constant Preview Surface normals also use the linear float16 path, with
+a shared 1x1 image and no external texture dependency. `(0,0,1)` needs no image.
+Nonfinite, zero, out-of-range and float16-zero vectors produce material warnings
+and retain the geometric-normal fallback. This requires the mesh's tangent frame;
+missing UV/tangent data and deformed-tangent fidelity remain separate limitations.
+The normal fixture includes `constant.usda` and `constant_animated.usda`; the latter
+animates the signed normal directly rather than through a texture scale input.
+
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:
 `make run RUN_WITH= APP_TARGET='--example uv_transform_fixture' ARGS='target/uv_transform_probe'`.

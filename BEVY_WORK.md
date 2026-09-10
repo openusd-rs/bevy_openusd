@@ -638,6 +638,39 @@ changed here, so the prior 521-pass/13-ignored unit suite was not rerun.
 `git diff --check` passes. Broader rendering and independent-instance acceptance
 remain open beyond this regression.
 
+## Explicit constant texture coordinates
+
+The UV graph reader now samples constant coordinate values at graph terminals,
+including direct texture inputs, sampled Material interfaces and inputs beneath
+`UsdTransform2d`. Float2/double2 values become zero-scale affine transforms, so
+all mesh UVs select the authored coordinate. Downstream transforms still compose
+in order. Wrong types, non-finite transforms and differing per-texture transforms
+remain explicit errors. Unauthored coordinate terminals retain the current
+implicit mesh-UV behavior; this is not full coordinate-graph or UV-set support.
+
+The focused regression first failed because a direct authored constant yielded
+no UV transform: `/tmp/constant-uv-before-value.log`. The initial test compile
+also exposed that Attribute::set_at requires a TimeCode, not a raw float; its
+failed log is `/tmp/constant-uv-before.log`. Tests now cover direct constants,
+sampled interfaces, transform composition, float/double values, wrong types and
+double-to-float overflow. Fixture tests check every deliberately varying mesh UV
+at endpoints, intermediate times and a return to time zero.
+
+`examples/uv_transform_fixture.rs` now generates `constant_coordinates.usda`;
+the independent reference retains explicit sampled mesh UVs instead of using
+constant shader coordinates. `uv_constant` extends the live-clock suite with
+two roots reversing 0/10 to 10/0. The behavior follows the explicit `st` input
+described by the [USD Preview Surface specification](https://openusd.org/dev/spec_usdpreviewsurface.html).
+
+Validation: 522 ordinary tests pass, 13 ignored; check-all, viewer build and
+`git diff --check` pass. Logs: `/tmp/constant-uv-{tests,check,build}.log`.
+All 19 GPU live-clock cases pass in `target/live-constant-uv-regression`, logged
+in `/tmp/live-constant-uv-regression.log`. Both new `uv_constant` images were
+inspected: the two panels each have a uniform sampled color despite varying
+mesh UVs. Live and independent-reference images match all 921,600 pixels at
+strict RGB tolerance 0 after reversing clocks. This validates the constant
+coordinate path, not arbitrary coordinate shaders or named UV-set selection.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

@@ -77,11 +77,12 @@ run_case() {
 }
 
 status=0
-for name in uv uv_interface uv_interface_mid texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface normal_constant morph_tangents subdivision_creases; do
+for name in uv uv_interface uv_interface_mid uv_constant texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface normal_constant morph_tangents subdivision_creases; do
     case "$name" in
         uv) live="$output/fixture/mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         uv_interface) live="$output/fixture/interface_mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         uv_interface_mid) live="$output/fixture/interface_mapped.usda"; reference="$output/fixture/sampled_reference.usda"; cpu=0 ;;
+        uv_constant) live="$output/fixture/constant_coordinates.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         texture) live="$output/fixture/file_samples.usda"; reference="$output/fixture/file_reference.usda"; cpu=0 ;;
         colorspace) live="$output/fixture/color_space_samples.usda"; reference=$live; cpu=0 ;;
         morph) live="$root/assets/morph_animation.usda"; reference=$live; cpu=1 ;;

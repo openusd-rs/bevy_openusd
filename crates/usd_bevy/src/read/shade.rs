@@ -272,7 +272,18 @@ fn read_uv_transform(stage: &Stage, textures: &[Path], time: Option<f64>) -> any
         for depth in 0..=16 {
             let connections = connections_at(stage, &current)?;
             anyhow::ensure!(connections.len() <= 1, "multiple texture-coordinate connections at {current}");
-            let Some(next) = connections.into_iter().next() else { break; };
+            let Some(next) = connections.into_iter().next() else {
+                if let Some(value) = sampled_value(stage, &current, time)? {
+                    let value = match value {
+                        Value::Vec2f(v) => bevy::math::Vec2::new(v.x,v.y),
+                        Value::Vec2d(v) => bevy::math::Vec2::new(v.x as f32,v.y as f32),
+                        _ => anyhow::bail!("constant texture coordinates must be a two-component vector at {current}"),
+                    };
+                    transform *= bevy::math::Affine2::from_scale_angle_translation(bevy::math::Vec2::ZERO,0.0,value);
+                    authored = true;
+                }
+                break;
+            };
             anyhow::ensure!(depth < 16, "texture-coordinate graph exceeds 16 connections");
             let node = next.prim_path();
             if read_token_or_string(stage, &node, "info:id")?.as_deref() == Some("UsdTransform2d") {
@@ -288,6 +299,39 @@ fn read_uv_transform(stage: &Stage, textures: &[Path], time: Option<f64>) -> any
         else { common = Some(transform); }
     }
     Ok(if authored { common } else { None })
+}
+
+#[test]
+fn constant_uv_coordinates_follow_interfaces_and_transforms() {
+    use bevy::math::Vec2;
+    let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("constant-uv.usda").unwrap();
+    for name in ["/Tex","/Mat","/Transform"] { stage.define_prim(name).unwrap(); }
+    let textures = [Path::new("/Tex").unwrap()];
+    let st = stage.create_attribute("/Tex.inputs:st", "float2").unwrap();
+    st.clone().set(Value::Vec2f([0.25,0.75].into())).unwrap();
+    let constant = read_uv_transform(&stage,&textures,Some(0.0)).unwrap().unwrap();
+    for uv in [Vec2::ZERO,Vec2::ONE,Vec2::new(-10.0,40.0)] {
+        assert_eq!(constant.transform_point2(uv),Vec2::new(0.25,0.75));
+    }
+    let input = stage.create_attribute("/Mat.inputs:uv", "float2").unwrap();
+    input.clone().set_at(Value::Vec2f([0.0,0.0].into()),openusd::usd::TimeCode::new(0.0)).unwrap();
+    input.set_at(Value::Vec2f([1.0,0.5].into()),openusd::usd::TimeCode::new(10.0)).unwrap();
+    st.clone().set_connections([Path::new("/Mat.inputs:uv").unwrap()]).unwrap();
+    assert_eq!(read_uv_transform(&stage,&textures,Some(5.0)).unwrap().unwrap().translation,Vec2::new(0.5,0.25));
+    stage.create_attribute("/Transform.info:id", "token").unwrap().set(Value::Token("UsdTransform2d".into())).unwrap();
+    stage.create_attribute("/Transform.inputs:translation", "float2").unwrap().set(Value::Vec2f([2.0,3.0].into())).unwrap();
+    stage.create_attribute("/Transform.inputs:in", "float2").unwrap().set_connections([Path::new("/Mat.inputs:uv").unwrap()]).unwrap();
+    st.set_connections([Path::new("/Transform.outputs:result").unwrap()]).unwrap();
+    assert_eq!(read_uv_transform(&stage,&textures,Some(5.0)).unwrap().unwrap().translation,Vec2::new(2.5,3.25));
+    stage.define_prim("/Bad").unwrap();
+    stage.create_attribute("/Bad.inputs:st", "token").unwrap().set(Value::Token("wrong".into())).unwrap();
+    assert!(read_uv_transform(&stage,&[Path::new("/Bad").unwrap()],None).unwrap_err().to_string().contains("two-component"));
+    stage.define_prim("/Double").unwrap();
+    let double = stage.create_attribute("/Double.inputs:st", "double2").unwrap();
+    double.clone().set(Value::Vec2d([0.5,0.25].into())).unwrap();
+    assert_eq!(read_uv_transform(&stage,&[Path::new("/Double").unwrap()],None).unwrap().unwrap().translation,Vec2::new(0.5,0.25));
+    double.set(Value::Vec2d([f64::MAX,0.0].into())).unwrap();
+    assert!(read_uv_transform(&stage,&[Path::new("/Double").unwrap()],None).unwrap_err().to_string().contains("non-finite"));
 }
 
 fn read_uv_node(stage: &Stage, node: &Path, time: Option<f64>) -> anyhow::Result<bevy::math::Affine2> {

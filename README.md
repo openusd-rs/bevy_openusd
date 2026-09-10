@@ -1400,7 +1400,7 @@ make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/
 ```
 
 It generates fresh UV/texture/scalar/color/normal fixtures and compares live clock
-reversals against independent references. Sixteen comparisons use zero RGB
+reversals against independent references. Seventeen comparisons use zero RGB
 tolerance; normal-interface and constant-normal cases use RGB tolerance 1 for
 independently animated geometry normals, matching the static precision bound.
 Metadata must confirm the reversal and expected visible mesh counts. The flat
@@ -1409,6 +1409,8 @@ GPU-morphed ordinary/subset meshes against CPU deformation without flat material
 The subdivision-crease case uses level 1 and reverses clocks 1/3 to 3/1,
 switching both roots between decayed-sharpness vertex normals and permanent-crease
 face-varying normals. Its final image must match freshly loaded roots at 3/1.
+The constant-coordinate case samples animated Material interface coordinates,
+ignoring deliberately different vertex UVs, against independent mesh-UV samples.
 Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain
 in the output directory, including on failure. This requires native GPU access
@@ -1669,6 +1671,14 @@ and focus `(0,1,0)`. The tested Vulkan captures match all 921,600 pixels at stri
 zero RGB tolerance. This checks simultaneous texture selection, not a live reload.
 UV transforms are read from connected texture-coordinate paths, including nodes
 outside the material's immediate children; disconnected nodes have no effect.
+Explicit constant float2/double2 coordinates at a texture-coordinate terminal
+are represented by a zero-scale affine transform. Sampled Material/NodeGraph
+interface values and constant `UsdTransform2d.inputs:in` values follow the same
+path and compose with downstream transforms. The fixture's
+`constant_coordinates.usda` deliberately has varying vertex UVs while its
+animated Material coordinates select one texture location across the mesh.
+Unauthored coordinate terminals retain the existing implicit mesh-UV behavior;
+named/per-texture UV-set selection remains unsupported.
 Different transforms across a material's texture channels, non-finite transforms
 and over-budget coordinate graphs produce explicit
 errors instead of silently choosing the first material child.

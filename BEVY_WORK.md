@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject lossy flattening of incomplete compositions
+
+Reproduced flattened export overwriting a valid destination despite an unresolved
+reference (`/tmp/flatten-validation-before.log`). EditorSession now validates the
+active composition before flattening, before entering the atomic publication
+path. Root/edit-layer export semantics remain authored-layer preservation; those
+operations can save unresolved references for repair, while package dependency
+requirements remain unchanged.
+
+The regression verifies rejection for USDA, USDC, USD and USDZ, unchanged existing
+bytes, no staging leftovers, unchanged authored layer contents and selection, and
+working undo history. It also checks that root/edit USDA exports retain the
+unresolved reference instead of losing it through implicit flattening. This gate
+uses the existing active-composition diagnostics, not exhaustive validation of
+every future sample or inactive branch.
+
+Validation: 377 ordinary tests, five optional native tests (44 export checks),
+check-all, build and whitespace checks pass. Logs:
+`/tmp/flatten-validation-{tests,native,check,build}.log`.
+
 ### Viewer Open composition guard and readable failures
 
 Reproduced the viewer command path accepting a document with a missing sublayer

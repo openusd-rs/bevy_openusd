@@ -58,6 +58,10 @@ reported composition errors. Failure retains any previous projection and reports
 The viewer's Open command applies the same composition validation before replacing
 the current document. Rejected opens retain selection and edit history; long
 failure messages wrap in the outliner's Status section.
+Flattened editor exports also validate the active composition before writing.
+Reported composition errors preserve the existing destination. Root/edit-layer
+exports retain authored unresolved references for repair rather than requiring
+a complete composed scene; USDZ packaging still requires its dependencies.
 
 For reusable in-memory assemblies, `UsdSource::snapshot(path, bytes)` disables
 filesystem fallback. `root.with_dependency(&model)` returns a new source containing

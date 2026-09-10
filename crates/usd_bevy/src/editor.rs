@@ -486,7 +486,10 @@ impl EditorSession {
                     .ok_or_else(|| anyhow::anyhow!("edit layer is unavailable"))?;
                 crate::persistence::export_layer(&self.stage, &layer, filename)?;
             }
-            SaveMode::Flattened => crate::persistence::export_layer(&self.stage, &self.stage.flatten()?, filename)?,
+            SaveMode::Flattened => {
+                crate::UsdSource::validate_composition(&self.stage)?;
+                crate::persistence::export_layer(&self.stage, &self.stage.flatten()?, filename)?;
+            }
         }
         Ok(())
     }
@@ -1130,6 +1133,36 @@ def Xform "Asset" (prepend variantSets = "shape") {
         bridge.send(EditorCommand::Payload { prim: "/Missing".into(), loaded: true }).unwrap();
         app.update();
         assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+    }
+
+    #[test]
+    fn flatten_rejects_incomplete_composition_without_publishing_or_mutating() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = crate::UsdSource::snapshot(directory.path().join("source.usda"), &b"#usda 1.0\ndef Scope \"Model\" (prepend references = @missing.usda@</Model>) {}\n"[..]).unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Model".into())).unwrap();
+        editor.edit(EditorEdit::Attribute {
+            prim: "/Model".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(17.0),
+        }).unwrap();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        for extension in ["usda", "usdc", "usd", "usdz"] {
+            let path = directory.path().join(format!("flat.{extension}"));
+            std::fs::write(&path, "existing output").unwrap();
+            let error = editor.save(path.to_str().unwrap(), SaveMode::Flattened).unwrap_err();
+            assert!(error.to_string().contains("missing.usda"), "{error:#}");
+            assert_eq!(std::fs::read(&path).unwrap(), b"existing output");
+        }
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 4);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert_eq!(editor.snapshot().unwrap().selected.as_deref(), Some("/Model"));
+        assert!(editor.snapshot().unwrap().can_undo);
+        for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
+            let path = directory.path().join("authored.usda");
+            editor.save(path.to_str().unwrap(), mode).unwrap();
+            assert!(std::fs::read_to_string(path).unwrap().contains("missing.usda"));
+        }
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().prim("/Model").unwrap().attribute("score").get::<f64>().unwrap(), None);
     }
 
     #[test]

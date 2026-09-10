@@ -208,6 +208,40 @@ shell syntax and git diff --check pass. Logs: `/tmp/uv-mid-{tests,check,build}.l
 This extends sampled-transform fidelity evidence, not arbitrary graph support,
 continuous-time reference parity or completion of the full Bevy checklist.
 
+## UR5 collection inspection and indexed-normal diagnostics
+
+Inspected `../usd_collection/matlab/ur_description/ur5.usdc` in the full editor,
+with paired host/viewport screenshots, time 0 and a 15000 ms ready delay.
+Both images were inspected: the robot is framed, material subsets render, and
+fine striping remains around the left joint cap. Evidence:
+`target/viewer-ui-captures/ur5-current*`, `/tmp/ur5-current-ui.log`.
+The host log retains the known Vulkan layer, clipboard and SSAO-limit warnings;
+this is not a warning-free or reference-render fidelity claim.
+
+The original scene report mixed unused zero normals with normals used by indices.
+Added referenced/unreferenced vertex counts, invalid referenced-normal counts and
+out-of-range index counts without discarding the original whole-buffer totals.
+Tests cover unused zero normals, referenced zero normals, missing normals and
+invalid indices. This changes diagnostics only, not mesh data or shading.
+
+The updated UR5 report traverses 28 meshes, including library and collision meshes.
+All seven visual geometry meshes have zero invalid referenced normals and indices.
+For `/ur5/world/base_link/visual_0/geom`, the 2789 invalid normals are exactly its
+2789 unreferenced vertices; all 1051 referenced vertices have valid normals.
+Logs: `/tmp/ur5-current-scene.log`, `/tmp/ur5-indexed-scene.log`.
+
+A standalone forward capture with shadows disabled also visibly retains joint
+striping: `target/ur5-shadows-off-current.png`, inspected directly,
+`/tmp/ur5-shadows-off-current.log`. It reports 31 visible mesh entities, including
+generated subsets, with no GPU skin/morph entities. Its 1280x720 aspect differs
+from the embedded 1440x920 view; it is not a pixel comparison. No source asset
+was modified. The remaining striping needs geometry/subset or reference-render
+isolation rather than a speculative normal replacement.
+
+Validation: 515 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/mesh-index-report-{tests,check,build}.log`.
+Full visual acceptance and the intermittent black host-window issue remain open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

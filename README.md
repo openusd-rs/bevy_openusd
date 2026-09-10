@@ -764,6 +764,10 @@ USD_CURVE_STEPS=32 make run APP_TARGET='--example viewer_capture' \
 with an explicitly closed four-point nonperiodic equivalent. Both render the
 same cubic loop, not the triangular control hull.
 
+`scene_report` distinguishes referenced vertices, unreferenced vertices, invalid
+referenced normals and out-of-range indices. Its total invalid-normal count still
+includes unused vertex data; that total alone does not establish a draw defect.
+These counts describe source-sampled meshes, not visibility-filtered GPU draws.
 `scene_report` also reports exact authored-vertex-normal preservation, degenerate
 and exact-duplicate triangles, normal/face alignment and indexed versus
 exact-position-welded boundary edges. These are local, undeformed triangle-data

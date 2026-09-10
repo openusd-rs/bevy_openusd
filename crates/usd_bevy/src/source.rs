@@ -299,6 +299,17 @@ impl UsdSource {
                 }
             }
         }
+        for identifier in stage.layer_identifiers() {
+            if stage.is_layer_muted(&identifier) { continue; }
+            let Some(layer) = stage.layer(&identifier) else { continue; };
+            let Some(root) = layer.pseudo_root() else { continue; };
+            let sublayers = root.sublayers().unwrap_or_default();
+            let offsets = root.get::<Vec<openusd::sdf::LayerOffset>>(openusd::sdf::FieldKey::SubLayerOffsets).unwrap_or_default();
+            for (index, offset) in offsets.iter().take(sublayers.len()).enumerate() {
+                anyhow::ensure!(offset.is_valid_composition(),
+                    "unsupported sublayer time offset in {identifier} at index {index}: {offset:?}");
+            }
+        }
         let errors = stage.composition_errors();
         anyhow::ensure!(errors.is_empty(), "USD composition failed: {}",
             errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "));

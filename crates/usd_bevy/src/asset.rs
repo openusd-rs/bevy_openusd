@@ -519,10 +519,17 @@ def Xform "Old" {}
         spawn_usd_scenes(&mut world);
         let entities = roots.map(|root| instance_entity(&world, root, "/Mover"));
         for entity in entities { world.entity_mut(entity).insert(Name::new("runtime name")); }
-        for (arc, scale) in [("references", -1), ("references", 0), ("payload", -1), ("payload", 0)] {
+        for (arc, scale) in [("references", -1), ("references", 0), ("payload", -1), ("payload", 0),
+            ("sublayers", -1), ("sublayers", 0)] {
             let text = format!("{ANIMATED}\nclass Xform \"Template\" {{ double score.timeSamples = {{0: 1, 10: 3}} }}\ndef Xform \"Invalid\" (prepend {arc} = </Template> (offset = 10; scale = {scale})) {{}}\n");
+            let source = if arc == "sublayers" {
+                let layer = UsdSource::snapshot("offset-layer.usda", ANIMATED.as_bytes()).unwrap();
+                UsdSource::snapshot("instances.usda", format!(
+                    "#usda 1.0\n(subLayers = [@offset-layer.usda@ (offset = 10; scale = {scale})])\n"
+                ).into_bytes()).unwrap().with_dependency(&layer).unwrap()
+            } else { UsdSource::snapshot("instances.usda", text.into_bytes()).unwrap() };
             world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
-                UsdSource::snapshot("instances.usda", text.into_bytes()).unwrap();
+                source;
             let fresh = world.spawn(UsdSceneRoot(handle.clone())).id();
             spawn_usd_scenes(&mut world);
             for root in roots.into_iter().chain([fresh]) {

@@ -213,8 +213,9 @@ failed a reversed-sample probe; newly authored negative mappings are rejected
 rather than silently interpreted incorrectly. Source validation also rejects
 invalid time offsets in composed reference and payload lists on traversed prims, including
 the internal-reference case that did not surface a composition error. Rejected
-reloads retain the last valid projection. Sublayer offsets and unselected
-branches are not covered by this additional arc-metadata check.
+reloads retain the last valid projection. Authored sublayer offsets in loaded,
+unmuted layers are checked too; absent offsets retain identity timing. This does
+not eagerly inspect unselected branches or layers that composition has not loaded.
 `examples/retimed_sources.rs` demonstrates
 one animated source mounted twice with different timing and checks projected mesh
 radii and stable entities across clock changes:

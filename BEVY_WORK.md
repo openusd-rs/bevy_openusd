@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject invalid sublayer time offsets
+
+The same Bevy-world regression found a negative sublayer scale could also reach
+Ready (`/tmp/sublayer-offset-focused.log`). Source validation now checks authored
+sublayer offsets in all loaded, unmuted layers after traversal. It checks only
+entries corresponding to authored sublayer paths; missing entries keep identity
+defaults, and trailing offsets without a corresponding path are ignored.
+This does not eagerly load unselected branches or unloaded layers.
+
+The regression now covers negative and zero scales on references, payloads and
+sublayers. Existing roots retain their entities/runtime names on failure; fresh
+roots publish no geometry, and restoring the valid source recovers Ready with
+stable identities. The focused recheck passes: `/tmp/sublayer-offset-recheck.log`.
+All 469 ordinary workspace tests pass (ten ignored), as do ten native export
+tests, check-all, build and whitespace validation:
+`/tmp/sublayer-offset-{tests,native,check,build}.log`.
+
 ### Reject invalid payload time offsets
 
 The expanded Bevy-world regression reproduces the same silent identity-timing

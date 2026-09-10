@@ -512,21 +512,21 @@ def Xform "Old" {}
     }
 
     #[test]
-    fn invalid_reference_offsets_fail_without_installing_identity_fallback() {
+    fn invalid_arc_offsets_fail_without_installing_identity_fallback() {
         let (mut world, handle) = instance_world();
         let original = world.resource::<Assets<UsdScene>>().get(&handle).unwrap().source.clone();
         let roots = [world.spawn(UsdSceneRoot(handle.clone())).id(), world.spawn(UsdSceneRoot(handle.clone())).id()];
         spawn_usd_scenes(&mut world);
         let entities = roots.map(|root| instance_entity(&world, root, "/Mover"));
         for entity in entities { world.entity_mut(entity).insert(Name::new("runtime name")); }
-        for scale in [-1, 0] {
-            let text = format!("{ANIMATED}\nclass Xform \"Template\" {{ double score.timeSamples = {{0: 1, 10: 3}} }}\ndef Xform \"Invalid\" (prepend references = </Template> (offset = 10; scale = {scale})) {{}}\n");
+        for (arc, scale) in [("references", -1), ("references", 0), ("payload", -1), ("payload", 0)] {
+            let text = format!("{ANIMATED}\nclass Xform \"Template\" {{ double score.timeSamples = {{0: 1, 10: 3}} }}\ndef Xform \"Invalid\" (prepend {arc} = </Template> (offset = 10; scale = {scale})) {{}}\n");
             world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
                 UsdSource::snapshot("instances.usda", text.into_bytes()).unwrap();
             let fresh = world.spawn(UsdSceneRoot(handle.clone())).id();
             spawn_usd_scenes(&mut world);
             for root in roots.into_iter().chain([fresh]) {
-                let Some(UsdSceneState::Failed(error)) = world.get::<UsdSceneState>(root) else { panic!("invalid offset accepted"); };
+                let Some(UsdSceneState::Failed(error)) = world.get::<UsdSceneState>(root) else { panic!("invalid {arc} offset {scale} accepted"); };
                 assert!(error.to_lowercase().contains("offset"), "{error}");
                 assert!(world.non_send::<UsdInstances>().entity(root, "/Invalid").is_none());
             }

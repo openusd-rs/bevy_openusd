@@ -25,6 +25,21 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject invalid payload time offsets
+
+The expanded Bevy-world regression reproduces the same silent identity-timing
+fallback for internal payloads: scale -1 reached Ready before this fix
+(`/tmp/payload-offset-before.log`). Source validation now checks composed payload
+list entries with LayerOffset::is_valid_composition, alongside references.
+The regression covers both arc kinds with scales -1 and 0, retaining existing
+entities/runtime names on failed reload, refusing a fresh projection and recovering
+after the valid source returns. Sublayer offsets and unselected branches remain
+outside this explicit metadata guard.
+Payload offsets are optional in the canonical type; absent offsets retain
+identity behavior. All 469 ordinary workspace tests pass (ten ignored), as do
+check-all, build and whitespace validation:
+`/tmp/payload-offset-tests-final.log`, `/tmp/payload-offset-{check,build}.log`.
+
 ### Reject invalid reference offsets during source publication
 
 The Rust composition code sanitizes nonpositive scales to identity, but an

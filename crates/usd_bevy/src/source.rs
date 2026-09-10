@@ -283,6 +283,13 @@ impl UsdSource {
                         "unsupported reference time offset at {path}: {:?}", reference.layer_offset);
                 }
             }
+            if let Some(openusd::sdf::Value::PayloadListOp(payloads)) = prim.get_metadata("payload")? {
+                for payload in payloads.explicit_items.iter().chain(&payloads.prepended_items)
+                    .chain(&payloads.appended_items).chain(&payloads.added_items) {
+                    anyhow::ensure!(payload.layer_offset.as_ref().is_none_or(openusd::sdf::LayerOffset::is_valid_composition),
+                        "unsupported payload time offset at {path}: {:?}", payload.layer_offset);
+                }
+            }
             for attribute in prim.attributes()? {
                 attribute.get::<openusd::sdf::Value>()?;
                 if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {

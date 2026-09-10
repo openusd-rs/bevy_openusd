@@ -211,10 +211,10 @@ the whole batch without changing inputs. The lower-level
 supports negative scales with a deprecation warning, but the pinned Rust reader
 failed a reversed-sample probe; newly authored negative mappings are rejected
 rather than silently interpreted incorrectly. Source validation also rejects
-invalid time offsets in composed reference lists on traversed prims, including
+invalid time offsets in composed reference and payload lists on traversed prims, including
 the internal-reference case that did not surface a composition error. Rejected
-reloads retain the last valid projection. Payload/sublayer offsets and unselected
-branches are not covered by this additional reference-metadata check.
+reloads retain the last valid projection. Sublayer offsets and unselected
+branches are not covered by this additional arc-metadata check.
 `examples/retimed_sources.rs` demonstrates
 one animated source mounted twice with different timing and checks projected mesh
 radii and stable entities across clock changes:

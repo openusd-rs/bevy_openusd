@@ -545,9 +545,16 @@ including sampled values. Multiple producers, invalid direct sources and
 connections with no readable value reject the material read. Authored fallback
 values follow the upstream resolver's rules; arbitrary shader computation is
 not evaluated for these float4 inputs.
-Diffuse, emissive and normal-map scale/bias are not implemented by this packing
-path. Out-of-range values are clamped before GPU filtering, so this is not exact
+For scalar maps, out-of-range values are clamped before GPU filtering, so this is not exact
 shader parity for arbitrary filtered float textures.
+Diffuse and emissive RGB scale/bias use a separate linear `Rgba16Float` path.
+Negative and HDR values remain unclamped in the transformed image; nonfinite
+coefficients and float16 overflow return material warnings. Alpha is preserved,
+and subsequent opacity packing retains transformed HDR RGB. Identity RGB
+transforms reuse original images. Transformed content uses a 64 MiB accounted
+cache and a 16M-pixel input limit; those are not total process/VRAM limits.
+Float16 rounding remains an approximation, and normal-map scale/bias is not
+implemented by this path.
 Material graph evaluation has a 256-input traversal budget and a separate
 32-level recursion limit for arithmetic/constant nodes; exceeding either reports
 an error rather than continuing unbounded recursion.
@@ -592,12 +599,25 @@ make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example capture_compare
 
 Texture-only emission uses a white Bevy emissive multiplier when an image handle
 is bound. Explicit emissive colors retain their multiplier, including black;
-untextured defaults remain non-emissive. This does not add RGB texture scale/bias.
+untextured defaults remain non-emissive.
 The same generator writes `animated.usda` (emissive filename samples) and
 `animated_reference.usda` (constant-color samples). The live-clock regression
 compares their endpoints after reversing two existing instance clocks. Filename
 selection is held, while the constant-color reference interpolates, so this
 comparison does not claim agreement at intermediate times.
+
+`color_texture_fixture` generates diffuse, emissive and opacity-combined RGB
+transform cases with HDR constant-color references and untransformed controls:
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example color_texture_fixture' ARGS='target/NEW-rgb'
+```
+
+Capture `<semantic>_mapped.usda` and `<semantic>_reference.usda` with the same
+camera (`0 2 6` looking at `0 0 0`), forward renderer and shadows disabled, then
+compare their RGBA files at zero RGB tolerance. Semantics are `diffuse`,
+`emissive` and `alpha`. The alpha reference includes the existing scalar
+8-bit quantization followed by float16 rounding; it is not ideal float opacity.
 
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:

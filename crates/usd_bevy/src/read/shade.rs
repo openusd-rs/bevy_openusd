@@ -36,6 +36,8 @@ pub struct ReadPreviewMaterial {
     pub texture_color_spaces: std::collections::BTreeMap<String, bool>,
     /// Selected-channel [scale, bias] for scalar texture semantics.
     pub scalar_texture_transforms: std::collections::BTreeMap<String, [f32; 2]>,
+    /// RGB [scale, bias] for diffuse and emissive textures.
+    pub color_texture_transforms: std::collections::BTreeMap<String, [[f32; 3]; 2]>,
     pub warnings: Vec<String>,
 
     /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
@@ -176,10 +178,16 @@ pub fn read_preview_material_at(stage: &Stage, material: &Path, time: Option<f64
     Ok(Some(out))
 }
 
+#[cfg(test)]
 fn texture_value_transform(stage: &Stage, prim: &Path, channel: usize, time: Option<f64>) -> anyhow::Result<[f32; 2]> {
+    let result = texture_rgba_transform(stage, prim, time)?;
+    Ok([result[0][channel], result[1][channel]])
+}
+
+fn texture_rgba_transform(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<[[f32; 4]; 2]> {
     use openusd_schemas::shade::{Connectable, ProducerFilter, Shader};
-    if read_token_or_string(stage, prim, "info:id")?.as_deref() != Some("UsdUVTexture") { return Ok([1.0, 0.0]); }
-    let mut result = [1.0, 0.0];
+    if read_token_or_string(stage, prim, "info:id")?.as_deref() != Some("UsdUVTexture") { return Ok([[1.0; 4], [0.0; 4]]); }
+    let mut result = [[1.0; 4], [0.0; 4]];
     let shader = Shader::new(stage.prim(prim)?);
     for (index, name) in ["scale", "bias"].into_iter().enumerate() {
         let input = shader.input(name);
@@ -198,7 +206,7 @@ fn texture_value_transform(stage: &Stage, prim: &Path, channel: usize, time: Opt
             let Value::Vec4f(value) = value else { anyhow::bail!("texture scale/bias must be float4 at {path}"); };
             let values = [value.x, value.y, value.z, value.w];
             anyhow::ensure!(values.iter().all(|value| value.is_finite()), "nonfinite texture scale/bias at {path}");
-            result[index] = values[channel];
+            result[index] = values;
         }
     }
     Ok(result)
@@ -365,10 +373,14 @@ fn resolve_surface_shader(
 
 type ColourSetter = fn(&mut ReadPreviewMaterial, [f32; 3]);
 type ScalarSetter = fn(&mut ReadPreviewMaterial, f32);
-type TextureInput = (String, usize, Option<bool>, Path, [f32; 2]);
+type TextureInput = (String, usize, Option<bool>, Path, [f32; 2], [[f32; 3]; 2]);
 type TextureSetter = fn(&mut ReadPreviewMaterial, TextureInput);
 
 impl ReadPreviewMaterial {
+    pub fn color_texture_transform(&self, semantic: &str) -> [[f32; 3]; 2] {
+        self.color_texture_transforms.get(semantic).copied().unwrap_or([[1.0; 3], [0.0; 3]])
+    }
+
     pub fn scalar_texture_transform(&self, semantic: &str) -> [f32; 2] {
         self.scalar_texture_transforms.get(semantic).copied().unwrap_or([1.0, 0.0])
     }
@@ -388,6 +400,7 @@ fn set_diffuse_c(o: &mut ReadPreviewMaterial, c: [f32; 3]) {
 }
 fn set_diffuse_s(_: &mut ReadPreviewMaterial, _: f32) {}
 fn set_diffuse_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.color_texture_transforms.insert("diffuse".into(), s.5);
     set_color_space(o, "diffuse", s.2);
     o.diffuse_texture = Some(s.0);
 }
@@ -431,6 +444,7 @@ fn set_emissive_c(o: &mut ReadPreviewMaterial, c: [f32; 3]) {
 }
 fn set_emissive_s(_: &mut ReadPreviewMaterial, _: f32) {}
 fn set_emissive_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.color_texture_transforms.insert("emissive".into(), s.5);
     set_color_space(o, "emissive", s.2);
     o.emissive_texture = Some(s.0);
 }
@@ -674,8 +688,10 @@ fn resolve_attr_chain_inner(
                 ShaderKind::Texture => {
                     let channel = match next.as_str().rsplit(':').next() { Some("g") => 1, Some("b") => 2, Some("a") => 3, _ => 0 };
                     let srgb = read_texture_color_space(stage, &prim, time)?;
-                    let transform = texture_value_transform(stage, &prim, channel, time)?;
-                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim, transform))));
+                    let rgba = texture_rgba_transform(stage, &prim, time)?;
+                    let transform = [rgba[0][channel], rgba[1][channel]];
+                    let rgb = rgba.map(|value| [value[0], value[1], value[2]]);
+                    return Ok((None, read_texture_file(stage, &prim, time)?.map(|path| (path, channel, srgb, prim, transform, rgb))));
                 }
                 ShaderKind::NormalMap => {
                     cur = prim.append_property("inputs:in")?;
@@ -715,8 +731,8 @@ fn resolve_attr_chain_inner(
         }
         let default = sampled_value(stage, &cur, time)?;
         match default.clone() {
-            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path(), [1.0, 0.0])))),
-            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path(), [1.0, 0.0])))),
+            Some(Value::AssetPath(s)) => return Ok((None, Some((s.resolved_path().unwrap_or(s.as_str()).to_string(), 0, None, cur.prim_path(), [1.0, 0.0], [[1.0; 3], [0.0; 3]])))),
+            Some(Value::String(s)) => return Ok((None, Some((s, 0, None, cur.prim_path(), [1.0, 0.0], [[1.0; 3], [0.0; 3]])))),
             _ => {}
         }
         return Ok((default.and_then(value_to_preview), None));

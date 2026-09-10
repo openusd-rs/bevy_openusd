@@ -1,0 +1,153 @@
+use bevy::{prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat}};
+use crate::{asset::SnapshotTextures, read::shade::ReadPreviewMaterial};
+
+#[derive(Resource, Default)]
+struct ColorTextures {
+    images: std::collections::HashMap<(u32, u32, Vec<u8>), Handle<Image>>,
+    bytes: usize,
+}
+
+pub(super) fn append_rgba(data: &mut Vec<u8>, rgba: [f32; 4]) -> anyhow::Result<()> {
+    for value in rgba {
+        let value = half::f16::from_f32(value);
+        anyhow::ensure!(value.is_finite(), "color texture value exceeds finite float16 range");
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(())
+}
+
+pub(super) fn transformed(world: &mut World, read: &ReadPreviewMaterial, semantic: &str) -> anyhow::Result<Option<Handle<Image>>> {
+    let [scale, bias] = read.color_texture_transform(semantic);
+    if scale == [1.0; 3] && bias == [0.0; 3] { return Ok(None); }
+    let path = match semantic { "diffuse" => &read.diffuse_texture, "emissive" => &read.emissive_texture,
+        _ => anyhow::bail!("unsupported color texture semantic: {semantic}") };
+    let Some(path) = path else { return Ok(None); };
+    anyhow::ensure!(scale.iter().chain(&bias).all(|v| v.is_finite()), "nonfinite color texture scale/bias");
+    let textures = world.get_resource::<SnapshotTextures>().ok_or_else(|| anyhow::anyhow!("color transform requires loaded snapshot textures"))?;
+    let handle = textures.0.get(&(path.clone(), read.texture_srgb(semantic))).ok_or_else(|| anyhow::anyhow!("missing color texture: {path}"))?;
+    let image = world.resource::<Assets<Image>>().get(handle).ok_or_else(|| anyhow::anyhow!("color image is not ready: {path}"))?;
+    let size = image.texture_descriptor.size;
+    anyhow::ensure!(image.texture_descriptor.dimension == TextureDimension::D2 && size.depth_or_array_layers == 1,
+        "color transform requires a 2D image");
+    anyhow::ensure!(matches!(image.sampler, bevy::image::ImageSampler::Default), "color transform requires a shared default sampler");
+    let count = u64::from(size.width) * u64::from(size.height);
+    anyhow::ensure!(count > 0 && count <= 16_777_216, "color image exceeds the 16M pixel transform limit");
+    let mut data = Vec::with_capacity(count as usize * 8);
+    for y in 0..size.height {
+        for x in 0..size.width {
+            let color = image.get_color_at(x, y)?.to_linear();
+            append_rgba(&mut data, [color.red * scale[0] + bias[0], color.green * scale[1] + bias[1],
+                color.blue * scale[2] + bias[2], color.alpha])?;
+        }
+    }
+    let key = (size.width, size.height, data);
+    if let Some(handle) = world.get_resource::<ColorTextures>().and_then(|cache| cache.images.get(&key)) {
+        if world.resource::<Assets<Image>>().contains(handle) { return Ok(Some(handle.clone())); }
+    }
+    let image = Image::new(Extent3d { width: key.0, height: key.1, depth_or_array_layers: 1 },
+        TextureDimension::D2, key.2.clone(), TextureFormat::Rgba16Float, bevy::asset::RenderAssetUsages::default());
+    let handle = world.resource_mut::<Assets<Image>>().add(image);
+    world.init_resource::<ColorTextures>();
+    let mut cache = world.resource_mut::<ColorTextures>();
+    let bytes = key.2.len() * 2;
+    if cache.bytes + bytes > 64 * 1024 * 1024 { cache.images.clear(); cache.bytes = 0; }
+    if bytes <= 64 * 1024 * 1024 { cache.images.insert(key, handle.clone()); cache.bytes += bytes; }
+    Ok(Some(handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn world_with_pixel(srgb: bool, bytes: [u8; 4]) -> World {
+        let mut world = World::new();
+        let mut images = Assets::<Image>::default();
+        let handle = images.add(Image::new(Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            TextureDimension::D2, bytes.to_vec(), if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
+            bevy::asset::RenderAssetUsages::default()));
+        let mut textures = SnapshotTextures::default();
+        textures.0.insert(("color.png".into(), srgb), handle);
+        world.insert_resource(images);
+        world.insert_resource(textures);
+        world
+    }
+
+    fn pixel(world: &World, handle: &Handle<Image>) -> [f32; 4] {
+        let image = world.resource::<Assets<Image>>().get(handle).unwrap();
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba16Float);
+        std::array::from_fn(|i| {
+            let data = image.data.as_ref().unwrap();
+            half::f16::from_le_bytes([data[i * 2], data[i * 2 + 1]]).to_f32()
+        })
+    }
+
+    #[test]
+    fn rgb_transform_is_linear_hdr_and_content_cached() {
+        let mut world = world_with_pixel(true, [128, 128, 128, 64]);
+        let mut read = ReadPreviewMaterial { emissive_texture: Some("color.png".into()), ..default() };
+        assert!(transformed(&mut world, &read, "emissive").unwrap().is_none());
+        let transform = [[2.0, 3.0, 4.0], [0.1, -0.8, 2.0]];
+        read.color_texture_transforms.insert("emissive".into(), transform);
+        let first = transformed(&mut world, &read, "emissive").unwrap().unwrap();
+        let actual = pixel(&world, &first);
+        let linear = ((128.0_f32 / 255.0 + 0.055) / 1.055).powf(2.4);
+        for i in 0..3 { assert!((actual[i] - (linear * transform[0][i] + transform[1][i])).abs() < 0.002); }
+        assert!(actual[1] < 0.0 && actual[2] > 1.0);
+        assert!((actual[3] - 64.0 / 255.0).abs() < 0.001);
+        assert_eq!(transformed(&mut world, &read, "emissive").unwrap(), Some(first.clone()));
+        read.color_texture_transforms.insert("emissive".into(), [[1.0; 3], [1.0; 3]]);
+        assert_ne!(transformed(&mut world, &read, "emissive").unwrap(), Some(first.clone()));
+        read.color_texture_transforms.insert("emissive".into(), transform);
+        assert_eq!(transformed(&mut world, &read, "emissive").unwrap(), Some(first));
+        for invalid in [f32::NAN, f32::INFINITY, 1.0e10] {
+            read.color_texture_transforms.insert("emissive".into(), [[invalid; 3], [0.0; 3]]);
+            assert!(transformed(&mut world, &read, "emissive").is_err());
+        }
+    }
+
+    #[test]
+    fn opacity_packing_preserves_transformed_hdr_rgb() {
+        let mut world = world_with_pixel(false, [255,255,255,64]);
+        let mut read = ReadPreviewMaterial { diffuse_texture: Some("color.png".into()),
+            opacity_texture: Some("color.png".into()), opacity_channel: 3, ..default() };
+        read.texture_color_spaces.insert("diffuse".into(), false);
+        read.color_texture_transforms.insert("diffuse".into(), [[2.0, 1.0, 0.5], [0.0; 3]]);
+        let handle = super::super::texture_pack::base_color_alpha(&mut world, &read).unwrap().unwrap();
+        let rgba = pixel(&world, &handle);
+        assert_eq!(&rgba[..3], &[2.0, 1.0, 0.5]);
+        assert!((rgba[3] - 64.0 / 255.0).abs() < 0.001);
+        assert_eq!(super::super::texture_pack::base_color_alpha(&mut world, &read).unwrap(), Some(handle));
+    }
+
+    #[test]
+    fn sampled_rgb_interfaces_reach_both_color_semantics() {
+        let source = crate::UsdSource::snapshot("rgb.usda", br#"#usda 1.0
+def Material "Mat" {
+    float4 inputs:gain.timeSamples = {0: (1,2,3,4), 10: (3,4,5,6)}
+    float4 inputs:offset = (0.1,0.2,0.3,0.4)
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        color3f inputs:emissiveColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @color.png@
+        float4 inputs:scale.connect = </Mat.inputs:gain>
+        float4 inputs:bias.connect = </Mat.inputs:offset>
+    }
+}
+"#.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        for (time, gain) in [(0.0, 1.0), (5.0, 2.0), (10.0, 3.0), (0.0, 1.0)] {
+            let read = crate::read::shade::read_preview_material_at(&stage, &openusd::sdf::path("/Mat").unwrap(), Some(time)).unwrap().unwrap();
+            for semantic in ["diffuse", "emissive"] {
+                assert_eq!(read.color_texture_transform(semantic), [[gain, gain + 1.0, gain + 2.0], [0.1,0.2,0.3]]);
+            }
+        }
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
+}

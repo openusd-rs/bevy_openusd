@@ -5895,6 +5895,7 @@ dependencies = [
  "async-channel",
  "bevy",
  "glam 0.30.10",
+ "half",
  "log",
  "openusd",
  "openusd-schemas",

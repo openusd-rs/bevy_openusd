@@ -16,6 +16,7 @@ openusd = { path = "../../vendor/openusd/crates/openusd" }
 openusd-schemas = { path = "../../vendor/openusd/crates/openusd-schemas", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
 glam = "0.30"
 anyhow = "1"
+half = "2"
 log = "0.4"
 tempfile = "3"
 zip = { version = "8.2.0", default-features = false, features = ["deflate"] }

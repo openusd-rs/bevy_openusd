@@ -25,6 +25,39 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Apply diffuse and emissive RGB texture scale/bias
+
+Canonical UsdShade float4 producer resolution now retains all RGBA coefficients;
+ReadPreviewMaterial exposes RGB transforms for diffuse/emissive semantics while
+scalar semantics retain their selected-channel coefficients. Sampled interfaces
+use the same resolver. Nonidentity RGB transforms decode to linear color and
+produce Rgba16Float images without clamping negative/HDR RGB. Identity transforms
+reuse original images. Nonfinite coefficients and float16 overflow report material
+warnings. A content-keyed cache accounts up to 64 MiB; input is limited to 16M
+pixels. Neither limit describes total process/VRAM use or measured performance.
+The existing half dependency is now explicitly declared by usd_bevy.
+
+Opacity packing uses the transformed diffuse image and retains its float16 HDR
+RGB instead of quantizing it back to sRGB8. Opacity still follows the existing
+scalar8 quantization, then float16 rounding. Its cache key includes the format
+choice. Normal-map transforms remain outside this path.
+
+Tests cover analytic sRGB-to-linear conversion, independent RGB coefficients,
+negative/HDR values, preserved alpha, cache reuse/backward values, overflow,
+sampled Material interfaces for both color semantics and unchanged source layers.
+The new color_texture_fixture generates mapped/reference/control spheres for
+emission, diffuse and diffuse-with-opacity. All three mapped/reference GPU pairs
+match at zero RGB tolerance; every control differs in 60646 of 921600 pixels
+(maximum RGB errors 54, 54 and 40). All nine images were visually inspected.
+Evidence: `target/rgb-transform-fixture/`, `/tmp/rgb-transform-gpu.log`,
+`/tmp/rgb-transform-{emissive,diffuse,alpha}-{compare,control}.log`.
+
+All 501 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/rgb-transform-{tests,check,build}.log`. All 13 native export tests
+pass: `/tmp/rgb-transform-native.log`. This proves the tested static RGB paths;
+float16 precision, broader filtered-texture parity and live GPU RGB animation
+acceptance remain explicit follow-up work.
+
 ### Verify independent live emissive textures
 
 The emissive fixture now includes two filename samples and a constant-color

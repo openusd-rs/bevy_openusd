@@ -117,6 +117,16 @@ pub(crate) fn resolve_material(
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
     apply_sidedness(ctx, &mut material);
     let mut warnings = read.warnings.clone();
+    for semantic in ["diffuse", "emissive"] {
+        match super::color_texture::transformed(world, &read, semantic) {
+            Ok(Some(handle)) => {
+                if semantic == "diffuse" { material.base_color_texture = Some(handle); }
+                else { material.emissive_texture = Some(handle); }
+            }
+            Ok(None) => {}
+            Err(error) => warnings.push(error.to_string()),
+        }
+    }
     match super::texture_pack::base_color_alpha(world, &read) {
         Ok(Some(packed)) => {
             material.base_color_texture = Some(packed);

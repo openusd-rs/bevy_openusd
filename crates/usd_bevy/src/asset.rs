@@ -728,6 +728,89 @@ def Xform "Model" (
         }
     }
 
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_reloads_layers_textures_and_recovers() {
+        let directory = tempfile::tempdir().unwrap();
+        let layer = directory.path().join("models/textured.usda");
+        let texture = directory.path().join("textures/pixel.png");
+        std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+        std::fs::write(directory.path().join("root.usda"),
+            "#usda 1.0\n( subLayers = [@models/textured.usda@] )\n").unwrap();
+        std::fs::write(&layer, TEXTURED).unwrap();
+        std::fs::write(&texture, pixel_png([255, 0, 0, 255])).unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: directory.path().to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true),
+            ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>();
+        app.finish();
+        app.cleanup();
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("root.usda");
+        let roots = [
+            app.world_mut().spawn(UsdSceneRoot(handle.clone())).id(),
+            app.world_mut().spawn(UsdSceneRoot(handle.clone())).id(),
+        ];
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+            && world.resource::<AssetServer>().is_loaded_with_dependencies(handle.id()));
+        let entities = roots.map(|root| app.world().non_send::<UsdInstances>()
+            .entity(root, "/Mesh").unwrap());
+        let children = entities.map(|entity| {
+            app.world_mut().entity_mut(entity).insert(Name::new("runtime name"));
+            app.world_mut().spawn((Name::new("runtime child"), ChildOf(entity))).id()
+        });
+        let mesh_handles = |world: &World| entities.map(|entity|
+            world.get::<Mesh3d>(entity).unwrap().0.clone());
+        let image_handles = |world: &World| entities.map(|entity| {
+            let material = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
+            world.resource::<Assets<StandardMaterial>>().get(material).unwrap()
+                .base_color_texture.clone().unwrap()
+        });
+        let initial_meshes = mesh_handles(app.world());
+        let initial_images = image_handles(app.world());
+        assert_eq!(initial_meshes[0], initial_meshes[1]);
+        assert_eq!(initial_images[0], initial_images[1]);
+        let edited = TEXTURED.replace("(1, 0, 0)", "(2, 0, 0)");
+        std::fs::write(&layer, &edited).unwrap();
+        tick_until(&mut app, |world| mesh_handles(world).iter().all(|handle| {
+            let mesh = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return false; };
+            positions.iter().any(|position| position[0] == 2.0)
+        }));
+        let updated_meshes = mesh_handles(app.world());
+        assert_ne!(initial_meshes[0], updated_meshes[0]);
+        assert_eq!(updated_meshes[0], updated_meshes[1]);
+        std::fs::write(&texture, pixel_png([0, 0, 255, 255])).unwrap();
+        tick_until(&mut app, |world| image_handles(world).iter().all(|handle|
+            world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                == Some(&[0, 0, 255, 255])));
+        let updated_images = image_handles(app.world());
+        assert_eq!(initial_images[0], updated_images[0]);
+        assert_eq!(updated_images[0], updated_images[1]);
+        std::fs::write(&layer, "#usda 1.0\ndef Mesh \"Mesh\" {").unwrap();
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+        assert_eq!(mesh_handles(app.world()), updated_meshes);
+        assert_eq!(image_handles(app.world()), updated_images);
+        std::fs::write(&layer, &edited).unwrap();
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        for ((root, entity), child) in roots.into_iter().zip(entities).zip(children) {
+            assert_eq!(app.world().non_send::<UsdInstances>().entity(root, "/Mesh"), Some(entity));
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+            assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
+        }
+        assert!(image_handles(app.world()).iter().all(|handle|
+            app.world().resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                == Some(&[0, 0, 255, 255])));
+    }
+
     fn pixel_png(rgba: [u8; 4]) -> Vec<u8> {
         let mut bytes = Vec::new();
         {

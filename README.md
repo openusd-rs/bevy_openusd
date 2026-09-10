@@ -50,6 +50,16 @@ and exposes `UsdSceneState` (Loading/Ready/Failed). Snapshot PNG/JPEG textures a
 tracked labeled assets with color/data color spaces. Dependency-change events
 reload their owning USD asset. Each root retains an independent live stage;
 matching prim entities and runtime-only components survive source reloads.
+For native filesystem events, enable the optional `usd_bevy/file_watcher`
+feature and set `AssetPlugin::watch_for_changes_override` to `Some(true)`.
+Without that feature, dependency tracking alone does not install an OS watcher.
+This applies to AssetServer-loaded scenes, not the viewer's direct editor Open
+path. Run the explicit OS-event regression with:
+
+```sh
+make --eval='test-file-watcher:; @$(CARGO) test -p usd_bevy --features file_watcher native_file_watcher -- --ignored --nocapture' test-file-watcher
+```
+
 Before publishing a source or override revision, Bevy traverses the active
 composition, reads default attribute values and asset time samples, and checks
 reported composition errors. Failure retains any previous projection and reports

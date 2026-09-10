@@ -25,6 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Native filesystem watching
+
+Added opt-in `usd_bevy/file_watcher` support, forwarding Bevy's native watcher
+feature without enabling it for default consumers. A filesystem-backed test
+mounts one composed scene twice, writes its sublayer and PNG dependency directly,
+and checks changed projected geometry and decoded pixels in both instances.
+It then writes a malformed sublayer, verifies Failed states retain the last good
+projection, and restores the layer to recover Ready states. Runtime entity IDs,
+names and child parenting survive; projected meshes remain shared. Labeled image
+handles remain stable while their pixels update, as Bevy reloads them in place.
+
+The regression uses no injected asset events or explicit reload calls. It is
+feature-gated and ignored by default because it requires native filesystem
+events; README includes its explicit Make invocation. This does not implement
+watching for the viewer's direct editor Open path or prove other OS backends,
+atomic-save rename behavior, or GPU image fidelity during reload.
+
+Validation: 428 ordinary workspace tests pass (seven native export tests ignored),
+plus check-all, build and whitespace checks. The watcher-enabled library suite
+passes 374 tests (eight ignored), and the explicit native watcher test passes
+once plus three consecutive repeats on Linux. Logs:
+`/tmp/native-watcher-{tests,check,build,feature,test}.log` and
+`/tmp/native-watcher-repeat-{1,2,3}.log`.
+
 ### AssetServer UV-chain instance clocks
 
 Extended the UV fixture regression through the real file-backed AssetServer and

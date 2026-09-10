@@ -6,6 +6,9 @@ license = "MIT"
 description = "Live OpenUSD editor for Bevy: stage projection, change-driven sync, authoring, persistence."
 repository = "https://github.com/bresilla/bevy_openusd"
 
+[features]
+file_watcher = ["bevy/file_watcher"]
+
 [dependencies]
 usd_macro = { path = "../usd_macro" }
 openusd = { path = "../../vendor/openusd/crates/openusd" }

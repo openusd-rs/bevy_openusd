@@ -138,6 +138,7 @@ fn process_commands(world: &mut World) {
             std::fs::read(path).map_err(anyhow::Error::from)
                 .and_then(|bytes| crate::UsdSource::new(path, bytes).map_err(anyhow::Error::from)).and_then(|source| {
                     let stage = source.open_stage()?;
+                    crate::UsdSource::validate_composition(&stage)?;
                     let textures = prepare_textures(&stage, &source)?;
                     if !textures.is_empty() && !world.contains_resource::<Assets<Image>>() {
                         anyhow::bail!("image assets are unavailable for this document");
@@ -485,7 +486,10 @@ impl EditorSession {
                     .ok_or_else(|| anyhow::anyhow!("edit layer is unavailable"))?;
                 crate::persistence::export_layer(&self.stage, &layer, filename)?;
             }
-            SaveMode::Flattened => crate::persistence::export_layer(&self.stage, &self.stage.flatten()?, filename)?,
+            SaveMode::Flattened => {
+                crate::UsdSource::validate_composition(&self.stage)?;
+                crate::persistence::export_layer(&self.stage, &self.stage.flatten()?, filename)?;
+            }
         }
         Ok(())
     }
@@ -1129,6 +1133,78 @@ def Xform "Asset" (prepend variantSets = "shape") {
         bridge.send(EditorCommand::Payload { prim: "/Missing".into(), loaded: true }).unwrap();
         app.update();
         assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+    }
+
+    #[test]
+    fn flatten_rejects_incomplete_composition_without_publishing_or_mutating() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = crate::UsdSource::snapshot(directory.path().join("source.usda"), &b"#usda 1.0\ndef Scope \"Model\" (prepend references = @missing.usda@</Model>) {}\n"[..]).unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Model".into())).unwrap();
+        editor.edit(EditorEdit::Attribute {
+            prim: "/Model".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(17.0),
+        }).unwrap();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        for extension in ["usda", "usdc", "usd", "usdz"] {
+            let path = directory.path().join(format!("flat.{extension}"));
+            std::fs::write(&path, "existing output").unwrap();
+            let error = editor.save(path.to_str().unwrap(), SaveMode::Flattened).unwrap_err();
+            assert!(error.to_string().contains("missing.usda"), "{error:#}");
+            assert_eq!(std::fs::read(&path).unwrap(), b"existing output");
+        }
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 4);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert_eq!(editor.snapshot().unwrap().selected.as_deref(), Some("/Model"));
+        assert!(editor.snapshot().unwrap().can_undo);
+        for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
+            let path = directory.path().join("authored.usda");
+            editor.save(path.to_str().unwrap(), mode).unwrap();
+            assert!(std::fs::read_to_string(path).unwrap().contains("missing.usda"));
+        }
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().prim("/Model").unwrap().attribute("score").get::<f64>().unwrap(), None);
+    }
+
+    #[test]
+    fn invalid_composition_open_preserves_document_selection_and_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let current = directory.path().join("current.usda");
+        std::fs::write(&current, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        std::fs::write(directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Present\" {}\n").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(current.to_string_lossy().into_owned())).unwrap();
+        bridge.send(EditorCommand::Select(Some("/Root".into()))).unwrap();
+        bridge.send(EditorCommand::Edit(EditorEdit::Attribute {
+            prim: "/Root".into(), name: "visibility".into(), type_name: "token".into(), value: Value::Token("invisible".into()),
+        })).unwrap();
+        app.update();
+        let entity = app.world().resource::<crate::live::PrimEntities>().entity("/Root").unwrap();
+        let document_id = bridge.view().unwrap().document.document_id;
+        for (name, text) in [
+            ("layer", "#usda 1.0\n(subLayers = [@missing.usda@])\ndef Scope \"Broken\" {}\n"),
+            ("reference", "#usda 1.0\ndef Scope \"Broken\" (prepend references = @missing.usda@</Model>) {}\n"),
+            ("root-target", "#usda 1.0\ndef Scope \"Broken\" (prepend references = @model.usda@</Absent>) {}\n"),
+            ("subroot-target", "#usda 1.0\ndef Scope \"Broken\" (prepend references = @model.usda@</Present/Absent>) {}\n"),
+            ("payload", "#usda 1.0\ndef Scope \"Broken\" (prepend payload = @missing.usda@</Model>) {}\n"),
+        ] {
+            let path = directory.path().join(format!("{name}.usda"));
+            std::fs::write(&path, text).unwrap();
+            bridge.send(EditorCommand::Open(path.to_string_lossy().into_owned())).unwrap();
+            app.update();
+            let view = bridge.view().unwrap();
+            assert!(view.status.starts_with("Failed:"), "{name}: {}", view.status);
+            assert_eq!(view.document.document_id, document_id);
+            assert_eq!(view.document.selected.as_deref(), Some("/Root"));
+            assert!(view.document.can_undo);
+            assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/Root"), Some(entity));
+            assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
+        }
+        bridge.send(EditorCommand::Undo).unwrap();
+        app.update();
+        assert_ne!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
+        assert!(bridge.view().unwrap().document.can_redo);
     }
 
     #[test]

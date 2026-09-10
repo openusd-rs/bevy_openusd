@@ -131,6 +131,7 @@ struct UsdApp {
     lighting: lighting::LightingBridge,
     rendering: render_settings::RenderSettingsBridge,
     file_dialogs: file_dialog::FileDialogs,
+    capture_handshake: bool,
 }
 
 impl WindowApp for UsdApp {
@@ -157,7 +158,8 @@ impl WindowApp for UsdApp {
             },
         );
 
-        if std::env::var_os("USD_UI_CAPTURE_HANDSHAKE").is_some() {
+        let capture_handshake = std::env::var_os("USD_UI_CAPTURE_HANDSHAKE").is_some();
+        if capture_handshake {
             eprintln!("USD_VIEWER_STARTED");
         }
 
@@ -170,6 +172,7 @@ impl WindowApp for UsdApp {
             lighting,
             rendering,
             file_dialogs: file_dialog::FileDialogs::new(ctx.__internal_egui_ctx()),
+            capture_handshake,
         }
     }
 
@@ -183,6 +186,7 @@ impl WindowApp for UsdApp {
             lighting,
             rendering,
             file_dialogs,
+            capture_handshake,
             ..
         } = self;
         if let Some(command) = file_dialogs.poll() { send(editor, command); }
@@ -201,6 +205,7 @@ impl WindowApp for UsdApp {
         // Panes + ribbon rail. Mara owns the pane/ribbon wiring,
         // open-state, pane-id publication, and paint ordering.
         let view = match editor.view() { Ok(view) => view, Err(error) => { error!("{error}"); return; } };
+        let renderer_error = rendering.renderer_error();
         let prims: Vec<_> = view.document.prims.iter().map(|path| PrimRow {
             path: path.clone(), name: path.rsplit('/').next().unwrap_or(path).to_string(),
         }).collect();
@@ -218,7 +223,7 @@ impl WindowApp for UsdApp {
                 "Outliner",
                 PaneAnchor::LeftRail(RailZone::Start),
                 |body| {
-                    outliner_pane(body, &prims, editor, view.document.selected.as_deref(), file_dialogs.status().unwrap_or(&view.status), accent, &view.document.visibility);
+                    outliner_pane(body, &prims, editor, view.document.selected.as_deref(), renderer_error.as_deref().or(file_dialogs.status()).unwrap_or(&view.status), accent, &view.document.visibility);
                 },
             )
             .pane(
@@ -268,6 +273,10 @@ impl WindowApp for UsdApp {
             } else if click.action == ribbon_action(ACTION_OPEN) {
                 file_dialogs.start(file_dialog::Request::Open);
             }
+        }
+        if *capture_handshake {
+            eprintln!("USD_VIEWER_UI_UPDATED");
+            *capture_handshake = false;
         }
     }
 }
@@ -319,12 +328,18 @@ fn outliner_pane(
     accent: MaraColor32,
     visibility: &std::collections::HashMap<String, bool>,
 ) {
-    // Load status (shows failures like "FAILED to open … unsupported .usd").
+    let lines = lighting::status_lines(status);
+    let status_pod = Pod::new(MaraId::new(("usd.outliner", "status")));
+    let status_pod = if lines.len() > 1 {
+        status_pod.with_custom_units(lines.len(), move |ui| {
+            for line in lines { ui.label(&line); }
+        })
+    } else { status_pod.with_readout("state", status) };
     body.add_normal(
         "usd.status",
         "Status",
         "list",
-        vec![Pod::new(MaraId::new(("usd.outliner", "status"))).with_readout("file", status)],
+        vec![status_pod],
     );
 
     let tree_root = MaraId::new(("usd.outliner", "tree_root"));

@@ -50,24 +50,30 @@ fn axis_rotation(attr: openusd::usd::Attribute) -> Quat {
     }
 }
 
-pub(crate) fn shape_mesh(ctx: &RouteCtx) -> Option<Mesh> {
+pub(crate) struct ShapeMesh {
+    pub mesh: Mesh,
+    pub opacity: Option<crate::read::geom::MeshPrimvar<f32>>,
+}
+
+pub(crate) fn shape_mesh(ctx: &RouteCtx) -> Option<ShapeMesh> {
     let mut mesh = shape_geometry(ctx)?;
     for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL] {
         let bevy::mesh::VertexAttributeValues::Float32x3(values) = mesh.attribute(attribute)? else { return None };
         if values.iter().flatten().any(|value| !value.is_finite()) { return None; }
     }
     let color = crate::read::geom::read_primvar_vec3f(ctx.stage, ctx.path, "primvars:displayColor", ctx.time)
-        .ok().flatten().and_then(constant_value);
+        .ok().flatten().as_ref().and_then(constant_value);
     let opacity = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time)
-        .ok().flatten().and_then(constant_value);
-    if color.is_some() || opacity.is_some() {
+        .ok().flatten();
+    let alpha = opacity.as_ref().and_then(constant_value);
+    if color.is_some() || alpha.is_some() {
         let color = color.unwrap_or([1.0;3]);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[color[0],color[1],color[2],opacity.unwrap_or(1.0)]; mesh.count_vertices()]);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[color[0],color[1],color[2],alpha.unwrap_or(1.0)]; mesh.count_vertices()]);
     }
-    Some(mesh)
+    Some(ShapeMesh { mesh, opacity })
 }
 
-fn constant_value<T: Copy>(value: crate::read::geom::MeshPrimvar<T>) -> Option<T> {
+fn constant_value<T: Copy>(value: &crate::read::geom::MeshPrimvar<T>) -> Option<T> {
     if value.interpolation != crate::read::geom::Interpolation::Constant
         && !(value.values.len() == 1 && value.indices.is_empty()) { return None; }
     let index = usize::try_from(value.indices.first().copied().unwrap_or(0)).ok()?;
@@ -144,13 +150,13 @@ impl PrimRoute for ShapesRoute {
         {
             return;
         }
-        let Some(mesh) = shape_mesh(ctx) else {
+        let Some(shape) = shape_mesh(ctx) else {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Shape);
             world.entity_mut(entity).insert(UsdShapeError("shape dimensions must be finite and nonnegative, and generated geometry must be finite".into()));
             return;
         };
-        let mesh_handle = super::cache::intern_mesh(world, mesh);
-        let material = super::cache::intern_material(world, super::material::default_material(ctx));
+        let mesh_handle = super::cache::intern_mesh(world, shape.mesh);
+        let material = super::cache::intern_material(world, super::material::default_material_with_opacity(ctx, shape.opacity.as_ref()));
         if let Ok(mut e) = world.get_entity_mut(entity) {
             e.remove::<(bevy::camera::primitives::Aabb, UsdShapeError)>();
             e.insert((Mesh3d(mesh_handle), MeshMaterial3d(material), super::geom::GeometryOwner::Shape));
@@ -222,7 +228,11 @@ def {kind} "Shape" {{
             let stage = source.open_stage().unwrap();
             let path = openusd::sdf::path("/Shape").unwrap();
             for (time, expected) in [(0.0, [1.0,0.0,0.0,0.25]), (10.0, [0.0,1.0,0.0,1.0])] {
-                let mesh = shape_mesh(&RouteCtx::at(&stage, &path, Some(time))).unwrap();
+                let shape = shape_mesh(&RouteCtx::at(&stage, &path, Some(time))).unwrap();
+                let ctx = RouteCtx::at(&stage, &path, Some(time));
+                assert_eq!(super::super::material::default_material_with_opacity(&ctx, shape.opacity.as_ref()).alpha_mode,
+                    if time == 0.0 { AlphaMode::Blend } else { AlphaMode::Opaque });
+                let mesh = shape.mesh;
                 let Some(VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("{kind} colors") };
                 assert_eq!(colors.len(), mesh.count_vertices());
                 assert!(colors.iter().all(|color| *color == expected), "{kind} time={time}");
@@ -249,7 +259,7 @@ def {kind} "Shape" {{
             }
             let path = openusd::sdf::path("/Shape").unwrap();
             let extent = |time| {
-                let mesh = shape_mesh(&RouteCtx::at(&stage, &path, Some(time))).unwrap();
+                let mesh = shape_mesh(&RouteCtx::at(&stage, &path, Some(time))).unwrap().mesh;
                 let bevy::mesh::VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!("positions") };
                 points.iter().map(|point| Vec3::from_array(*point).abs()).fold(Vec3::ZERO, Vec3::max)
             };

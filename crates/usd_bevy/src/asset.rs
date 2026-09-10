@@ -57,6 +57,25 @@ pub enum UsdSceneState {
     Failed(String),
 }
 
+/// Optional cumulative timings for source/override publication attempts.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct UsdSceneTimings {
+    pub attempts: usize,
+    pub failures: usize,
+    pub open: std::time::Duration,
+    pub overrides: std::time::Duration,
+    pub validation: std::time::Duration,
+    pub projection: std::time::Duration,
+}
+
+fn timed<T>(enabled: bool, elapsed: &mut std::time::Duration, operation: impl FnOnce() -> T) -> T {
+    if !enabled { return operation(); }
+    let start = std::time::Instant::now();
+    let result = operation();
+    *elapsed += start.elapsed();
+    result
+}
+
 /// Reads a source snapshot and its discovered dependencies through Bevy.
 #[derive(Default, TypePath)]
 pub struct UsdAssetLoader;
@@ -228,11 +247,14 @@ fn spawn_usd_scenes(world: &mut World) {
         {
             continue;
         }
-        let opened = source.open_stage().map_err(anyhow::Error::from).and_then(|stage| {
-            overrides.apply(&stage)?;
-            UsdSource::validate_composition(&stage)?;
+        let profiled = world.contains_resource::<UsdSceneTimings>();
+        let mut timing = UsdSceneTimings { attempts: 1, ..default() };
+        let opened = timed(profiled, &mut timing.open, || source.open_stage()).map_err(anyhow::Error::from).and_then(|stage| {
+            timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
+            timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
             Ok(stage)
         });
+        timing.failures = usize::from(opened.is_err());
         match opened {
             Ok(stage) => {
                 let retained = instances.roots.remove(&entity)
@@ -249,15 +271,17 @@ fn spawn_usd_scenes(world: &mut World) {
                 world.insert_resource(StageTime { current });
                 world.insert_resource(SnapshotTextures(textures.clone()));
                 let live = LiveStage::new(stage);
-                let map = if let Some(mut runtime) = retained {
-                    reconcile(world, &live, &mut runtime.map);
-                    if let Some(root) = runtime.map.entity("/") {
-                        world.entity_mut(root).insert(Transform::from_rotation(stage_up_axis(&live.stage)));
+                let map = timed(profiled, &mut timing.projection, || {
+                    if let Some(mut runtime) = retained {
+                        reconcile(world, &live, &mut runtime.map, false);
+                        if let Some(root) = runtime.map.entity("/") {
+                            world.entity_mut(root).insert(Transform::from_rotation(stage_up_axis(&live.stage)));
+                        }
+                        runtime.map
+                    } else {
+                        project_stage_under(world, &live.stage, entity)
                     }
-                    runtime.map
-                } else {
-                    project_stage_under(world, &live.stage, entity)
-                };
+                });
                 world.remove_resource::<SnapshotTextures>();
                 world.remove_resource::<StageTime>();
                 world.remove_resource::<AnimatedPrims>();
@@ -291,6 +315,14 @@ fn spawn_usd_scenes(world: &mut World) {
                     UsdSceneState::Failed(error.to_string()),
                 ));
             }
+        }
+        if profiled && let Some(mut total) = world.get_resource_mut::<UsdSceneTimings>() {
+            total.attempts += timing.attempts;
+            total.failures += timing.failures;
+            total.open += timing.open;
+            total.overrides += timing.overrides;
+            total.validation += timing.validation;
+            total.projection += timing.projection;
         }
     }
     crate::instance::tick(world, &mut instances);
@@ -331,6 +363,7 @@ def Xform "Old" {}
     #[test]
     fn incomplete_composed_source_fails_before_replacing_live_entities() {
         let (mut world, handle) = instance_world();
+        world.init_resource::<UsdSceneTimings>();
         let root = world.spawn(UsdSceneRoot(handle.clone())).id();
         spawn_usd_scenes(&mut world);
         let old = instance_entity(&world, root, "/Old");
@@ -344,6 +377,8 @@ def Xform "Old" {}
         assert!(error.contains("missing.usda"), "{error}");
         assert_eq!(instance_entity(&world, root, "/Old"), old);
         assert!(world.non_send::<UsdInstances>().entity(root, "/Broken").is_none());
+        assert_eq!(world.resource::<UsdSceneTimings>().attempts, 2);
+        assert_eq!(world.resource::<UsdSceneTimings>().failures, 1);
         let fresh = world.spawn(UsdSceneRoot(handle.clone())).id();
         spawn_usd_scenes(&mut world);
         assert!(matches!(world.get::<UsdSceneState>(fresh), Some(UsdSceneState::Failed(_))));
@@ -391,6 +426,41 @@ def Xform "Old" {}
         spawn_usd_scenes(&mut world);
         assert_eq!(world.get::<Score>(ea), Some(&Score { value: 20.0 }));
         assert!(world.get::<RuntimeMarker>(ea).is_some());
+    }
+
+    #[test]
+    fn source_reload_and_scrub_detect_new_animation_without_a_shared_index() {
+        let (mut world, handle) = instance_world();
+        let static_source = UsdSource::snapshot("instances.usda", &b"#usda 1.0\ndef Xform \"Mover\" {}\n"[..]).unwrap();
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = static_source.clone();
+        let sentinel = std::collections::HashSet::from(["/OtherSession".to_string()]);
+        world.insert_resource(AnimatedPrims(sentinel.clone()));
+        world.insert_resource(StageTime { current: 999.0 });
+        let a = world.spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 2.0 })).id();
+        let b = world.spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 8.0 })).id();
+        spawn_usd_scenes(&mut world);
+        let ea = instance_entity(&world, a, "/Mover");
+        let eb = instance_entity(&world, b, "/Mover");
+        for animated in [true, false, true] {
+            world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = if animated {
+                UsdSource::snapshot("instances.usda", ANIMATED.as_bytes()).unwrap()
+            } else { static_source.clone() };
+            world.get_mut::<UsdInstanceTime>(a).unwrap().current = 2.0;
+            world.get_mut::<UsdInstanceTime>(b).unwrap().current = 8.0;
+            spawn_usd_scenes(&mut world);
+            assert_eq!(world.get::<Transform>(ea).unwrap().translation.x, if animated { 2.0 } else { 0.0 });
+            assert_eq!(world.get::<Transform>(eb).unwrap().translation.x, if animated { 8.0 } else { 0.0 });
+            world.get_mut::<UsdInstanceTime>(a).unwrap().current = 5.0;
+            spawn_usd_scenes(&mut world);
+            assert_eq!(world.get::<Transform>(ea).unwrap().translation.x, if animated { 5.0 } else { 0.0 });
+            assert_eq!(world.get::<Transform>(eb).unwrap().translation.x, if animated { 8.0 } else { 0.0 });
+            assert_eq!(instance_entity(&world, a, "/Mover"), ea);
+            assert_eq!(instance_entity(&world, b, "/Mover"), eb);
+            assert_eq!(world.resource::<StageTime>().current, 999.0);
+            assert_eq!(world.resource::<AnimatedPrims>().0, sentinel);
+            assert_eq!(world.get::<UsdSceneState>(a), Some(&UsdSceneState::Ready));
+            assert_eq!(world.get::<UsdSceneState>(b), Some(&UsdSceneState::Ready));
+        }
     }
 
     #[test]

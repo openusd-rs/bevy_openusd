@@ -55,6 +55,13 @@ composition, reads default attribute values and asset time samples, and checks
 reported composition errors. Failure retains any previous projection and reports
 `UsdSceneState::Failed`. Unselected variant branches are not eagerly validated.
 `UsdSource::open_stage` itself retains upstream's permissive partial-stage behavior.
+The viewer's Open command applies the same composition validation before replacing
+the current document. Rejected opens retain selection and edit history; long
+failure messages wrap in the outliner's Status section.
+Flattened editor exports also validate the active composition before writing.
+Reported composition errors preserve the existing destination. Root/edit-layer
+exports retain authored unresolved references for repair rather than requiring
+a complete composed scene; USDZ packaging still requires its dependencies.
 
 For reusable in-memory assemblies, `UsdSource::snapshot(path, bytes)` disables
 filesystem fallback. `root.with_dependency(&model)` returns a new source containing
@@ -75,6 +82,37 @@ runtime-only component preservation, malformed-root failure/recovery and cleanup
 ```sh
 make run RUN_WITH= APP_TARGET='--example composed_sources'
 ```
+
+`source_benchmark` measures the actual UsdSceneRoot lifecycle for one and four
+roots, each containing the requested number of native USD instances. Three
+alternating-order samples report initial load/validation/projection, captured
+dependency reload, idle App updates and asset sharing. It checks geometry updates,
+entity identity and runtime-only components. Inputs are already captured in memory;
+disk I/O, plugin startup, GPU upload and rendering are excluded.
+
+```sh
+make run RUN_WITH= APP_TARGET='--example source_benchmark' ARGS=128
+make run RUN_WITH= APP_TARGET='--release --example source_benchmark' ARGS=128
+```
+
+Set `USD_PROFILE_SOURCES=1` to report opening, override application, composition
+validation and projection/reconciliation separately. Add `USD_PROFILE_ROUTES=1`
+for route matching/application counters per load/reload phase. Profiling output
+goes to stderr; CSV timings remain on stdout. Both instruments add timing overhead.
+Apps can opt in directly with `usd_bevy::asset::UsdSceneTimings`; its cumulative
+attempt/failure counters and durations can be read or reset. Failures counted here
+occur during stage opening, overrides or validation, not earlier AssetServer I/O.
+No clock reads are added to source publication when this resource is absent.
+
+The separate `projection_benchmark` measures direct LiveStage projection and edits,
+not the source-root publication path. Its timings are not interchangeable with
+the lifecycle benchmark. Debug timings are diagnostic, not production guarantees.
+The [release CPU baseline](benchmarks/source-lifecycle.md) records raw samples up
+to 4,096 projected shapes, source-phase profiles and a separate cache comparison.
+It demonstrates asset sharing, but not CPU acceleration or rendered performance.
+The subsequent [reload comparison](benchmarks/reload-animation.md) measures reduced
+CPU reload cost from skipping an unused animation-index scan, with clock-isolation
+regressions. It does not establish GPU or frame-rate improvements.
 
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional
@@ -525,9 +563,22 @@ USD_VIEWER_DOME=/Env USD_VIEWER_PANE=lighting nix shell nixpkgs#weston -c /bin/b
 
 Choose a new output filename. Companion `.viewer.log`, `.weston.log` and
 `.capture.log` files are retained. The script waits up to 300 seconds for the
-viewer startup handshake, then `USD_UI_CAPTURE_WAIT` sets a 1–300 second delay
-(default 20). Build-lock waits do not consume that delay. The handshake marks
-viewport construction, not scene/pipeline readiness; inspect the screenshot.
+viewer's first completed UI update, then `USD_UI_CAPTURE_WAIT` sets a 1–300 second
+delay (default 20). Build-lock waits and synchronous first-update projection do
+not consume that delay. `USD_VIEWER_STARTED` marks viewport construction;
+`USD_VIEWER_UI_UPDATED` starts the delay. Neither proves GPU pipeline readiness
+or final texture upload completion; inspect the screenshot.
+At render startup the viewer caps mesh allocator slabs at half the shared device's
+maximum buffer size, retaining smaller configured limits. This leaves allocation
+rounding headroom and avoids growing pooled buffers beyond the host's limit.
+It is not a total-memory budget or support for individual meshes exceeding the
+device limit. Large scenes can still spend substantial time projecting before
+the first UI update.
+Reported Bevy renderer failures appear in the Outliner status and Rendering pane,
+taking precedence over document Ready/save-dialog status. Rendering stays stopped;
+the handler does not request application exit or attempt automatic recovery. Save
+edits before restarting. The first diagnostic is retained, with long descriptions
+limited to 2,048 characters plus an ellipsis; full errors remain in the log.
 Use real `/bin/bash`, not the local `bash` wrapper. Weston uses its Vulkan renderer
 by default (`USD_UI_COMPOSITOR_RENDERER` overrides it); on this machine the GL
 capture was vertically inverted and Pixman could not host the viewer GPU surface.

@@ -25,6 +25,259 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Surface stopped-renderer diagnostics in the viewer
+
+Installed a viewer-owned Bevy RenderErrorHandler that retains the first error in
+RenderSettingsBridge and returns StopRendering. It does not resume a broken
+renderer, request AppExit, mutate the USD document or attempt recovery. The
+Outliner prioritizes the renderer failure over Ready/file-dialog text, and the
+Rendering pane shows the same wrapped diagnostic and save-before-restart advice.
+Descriptions are UTF-8-safe, bounded to 2,048 characters with an ellipsis; the
+original Bevy error log remains available.
+
+Verified against real GPU validation failures, not only injected UI strings:
+temporarily restored the oversized slab limit and captured ANYmal in both panes.
+Inspected `target/viewer-ui-captures/anymal-renderer-error-status.png` and
+`anymal-renderer-error-pane.png`; both show readable Validation/buffer-limit
+details. Logs no longer repeat the default handler's quitting message. The
+temporary unsafe setting was restored before final builds/tests and is absent
+from the committed diff.
+
+Inspected the final safe build's `anymal-renderer-status-healthy.png`: ANYmal
+renders normally, Ready is shown, and its log has no reproduced render-validation
+errors. Tests verify StopRendering, retained first-error text through publication,
+no AppExit message, retained world entities, absent-bridge handling and bounded
+multibyte diagnostics. All 384 ordinary tests, check-all, build and whitespace
+checks pass (`/tmp/renderer-status-final-{tests,check,build}.log`).
+
+This does not implement renderer/device recovery. The viewport's host-provided
+warm-up placeholder can remain behind the explicit error pane; no Mara changes
+were made. Saving through a native picker after a GPU failure and continued UI
+operation after loss of the shared host device remain unverified.
+
+### Render ANYmal within the embedded device's buffer limit
+
+Actual collection inspection exposed two separate failures. The first capture,
+`target/viewer-ui-captures/anymal-texture-acceptance.png`, contained only the
+private desktop: the old 20-second delay began at viewport construction while
+ANYmal was still projecting. The viewer now emits USD_VIEWER_UI_UPDATED after
+its first complete host UI update, and the capture script starts its bounded
+delay at that marker. Startup still has a 300-second timeout. This is not a
+GPU-readiness handshake; screenshots still require inspection.
+
+The next capture, `anymal-ui-update.png`, showed Ready but only the renderer's
+warming-up placeholder. Its log identified pooled mesh buffers of 453,496,320
+and 536,870,912 bytes exceeding the shared device's 268,435,456-byte limit.
+At RenderStartup, the viewer now bounds MeshAllocatorSettings to half the actual
+device max_buffer_size, including compatible minimum and large-allocation
+thresholds. Smaller configured limits and the growth factor are preserved.
+The half-limit leaves room for allocator slot rounding; individual oversized
+meshes and total CPU/GPU memory budgets remain separate concerns. No Mara,
+Bevy dependency source, collection assets or environment configuration changed.
+
+Inspected `target/viewer-ui-captures/anymal-bounded-slabs.png`: the actual ANYmal
+robot, distinct material regions and studio grid render. Its log contains none
+of the reproduced Bevy render-validation errors. The source report traverses 25
+meshes, and the viewer projects 424 prims. The source JPEG and material graph
+confirm a carbon-fibre diffuse texture, but this camera/capture does not establish
+texture orientation, normal fidelity or matched reference-renderer appearance.
+Ready currently describes the document, not renderer health; surfacing renderer
+failures rather than an indefinite warm-up placeholder remains open.
+
+All 383 ordinary tests, check-all, build, shell syntax and whitespace checks pass.
+The new unit test covers the 256MiB device, smaller caller settings and lower
+limits. Logs: `/tmp/mesh-slab-limit-{tests,check,build}.log`; native export tests
+were not rerun for these viewer-only changes. All captures used a private Weston
+compositor and cleaned up only their own process groups.
+
+### Refresh live animation membership after sparse edits
+
+Reproduced time-sample authoring on an already-projected static Xform leaving it
+out of AnimatedPrims (`/tmp/sparse-animation-before.log`). USD reports these
+edits as changed-info, not resync, so the existing sparse component patch bypassed
+animation discovery. Sparse live patches now refresh the affected prim's index
+membership when a live animation index exists. Source-root ticks without that
+resource do not perform this additional scan; dependency-affecting edits still
+use the existing reconciliation path.
+
+The regression authors samples through actual USD attributes, checks sparse
+notices, scrubs through the real animation-resampling system and verifies the
+interpolated transform. Removing both samples restores the static default and
+removes index membership without replacing the entity. All 382 ordinary tests,
+check-all, build and whitespace checks pass
+(`/tmp/sparse-animation-{tests,check,build}.log`). This is live editing/timeline
+state coverage, not a new rendered animation or native export acceptance claim.
+
+### Skip unused source-reload animation discovery
+
+Source-root publication now disables animation-index collection during
+reconciliation, rather than building the live editor index and immediately
+discarding it. Live editor reconciliation still collects its index; source-root
+clock changes retain their existing current-stage discovery. No cross-stage cache
+was introduced. Two regressions cover index ownership and static/animated reloads
+followed by independent root scrubbing, preserving entity identity and unrelated
+live-session resources.
+
+Paired before/after/after/before release runs at 4,096 shapes measured reloads
+601.643–785.630ms before versus 432.302–508.268ms after. Smaller instrumented runs
+locate the reduction in projection; validation ranges overlap. Raw evidence and
+limitations are in `benchmarks/reload-animation.md`. This supports a fixture-local
+CPU reload improvement, not rendering acceptance or universal speedup. Instance
+edit reconciliation and clock discovery remain separate optimization work.
+
+All 381 ordinary tests, check-all, build and whitespace checks pass; logs are
+`/tmp/reload-animation-{tests,check,build,release-build}.log`. Both executables
+passed all benchmark lifecycle assertions. The five optional native export tests
+were not rerun for this projection-only change.
+
+### Release lifecycle and cache baseline
+
+Ran optimized source-root benchmarks at 128 and 1,024 native instances per root,
+one/four roots, plus separate source/route profiling and direct projection cache
+comparison. All commands passed their runtime assertions. Committed raw samples,
+commands, host/toolchain context and limitations in
+`benchmarks/source-lifecycle.md`; local logs are `/tmp/source-release-128.log`,
+`/tmp/source-release-1024.log`, `/tmp/source-release-profile.log` and
+`/tmp/projection-release-128.log`.
+
+At 4,096 projected shapes, dependency reload takes 596.079–870.955ms despite
+one initial mesh/material asset and preserved entities/runtime state. At 512
+shapes it takes 67.673–122.524ms. Profiling still puts projection and composition
+validation ahead of opening. Cached direct projection was slower in each
+same-index sample; asset reduction is proven, CPU acceleration is not. High
+uncontrolled host load and three samples preclude stable performance thresholds.
+These are release CPU baselines, not rendering/GPU acceptance or a before/after
+speedup attributable to the opacity-read change.
+
+The preceding `40a13c9` change passes sampled opacity from shape construction to
+its fallback material, avoiding a duplicate USD read without cross-frame caching.
+Its existing sampled-alpha regression was extended; 379 ordinary tests,
+check-all, build and whitespace checks passed (`/tmp/shape-opacity-*.log`).
+
+### Preserve cull state during material interning
+
+Inspection of Bevy 0.19.1 StandardMaterial found that `cull_mode` is excluded from
+reflection. Reproduced a cached material mutated from back-face culling to None
+being reused for a later default-material request (`/tmp/material-cull-before.log`).
+Cache equality now checks cull_mode explicitly as well as reflected fields. The
+regression verifies distinct handles, preservation of the application's mutated
+asset and the default culling state of the newly requested material.
+
+A compact material-key experiment removed Debug-string hashing, but its four-root
+reload measurements overlapped the previous route profile: ShapesRoute application
+163.671–204.919ms versus 175.786–210.888ms, and MaterialRoute 63.759–80.266ms versus
+68.281–82.753ms (`/tmp/material-key-profile.log`, `/tmp/source-route-profile.log`).
+No end-to-end speedup was established, and a subset key increases collision groups
+for materials differing in other fields. The experimental key was reverted; only
+the proven cull-state correctness fix remains. Projection optimization stays open.
+
+All 379 ordinary tests, check-all, build and whitespace checks pass
+(`/tmp/material-cull-{tests,check,build}.log`). This is material-state regression
+coverage, not evidence that Spot's authored faceting or broader render fidelity
+has changed.
+
+### Opt-in source publication phase profiling
+
+Added `asset::UsdSceneTimings`, an optional resource accumulating stage-open,
+override, validation and projection/reconciliation durations plus attempt/failure
+counts. The timing helper bypasses clock reads when disabled; the resource is not
+installed by default. Cached/idle roots do not add attempts. Failed opens and
+validation failures are counted before returning the existing projection; earlier
+AssetServer load failures and texture/resource bookkeeping are outside these
+phase counters.
+
+The source benchmark exposes USD_PROFILE_SOURCES and the existing USD_PROFILE_ROUTES,
+reporting and resetting each phase's counters outside its wall-clock measurement.
+Tests exercise enabled/disabled measurement, expected root counts, no idle attempts
+or route callbacks, and failure counts in the existing recovery regression.
+
+Source-only debug profiling (`/tmp/source-phase-profile.log`) at four roots x 128
+native instances measured reload validation 357.982–410.243ms versus projection
+860.684–912.952ms; opening was 7.837–11.265ms. With route timing also enabled
+(`/tmp/source-route-profile.log`), ShapesRoute application was 175.786–210.888ms,
+MaterialRoute 68.281–82.753ms and VisibilityRoute 57.579–66.092ms. Projection as a
+whole was 886.685–1025.285ms, leaving substantial work outside those callbacks.
+These are noisy debug measurements with instrumentation overhead, not independent
+CPU speedup evidence or release/rendered performance acceptance.
+
+All 378 ordinary tests, check-all, build and the profiled 128-instance benchmark
+pass (`/tmp/source-phase-{tests,check,build}.log`); whitespace checks pass.
+
+### End-to-end source-root performance baseline
+
+Added `examples/source_benchmark.rs` to exercise actual UsdSceneRoot publication,
+including composition validation, with captured external model dependencies.
+Three alternating-order samples use one/four roots with 128 native instances per
+root. It measures first App update, captured dependency replacement plus App
+update, and mean idle App update time over 100 iterations. Plugin startup and
+input construction are outside the timers; disk I/O and rendering are absent.
+
+Every sample verifies unique projected entities, Ready roots, a single initial
+mesh/material asset, retained entity identity/runtime-only components across
+reload, shared updated mesh handles, and updated cube geometry. Four roots yield
+512 distinct projected meshes sharing one asset; this does not measure GPU draw
+calls or CPU geometry work avoided by interning.
+
+Current debug measurements (`/tmp/source-benchmark-128.log`):
+
+| Roots | Load/validate/project ms | Dependency reload ms | Mean idle update us |
+| --- | --- | --- | --- |
+| 1 | 278.156–450.994 | 341.460–345.210 | 392.325–491.726 |
+| 4 | 1120.493–1160.782 | 1238.661–1517.410 | 458.587–573.368 |
+
+Also refreshed the separate 128-instance direct projection benchmark
+(`/tmp/projection-current-baseline.log`): cached projection 264.962–273.477ms,
+uncached 251.639–264.033ms, with one versus 129 initial mesh/material assets.
+No CPU speedup is established. These fixtures/interfaces differ, so subtracting
+their timings does not isolate validation overhead. Host load is uncontrolled;
+release and rendered performance still require measurement.
+
+Validation: 378 ordinary tests, check-all, build, the runnable 128-instance
+benchmark and whitespace checks pass (`/tmp/source-benchmark-{tests,check,build}.log`).
+
+### Reject lossy flattening of incomplete compositions
+
+Reproduced flattened export overwriting a valid destination despite an unresolved
+reference (`/tmp/flatten-validation-before.log`). EditorSession now validates the
+active composition before flattening, before entering the atomic publication
+path. Root/edit-layer export semantics remain authored-layer preservation; those
+operations can save unresolved references for repair, while package dependency
+requirements remain unchanged.
+
+The regression verifies rejection for USDA, USDC, USD and USDZ, unchanged existing
+bytes, no staging leftovers, unchanged authored layer contents and selection, and
+working undo history. It also checks that root/edit USDA exports retain the
+unresolved reference instead of losing it through implicit flattening. This gate
+uses the existing active-composition diagnostics, not exhaustive validation of
+every future sample or inactive branch.
+
+Validation: 377 ordinary tests, five optional native tests (44 export checks),
+check-all, build and whitespace checks pass. Logs:
+`/tmp/flatten-validation-{tests,native,check,build}.log`.
+
+### Viewer Open composition guard and readable failures
+
+Reproduced the viewer command path accepting a document with a missing sublayer
+as Ready (`/tmp/editor-composition-before.log`). Open now uses the composition
+validator before loading textures or replacing the active session/projection.
+The command-bridge regression checks missing sublayers, reference layers, root
+and sub-root targets, and payload layers. Every rejected open retains document
+identity, selection, the existing entity, its edited visibility and undo history;
+undo still succeeds afterward.
+
+The first actual failure capture exposed clipped/overlapping status text. The
+outliner now uses the existing wrapped-status helper for multiline messages,
+while short statuses retain a one-row readout. No Mara changes were made.
+Inspected `target/viewer-ui-captures/wrapped-composition-error.png`: the Failed
+prefix, asset path and prim target are readable. Also inspected
+`target/viewer-ui-captures/spot-composition-guard.png`: the original collection
+Spot opens as Ready and renders. This is a positive launch/render regression,
+not a new geometry/material fidelity certification or a native picker interaction.
+
+All 376 ordinary tests, check-all, build and whitespace checks pass; logs:
+`/tmp/editor-composition-{tests,check,build}.log`. The first clipped capture is
+`target/viewer-ui-captures/invalid-composition-open.png` for comparison.
+
 ### Deferred sub-root target diagnostics
 
 Extended the recorded reference-diagnostic patch to absent external sub-root

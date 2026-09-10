@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Grouped editor commands
+
+Added `EditorEdit::Batch(Vec<EditorEdit>)` for ordered, nested command groups with
+one canonical history entry. Failure rolls back completed child transactions;
+empty groups preserve redo. Selection changes compose in child order. The bridge
+now collects all namespace movements and reverses both direction and order for
+undo, preserving runtime entities across chained renames/moves.
+
+Tests build a configured assembly through a nested batch, compare exact layer
+data after undo/redo, verify failed-batch rollback without losing prior redo,
+and exercise nested namespace batches through the real editor/live Bevy schedule
+while checking selection, entity identity and runtime children. Groups use one
+edit target; stage sinks still observe constituent transactions. This is grouped
+document authoring, not a completed typed scene DSL or observer-isolated commit.
+All 419 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks. Logs: `/tmp/editor-batch-{tests,check,build}.log`.
+
 ### One canonical transform history
 
 Removed `live::TransformHistory` and its TRS snapshot/inverse-edit implementation.

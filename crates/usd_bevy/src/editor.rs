@@ -127,11 +127,11 @@ fn process_commands(world: &mut World) {
     let mut status = if external { "External edits detected; undo history reset".into() } else { String::new() };
     let mut texture_dirty = external;
     for command in commands {
-        let movement = session.as_ref().and_then(|editor| match &command {
-            EditorCommand::Edit(edit) => edit.namespace_move(),
-            EditorCommand::Undo => editor.undo.last().and_then(|entry| entry.edit.namespace_move()).map(|(old, new)| (new, old)),
-            EditorCommand::Redo => editor.redo.last().and_then(|entry| entry.edit.namespace_move()),
-            _ => None,
+        let movements = session.as_ref().map_or_else(Vec::new, |editor| match &command {
+            EditorCommand::Edit(edit) => edit.namespace_moves(),
+            EditorCommand::Undo => editor.undo.last().map(|entry| entry.edit.namespace_moves().into_iter().rev().map(|(old, new)| (new, old)).collect()).unwrap_or_default(),
+            EditorCommand::Redo => editor.redo.last().map(|entry| entry.edit.namespace_moves()).unwrap_or_default(),
+            _ => Vec::new(),
         });
         if matches!(&command, EditorCommand::Edit(_) | EditorCommand::Undo | EditorCommand::Redo | EditorCommand::Payload { .. }) {
             texture_dirty = true;
@@ -191,7 +191,7 @@ fn process_commands(world: &mut World) {
             Err(anyhow::anyhow!("no USD document is open"))
         };
         if result.is_ok() {
-            if let Some((old, new)) = movement { crate::live::remap_namespace(world, &old, &new); }
+            for (old, new) in movements { crate::live::remap_namespace(world, &old, &new); }
         }
         status = match result { Ok(()) => "Ready".into(), Err(error) => format!("Failed: {error:#}") };
     }
@@ -253,6 +253,8 @@ fn install_textures(world: &mut World, prepared: PreparedTextures) -> anyhow::Re
 /// An undoable document edit.
 #[derive(Debug, Clone)]
 pub enum EditorEdit {
+    /// Applies edits in order as one undoable command.
+    Batch(Vec<EditorEdit>),
     /// Replaces the local stack with a static affine matrix and explicit reset state.
     TransformMatrix { prim: String, matrix: [f64; 16], reset: bool },
     AttributeSample { prim: String, name: String, type_name: String, value: Value, time: f64 },
@@ -273,17 +275,22 @@ pub enum EditorEdit {
 }
 
 impl EditorEdit {
-    fn namespace_move(&self) -> Option<(String, String)> {
+    fn namespace_moves(&self) -> Vec<(String, String)> {
+        if let Self::Batch(edits) = self { return edits.iter().flat_map(Self::namespace_moves).collect(); }
         let old = match self {
             Self::Rename { path, .. } | Self::Reparent { path, .. } | Self::Move { path, .. } => path,
-            _ => return None,
+            _ => return Vec::new(),
         };
-        Some((old.clone(), self.selection_after(Some(old))?))
+        self.selection_after(Some(old)).map(|new| vec![(old.clone(), new)]).unwrap_or_default()
     }
 
     fn apply(&self, stage: &Stage) -> anyhow::Result<()> {
         use crate::authoring;
         match self {
+            Self::Batch(edits) => {
+                for edit in edits { edit.apply(stage)?; }
+                Ok(())
+            }
             Self::TransformMatrix { prim, matrix, reset } => {
                 let value = bevy::math::DMat4::from_cols_array(matrix);
                 anyhow::ensure!(value.is_finite() && value.row(3) == bevy::math::DVec4::W
@@ -326,6 +333,9 @@ impl EditorEdit {
     }
 
     fn selection_after(&self, selected: Option<&str>) -> Option<String> {
+        if let Self::Batch(edits) = self {
+            return edits.iter().fold(selected.map(String::from), |selected, edit| edit.selection_after(selected.as_deref()));
+        }
         let selected = selected?;
         let (old, new) = match self {
             Self::Rename { path, name } => (path, Some(format!("{}/{name}", path.rsplit_once('/').map_or("", |(parent, _)| parent)))),
@@ -1057,6 +1067,38 @@ def Xform "Mover" {
     }
 
     #[test]
+    fn batch_edits_group_history_and_roll_back_failure() {
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("batch.usda").unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        editor.edit(EditorEdit::Batch(vec![
+            EditorEdit::Define { path: "/Assembly".into(), type_name: "Xform".into() },
+            EditorEdit::Batch(vec![
+                EditorEdit::Define { path: "/Assembly/Ball".into(), type_name: "Sphere".into() },
+                EditorEdit::Attribute { prim: "/Assembly/Ball".into(), name: "radius".into(), type_name: "double".into(), value: Value::Double(2.5) },
+            ]),
+        ])).unwrap();
+        let after = stage.root_layer().export_to_string().unwrap();
+        assert_eq!(editor.undo.len(), 1);
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(!editor.undo().unwrap());
+        editor.edit(EditorEdit::Batch(vec![])).unwrap();
+        assert!(editor.snapshot().unwrap().can_redo);
+        let failed = EditorEdit::Batch(vec![
+            EditorEdit::Define { path: "/Temporary".into(), type_name: "Xform".into() },
+            EditorEdit::TransformMatrix { prim: "/Missing".into(), matrix: [0.0; 16], reset: false },
+        ]);
+        assert!(editor.edit(failed).is_err());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(!editor.snapshot().unwrap().can_undo);
+        assert!(editor.redo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), after);
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
+
+    #[test]
     fn namespace_commands_reconcile_the_live_projection() {
         #[derive(Component, PartialEq, Debug)]
         struct RuntimeState(u32);
@@ -1111,6 +1153,21 @@ def Xform "Mover" {
         assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/Final"), Some(original));
         assert_eq!(app.world().get::<RuntimeState>(original), Some(&RuntimeState(42)));
         assert_eq!(app.world().get::<RuntimeState>(runtime_child), Some(&RuntimeState(7)));
+        bridge.send(EditorCommand::Edit(EditorEdit::Batch(vec![
+            EditorEdit::Rename { path: "/Final".into(), name: "Intermediate".into() },
+            EditorEdit::Batch(vec![EditorEdit::Move { path: "/Intermediate".into(), destination: "/Batched".into() }]),
+        ]))).unwrap();
+        app.update();
+        for path in ["/Batched", "/Final", "/Batched"] {
+            if path == "/Final" { bridge.send(EditorCommand::Undo).unwrap(); app.update(); }
+            else if bridge.view().unwrap().document.selected.as_deref() == Some("/Final") {
+                bridge.send(EditorCommand::Redo).unwrap(); app.update();
+            }
+            assert_eq!(bridge.view().unwrap().document.selected.as_deref(), Some(path));
+            assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity(path), Some(original));
+            assert_eq!(app.world().get::<RuntimeState>(original), Some(&RuntimeState(42)));
+            assert_eq!(app.world().get::<ChildOf>(runtime_child).unwrap().parent(), original);
+        }
     }
 
     #[test]

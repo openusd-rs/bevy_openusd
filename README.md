@@ -889,6 +889,15 @@ removed; use the same `EditorSession` for transform and other document edits.
 For Bevy TRS input, convert `transform.to_matrix().to_cols_array().map(f64::from)`
 to the command's matrix field and choose the reset state explicitly.
 
+`EditorEdit::Batch(Vec<EditorEdit>)` applies a sequence, including nested batches,
+as one undo step. A failed child edit rolls back preceding changes in the batch;
+empty batches leave undo/redo intact. Selection follows namespace edits in order,
+and the editor bridge remaps existing Bevy entities in reverse order during undo.
+For example, group a `Define`, its `Attribute` edits and a `TransformMatrix` to
+create a configured assembly with a single history entry. All children use the
+session's current edit target. This groups history and rollback, not stage-sink
+notifications: upstream still emits each constituent transaction.
+
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a
 default or a time sample using the ordinary attribute controls; these edits keep

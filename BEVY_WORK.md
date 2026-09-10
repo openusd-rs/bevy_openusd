@@ -25,6 +25,245 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Verify live signed normal interfaces
+
+The normal fixture now generates animated Material normal_gain coefficients and
+an independent animated geometry-normal reference. Its unit test checks normal
+directions at 0/5/10/backward 0. The live-clock suite includes this thirteenth
+case, reversing two existing roots from 0/10 to 10/0 after 30 ready frames.
+All thirteen cases pass: the previous twelve retain strict RGB-zero comparisons;
+normal_interface uses RGB tolerance 1, consistent with the independently computed
+geometry-normal static baseline. A separate strict-zero comparison reports two
+changed pixels of 921600, maximum RGB error 1, not pixel-exact parity.
+Evidence: `target/live-normal-fixed-regression/`, `/tmp/normal-live-fixed-gpu.log`,
+`/tmp/normal-live-strict-compare.log`. Both normal endpoint images were inspected.
+
+An additional manual Make pair reverses 5/10 to 10/5 and compares fresh geometry
+normals at the same clocks. It matches exactly at RGB zero. Both images were
+inspected; metadata confirms two visible meshes and the 30-frame live reversal.
+Evidence: `target/live-normal-fixed-regression/normal-mid-*`,
+`/tmp/normal-mid-{live,reference,compare}.log`. No renderer warnings/errors occurred.
+The midpoint pair is not an additional default suite case.
+
+The first fixture authored interpolation metadata after a timeSamples map, which
+the USDA parser correctly rejected. The generator now authors a separate normal
+attribute declaration for interpolation metadata. Failed evidence is preserved
+in `target/live-normal-regression/` and `/tmp/normal-live-tests.log`.
+All 504 ordinary tests pass (13 ignored), make check-all/build, shell syntax and
+git diff --check pass: `/tmp/normal-live-tests-final.log`,
+`/tmp/normal-live-{check,build}.log`. The full acceptance checklist, general normal
+graph/deformation fidelity, performance evidence and host black-window issue
+remain open.
+
+### Verify live RGB interfaces and interpolated transforms
+
+The RGB fixture now generates sampled Material rgb_gain interfaces and independent
+constant-color references for emissive, diffuse and opacity-combined diffuse.
+The twelve-case live-clock suite adds these three paths. All twelve cases pass
+at zero RGB tolerance; new metadata confirms two existing meshes, clocks reversed
+from 0/10 to 10/0 after 30 ready frames. Both images for each new case were
+visually inspected. Evidence: `target/live-rgb-regression/`, `/tmp/rgb-live-gpu.log`.
+
+Three additional GPU comparisons start at 5/10 and reverse to 10/5. All three
+interpolated results match fresh constant-color references exactly (0 of 921600
+changed pixels), with two meshes and the same 30-frame reversal confirmed.
+All six midpoint images were inspected; logs contain no renderer warnings/errors.
+Evidence: `target/live-rgb-regression/rgb_*-mid-*`,
+`/tmp/rgb-mid-{emissive,diffuse,alpha}-{live,reference,compare}.log`.
+These midpoint runs are additional manual Make captures, not extra default suite
+cases. The fixture unit test checks endpoints, midpoint and backward reads.
+
+All 501 ordinary tests pass (13 ignored), check-all/build and shell syntax/
+whitespace checks pass: `/tmp/rgb-live-{tests,check,build}.log`. This verifies live
+RGB changes for these representable HDR values; arbitrary float16 precision,
+filtered-texture parity and performance claims remain unproven.
+
+### Apply diffuse and emissive RGB texture scale/bias
+
+Canonical UsdShade float4 producer resolution now retains all RGBA coefficients;
+ReadPreviewMaterial exposes RGB transforms for diffuse/emissive semantics while
+scalar semantics retain their selected-channel coefficients. Sampled interfaces
+use the same resolver. Nonidentity RGB transforms decode to linear color and
+produce Rgba16Float images without clamping negative/HDR RGB. Identity transforms
+reuse original images. Nonfinite coefficients and float16 overflow report material
+warnings. A content-keyed cache accounts up to 64 MiB; input is limited to 16M
+pixels. Neither limit describes total process/VRAM use or measured performance.
+The existing half dependency is now explicitly declared by usd_bevy.
+
+Opacity packing uses the transformed diffuse image and retains its float16 HDR
+RGB instead of quantizing it back to sRGB8. Opacity still follows the existing
+scalar8 quantization, then float16 rounding. Its cache key includes the format
+choice. Normal-map transforms remain outside this path.
+
+Tests cover analytic sRGB-to-linear conversion, independent RGB coefficients,
+negative/HDR values, preserved alpha, cache reuse/backward values, overflow,
+sampled Material interfaces for both color semantics and unchanged source layers.
+The new color_texture_fixture generates mapped/reference/control spheres for
+emission, diffuse and diffuse-with-opacity. All three mapped/reference GPU pairs
+match at zero RGB tolerance; every control differs in 60646 of 921600 pixels
+(maximum RGB errors 54, 54 and 40). All nine images were visually inspected.
+Evidence: `target/rgb-transform-fixture/`, `/tmp/rgb-transform-gpu.log`,
+`/tmp/rgb-transform-{emissive,diffuse,alpha}-{compare,control}.log`.
+
+All 501 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/rgb-transform-{tests,check,build}.log`. All 13 native export tests
+pass: `/tmp/rgb-transform-native.log`. This proves the tested static RGB paths;
+float16 precision, broader filtered-texture parity and live GPU RGB animation
+acceptance remain explicit follow-up work.
+
+### Verify independent live emissive textures
+
+The emissive fixture now includes two filename samples and a constant-color
+endpoint reference. The ninth check_live_clocks case loads two existing roots
+at times 0/10, reverses them after 30 ready frames and compares against fresh
+reference roots at 10/0. All nine cases pass at zero RGB tolerance. Emission
+metadata confirms two visible meshes and the reversed clocks; both emission
+images were visually inspected and match exactly (0 of 921600 changed pixels).
+
+Evidence: `target/live-emissive-regression/`, `/tmp/emissive-live-gpu.log`.
+The fixture unit regression checks both endpoints and backward reads. All 497
+ordinary tests pass (13 ignored), check-all/build and shell syntax/whitespace
+checks pass: `/tmp/emissive-live-{tests,check,build}.log`. This tests endpoint
+updates and cache behavior, not intermediate-time parity: filenames are held,
+whereas the constant-color reference interpolates between its endpoints.
+
+### Restore texture-only emissive output
+
+Bevy StandardMaterial defaults its emissive multiplier to black. The material
+route previously bound a texture-only USD emissive input without changing that
+multiplier, so the texture contributed no emission. The route now uses white
+only when an emissive image handle is bound and no explicit emissive color was
+decoded. Explicit colors (including black/HDR values), missing image handles
+and untextured defaults retain their existing behavior.
+
+`examples/emissive_texture_fixture.rs` generates a raw 1x1 RGB emission texture,
+a sphere using that texture, an independently authored constant-color reference
+and a dark control. Before the fix, texture/control images matched exactly,
+while texture/reference differed in 60646 of 921600 pixels (max RGB error 178).
+After the fix, texture/reference differ in zero RGB pixels. Before/after and
+reference images were visually inspected. Evidence:
+`target/emissive-texture-fixture/`, `/tmp/emissive-before-compare.log`,
+`/tmp/emissive-after-compare.log` and `/tmp/emissive-{before,after}-gpu.log`.
+
+The material regression checks white identity, explicit black/HDR multipliers,
+missing handles and default black. The fixture regression reopens authored USD
+and checks texture-vs-constant semantics and existing-directory refusal.
+All 497 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/emissive-{tests,check,build}.log`. This fixes emission mapping; RGB
+texture scale/bias and the independent black host-window issue remain open.
+
+### Configure the actual wgpu presentation mode
+
+Corrected the eframe control: eframe 0.34.3 NativeOptions.vsync only applies to
+glow, so the earlier vsync=false runs actually retained wgpu AutoVsync. The probe
+now sets WgpuConfiguration.present_mode explicitly. Its new
+`USD_HOST_PROBE_PRESENT_MODE=auto-no-vsync|auto-vsync` defaults to AutoNoVsync,
+matching Mara, and logs the selected enum. Invalid/non-Unicode options fail before
+window creation; the unit test checks defaults and accepted/rejected values.
+
+Three alternating pairs of explicit AutoNoVsync/AutoVsync runs all produced
+healthy compositor captures and direct GPU readbacks. All twelve images were
+visually inspected. Evidence:
+`target/viewer-ui-captures/eframe-{auto-no-vsync,auto-vsync}-{1,2,3}*` and
+`/tmp/eframe-present-gpu.log`. This corrects the control, but does not reproduce
+or explain the intermittent Mara host failure; neither mode is proved reliable.
+All 495 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/eframe-present-{tests,check,build}.log`. Viewer defaults are unchanged.
+
+### Add a direct eframe GPU-readback control
+
+`examples/eframe_capture_probe.rs` draws colored panels and text with eframe's
+wgpu runner, without Mara, Bevy or USD initialization. These initial runs used
+wgpu's default AutoVsync: the native vsync=false option only affects the glow
+backend, contrary to the original report. `USD_HOST_PROBE_SCREENSHOT` requests a direct egui Screenshot
+readback into a new PNG; exclusive file creation preserves existing outputs.
+The unit test decodes RGBA bytes and verifies overwrite refusal. The compositor
+harness does not validate this optional readback, so its log/file must be checked
+separately. Callback timeout is UI-update-driven, not an independent watchdog.
+
+Initial delayed-readback runs 1/2 produced healthy compositor and GPU images;
+run 3 showed a healthy compositor image but no readback before capture teardown.
+That missing-readback failure is preserved. The probe now requests readback in
+its first painted pass, rather than relying on a later three-second UI update.
+New runs 4/5/6 all produced healthy compositor images and direct 1440x920 GPU
+readbacks. All available images were visually inspected. No black eframe-only
+surface was reproduced in these six runs; this sample does not prove reliability
+or assign the Mara host failures to a specific implementation difference.
+
+Evidence: `target/viewer-ui-captures/eframe-only-{1,2,3,4,5,6}*`,
+`/tmp/eframe-probe-gpu.log`, `/tmp/eframe-probe-gpu-final.log`. All 494 ordinary
+tests pass (13 ignored), check-all/build and whitespace checks pass:
+`/tmp/eframe-probe-{tests,check,build}-final.log`. No viewer/host default changed.
+
+### Reproduce the black surface in the host-only control
+
+Four alternating fresh-compositor pairs used the paced native bridge and the
+host-only colored-panel probe. Paced trials 4/5/6/7 were fail/pass/pass/pass;
+host-only trials 4/5/6/7 were pass/fail/pass/fail. Every image was inspected.
+The paced failure confirms delay_ms=33 and 26/26 committed/painted Hz. Both
+host failures confirm no Bevy app or USD stage and lose the colored panels,
+text and host chrome together. The failed host trial 7 records 50 nonblack
+pixels out of 1120000 and 949/60 committed/painted Hz.
+
+Evidence: `target/viewer-ui-captures/isolation-{paced,host}-{4,5,6,7}*` and
+`/tmp/bridge-isolation-extended.log`, including every failed artifact. Paced
+trial 7 is nonblack and upright but its window is vertically displaced;
+near-black success is not geometry/placement acceptance.
+
+Neither Bevy, USD content nor high submission cadence is necessary to reproduce
+the black-surface symptom in this environment. Earlier three-run successes for
+host-only, CPU transfer or paced transfer do not establish a reliable workaround.
+Keep investigation at the host/wgpu/presentation/compositor boundary rather than
+changing USD material rendering to compensate. These observations do not uniquely
+attribute the fault to Mara, wgpu, the driver or Weston.
+
+Current sibling source inspection confirms that Mara already calls
+painter.handle_screenshots before UI updates, but ignores Screenshot viewport
+commands and passes an empty capture-request list to paint_and_update_textures.
+The missing piece is request forwarding, not screenshot-event collection.
+No implementation changed in this experiment; the previous 493-test/check/build
+baseline remains unchanged. Sibling Mara and compositor configuration are intact.
+
+### Control bridge update cadence independently of transfer
+
+`USD_BRIDGE_PROBE_DELAY_MS=0..1000` adds a deliberate sleep at the start of
+each minimal-probe UI update, default zero. The native transfer path is unchanged.
+Invalid/non-Unicode values fail before window creation. This blocks input too;
+it is explicitly diagnostic and is not installed in the production viewer.
+
+Three native-sharing captures with a 33 ms delay all show the cube, blue clear
+color and upright egui label, visually inspected. Weston samples show 26/26,
+26/27 and 26/26 committed/painted Hz. Evidence:
+`target/viewer-ui-captures/bridge-paced-{1,2,3}*`, `/tmp/bridge-delay-gpu.log`.
+This demonstrates healthy native transfer at reduced cadence in these runs,
+not a reliable fix or proof that high submission rate causes the intermittent
+black surface. The CPU-mode comparison cannot uniquely implicate device sharing.
+Mara still hardcodes AutoNoVsync; its runner and scheduling were not changed.
+
+All 493 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/bridge-delay-{tests,check,build}.log`. The delay regression covers
+default zero, boundaries, overflow and invalid syntax without sleeping in tests.
+
+### Compare native sharing with CPU viewport transfer
+
+The bridge probe accepts `USD_BRIDGE_PROBE_TRANSFER=native|cpu` (native default).
+CPU mode uses canonical Mara with_content and passes no render state to show,
+so Bevy creates its own device and sends CPU-readback pixels through egui upload.
+Unknown/non-Unicode modes fail before window creation. No viewer default changed.
+
+Three fresh private Vulkan Weston CPU-mode captures all passed inspection; all
+three images show the orange cube, blue viewport and upright white egui label.
+Evidence: `target/viewer-ui-captures/bridge-cpu-{1,2,3}*` and
+`/tmp/bridge-transfer-gpu.log`. Logs confirm cpu_readback=true. Sampled compositor
+commit/paint rates were 27/19, 23/17 and 35/19 Hz, unlike the native run's 667/60.
+This comparison changes both device sharing and frame cadence; three successes
+do not establish causality, reliability or an acceptable production fallback.
+The native black-window reproducer remains unresolved and preserved.
+
+All 492 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/bridge-transfer-{tests,check,build}.log`. The new option unit test
+covers defaults, both modes and invalid values.
+
 ### Reproduce black presentation without USD
 
 `examples/bridge_capture_probe.rs` runs the canonical Mara/Bevy viewport bridge
@@ -5455,3 +5694,33 @@ support or guarantee diagnostics for every unsupported prototype shape.
 
 Validation: make test-all (192 tests), make check-all, make build with offline
 Cargo and git diff --check pass; /tmp/usd-instancer-validation-{tests,check,build}.log.
+
+## Signed Preview Surface normal texture transforms
+
+Preview Surface UsdUVTexture normals now retain full RGB scale/bias, including
+sampled material interfaces, and encode the signed result for Bevy with
+`(sample * scale + bias + 1) / 2`. Nonidentity conversions use the bounded linear
+RGBA16Float texture cache; canonical scale 2/bias -1 retains the original image.
+Other surface dialects and ND_normalmap wrappers retain previous handling rather
+than applying an additional signed decode. General MaterialX processing, deformed
+tangents and per-texture UV transforms are not completed by this change.
+
+The normal fixture includes white-texture scale (0,0.5,0.5), zero bias, an
+independent geometry-normal reference and opposite-Y control. All six generated
+images were inspected at eye (0,1,5), focus (0,1,0), forward rendering, shadows
+off. Evidence: `target/normal-transform-fixture/`,
+`/tmp/normal-transform-{scaled_mapped,scaled_reference,scaled_opposite,mapped,reference,opposite}.log`.
+All captures report CAPTURE_OK without WARN/ERROR. Strict-zero comparison fails:
+scaled mapped/reference differs at six of 921600 pixels, max RGB error 1;
+canonical mapped/reference retains its two-pixel, max RGB-1 difference.
+Both opposite controls differ at 121104 pixels, max RGB error 163. Logs:
+`/tmp/normal-transform-*-compare.log`. This is near-reference constant-normal
+evidence, not pixel-exact parity or filtered/deformed-normal acceptance.
+
+Validation: 503 ordinary tests pass, 13 native tests ignored; make check-all,
+make build and git diff --check pass. Logs:
+`/tmp/normal-transform-tests-final.log`, `/tmp/normal-transform-{check,build}.log`.
+Tests cover signed encoding, canonical identity reuse, animated interface reads
+at 0/5/10/backward 0, shader/wrapper exclusions and source preservation.
+Live rendered normal-interface reversal remains to be verified; the full Bevy
+acceptance checklist and intermittent black host-window issue remain open.

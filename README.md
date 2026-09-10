@@ -545,9 +545,16 @@ including sampled values. Multiple producers, invalid direct sources and
 connections with no readable value reject the material read. Authored fallback
 values follow the upstream resolver's rules; arbitrary shader computation is
 not evaluated for these float4 inputs.
-Diffuse, emissive and normal-map scale/bias are not implemented by this packing
-path. Out-of-range values are clamped before GPU filtering, so this is not exact
+For scalar maps, out-of-range values are clamped before GPU filtering, so this is not exact
 shader parity for arbitrary filtered float textures.
+Diffuse and emissive RGB scale/bias use a separate linear `Rgba16Float` path.
+Negative and HDR values remain unclamped in the transformed image; nonfinite
+coefficients and float16 overflow return material warnings. Alpha is preserved,
+and subsequent opacity packing retains transformed HDR RGB. Identity RGB
+transforms reuse original images. Transformed content uses a 64 MiB accounted
+cache and a 16M-pixel input limit; those are not total process/VRAM limits.
+Float16 rounding remains an approximation, and normal-map scale/bias is not
+implemented by this path.
 Material graph evaluation has a 256-input traversal budget and a separate
 32-level recursion limit for arithmetic/constant nodes; exceeding either reports
 an error rather than continuing unbounded recursion.
@@ -579,6 +586,43 @@ discovery. `colorspace_interface_animated.usda` switches raw/sRGB interpretation
 through a Material/NodeGraph interface; `colorspace_reference.usda` switches
 between precomputed raw linear bytes instead. This is an explicit color-space
 test, not implementation of metadata-based `auto` color-space detection.
+
+The emissive fixture compares a texture-only
+emissive input against a constant linear-color reference and a non-emissive control:
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example emissive_texture_fixture' ARGS='target/NEW-emission'
+USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off make run CARGO='cargo --offline' APP_TARGET='--example viewer_capture' ARGS='target/NEW-emission/textured.usda target/NEW-emission/textured.png 0 0 2 6 0 0 0'
+USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off make run CARGO='cargo --offline' APP_TARGET='--example viewer_capture' ARGS='target/NEW-emission/reference.usda target/NEW-emission/reference.png 0 0 2 6 0 0 0'
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example capture_compare' ARGS='target/NEW-emission/textured.rgba target/NEW-emission/reference.rgba 0 1280 target/NEW-emission/diff.png'
+```
+
+Texture-only emission uses a white Bevy emissive multiplier when an image handle
+is bound. Explicit emissive colors retain their multiplier, including black;
+untextured defaults remain non-emissive.
+The same generator writes `animated.usda` (emissive filename samples) and
+`animated_reference.usda` (constant-color samples). The live-clock regression
+compares their endpoints after reversing two existing instance clocks. Filename
+selection is held, while the constant-color reference interpolates, so this
+comparison does not claim agreement at intermediate times.
+
+`color_texture_fixture` generates diffuse, emissive and opacity-combined RGB
+transform cases with HDR constant-color references and untransformed controls:
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example color_texture_fixture' ARGS='target/NEW-rgb'
+```
+
+Capture `<semantic>_mapped.usda` and `<semantic>_reference.usda` with the same
+camera (`0 2 6` looking at `0 0 0`), forward renderer and shadows disabled, then
+compare their RGBA files at zero RGB tolerance. Semantics are `diffuse`,
+`emissive` and `alpha`. The alpha reference includes the existing scalar
+8-bit quantization followed by float16 rounding; it is not ideal float opacity.
+The generator also writes `<semantic>_interface_animated.usda`, with sampled
+RGB gain supplied through a Material input, and `<semantic>_animated_reference.usda`,
+with independent constant-color samples. The live-clock suite tests all three
+semantics after reversing two existing instance clocks. Fixture source tests also
+check interpolated midpoint values and backward reads.
 
 For a deterministic textured UV comparison, generate a new fixture directory
 (existing directories are refused), then capture both indexed samples:
@@ -967,6 +1011,9 @@ USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example host_capture_probe' --eval=
 
 Use the Weston-enabled environment described above. This is a diagnostic, not
 the viewer or proof of its rendering fidelity.
+Repeated local Vulkan Weston captures have reproduced a wholly black host-only
+window too: neither Bevy nor USD is required. Inspect and preserve failed runs;
+do not interpret a few successful probe launches as a reliable fallback.
 
 `examples/bridge_capture_probe.rs` adds only the Bevy viewport bridge, a blue
 clear color and an orange unlit cube, with a white egui label over the viewport.
@@ -979,6 +1026,34 @@ USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example bridge_capture_probe' --eva
 
 The asset argument is ignored. Inspect both the cube and the egui label; a
 nonblack background alone does not prove that the bridge rendered correctly.
+The probe defaults to `USD_BRIDGE_PROBE_TRANSFER=native`, sharing the host wgpu
+device and registering the Bevy texture directly. Set
+`USD_BRIDGE_PROBE_TRANSFER=cpu` to construct an independent Bevy device and use
+Mara's existing CPU readback/egui texture upload path. Both construction and
+per-frame drawing omit the host render state in CPU mode. This diagnostic does
+not change the viewer's transfer path or establish a production fallback.
+Set `USD_BRIDGE_PROBE_DELAY_MS=33` to deliberately block each probe UI update
+for 33 milliseconds while retaining the selected transfer path. The default is
+zero; accepted values are integer milliseconds from 0 to 1000. This bounds the
+probe's update rate independently of egui repaint requests, but blocks input
+handling too: it is a timing diagnostic, not production frame pacing.
+
+`examples/eframe_capture_probe.rs` removes the Mara runner as well, drawing only
+colored panels and text with eframe's wgpu backend (`AutoNoVsync` by default,
+matching Mara). Set `USD_HOST_PROBE_PRESENT_MODE=auto-vsync` for the explicitly
+vsynced comparison, or `auto-no-vsync` for the default. Set
+`USD_HOST_PROBE_SCREENSHOT` to a new PNG path for eframe's direct GPU screenshot:
+
+```sh
+USD_HOST_PROBE_SCREENSHOT="$PWD/target/NEW-eframe.host.png" USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example eframe_capture_probe' --eval='capture-eframe:; @/bin/bash scripts/capture_viewer_ui.sh assets/retimed_instances.usda target/NEW-eframe.png' capture-eframe
+```
+
+The example requests readback in its first painted UI pass and logs `HOST_READBACK_OK`
+or `HOST_READBACK_ERROR`; callback timeout is checked on UI updates after thirty
+seconds. The compositor script does not validate this additional readback: check
+the log and inspect both PNGs. The readback and compositor capture are not the
+same frame. Existing direct-readback files are never overwritten. This isolates
+host paths; it is not a replacement viewer or proof of USD rendering fidelity.
 
 The `.settings.txt` companion records compositor backend, output/inspection
 dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's
@@ -1191,16 +1266,17 @@ mutates the existing roots without reopening the source. The default is 0; other
 values and single-root reversal requests are rejected. Metadata records the
 final clock order and whether the live reversal happened.
 
-Run the strict live-clock GPU regression suite into a new directory:
+Run the live-clock GPU regression suite into a new directory:
 
 ```bash
 make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/live-clock-check' check-live-clocks
 ```
 
-It generates fresh UV/texture/scalar fixtures and compares live clock reversals
-against baked UV, fixed-image, CPU-morph and precomputed scalar-map references.
-All eight comparisons use zero RGB
-tolerance. Metadata must confirm the reversal and two visible mesh entities;
+It generates fresh UV/texture/scalar/color/normal fixtures and compares live clock
+reversals against independent references. Twelve comparisons use zero RGB
+tolerance; the normal-interface case uses RGB tolerance 1 for the independently
+animated geometry-normal reference, matching the static fixture's precision bound.
+Metadata must confirm the reversal and two visible mesh entities;
 the morph case also verifies shared GPU material use. Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain
 in the output directory, including on failure. This requires native GPU access
@@ -1388,13 +1464,24 @@ residual path. `live::current_transform` returns `None` on a TRS read error;
 `route::xform::transform_of` retains its documented identity-on-error fallback.
 
 `make run RUN_WITH= APP_TARGET='--example normal_fixture' ARGS='target/normal_probe'`
-creates a new directory containing a normal-mapped quad, an equivalent
-explicit-normal reference and an opposite-Y control. It refuses overwrites.
+creates a new directory containing normal-mapped quads, equivalent
+explicit-normal references and opposite-Y controls. It refuses overwrites.
 The 8-bit map uses raw color space and scale/bias (2,-1), following the
 [UsdPreviewSurface normal specification](https://openusd.org/24.08/spec_usdpreviewsurface.html).
 Bevy's tangent generation already compensates the relevant handedness change;
 adding a second normal-map Y flip would break this fixture. This checks a static
-constant map, not arbitrary texture transforms, scale/bias or deformed tangents.
+constant map, not arbitrary texture transforms or deformed tangents.
+The `scaled_*` variants exercise noncanonical Preview Surface `UsdUVTexture`
+RGB scale/bias. Signed normal results are encoded for Bevy as `(value + 1) / 2`
+in a linear float16 texture; canonical scale/bias (2,-1) reuses the original.
+Sampled scale/bias interfaces are read at the requested clock. Other surface
+dialects and `ND_normalmap` wrappers retain their previous handling.
+`interface_animated.usda` animates the normal gain through a Material input;
+`animated_reference.usda` independently animates the geometry normal. The fixture
+test checks directions at times 0/5/10 and backward to 0.
+The scaled mapped/reference capture differs at six pixels by at most RGB 1;
+the canonical case retains its two-pixel RGB-1 difference. Neither is pixel-exact
+reference parity, and general MaterialX normal processing remains unsupported.
 
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:

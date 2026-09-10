@@ -101,6 +101,9 @@ fn to_standard_material(
     m.base_color_texture = texture(&read.diffuse_texture, read.texture_srgb("diffuse"));
     m.normal_map_texture = texture(&read.normal_texture, read.texture_srgb("normal"));
     m.emissive_texture = texture(&read.emissive_texture, read.texture_srgb("emissive"));
+    if m.emissive_texture.is_some() && read.emissive_color.is_none() {
+        m.emissive = LinearRgba::WHITE;
+    }
     m
 }
 
@@ -114,6 +117,17 @@ pub(crate) fn resolve_material(
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
     apply_sidedness(ctx, &mut material);
     let mut warnings = read.warnings.clone();
+    for semantic in ["diffuse", "emissive", "normal"] {
+        match super::color_texture::transformed(world, &read, semantic) {
+            Ok(Some(handle)) => {
+                if semantic == "diffuse" { material.base_color_texture = Some(handle); }
+                else if semantic == "normal" { material.normal_map_texture = Some(handle); }
+                else { material.emissive_texture = Some(handle); }
+            }
+            Ok(None) => {}
+            Err(error) => warnings.push(error.to_string()),
+        }
+    }
     match super::texture_pack::base_color_alpha(world, &read) {
         Ok(Some(packed)) => {
             material.base_color_texture = Some(packed);
@@ -375,6 +389,25 @@ def Material "Mat" {
         assert!((m.ior - 1.4).abs() < 1e-6);
         assert_eq!(m.emissive, LinearRgba::rgb(1.0, 0.0, 0.0));
         assert!(matches!(m.alpha_mode, AlphaMode::Opaque));
+    }
+
+    #[test]
+    fn emissive_texture_uses_identity_multiplier_without_authored_color() {
+        let mut images = Assets::<Image>::default();
+        let handle = images.add(Image::default());
+        let mut textures = crate::asset::SnapshotTextures::default();
+        textures.0.insert(("emission.png".into(), true), handle.clone());
+        let mut read = ReadPreviewMaterial { emissive_texture: Some("emission.png".into()), ..default() };
+        let material = to_standard_material(&read, None, Some(&textures));
+        assert_eq!(material.emissive_texture, Some(handle));
+        assert_eq!(material.emissive, LinearRgba::WHITE);
+        assert_eq!(to_standard_material(&read, None, None).emissive, LinearRgba::BLACK);
+        for color in [[0.0; 3], [0.25, 0.5, 2.0]] {
+            read.emissive_color = Some(color);
+            assert_eq!(to_standard_material(&read, None, Some(&textures)).emissive,
+                LinearRgba::rgb(color[0], color[1], color[2]));
+        }
+        assert_eq!(to_standard_material(&ReadPreviewMaterial::default(), None, None).emissive, LinearRgba::BLACK);
     }
 
     #[test]

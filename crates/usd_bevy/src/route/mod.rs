@@ -35,6 +35,7 @@ pub mod light;
 pub mod points;
 pub mod material;
 mod texture_pack;
+mod color_texture;
 pub mod payload;
 pub mod physics;
 pub mod reflect;

@@ -20,15 +20,17 @@ pub(crate) struct PackedTextures {
 
 #[derive(Resource, Default)]
 struct AlphaTextures {
-    images: std::collections::HashMap<(u32, u32, Vec<u8>), Handle<Image>>,
+    images: std::collections::HashMap<(u32, u32, bool, Vec<u8>), Handle<Image>>,
     bytes: usize,
 }
 
 pub(crate) fn base_color_alpha(world: &mut World, read: &ReadPreviewMaterial) -> anyhow::Result<Option<Handle<Image>>> {
     let Some(alpha) = plane(world, &read.opacity_texture, read.opacity_channel, read.texture_srgb("opacity"), read.scalar_texture_transform("opacity"))? else { return Ok(None) };
+    let transformed = super::color_texture::transformed(world, read, "diffuse")?;
     let color = if let Some(path) = &read.diffuse_texture {
         let textures = world.get_resource::<SnapshotTextures>().ok_or_else(|| anyhow::anyhow!("alpha packing requires loaded snapshot textures"))?;
-        let handle = textures.0.get(&(path.clone(), read.texture_srgb("diffuse"))).ok_or_else(|| anyhow::anyhow!("missing diffuse texture: {path}"))?;
+        let handle = transformed.as_ref().or_else(|| textures.0.get(&(path.clone(), read.texture_srgb("diffuse"))))
+            .ok_or_else(|| anyhow::anyhow!("missing diffuse texture: {path}"))?;
         let image = world.resource::<Assets<Image>>().get(handle).ok_or_else(|| anyhow::anyhow!("diffuse image is not ready: {path}"))?;
         let size = image.texture_descriptor.size;
         anyhow::ensure!(image.texture_descriptor.dimension == TextureDimension::D2 && size.depth_or_array_layers == 1,
@@ -37,9 +39,16 @@ pub(crate) fn base_color_alpha(world: &mut World, read: &ReadPreviewMaterial) ->
         anyhow::ensure!(matches!(image.sampler, bevy::image::ImageSampler::Default), "alpha packing requires a shared default sampler");
         Some(image)
     } else { None };
-    let mut data = Vec::with_capacity(alpha.values.len() * 4);
+    let float = transformed.is_some();
+    let mut data = Vec::with_capacity(alpha.values.len() * if float { 8 } else { 4 });
     for y in 0..alpha.height {
         for x in 0..alpha.width {
+            if float {
+                let color = color.unwrap().get_color_at(x, y)?.to_linear();
+                super::color_texture::append_rgba(&mut data, [color.red, color.green, color.blue,
+                    alpha.values[(y * alpha.width + x) as usize] as f32 / 255.0])?;
+                continue;
+            }
             let rgb = if let Some(image) = color {
                 let color = image.get_color_at(x, y)?.to_srgba();
                 [color.red, color.green, color.blue].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
@@ -47,16 +56,16 @@ pub(crate) fn base_color_alpha(world: &mut World, read: &ReadPreviewMaterial) ->
             data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], alpha.values[(y * alpha.width + x) as usize]]);
         }
     }
-    let key = (alpha.width, alpha.height, data);
+    let key = (alpha.width, alpha.height, float, data);
     if let Some(handle) = world.get_resource::<AlphaTextures>().and_then(|cache| cache.images.get(&key)) {
         if world.resource::<Assets<Image>>().contains(handle) { return Ok(Some(handle.clone())); }
     }
     let image = Image::new(Extent3d { width: alpha.width, height: alpha.height, depth_or_array_layers: 1 },
-        TextureDimension::D2, key.2.clone(), TextureFormat::Rgba8UnormSrgb, bevy::asset::RenderAssetUsages::default());
+        TextureDimension::D2, key.3.clone(), if float { TextureFormat::Rgba16Float } else { TextureFormat::Rgba8UnormSrgb }, bevy::asset::RenderAssetUsages::default());
     let handle = world.resource_mut::<Assets<Image>>().add(image);
     world.init_resource::<AlphaTextures>();
     let mut cache = world.resource_mut::<AlphaTextures>();
-    let bytes = key.2.len() * 2;
+    let bytes = key.3.len() * 2;
     if cache.bytes + bytes > 64 * 1024 * 1024 {
         cache.images.clear();
         cache.bytes = 0;

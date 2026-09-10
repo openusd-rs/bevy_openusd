@@ -933,6 +933,11 @@ before becoming Bevy's UV transform. Generate the animated comparison fixture:
 Its mapped and explicit-UV scenes are equivalent at times 0 and 10; intermediate
 times are not reference baselines because interpolating coordinates differs from
 interpolating rotation. Arbitrary per-texture transform chains remain unsupported.
+UV transforms are read from connected texture-coordinate paths, including nodes
+outside the material's immediate children; disconnected nodes have no effect.
+Different transforms across a material's texture channels, chained transform
+nodes, non-finite transforms and over-budget coordinate graphs produce explicit
+errors instead of silently choosing the first material child.
 
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a

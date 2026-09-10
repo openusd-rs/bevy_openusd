@@ -25,6 +25,31 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Connected texture-coordinate discovery
+
+The material reader now retains each resolved texture node and follows its
+connected `inputs:st` path instead of scanning for the first transform child.
+Disconnected transforms no longer affect shading; connected transforms outside
+the material's immediate children are discovered. Texture channels must agree on
+the material-wide transform. Conflicting transforms, multiple input connections,
+chained transform nodes, non-finite values and graphs beyond 16 connections
+return explicit errors rather than silently choosing an unrelated node.
+
+The existing reader regression now demonstrates an ignored disconnected node,
+a connected local node, a connected external node and explicit chain rejection.
+A new graph regression covers conflicting/common transforms, non-finite inputs
+and cycles. The independent-instance material animation test previously expected
+an unconnected transform to apply; it now expects identity while still validating
+animated color/opacity/roughness and instance isolation. Arbitrary per-texture UV
+sets and composed multi-transform chains are not implemented by this change.
+All 426 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks (`/tmp/connected-uv-{tests,check,build}.log`). Both
+animated UV endpoints were recaptured and inspected at the earlier fixed camera,
+time 0/10, shadows off: `target/connected_uv_{0,10}.png`. Both remain identical
+to their validated pre-change captures across all 921,600 pixels at strict-zero
+RGB tolerance, with CAPTURE_OK and no WARN/ERROR entries. Logs:
+`/tmp/connected-uv-{capture,compare}-{0,10}.log`.
+
 ### Correct UV-transform coordinate conversion
 
 Confirmed a material rendering bug: USD UV transforms were applied directly to

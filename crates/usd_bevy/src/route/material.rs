@@ -275,7 +275,7 @@ def Shader "External" {
                 let material = world.resource::<Assets<StandardMaterial>>().get(handle).unwrap();
                 assert_eq!(material.base_color, Color::linear_rgba(1.0-t, 0.0, t, 0.25+0.75*t));
                 assert!((material.perceptual_roughness - (0.2+0.6*t)).abs() < 1e-6);
-                assert_eq!(material.uv_transform.translation, Vec2::new(2.0*t, 0.0));
+                assert_eq!(material.uv_transform.translation, Vec2::ZERO);
                 assert_eq!(material.alpha_mode, if t < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque });
             }
         };

@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Time-sampled texture GPU acceptance
+
+Extended the reproducible UV fixture with red/blue one-pixel images and a
+sample-only inputs:file scene. A separate fixed quadrant texture uses explicit
+UV samples to select the same colors. The fixture test verifies no default
+texture, correct resolved files at times 0/10 and no connected UV transform.
+All previous fixture outputs and overwrite protection remain in place.
+
+Captured two independently timed roots together for both scenes on NVIDIA/Vulkan,
+using clocks 0/10, eye (0,1,8), focus (0,1,0), shadows off. Inspected both red/blue
+panel renders; mapped versus fixed-texture reference matches all 921,600 pixels
+at strict zero RGB tolerance. Both captures report CAPTURE_OK without WARN/ERROR.
+Images: `target/texture_file_{samples,reference}.png`; fixture:
+`target/texture_file_fixture`; logs:
+`/tmp/texture-file-{fixture,focused,samples,reference,compare}.log`.
+This proves GPU endpoint texture selection in simultaneous roots, not live
+texture swapping/reload within one run, normal maps or every image format.
+
+Validation: 434 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/texture-file-{tests,check,build}.log`.
+
 ### Material-local texture sample discovery
 
 Texture discovery now collects sample times per material graph instead of using

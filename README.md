@@ -984,6 +984,11 @@ eye `(0,1,5)`, focus `(0,1,0)` and `USD_CAPTURE_SHADOWS=off`. On the tested Vulk
 renderer, mapped versus baked differs in 7 of 921,600 pixels (maximum RGB error
 2); the lossy control differs in 120,136 pixels (maximum error 91). These are
 recorded strict-zero comparison results, not a claim of bit-identical rendering.
+The generator also writes `file_samples.usda` (sample-only red/blue texture
+files) and `file_reference.usda` (fixed quadrant texture with explicit UV samples).
+Capture both with `USD_CAPTURE_INSTANCE_TIMES=0,10`, shadows off, eye `(0,1,8)`
+and focus `(0,1,0)`. The tested Vulkan captures match all 921,600 pixels at strict
+zero RGB tolerance. This checks simultaneous texture selection, not a live reload.
 UV transforms are read from connected texture-coordinate paths, including nodes
 outside the material's immediate children; disconnected nodes have no effect.
 Different transforms across a material's texture channels, non-finite transforms

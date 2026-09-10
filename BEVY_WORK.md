@@ -25,6 +25,22 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Range-safe vector-scale inverses
+
+Inverse vector scale ops now use component reciprocals rather than a generic
+matrix determinant/inverse. This accepts finite scales such as 1e-200 and 1e200
+whose determinants underflow or overflow while their reciprocals remain finite.
+Zero components, non-finite input and overflowing reciprocals remain errors.
+Scalar-axis inverse behavior is unchanged. Arbitrary matrix-op inversion still
+uses the generic matrix inverse and does not gain this range guarantee.
+
+The regression checks positive/negative components at both extremes and the
+invalid cases. Native OpenUSD 25.05.01 returns the same reciprocal matrices for
+both extremes (`/tmp/native-inverse-range.log`).
+All 417 ordinary tests pass (seven native export tests ignored), together with
+check-all, build and whitespace checks. Gate logs:
+`/tmp/xform-inverse-range-{tests,check,build}.log`.
+
 ### Double-precision local transform composition
 
 The reader now composes local op matrices in f64 and converts only the final
@@ -41,6 +57,11 @@ half, quaternion, scalar-axis and inverse tests continue to exercise the reader.
 Native OpenUSD 25.05.01 confirms the one-unit local result for
 `assets/xform_precision.usda` (`/tmp/native-double-stack.log`). Its reference is
 `assets/xform_precision_reference.usda`, which authors a direct translation.
+Both fixed-camera captures were inspected and have identical RGB pixels at
+strict zero tolerance (921,600 pixels), CAPTURE_OK and no WARN/ERROR entries.
+Images: `target/xform_precision{,_reference}.png`; comparison:
+`/tmp/xform-precision-compare.log`. The original precision gates passed:
+`/tmp/xform-double-{tests,check,build}.log`.
 
 ### Scalar-axis transforms and adjacent inverse cancellation
 

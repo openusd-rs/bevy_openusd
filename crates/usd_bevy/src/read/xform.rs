@@ -154,9 +154,14 @@ fn build_op_matrix(
 
     anyhow::ensure!(m.is_finite(), "non-finite transform in {op_token}");
     if !inverted || matches!(kind, "scaleX" | "scaleY" | "scaleZ") { return Ok(m); }
-    let matrix = m;
-    anyhow::ensure!(matrix.determinant() != 0.0, "singular inverse transform in {op_token}");
-    let inverse = matrix.inverse();
+    let inverse = if kind == "scale" {
+        let scale = DVec3::new(m.x_axis.x, m.y_axis.y, m.z_axis.z);
+        anyhow::ensure!(scale.x != 0.0 && scale.y != 0.0 && scale.z != 0.0, "singular inverse transform in {op_token}");
+        DMat4::from_scale(scale.recip())
+    } else {
+        anyhow::ensure!(m.determinant() != 0.0, "singular inverse transform in {op_token}");
+        m.inverse()
+    };
     anyhow::ensure!(inverse.is_finite(), "non-finite inverse transform in {op_token}");
     Ok(inverse)
 }
@@ -210,6 +215,25 @@ fn value_to_quat_wxyz(v: &Value) -> Option<[f64; 4]> {
 mod tests {
     use super::*;
     use glam::Vec3;
+
+    #[test]
+    fn vector_scale_inverse_avoids_determinant_range_limits() {
+        let stage = Stage::builder().in_memory("inverse-range.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        let scale = stage.create_attribute("/Root.xformOp:scale", "double3").unwrap()
+            .set(Value::Vec3d(openusd::gf::Vec3d::from([1.0; 3]))).unwrap();
+        let path = openusd::sdf::path("/Root").unwrap();
+        for values in [[1e-200, -1e-200, 1e-200], [1e200, -1e200, 1e200]] {
+            scale.clone().set(Value::Vec3d(openusd::gf::Vec3d::from(values))).unwrap();
+            let inverse = build_op_matrix(&stage, &path, "!invert!xformOp:scale", None).unwrap();
+            assert_eq!(inverse, DMat4::from_scale(DVec3::from(values).recip()));
+            assert!((DMat4::from_scale(DVec3::from(values)) * inverse).abs_diff_eq(DMat4::IDENTITY, 1e-14));
+        }
+        for values in [[0.0, 1.0, 1.0], [1e-320, 1.0, 1.0], [f64::INFINITY, 1.0, 1.0]] {
+            scale.clone().set(Value::Vec3d(openusd::gf::Vec3d::from(values))).unwrap();
+            assert!(build_op_matrix(&stage, &path, "!invert!xformOp:scale", None).is_err());
+        }
+    }
 
     #[test]
     fn double_stack_keeps_small_residual_before_render_conversion() {

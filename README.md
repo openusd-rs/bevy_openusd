@@ -860,6 +860,13 @@ asset metadata in anonymous flattened layers remains a separate limitation.
 
 ### Hierarchical point prototypes
 
+Direct mesh prototypes bake their full invertible affine matrix into positions,
+inverse-transpose normals and tangent frames, including shear. Material subsets
+and repeated instances still share the baked assets. `assets/point_affine.usda`
+and `assets/point_affine_reference.usda` provide matrix versus explicit-vertex
+comparison scenes. This does not add shear support to ordinary Transform
+projection or to the multi-node hierarchy path described below.
+
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset
 handles are shared across copies. Nested transforms remain on generated entities

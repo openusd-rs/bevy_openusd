@@ -399,17 +399,8 @@ fn bake_mesh(ctx: &RouteCtx, world: &mut World, proto_path: &openusd::sdf::Path,
         crate::read::geom::read_mesh_at(ctx.stage, proto_path, ctx.time).ok().flatten()?
     };
     let mut mesh = crate::mesh::mesh_from_usd(&mesh_read);
-    if bake_transform && let Some(transform) = crate::read::xform::read_transform_at(ctx.stage, proto_path, ctx.time).ok().flatten() {
-        let transform = Transform {
-            translation: Vec3::from_array(transform.translate),
-            rotation: Quat::from_array(transform.rotate),
-            scale: Vec3::from_array(transform.scale),
-        };
-        if !transform.translation.is_finite() || !transform.rotation.is_finite()
-            || !transform.scale.is_finite() || transform.scale.abs().min_element() == 0.0 {
-            return None;
-        }
-        mesh.transform_by(transform);
+    if bake_transform && let Some(matrix) = crate::read::xform::read_transform_matrix_at(ctx.stage, proto_path, ctx.time).ok()? {
+        crate::mesh::affine::bake(&mut mesh, Mat4::from_cols_array(&matrix))?;
     }
     let (material, warnings) = prototype_material(&proto_ctx, world, || super::material::default_material(&proto_ctx));
     let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh, &material);
@@ -424,6 +415,55 @@ mod tests {
     use crate::route::SchemaRegistry;
     use openusd::sdf::Value;
     use openusd::usd::Stage;
+
+    #[test]
+    fn affine_mesh_prototypes_match_explicit_points_and_share_subsets() {
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/point_affine.usda")).unwrap();
+        let reference = Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/point_affine_reference.usda")).unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let path = openusd::sdf::path("/Panels").unwrap();
+        let mut expected = crate::read::geom::read_mesh_at(&reference, &path, Some(0.0)).unwrap().unwrap();
+        expected.triangulation_points = Some(crate::read::geom::read_mesh_at(&stage, &path, Some(0.0)).unwrap().unwrap().points);
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let entity = world.spawn_empty().id();
+        let instancer = openusd::sdf::path("/Instances").unwrap();
+        PointInstancerRoute.project(&RouteCtx::at(&stage, &instancer, Some(0.0)), &mut world, entity);
+        assert!(world.get::<UsdInstancerWarning>(entity).is_none());
+        let copies: Vec<_> = world.get::<Children>(entity).unwrap().iter().collect();
+        assert_eq!(copies.len(), 3);
+        let mut handles = Vec::new();
+        for copy in copies {
+            let mut parts = Vec::new();
+            for child in world.get::<Children>(copy).unwrap().iter() {
+                let subset = world.get::<super::super::subset::UsdSubset>(child).unwrap();
+                let faces = &expected.subsets.iter().find(|part| part.name == subset.0).unwrap().indices;
+                let reference = crate::mesh::mesh_from_usd_subset(&expected, Some(faces));
+                let handle = &world.get::<Mesh3d>(child).unwrap().0;
+                let actual = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+                for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL] {
+                    let bevy::mesh::VertexAttributeValues::Float32x3(a) = actual.attribute(attribute).unwrap() else { panic!() };
+                    let bevy::mesh::VertexAttributeValues::Float32x3(b) = reference.attribute(attribute).unwrap() else { panic!() };
+                    for (ia, ib) in actual.indices().unwrap().iter().zip(reference.indices().unwrap().iter()) {
+                        let (mut a, mut b) = (Vec3::from(a[ia]), Vec3::from(b[ib]));
+                        if attribute == Mesh::ATTRIBUTE_NORMAL { a = a.normalize(); b = b.normalize(); }
+                        assert!(a.abs_diff_eq(b, 1e-6), "{}: {a:?} != {b:?}", subset.0);
+                    }
+                    assert_eq!(actual.indices().unwrap().len(), reference.indices().unwrap().len());
+                }
+                parts.push((subset.0.clone(), handle.clone()));
+            }
+            parts.sort_by(|a,b| a.0.cmp(&b.0));
+            assert_eq!(parts.len(), 2);
+            handles.push(parts);
+        }
+        assert_eq!(handles[0], handles[1]);
+        assert_eq!(handles[1], handles[2]);
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
 
     #[test]
     fn hierarchy_local_transforms_reject_shear_perspective_and_singular_axes() {

@@ -25,6 +25,36 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Preserve affine transforms on direct mesh point prototypes
+
+Direct mesh prototype baking now uses the authored composed matrix, not its
+lossy TRS decomposition. Positions retain shear; normals use inverse transpose,
+tangent directions use the linear matrix and tangent handedness tracks its
+determinant. Double-precision directional calculations avoid determinant
+underflow at small but valid scales. Non-finite, singular and projective matrices
+still reject the prototype rather than publishing invalid geometry.
+
+Unit coverage checks sheared positions, perpendicular unit normal/tangent
+frames, reflections, tiny scales and invalid matrices. Integration coverage
+compares rendered triangle corners and normal directions against explicit
+reference points, preserving the source triangulation, and checks shared subset
+handles across three instances plus unchanged source-layer data. The initial
+reference test needed the same triangulation basis: triangulating already
+sheared quads can select a different diagonal without changing the surface.
+
+Fixtures: `assets/point_affine.usda`, `assets/point_affine_reference.usda`.
+The hierarchy path still rejects per-node shear; ordinary transform projection
+and GPU point-prototype deformation are not changed by this slice.
+
+All 395 ordinary tests, check-all, build and whitespace checks pass; logs:
+`/tmp/prototype-affine-final-tests.log`, `/tmp/prototype-affine-final2-check.log`,
+`/tmp/prototype-affine-final-build.log`. Captures `target/prototype-affine.png`
+and `target/prototype-affine-reference.png` were inspected at time 0 with eye
+(12,7,16), focus (0,1,0). They differ at 6 of 921,600 pixels, maximum RGB error
+1 and mean 0.000002; zero tolerance correctly fails. Renderer logs contain no
+warnings/errors (`/tmp/prototype-affine-{capture,reference,compare}.log`). This
+is an explicit-geometry reference in Bevy, not a native USD renderer comparison.
+
 ### Repeatable multi-time CPU/GPU image comparisons
 
 Added `scripts/compare_deformation.sh`, using make for both capture modes and

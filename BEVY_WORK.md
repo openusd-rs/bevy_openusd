@@ -25,6 +25,28 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Guarded public TRS reads
+
+Moved the renderer's guarded TRS decomposition into one internal reader helper.
+Public `read_transform`/`read_transform_at` now use the same checks and return an
+explicit matrix-API diagnostic for shear, projective or degenerate matrices,
+rather than silently returning a lossy/invalid decomposition. Reflection and
+ordinary rotated TRS still round-trip within the existing float tolerance.
+The renderer retains its finite-affine residual fallback, including singular and
+tiny scales; full-matrix reader behavior is unchanged.
+
+The new regression exercises public reads with shear, zero/tiny scale, projective
+and reflected/rotated matrices. Existing runtime propagation and reset/history
+tests exercise the shared implementation. `live::current_transform` maps these
+errors to None and `transform_of` maps them to identity as documented; neither
+helper is an exact full-matrix API.
+All 422 ordinary tests pass (seven native export tests ignored), plus clean
+check-all, build and whitespace checks (`/tmp/trs-reader-{tests,check,build}.log`).
+The assembly was recaptured and inspected at the same fixed camera:
+`target/trs_guard_assembly.png`. All 921,600 RGB pixels match the pre-refactor
+capture at zero tolerance; CAPTURE_OK without WARN/ERROR entries. Logs:
+`/tmp/trs-guard-{capture,compare}.log`.
+
 ### Shared captured-asset read handles
 
 Captured root/dependency asset opens now retain an Arc-backed read cursor rather

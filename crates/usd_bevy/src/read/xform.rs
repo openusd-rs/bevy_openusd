@@ -1,7 +1,7 @@
 //! Xform reader — compose `xformOpOrder` into a single 4×4 and decompose to
 //! TRS, read from the composed stage via openusd.
 
-use glam::{DMat4, DVec3, Mat4};
+use glam::{DMat4, DVec3};
 use openusd::sdf::{Path, Value};
 use openusd::usd::{Stage, TimeCode};
 
@@ -30,19 +30,35 @@ pub fn read_transform(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Trans
 }
 
 /// Like [`read_transform`], but resolves attribute values at `time` (a USD
-/// time code). `None` reads the default (unanimated) value.
+/// time code). `None` reads the default (unanimated) value. Errors when the
+/// matrix cannot be represented by a finite, nondegenerate TRS decomposition.
 pub fn read_transform_at(
     stage: &Stage,
     prim: &Path,
     time: Option<f64>,
 ) -> anyhow::Result<Option<Transform3>> {
     let Some(matrix) = read_transform_matrix_at(stage, prim, time)? else { return Ok(None) };
-    let (s, r, t) = Mat4::from_cols_array(&matrix).to_scale_rotation_translation();
-    Ok(Some(Transform3 {
-        translate: [t.x, t.y, t.z],
-        rotate: [r.x, r.y, r.z, r.w],
-        scale: [s.x, s.y, s.z],
-    }))
+    decompose_trs(matrix).map(Some)
+        .ok_or_else(|| anyhow::anyhow!("transform requires the matrix API; no finite nondegenerate TRS decomposition"))
+}
+
+pub(crate) fn decompose_trs(matrix: [f32; 16]) -> Option<Transform3> {
+    use bevy::math::{Mat4, Vec4};
+    let matrix = Mat4::from_cols_array(&matrix);
+    if !matrix.is_finite() || matrix.row(3) != Vec4::W { return None; }
+    let [Some(x), Some(y), Some(z)] = [matrix.x_axis, matrix.y_axis, matrix.z_axis]
+        .map(|axis| axis.truncate().try_normalize()) else { return None; };
+    if x.dot(y).abs() >= 1e-6 || x.dot(z).abs() >= 1e-6 || y.dot(z).abs() >= 1e-6 { return None; }
+    let determinant = matrix.determinant();
+    if !determinant.is_finite() || determinant == 0.0 { return None; }
+    let (scale, rotate, translate) = matrix.to_scale_rotation_translation();
+    if !rotate.is_finite() || !rotate.is_normalized() || !scale.is_finite() { return None; }
+    let rebuilt = Mat4::from_scale_rotation_translation(scale, rotate, translate);
+    let close = [matrix.x_axis, matrix.y_axis, matrix.z_axis].into_iter()
+        .zip([rebuilt.x_axis, rebuilt.y_axis, rebuilt.z_axis]).all(|(a,b)|
+            a.abs_diff_eq(b, a.abs().max_element().max(f32::MIN_POSITIVE) * 1e-5));
+    if !rebuilt.is_finite() || !close { return None; }
+    Some(Transform3 { translate: translate.to_array(), rotate: rotate.to_array(), scale: scale.to_array() })
 }
 
 /// Composed local matrix in column-major order before TRS decomposition.
@@ -214,7 +230,31 @@ fn value_to_quat_wxyz(v: &Value) -> Option<[f64; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
+    use glam::{Mat4, Vec3, Vec4, Quat};
+
+    #[test]
+    fn trs_reads_reject_lossy_or_degenerate_decomposition() {
+        let stage = Stage::builder().in_memory("trs-read.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        stage.create_attribute("/Root.xformOpOrder", "token[]").unwrap()
+            .set(Value::TokenVec(vec!["xformOp:transform".into()])).unwrap();
+        let attribute = stage.create_attribute("/Root.xformOp:transform", "matrix4d").unwrap();
+        let path = openusd::sdf::path("/Root").unwrap();
+        let shear = Mat4::from_cols(Vec4::X, Vec4::new(0.5, 1.0, 0.0, 0.0), Vec4::Z, Vec4::W);
+        for matrix in [shear, Mat4::from_scale(Vec3::ZERO), Mat4::from_scale(Vec3::splat(1e-20)),
+            Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0)] {
+            attribute.clone().set(Value::Matrix4d(openusd::gf::Matrix4d(matrix.to_cols_array().map(f64::from)))).unwrap();
+            assert!(read_transform(&stage, &path).unwrap_err().to_string().contains("matrix API"));
+            assert_eq!(read_transform_matrix_at(&stage, &path, None).unwrap(), Some(matrix.to_cols_array()));
+        }
+        for scale in [Vec3::ONE, Vec3::new(-2.0, 3.0, 4.0)] {
+            let matrix = Mat4::from_scale_rotation_translation(scale, Quat::from_rotation_y(0.7), Vec3::new(2.0, 3.0, 4.0));
+            attribute.clone().set(Value::Matrix4d(openusd::gf::Matrix4d(matrix.to_cols_array().map(f64::from)))).unwrap();
+            let value = read_transform(&stage, &path).unwrap().unwrap();
+            let rebuilt = Mat4::from_scale_rotation_translation(Vec3::from(value.scale), Quat::from_array(value.rotate), Vec3::from(value.translate));
+            assert!(rebuilt.abs_diff_eq(matrix, 1e-5));
+        }
+    }
 
     #[test]
     fn vector_scale_inverse_avoids_determinant_range_limits() {

@@ -911,6 +911,13 @@ edit, then saves and reopens a flattened scene. The optional output also support
 USDC and USDZ. Reference sites stay typeless so they inherit the model's schema.
 This is an executable composition recipe, not a new typed scene DSL.
 
+TRS-only reads (`read_transform` / `read_transform_at`) reject shear, projective
+matrices and degenerate decompositions instead of returning misleading TRS.
+Use `read_transform_stack_at` or `read_transform_stack_f64_at` for full matrices.
+The renderer still preserves finite affine shear/singular transforms through its
+residual path. `live::current_transform` returns `None` on a TRS read error;
+`route::xform::transform_of` retains its documented identity-on-error fallback.
+
 The inspector exposes `matrix4d` attributes in a Matrix attributes section with
 four USD rows (translation in row 4), preserving f64 input precision. Apply a
 default or a time sample using the ordinary attribute controls; these edits keep

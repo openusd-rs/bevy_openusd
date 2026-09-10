@@ -31,23 +31,9 @@ pub(super) fn project(ctx: &RouteCtx, world: &mut World, entity: Entity) {
 
 fn representation(matrix: Mat4) -> Option<(Transform, Mat4)> {
     if !matrix.is_finite() || matrix.row(3) != Vec4::W { return None; }
-    let axes = [matrix.x_axis.truncate(), matrix.y_axis.truncate(), matrix.z_axis.truncate()];
-    let normalized = axes.map(Vec3::try_normalize);
-    let orthogonal = match normalized {
-        [Some(x), Some(y), Some(z)] => x.dot(y).abs() < 1e-6 && x.dot(z).abs() < 1e-6 && y.dot(z).abs() < 1e-6,
-        _ => false,
-    };
-    let determinant = matrix.determinant();
-    let transform = if orthogonal && determinant.is_finite() && determinant != 0.0 {
-        Transform::from_matrix(matrix)
-    } else {
-        Transform::from_translation(matrix.w_axis.truncate())
-    };
-    let rebuilt = if transform.rotation.is_finite() && transform.rotation.is_normalized() && transform.scale.is_finite() { transform.to_matrix() } else { Mat4::ZERO };
-    let close = [matrix.x_axis, matrix.y_axis, matrix.z_axis].into_iter()
-        .zip([rebuilt.x_axis, rebuilt.y_axis, rebuilt.z_axis]).all(|(a,b)|
-            a.abs_diff_eq(b, a.abs().max_element().max(f32::MIN_POSITIVE) * 1e-5));
-    if rebuilt.is_finite() && rebuilt.w_axis.w == 1.0 && close { return Some((transform, Mat4::IDENTITY)); }
+    if let Some(transform) = crate::read::xform::decompose_trs(matrix.to_cols_array()) {
+        return Some((super::to_bevy_transform(transform), Mat4::IDENTITY));
+    }
     let mut residual = matrix;
     residual.w_axis = Vec4::W;
     Some((Transform::from_translation(matrix.w_axis.truncate()), residual))

@@ -64,7 +64,7 @@ pub fn read_transform_stack_at(stage: &Stage, prim: &Path, time: Option<f64>) ->
             .into_iter()
             .map(|t| t.as_str().to_string())
             .collect(),
-        _ => return Ok(None),
+        _ => anyhow::bail!("unsupported xformOpOrder value type"),
     };
 
     let mut m = Mat4::IDENTITY;
@@ -94,23 +94,24 @@ fn build_op_matrix(
 
     let kind = base.strip_prefix("xformOp:").unwrap_or(base);
     let kind = kind.split(':').next().unwrap_or(kind);
+    let invalid = || anyhow::anyhow!("unsupported value type for {op_token}");
 
     let m = match kind {
         "translate" => {
-            Mat4::from_translation(Vec3::from(value_to_vec3f(&raw).unwrap_or([0.0, 0.0, 0.0])))
+            Mat4::from_translation(Vec3::from(value_to_vec3f(&raw).ok_or_else(invalid)?))
         }
-        "scale" => Mat4::from_scale(Vec3::from(value_to_vec3f(&raw).unwrap_or([1.0, 1.0, 1.0]))),
+        "scale" => Mat4::from_scale(Vec3::from(value_to_vec3f(&raw).ok_or_else(invalid)?)),
         "orient" => {
-            let q = value_to_quat_wxyz(&raw).unwrap_or([1.0, 0.0, 0.0, 0.0]);
+            let q = value_to_quat_wxyz(&raw).ok_or_else(invalid)?;
             let q = Quat::from_xyzw(q[1], q[2], q[3], q[0]);
             anyhow::ensure!(q.is_finite() && q.is_normalized(), "invalid orientation in {op_token}");
             Mat4::from_quat(q)
         }
-        "rotateX" => Mat4::from_rotation_x(value_to_scalar_f32(&raw).unwrap_or(0.0).to_radians()),
-        "rotateY" => Mat4::from_rotation_y(value_to_scalar_f32(&raw).unwrap_or(0.0).to_radians()),
-        "rotateZ" => Mat4::from_rotation_z(value_to_scalar_f32(&raw).unwrap_or(0.0).to_radians()),
+        "rotateX" => Mat4::from_rotation_x(value_to_scalar_f32(&raw).ok_or_else(invalid)?.to_radians()),
+        "rotateY" => Mat4::from_rotation_y(value_to_scalar_f32(&raw).ok_or_else(invalid)?.to_radians()),
+        "rotateZ" => Mat4::from_rotation_z(value_to_scalar_f32(&raw).ok_or_else(invalid)?.to_radians()),
         "rotateXYZ" | "rotateYXZ" | "rotateZXY" | "rotateXZY" | "rotateYZX" | "rotateZYX" => {
-            let v = value_to_vec3f(&raw).unwrap_or([0.0, 0.0, 0.0]);
+            let v = value_to_vec3f(&raw).ok_or_else(invalid)?;
             let rx_m = Mat4::from_rotation_x(v[0].to_radians());
             let ry_m = Mat4::from_rotation_y(v[1].to_radians());
             let rz_m = Mat4::from_rotation_z(v[2].to_radians());
@@ -124,8 +125,8 @@ fn build_op_matrix(
                 _ => unreachable!(),
             }
         }
-        "transform" => value_to_mat4_glam(&raw).unwrap_or(Mat4::IDENTITY),
-        _ => Mat4::IDENTITY,
+        "transform" => value_to_mat4_glam(&raw).ok_or_else(invalid)?,
+        _ => anyhow::bail!("unsupported transform op {op_token}"),
     };
 
     anyhow::ensure!(m.is_finite(), "non-finite transform in {op_token}");
@@ -151,6 +152,7 @@ fn value_to_vec3f(v: &Value) -> Option<[f32; 3]> {
     match v {
         Value::Vec3f(a) => Some([a.x, a.y, a.z]),
         Value::Vec3d(a) => Some([a.x as f32, a.y as f32, a.z as f32]),
+        Value::Vec3h(a) => Some([a.x.to_f32(), a.y.to_f32(), a.z.to_f32()]),
         _ => None,
     }
 }
@@ -159,6 +161,7 @@ fn value_to_scalar_f32(v: &Value) -> Option<f32> {
     match v {
         Value::Float(f) => Some(*f),
         Value::Double(d) => Some(*d as f32),
+        Value::Half(h) => Some(h.to_f32()),
         Value::Int(i) => Some(*i as f32),
         Value::Int64(i) => Some(*i as f32),
         _ => None,
@@ -176,6 +179,41 @@ fn value_to_quat_wxyz(v: &Value) -> Option<[f32; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn half_precision_stack_matches_double_reference() {
+        let open = |file| Stage::builder().schema_registry(openusd_schemas::schema_registry())
+            .open(&format!("{}/../../assets/{file}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let stage = open("xform_half.usda");
+        let reference = open("xform_half_reference.usda");
+        let path = openusd::sdf::path("/Panels").unwrap();
+        let actual = read_transform_matrix_at(&stage, &path, None).unwrap().unwrap();
+        assert_eq!(Some(actual), read_transform_matrix_at(&reference, &path, None).unwrap());
+        let expected = Mat4::from_translation(Vec3::new(1.0, 0.5, -2.0))
+            * Mat4::from_rotation_y(30_f32.to_radians()) * Mat4::from_scale(Vec3::new(1.5, 0.5, 2.0));
+        assert!(Mat4::from_cols_array(&actual).abs_diff_eq(expected, 1e-6));
+        for op in ["translate", "rotateY", "scale"] {
+            let direct = build_op_matrix(&stage, &path, &format!("xformOp:{op}"), None).unwrap();
+            let inverse = build_op_matrix(&stage, &path, &format!("!invert!xformOp:{op}"), None).unwrap();
+            assert!((direct * inverse).abs_diff_eq(Mat4::IDENTITY, 1e-6));
+        }
+    }
+
+    #[test]
+    fn wrong_transform_value_types_and_unknown_ops_are_diagnosed() {
+        let stage = Stage::builder().in_memory("wrong-xform-types.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        let path = openusd::sdf::path("/Root").unwrap();
+        for op in ["translate", "scale", "orient", "rotateX", "rotateY", "rotateZ", "rotateXYZ", "transform", "unknown"] {
+            let name = format!("xformOp:{op}");
+            stage.create_attribute(path.append_property(&name).unwrap(), "string").unwrap().set(Value::String("bad".into())).unwrap();
+            let error = build_op_matrix(&stage, &path, &name, None).unwrap_err().to_string();
+            assert!(error.contains(&name));
+        }
+        assert_eq!(build_op_matrix(&stage, &path, "xformOp:translate:missing", None).unwrap(), Mat4::IDENTITY);
+        stage.create_attribute("/Root.xformOpOrder", "string").unwrap().set(Value::String("bad".into())).unwrap();
+        assert!(read_transform_stack_at(&stage, &path, None).unwrap_err().to_string().contains("xformOpOrder"));
+    }
 
     #[test]
     fn invalid_orientation_and_singular_inverse_return_errors() {

@@ -902,6 +902,12 @@ layout. The edit/undo sequences reload the time sample after applying or undoing
 it, checking the authored result rather than only the text draft. See
 `BEVY_WORK.md` for capture settings and inspected evidence.
 
+`assets/xform_half.usda` exercises half-precision translation, rotation and scale
+against `assets/xform_half_reference.usda` using double-precision attributes.
+Unsupported op kinds or value types now produce transform diagnostics instead
+of disappearing into identity. Half-quaternion orientation and scalar-axis
+translation/scale support remain open.
+
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset
 handles are shared across copies. Nested transforms remain on generated entities

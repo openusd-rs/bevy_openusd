@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Half-precision transform values and explicit unsupported-op errors
+
+Transform reading now decodes half scalars and half3 vectors for the existing
+rotation/translation/scale routes. Wrong value types, malformed op-order types
+and unsupported authored op kinds return diagnostics rather than silently
+substituting identity. Missing op values retain the existing identity fallback.
+Ordinary projection surfaces these errors through `UsdTransformError` and keeps
+the previous valid pose. Half quaternion orientations and scalar-axis
+translation/scale ops remain unsupported; they are no longer silently ignored.
+
+The supported half scalar/vector forms were checked against the official
+[OpenUSD xform-op implementation](https://raw.githubusercontent.com/PixarAnimationStudios/OpenUSD/release/pxr/usd/usdGeom/xformOp.cpp).
+Reader tests compare a half stack to a double stack and an independently
+constructed matrix, check inverse operations, and verify wrong-type/unknown-op
+diagnostics. Fixtures `assets/xform_half{,_reference}.usda` render identically at
+time 0 with eye (6,4,8), focus (0,1,0): zero changed pixels of 921,600 at strict
+zero RGB tolerance. Both `target/xform_half{,_reference}.png` were inspected;
+capture logs have CAPTURE_OK without WARN/ERROR entries. This is a Bevy
+half-versus-double reference, not native USD renderer parity. Logs:
+`/tmp/xform_half{,_reference}-capture.log`, `/tmp/xform-half-compare.log`.
+All 410 ordinary tests pass, seven native tests ignored; check-all, build and
+whitespace checks pass. Logs: `/tmp/xform-half-{tests,check,build}.log`.
+
 ### Matrix widget input replay
 
 The existing `USD_UI_REPLAY` hook now has checked-in matrix load/edit/undo

@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Viewer Open composition guard and readable failures
+
+Reproduced the viewer command path accepting a document with a missing sublayer
+as Ready (`/tmp/editor-composition-before.log`). Open now uses the composition
+validator before loading textures or replacing the active session/projection.
+The command-bridge regression checks missing sublayers, reference layers, root
+and sub-root targets, and payload layers. Every rejected open retains document
+identity, selection, the existing entity, its edited visibility and undo history;
+undo still succeeds afterward.
+
+The first actual failure capture exposed clipped/overlapping status text. The
+outliner now uses the existing wrapped-status helper for multiline messages,
+while short statuses retain a one-row readout. No Mara changes were made.
+Inspected `target/viewer-ui-captures/wrapped-composition-error.png`: the Failed
+prefix, asset path and prim target are readable. Also inspected
+`target/viewer-ui-captures/spot-composition-guard.png`: the original collection
+Spot opens as Ready and renders. This is a positive launch/render regression,
+not a new geometry/material fidelity certification or a native picker interaction.
+
+All 376 ordinary tests, check-all, build and whitespace checks pass; logs:
+`/tmp/editor-composition-{tests,check,build}.log`. The first clipped capture is
+`target/viewer-ui-captures/invalid-composition-open.png` for comparison.
+
 ### Deferred sub-root target diagnostics
 
 Extended the recorded reference-diagnostic patch to absent external sub-root

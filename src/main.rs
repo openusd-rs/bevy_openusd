@@ -319,12 +319,18 @@ fn outliner_pane(
     accent: MaraColor32,
     visibility: &std::collections::HashMap<String, bool>,
 ) {
-    // Load status (shows failures like "FAILED to open … unsupported .usd").
+    let lines = lighting::status_lines(status);
+    let status_pod = Pod::new(MaraId::new(("usd.outliner", "status")));
+    let status_pod = if lines.len() > 1 {
+        status_pod.with_custom_units(lines.len(), move |ui| {
+            for line in lines { ui.label(&line); }
+        })
+    } else { status_pod.with_readout("state", status) };
     body.add_normal(
         "usd.status",
         "Status",
         "list",
-        vec![Pod::new(MaraId::new(("usd.outliner", "status"))).with_readout("file", status)],
+        vec![status_pod],
     );
 
     let tree_root = MaraId::new(("usd.outliner", "tree_root"));

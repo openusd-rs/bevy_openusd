@@ -55,6 +55,9 @@ composition, reads default attribute values and asset time samples, and checks
 reported composition errors. Failure retains any previous projection and reports
 `UsdSceneState::Failed`. Unselected variant branches are not eagerly validated.
 `UsdSource::open_stage` itself retains upstream's permissive partial-stage behavior.
+The viewer's Open command applies the same composition validation before replacing
+the current document. Rejected opens retain selection and edit history; long
+failure messages wrap in the outliner's Status section.
 
 For reusable in-memory assemblies, `UsdSource::snapshot(path, bytes)` disables
 filesystem fallback. `root.with_dependency(&model)` returns a new source containing

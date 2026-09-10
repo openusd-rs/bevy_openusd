@@ -138,6 +138,7 @@ fn process_commands(world: &mut World) {
             std::fs::read(path).map_err(anyhow::Error::from)
                 .and_then(|bytes| crate::UsdSource::new(path, bytes).map_err(anyhow::Error::from)).and_then(|source| {
                     let stage = source.open_stage()?;
+                    crate::UsdSource::validate_composition(&stage)?;
                     let textures = prepare_textures(&stage, &source)?;
                     if !textures.is_empty() && !world.contains_resource::<Assets<Image>>() {
                         anyhow::bail!("image assets are unavailable for this document");
@@ -1129,6 +1130,48 @@ def Xform "Asset" (prepend variantSets = "shape") {
         bridge.send(EditorCommand::Payload { prim: "/Missing".into(), loaded: true }).unwrap();
         app.update();
         assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+    }
+
+    #[test]
+    fn invalid_composition_open_preserves_document_selection_and_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let current = directory.path().join("current.usda");
+        std::fs::write(&current, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        std::fs::write(directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Present\" {}\n").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(current.to_string_lossy().into_owned())).unwrap();
+        bridge.send(EditorCommand::Select(Some("/Root".into()))).unwrap();
+        bridge.send(EditorCommand::Edit(EditorEdit::Attribute {
+            prim: "/Root".into(), name: "visibility".into(), type_name: "token".into(), value: Value::Token("invisible".into()),
+        })).unwrap();
+        app.update();
+        let entity = app.world().resource::<crate::live::PrimEntities>().entity("/Root").unwrap();
+        let document_id = bridge.view().unwrap().document.document_id;
+        for (name, text) in [
+            ("layer", "#usda 1.0\n(subLayers = [@missing.usda@])\ndef Scope \"Broken\" {}\n"),
+            ("reference", "#usda 1.0\ndef Scope \"Broken\" (prepend references = @missing.usda@</Model>) {}\n"),
+            ("root-target", "#usda 1.0\ndef Scope \"Broken\" (prepend references = @model.usda@</Absent>) {}\n"),
+            ("subroot-target", "#usda 1.0\ndef Scope \"Broken\" (prepend references = @model.usda@</Present/Absent>) {}\n"),
+            ("payload", "#usda 1.0\ndef Scope \"Broken\" (prepend payload = @missing.usda@</Model>) {}\n"),
+        ] {
+            let path = directory.path().join(format!("{name}.usda"));
+            std::fs::write(&path, text).unwrap();
+            bridge.send(EditorCommand::Open(path.to_string_lossy().into_owned())).unwrap();
+            app.update();
+            let view = bridge.view().unwrap();
+            assert!(view.status.starts_with("Failed:"), "{name}: {}", view.status);
+            assert_eq!(view.document.document_id, document_id);
+            assert_eq!(view.document.selected.as_deref(), Some("/Root"));
+            assert!(view.document.can_undo);
+            assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/Root"), Some(entity));
+            assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
+        }
+        bridge.send(EditorCommand::Undo).unwrap();
+        app.update();
+        assert_ne!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
+        assert!(bridge.view().unwrap().document.can_redo);
     }
 
     #[test]

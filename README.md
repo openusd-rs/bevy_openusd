@@ -1269,6 +1269,14 @@ the selected path; missing cameras wait until the capture timeout. The tool does
 not activate the source camera itself. Camera transforms must be representable as
 Bevy TRS; sheared camera transforms are not fidelity-validated.
 
+The offscreen tool records `camera_eye`, `camera_forward`, `camera_up`, and
+column-major `camera_world_from_view_cols` / `camera_clip_from_view_cols` after
+camera/transform updates, in `Last` when requesting readback. These describe the
+effective Bevy camera, including authored aperture offsets. `requested_eye` and
+`requested_target` are only the CLI fallback settings (formerly the misleading
+`eye` / `target` fields); they are not the active view when a USD camera is chosen.
+This metadata is a request-time snapshot, not a GPU completion timestamp.
+
 Perspective aperture offsets use `route::camera::UsdPerspectiveProjection` inside
 `Projection::Custom`; unshifted cameras retain `Projection::Perspective`.
 Viewport resizing preserves vertical FOV and physical aperture-offset/focal-length

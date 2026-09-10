@@ -56,6 +56,52 @@ subdivision globally merely to conceal these artifacts. Full visual fidelity
 and the intermittent black editor-window issue remain open. This checkpoint
 changes documentation only; no workspace test/build rerun is claimed.
 
+## Effective camera capture metadata and matched Spot view
+
+The shared-camera probe uses `target/spot-matched-polygon.usda`, sublayering
+the fresh root export above, with stronger `subdivisionScheme = "none"`
+opinions on all 26 reported meshes. Its `/__ReferenceCamera` is Z-up, with
+eye (1.6,-1.8,0.8), focus (0,0,-0.15), focal length 50, vertical aperture
+41.4213562373095 and horizontal aperture 73.63796664410579. Both renderers
+read that same camera at time 0 and produce 1280x720 images. Native invocation:
+
+```sh
+make capture-reference ARGS='--renderer Embree --disableGpu --camera /__ReferenceCamera --imageWidth 1280 target/spot-matched-polygon.usda target/spot-matched-native.png'
+USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off USD_CAPTURE_CAMERA=/__ReferenceCamera \
+make run CARGO='cargo --offline' APP_TARGET='--example viewer_capture' \
+ARGS='target/spot-matched-polygon.usda target/spot-matched-bevy.png 0'
+```
+
+Both images were inspected. Framing agrees visually and both show faceting;
+Embree's unsupported materials, camera light and black background still
+prevent shading/pixel parity claims. This explicit polygon probe does not
+validate subdivision, nor prove every seam is source-authored. Original
+collection files remain untouched. Logs: `/tmp/spot-matched-{native,bevy}.log`.
+
+This exposed misleading offscreen metadata: `eye` and `target` recorded CLI
+fallbacks even with an authored camera active. They are now explicitly named
+`requested_eye` and `requested_target`. Effective eye, forward, up, world-from-view
+and clip-from-view column-major matrices are recorded separately. The screenshot
+request runs in Last, after camera and transform updates, and snapshots the
+computed camera projection rather than reconstructing it from focal settings.
+It remains request-time metadata, not a GPU completion timestamp.
+
+The new GPU capture `target/spot-matched-bevy-camera-metadata.png` reports
+effective eye (1.6,0.79999983,1.7999998), distinct from requested (6,4,8),
+and projection scales 1.357995 / 2.4142134. Strict RGB comparison against
+the preceding Bevy capture changes zero of 921600 pixels. Logs:
+`/tmp/spot-matched-bevy-camera-metadata.log`,
+`/tmp/spot-camera-metadata-compare.log`.
+
+Validation: 511 ordinary tests pass, 13 ignored; check-all and viewer build
+pass. Logs: `/tmp/capture-camera-all-tests.log`,
+`/tmp/capture-camera-{tests,check,build}.log`. Unit coverage checks effective
+transform/projection serialization and the renamed fallback metadata.
+All 15 live-clock GPU cases also pass after the scheduling change, retaining
+the existing strict RGB-zero gates and RGB-one tolerances for the two normal
+cases. Evidence: `target/live-camera-metadata-regression/results.tsv` and
+`/tmp/camera-metadata-live.log`. This does not resolve the full Bevy checklist.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

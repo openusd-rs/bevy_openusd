@@ -242,6 +242,44 @@ Validation: 515 ordinary tests pass, 13 ignored; check-all, viewer build and
 git diff --check pass. Logs: `/tmp/mesh-index-report-{tests,check,build}.log`.
 Full visual acceptance and the intermittent black host-window issue remain open.
 
+## UR5 native polygon and subdivision controls
+
+Exported the untouched collection root through `scene_report` into
+`target/ur5-reference-source.usda` (`/tmp/ur5-reference-export.log`). Two diagnostic
+wrapper layers share `/__ReferenceCamera`, converted from the preceding Bevy
+capture into source Z-up coordinates. Both use a 45-degree vertical field of view
+and 1280x720 output. Relative assets in the root export are not rebased.
+
+- `target/ur5-reference-polygon.usda` overrides all 28 reported mesh subdivision
+  schemes to none. Native Embree and Bevy read the same wrapper and camera.
+  `target/ur5-polygon-{native,bevy}.png` were both inspected. Framing agrees
+  visually; Bevy's fine cap striping is absent but cylindrical parts become
+  faceted. This control changes generated normals as well as subdivision
+  semantics, so it is not proof that the source is a polygon mesh or a repair.
+- `target/ur5-reference-subdivision.usda` retains the source's unauthored
+  Catmull-Clark defaults and adds only the camera. Native Embree uses complexity
+  low; Bevy explicitly enables finite subdivision level 1. Both
+  `target/ur5-subdivision-{native,bevy}.png` were inspected. Bevy has conspicuous
+  striping on several parts; the native image does not show the same pattern.
+  Native complexity low is not asserted to equal our refinement/normal model.
+
+Commands use `make capture-reference --renderer Embree --disableGpu` through ARGS
+and `make run --example viewer_capture` through APP_TARGET, with the shared
+camera selected. Bevy runs use forward rendering and shadows off; all four
+processes exit successfully. Logs: `/tmp/ur5-{polygon,subdivision}-{native,bevy}.log`.
+Embree reports unsupported Material prims and GPU-disabled color correction;
+its lighting and shading differ. No pixel/material parity claim is made.
+
+Current source confirms absent normals use flat shading for explicit none or
+bilinear, and generated smooth normals for Catmull-Clark cages. The shoulder
+report already records four degenerate triangles and 64 reversed normal corners
+despite zero invalid referenced vectors. Valid vector length alone therefore
+does not establish suitable smoothing. The next isolation target is generated
+normals/subdivision, retaining source topology and material subsets rather than
+forcing flat shading or welding assets. These probes change only diagnostic
+artifacts/documentation; no new workspace test/build result is claimed.
+Full rendering acceptance remains unproven.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

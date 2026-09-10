@@ -834,6 +834,27 @@ def Xform "Model" (
             world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
                 == Some(&[0, 255, 0, 255])));
         if removal_adapter {
+            let textures = texture.parent().unwrap();
+            let moved_textures = directory.path().join("moved-textures");
+            let retained_images = image_handles(app.world());
+            std::fs::rename(textures, &moved_textures).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            assert_eq!(image_handles(app.world()), retained_images);
+            assert!(retained_images.iter().all(|handle|
+                app.world().resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                    == Some(&[0, 255, 0, 255])));
+            std::fs::write(moved_textures.join("pixel.png"), pixel_png([255, 255, 0, 255])).unwrap();
+            std::fs::rename(&moved_textures, textures).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+                && image_handles(world).iter().all(|handle|
+                    world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                        == Some(&[255, 255, 0, 255])));
+            std::fs::write(&texture, pixel_png([0, 255, 0, 255])).unwrap();
+            tick_until(&mut app, |world| image_handles(world).iter().all(|handle|
+                world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                    == Some(&[0, 255, 0, 255])));
             let models = layer.parent().unwrap();
             let moved = directory.path().join("moved-models");
             let retained_meshes = mesh_handles(app.world());

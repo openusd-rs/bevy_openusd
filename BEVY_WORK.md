@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Texture folder recovery evidence
+
+The native AssetServer regression now also renames the texture directory away,
+requires both roots to report Failed, and checks that the previous image handles
+and green pixel bytes remain installed. It changes the image to yellow while the
+directory is displaced, restores the directory and requires Ready plus the new
+pixels in both instances. A subsequent green file edit verifies continued watching.
+The expanded regression passes: `/tmp/texture-folder-native.log`. This is installed
+image/state evidence, not a new GPU screenshot or editor-watcher validation.
+
+A direct TrackingReader regression requests a nonexistent file, verifies its
+path is invalidated by a later folder addition, creates the file and reads it
+successfully; repeated reads do not duplicate the path entry.
+All 461 ordinary workspace tests (eight ignored) and 396 usd_bevy file_watcher
+feature tests (13 ignored) pass, along with check-all, build and whitespace
+validation: `/tmp/texture-folder-{tests,feature,check,build}.log`.
+
 ### Folder dependency invalidation
 
 The file-source adapter delegates I/O to Bevy's FileAssetReader and records file

@@ -130,6 +130,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tracking_reader_records_missing_files_before_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let requested = Arc::new(RequestedPaths::default());
+        let reader = TrackingReader {
+            reader: FileAssetReader::new(directory.path()), requested: requested.clone(),
+        };
+        let path = Path::new("missing/model.usda");
+        assert!(matches!(bevy::tasks::block_on(reader.read(path)), Err(AssetReaderError::NotFound(_))));
+        assert_eq!(requested.invalidations(&AssetSourceEvent::AddedFolder("missing".into())),
+            [path.to_owned()].into());
+        std::fs::create_dir(directory.path().join("missing")).unwrap();
+        std::fs::write(directory.path().join(path), b"#usda 1.0\n").unwrap();
+        assert!(bevy::tasks::block_on(reader.read(path)).is_ok());
+        assert_eq!(requested.0.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn folder_events_invalidate_only_requested_descendants() {
         let requested = RequestedPaths::default();
         for path in ["models/a.usda", "models/nested/b.usda", "models-old/c.usda", "next/d.usda"] {

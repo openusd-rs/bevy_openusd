@@ -463,8 +463,18 @@ expanded equivalents on the right, with Bspline above Catmull-Rom:
 USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='assets/pinned_curves.usda target/pinned-curves.png 0 0 0.5 8 0 0.5 0'
 ```
 
-Each row should have matching shapes and endpoint heights. Tessellation remains
-eight samples per segment rather than adaptive or exact-limit rendering.
+Each row should have matching shapes and endpoint heights. Tessellation defaults
+to eight samples per segment rather than adaptive or exact-limit rendering.
+Library applications can choose 1–64 samples before loading/projecting curves:
+
+```rust
+app.insert_resource(usd_bevy::route::curves::UsdCurveSettings::new(32)?);
+```
+
+The setting controls cubic positions and display-primvar interpolation together;
+linear curves are unchanged. Existing output-size limits still apply. Changing
+the resource alone does not trigger a resync: reload or explicitly reproject
+existing curves to apply it. This does not add width-aware curve surfaces.
 
 `assets/periodic_bezier.usda` compares a three-control-point periodic Bezier
 with an explicitly closed four-point nonperiodic equivalent. Both render the

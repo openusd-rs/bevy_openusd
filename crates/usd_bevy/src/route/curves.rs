@@ -4,7 +4,7 @@
 //! Bevy has no native curve primitive, so each curve is drawn as line segments.
 //! Linear curves connect their vertices directly; **cubic** curves are
 //! tessellated (PLAN Phase 6e) — each segment is evaluated through its basis
-//! matrix (bezier / b-spline / catmull-rom) at [`CUBIC_STEPS`] samples, so the
+//! matrix (bezier / b-spline / catmull-rom) at configurable samples, so the
 //! rendered polyline follows the smooth curve rather than its control hull.
 
 use bevy::asset::RenderAssetUsages;
@@ -25,6 +25,23 @@ pub struct CurvesRoute;
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct UsdCurveError(pub String);
 
+/// Cubic samples per segment, applied when curves are projected.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct UsdCurveSettings { cubic_steps: usize }
+
+impl UsdCurveSettings {
+    pub fn new(cubic_steps: usize) -> Result<Self, String> {
+        if !(1..=64).contains(&cubic_steps) { return Err("cubic curve steps must be 1..=64".into()); }
+        Ok(Self { cubic_steps })
+    }
+
+    pub fn cubic_steps(self) -> usize { self.cubic_steps }
+}
+
+impl Default for UsdCurveSettings {
+    fn default() -> Self { Self { cubic_steps: CUBIC_STEPS } }
+}
+
 pub const MAX_CURVE_VERTICES: usize = 1_000_000;
 pub const MAX_CURVE_INDICES: usize = 2_000_000;
 
@@ -38,7 +55,7 @@ fn accumulate_curve_output(total: &mut (usize, usize), vertices: usize, indices:
     Ok(())
 }
 
-fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
+fn validate_curves(ctx: &RouteCtx, steps: usize) -> Result<(), String> {
     let curves = BasisCurves::get(ctx.stage, ctx.path.clone()).map_err(|error| error.to_string())?
         .ok_or("missing BasisCurves schema")?;
     let points = read_points(&curves, ctx.time).ok_or("missing or invalid curve points")?;
@@ -76,7 +93,7 @@ fn validate_curves(ctx: &RouteCtx) -> Result<(), String> {
         varying_count = varying_count.checked_add(varying).ok_or("varying sample count overflow")?;
         let segments = varying - usize::from(wrap != "periodic");
         let (vertices, segments) = if kind == "linear" { (count, segments) } else {
-            let segments = segments.checked_mul(CUBIC_STEPS).ok_or("curve segment count overflow")?;
+            let segments = segments.checked_mul(steps).ok_or("curve segment count overflow")?;
             (segments.checked_add(1).ok_or("curve vertex count overflow")?, segments)
         };
         accumulate_curve_output(&mut output_size, vertices, segments.checked_mul(2).ok_or("curve index count overflow")?)?;
@@ -134,8 +151,7 @@ fn read_token(attr: openusd::usd::Attribute, default: &str, time: Option<f64>) -
     }
 }
 
-/// Samples per cubic segment. 8 keeps meshes light while removing the visible
-/// faceting of a raw control hull.
+/// Default samples per cubic segment.
 pub const CUBIC_STEPS: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -198,7 +214,7 @@ fn eval(cvs: [[f32; 3]; 4], w: [f32; 4]) -> [f32; 3] {
 
 /// Append a tessellated cubic curve (points `cv`, `periodic` wrap) to the
 /// output position + line-index buffers.
-fn tessellate_cubic(cv: &[[f32; 3]], basis: Basis, periodic: bool, out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>) {
+fn tessellate_cubic(cv: &[[f32; 3]], basis: Basis, periodic: bool, out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>, steps: usize) {
     let n = cv.len();
     if n < 4 && !(periodic && n >= 3) {
         // Not enough CVs for a cubic segment; fall back to a polyline.
@@ -223,8 +239,8 @@ fn tessellate_cubic(cv: &[[f32; 3]], basis: Basis, periodic: bool, out: &mut Vec
         // First sample of a segment coincides with the previous segment's last;
         // start at step 1 for continued segments to avoid duplicate joints.
         let start = if s == 0 { 0 } else { 1 };
-        for step in start..=CUBIC_STEPS {
-            let t = step as f32 / CUBIC_STEPS as f32;
+        for step in start..=steps {
+            let t = step as f32 / steps as f32;
             let cur = out.len() as u32;
             out.push(eval(cvs, basis.weights(t as f64).map(|weight| weight as f32)));
             if cur > 0 && !(s == 0 && step == 0) {
@@ -235,9 +251,9 @@ fn tessellate_cubic(cv: &[[f32; 3]], basis: Basis, periodic: bool, out: &mut Vec
     }
 }
 
-fn tessellate_pinned(cv: &[[f32; 3]], basis: Basis, out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>) {
+fn tessellate_pinned(cv: &[[f32; 3]], basis: Basis, out: &mut Vec<[f32; 3]>, idx: &mut Vec<u32>, steps: usize) {
     if cv.len() < 2 || basis == Basis::Bezier {
-        tessellate_cubic(cv, basis, false, out, idx);
+        tessellate_cubic(cv, basis, false, out, idx, steps);
         return;
     }
     let phantom = |a: [f32; 3], b: [f32; 3]| std::array::from_fn(|i| (2.0 * a[i] as f64 - b[i] as f64) as f32);
@@ -245,7 +261,7 @@ fn tessellate_pinned(cv: &[[f32; 3]], basis: Basis, out: &mut Vec<[f32; 3]>, idx
     expanded.push(phantom(cv[0], cv[1]));
     expanded.extend_from_slice(cv);
     expanded.push(phantom(cv[cv.len() - 1], cv[cv.len() - 2]));
-    tessellate_cubic(&expanded, basis, false, out, idx);
+    tessellate_cubic(&expanded, basis, false, out, idx, steps);
 }
 
 /// Append consecutive straight segments and optional last-to-first closure.
@@ -263,7 +279,7 @@ fn emit_polyline(cv: &[[f32; 3]], periodic: bool, out: &mut Vec<[f32; 3]>, idx: 
 
 /// Positions + line indices for every curve. Linear curves connect vertices
 /// directly; cubic curves are tessellated through their basis.
-fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<[f32; 4]>>)> {
+fn line_geometry(ctx: &RouteCtx, steps: usize) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<[f32; 4]>>)> {
     let curves = BasisCurves::get(ctx.stage, ctx.path.clone()).ok()??;
     let points = read_points(&curves, ctx.time)?;
     if points.is_empty() {
@@ -295,17 +311,17 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<
         let cv = &points[cursor..end];
         let first = out.len();
         if is_cubic && wrap == "pinned" {
-            tessellate_pinned(cv, basis, &mut out, &mut indices);
+            tessellate_pinned(cv, basis, &mut out, &mut indices, steps);
         } else if is_cubic {
-            tessellate_cubic(cv, basis, periodic, &mut out, &mut indices);
+            tessellate_cubic(cv, basis, periodic, &mut out, &mut indices, steps);
         } else {
             emit_polyline(cv, periodic, &mut out, &mut indices);
         }
         let pinned = wrap == "pinned" && basis != Basis::Bezier;
         let cubic = is_cubic && (cv.len() >= 4 || (periodic && cv.len() >= 3) || (pinned && cv.len() >= 2));
         let samples = out.len() - first;
-        let segments = if cubic { samples.saturating_sub(1) / CUBIC_STEPS } else { 0 };
-        let layout = CurveSampling { curve, point_offset: cursor, varying_offset, count: cv.len(), segments, basis, cubic, periodic, pinned };
+        let segments = if cubic { samples.saturating_sub(1) / steps } else { 0 };
+        let layout = CurveSampling { steps, curve, point_offset: cursor, varying_offset, count: cv.len(), segments, basis, cubic, periodic, pinned };
         if let Some(colors) = &mut colors {
             for sample in 0..samples {
                 let rgb = color.as_ref().map(|value| layout.sample(value, sample, DVec3::ONE)).unwrap_or(DVec3::ONE);
@@ -320,6 +336,7 @@ fn line_geometry(ctx: &RouteCtx) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<
 }
 
 struct CurveSampling {
+    steps: usize,
     curve: usize,
     point_offset: usize,
     varying_offset: usize,
@@ -350,8 +367,8 @@ impl CurveSampling {
             let offset = if value.interpolation == Interpolation::Vertex { self.point_offset } else { self.varying_offset };
             return lookup(offset + sample);
         }
-        let segment = (sample / CUBIC_STEPS).min(self.segments - 1);
-        let t = (sample - segment * CUBIC_STEPS) as f64 / CUBIC_STEPS as f64;
+        let segment = (sample / self.steps).min(self.segments - 1);
+        let t = (sample - segment * self.steps) as f64 / self.steps as f64;
         if value.interpolation == Interpolation::Varying {
             let next = if self.periodic { (segment + 1) % self.segments } else { segment + 1 };
             return lookup(self.varying_offset + segment) * (1. - t) + lookup(self.varying_offset + next) * t;
@@ -386,13 +403,14 @@ impl PrimRoute for CurvesRoute {
         {
             return;
         }
-        if let Err(error) = validate_curves(ctx) {
+        let steps = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().cubic_steps;
+        if let Err(error) = validate_curves(ctx, steps) {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             world.entity_mut(entity).insert(UsdCurveError(error));
             return;
         }
         world.entity_mut(entity).remove::<UsdCurveError>();
-        let Some((points, indices, colors)) = line_geometry(ctx) else {
+        let Some((points, indices, colors)) = line_geometry(ctx, steps) else {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             return;
         };
@@ -483,6 +501,8 @@ mod tests {
         points.clone().set(Value::Vec3fVec(vec![[0.,0.,0.].into();count])).unwrap();
         counts.clone().set(Value::IntVec(vec![count as i32])).unwrap();
         let path = openusd::sdf::path("/Curve").unwrap();
+        assert!(validate_curves(&RouteCtx::new(&stage, &path), 1).is_ok());
+        assert!(validate_curves(&RouteCtx::new(&stage, &path), 64).is_err());
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<Assets<StandardMaterial>>();
@@ -575,7 +595,7 @@ mod tests {
             }
             stage.create_attribute("/Curve.points", "point3f[]").unwrap().set(Value::Vec3fVec(vec![[0.,0.,0.].into();count])).unwrap();
             stage.create_attribute("/Curve.curveVertexCounts", "int[]").unwrap().set(Value::IntVec(vec![count as i32])).unwrap();
-            let result = validate_curves(&RouteCtx::new(&stage, &path));
+            let result = validate_curves(&RouteCtx::new(&stage, &path), CUBIC_STEPS);
             assert_eq!(result.is_ok(), valid, "{kind}/{basis}/{wrap}/{count}: {result:?}");
         }
     }
@@ -647,7 +667,7 @@ def BasisCurves "Curve" {
         let stage = source.open_stage().unwrap();
         for (name, midpoints) in [("Vertex", [[0.125,0.75,0.125], [0.875,0.75,0.125]]), ("Varying", [[0.5,0.,0.5];2])] {
             let path = openusd::sdf::path(&format!("/{name}")).unwrap();
-            let (positions, _, colors) = line_geometry(&RouteCtx::new(&stage, &path)).unwrap();
+            let (positions, _, colors) = line_geometry(&RouteCtx::new(&stage, &path), CUBIC_STEPS).unwrap();
             let colors = colors.unwrap();
             assert_eq!(colors.len(), positions.len());
             assert_eq!(colors.len(), 2 * (CUBIC_STEPS + 1));
@@ -671,10 +691,10 @@ def BasisCurves "Curve" {
                 let cv = &controls[..count];
                 let mut positions = Vec::new();
                 let mut indices = Vec::new();
-                if pinned { tessellate_pinned(cv, basis, &mut positions, &mut indices); }
-                else { tessellate_cubic(cv, basis, periodic, &mut positions, &mut indices); }
+                if pinned { tessellate_pinned(cv, basis, &mut positions, &mut indices, CUBIC_STEPS); }
+                else { tessellate_cubic(cv, basis, periodic, &mut positions, &mut indices, CUBIC_STEPS); }
                 let value = MeshPrimvar { values: cv.iter().copied().map(|value| Vec3::from(value).as_dvec3()).collect(), interpolation: Interpolation::Vertex, indices: Vec::new() };
-                let layout = CurveSampling { curve: 0, point_offset: 0, varying_offset: 0, count, segments: (positions.len()-1)/CUBIC_STEPS, basis, cubic: true, periodic, pinned };
+                let layout = CurveSampling { steps: CUBIC_STEPS, curve: 0, point_offset: 0, varying_offset: 0, count, segments: (positions.len()-1)/CUBIC_STEPS, basis, cubic: true, periodic, pinned };
                 for (sample, expected) in positions.into_iter().enumerate() {
                     assert!(layout.sample(&value, sample, DVec3::ONE).abs_diff_eq(Vec3::from(expected).as_dvec3(), 1e-5));
                 }
@@ -685,7 +705,7 @@ def BasisCurves "Curve" {
     #[test]
     fn varying_periodic_samples_wrap_within_their_batch() {
         let value = MeshPrimvar { values: vec![99., 0., 1., 2.], interpolation: Interpolation::Varying, indices: vec![0,3,2,1] };
-        let layout = CurveSampling { curve: 1, point_offset: 7, varying_offset: 1, count: 3, segments: 3, basis: Basis::Bspline, cubic: true, periodic: true, pinned: false };
+        let layout = CurveSampling { steps: CUBIC_STEPS, curve: 1, point_offset: 7, varying_offset: 1, count: 3, segments: 3, basis: Basis::Bspline, cubic: true, periodic: true, pinned: false };
         assert_eq!(layout.sample(&value, 0, -1.), 2.);
         assert_eq!(layout.sample(&value, CUBIC_STEPS, -1.), 1.);
         assert_eq!(layout.sample(&value, 2*CUBIC_STEPS, -1.), 0.);
@@ -739,8 +759,8 @@ def BasisCurves "Curve" {
         let stage = source.open_stage().unwrap();
         let periodic = openusd::sdf::path("/Periodic").unwrap();
         let explicit = openusd::sdf::path("/Explicit").unwrap();
-        let actual = line_geometry(&RouteCtx::new(&stage, &periodic)).unwrap();
-        assert_eq!(actual, line_geometry(&RouteCtx::new(&stage, &explicit)).unwrap());
+        let actual = line_geometry(&RouteCtx::new(&stage, &periodic), CUBIC_STEPS).unwrap();
+        assert_eq!(actual, line_geometry(&RouteCtx::new(&stage, &explicit), CUBIC_STEPS).unwrap());
         assert_eq!(actual.0.len(), CUBIC_STEPS + 1);
         assert_eq!(actual.1.len(), CUBIC_STEPS * 2);
         assert_eq!(actual.0.first(), actual.0.last());
@@ -754,13 +774,13 @@ def BasisCurves "Curve" {
         for basis in ["Bspline", "CatmullRom"] {
             let pinned = openusd::sdf::path(&format!("/Pinned{basis}")).unwrap();
             let explicit = openusd::sdf::path(&format!("/Explicit{basis}")).unwrap();
-            let actual = line_geometry(&RouteCtx::new(&stage, &pinned)).unwrap();
-            assert_eq!(actual, line_geometry(&RouteCtx::new(&stage, &explicit)).unwrap());
+            let actual = line_geometry(&RouteCtx::new(&stage, &pinned), CUBIC_STEPS).unwrap();
+            assert_eq!(actual, line_geometry(&RouteCtx::new(&stage, &explicit), CUBIC_STEPS).unwrap());
             assert_eq!(actual.0.len(), 3 * CUBIC_STEPS + 1);
             assert!(Vec3::from(actual.0[0]).distance(Vec3::new(-1.,0.,0.)) < 1e-6);
             assert!(Vec3::from(*actual.0.last().unwrap()).distance(Vec3::new(1.,0.,0.)) < 1e-6);
             stage.prim(pinned.clone()).unwrap().attribute("wrap").set(Value::Token("nonperiodic".into())).unwrap();
-            assert_eq!(line_geometry(&RouteCtx::new(&stage, &pinned)).unwrap().0.len(), CUBIC_STEPS + 1);
+            assert_eq!(line_geometry(&RouteCtx::new(&stage, &pinned), CUBIC_STEPS).unwrap().0.len(), CUBIC_STEPS + 1);
         }
     }
 
@@ -773,7 +793,7 @@ def BasisCurves "Curve" {
             for _ in 0..2 {
                 let base = positions.len();
                 let index_base = indices.len();
-                tessellate_pinned(&cv, basis, &mut positions, &mut indices);
+                tessellate_pinned(&cv, basis, &mut positions, &mut indices, CUBIC_STEPS);
                 assert_eq!(positions.len() - base, CUBIC_STEPS + 1);
                 for step in 0..=CUBIC_STEPS {
                     let expected = Vec3::from(cv[0]).lerp(Vec3::from(cv[1]), step as f32 / CUBIC_STEPS as f32);
@@ -790,12 +810,12 @@ def BasisCurves "Curve" {
         let stage = source.open_stage().unwrap();
         let closed = openusd::sdf::path("/Closed").unwrap();
         let open = openusd::sdf::path("/Open").unwrap();
-        let (positions, indices, _) = line_geometry(&RouteCtx::new(&stage, &closed)).unwrap();
+        let (positions, indices, _) = line_geometry(&RouteCtx::new(&stage, &closed), CUBIC_STEPS).unwrap();
         assert_eq!(positions.len(), 8);
         assert_eq!(indices, [0,1,1,2,2,3,3,0,4,5,5,6,6,7,7,4]);
-        assert_eq!(line_geometry(&RouteCtx::new(&stage, &open)).unwrap().1, [0,1,1,2,2,3]);
+        assert_eq!(line_geometry(&RouteCtx::new(&stage, &open), CUBIC_STEPS).unwrap().1, [0,1,1,2,2,3]);
         stage.prim(closed.clone()).unwrap().attribute("wrap").set(Value::Token("nonperiodic".into())).unwrap();
-        assert_eq!(line_geometry(&RouteCtx::new(&stage, &closed)).unwrap().1, [0,1,1,2,2,3,4,5,5,6,6,7]);
+        assert_eq!(line_geometry(&RouteCtx::new(&stage, &closed), CUBIC_STEPS).unwrap().1, [0,1,1,2,2,3,4,5,5,6,6,7]);
     }
 
     #[test]
@@ -807,7 +827,7 @@ def BasisCurves "Curve" {
             for _ in 0..2 {
                 let base = positions.len();
                 let index_base = indices.len();
-                tessellate_cubic(&cv, basis, true, &mut positions, &mut indices);
+                tessellate_cubic(&cv, basis, true, &mut positions, &mut indices, CUBIC_STEPS);
                 assert_eq!(positions.len() - base, cv.len() / basis.vstep() * CUBIC_STEPS + 1);
                 assert!(Vec3::from(positions[base]).distance(Vec3::from(*positions.last().unwrap())) < 1e-6);
                 assert!(indices[index_base..].iter().all(|index| (*index as usize) >= base && (*index as usize) < positions.len()));
@@ -853,6 +873,34 @@ def BasisCurves "Curve" {
         assert_eq!(mesh.primitive_topology(), PrimitiveTopology::LineList);
         // Three linear points produce two segments.
         assert_eq!(mesh.indices().map(|i| i.len()), Some(4));
+    }
+
+    #[test]
+    fn curve_quality_settings_control_projection() {
+        assert!(UsdCurveSettings::new(0).is_err());
+        assert!(UsdCurveSettings::new(65).is_err());
+        assert_eq!(UsdCurveSettings::default().cubic_steps(), CUBIC_STEPS);
+        let source = crate::UsdSource::new("gradients.usda", include_bytes!("../../../../assets/curve_gradients.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let path = openusd::sdf::path("/Vertex").unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let entity = world.spawn_empty().id();
+        for steps in [1, 2, 16, 64] {
+            world.insert_resource(UsdCurveSettings::new(steps).unwrap());
+            CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+            assert!(world.get::<UsdCurveError>(entity).is_none());
+            let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
+            assert_eq!(mesh.count_vertices(), 2 * (steps + 1));
+            assert_eq!(mesh.indices().unwrap().len(), 4 * steps);
+            let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!() };
+            assert_eq!(colors[0], [1.,0.,0.,0.2]);
+            assert_eq!(colors[steps], [0.,0.,1.,1.]);
+            if steps % 2 == 0 {
+                assert!(Vec4::from(colors[steps / 2]).abs_diff_eq(Vec4::new(0.125,0.75,0.125,0.6), 1e-6));
+            }
+        }
     }
 
     #[test]

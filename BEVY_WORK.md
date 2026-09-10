@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Configurable cubic curve quality
+
+The library now exposes canonical route::curves::UsdCurveSettings with validated
+1–64 samples per cubic segment and the existing default of eight. Projection
+uses the same setting in pre-allocation size validation, ordinary/pinned cubic
+tessellation and vertex/varying display-primvar interpolation. Linear topology
+is unchanged. Settings are read during projection; changing the resource alone
+does not schedule a resync and the viewer has no quality control yet.
+
+The regression projects indexed gradient curves at 1, 2, 16 and 64 steps, checks
+vertex/index counts, endpoints and common midpoint color/opacity. Output-limit
+coverage verifies the same control-point input is accepted at one step and
+rejected before tessellation at 64. Existing periodic/pinned/default-quality
+tests remain passing. This is numerical projection evidence, not new rendered
+quality acceptance, adaptive tessellation or width-aware surface support.
+
+All 455 ordinary workspace tests pass (eight ignored), plus check-all, build and
+whitespace checks. Logs: `/tmp/curve-quality-{tests,check,build}.log`; 22 focused
+curve tests also pass in `/tmp/curve-quality-focused.log`.
+
 ### Sampled texture color-space interpretation
 
 Texture channels now read explicit sourceColorSpace tokens at the instance's USD

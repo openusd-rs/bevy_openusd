@@ -165,6 +165,17 @@ make run RUN_WITH= APP_TARGET='--example reference_benchmark' ARGS='32 3'
 It reports assembly time only, not Bevy projection, rendering or disk I/O.
 For release measurements, append `--release` to `APP_TARGET`.
 
+`with_instanceable_references` accepts the same four-field entries as
+`with_offset_references` and marks every mount instanceable. OpenUSD determines
+prototype sharing; descendant prims become instance proxies, not independently
+editable copies. The ordinary reference APIs do not mark mounts instanceable.
+The headless example verifies distinct projected entities sharing one mesh handle
+and cleanup after root despawn:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example instanceable_sources'
+```
+
 `with_offset_references` accepts `(destination, source, target, LayerOffset)`
 entries using `openusd::sdf::LayerOffset`. It preserves reference arcs while
 retiming samples; offsets must be finite and scales finite and positive.

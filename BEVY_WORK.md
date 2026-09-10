@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Instanceable reference assembly
+
+UsdSource::with_instanceable_references accepts the retimed API's four-field
+entries and marks every mount instanceable through the canonical Prim API.
+The existing reference methods retain their non-instanceable behavior, sharing
+the same atomic assembly/validation path. Prototype sharing remains determined
+by USD composition; descendants are instance proxies, not independent editable
+copies. No claim of complete BSN parity or general native-instance fidelity.
+
+The source regression verifies a shared native prototype, proxy descendants,
+source immutability, one captured dependency and rejection of a destination
+inside an existing instance. The runnable instanceable_sources example checks
+two distinct Bevy entities sharing one mesh handle and cleanup after root despawn.
+Native exported instanceability through this API and render/performance evidence
+remain separate acceptance work.
+All 465 ordinary workspace tests pass (nine ignored); check-all, build, the
+runnable example and whitespace validation pass:
+`/tmp/instance-assembly-{tests,check,build,example}.log`.
+
 ### Bounded screenshot subprocess
 
 The full-UI capture script now bounds weston-screenshooter with a default

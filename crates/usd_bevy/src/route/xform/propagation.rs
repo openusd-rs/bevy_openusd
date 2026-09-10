@@ -62,6 +62,46 @@ mod tests {
     }
 
     #[test]
+    fn live_malformed_matrix_edits_keep_last_pose_and_recover() {
+        use crate::live::{LiveStage, PrimEntities, project_stage, apply_changes};
+        use openusd::{usd::Stage, sdf::Value, gf::Matrix4d};
+        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("affine-recovery.usda").unwrap();
+        stage.define_prim("/Foo").unwrap().set_type_name("Xform").unwrap();
+        let matrix = stage.create_attribute("/Foo.xformOp:transform", "matrix4d").unwrap();
+        matrix.set(Value::Matrix4d(Matrix4d(shear().to_cols_array().map(f64::from)))).unwrap();
+        stage.create_attribute("/Foo.xformOpOrder", "token[]").unwrap()
+            .set(Value::TokenVec(vec!["xformOp:transform".into()])).unwrap();
+        let live = LiveStage::new(stage);
+        let mut app = App::new();
+        app.add_plugins(bevy::transform::TransformPlugin);
+        configure(&mut app);
+        let mut map = PrimEntities::default();
+        project_stage(app.world_mut(), &live, &mut map);
+        let entity = map.entity("/Foo").unwrap();
+        app.world_mut().entity_mut(entity).insert(Name::new("runtime"));
+        app.update();
+        let original = *app.world().get::<GlobalTransform>(entity).unwrap();
+        for bad in [Mat4::perspective_rh(1.0, 1.0, 0.1, 10.0), Mat4::from_scale(Vec3::splat(f32::NAN))] {
+            live.stage.attribute("/Foo.xformOp:transform").unwrap()
+                .set(Value::Matrix4d(Matrix4d(bad.to_cols_array().map(f64::from)))).unwrap();
+            apply_changes(app.world_mut(), &live, &mut map);
+            app.update();
+            assert!(app.world().get::<UsdTransformError>(entity).is_some());
+            assert_eq!(*app.world().get::<GlobalTransform>(entity).unwrap(), original);
+        }
+        let recovered = Mat4::from_translation(Vec3::new(3.0, 4.0, 5.0));
+        live.stage.attribute("/Foo.xformOp:transform").unwrap()
+            .set(Value::Matrix4d(Matrix4d(recovered.to_cols_array().map(f64::from)))).unwrap();
+        apply_changes(app.world_mut(), &live, &mut map);
+        app.update();
+        assert!(app.world().get::<UsdTransformError>(entity).is_none());
+        assert!(app.world().get::<UsdTransformOverride>(entity).is_none());
+        assert_eq!(app.world().get::<GlobalTransform>(entity).unwrap().to_matrix(), recovered);
+        assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime");
+        assert_eq!(map.entity("/Foo"), Some(entity));
+    }
+
+    #[test]
     fn authored_reset_discards_prefix_and_reprojection_clears_override() {
         let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry())
             .open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/xform_reset.usda")).unwrap();

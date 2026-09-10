@@ -102,7 +102,9 @@ fn build_op_matrix(
         "scale" => Mat4::from_scale(Vec3::from(value_to_vec3f(&raw).unwrap_or([1.0, 1.0, 1.0]))),
         "orient" => {
             let q = value_to_quat_wxyz(&raw).unwrap_or([1.0, 0.0, 0.0, 0.0]);
-            Mat4::from_quat(Quat::from_xyzw(q[1], q[2], q[3], q[0]))
+            let q = Quat::from_xyzw(q[1], q[2], q[3], q[0]);
+            anyhow::ensure!(q.is_finite() && q.is_normalized(), "invalid orientation in {op_token}");
+            Mat4::from_quat(q)
         }
         "rotateX" => Mat4::from_rotation_x(value_to_scalar_f32(&raw).unwrap_or(0.0).to_radians()),
         "rotateY" => Mat4::from_rotation_y(value_to_scalar_f32(&raw).unwrap_or(0.0).to_radians()),
@@ -126,7 +128,13 @@ fn build_op_matrix(
         _ => Mat4::IDENTITY,
     };
 
-    Ok(if inverted { m.inverse() } else { m })
+    anyhow::ensure!(m.is_finite(), "non-finite transform in {op_token}");
+    if !inverted { return Ok(m); }
+    let matrix = m.as_dmat4();
+    anyhow::ensure!(matrix.determinant() != 0.0, "singular inverse transform in {op_token}");
+    let inverse = matrix.inverse().as_mat4();
+    anyhow::ensure!(inverse.is_finite(), "non-finite inverse transform in {op_token}");
+    Ok(inverse)
 }
 
 fn value_to_mat4_glam(v: &Value) -> Option<Mat4> {
@@ -162,5 +170,31 @@ fn value_to_quat_wxyz(v: &Value) -> Option<[f32; 4]> {
         Value::Quatf(q) => Some([q.w, q.x, q.y, q.z]),
         Value::Quatd(q) => Some([q.w as f32, q.x as f32, q.y as f32, q.z as f32]),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_orientation_and_singular_inverse_return_errors() {
+        let stage = Stage::builder().in_memory("invalid-ops.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        let path = openusd::sdf::path("/Root").unwrap();
+        let mut orientation = stage.create_attribute("/Root.xformOp:orient", "quatf").unwrap();
+        for w in [0.0, 2.0, f32::NAN, f32::INFINITY] {
+            orientation = orientation.set(Value::Quatf(openusd::gf::Quatf { w, x: 0.0, y: 0.0, z: 0.0 })).unwrap();
+            assert!(build_op_matrix(&stage, &path, "xformOp:orient", None).is_err());
+        }
+        orientation.set(Value::Quatf(openusd::gf::Quatf::IDENTITY)).unwrap();
+        assert_eq!(build_op_matrix(&stage, &path, "xformOp:orient", None).unwrap(), Mat4::IDENTITY);
+        let scale = stage.create_attribute("/Root.xformOp:scale", "double3").unwrap();
+        let scale = scale.set(Value::Vec3d(openusd::gf::Vec3d::from([0.0, 1.0, 1.0]))).unwrap();
+        assert!(build_op_matrix(&stage, &path, "!invert!xformOp:scale", None).is_err());
+        scale.set(Value::Vec3d(openusd::gf::Vec3d::from([1e-20; 3]))).unwrap();
+        let inverse = build_op_matrix(&stage, &path, "!invert!xformOp:scale", None).unwrap();
+        assert!(inverse.is_finite());
+        assert!((inverse.x_axis.x / 1e20 - 1.0).abs() < 1e-6);
     }
 }

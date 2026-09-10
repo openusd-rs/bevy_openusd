@@ -41,8 +41,11 @@ cover representation, a runtime descendant under shear, runtime translation
 edits and nested reset behavior under a rotated scene root and translated mount.
 An authored reset regression also checks prefix exclusion, override removal on
 reprojection, runtime-name preservation and unchanged source-layer data.
-Malformed-edit recovery and broader animated coverage remain pending. This does
-not complete the integration acceptance checklist.
+Live edit coverage now sends projective and NaN matrices through the stage
+change sink and `apply_changes`, verifies last-good affine globals, then restores
+TRS and checks error/override removal, unchanged entity identity and runtime
+name preservation. Broader animated coverage remains pending. This does not
+complete the integration acceptance checklist.
 
 All 397 ordinary tests pass (six native export tests ignored), alongside
 check-all, build and whitespace checks. Logs:
@@ -60,6 +63,16 @@ Bevy geometry references, not comparison with a native USD renderer.
 The fixture regression brings the ordinary test total to 398 passing, with six
 native tests ignored. Check-all, build and whitespace checks pass; logs:
 `/tmp/xform-fixtures-{tests,check,build}.log`.
+
+Transform-op reading rejects non-finite/non-unit orientation quaternions before
+matrix construction and singular inverse ops before inversion. Inversion uses
+double precision before converting back to finite float matrices, avoiding
+determinant underflow for tiny invertible scales. Reader tests check malformed
+orientations, identity recovery, singular inverses and a 1e-20 scale inverse.
+Non-unit authored orientations are diagnosed rather than normalized; broader
+native quaternion semantics and animated orientation parity remain unverified.
+All 400 ordinary tests pass, with six native tests ignored; check-all, build
+and whitespace checks pass. Logs: `/tmp/xform-recovery-final-{tests,check,build}.log`.
 
 ### Preserve affine transforms on direct mesh point prototypes
 

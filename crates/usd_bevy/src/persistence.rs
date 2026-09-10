@@ -45,16 +45,7 @@ mod tests {
         use std::process::Command;
 
         let directory = tempfile::tempdir().unwrap();
-        let source = br#"#usda 1.0
-def Xform "Saved" (
-    prepend apiSchemas = ["MaterialBindingAPI"]
-) {
-    double score = 7
-    def Cube "Child" {
-        double size = 3
-    }
-}
-"#;
+        let source = include_bytes!("../../../assets/native_save.usda");
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
         let original = directory.path().join("source.usda");
         fs::write(&original, source).unwrap();
@@ -67,7 +58,7 @@ def Xform "Saved" (
             for extension in ["usda", "usdc", "usd", "usdz"] {
                 let destination = directory.path().join(format!("{name}.{extension}"));
                 editor.save(destination.to_str().unwrap(), mode).unwrap();
-                let output = Command::new(&native).arg(&destination).output().expect("launch native USD reader");
+                let output = Command::new(&native).arg("--flatten").arg(&destination).output().expect("launch native USD reader");
                 if !output.status.success() {
                     failures.push(format!("{name}.{extension}: {}", String::from_utf8_lossy(&output.stderr)));
                     continue;
@@ -77,8 +68,9 @@ def Xform "Saved" (
                     .unwrap().open_stage().unwrap();
                 let score = reopened.prim("/Saved").ok().and_then(|prim| prim.attribute("score").get::<f64>().ok().flatten());
                 let size = reopened.prim("/Saved/Child").ok().and_then(|prim| prim.attribute("size").get::<f64>().ok().flatten());
-                if score != Some(7.0) || size != Some(3.0) || !metadata {
-                    failures.push(format!("{name}.{extension}: score={score:?}, child size={size:?}, API={metadata}"));
+                let variant = reopened.prim("/Saved").ok().and_then(|prim| prim.attribute("variantScore").get::<f64>().ok().flatten());
+                if score != Some(7.0) || size != Some(3.0) || variant != Some(21.0) || !metadata {
+                    failures.push(format!("{name}.{extension}: score={score:?}, child size={size:?}, variant={variant:?}, API={metadata}"));
                 }
             }
         }

@@ -2,6 +2,19 @@
 
 ## Native interoperability audit — open failures
 
+Both review patches in `patches/` now pass the actual editor's 12-combination
+native gate when supplied as temporary Cargo overrides. The gate additionally
+uses native flattening to verify the selected variant's authored value. Fixes:
+USDA singleton list brackets; non-array TokenVector encoding for the eight
+structural/order fields; StringListOp encoding for variantSetNames. The last
+case is required by native schema.cpp and is distinct from the token-vector
+array bit. Upstream's parser currently stores variantSetNames as TokenListOp,
+so the binary writer translates it at the format boundary. Both patches pass
+1,584 core tests and 56 binary fixture roundtrips. Logs:
+`/tmp/upstream-vector-tests.log`, `/tmp/upstream-vector-roundtrip-final.log`,
+`/tmp/bevy-native-patched-variants.log`. These are temporary-override results,
+not dependency integration or comprehensive interchange acceptance.
+
 `make test-native` now checks actual editor saves through native `usdcat` in all
 three save modes and four supported extensions. It fails in all 12 combinations
 at the current pin: root/edit USDA reject singleton list-op syntax, flattened

@@ -800,11 +800,13 @@ make run APP_TARGET='--example viewer_capture' ARGS='assets/point_shapes.usda ta
 
 `make test-native` requires Pixar OpenUSD's `usdcat` on PATH, or an executable
 path in `USD_CAT`. It exercises the editor's root-layer, edit-layer and flattened
-save modes in USDA, USDC, USD and USDZ, then checks hierarchy, attribute values
-and API metadata through native decoding. Missing tools are errors, not passes.
+save modes in USDA, USDC, USD and USDZ, then checks hierarchy, attribute values,
+selected variant composition and API metadata through native flattening. Missing
+tools are errors, not passes.
 The test is ignored in the ordinary suite because native OpenUSD is optional.
 
 This gate is expected to fail with the current pinned dependency; ordinary Rust
 self-reopen tests do not establish native interchange. The pending upstream
-patch in `patches/` fixes singleton text metadata only, not all binary export
-compatibility. See `OPENUSD_UPGRADE.md` for the active findings.
+patches in `patches/` correct singleton text and structural binary metadata;
+the gate passes with both supplied as temporary dependency overrides, but they
+are not integrated. See `OPENUSD_UPGRADE.md` for the active findings.

@@ -25,6 +25,27 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Expanded and preserved the binary fix as
+`patches/openusd-token-vector-fields.patch`: all eight native token-vector
+structural/order fields use non-array TokenVector values, and variantSetNames
+token list operations emit native StringListOp values. Wire tests cover vector
+sizes 0/1/3, ordinary arrays and six variant-set operations. Both patches together
+pass 1,584 upstream core tests and 56 binary fixture roundtrips. The native editor
+gate now uses `assets/native_save.usda` and native flattening to check variant
+composition as well as hierarchy/values/API metadata. All 12 combinations pass
+with temporary Cargo overrides pointing at the patched isolated copy. Logs:
+`/tmp/upstream-vector-tests.log`, `/tmp/upstream-vector-roundtrip-final.log`,
+`/tmp/bevy-native-patched-variants.log`. Permanent integration remains pending;
+ordinary pinned dependencies are not fixed by committing patch artifacts.
+
+The patched Bevy workspace also passes all 361 ordinary tests (one optional
+native test ignored), check-all and build; logs:
+`/tmp/bevy-patched-{all-tests,check,build}.log`. Restored the normal Git dependency
+resolution and verified Cargo.lock has no diff. The unchanged pin fails the
+expanded native gate as expected; the normal viewer build passes
+(`/tmp/bevy-native-restored-pin.log`, `/tmp/bevy-restored-build.log`). Both patch
+files pass git apply --check against the pinned upstream checkout.
+
 Added optional `make test-native` exercising the real editor persistence path
 for RootLayer/EditLayer/Flattened and usda/usdc/usd/usdz. All 12 combinations
 currently fail native interchange checks: USDA metadata syntax errors (a distinct

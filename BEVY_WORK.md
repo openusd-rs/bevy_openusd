@@ -25,6 +25,36 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Delay low-level readback for post-interaction captures
+
+USD_CAPTURE_DELAY_MS accepts 0..45000 (default 0) and is validated before window
+creation when capture is enabled. The capture gate now requires both 120 ready
+updates and the minimum continuous ready duration for the same document. Loss of
+an active camera/document or document replacement resets readiness; the existing
+60-second update-driven global deadline remains. The counter saturates safely.
+Sidecars record configured delay, actual ready elapsed time, update count,
+document ID and scene time at request. These identify request conditions, not
+the precise rendered frame/callback time or synchronized host/viewport frames.
+
+Tests cover delay parsing/bounds, early frames, replacement resets, one-shot
+requests, late-document timeout and timing metadata. All 510 ordinary tests pass
+(13 ignored), make check-all/build and git diff --check pass:
+`/tmp/capture-delay-tests-final.log`, `/tmp/capture-delay-{check,build}-final.log`.
+
+The visibility eye-click replay was repeated with 15000 ms ready delay and a
+20-second host wait. Both host and low-level Bevy images were inspected and now
+show the post-click two-cube state. The sidecar records 15026 ms ready time,
+341 ready updates, document 1 and scene time 10. The viewer log places all four
+replay events before VIEWPORT_CAPTURE_OK. Evidence:
+`target/viewer-ui-captures/animated-visibility-delayed*`,
+`/tmp/capture-delay-ui.log`. UI_CAPTURE_OK is present. A transient startup grep
+reported the not-yet-created viewer log; it did not prevent capture. Native
+clipboard/Vulkan-layer/SSAO warnings remain separate known environment issues.
+
+This supplies a usable post-interaction readback control, not a render-readiness
+fence, a synchronized pair or a fix for intermittent host blackouts. The full
+Bevy acceptance checklist remains open.
+
 ### Make the Outliner eye action edit animated visibility
 
 The sampled eye indicator exposed an ineffective action: writing a visibility

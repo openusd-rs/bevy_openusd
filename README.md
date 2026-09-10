@@ -542,11 +542,15 @@ non-finite or malformed `USD_CAPTURE_TIME` values before constructing the window
 Negative and fractional finite time codes are accepted. Without USD_SCREENSHOT,
 USD_CAPTURE_TIME does not enable capture or set the editor clock.
 It writes the PNG plus tightly packed `.rgba` pixels and `.capture.txt` containing
-dimensions, source texture format and row length. `VIEWPORT_CAPTURE_OK` in stderr
+dimensions, source texture format, row length and capture-request timing/clock
+metadata. `VIEWPORT_CAPTURE_OK` in stderr
 means all three files were written; `VIEWPORT_CAPTURE_ERROR` reports a failure.
-The viewer stays open. Capture is requested once after 120 consecutive updates
+The viewer stays open. Capture is requested once after at least 120 consecutive updates
 with the same open editor document and an active camera. Losing the camera or
-replacing the document resets that count. A 60-second deadline, checked on each
+replacing the document resets that count and the ready-duration timer.
+`USD_CAPTURE_DELAY_MS=0..45000` adds a minimum ready duration (default 0), useful
+for captures after a timed UI replay. Invalid values are rejected before window
+creation. A 60-second deadline, checked on each
 update, reports an error if those conditions were not met; an invalid initial
 open no longer produces a grid-only success. This does not guarantee GPU
 pipeline readiness, completed uploads or correct projection. The deadline ends
@@ -1015,7 +1019,11 @@ the run, but does not suppress the compositor screenshot attempt. Existing
 viewport companions are rejected before launch.
 
 These are two capture paths, not synchronized frames: Bevy requests its readback
-after 120 document/camera-ready updates, whereas Weston captures after the UI delay. A healthy viewport
+after 120 document/camera-ready updates and its optional ready delay, whereas
+Weston captures after the UI delay. For the 10-second visibility-click replay,
+`USD_CAPTURE_DELAY_MS=15000 USD_UI_CAPTURE_WAIT=20` targets the post-click state
+on both paths. Timing metadata identifies the request, not the exact rendered
+frame or callback time. A healthy viewport
 with a black host image narrows the failure to host presentation/composition or
 compositor readback, not necessarily to Weston itself. Neither near-black check
 proves scene fidelity or completed asset uploads.

@@ -967,6 +967,9 @@ USD_UI_CAPTURE_VIEWPORT=0 make APP_TARGET='--example host_capture_probe' --eval=
 
 Use the Weston-enabled environment described above. This is a diagnostic, not
 the viewer or proof of its rendering fidelity.
+Repeated local Vulkan Weston captures have reproduced a wholly black host-only
+window too: neither Bevy nor USD is required. Inspect and preserve failed runs;
+do not interpret a few successful probe launches as a reliable fallback.
 
 `examples/bridge_capture_probe.rs` adds only the Bevy viewport bridge, a blue
 clear color and an orange unlit cube, with a white egui label over the viewport.

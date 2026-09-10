@@ -25,6 +25,35 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reproduce the black surface in the host-only control
+
+Four alternating fresh-compositor pairs used the paced native bridge and the
+host-only colored-panel probe. Paced trials 4/5/6/7 were fail/pass/pass/pass;
+host-only trials 4/5/6/7 were pass/fail/pass/fail. Every image was inspected.
+The paced failure confirms delay_ms=33 and 26/26 committed/painted Hz. Both
+host failures confirm no Bevy app or USD stage and lose the colored panels,
+text and host chrome together. The failed host trial 7 records 50 nonblack
+pixels out of 1120000 and 949/60 committed/painted Hz.
+
+Evidence: `target/viewer-ui-captures/isolation-{paced,host}-{4,5,6,7}*` and
+`/tmp/bridge-isolation-extended.log`, including every failed artifact. Paced
+trial 7 is nonblack and upright but its window is vertically displaced;
+near-black success is not geometry/placement acceptance.
+
+Neither Bevy, USD content nor high submission cadence is necessary to reproduce
+the black-surface symptom in this environment. Earlier three-run successes for
+host-only, CPU transfer or paced transfer do not establish a reliable workaround.
+Keep investigation at the host/wgpu/presentation/compositor boundary rather than
+changing USD material rendering to compensate. These observations do not uniquely
+attribute the fault to Mara, wgpu, the driver or Weston.
+
+Current sibling source inspection confirms that Mara already calls
+painter.handle_screenshots before UI updates, but ignores Screenshot viewport
+commands and passes an empty capture-request list to paint_and_update_textures.
+The missing piece is request forwarding, not screenshot-event collection.
+No implementation changed in this experiment; the previous 493-test/check/build
+baseline remains unchanged. Sibling Mara and compositor configuration are intact.
+
 ### Control bridge update cadence independently of transfer
 
 `USD_BRIDGE_PROBE_DELAY_MS=0..1000` adds a deliberate sleep at the start of

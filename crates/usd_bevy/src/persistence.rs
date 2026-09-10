@@ -47,6 +47,59 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_repackages_snapshot_archives() {
+        use crate::editor::{EditorSession, SaveMode};
+        use std::io::{Cursor, Read};
+        use std::process::Command;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut archive = openusd::usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
+        archive.add_layer("root.usda", b"#usda 1.0\n( subLayers = [@layers/weak.usda@] )\ndef Scope \"Assets\" {\n asset blob = @textures/pixels.bin@\n}\n").unwrap();
+        archive.add_layer("layers/weak.usda", b"#usda 1.0\ndef Scope \"Weak\" {\n double score = 41\n asset blob = @../textures/pixels.bin@\n}\n").unwrap();
+        archive.add_layer("textures/pixels.bin", b"packaged payload").unwrap();
+        let bytes = archive.finish().unwrap().into_inner();
+        let virtual_path = directory.path().join("never-written.USDZ");
+        let source = crate::UsdSource::snapshot(&virtual_path, bytes).unwrap();
+        let editor = EditorSession::new(source.open_stage().unwrap());
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        let check = |path: &Path| {
+            let result = Command::new(&native).arg("--flatten").arg(path).output().expect("native USD reader");
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            let stage = crate::UsdSource::new(directory.path().join("native.usda"), result.stdout).unwrap().open_stage().unwrap();
+            assert_eq!(stage.prim("/Weak").unwrap().attribute("score").get::<f64>().unwrap(), Some(41.0));
+            let mut archive = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+            for prim in ["/Weak", "/Assets"] {
+                let value = stage.prim(prim).unwrap().attribute("blob").get::<openusd::sdf::Value>().unwrap().unwrap();
+                let openusd::sdf::Value::AssetPath(asset) = value else { panic!("expected asset") };
+                let (_, entry) = openusd::ar::split_package_relative_path_outer(&asset.authored_path).expect("packaged asset");
+                let mut bytes = Vec::new();
+                archive.by_name(&entry).unwrap().read_to_end(&mut bytes).unwrap();
+                assert_eq!(bytes, b"packaged payload");
+            }
+        };
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            let first = directory.path().join(format!("{name}.usdz"));
+            editor.save(first.to_str().unwrap(), mode).unwrap();
+            check(&first);
+            let source = crate::UsdSource::snapshot(&first, fs::read(&first).unwrap()).unwrap();
+            let second = directory.path().join(format!("{name}-repacked.usdz"));
+            let second_editor = EditorSession::new(source.open_stage().unwrap());
+            fs::remove_file(&first).unwrap();
+            second_editor.save(second.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+            check(&second);
+        }
+        let wrapper = b"#usda 1.0\ndef Scope \"Weak\" (\n prepend references = @never-written.USDZ@</Weak>\n) {}\ndef Scope \"Assets\" (\n prepend references = @never-written.USDZ@</Assets>\n) {}\n";
+        let mut wrapper_source = crate::UsdSource::snapshot(&directory.path().join("wrapper.usda"), wrapper.to_vec()).unwrap();
+        wrapper_source.insert_dependency(virtual_path.to_str().unwrap().into(), source.read_asset(source.identifier()).unwrap());
+        let wrapped = directory.path().join("wrapped.usdz");
+        crate::authoring::save_stage_as(&wrapper_source.open_stage().unwrap(), wrapped.to_str().unwrap()).unwrap();
+        assert_eq!(zip::ZipArchive::new(fs::File::open(&wrapped).unwrap()).unwrap().len(), 4);
+        check(&wrapped);
+        assert!(!virtual_path.exists());
+    }
+
+    #[test]
     fn package_preserves_snapshot_assets_live_edits_and_archive_layout() {
         use crate::editor::{EditorEdit, EditorSession, SaveMode};
         use openusd::sdf::Value;

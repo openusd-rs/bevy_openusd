@@ -6,8 +6,8 @@ local writer and packaging changes recorded in `vendor/openusd/VENDORED.md`.
 
 USDZ export bundles ordinary layer and asset dependencies through the stage's
 resolver, preserving root/edit semantics and live edits. Moved-package native
-checks pass for the covered scene and asset payload. Package-relative inputs,
-expressions and tile/sequence patterns remain unsupported; failures retain the
+checks pass for the covered scene and asset payload, including snapshot-only
+package re-export. Nested packages, expressions and tile/sequence patterns remain unsupported; failures retain the
 old destination. Limits and remaining acceptance work are in `PACKAGING.md`.
 Passing data tests do not establish rendered fidelity or production performance.
 

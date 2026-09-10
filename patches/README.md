@@ -78,3 +78,5 @@ for USDZ saves; ArchiveWriter itself remains a byte-oriented archive sink.
 The patch is applied in `vendor/openusd` alongside the two writer fixes.
 See `PACKAGING.md` for resolver/snapshot behavior, bounds, unsupported inputs
 and the full acceptance requirements that remain open.
+The packaging patch also handles single-level input archives, bounded cached
+entry extraction and bare-package references; nested packages remain unsupported.

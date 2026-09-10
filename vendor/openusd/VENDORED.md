@@ -22,6 +22,8 @@ token-vector child/order fields and variant-set StringListOp encoding.
 The stage packaging patch adds resolver-aware dependency traversal without
 changing the layer-only ArchiveWriter contract. See the root PACKAGING.md for
 its limits and unsupported inputs.
+Single-level source archives are cached and their entry reads are bounded;
+package-relative dependencies are repackaged rather than retained externally.
 
 The root Cargo patch table redirects all three Git dependency packages here.
 The usd_bevy and usd_macro manifests also use direct relative paths to this

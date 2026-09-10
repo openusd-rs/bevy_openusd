@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
     fmt::Display,
-    io::{self, Cursor, Seek, SeekFrom, Write},
+    io::{self, Cursor, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -27,6 +27,7 @@ struct Package<'a> {
     pending: VecDeque<(usize, sdf::Data, Option<String>)>,
     bytes: usize,
     input_bytes: usize,
+    archives: HashMap<String, Vec<u8>>,
 }
 
 struct LimitedBytes {
@@ -64,7 +65,7 @@ impl Seek for LimitedBytes {
 
 impl Stage {
     /// Write a dependency-containing USDZ from a layer using this stage's resolver and live layers.
-    /// Limited to 4096 entries and 256 MiB of serialized data. Package-relative dependencies,
+    /// Limited to 4096 entries and 256 MiB of serialized data. Nested packages,
     /// asset expressions and tile/sequence patterns currently return errors.
     pub fn write_usdz_package(&self, layer: &sdf::Layer, sink: &mut dyn sdf::WriteSeek) -> io::Result<()> {
         let graph = self.layers();
@@ -75,6 +76,7 @@ impl Stage {
             pending: VecDeque::new(),
             bytes: 0,
             input_bytes: 0,
+            archives: HashMap::new(),
         };
         package.names.insert(layer.identifier().to_owned(), 0);
         if let Some(path) = layer.resolved_path() {
@@ -96,6 +98,72 @@ impl Stage {
 }
 
 impl Package<'_> {
+    fn archive(&mut self, path: &str) -> io::Result<zip::ZipArchive<Cursor<&[u8]>>> {
+        if ar::is_package_relative_path(path) {
+            return Err(invalid("nested package dependencies are not yet supported"));
+        }
+        if !self.archives.contains_key(path) {
+            let bytes = self
+                .graph
+                .layer_registry()
+                .package_asset_bytes(path, MAX_BYTES - self.input_bytes)?;
+            self.input_bytes += bytes.len();
+            self.archives.insert(path.to_owned(), bytes);
+        }
+        let bytes = self
+            .archives
+            .get(path)
+            .ok_or_else(|| invalid("package archive cache entry missing"))?;
+        zip::ZipArchive::new(Cursor::new(bytes.as_slice())).map_err(invalid)
+    }
+
+    fn package_root(&mut self, path: &str) -> io::Result<String> {
+        let mut archive = self.archive(path)?;
+        let entry = archive.by_index(0).map_err(invalid)?;
+        let name = entry.name();
+        let extension = Path::new(name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(extension.as_str(), "usda" | "usdc" | "usd") {
+            return Err(invalid("package first entry must be a USD layer"));
+        }
+        Ok(ar::join_package_relative_path(path, name))
+    }
+
+    fn read_asset(&mut self, identifier: &str) -> io::Result<Vec<u8>> {
+        let bytes = if let Some((outer, inner)) = ar::split_package_relative_path_outer(identifier) {
+            if ar::is_package_relative_path(&inner)
+                || Path::new(&inner)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("usdz"))
+            {
+                return Err(invalid("nested package dependencies are not yet supported"));
+            }
+            self.archive(&outer)?;
+            let limit = MAX_BYTES - self.input_bytes;
+            let mut archive = self.archive(&outer)?;
+            let entry = archive.by_name(&inner).map_err(invalid)?;
+            if entry.size() > limit as u64 {
+                return Err(invalid("package byte budget exceeded"));
+            }
+            let mut bytes = Vec::new();
+            entry.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+            if bytes.len() > limit {
+                return Err(invalid("package byte budget exceeded"));
+            }
+            bytes
+        } else {
+            self.graph
+                .layer_registry()
+                .package_asset_bytes(identifier, MAX_BYTES - self.input_bytes)?
+        };
+        self.input_bytes += bytes.len();
+        Ok(bytes)
+    }
+
     fn store(&mut self, index: usize, bytes: Vec<u8>) -> io::Result<()> {
         self.bytes = self
             .bytes
@@ -140,12 +208,9 @@ impl Package<'_> {
         if path.is_empty() {
             return Ok(String::new());
         }
-        if path.contains(['`', '<', '#'])
-            || ar::is_package_relative_path(path)
-            || anchor.is_some_and(ar::is_package_relative_path)
-        {
+        if path.contains(['`', '<', '#']) {
             return Err(invalid(format!(
-                "unsupported package dependency expression/pattern/package path: {path}"
+                "unsupported package dependency expression/pattern: {path}"
             )));
         }
         if anchor.is_none() && Path::new(path).is_relative() {
@@ -153,24 +218,43 @@ impl Package<'_> {
                 "relative package dependency has no layer anchor: {path}"
             )));
         }
-        let registry = self.graph.layer_registry();
+        let graph = self.graph;
+        let registry = graph.layer_registry();
         let anchor = anchor.map(ar::ResolvedPath::new);
-        let identifier = registry.create_identifier(path, anchor.as_ref());
+        let original = registry.create_identifier(path, anchor.as_ref());
+        let mut identifier = original.clone();
         if let Some(index) = self.names.get(&identifier) {
             return Ok(self.entries[*index].0.clone());
+        }
+        if Path::new(&identifier)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("usdz"))
+        {
+            identifier = self.package_root(&identifier)?;
+        }
+        if let Some(index) = self.names.get(&identifier).copied() {
+            self.names.insert(original, index);
+            return Ok(self.entries[index].0.clone());
         }
         if self.entries.len() >= MAX_ENTRIES {
             return Err(invalid("package entry budget exceeded"));
         }
-        let extension = Path::new(&identifier)
+        let (_, inner) =
+            ar::split_package_relative_path_outer(&identifier).unwrap_or_else(|| (String::new(), identifier.clone()));
+        if ar::is_package_relative_path(&inner) {
+            return Err(invalid("nested package dependencies are not yet supported"));
+        }
+        let extension = Path::new(&inner)
             .extension()
             .and_then(|value| value.to_str())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_ascii_lowercase();
         if extension == "usdz" {
             return Err(invalid("nested package dependencies are not yet supported"));
         }
-        let is_layer = layer || matches!(extension, "usd" | "usda" | "usdc");
-        let extension = if is_layer { "usdc" } else { extension };
+        let is_layer = layer || matches!(extension.as_str(), "usd" | "usda" | "usdc");
+        let extension = if is_layer { "usdc" } else { &extension };
         if !extension.chars().all(|character| character.is_ascii_alphanumeric()) {
             return Err(invalid(format!("unsupported package asset extension: {extension}")));
         }
@@ -182,19 +266,26 @@ impl Package<'_> {
         };
         self.entries.push((name.clone(), Vec::new()));
         self.names.insert(identifier.clone(), index);
+        self.names.insert(original.clone(), index);
         if is_layer {
-            let live = self.graph.id_of(&identifier).map(|id| self.graph.layer(id));
+            let live = graph
+                .id_of(&identifier)
+                .or_else(|| graph.id_of(&original))
+                .map(|id| graph.layer(id));
             let (data, anchor) = if let Some(layer) = live {
                 (
                     sdf::Data::from_abstract(layer.data()).map_err(invalid)?,
                     layer.resolved_path().map(str::to_owned),
                 )
             } else {
-                let resolved = registry
-                    .resolve_layer(&identifier)
-                    .ok_or_else(|| invalid(format!("unresolved package layer: {identifier}")))?;
-                let bytes = registry.package_asset_bytes(&identifier, MAX_BYTES - self.input_bytes)?;
-                self.input_bytes += bytes.len();
+                let resolved = if ar::is_package_relative_path(&identifier) {
+                    ar::ResolvedPath::new(&identifier)
+                } else {
+                    registry
+                        .resolve_layer(&identifier)
+                        .ok_or_else(|| invalid(format!("unresolved package layer: {identifier}")))?
+                };
+                let bytes = self.read_asset(&identifier)?;
                 let data = sdf::LayerRegistry::read_bytes(Cow::Owned(bytes), &identifier).map_err(invalid)?;
                 (
                     sdf::Data::from_abstract(data.as_ref()).map_err(invalid)?,
@@ -203,8 +294,7 @@ impl Package<'_> {
             };
             self.pending.push_back((index, data, anchor));
         } else {
-            let bytes = registry.package_asset_bytes(&identifier, MAX_BYTES - self.input_bytes)?;
-            self.input_bytes += bytes.len();
+            let bytes = self.read_asset(&identifier)?;
             self.store(index, bytes)?;
         }
         Ok(name)
@@ -284,6 +374,28 @@ fn rewrite<T: Default + Clone + PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_entries_are_checked_against_remaining_input_budget() {
+        let stage = Stage::builder().in_memory("budget.usda").unwrap();
+        let graph = stage.layers();
+        let mut archive = usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
+        archive.add_layer("data.bin", b"12345678").unwrap();
+        let bytes = archive.finish().unwrap().into_inner();
+        let mut package = Package {
+            graph: &graph,
+            names: HashMap::new(),
+            entries: Vec::new(),
+            pending: VecDeque::new(),
+            bytes: 0,
+            input_bytes: MAX_BYTES - 4,
+            archives: HashMap::from([("source.usdz".into(), bytes)]),
+        };
+        let error = package.read_asset("source.usdz[data.bin]").unwrap_err();
+        assert!(error.to_string().contains("byte budget exceeded"));
+        assert_eq!(package.input_bytes, MAX_BYTES - 4);
+        assert!(package.read_asset("source.usdz[nested.usdz[data.bin]]").is_err());
+    }
 
     #[test]
     fn serialized_bytes_are_bounded_before_growth() {

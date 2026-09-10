@@ -25,6 +25,32 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+Added single-level USDZ input/re-export support to the stage-aware packager.
+Package-relative layer and asset paths resolve through the existing stage context;
+source containers are cached, while container bytes and extracted entry bytes
+both count against the input budget. Entry sizes and bounded reads constrain
+extraction. Bare-package references map to their default root, and bare/default
+root identities share an output entry. Input extensions are case-insensitive.
+Genuinely nested packages still return explicit errors.
+
+Native coverage adds seven save checks: all three modes from a never-written
+snapshot-only USDZ, a second re-export for each after deleting the first output,
+and a wrapper referring to the same bare package twice. Composed values and asset
+bytes survive, and the wrapper has the expected deduplicated four entries.
+An uppercase input USDZ extension is covered. A new upstream unit test verifies
+that an archive entry exceeding the remaining input budget is refused and nested
+entry syntax is rejected. Logs: `/tmp/repackage-case-native.log`,
+`/tmp/upstream-repackage-final-tests.log`, `/tmp/upstream-repackage-final-clippy.log`.
+
+Validation: 34 native save checks pass across four optional tests. All 364
+ordinary tests pass with those four native tests ignored; check-all, build and
+whitespace checks pass (`/tmp/repackage-accepted-{tests,check,build}.log`). Upstream
+validation passes 1,587 core tests, 56 binary fixture roundtrips and strict core
+Clippy. All three recorded patches pass reverse-apply checks against the vendor
+source. The wider packaging and Bevy acceptance checklists remain open.
+
+### Initial packager checkpoint
+
 Implemented the initial stage-aware USDZ dependency packager. The new upstream
 Stage::write_usdz_package uses the stage's existing registry and live layer graph,
 preserves root/edit semantics, rewrites authored asset locations and includes

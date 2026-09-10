@@ -819,5 +819,6 @@ they do not certify cross-directory Save As or self-contained USDZ packaging.
 The native gate also removes the source directory before checking exported
 packages. All three save modes now pass that regression, including an asset
 payload. USDZ persistence uses the stage-aware dependency packager described in
-`PACKAGING.md`. Package inputs, expressions and tile/sequence patterns currently
-produce explicit errors; this does not certify arbitrary USDZ interchange.
+`PACKAGING.md`. Single-level package inputs and package-relative assets can be
+re-exported; genuinely nested packages, expressions and tile/sequence patterns
+currently produce explicit errors. This does not certify arbitrary interchange.

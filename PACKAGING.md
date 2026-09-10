@@ -14,12 +14,20 @@ includes snapshot-only bytes and unsaved live layer edits. Missing dependencies
 fail instead of silently retaining external paths. ArchiveWriter remains the
 aligned stored ZIP sink.
 
+Single-level USDZ inputs and package-relative layers/assets are supported,
+including snapshot-only source archives and external references to a bare USDZ.
+Source containers are cached; their bytes and extracted entry bytes both count
+toward the input budget. Entry size and bounded reads enforce the remaining
+budget before decompression output can grow beyond it. A referenced package's
+first entry must be a USD layer. Default-package and explicit-root identities
+share one output entry; input extensions are matched case-insensitively.
+
 Limits: 4096 entries including the root, 256 MiB of serialized entry payloads,
 and a separate 256 MiB aggregate bound on newly read asset bytes. Serialization
 is bounded before buffer growth. These are not process-memory limits: live data
 clones, parsed-layer expansion, allocator overhead and ZIP headers are separate.
 
-Explicitly unsupported for now: package-relative/nested-package dependencies,
+Explicitly unsupported for now: genuinely nested-package dependencies,
 asset expressions, tile/sequence patterns and clip template asset paths. Paths
 containing backticks, `<` or `#` are rejected conservatively. Unresolved assets
 in deleted/reordered list-op buckets also fail; support for those authored but
@@ -90,5 +98,10 @@ edits, unchanged source exports and undo behavior, repeated paths, a root self
 asset cycle, colliding basenames, deterministic output, stored compression,
 64-byte alignment and root entry ordering. Missing-asset and entry-budget failures
 retain the existing destination and remove staging files. Broader cycle graphs,
-payload/variant combinations, resolver aliases, pattern expansion, package inputs
+payload/variant combinations, broader resolver aliases, pattern expansion, nested packages
 and rendered texture fidelity remain to be verified or implemented.
+
+Native coverage now also repackages a snapshot-only input in every save mode,
+deletes each first-generation output before re-exporting its snapshot, and checks
+a wrapper referencing the same bare package twice. It verifies composed values,
+shared archive entries and asset bytes, including an uppercase USDZ extension.

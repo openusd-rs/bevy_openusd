@@ -2,6 +2,13 @@
 
 ## Integrated writer fixes
 
+Packaging now accepts single-level source USDZ archives and package-relative
+layers/assets. Native tests cover snapshot-only inputs, a second re-export after
+deleting the first file, and a wrapper referring to one bare package twice.
+Containers and extracted bytes share the input budget; entry lengths are checked
+before reading. Nested packages remain unsupported. Logs:
+`/tmp/repackage-case-native.log`, `/tmp/upstream-repackage-final-tests.log`.
+
 Stage-aware packaging is now integrated as a third local upstream patch.
 Root/edit USDZ exports preserve authored composition while bundling reachable
 ordinary layers and assets through the same resolver; flattened saves bundle

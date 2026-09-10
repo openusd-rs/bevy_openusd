@@ -1559,6 +1559,10 @@ before becoming Bevy's UV transform. Generate the animated comparison fixture:
 Its mapped and explicit-UV scenes are equivalent at times 0 and 10; intermediate
 times are not reference baselines because interpolating coordinates differs from
 interpolating rotation. Different per-texture coordinate transforms remain unsupported.
+`interface_mapped.usda` drives the same transform chain through sampled Material
+inputs. Scale, rotation and translation resolve canonical value producers at each
+instance's clock; malformed connections, wrong value types and nonfinite results
+are errors rather than silently ignored interface values.
 The same generator writes `shear_mapped.usda`, `shear_reference.usda` and
 `shear_lossy.usda`: a nonuniform-scale/37-degree-rotation chain, independently
 baked vertex UVs, and a deliberately lossy SRT control. Capture at time 0 with

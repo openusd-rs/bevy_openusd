@@ -150,6 +150,42 @@ Validation: 513 ordinary tests pass, 13 ignored; check-all, viewer build and
 git diff --check pass. Final logs: `/tmp/frame-visible-{tests,check,build}-icon.log`.
 The full acceptance checklist and intermittent host presentation issue remain open.
 
+## Sampled UV-transform interfaces
+
+`UsdTransform2d` scale, translation and rotation now resolve canonical upstream
+value-producing attributes instead of reading only directly authored values.
+The failing regression previously returned identity at time 0 despite a connected
+material translation of (0,0.5): `/tmp/uv-interface-before.log`.
+Sample-only interfaces keep default-time behavior and evaluate at each explicit
+instance clock. Invalid sources, multiple producers, unreadable connected values,
+wrong value types and nonfinite transforms are rejected. This does not implement
+arbitrary shader evaluation or different per-texture coordinate transforms.
+
+The UV fixture generator writes `interface_mapped.usda` with animated material
+inputs driving the existing two-node transform chain. Its endpoints are checked
+against the independent explicit-UV reference. The AssetServer instance test now
+loads this interface fixture and checks forward/backward/midpoint clock changes,
+material sharing, mesh/texture identity, runtime children and unchanged source.
+The live GPU suite adds `uv_interface` with strict RGB-zero comparison, expanding
+the suite to 16 cases. Reader coverage also checks default time, wrong types,
+multiple/missing producers and infinity.
+
+The first full-suite attempt had reversed arguments in the new test's `set_at`
+call; corrected before the final validation. Its failure log is retained as
+`/tmp/uv-interface-all-tests.log` rather than hidden by overwriting it.
+
+Final validation: 514 ordinary tests pass, 13 ignored; check-all, viewer build,
+shell syntax and git diff --check pass. Logs:
+`/tmp/uv-interface-all-tests-final.log`,
+`/tmp/uv-interface-{check,build}-final.log`.
+All 16 live GPU cases pass: `target/live-uv-interface-regression/results.tsv`,
+`/tmp/uv-interface-live.log`. Both new UV-interface endpoint images were inspected;
+the live 0/10 to 10/0 clock reversal matches the independently authored 10/0
+explicit-UV reference at all 921600 pixels with RGB error zero. Existing two
+normal cases retain tolerance 1; other cases use zero. This is endpoint rendering
+evidence plus headless midpoint material assertions, not a rendered midpoint or
+arbitrary shader-graph acceptance claim. Full Bevy acceptance remains open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

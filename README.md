@@ -226,9 +226,10 @@ make run RUN_WITH= APP_TARGET='--example composed_sources'
 
 `source_benchmark` measures the actual UsdSceneRoot lifecycle for one and four
 roots, each containing the requested number of native USD instances. Three
-alternating-order samples report initial load/validation/projection, captured
+alternating-order samples report typed instanceable-batch assembly and replacement
+assembly separately from initial load/validation/projection, captured
 dependency reload, idle App updates and asset sharing. It checks geometry updates,
-entity identity and runtime-only components. Inputs are already captured in memory;
+entity identity, shared native prototypes and runtime-only components. Inputs are already captured in memory;
 disk I/O, plugin startup, GPU upload and rendering are excluded.
 
 ```sh

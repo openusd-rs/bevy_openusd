@@ -25,6 +25,24 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Typed assembly lifecycle measurements
+
+source_benchmark now prepares both source revisions through
+with_instanceable_references rather than generated reference text. Its CSV adds
+assembly_ms and replacement_assembly_ms separately from Bevy load/reload and
+idle update timings. Input generation, plugin startup, disk I/O and GPU work
+remain excluded. Validation outside the timers checks actual native instances
+and shared prototypes as well as mesh/material sharing, changed Cube geometry,
+preserved entity identities and runtime-only components. The empty root snapshot
+must remain dependency-free after both assemblies.
+A debug run with 32 mounts per root and three alternating samples at one/four
+roots verifies one mesh and one material for 32/128 projected meshes. Across
+the six samples, initial assembly spans 34.308–140.063 ms and replacement assembly
+39.552–234.942 ms. Variance is substantial; this is an unisolated debug measurement,
+not a release speedup or frame-rate claim. Full rows: `/tmp/typed-source-benchmark-final.log`.
+All 467 ordinary tests pass (ten ignored), as do check-all, build and whitespace
+validation: `/tmp/typed-source-{tests,check,build}.log`.
+
 ### Live retimed assembly clocks and capture spacing
 
 Extended the retimed GPU script with two assemblies at clocks 10/20, reversed to

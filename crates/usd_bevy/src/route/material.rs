@@ -25,9 +25,14 @@ pub(crate) fn apply_sidedness(ctx: &RouteCtx, material: &mut StandardMaterial) {
 }
 
 pub(crate) fn default_material(ctx: &RouteCtx) -> StandardMaterial {
+    let opacity = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time).ok().flatten();
+    default_material_with_opacity(ctx, opacity.as_ref())
+}
+
+pub(crate) fn default_material_with_opacity(ctx: &RouteCtx, opacity: Option<&crate::read::geom::MeshPrimvar<f32>>) -> StandardMaterial {
     let mut material = StandardMaterial::default();
     apply_sidedness(ctx, &mut material);
-    if let Ok(Some(opacity)) = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time) {
+    if let Some(opacity) = opacity {
         let translucent = |value: &f32| value.is_finite() && *value < 1.0;
         let blend = if opacity.indices.is_empty() { opacity.values.iter().any(translucent) }
             else { opacity.indices.iter().filter_map(|index| usize::try_from(*index).ok().and_then(|index| opacity.values.get(index))).any(translucent) };

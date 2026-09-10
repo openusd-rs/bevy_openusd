@@ -369,21 +369,22 @@ fn apply_hierarchy(ctx: &RouteCtx, world: &mut World, instance: Entity, parts: &
     world.entity_mut(instance).insert(PrototypeEntities(next));
 }
 
-fn prototype_material(ctx: &RouteCtx, world: &mut World) -> (Handle<StandardMaterial>, Vec<String>) {
+fn prototype_material(ctx: &RouteCtx, world: &mut World, fallback: impl FnOnce() -> StandardMaterial) -> (Handle<StandardMaterial>, Vec<String>) {
     match super::material::resolve_material(ctx, world) {
         Ok(Some(material)) => material,
         result => {
             let warnings = result.err().map(|error| vec![error.to_string()]).unwrap_or_default();
-            (super::cache::intern_material(world, super::material::default_material(ctx)), warnings)
+            (super::cache::intern_material(world, fallback()), warnings)
         }
     }
 }
 
 fn bake_shape(ctx: &RouteCtx, world: &mut World, path: &openusd::sdf::Path) -> Option<ProtoHandles> {
     let ctx = RouteCtx::at(ctx.stage, path, ctx.time);
-    let mesh = super::shapes::shape_mesh(&ctx)?;
-    let (material, warnings) = prototype_material(&ctx, world);
-    Some((super::cache::intern_mesh(world, mesh), material, warnings, default()))
+    let shape = super::shapes::shape_mesh(&ctx)?;
+    let (material, warnings) = prototype_material(&ctx, world,
+        || super::material::default_material_with_opacity(&ctx, shape.opacity.as_ref()));
+    Some((super::cache::intern_mesh(world, shape.mesh), material, warnings, default()))
 }
 
 fn bake_mesh(ctx: &RouteCtx, world: &mut World, proto_path: &openusd::sdf::Path, bake_transform: bool) -> Option<ProtoHandles> {
@@ -410,7 +411,7 @@ fn bake_mesh(ctx: &RouteCtx, world: &mut World, proto_path: &openusd::sdf::Path,
         }
         mesh.transform_by(transform);
     }
-    let (material, warnings) = prototype_material(&proto_ctx, world);
+    let (material, warnings) = prototype_material(&proto_ctx, world, || super::material::default_material(&proto_ctx));
     let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh, &material);
     let mesh_handle = super::cache::intern_mesh(world, mesh);
     Some((mesh_handle, material, warnings, subsets))

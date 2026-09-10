@@ -6,6 +6,7 @@ use std::path::Path;
 pub struct CaptureConfig {
     output: String,
     time: Option<f64>,
+    delay_ms: u64,
 }
 
 impl CaptureConfig {
@@ -18,7 +19,15 @@ impl CaptureConfig {
         let time = time.map(|value| value.parse::<f64>()
             .ok().filter(|time| time.is_finite())
             .ok_or_else(|| "USD_CAPTURE_TIME must be a finite number".to_owned())).transpose()?;
-        Ok(Some(Self { output, time }))
+        Ok(Some(Self { output, time, delay_ms: 0 }))
+    }
+
+    fn delay(value: Option<String>) -> Result<u64, String> {
+        match value {
+            None => Ok(0),
+            Some(value) => value.parse::<u64>().ok().filter(|value| *value <= 45_000)
+                .ok_or_else(|| "USD_CAPTURE_DELAY_MS must be an integer from 0 to 45000".into()),
+        }
     }
 
     pub fn from_env() -> Result<Option<Self>, String> {
@@ -27,7 +36,9 @@ impl CaptureConfig {
             Err(std::env::VarError::NotPresent) => Ok(None),
             Err(error) => Err(format!("{name}: {error}")),
         };
-        Self::parse(read("USD_SCREENSHOT")?, read("USD_CAPTURE_TIME")?)
+        let mut config = Self::parse(read("USD_SCREENSHOT")?, read("USD_CAPTURE_TIME")?)?;
+        if let Some(config) = &mut config { config.delay_ms = Self::delay(read("USD_CAPTURE_DELAY_MS")?)?; }
+        Ok(config)
     }
 }
 
@@ -36,6 +47,8 @@ struct CaptureGate {
     document: Option<u64>,
     frames: u32,
     finished: bool,
+    ready_since: Option<std::time::Duration>,
+    delay: std::time::Duration,
 }
 
 #[derive(Debug, PartialEq)]
@@ -48,42 +61,50 @@ impl CaptureGate {
             self.finished = true;
             return CaptureAction::Timeout;
         }
-        if document != self.document { self.frames = 0; self.document = document; }
+        if document != self.document {
+            self.frames = 0;
+            self.document = document;
+            self.ready_since = document.map(|_| elapsed);
+        }
         if document.is_none() { return CaptureAction::Wait; }
-        self.frames += 1;
-        if self.frames < 120 { return CaptureAction::Wait; }
+        self.frames = self.frames.saturating_add(1);
+        if self.frames < 120 || elapsed.saturating_sub(self.ready_since.unwrap()) < self.delay { return CaptureAction::Wait; }
         self.finished = true;
         CaptureAction::Request
     }
 }
 
-fn save_readback(image: &Image, output: &Path) -> Result<(), String> {
+fn save_readback(image: &Image, output: &Path, timing: &str) -> Result<(), String> {
     if output.extension().and_then(|value| value.to_str()) != Some("png") {
         return Err("USD_SCREENSHOT must end in .png".into());
     }
     let rgba = image.clone().try_into_dynamic().map_err(|error| error.to_string())?.to_rgba8();
     let (width, height) = rgba.dimensions();
     std::fs::write(output.with_extension("rgba"), rgba.as_raw()).map_err(|error| error.to_string())?;
-    let report = format!("source=embedded-viewer\nwidth={width}\nheight={height}\nlayout=rgba8\nsource_format={:?}\nrow_bytes={}\nbytes={}\n", image.texture_descriptor.format, u64::from(width) * 4, rgba.len());
+    let report = format!("source=embedded-viewer\nwidth={width}\nheight={height}\nlayout=rgba8\nsource_format={:?}\nrow_bytes={}\nbytes={}\n{timing}", image.texture_descriptor.format, u64::from(width) * 4, rgba.len());
     std::fs::write(output.with_extension("capture.txt"), report).map_err(|error| error.to_string())?;
     rgba.save(output).map_err(|error| error.to_string())
 }
 
 pub fn configure(app: &mut App) {
-    let Some(CaptureConfig { output, time }) = CaptureConfig::from_env().expect("invalid capture configuration") else { return };
+    let Some(CaptureConfig { output, time, delay_ms }) = CaptureConfig::from_env().expect("invalid capture configuration") else { return };
     if let Some(current) = time { app.insert_resource(usd_bevy::route::StageTime { current }); }
     let started = std::time::Instant::now();
     app.add_systems(Update, move |mut commands: Commands, cameras: Query<(&Camera, &RenderTarget), With<Camera3d>>,
-        session: Option<NonSend<usd_bevy::editor::EditorSession>>, mut gate: Local<CaptureGate>| {
+        session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>| {
         let target = cameras.iter().find(|(camera, _)| camera.is_active).map(|(_, target)| target);
         let document = target.and_then(|_| session.as_ref().map(|session| session.document_id()));
-        match gate.advance(document, started.elapsed()) {
-            CaptureAction::Timeout => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: timed out waiting for an open document and active camera"),
+        gate.delay = std::time::Duration::from_millis(delay_ms);
+        let elapsed = started.elapsed();
+        match gate.advance(document, elapsed) {
+            CaptureAction::Timeout => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: timed out waiting for an open document, active camera and capture delay"),
             CaptureAction::Request => {
                 let target = target.expect("capture gate requires an active camera");
                 let output = output.clone();
+                let timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
+                    elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
                 commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>| {
-                    match save_readback(&event.image, Path::new(&output)) {
+                    match save_readback(&event.image, Path::new(&output), &timing) {
                         Ok(()) => eprintln!("VIEWPORT_CAPTURE_OK {output}"),
                         Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
                     }
@@ -98,6 +119,26 @@ pub fn configure(app: &mut App) {
 mod tests {
     use super::*;
     use bevy::render::render_resource::TextureFormat;
+
+    #[test]
+    fn capture_delay_is_bounded_and_resets_with_document() {
+        assert_eq!(CaptureConfig::delay(None).unwrap(), 0);
+        for value in [0, 15000, 45000] { assert_eq!(CaptureConfig::delay(Some(value.to_string())).unwrap(), value); }
+        for value in ["", "-1", "45001", "NaN", "1.5", "99999999999999999999999999"] {
+            assert!(CaptureConfig::delay(Some(value.into())).is_err());
+        }
+        let seconds = std::time::Duration::from_secs;
+        let mut gate = CaptureGate { delay: seconds(15), ..Default::default() };
+        for _ in 0..200 { assert_eq!(gate.advance(Some(1), seconds(1)), CaptureAction::Wait); }
+        assert_eq!(gate.advance(Some(1), seconds(15)), CaptureAction::Wait);
+        for _ in 0..200 { assert_eq!(gate.advance(Some(2), seconds(15)), CaptureAction::Wait); }
+        assert_eq!(gate.advance(Some(2), seconds(29)), CaptureAction::Wait);
+        assert_eq!(gate.advance(Some(2), seconds(30)), CaptureAction::Request);
+        assert_eq!(gate.advance(Some(2), seconds(31)), CaptureAction::Wait);
+        let mut gate = CaptureGate { delay: seconds(45), ..Default::default() };
+        for _ in 0..200 { assert_eq!(gate.advance(Some(1), seconds(30)), CaptureAction::Wait); }
+        assert_eq!(gate.advance(Some(1), seconds(60)), CaptureAction::Timeout);
+    }
 
     #[test]
     fn capture_options_reject_invalid_times_and_outputs() {
@@ -150,11 +191,12 @@ mod tests {
         let output = directory.join("viewport.png");
         let mut image = Image::new_target_texture(3, 2, TextureFormat::Rgba8UnormSrgb, None);
         image.data = Some((0..24).collect());
-        save_readback(&image, &output).unwrap();
+        save_readback(&image, &output, "minimum_ready_delay_ms=15000\n").unwrap();
         assert_eq!(std::fs::read(output.with_extension("rgba")).unwrap(), image.data.unwrap());
         let report = std::fs::read_to_string(output.with_extension("capture.txt")).unwrap();
         assert!(report.contains("width=3\nheight=2\n"));
         assert!(report.contains("row_bytes=12\nbytes=24\n"));
+        assert!(report.contains("minimum_ready_delay_ms=15000\n"));
         assert!(output.is_file());
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -162,8 +204,8 @@ mod tests {
     #[test]
     fn embedded_readback_reports_invalid_output_and_io_errors() {
         let image = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
-        assert!(save_readback(&image, Path::new("invalid.jpg")).is_err());
+        assert!(save_readback(&image, Path::new("invalid.jpg"), "").is_err());
         let directory = std::env::temp_dir().join(format!("usd-capture-missing-{}", std::process::id()));
-        assert!(save_readback(&image, &directory.join("missing/viewport.png")).is_err());
+        assert!(save_readback(&image, &directory.join("missing/viewport.png"), "").is_err());
     }
 }

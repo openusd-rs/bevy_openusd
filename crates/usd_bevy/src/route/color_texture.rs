@@ -17,6 +17,16 @@ pub(super) fn append_rgba(data: &mut Vec<u8>, rgba: [f32; 4]) -> anyhow::Result<
 }
 
 pub(super) fn transformed(world: &mut World, read: &ReadPreviewMaterial, semantic: &str) -> anyhow::Result<Option<Handle<Image>>> {
+    if semantic == "normal" && read.normal_texture.is_none() && let Some(normal) = read.normal {
+        anyhow::ensure!(normal.iter().all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+            && normal.iter().any(|v| *v != 0.0), "constant normal must be finite, nonzero and within [-1,1]");
+        if normal == [0.0, 0.0, 1.0] { return Ok(None); }
+        let mut data = Vec::with_capacity(8);
+        append_rgba(&mut data, [normal[0] * 0.5 + 0.5, normal[1] * 0.5 + 0.5, normal[2] * 0.5 + 0.5, 1.0])?;
+        anyhow::ensure!(data[..6].chunks_exact(2).any(|bytes| half::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32() != 0.5),
+            "constant normal becomes zero at float16 precision");
+        return cached(world, (1, 1, data)).map(Some);
+    }
     let [scale, bias] = if semantic == "normal" {
         let Some([scale, bias]) = read.normal_texture_transform else { return Ok(None); };
         [scale.map(|v| v * 0.5), bias.map(|v| v * 0.5 + 0.5)]
@@ -43,9 +53,12 @@ pub(super) fn transformed(world: &mut World, read: &ReadPreviewMaterial, semanti
                 color.blue * scale[2] + bias[2], color.alpha])?;
         }
     }
-    let key = (size.width, size.height, data);
+    cached(world, (size.width, size.height, data)).map(Some)
+}
+
+fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<Image>> {
     if let Some(handle) = world.get_resource::<ColorTextures>().and_then(|cache| cache.images.get(&key)) {
-        if world.resource::<Assets<Image>>().contains(handle) { return Ok(Some(handle.clone())); }
+        if world.resource::<Assets<Image>>().contains(handle) { return Ok(handle.clone()); }
     }
     let image = Image::new(Extent3d { width: key.0, height: key.1, depth_or_array_layers: 1 },
         TextureDimension::D2, key.2.clone(), TextureFormat::Rgba16Float, bevy::asset::RenderAssetUsages::default());
@@ -55,12 +68,33 @@ pub(super) fn transformed(world: &mut World, read: &ReadPreviewMaterial, semanti
     let bytes = key.2.len() * 2;
     if cache.bytes + bytes > 64 * 1024 * 1024 { cache.images.clear(); cache.bytes = 0; }
     if bytes <= 64 * 1024 * 1024 { cache.images.insert(key, handle.clone()); cache.bytes += bytes; }
-    Ok(Some(handle))
+    Ok(handle)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn constant_normals_encode_cache_and_reject_invalid_vectors() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let mut read = ReadPreviewMaterial { normal: Some([0.0, 0.5, 0.5]), ..Default::default() };
+        let first = transformed(&mut world, &read, "normal").unwrap().unwrap();
+        assert_eq!(pixel(&world, &first), [0.5, 0.75, 0.75, 1.0]);
+        read.normal = Some([0.0, -0.5, 0.5]);
+        let other = transformed(&mut world, &read, "normal").unwrap().unwrap();
+        assert_ne!(first, other);
+        assert_eq!(pixel(&world, &other), [0.5, 0.25, 0.75, 1.0]);
+        read.normal = Some([0.0, 0.5, 0.5]);
+        assert_eq!(transformed(&mut world, &read, "normal").unwrap(), Some(first));
+        read.normal = Some([0.0, 0.0, 1.0]);
+        assert!(transformed(&mut world, &read, "normal").unwrap().is_none());
+        for normal in [[0.0; 3], [f32::NAN, 0.0, 1.0], [f32::INFINITY, 0.0, 1.0], [2.0, 0.0, 1.0], [1e-9, 0.0, 0.0]] {
+            read.normal = Some(normal);
+            assert!(transformed(&mut world, &read, "normal").is_err());
+        }
+    }
 
     fn world_with_pixel(srgb: bool, bytes: [u8; 4]) -> World {
         let mut world = World::new();

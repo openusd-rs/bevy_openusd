@@ -3,6 +3,59 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Spot visual recheck after material fixes
+
+Rechecked at `f709355` using the original collection asset
+`../usd_collection/oems/spot_boston_dynamics/spot_base_urdf/spot.usdc`.
+Its SHA-256 is
+`3d450917a26f3bb89c32f2872cf7b8be2bffac15954c0dbca6330ec780f9365b`.
+No collection files were modified.
+
+Both forward-rendered captures use time 0, shadows off, eye (1.6,0.8,1.8),
+target (0,-0.15,0), 1280x720 and 60 ready frames. Each reports 13 visible
+meshes and CAPTURE_OK. Both images were inspected:
+
+- `target/spot-material-framed.png`: subdivision disabled; visible faceting
+  and seams remain after the material/tangent fixes.
+- `target/spot-material-subdiv1.png`: finite subdivision level 1; dark seam
+  details on the lower legs are more conspicuous, not a visual repair.
+- Logs: `/tmp/spot-material-{framed,subdiv1}.log`.
+
+The current `scene_report ASSET 0 1` completed for 26 traversed meshes,
+including library geometry, not 26 visible meshes. The base mesh preserves
+all 3,368 authored vertex normals exactly. Its 1,296 source triangles have
+no degenerate/duplicate triangles or reversed normal corners; the minimum
+face/normal dot is 0.999808. Thus its source normals are almost face-aligned.
+The indexed boundary count is 3,368 versus 55 position-welded boundaries;
+position welding also exposes one nonmanifold edge. The subdivision scheme
+is the unauthored Catmull-Clark fallback. At level 1 the base has 8,292 points,
+3,888 quads and eight reversed normal corners in the triangulated result.
+These are diagnostics, not proof of their contribution to each visible seam.
+Log: `/tmp/spot-material-scene-report.log`.
+
+Native `make capture-reference` with Embree, GPU disabled and image width
+1280 again writes a completely black image for the original binary.
+`capture_inspect` rejects it: zero nonblack pixels out of 1,195,520.
+The initial inspection used an incorrect height of 960 and failed bounds
+validation; the corrected height is 934. Evidence:
+`target/spot-native-current.png`, `/tmp/spot-native-current.log`,
+`/tmp/spot-native-inspect-final.log`.
+
+A fresh diagnostic root export (`USD_REPORT_EXPORT_LAYER` with scene_report)
+to `target/spot-material-native.usda` renders visibly through native Embree:
+`target/spot-native-reexport.png`, inspected directly. Faceting is also
+visible there. Logs: `/tmp/spot-material-native-export.log` and
+`/tmp/spot-native-reexport.log`. Native warnings explicitly exclude Material
+prim support and GPU-disabled color correction. Camera, lighting and
+refinement are not matched to Bevy; this is not a material or pixel-parity
+test. The diagnostic export does not rebase relative assets.
+
+Next: obtain a matched-camera geometry reference with explicit refinement
+before changing smoothing or topology. Do not weld the source or enable
+subdivision globally merely to conceal these artifacts. Full visual fidelity
+and the intermittent black editor-window issue remain open. This checkpoint
+changes documentation only; no workspace test/build rerun is claimed.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.
@@ -24,6 +77,291 @@ rendered captures, and use explicit benchmarks for performance claims.
 Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
+
+### Delay low-level readback for post-interaction captures
+
+USD_CAPTURE_DELAY_MS accepts 0..45000 (default 0) and is validated before window
+creation when capture is enabled. The capture gate now requires both 120 ready
+updates and the minimum continuous ready duration for the same document. Loss of
+an active camera/document or document replacement resets readiness; the existing
+60-second update-driven global deadline remains. The counter saturates safely.
+Sidecars record configured delay, actual ready elapsed time, update count,
+document ID and scene time at request. These identify request conditions, not
+the precise rendered frame/callback time or synchronized host/viewport frames.
+
+Tests cover delay parsing/bounds, early frames, replacement resets, one-shot
+requests, late-document timeout and timing metadata. All 510 ordinary tests pass
+(13 ignored), make check-all/build and git diff --check pass:
+`/tmp/capture-delay-tests-final.log`, `/tmp/capture-delay-{check,build}-final.log`.
+
+The visibility eye-click replay was repeated with 15000 ms ready delay and a
+20-second host wait. Both host and low-level Bevy images were inspected and now
+show the post-click two-cube state. The sidecar records 15026 ms ready time,
+341 ready updates, document 1 and scene time 10. The viewer log places all four
+replay events before VIEWPORT_CAPTURE_OK. Evidence:
+`target/viewer-ui-captures/animated-visibility-delayed*`,
+`/tmp/capture-delay-ui.log`. UI_CAPTURE_OK is present. A transient startup grep
+reported the not-yet-created viewer log; it did not prevent capture. Native
+clipboard/Vulkan-layer/SSAO warnings remain separate known environment issues.
+
+This supplies a usable post-interaction readback control, not a render-readiness
+fence, a synchronized pair or a fix for intermittent host blackouts. The full
+Bevy acceptance checklist remains open.
+
+### Make the Outliner eye action edit animated visibility
+
+The sampled eye indicator exposed an ineffective action: writing a visibility
+default did not override existing time samples. EditorCommand::Visibility now
+chooses AttributeSample at the current finite StageTime when the composed
+attribute has samples, otherwise Attribute. It uses the existing typed authoring
+and undo path, and pauses playback after a successful edit. The Outliner sends
+this command and its tooltip identifies current-time behavior. Local visibility
+and ordinary cross-layer strength rules remain unchanged; this does not override
+an invisible ancestor or copy weaker sample sets into stronger layers.
+
+The command regression verifies sampled and static edits, pause, unchanged sample
+keys/default value, undo/redo and exact restoration of the original layer, plus
+nonfinite-time rejection. All 509 ordinary tests pass (13 ignored), check-all/
+build and git diff --check pass: `/tmp/visibility-toggle-tests-final.log`,
+`/tmp/visibility-toggle-{check,build}.log`.
+
+`scripts/replays/visibility_toggle.replay` exercises the actual eye click on
+Animated at time 10. The inspected host screenshot shows the eye reopened and
+the formerly hidden cube visible at the left edge; Ready remains shown. Evidence:
+`target/viewer-ui-captures/animated-visibility-toggle-retry*`,
+`/tmp/visibility-toggle-retry-ui.log`. The Bevy readback occurs before the 10-second
+click and shows the initial one-cube state; it is not a post-click comparison.
+Both images were inspected and the log confirms all four replay events.
+
+The first private-Weston attempt exceeded compositor startup time before viewer
+launch. Its failed log/settings remain under `animated-visibility-toggle*` and
+`/tmp/visibility-toggle-ui.log`; retry used a new output after compilation ended.
+Known clipboard/Vulkan-layer/SSAO warnings persist on the successful retry.
+This verifies the native eye action, not all interaction states or resolution
+of intermittent host blackouts. The full Bevy checklist remains open.
+
+### Publish projected material warnings in the Properties pane
+
+UsdMaterialWarning was attached to projected meshes but omitted from the editor's
+render-issue publication query. The selected mapped entity's material warning now
+appears alongside subdivision/deformation/shape/curve/transform issues. Existing
+render-issue presentation wraps it into readable lines. The publication regression
+now includes material warnings and verifies clearing when components are removed;
+missing/unselected prims retain empty issue lists. Generated descendant warnings
+are not aggregated onto selected parent prims by this change.
+
+A paired private-Weston capture selects /Quad in the normal fixture's no-UV case
+with Properties open. Both host and viewport images were inspected; the host
+shows the full material warning explaining the missing tangent frame, while the
+quad remains rendered with the geometric fallback. Evidence:
+`target/viewer-ui-captures/material-missing-tangents*`,
+`/tmp/editor-material-warning-ui.log`. UI_CAPTURE_OK and VIEWPORT_CAPTURE_OK are
+present. The expected material warning and known native Vulkan-layer/SSAO-limit
+diagnostics persist; this nonblack run does not resolve intermittent host blackouts.
+
+All 508 ordinary tests pass (13 ignored), make check-all/build and git diff --check
+pass: `/tmp/editor-material-warning-{tests,check,build}.log`.
+Full descendant diagnostics, native interaction acceptance and the broader Bevy
+checklist remain open.
+
+### Keep sampled editor snapshots synchronized with playback
+
+Visibility snapshots previously read default values even when a scene clock was
+supplied, and advance_editor_time updated only the timeline, leaving sampled
+matrix/visibility inspector data at the last command's time. Visibility now uses
+get_at with the requested TimeCode. After playback advances the clock, the editor
+refreshes its snapshot only if the published sample time differs. Paused unchanged
+clocks avoid this work; failures publish an inspection error. This adds snapshot
+work during playback and does not establish a performance improvement.
+
+Expanded regressions verify sampled visibility after seek, loop and playback,
+selected retimed matrix samples after automatic advancement, pause, document/
+entity continuity and unchanged source/undo history. All 508 ordinary tests pass
+(13 ignored), make check-all/build and git diff --check pass:
+`/tmp/editor-playback-snapshot-{tests,check,build}.log`.
+
+Added `assets/visibility_animation.usda`: Animated is hidden at time 10 while
+Visible remains shown. Paired private-Weston captures at time 10 were inspected:
+`target/viewer-ui-captures/sampled-visibility*`. The first opens the Rendering
+pane; the second (`sampled-visibility-outliner*`) shows Animated's crossed-out eye,
+Visible's open eye, Ready status and only the visible cube in both host and Bevy
+readback. Logs: `/tmp/editor-visibility-ui.log`,
+`/tmp/editor-visibility-outliner-ui.log`. Both report UI_CAPTURE_OK and their
+viewer logs report VIEWPORT_CAPTURE_OK. Known missing Vulkan layer and SSAO
+storage-limit warnings persist. These runs were nonblack; they do not resolve
+the intermittent black-host issue or verify continuous playback screenshots.
+
+Visibility indicators remain local authored/composed tokens, not inherited
+effective visibility. The toggle still authors a default opinion rather than
+an animated sample. Full native interaction and the broader checklist remain open.
+
+### Establish a release-profile editor seek baseline
+
+Built the current editor benchmark with the repository release profile and
+repeated three alternating fresh-process CPU/GPU-prepared pairs after compilation.
+Each run verifies profile=release, document/clock continuity and prepared morph
+counts. Median seek times were 565.161–582.677 us for CPU and
+529.111–589.169 us for GPU-prepared on the two-triangle morph/subset fixture.
+p95 spans 855.684–1222.401 us across both modes. Retained payload counts match
+the debug baseline; this is not GPU execution time, a causal speedup comparison
+or evidence for representative production-scene performance.
+
+Exact release numbers, source revision, methodology and limitations are recorded
+in `benchmarks/morph-tangent-seek.md`. Logs:
+`/tmp/editor-seek-release-build.log`,
+`/tmp/editor-seek-release-{cpu,gpu-prepared}-{1,2,3}.log`.
+No agent-started tests/builds overlapped the measured runs; ambient load was not
+controlled. All three editor benchmark tests pass in release mode afterward:
+`/tmp/editor-seek-release-tests.log`. Documentation-only changes pass diff checks;
+the preceding unchanged source baseline passed 508 ordinary tests/check/build.
+Representative scenes, sustained unique clocks, allocation/RSS/VRAM accounting
+and real rendered frame latency remain open, along with the full checklist.
+
+### Measure headless editor seek cost and retained morph payload
+
+editor_benchmark accepts an optional `seek` argument: four warmup updates followed
+by 100 seeks at clocks 0/5/10/5. Each seek checks document identity, Ready status
+and current clock; nearest-rank median/p95/max measure App::update only. Retained
+payload statistics now label their after-idle/after-seeks phase, and GPU morph
+entity counts distinguish actual preparation from CPU fallback. This does not
+instantiate a renderer, measure GPU time or account for RSS/VRAM.
+
+Three alternating fresh-process CPU/GPU-prepared pairs ran on the normal-mapped
+morph/subset fixture. Debug median seek times were 6700.692–6803.963 us for CPU
+and 6433.609–6529.049 us for GPU-prepared. Timing variation and concurrent host
+work preclude a speedup claim. Retained CPU payload counts differ (8 versus 10
+mesh assets; 0 versus 1440 morph bytes), while morph entity counts are 0 versus 2.
+Full numbers and exclusions: `benchmarks/morph-tangent-seek.md`,
+`/tmp/editor-seek-{cpu,gpu-prepared}-{1,2,3}.log`.
+
+All 508 ordinary tests pass (13 ignored), check-all/build and git diff --check
+pass: `/tmp/editor-seek-tests.log`, `/tmp/editor-seek-check-final.log`,
+`/tmp/editor-seek-build.log`. The new test exercises both CPU and GPU-prepared
+seek paths, their morph counts, payloads and ordered timing percentiles.
+Release/representative-scene benchmarks, sustained allocation behavior, real GPU
+latency and the full Bevy acceptance checklist remain open.
+
+### Verify live morph tangents and constant normals in the GPU suite
+
+The repeatable live-clock suite now has fifteen cases. It adds constant-normal
+animation against independently animated geometry normals and normal-mapped
+morph tangents with material subsets against CPU deformation. Normal constant/
+interface cases explicitly allow RGB error 1; the other thirteen remain strict
+RGB-zero checks. The morph-tangent case requires four visible meshes, four GPU
+morph entities in the live run, zero in the CPU reference, and no flat-material
+entities. All cases verify reversed clock order after 30 ready frames and reject
+renderer warnings/errors.
+
+All fifteen cases pass: `target/live-morph-tangent-regression/`,
+`/tmp/live-morph-tangent-gpu.log`. Both images for each newly added case were
+inspected. The constant-normal case has max RGB error 1; live morph tangents
+match CPU deformation exactly at endpoint clocks 10/0.
+
+A manual midpoint pair reverses 5/10 to 10/5 and also matches the CPU reference
+exactly. Both images were inspected; metadata confirms four visible meshes,
+four GPU morph entities versus zero, and a 30-frame live reversal. No renderer
+WARN/ERROR. Evidence: `target/live-morph-tangent-mid-*`,
+`/tmp/live-morph-tangent-mid-{live,reference,compare}.log`. This midpoint pair is
+additional evidence, not a sixteenth default suite case.
+
+All 507 ordinary tests pass (13 ignored), make check-all/build, shell syntax and
+git diff --check pass: `/tmp/live-morph-tangent-{tests,check,build}.log`.
+General skinning tangent fidelity, performance measurements and the full Bevy
+acceptance checklist remain open.
+
+### Rebuild GPU morph tangents at the sampled USD clock
+
+GPU morph preparation previously supplied zero tangent deltas while retaining
+rest tangents, despite changing positions and authored normals. The new CPU
+reference regression reproduced a mismatch at time 5: GPU tangent (1,0,0,1)
+versus approximately (0.973375,0.000135,-0.229217,1). The fixture has authored UVs,
+normal offsets, a constant tangent-space normal material and material subsets.
+Evidence: `/tmp/morph-tangent-before-fixed-test.log`.
+
+When UVs exist, preparation now builds sampled morph-space positions and normals,
+retains rest triangulation, regenerates tangents through the existing mesh builder
+and copies only the tangent attribute to the GPU base mesh. Position/normal
+offsets remain GPU morph attributes; skinning, when present, runs afterward.
+Nonfinite positions and changed vertex counts reject preparation. Missing
+generated tangents remove the stale attribute and reach the existing diagnostic.
+This intentionally adds CPU tangent generation and time-specific mesh data; no
+performance improvement or arbitrary post-skinning tangent parity is claimed.
+
+The unit regression passes at 0/5/10/backward 0 and verifies the reference really
+differs from rest tangents. Actual GPU and CPU captures at time 10 match exactly
+at zero RGB tolerance. Both were inspected; metadata confirms two GPU morph mesh
+entities in the GPU run and zero in the CPU reference, with two visible meshes
+in each. No renderer WARN/ERROR, both CAPTURE_OK.
+Evidence: `target/morph-tangent-after-{gpu,cpu,diff}.png`,
+`/tmp/morph-tangent-after-{gpu,cpu,compare}.log`.
+
+The first capture pair mistakenly set USD_CPU_SKINNING=0, which still selects
+CPU mode because the option is presence-based. Its metadata reports zero GPU
+morph meshes in both captures; `target/morph-tangent-before-*` is retained but
+is NOT GPU-before evidence. The corrected GPU run unsets the variable.
+An initial unit setup also tried setting an absent attribute spec; it was
+replaced by the explicit `assets/morph_tangent_normals.usda` fixture before the
+actual stale-tangent regression was reproduced.
+
+All 507 ordinary tests pass (13 ignored), make check-all/build and git diff --check
+pass: `/tmp/morph-tangent-{tests,check,build}.log`. Live rendered clock reversal,
+general skinning tangent fidelity, performance measurements and the full Bevy
+acceptance checklist remain open.
+
+### Diagnose ignored normal mapping without tangents
+
+Bevy 0.19.1's pbr_fragment.wgsl guards normal mapping with VERTEX_TANGENTS;
+the projection previously attached normal textures without exposing that missing
+mesh tangents would make them ineffective. A shared material diagnostic now adds
+UsdMaterialWarning on ordinary meshes, material subsets and point-instancer
+mesh/shape prototypes when their material has a normal map but the projected
+mesh has no tangent attribute. It does not invent UVs, mutate shared materials,
+or validate numerical quality of existing/deformed tangent frames.
+
+The integration test projects ordinary/subset/instancer material entities both
+without UVs and with a valid authored UV frame, requiring the warning only for
+the missing-tangent case. normal_fixture now generates constant_no_uv.usda.
+GPU captures of this fixture and the valid constant-normal control were inspected:
+both render, the missing-UV case emits the expected warning exactly once, and
+their images differ across 121104 of 921600 pixels, maximum RGB error 26. The
+valid control has no WARN/ERROR. This is evidence that the ignored input is now
+diagnosed, not a fix for missing UV/tangent data.
+Evidence: `target/normal-tangent-fixture/`,
+`/tmp/normal-tangent-{constant,constant_no_uv,compare}.log`.
+
+All 506 ordinary tests pass (13 ignored), make check-all/build and git diff --check
+pass: `/tmp/normal-tangent-tests.log`, `/tmp/normal-tangent-check-final.log`,
+`/tmp/normal-tangent-build.log`. The full Bevy acceptance checklist remains open.
+
+### Render authored constant Preview Surface normals
+
+The normal color setter previously discarded resolved normal3f values. The read
+model now retains them for Preview Surface, including sampled values, and the
+material route encodes them into shared 1x1 linear RGBA16Float images. The default
+(0,0,1) avoids allocating an image. This follows the signed tangent-space input
+contract: https://openusd.org/release/spec_usdpreviewsurface.html . Other surface
+dialects retain their existing behavior. Nonfinite, zero, out-of-range and vectors
+that collapse to zero at half precision return explicit material warnings rather
+than constructing invalid shader normals. Existing texture inputs take precedence.
+The texture cache implementation is shared with transformed RGB/normal images.
+
+Unit tests cover encoding, default identity, changed/backward cache handles,
+invalid vectors and sampled constant reads at 0/5/10/backward 0. The normal fixture
+now generates constant.usda and constant_animated.usda. A GPU pair reverses two
+constant-normal roots from 0/10 to 10/0 after 30 ready frames and compares fresh
+independent animated geometry normals at 10/0. Both images were inspected; the
+strict-zero comparison differs at two of 921600 pixels, max RGB error 1. It is
+near-reference evidence, not exact parity. Metadata confirms two visible meshes;
+both captures report CAPTURE_OK without WARN/ERROR.
+Evidence: `target/constant-normal-fixture/`,
+`/tmp/constant-normal-{live,reference,compare}.log`.
+
+All 505 ordinary tests pass (13 ignored), check-all/build and git diff --check
+pass: `/tmp/constant-normal-tests.log`, `/tmp/constant-normal-check-final.log`,
+`/tmp/constant-normal-build.log`. Meshes still require a valid UV-derived tangent
+frame; missing tangents, deformed tangent fidelity, broad shader graphs and the
+full acceptance checklist remain unresolved. This manual GPU pair is not yet a
+default live-clock suite case.
 
 ### Verify live signed normal interfaces
 

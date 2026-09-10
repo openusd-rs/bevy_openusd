@@ -332,14 +332,24 @@ The subsequent [reload comparison](benchmarks/reload-animation.md) measures redu
 CPU reload cost from skipping an unused animation-index scan, with clock-isolation
 regressions. It does not establish GPU or frame-rate improvements.
 
-`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared]` measures the actual editor Open path and retained
+`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek]` measures the actual editor Open path and retained
 mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
 includes file reading and texture decoding, but excludes GPU work and the UI:
 
 ```sh
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/material_subsets.usda'
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/morph_animation.usda 3 gpu-prepared'
+make run RUN_WITH= APP_TARGET='--example editor_benchmark' ARGS='assets/morph_tangent_normals.usda 3 gpu-prepared seek'
 ```
+
+Optional `seek` cycles clocks 0/5/10/5 for four warmup updates and 100 measured
+updates. It checks document identity, Ready status and the requested clock after
+each update, then reports nearest-rank median/p95/max `App::update` duration and
+post-seek retained payloads. Command enqueue and result validation are outside the
+timer. GPU morph entity counts distinguish prepared morphs from CPU fallback.
+These are headless editor update timings, not GPU frame latency or VRAM use.
+The initial [morph-tangent seek measurements](benchmarks/morph-tangent-seek.md)
+record debug and release CPU/GPU-prepared runs with explicit limitations.
 
 The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
 GPU deformation routing and measures its retained CPU-side mesh/morph payloads;
@@ -507,6 +517,16 @@ Open the Timeline ribbon pane to play/pause, step one USD time code, return to
 the authored start time, or enter a time code and seek. Seeking pauses playback;
 playing loops over the authored start/end range using the stage's time-code rate.
 Timeline operations change viewer time, not USD opinions or undo history.
+The editor refreshes its sampled snapshot when playback changes the clock, so
+matrix sample labels and outliner local-visibility indicators follow scene time.
+Paused unchanged clocks do not trigger another snapshot. Visibility indicators
+show the prim's local token, not inherited/effective visibility. The existing
+visibility toggle writes a sample at the current clock when the composed attribute
+has time samples, otherwise a default opinion. Successful toggles pause playback
+and participate in undo/redo; they do not change other authored sample keys in the
+same edit layer. Normal USD strength rules still apply across edit layers.
+`assets/visibility_animation.usda` hides Animated at time 10 while Visible remains
+shown; it is a control for sampled outliner and rendered visibility.
 
 `assets/animation_showcase.usda` combines a growing Cube, three shared animated
 mesh prototypes and an orange-to-blue material transition over time codes 0–10.
@@ -522,11 +542,15 @@ non-finite or malformed `USD_CAPTURE_TIME` values before constructing the window
 Negative and fractional finite time codes are accepted. Without USD_SCREENSHOT,
 USD_CAPTURE_TIME does not enable capture or set the editor clock.
 It writes the PNG plus tightly packed `.rgba` pixels and `.capture.txt` containing
-dimensions, source texture format and row length. `VIEWPORT_CAPTURE_OK` in stderr
+dimensions, source texture format, row length and capture-request timing/clock
+metadata. `VIEWPORT_CAPTURE_OK` in stderr
 means all three files were written; `VIEWPORT_CAPTURE_ERROR` reports a failure.
-The viewer stays open. Capture is requested once after 120 consecutive updates
+The viewer stays open. Capture is requested once after at least 120 consecutive updates
 with the same open editor document and an active camera. Losing the camera or
-replacing the document resets that count. A 60-second deadline, checked on each
+replacing the document resets that count and the ready-duration timer.
+`USD_CAPTURE_DELAY_MS=0..45000` adds a minimum ready duration (default 0), useful
+for captures after a timed UI replay. Invalid values are rejected before window
+creation. A 60-second deadline, checked on each
 update, reports an error if those conditions were not met; an invalid initial
 open no longer produces a grid-only success. This does not guarantee GPU
 pipeline readiness, completed uploads or correct projection. The deadline ends
@@ -995,7 +1019,11 @@ the run, but does not suppress the compositor screenshot attempt. Existing
 viewport companions are rejected before launch.
 
 These are two capture paths, not synchronized frames: Bevy requests its readback
-after 120 document/camera-ready updates, whereas Weston captures after the UI delay. A healthy viewport
+after 120 document/camera-ready updates and its optional ready delay, whereas
+Weston captures after the UI delay. For the 10-second visibility-click replay,
+`USD_CAPTURE_DELAY_MS=15000 USD_UI_CAPTURE_WAIT=20` targets the post-click state
+on both paths. Timing metadata identifies the request, not the exact rendered
+frame or callback time. A healthy viewport
 with a black host image narrows the failure to host presentation/composition or
 compositor readback, not necessarily to Weston itself. Neither near-black check
 proves scene fidelity or completed asset uploads.
@@ -1273,11 +1301,13 @@ make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/
 ```
 
 It generates fresh UV/texture/scalar/color/normal fixtures and compares live clock
-reversals against independent references. Twelve comparisons use zero RGB
-tolerance; the normal-interface case uses RGB tolerance 1 for the independently
-animated geometry-normal reference, matching the static fixture's precision bound.
-Metadata must confirm the reversal and two visible mesh entities;
-the morph case also verifies shared GPU material use. Renderer warnings/errors
+reversals against independent references. Thirteen comparisons use zero RGB
+tolerance; normal-interface and constant-normal cases use RGB tolerance 1 for
+independently animated geometry normals, matching the static precision bound.
+Metadata must confirm the reversal and expected visible mesh counts. The flat
+morph case verifies shared GPU material use; the morph-tangent case verifies four
+GPU-morphed ordinary/subset meshes against CPU deformation without flat materials.
+Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain
 in the output directory, including on failure. This requires native GPU access
 and uses offline Cargo through Make.
@@ -1344,6 +1374,15 @@ constant influence set shared by the entire mesh instead of per-vertex arrays.
 `assets/skel_material_subsets.usda` exercises shared-palette GPU skinning with
 orange/blue face materials. Capture time `30`, eye `(4,3,6)`, target `(0,1,0)`
 and compare against `USD_CPU_SKINNING=1` using the same camera.
+`assets/morph_tangent_normals.usda` exercises normal-mapped morphs with authored
+normal offsets and material subsets. GPU morph preparation regenerates the
+tangent frame on the CPU from sampled morphed positions/normals and authored UVs,
+while position/normal offsets remain GPU morph targets. Rest-pose triangulation
+is retained. This adds CPU work and time-specific mesh data; it is not a measured
+performance improvement or proof of tangent parity after arbitrary skinning.
+Set `USD_CPU_SKINNING=1` for the CPU reference and **unset** it for GPU rendering;
+the override is presence-based, so setting it to `0` still selects CPU mode.
+
 `assets/morph_animation.usda` exercises standalone GPU morph targets. Capture
 time `10`, eye `(2,2,4)`, target `(0.5,0.5,0)`; `USD_CPU_SKINNING=1` also disables
 the GPU morph route for comparison. Metadata reports GPU morph meshes separately
@@ -1482,6 +1521,22 @@ test checks directions at times 0/5/10 and backward to 0.
 The scaled mapped/reference capture differs at six pixels by at most RGB 1;
 the canonical case retains its two-pixel RGB-1 difference. Neither is pixel-exact
 reference parity, and general MaterialX normal processing remains unsupported.
+
+Authored constant Preview Surface normals also use the linear float16 path, with
+a shared 1x1 image and no external texture dependency. `(0,0,1)` needs no image.
+Nonfinite, zero, out-of-range and float16-zero vectors produce material warnings
+and retain the geometric-normal fallback. This requires the mesh's tangent frame;
+missing UV/tangent data and deformed-tangent fidelity remain separate limitations.
+The normal fixture includes `constant.usda` and `constant_animated.usda`; the latter
+animates the signed normal directly rather than through a texture scale input.
+`constant_no_uv.usda` omits UVs and exercises the missing-tangent diagnostic.
+Normal-mapped ordinary meshes, material subsets and point-instancer prototypes
+carry `UsdMaterialWarning` when the projected mesh lacks tangents. Bevy then uses
+geometric shading normals; the diagnostic does not invent a UV/tangent basis or
+validate the numerical quality of existing tangents.
+Material warnings on the selected prim's mapped entity appear in the Properties
+pane's render issues and clear when the warning or selection disappears. This
+does not aggregate warnings from generated subset/prototype descendants.
 
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:

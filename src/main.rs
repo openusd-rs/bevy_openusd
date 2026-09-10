@@ -484,7 +484,7 @@ fn walk_usd_tree(
     let previous_eye = visibility.get(&node.path).copied().unwrap_or(true);
     let mut eye_on = previous_eye;
     let mut slots =
-        [TreeIconSlot::new(TreeIconKind::Eye, &mut eye_on).with_tooltip("Toggle visibility")];
+        [TreeIconSlot::new(TreeIconKind::Eye, &mut eye_on).with_tooltip("Toggle local visibility; animated values use the current time")];
     let resp = tree.row(
         i,
         depth,
@@ -500,10 +500,7 @@ fn walk_usd_tree(
     }
     tree.set_persisted_bool(exp_key, expanded);
     if eye_on != previous_eye {
-        send(editor, EditorCommand::Edit(usd_bevy::editor::EditorEdit::Attribute {
-            prim: node.path.clone(), name: "visibility".into(), type_name: "token".into(),
-            value: openusd::sdf::Value::Token(if eye_on { "inherited" } else { "invisible" }.into()),
-        }));
+        send(editor, EditorCommand::Visibility { prim: node.path.clone(), visible: eye_on });
     }
     if is_branch && expanded {
         for &c in &node.children {

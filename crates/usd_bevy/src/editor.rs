@@ -15,6 +15,7 @@ pub enum EditorCommand {
     /// Reload source-backed images without replacing the document or edit history.
     RefreshTextures,
     Select(Option<String>),
+    Visibility { prim: String, visible: bool },
     Edit(EditorEdit),
     EditLayer(String),
     Payload { prim: String, loaded: bool },
@@ -84,7 +85,7 @@ fn publish_projection_issues(
     rendering: Query<(Option<&crate::route::subdivision::UsdSubdivisionError>,
         Option<&crate::route::skel::UsdDeformationError>, Option<&crate::route::instancer::UsdInstancerWarning>,
         Option<&crate::route::shapes::UsdShapeError>, Option<&crate::route::curves::UsdCurveError>,
-        Option<&crate::route::xform::UsdTransformError>)>,
+        Option<&crate::route::xform::UsdTransformError>, Option<&crate::route::material::UsdMaterialWarning>)>,
 ) {
     let Ok(mut state) = bridge.0.lock() else { return };
     state.view.document.reflect_issues = state.view.document.selected.as_deref()
@@ -94,13 +95,14 @@ fn publish_projection_issues(
     state.view.document.render_issues = state.view.document.selected.as_deref()
         .and_then(|path| prims.as_ref()?.entity(path))
         .and_then(|entity| rendering.get(entity).ok())
-        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve, transform)| {
+        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve, transform, material)| {
             [subdivision.map(|error| format!("Subdivision: {}", error.0)),
                 deformation.map(|error| format!("Deformation: {}", error.0)),
                 instancer.map(|error| format!("Point instancer: {}", error.0)),
                 shape.map(|error| format!("Shape: {}", error.0)),
                 curve.map(|error| format!("Curve: {}", error.0)),
-                transform.map(|error| format!("Transform: {}", error.0))]
+                transform.map(|error| format!("Transform: {}", error.0)),
+                material.map(|warning| format!("Material: {}", warning.0))]
                 .into_iter().flatten().collect()
         });
 }
@@ -113,8 +115,19 @@ fn advance_editor_time(world: &mut World) {
     world.resource_mut::<crate::route::StageTime>().current = current;
     let timeline = EditorTimeline { current, start: stage.start_time_code(), end: stage.end_time_code(),
         playing: world.resource::<EditorPlayback>().0.playing };
+    let refresh = world.resource::<EditorBridge>().0.lock()
+        .is_ok_and(|state| state.view.document.sample_time != Some(current));
+    let snapshot = refresh.then(|| world.get_non_send::<EditorSession>().unwrap().snapshot_at(Some(current)));
     let bridge = world.resource::<EditorBridge>();
-    if let Ok(mut state) = bridge.0.lock() { state.view.timeline = timeline; }
+    if let Ok(mut state) = bridge.0.lock() {
+        state.view.timeline = timeline;
+        if let Some(snapshot) = snapshot {
+            match snapshot {
+                Ok(document) => state.view.document = document,
+                Err(error) => state.view.status = format!("Inspection failed: {error:#}"),
+            }
+        }
+    }
 }
 
 fn process_commands(world: &mut World) {
@@ -166,6 +179,11 @@ fn process_commands(world: &mut World) {
                 })
         } else if let Some(editor) = &mut session {
             match command {
+                EditorCommand::Visibility { prim, visible } => {
+                    let time = world.resource::<crate::route::StageTime>().current;
+                    visibility_edit(editor.stage(), prim, visible, time).and_then(|edit| editor.edit(edit))
+                        .map(|_| world.resource_mut::<EditorPlayback>().0.playing = false)
+                }
                 EditorCommand::RefreshTextures => editor.source.as_ref()
                     .ok_or_else(|| anyhow::anyhow!("document has no source snapshot"))
                     .and_then(|source| refresh_textures(world, editor.stage(), source))
@@ -230,6 +248,17 @@ fn process_commands(world: &mut World) {
 }
 
 type PreparedTextures = Vec<((String, bool), Image)>;
+
+fn visibility_edit(stage: &Stage, prim: String, visible: bool, time: f64) -> anyhow::Result<EditorEdit> {
+    anyhow::ensure!(time.is_finite(), "visibility edit time must be finite");
+    let sampled = !stage.prim(openusd::sdf::path(&prim)?)?.attribute("visibility").time_sample_times()?.is_empty();
+    let value = Value::Token(if visible { "inherited" } else { "invisible" }.into());
+    Ok(if sampled {
+        EditorEdit::AttributeSample { prim, name: "visibility".into(), type_name: "token".into(), value, time }
+    } else {
+        EditorEdit::Attribute { prim, name: "visibility".into(), type_name: "token".into(), value }
+    })
+}
 
 #[derive(Resource, Default)]
 pub(crate) struct EditorTextureRequests(pub std::collections::BTreeSet<String>);
@@ -602,7 +631,8 @@ impl EditorSession {
             snapshot.prims.push(path.as_str().to_owned());
         })?;
         for path in &snapshot.prims {
-            let value = self.stage.prim(openusd::sdf::path(path)?)?.attribute("visibility").get::<Value>()?;
+            let value = self.stage.prim(openusd::sdf::path(path)?)?.attribute("visibility")
+                .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?;
             snapshot.visibility.insert(path.clone(), !matches!(value, Some(Value::Token(token)) if token.as_str() == "invisible"));
         }
         if let Some(path) = &self.selected {
@@ -679,6 +709,44 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 #[cfg(test)]
 mod tests {
     #[test]
+    fn visibility_commands_edit_samples_or_defaults_and_undo() {
+        let source = crate::UsdSource::snapshot("visibility.usda", include_bytes!("../../../assets/visibility_animation.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.insert_non_send(EditorSession::new(stage.clone()));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Seek(10.0)).unwrap();
+        app.update();
+        assert!(!bridge.view().unwrap().document.visibility["/Animated"]);
+        bridge.send(EditorCommand::Play(true)).unwrap();
+        bridge.send(EditorCommand::Visibility { prim: "/Animated".into(), visible: true }).unwrap();
+        app.update();
+        let view = bridge.view().unwrap();
+        assert_eq!(view.status, "Ready");
+        assert_eq!(view.timeline.current, 10.0);
+        assert!(!view.timeline.playing);
+        assert!(view.document.visibility["/Animated"]);
+        let attr = stage.prim("/Animated").unwrap().attribute("visibility");
+        assert_eq!(attr.time_sample_times().unwrap(), vec![0.0, 10.0, 20.0]);
+        assert_eq!(attr.get::<Value>().unwrap(), Some(Value::Token("inherited".into())));
+        bridge.send(EditorCommand::Undo).unwrap();
+        app.update();
+        assert!(!bridge.view().unwrap().document.visibility["/Animated"]);
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        bridge.send(EditorCommand::Redo).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().document.visibility["/Animated"]);
+        bridge.send(EditorCommand::Visibility { prim: "/Visible".into(), visible: false }).unwrap();
+        app.update();
+        assert!(!bridge.view().unwrap().document.visibility["/Visible"]);
+        assert!(stage.prim("/Visible").unwrap().attribute("visibility").time_sample_times().unwrap().is_empty());
+        for _ in 0..2 { bridge.send(EditorCommand::Undo).unwrap(); app.update(); }
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(visibility_edit(&stage, "/Animated".into(), true, f64::NAN).is_err());
+    }
+    #[test]
     fn failed_texture_refresh_retains_images_and_records_requested_paths() {
         use super::*;
         let directory = tempfile::tempdir().unwrap();
@@ -742,6 +810,16 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
         assert_eq!(published.timeline.current, 15.0);
         let sampled = published.document.attributes.iter().find(|attribute| attribute.name == "xformOp:transform").unwrap().sampled_matrix.unwrap();
         assert_eq!(sampled[2], 0.25);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(100)));
+        app.world_mut().resource_mut::<EditorPlayback>().0.range = Some((10.0, 30.0));
+        bridge.send(EditorCommand::Play(true)).unwrap();
+        app.update();
+        let published = bridge.view().unwrap();
+        assert!(published.timeline.current > 15.0);
+        assert_eq!(published.document.sample_time, Some(published.timeline.current));
+        let sampled = published.document.attributes.iter().find(|attribute| attribute.name == "xformOp:transform").unwrap().sampled_matrix.unwrap();
+        assert!((sampled[2] - (published.timeline.current - 10.0) * 0.05).abs() < 1e-6);
+        assert!(!published.document.can_undo);
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
     }
 
@@ -1041,18 +1119,19 @@ def Xform "Model" (
     fn selected_render_failures_publish_and_clear() {
         use crate::route::{subdivision::UsdSubdivisionError, skel::UsdDeformationError, instancer::UsdInstancerWarning, shapes::UsdShapeError, curves::UsdCurveError};
         use crate::route::xform::UsdTransformError;
+        use crate::route::material::UsdMaterialWarning;
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, EditorPlugin));
         app.init_resource::<crate::live::PrimEntities>();
         let entity = app.world_mut().spawn((UsdSubdivisionError("unsupported holes".into()),
-            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()), UsdTransformError("projective matrix".into()))).id();
+            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()), UsdTransformError("projective matrix".into()), UsdMaterialWarning("missing tangent frame".into()))).id();
         app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Prim", entity);
         let bridge = app.world().resource::<EditorBridge>().clone();
         bridge.0.lock().unwrap().view.document.selected = Some("/Prim".into());
         app.update();
         assert_eq!(bridge.view().unwrap().document.render_issues,
-            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts", "Transform: projective matrix"]);
-        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError, UsdTransformError)>();
+            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts", "Transform: projective matrix", "Material: missing tangent frame"]);
+        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError, UsdTransformError, UsdMaterialWarning)>();
         app.update();
         assert!(bridge.view().unwrap().document.render_issues.is_empty());
         app.world_mut().entity_mut(entity).insert(UsdSubdivisionError("unsupported holes".into()));
@@ -1070,6 +1149,7 @@ def Xform "Model" (
 ( startTimeCode = 0 endTimeCode = 10 timeCodesPerSecond = 10 )
 def Xform "Mover" {
     double3 xformOp:translate.timeSamples = { 0: (0,0,0), 10: (10,0,0) }
+    token visibility.timeSamples = { 0: "inherited", 5: "invisible", 10: "inherited" }
     uniform token[] xformOpOrder = ["xformOp:translate"]
 }
 "#[..]).unwrap().open_stage().unwrap();
@@ -1086,6 +1166,8 @@ def Xform "Mover" {
         app.update();
         assert_eq!(app.world().get::<Transform>(entity).unwrap().translation.x, 5.0);
         assert_eq!(bridge.view().unwrap().timeline.current, 5.0);
+        assert_eq!(bridge.view().unwrap().document.sample_time, Some(5.0));
+        assert!(!bridge.view().unwrap().document.visibility["/Mover"]);
         assert!(!bridge.view().unwrap().document.can_undo);
         bridge.send(EditorCommand::Seek(f64::NAN)).unwrap();
         app.update();
@@ -1095,8 +1177,11 @@ def Xform "Mover" {
         bridge.send(EditorCommand::Play(true)).unwrap();
         app.update();
         assert!(bridge.view().unwrap().timeline.current.abs() < 1e-6);
+        assert!(bridge.view().unwrap().document.visibility["/Mover"]);
+        assert_eq!(bridge.view().unwrap().document.sample_time, Some(0.0));
         app.update();
         assert!((bridge.view().unwrap().timeline.current - 1.0).abs() < 1e-6);
+        assert_eq!(bridge.view().unwrap().document.sample_time, Some(1.0));
         bridge.send(EditorCommand::Play(false)).unwrap();
         app.update();
         let paused = bridge.view().unwrap().timeline.current;

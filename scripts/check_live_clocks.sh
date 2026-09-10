@@ -31,20 +31,21 @@ run_example normal_fixture "$output/normal-fixture" > "$output/normal-fixture.lo
 printf 'case\tstatus\n' > "$output/results.tsv"
 
 run_case() {
-    local name=$1 live=$2 reference=$3 cpu=$4 tolerance=0
-    if [[ "$name" == normal_interface ]]; then tolerance=1; fi
+    local name=$1 live=$2 reference=$3 cpu=$4 tolerance=0 meshes=2
+    if [[ "$name" == normal_interface || "$name" == normal_constant ]]; then tolerance=1; fi
+    if [[ "$name" == morph_tangents ]]; then meshes=4; fi
     run_options=()
     unset USD_CPU_SKINNING
     export USD_CAPTURE_INSTANCE_TIMES=0,10 USD_CAPTURE_SWAP_CLOCKS=1
     run_example viewer_capture "$live" "$output/$name-live.png" 0 0 1 8 0 1 0 > "$output/$name-live.log" 2>&1 || return 1
     export USD_CAPTURE_INSTANCE_TIMES=10,0 USD_CAPTURE_SWAP_CLOCKS=0
-    if [[ "$cpu" == 1 ]]; then export USD_CPU_SKINNING=1; fi
+    if [[ "$cpu" != 0 ]]; then export USD_CPU_SKINNING=1; fi
     run_example viewer_capture "$reference" "$output/$name-reference.png" 0 0 1 8 0 1 0 > "$output/$name-reference.log" 2>&1 || return 1
     grep -qx 'clocks_reversed_after_ready_frames=30' "$output/$name-live.capture.txt" || return 1
     grep -qx 'clocks_reversed_after_ready_frames=0' "$output/$name-reference.capture.txt" || return 1
     for mode in live reference; do
         grep -Fxq 'instance_times=[10.0, 0.0]' "$output/$name-$mode.capture.txt" || return 1
-        grep -qx 'hierarchy_visible_meshes=2' "$output/$name-$mode.capture.txt" || return 1
+        grep -qx "hierarchy_visible_meshes=$meshes" "$output/$name-$mode.capture.txt" || return 1
         if grep -Eq '(^|[[:space:]])(ERROR|WARN)([[:space:]]|$)' "$output/$name-$mode.log"; then return 1; fi
     done
     if [[ "$cpu" == 1 ]]; then
@@ -53,12 +54,17 @@ run_case() {
         grep -qx 'hierarchy_visible_unique_flat_materials=1' "$output/$name-live.capture.txt" || return 1
         grep -qx 'hierarchy_visible_gpu_morph_meshes=0' "$output/$name-reference.capture.txt" || return 1
     fi
+    if [[ "$cpu" == 2 ]]; then
+        grep -qx "hierarchy_visible_gpu_morph_meshes=$meshes" "$output/$name-live.capture.txt" || return 1
+        grep -qx 'hierarchy_visible_gpu_morph_meshes=0' "$output/$name-reference.capture.txt" || return 1
+        grep -qx 'hierarchy_visible_flat_material_entities=0' "$output/$name-live.capture.txt" || return 1
+    fi
     run_options=(RUN_WITH=)
     run_example capture_compare "$output/$name-live.rgba" "$output/$name-reference.rgba" "$tolerance" 1280 "$output/$name-diff.png" > "$output/$name-compare.log" 2>&1 || return 1
 }
 
 status=0
-for name in uv texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface; do
+for name in uv texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface normal_constant morph_tangents; do
     case "$name" in
         uv) live="$output/fixture/mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         texture) live="$output/fixture/file_samples.usda"; reference="$output/fixture/file_reference.usda"; cpu=0 ;;
@@ -71,6 +77,8 @@ for name in uv texture colorspace morph scalar scalar_interface file_interface c
         emissive) live="$output/emissive-fixture/animated.usda"; reference="$output/emissive-fixture/animated_reference.usda"; cpu=0 ;;
         rgb_emissive|rgb_diffuse|rgb_alpha) semantic=${name#rgb_}; live="$output/rgb-fixture/${semantic}_interface_animated.usda"; reference="$output/rgb-fixture/${semantic}_animated_reference.usda"; cpu=0 ;;
         normal_interface) live="$output/normal-fixture/interface_animated.usda"; reference="$output/normal-fixture/animated_reference.usda"; cpu=0 ;;
+        normal_constant) live="$output/normal-fixture/constant_animated.usda"; reference="$output/normal-fixture/animated_reference.usda"; cpu=0 ;;
+        morph_tangents) live="$root/assets/morph_tangent_normals.usda"; reference=$live; cpu=2 ;;
     esac
     if run_case "$name" "$live" "$reference" "$cpu"; then result=ok; else result=failed; status=1; fi
     printf '%s\t%s\n' "$name" "$result" | tee -a "$output/results.tsv"

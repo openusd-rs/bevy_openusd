@@ -382,8 +382,11 @@ fn prototype_material(ctx: &RouteCtx, world: &mut World, fallback: impl FnOnce()
 fn bake_shape(ctx: &RouteCtx, world: &mut World, path: &openusd::sdf::Path) -> Option<ProtoHandles> {
     let ctx = RouteCtx::at(ctx.stage, path, ctx.time);
     let shape = super::shapes::shape_mesh(&ctx)?;
-    let (material, warnings) = prototype_material(&ctx, world,
+    let (material, mut warnings) = prototype_material(&ctx, world,
         || super::material::default_material_with_opacity(&ctx, shape.opacity.as_ref()));
+    if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
+        super::material::warn_missing_tangents(&shape.mesh, material, &mut warnings);
+    }
     Some((super::cache::intern_mesh(world, shape.mesh), material, warnings, default()))
 }
 
@@ -402,7 +405,10 @@ fn bake_mesh(ctx: &RouteCtx, world: &mut World, proto_path: &openusd::sdf::Path,
     if bake_transform && let Some(matrix) = crate::read::xform::read_transform_matrix_at(ctx.stage, proto_path, ctx.time).ok()? {
         crate::mesh::affine::bake(&mut mesh, Mat4::from_cols_array(&matrix))?;
     }
-    let (material, warnings) = prototype_material(&proto_ctx, world, || super::material::default_material(&proto_ctx));
+    let (material, mut warnings) = prototype_material(&proto_ctx, world, || super::material::default_material(&proto_ctx));
+    if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
+        super::material::warn_missing_tangents(&mesh, material, &mut warnings);
+    }
     let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh, &material);
     let mesh_handle = super::cache::intern_mesh(world, mesh);
     Some((mesh_handle, material, warnings, subsets))

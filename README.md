@@ -789,6 +789,21 @@ make capture-reference ARGS='--renderer Embree --disableGpu assets/subdivision_c
 Renderer availability depends on that native installation. Inspect the result;
 successful image writing does not prove that the native stage contained meshes.
 
+For a local-space triangle/normal isolation probe:
+
+```bash
+make run RUN_WITH= APP_TARGET='--example normal_isolation' ARGS='ASSET.usdc /Mesh NEW_DIRECTORY'
+```
+
+It writes `with_normals.usda` and `without_normals.usda` with identical projected
+triangle positions/indices and a shared `/Camera`. The first copies projected
+normals; the second omits them. Both explicitly use polygon geometry. An optional
+fourth argument applies finite subdivision (1..6) before copying the triangles.
+This is a time-zero diagnostic, not a scene exporter: original transforms,
+deformation, materials, subsets and other primvars are omitted. Render either
+through `viewer_capture` with `USD_CAPTURE_CAMERA=/Camera`, or through native
+`capture-reference` with `--camera /Camera --imageWidth 1280`.
+
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
 flat normals independently of authored normals. Capture without shadow maps:

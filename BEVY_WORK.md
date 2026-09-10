@@ -280,6 +280,40 @@ forcing flat shading or welding assets. These probes change only diagnostic
 artifacts/documentation; no new workspace test/build result is claimed.
 Full rendering acceptance remains unproven.
 
+## Cross-renderer triangle/normal isolation
+
+Added `examples/normal_isolation.rs`: `ASSET PRIM NEW_DIRECTORY [LEVELS]`.
+It reads one mesh at time zero, optionally refines it 1..6 levels, then writes
+two local-space polygon meshes with identical projected positions and indices.
+`with_normals.usda` copies the projected normals; `without_normals.usda` omits
+them. Both have the same fitted `/Camera`. Materials, subsets, transforms,
+deformation and other primvars are deliberately absent. It is a diagnostic,
+not a scene exporter or asset repair. Existing directories are refused; invalid
+vertex data, nonfinite coordinates/normals, invalid indices and bounds are errors.
+
+The UR5 shoulder probe contains 13041 vertices and 13492 triangles, generated
+from `/ur5/world/base_link/shoulder_link/visual_0/geom`. Both files were rendered
+by Bevy and native Embree with the shared camera, and all four images inspected:
+`target/ur5-normal-isolation/{with_normals,without_normals}-{native,bevy}.png`.
+Both renderers show the characteristic jagged shading with the copied normals;
+without those normals, that pattern disappears and polygon facets remain.
+Thus the artifact can travel with our generated normal data and does not require
+the original material subsets or a Bevy-specific shader. This does not yet identify
+which averaging/topology/limit-normal rule should replace the current result.
+No source assets or production normal-generation rules were changed.
+
+Logs: `/tmp/ur5-normal-isolation.log`,
+`/tmp/ur5-isolation-{with_normals,without_normals}-{native,bevy}.log`.
+The optional level-1 path also generated 46817 vertices / 80952 triangles in
+`target/ur5-normal-isolation-level1`; these outputs were not rendered in this
+checkpoint. Log: `/tmp/ur5-normal-isolation-level1.log`.
+
+Validation: 516 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/normal-isolation-all-tests-final.log`,
+`/tmp/normal-isolation-{check,build}-final.log`. Regression verifies exact
+point/index/normal round trips, deliberate normal omission and directory refusal.
+Full Bevy fidelity and subdivision acceptance remain open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

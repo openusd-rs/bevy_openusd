@@ -26,6 +26,8 @@ fn pipeline_progress(cache: Res<bevy::render::render_resource::PipelineCache>, p
 mod environment;
 #[path = "../src/curve_quality.rs"]
 mod curve_quality;
+#[path = "../src/capture_metadata.rs"]
+mod capture_metadata;
 
 #[derive(Resource)]
 struct Capture {
@@ -194,9 +196,9 @@ fn main() -> AppExit {
         .add_plugins((ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 60.0)),
             UsdPlugin, UsdAssetPlugin, environment::ViewerEnvironmentPlugin))
         .add_systems(Startup, setup)
-        .add_systems(Update, (select_authored_camera, reverse_capture_clocks, capture_frame).chain())
+        .add_systems(Update, (select_authored_camera, reverse_capture_clocks).chain())
         .add_systems(PostUpdate, configure_shadow_maps)
-        .add_systems(Last, fit_capture_grid);
+        .add_systems(Last, (fit_capture_grid, capture_frame).chain());
     if std::env::var_os("USD_CAPTURE_DOME").is_some() {
         app.add_plugins(usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin)
             .add_systems(Update, select_dome);
@@ -304,7 +306,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     progress: Res<PipelineProgress>,
     states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
     meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>, Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>), With<Mesh3d>>,
-    camera: Query<&RenderTarget, With<CaptureCamera>>,
+    camera: Query<(&RenderTarget, &GlobalTransform, &Camera), With<CaptureCamera>>,
     environments: Query<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState, With<CaptureCamera>>,
     environment_lights: Query<&bevy::light::EnvironmentMapLight, With<CaptureCamera>>,
     generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
@@ -381,7 +383,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     }
     capture.ready_frames += 1;
     if capture.ready_frames < 60 { return; }
-    let Ok(target) = camera.single() else { return };
+    let Ok((target, camera_transform, camera)) = camera.single() else { return };
     let visible = meshes.iter().filter(|(_, visibility, _, _, _, _)| visibility.get()).count();
     let gpu = meshes.iter().filter(|(_, visibility, skin, _, _, _)| visibility.get() && skin.is_some()).count();
     let morph = meshes.iter().filter(|(_, visibility, _, _, morph, _)| visibility.get() && morph.is_some()).count();
@@ -389,6 +391,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
         .filter_map(|(_, _, _, _, _, material)| material.map(|material| material.0.id())).collect();
     let flat_unique: std::collections::HashSet<_> = flat_handles.iter().copied().collect();
     capture.mesh_report = format!("hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n");
+    capture.mesh_report.push_str(&capture_metadata::camera_report(camera_transform, camera.clip_from_view()));
     capture.mesh_report.push_str(&format!("hierarchy_visible_flat_material_entities={}\nhierarchy_visible_unique_flat_materials={}\n", flat_handles.len(), flat_unique.len()));
     capture.mesh_report.push_str(&format!("studio_baseline_lux={:?}\n", studio_lights.iter().map(|light| light.0).collect::<Vec<_>>()));
     if let Ok(dome) = std::env::var("USD_CAPTURE_DOME") {
@@ -423,7 +426,7 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
     let temporary = capture.output.with_extension("partial.png");
     dynamic.to_rgb8().save(&temporary).map_err(|error| format!("PNG write {output}: {error}", output = temporary.display()))?;
     std::fs::write(capture.output.with_extension("rgba"), rgba.as_raw()).map_err(|error| format!("RGBA write: {error}"))?;
-    let report = format!("asset={asset}\ntime={time}\neye={eye:?}\ntarget={target:?}\nwidth=1280\nheight=720\nformat=rgba8-srgb\nrow_bytes=5120\nbytes={bytes}\nready_frames={frames}\ncpu_skinning={cpu}\n",
+    let report = format!("asset={asset}\ntime={time}\nrequested_eye={eye:?}\nrequested_target={target:?}\nwidth=1280\nheight=720\nformat=rgba8-srgb\nrow_bytes=5120\nbytes={bytes}\nready_frames={frames}\ncpu_skinning={cpu}\n",
         asset = capture.asset.display(), time = capture.time, eye = capture.eye, target = capture.focus,
         bytes = rgba.len(), frames = capture.ready_frames, cpu = std::env::var_os("USD_CPU_SKINNING").is_some());
     let report = report + &format!("instance_times={:?}\ninstance_spacing={}\n", capture.instance_times, capture.instance_spacing)
@@ -552,6 +555,8 @@ mod tests {
             let report = std::fs::read_to_string(output.with_extension("capture.txt")).unwrap();
             assert!(report.contains(&format!("subdivision_levels={}\n", levels.unwrap_or(0))));
             assert!(report.contains(&format!("curve_steps={}\n", capture.curve_steps)));
+            assert!(report.contains("requested_eye=Vec3(6.0, 4.0, 8.0)\n"));
+            assert!(!report.contains("\neye="));
             assert_eq!(std::fs::metadata(output.with_extension("rgba")).unwrap().len(), 1280 * 720 * 4);
             assert!(output.is_file());
             assert!(!output.with_extension("partial.png").exists());

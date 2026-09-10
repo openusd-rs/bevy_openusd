@@ -295,10 +295,11 @@ fn read_uv_node(stage: &Stage, node: &Path, time: Option<f64>) -> anyhow::Result
         let mut translation = bevy::math::Vec2::ZERO;
         let mut rotation_deg = 0.0_f32;
         let vector = |name| -> anyhow::Result<Option<[f32; 2]>> {
-            Ok(match sampled_value(stage, &node.append_property(name)?, time)? {
+            Ok(match uv_input_value(stage, node, name, time)? {
                 Some(Value::Vec2f(value)) => Some([value.x, value.y]),
                 Some(Value::Vec2d(value)) => Some([value.x as f32, value.y as f32]),
-                _ => None,
+                None => None,
+                _ => anyhow::bail!("UV transform {name} must be a two-component vector at {node}"),
             })
         };
         if let Some(s) = vector("inputs:scale")? {
@@ -307,17 +308,66 @@ fn read_uv_node(stage: &Stage, node: &Path, time: Option<f64>) -> anyhow::Result
         if let Some(tr) = vector("inputs:translation")? {
             translation = tr.into();
         }
-        if let Some(Value::Float(r)) = sampled_value(stage, &node.append_property("inputs:rotation")?, time)?
-        {
-            rotation_deg = r;
-        } else if let Some(Value::Double(r)) =
-            sampled_value(stage, &node.append_property("inputs:rotation")?, time)?
-        {
-            rotation_deg = r as f32;
+        match uv_input_value(stage, node, "inputs:rotation", time)? {
+            Some(Value::Float(r)) => rotation_deg = r,
+            Some(Value::Double(r)) => rotation_deg = r as f32,
+            None => (),
+            _ => anyhow::bail!("UV transform rotation must be a scalar at {node}"),
         }
         let matrix = bevy::math::Affine2::from_scale_angle_translation(scale, rotation_deg.to_radians(), translation);
         anyhow::ensure!(matrix.is_finite(), "non-finite UV transform at {node}");
         Ok(matrix)
+}
+
+fn uv_input_value(stage: &Stage, node: &Path, name: &str, time: Option<f64>) -> anyhow::Result<Option<Value>> {
+    let input = stage.prim(node)?.attribute(name);
+    let connected = !input.connections()?.is_empty();
+    let Some(attribute) = texture_input_attribute(stage, node, name.strip_prefix("inputs:").unwrap())? else { return Ok(None); };
+    let value = attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))?;
+    let sampled_default = time.is_none() && !attribute.time_sample_times()?.is_empty();
+    anyhow::ensure!(!connected || value.is_some() || sampled_default,
+        "connected UV transform input has no readable value at {}", input.path());
+    Ok(value)
+}
+
+#[test]
+fn uv_transform_reads_sampled_material_interfaces() {
+    let source = crate::UsdSource::new("uv-interface.usda", br#"#usda 1.0
+def Material "Mat" {
+    float2 inputs:move.timeSamples = {0: (0,0.5), 10: (0.75,0.25)}
+    float2 inputs:size.timeSamples = {0: (1,1), 10: (0.5,1.5)}
+    float inputs:angle.timeSamples = {0: 0, 10: 90}
+    def Shader "Transform" {
+        uniform token info:id = "UsdTransform2d"
+        float2 inputs:translation.connect = </Mat.inputs:move>
+        float2 inputs:scale.connect = </Mat.inputs:size>
+        float inputs:rotation.connect = </Mat.inputs:angle>
+    }
+}
+"#.as_slice()).unwrap();
+    let stage = source.open_stage().unwrap();
+    let node = Path::new("/Mat/Transform").unwrap();
+    let before = stage.root_layer().export_to_string().unwrap();
+    for time in [0.0, 5.0, 10.0, 0.0] {
+        let w = time as f32 / 10.0;
+        let expected = bevy::math::Affine2::from_scale_angle_translation(
+            bevy::math::Vec2::new(1.0 - 0.5*w, 1.0 + 0.5*w),
+            (90.0*w).to_radians(), bevy::math::Vec2::new(0.75*w, 0.5 - 0.25*w));
+        assert!(read_uv_node(&stage, &node, Some(time)).unwrap().abs_diff_eq(expected, 1e-6), "time {time}");
+    }
+    assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    assert_eq!(read_uv_node(&stage, &node, None).unwrap(), bevy::math::Affine2::IDENTITY);
+    let scale = stage.attribute("/Mat/Transform.inputs:scale").unwrap();
+    scale.clone().set_connections([Path::new("/Mat.inputs:angle").unwrap()]).unwrap();
+    assert!(read_uv_node(&stage, &node, Some(0.0)).unwrap_err().to_string().contains("two-component"));
+    scale.clone().set_connections([Path::new("/Mat.inputs:size").unwrap(), Path::new("/Mat.inputs:move").unwrap()]).unwrap();
+    assert!(read_uv_node(&stage, &node, Some(0.0)).unwrap_err().to_string().contains("multiple"));
+    scale.clone().set_connections([Path::new("/Mat.inputs:missing").unwrap()]).unwrap();
+    assert!(read_uv_node(&stage, &node, Some(0.0)).is_err());
+    scale.set_connections([Path::new("/Mat.inputs:size").unwrap()]).unwrap();
+    stage.attribute("/Mat.inputs:size").unwrap().set_at(Value::Vec2f([f32::INFINITY, 1.0].into()),
+        openusd::usd::TimeCode::new(0.0)).unwrap();
+    assert!(read_uv_node(&stage, &node, Some(0.0)).unwrap_err().to_string().contains("non-finite"));
 }
 
 #[derive(Copy, Clone, Debug)]

@@ -56,6 +56,329 @@ subdivision globally merely to conceal these artifacts. Full visual fidelity
 and the intermittent black editor-window issue remain open. This checkpoint
 changes documentation only; no workspace test/build rerun is claimed.
 
+## Effective camera capture metadata and matched Spot view
+
+The shared-camera probe uses `target/spot-matched-polygon.usda`, sublayering
+the fresh root export above, with stronger `subdivisionScheme = "none"`
+opinions on all 26 reported meshes. Its `/__ReferenceCamera` is Z-up, with
+eye (1.6,-1.8,0.8), focus (0,0,-0.15), focal length 50, vertical aperture
+41.4213562373095 and horizontal aperture 73.63796664410579. Both renderers
+read that same camera at time 0 and produce 1280x720 images. Native invocation:
+
+```sh
+make capture-reference ARGS='--renderer Embree --disableGpu --camera /__ReferenceCamera --imageWidth 1280 target/spot-matched-polygon.usda target/spot-matched-native.png'
+USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off USD_CAPTURE_CAMERA=/__ReferenceCamera \
+make run CARGO='cargo --offline' APP_TARGET='--example viewer_capture' \
+ARGS='target/spot-matched-polygon.usda target/spot-matched-bevy.png 0'
+```
+
+Both images were inspected. Framing agrees visually and both show faceting;
+Embree's unsupported materials, camera light and black background still
+prevent shading/pixel parity claims. This explicit polygon probe does not
+validate subdivision, nor prove every seam is source-authored. Original
+collection files remain untouched. Logs: `/tmp/spot-matched-{native,bevy}.log`.
+
+This exposed misleading offscreen metadata: `eye` and `target` recorded CLI
+fallbacks even with an authored camera active. They are now explicitly named
+`requested_eye` and `requested_target`. Effective eye, forward, up, world-from-view
+and clip-from-view column-major matrices are recorded separately. The screenshot
+request runs in Last, after camera and transform updates, and snapshots the
+computed camera projection rather than reconstructing it from focal settings.
+It remains request-time metadata, not a GPU completion timestamp.
+
+The new GPU capture `target/spot-matched-bevy-camera-metadata.png` reports
+effective eye (1.6,0.79999983,1.7999998), distinct from requested (6,4,8),
+and projection scales 1.357995 / 2.4142134. Strict RGB comparison against
+the preceding Bevy capture changes zero of 921600 pixels. Logs:
+`/tmp/spot-matched-bevy-camera-metadata.log`,
+`/tmp/spot-camera-metadata-compare.log`.
+
+Validation: 511 ordinary tests pass, 13 ignored; check-all and viewer build
+pass. Logs: `/tmp/capture-camera-all-tests.log`,
+`/tmp/capture-camera-{tests,check,build}.log`. Unit coverage checks effective
+transform/projection serialization and the renamed fallback metadata.
+All 15 live-clock GPU cases also pass after the scheduling change, retaining
+the existing strict RGB-zero gates and RGB-one tolerances for the two normal
+cases. Evidence: `target/live-camera-metadata-regression/results.tsv` and
+`/tmp/camera-metadata-live.log`. This does not resolve the full Bevy checklist.
+
+## Embedded viewport camera evidence
+
+The editor's `USD_SCREENSHOT` path now uses the same effective-camera metadata
+implementation as `viewer_capture`, in `src/capture_metadata.rs`. The duplicate
+offscreen helper was removed. Embedded screenshot requests run in Last after
+camera/transform updates and preserve their document/time/delay snapshot.
+Unit coverage verifies metadata survives embedded readback alongside tightly
+packed pixels. No host-window presentation or camera-framing behavior is changed.
+
+Validation: 512 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/embedded-camera-{tests,check,build}.log`.
+The private Weston visibility-toggle replay at time 10 and 15000 ms capture
+delay passed, producing both host and viewport screenshots; both were inspected.
+The Animated eye is open and both cubes render after the click (the left cube
+remains partly clipped by the existing initial framing). Metadata records
+15024 ms, 341 ready updates, document 1, time 10, effective eye
+(2.063363,1.3923875,2.201329) and a computed 1440x920 projection. Evidence:
+`target/viewer-ui-captures/embedded-camera-metadata*`,
+`/tmp/embedded-camera-ui.log`. The intermittent black host-window failure is
+not fixed or disproved by this successful run. Full acceptance remains open.
+
+## Explicit frame-visible-scene action
+
+Added a Frame visible scene ribbon action with the maximize icon. A cloned
+atomic request resource connects the host to the existing Bevy bounds/framing
+system without authoring USD or adding editor history. Requests are coalesced
+and consumed once. The fit includes visible generated children belonging to the
+current document, resets camera distance/clipping and fits the grid. Visibility
+changes alone retain the existing camera; subsequent navigation remains intact.
+No valid bounds or compatible perspective chase camera means no framing change.
+This is whole-visible-document framing, not frame-selection or automatic tracking.
+
+A regression reveals a previously hidden distant mesh, checks that ordinary
+updates preserve framing, then verifies explicit reframe and subsequent user
+distance preservation. `scripts/replays/visibility_frame.replay` reveals Animated
+at time 10 and clicks Frame visible scene two seconds later. Both host and GPU
+viewport captures were inspected: the two cubes are fully framed, unlike the
+earlier clipped visibility-only capture. Final-icon evidence:
+`target/viewer-ui-captures/visibility-frame-final*`,
+`/tmp/frame-visible-ui-final.log`; all seven replay events precede readback.
+Metadata records scene time 10, ready delay 15026 ms and effective camera eye
+(2.0361855,2.2087922,4.2152243). The first working capture is retained separately
+under `visibility-frame*` without the final suffix.
+
+Validation: 513 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Final logs: `/tmp/frame-visible-{tests,check,build}-icon.log`.
+The full acceptance checklist and intermittent host presentation issue remain open.
+
+## Sampled UV-transform interfaces
+
+`UsdTransform2d` scale, translation and rotation now resolve canonical upstream
+value-producing attributes instead of reading only directly authored values.
+The failing regression previously returned identity at time 0 despite a connected
+material translation of (0,0.5): `/tmp/uv-interface-before.log`.
+Sample-only interfaces keep default-time behavior and evaluate at each explicit
+instance clock. Invalid sources, multiple producers, unreadable connected values,
+wrong value types and nonfinite transforms are rejected. This does not implement
+arbitrary shader evaluation or different per-texture coordinate transforms.
+
+The UV fixture generator writes `interface_mapped.usda` with animated material
+inputs driving the existing two-node transform chain. Its endpoints are checked
+against the independent explicit-UV reference. The AssetServer instance test now
+loads this interface fixture and checks forward/backward/midpoint clock changes,
+material sharing, mesh/texture identity, runtime children and unchanged source.
+The live GPU suite adds `uv_interface` with strict RGB-zero comparison, expanding
+the suite to 16 cases. Reader coverage also checks default time, wrong types,
+multiple/missing producers and infinity.
+
+The first full-suite attempt had reversed arguments in the new test's `set_at`
+call; corrected before the final validation. Its failure log is retained as
+`/tmp/uv-interface-all-tests.log` rather than hidden by overwriting it.
+
+Final validation: 514 ordinary tests pass, 13 ignored; check-all, viewer build,
+shell syntax and git diff --check pass. Logs:
+`/tmp/uv-interface-all-tests-final.log`,
+`/tmp/uv-interface-{check,build}-final.log`.
+All 16 live GPU cases pass: `target/live-uv-interface-regression/results.tsv`,
+`/tmp/uv-interface-live.log`. Both new UV-interface endpoint images were inspected;
+the live 0/10 to 10/0 clock reversal matches the independently authored 10/0
+explicit-UV reference at all 921600 pixels with RGB error zero. Existing two
+normal cases retain tolerance 1; other cases use zero. This is endpoint rendering
+evidence plus headless midpoint material assertions, not a rendered midpoint or
+arbitrary shader-graph acceptance claim. Full Bevy acceptance remains open.
+
+## Analytic UV midpoint image regression
+
+The UV fixture generator now writes `sampled_reference.usda`, baking UV values
+with independent f64 scalar sine/cosine equations at 0, 2.5, 5, 7.5 and 10.
+Those discrete keys are references; their intervening linear interpolation is
+not equivalent to the original animated rotation. Expanded CPU assertions compare
+both direct and material-interface transforms at every key and backward to zero.
+A negative control confirms the old endpoint-only reference differs at time 5.
+
+The live GPU suite adds `uv_interface_mid`: start two instances at 5/10,
+reverse their clocks after 30 ready updates and compare against a fresh 10/5
+explicit-UV reference. The metadata verifies final clocks and reversal timing.
+Both new images were inspected and all 921600 pixels match at strict RGB-zero
+tolerance. Evidence: `target/live-uv-mid-regression/uv_interface_mid-*`.
+All 17 live GPU cases pass, retaining the existing two RGB-one normal tolerances:
+`target/live-uv-mid-regression/results.tsv`, `/tmp/uv-mid-live.log`.
+
+Validation: 514 ordinary tests pass, 13 ignored; check-all, viewer build,
+shell syntax and git diff --check pass. Logs: `/tmp/uv-mid-{tests,check,build}.log`.
+This extends sampled-transform fidelity evidence, not arbitrary graph support,
+continuous-time reference parity or completion of the full Bevy checklist.
+
+## UR5 collection inspection and indexed-normal diagnostics
+
+Inspected `../usd_collection/matlab/ur_description/ur5.usdc` in the full editor,
+with paired host/viewport screenshots, time 0 and a 15000 ms ready delay.
+Both images were inspected: the robot is framed, material subsets render, and
+fine striping remains around the left joint cap. Evidence:
+`target/viewer-ui-captures/ur5-current*`, `/tmp/ur5-current-ui.log`.
+The host log retains the known Vulkan layer, clipboard and SSAO-limit warnings;
+this is not a warning-free or reference-render fidelity claim.
+
+The original scene report mixed unused zero normals with normals used by indices.
+Added referenced/unreferenced vertex counts, invalid referenced-normal counts and
+out-of-range index counts without discarding the original whole-buffer totals.
+Tests cover unused zero normals, referenced zero normals, missing normals and
+invalid indices. This changes diagnostics only, not mesh data or shading.
+
+The updated UR5 report traverses 28 meshes, including library and collision meshes.
+All seven visual geometry meshes have zero invalid referenced normals and indices.
+For `/ur5/world/base_link/visual_0/geom`, the 2789 invalid normals are exactly its
+2789 unreferenced vertices; all 1051 referenced vertices have valid normals.
+Logs: `/tmp/ur5-current-scene.log`, `/tmp/ur5-indexed-scene.log`.
+
+A standalone forward capture with shadows disabled also visibly retains joint
+striping: `target/ur5-shadows-off-current.png`, inspected directly,
+`/tmp/ur5-shadows-off-current.log`. It reports 31 visible mesh entities, including
+generated subsets, with no GPU skin/morph entities. Its 1280x720 aspect differs
+from the embedded 1440x920 view; it is not a pixel comparison. No source asset
+was modified. The remaining striping needs geometry/subset or reference-render
+isolation rather than a speculative normal replacement.
+
+Validation: 515 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/mesh-index-report-{tests,check,build}.log`.
+Full visual acceptance and the intermittent black host-window issue remain open.
+
+## UR5 native polygon and subdivision controls
+
+Exported the untouched collection root through `scene_report` into
+`target/ur5-reference-source.usda` (`/tmp/ur5-reference-export.log`). Two diagnostic
+wrapper layers share `/__ReferenceCamera`, converted from the preceding Bevy
+capture into source Z-up coordinates. Both use a 45-degree vertical field of view
+and 1280x720 output. Relative assets in the root export are not rebased.
+
+- `target/ur5-reference-polygon.usda` overrides all 28 reported mesh subdivision
+  schemes to none. Native Embree and Bevy read the same wrapper and camera.
+  `target/ur5-polygon-{native,bevy}.png` were both inspected. Framing agrees
+  visually; Bevy's fine cap striping is absent but cylindrical parts become
+  faceted. This control changes generated normals as well as subdivision
+  semantics, so it is not proof that the source is a polygon mesh or a repair.
+- `target/ur5-reference-subdivision.usda` retains the source's unauthored
+  Catmull-Clark defaults and adds only the camera. Native Embree uses complexity
+  low; Bevy explicitly enables finite subdivision level 1. Both
+  `target/ur5-subdivision-{native,bevy}.png` were inspected. Bevy has conspicuous
+  striping on several parts; the native image does not show the same pattern.
+  Native complexity low is not asserted to equal our refinement/normal model.
+
+Commands use `make capture-reference --renderer Embree --disableGpu` through ARGS
+and `make run --example viewer_capture` through APP_TARGET, with the shared
+camera selected. Bevy runs use forward rendering and shadows off; all four
+processes exit successfully. Logs: `/tmp/ur5-{polygon,subdivision}-{native,bevy}.log`.
+Embree reports unsupported Material prims and GPU-disabled color correction;
+its lighting and shading differ. No pixel/material parity claim is made.
+
+Current source confirms absent normals use flat shading for explicit none or
+bilinear, and generated smooth normals for Catmull-Clark cages. The shoulder
+report already records four degenerate triangles and 64 reversed normal corners
+despite zero invalid referenced vectors. Valid vector length alone therefore
+does not establish suitable smoothing. The next isolation target is generated
+normals/subdivision, retaining source topology and material subsets rather than
+forcing flat shading or welding assets. These probes change only diagnostic
+artifacts/documentation; no new workspace test/build result is claimed.
+Full rendering acceptance remains unproven.
+
+## Cross-renderer triangle/normal isolation
+
+Added `examples/normal_isolation.rs`: `ASSET PRIM NEW_DIRECTORY [LEVELS]`.
+It reads one mesh at time zero, optionally refines it 1..6 levels, then writes
+two local-space polygon meshes with identical projected positions and indices.
+`with_normals.usda` copies the projected normals; `without_normals.usda` omits
+them. Both have the same fitted `/Camera`. Materials, subsets, transforms,
+deformation and other primvars are deliberately absent. It is a diagnostic,
+not a scene exporter or asset repair. Existing directories are refused; invalid
+vertex data, nonfinite coordinates/normals, invalid indices and bounds are errors.
+
+The UR5 shoulder probe contains 13041 vertices and 13492 triangles, generated
+from `/ur5/world/base_link/shoulder_link/visual_0/geom`. Both files were rendered
+by Bevy and native Embree with the shared camera, and all four images inspected:
+`target/ur5-normal-isolation/{with_normals,without_normals}-{native,bevy}.png`.
+Both renderers show the characteristic jagged shading with the copied normals;
+without those normals, that pattern disappears and polygon facets remain.
+Thus the artifact can travel with our generated normal data and does not require
+the original material subsets or a Bevy-specific shader. This does not yet identify
+which averaging/topology/limit-normal rule should replace the current result.
+No source assets or production normal-generation rules were changed.
+
+Logs: `/tmp/ur5-normal-isolation.log`,
+`/tmp/ur5-isolation-{with_normals,without_normals}-{native,bevy}.log`.
+The optional level-1 path also generated 46817 vertices / 80952 triangles in
+`target/ur5-normal-isolation-level1`; these outputs were not rendered in this
+checkpoint. Log: `/tmp/ur5-normal-isolation-level1.log`.
+
+Validation: 516 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/normal-isolation-all-tests-final.log`,
+`/tmp/normal-isolation-{check,build}-final.log`. Regression verifies exact
+point/index/normal round trips, deliberate normal omission and directory refusal.
+Full Bevy fidelity and subdivision acceptance remain open.
+
+## Thin-triangle normal hypothesis checked
+
+`normal_isolation` now reports double-area / longest-edge-squared quality bins,
+plus diagnostic angle-weighted normal recomputations with quality thresholds
+0, 1e-6 and 1e-4. Reports include changed vectors, remaining reversed normal
+corners and zero referenced normals. These calculations do not replace emitted
+normals or change production shading. Scale-invariance tests run at 1e-12, 1 and
+1e12, including the zero-normal consequence of removing a vertex's only face.
+
+The UR5 shoulder cage has 4 exactly degenerate triangles, 5 triangles at or below
+1e-6 quality and 24 at or below 1e-4. Recomputing with threshold zero matches
+the existing vectors within 1e-4. The thin-face cutoff does not improve the
+reversed-corner metric:
+
+| Geometry | Threshold | Changed vertices | Reversed corners | Zero referenced normals |
+| --- | ---: | ---: | ---: | ---: |
+| Cage | 0 | 0 | 64 | 0 |
+| Cage | 1e-6 | 1 | 64 | 0 |
+| Cage | 1e-4 | 35 | 70 | 0 |
+| Level 1 | 0 | 0 | 570 | 1 |
+| Level 1 | 1e-6 | 0 | 570 | 1 |
+| Level 1 | 1e-4 | 2 | 572 | 1 |
+
+This does not support adding a simple thin-triangle cutoff as a repair. No
+experimental filtered normals were rendered or installed. The level-one probe
+also reveals one zero normal on a referenced vertex despite its triangles having
+nonzero area; topology/fan cancellation remains an investigation target.
+Logs: `/tmp/ur5-normal-filter-final.log`,
+`/tmp/ur5-normal-filter-level1-final.log`. Byte comparisons confirm the emitted
+with-normal USDA files are unchanged from the prior cage and level-one probes.
+
+Validation: 517 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/normal-quality-all-tests-final.log`,
+`/tmp/normal-quality-{check,build}-final.log`. Full fidelity remains open.
+
+## Refined zero-normal fan isolated
+
+The normal probe now reports indexed two-face-edge fan connectivity, inconsistent
+edge winding and nonmanifold edges, without welding positions. Bounded witnesses
+print up to eight zero-normal referenced vertices with at most twelve incident
+triangles each, their face normals and corner angles. Tests distinguish vertex-only
+contacts, connected fans, inconsistent winding, nonmanifold edges and a connected
+but geometrically folded planar fan. No production mesh generation is changed.
+
+Both UR5 shoulder probes have zero nonmanifold edges, inconsistent winding edges
+and disconnected vertices. Thus disconnected-fan averaging is not supported as
+the explanation for this example. Logs: `/tmp/ur5-normal-fans.log`,
+`/tmp/ur5-normal-fans-level1.log`.
+
+The refined mesh's zero normal is vertex 17054 at
+(-0.014281747,-0.056019638,-0.059899956). Its four incident triangles are coplanar:
+three face -Z with corner angles 0.03556024303213283, 3.0555491135658177 and
+0.035489099502675536; one faces +Z with angle 3.126598456100626. Their signed
+angle sum cancels. This is a geometrically folded triangle fan despite consistent
+topological winding, not an unexplained failure to normalize a nonzero vector.
+Full coordinates and indices: `/tmp/ur5-normal-witness-level1.log`.
+That identifies the finite-mesh cancellation but does not establish whether our
+refined positions or limit-normal approximation agree with OpenSubdiv. Do not
+label the original asset invalid or silently replace the zero with an arbitrary
+axis. Refined-position/limit-surface comparison remains necessary.
+
+Validation: 518 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/normal-fans-{all-tests,check,build}.log`.
+Full Bevy rendering acceptance remains open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

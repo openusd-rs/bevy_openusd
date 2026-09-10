@@ -3,6 +3,20 @@ use std::collections::{HashMap, HashSet};
 use bevy::mesh::{Mesh, VertexAttributeValues};
 use usd_bevy::read::geom::ReadMesh;
 
+fn indexed_vertex_diagnostics(mesh: &Mesh) -> String {
+    let count = mesh.count_vertices();
+    let indices = mesh.indices().map(|indices| indices.iter().collect::<Vec<_>>()).unwrap_or_else(|| (0..count).collect());
+    let referenced: HashSet<_> = indices.iter().copied().filter(|index| *index < count).collect();
+    let normals = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+        Some(VertexAttributeValues::Float32x3(normals)) => Some(normals),
+        _ => None,
+    };
+    let invalid_normals = referenced.iter().filter(|index| normals.and_then(|values| values.get(**index))
+        .is_none_or(|normal| !normal.iter().all(|value| value.is_finite()) || normal.iter().all(|value| *value == 0.0))).count();
+    format!("referenced_vertices={} unreferenced_vertices={} invalid_referenced_normals={invalid_normals} invalid_indices={}",
+        referenced.len(), count - referenced.len(), indices.iter().filter(|index| **index >= count).count())
+}
+
 fn surface_diagnostics(mesh: &Mesh) -> String {
     let Some(VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return "surface=missing_positions".into(); };
     let normals = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) { Some(VertexAttributeValues::Float32x3(values)) => Some(values), _ => None };
@@ -66,7 +80,8 @@ fn describe(mesh: &ReadMesh) -> String {
     format!("points={} faces={} corners={} subdivision={:?} authored_normals={} uv_values={} projected_vertices={} projected_unique_normals={} projected_invalid_normals={} subsets={} double_sided={} authored_vertex_normals_preserved={preserved}\n  {}",
         mesh.points.len(), mesh.face_vertex_counts.len(), mesh.face_vertex_indices.len(), mesh.subdivision_scheme,
         normals, mesh.uvs.as_ref().map_or(0, |uv| uv.values.len()), projected.count_vertices(), unique_normals,
-        invalid_normals, mesh.subsets.len(), mesh.double_sided, surface_diagnostics(&projected))
+        invalid_normals, mesh.subsets.len(), mesh.double_sided,
+        format!("{}\n  {}", surface_diagnostics(&projected), indexed_vertex_diagnostics(&projected)))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -120,6 +135,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("meshes={count}");
     if refinement_errors > 0 { return Err(format!("{refinement_errors} meshes failed refinement").into()); }
     Ok(())
+}
+
+#[test]
+fn indexed_report_distinguishes_unused_normals_from_referenced_failures() {
+    let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, Default::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.,0.,0.], [1.,0.,0.], [0.,1.,0.], [9.,9.,9.]]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.,0.,1.], [0.,0.,1.], [0.,0.,1.], [0.,0.,0.]]);
+    mesh.insert_indices(bevy::mesh::Indices::U32(vec![0,1,2]));
+    assert_eq!(indexed_vertex_diagnostics(&mesh), "referenced_vertices=3 unreferenced_vertices=1 invalid_referenced_normals=0 invalid_indices=0");
+    mesh.insert_indices(bevy::mesh::Indices::U32(vec![0,1,3,0,1,99]));
+    assert_eq!(indexed_vertex_diagnostics(&mesh), "referenced_vertices=3 unreferenced_vertices=1 invalid_referenced_normals=1 invalid_indices=1");
+    mesh.remove_attribute(Mesh::ATTRIBUTE_NORMAL);
+    assert!(indexed_vertex_diagnostics(&mesh).contains("invalid_referenced_normals=3"));
 }
 
 #[test]

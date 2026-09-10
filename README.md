@@ -537,13 +537,20 @@ USD_SCREENSHOT=target/showcase-t10.png USD_CAPTURE_TIME=10 make run ARGS='assets
 ```
 
 `USD_SCREENSHOT` reads the actual embedded viewport GPU texture, without the UI.
+The **Frame visible scene** ribbon action refits the current visible document
+geometry, camera clipping range and grid. Use it after revealing objects or
+changing the scene; ordinary visibility changes do not reset camera navigation.
+Framing is a viewer-only operation and does not author USD or add undo entries.
 When capture is enabled, the viewer rejects non-PNG destination names and
 non-finite or malformed `USD_CAPTURE_TIME` values before constructing the window.
 Negative and fractional finite time codes are accepted. Without USD_SCREENSHOT,
 USD_CAPTURE_TIME does not enable capture or set the editor clock.
 It writes the PNG plus tightly packed `.rgba` pixels and `.capture.txt` containing
 dimensions, source texture format, row length and capture-request timing/clock
-metadata. `VIEWPORT_CAPTURE_OK` in stderr
+metadata. Effective camera eye, forward, up and column-major world-from-view /
+clip-from-view matrices use the same fields as the offscreen capture tool.
+Both snapshot the camera in `Last`, after camera/transform updates; this is
+request-time evidence, not a GPU completion timestamp. `VIEWPORT_CAPTURE_OK` in stderr
 means all three files were written; `VIEWPORT_CAPTURE_ERROR` reports a failure.
 The viewer stays open. Capture is requested once after at least 120 consecutive updates
 with the same open editor document and an active camera. Losing the camera or
@@ -757,6 +764,10 @@ USD_CURVE_STEPS=32 make run APP_TARGET='--example viewer_capture' \
 with an explicitly closed four-point nonperiodic equivalent. Both render the
 same cubic loop, not the triangular control hull.
 
+`scene_report` distinguishes referenced vertices, unreferenced vertices, invalid
+referenced normals and out-of-range indices. Its total invalid-normal count still
+includes unused vertex data; that total alone does not establish a draw defect.
+These counts describe source-sampled meshes, not visibility-filtered GPU draws.
 `scene_report` also reports exact authored-vertex-normal preservation, degenerate
 and exact-duplicate triangles, normal/face alignment and indexed versus
 exact-position-welded boundary edges. These are local, undeformed triangle-data
@@ -777,6 +788,29 @@ make capture-reference ARGS='--renderer Embree --disableGpu assets/subdivision_c
 
 Renderer availability depends on that native installation. Inspect the result;
 successful image writing does not prove that the native stage contained meshes.
+
+For a local-space triangle/normal isolation probe:
+
+```bash
+make run RUN_WITH= APP_TARGET='--example normal_isolation' ARGS='ASSET.usdc /Mesh NEW_DIRECTORY'
+```
+
+It writes `with_normals.usda` and `without_normals.usda` with identical projected
+triangle positions/indices and a shared `/Camera`. The first copies projected
+normals; the second omits them. Both explicitly use polygon geometry. An optional
+fourth argument applies finite subdivision (1..6) before copying the triangles.
+This is a time-zero diagnostic, not a scene exporter: original transforms,
+deformation, materials, subsets and other primvars are omitted. Render either
+through `viewer_capture` with `USD_CAPTURE_CAMERA=/Camera`, or through native
+`capture-reference` with `--camera /Camera --imageWidth 1280`.
+The probe also reports scale-independent triangle-quality bins and diagnostic
+normal recomputations excluding very thin triangles at two thresholds. These
+report changed vectors, reversed normal corners and zero referenced normals;
+they do not modify the emitted normals or enable a production filtering rule.
+Indexed fan diagnostics join corners across exactly two-face edges, report
+nonmanifold edges and inconsistent winding, and count disconnected fans without
+position welding. Zero-normal witnesses print at most eight referenced vertices
+and twelve incident triangles each, including face directions and corner angles.
 
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
@@ -1269,6 +1303,14 @@ the selected path; missing cameras wait until the capture timeout. The tool does
 not activate the source camera itself. Camera transforms must be representable as
 Bevy TRS; sheared camera transforms are not fidelity-validated.
 
+The offscreen tool records `camera_eye`, `camera_forward`, `camera_up`, and
+column-major `camera_world_from_view_cols` / `camera_clip_from_view_cols` after
+camera/transform updates, in `Last` when requesting readback. These describe the
+effective Bevy camera, including authored aperture offsets. `requested_eye` and
+`requested_target` are only the CLI fallback settings (formerly the misleading
+`eye` / `target` fields); they are not the active view when a USD camera is chosen.
+This metadata is a request-time snapshot, not a GPU completion timestamp.
+
 Perspective aperture offsets use `route::camera::UsdPerspectiveProjection` inside
 `Projection::Custom`; unshifted cameras retain `Projection::Perspective`.
 Viewport resizing preserves vertical FOV and physical aperture-offset/focal-length
@@ -1544,6 +1586,14 @@ before becoming Bevy's UV transform. Generate the animated comparison fixture:
 Its mapped and explicit-UV scenes are equivalent at times 0 and 10; intermediate
 times are not reference baselines because interpolating coordinates differs from
 interpolating rotation. Different per-texture coordinate transforms remain unsupported.
+`sampled_reference.usda` separately bakes analytic coordinates at times 0, 2.5,
+5, 7.5 and 10 using scalar sine/cosine math. Only those keys are reference
+samples; interpolation between its baked keys is not the original rotation curve.
+The live-clock suite tests 5/10 reversed to 10/5 against this reference.
+`interface_mapped.usda` drives the same transform chain through sampled Material
+inputs. Scale, rotation and translation resolve canonical value producers at each
+instance's clock; malformed connections, wrong value types and nonfinite results
+are errors rather than silently ignored interface values.
 The same generator writes `shear_mapped.usda`, `shear_reference.usda` and
 `shear_lossy.usda`: a nonuniform-scale/37-degree-rotation chain, independently
 baked vertex UVs, and a deliberately lossy SRT control. Capture at time 0 with

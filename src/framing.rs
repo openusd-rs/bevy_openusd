@@ -5,8 +5,15 @@ use usd_bevy::live::PrimEntities;
 use bevy::dev_tools::infinite_grid::InfiniteGridSettings;
 use crate::environment::ViewerGrid;
 
+#[derive(Resource, Clone, Default)]
+pub struct FrameRequest(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl FrameRequest {
+    pub fn request(&self) { self.0.store(true, std::sync::atomic::Ordering::Relaxed); }
+}
+
 pub fn configure(app: &mut App) {
-    app.add_systems(Last, frame_opened_document);
+    app.init_resource::<FrameRequest>().add_systems(Last, frame_opened_document);
 }
 
 fn frame_opened_document(
@@ -18,9 +25,11 @@ fn frame_opened_document(
     mut cameras: Query<(&mut mara_bevy::ChaseCamera, &mut Transform, &mut Projection), (With<Camera3d>, Without<ViewerGrid>)>,
     mut grids: Query<(&mut Transform, &mut InfiniteGridSettings), (With<ViewerGrid>, Without<Camera3d>)>,
     mut framed: Local<Option<Entity>>,
+    request: Res<FrameRequest>,
 ) {
+    let requested = request.0.swap(false, std::sync::atomic::Ordering::Relaxed);
     let Some(root) = prims.entity("/") else { return };
-    if *framed == Some(root) { return; }
+    if *framed == Some(root) && !requested { return; }
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
     for (entity, mesh, bounds, transform, visibility, skin, morph) in &meshes {
@@ -79,6 +88,34 @@ fn fit(low: Vec3, high: Vec3, fov: f32, aspect: f32) -> Option<(Vec3, f32, f32)>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_request_frames_newly_visible_geometry_once() {
+        let mut app = App::new();
+        app.init_resource::<PrimEntities>();
+        configure(&mut app);
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut().resource_mut::<PrimEntities>().insert("/", root);
+        let mut spawn_mesh = |visible, x| app.world_mut().spawn((Mesh3d::default(),
+            Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE),
+            GlobalTransform::from_translation(Vec3::new(x, 0.0, 0.0)), visible, ChildOf(root))).id();
+        spawn_mesh(InheritedVisibility::VISIBLE, 0.0);
+        let hidden = spawn_mesh(InheritedVisibility::HIDDEN, 10.0);
+        let camera = app.world_mut().spawn((Camera3d::default(), mara_bevy::ChaseCamera::default(),
+            Transform::default(), Projection::Perspective(PerspectiveProjection::default()))).id();
+        app.update();
+        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().focus, Vec3::ZERO);
+        app.world_mut().entity_mut(hidden).insert(InheritedVisibility::VISIBLE);
+        app.update();
+        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().focus, Vec3::ZERO);
+        let request = app.world().resource::<FrameRequest>().clone();
+        request.request();
+        app.update();
+        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().focus, Vec3::new(5.0, 0.0, 0.0));
+        app.world_mut().get_mut::<mara_bevy::ChaseCamera>(camera).unwrap().distance = 123.0;
+        app.update();
+        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().distance, 123.0);
+    }
 
     #[test]
     fn generated_children_contribute_bounds_but_unrelated_meshes_do_not() {

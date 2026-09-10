@@ -63,7 +63,23 @@ def Material "Material" {{
 "#);
         std::fs::write(directory.join(if reference { "reference.usda" } else { "mapped.usda" }), text)?;
     }
-    let source = std::fs::read_to_string(directory.join("mapped.usda"))?
+    let mapped = std::fs::read_to_string(directory.join("mapped.usda"))?;
+    let interfaces = mapped.replace("def Material \"Material\" {", r#"def Material "Material" {
+    float2 inputs:move.timeSamples = {0: (0,0.5), 10: (0.75,0.25)}
+    float2 inputs:size.timeSamples = {0: (1,1), 10: (0.5,1.5)}
+    float inputs:angle.timeSamples = {0: 0, 10: 90}"#)
+        .replace("float2 inputs:translation.timeSamples = {0: (0,0.5), 10: (0.75,0.25)}", "float2 inputs:translation.connect = </Material.inputs:move>")
+        .replace("float2 inputs:scale.timeSamples = {0: (1,1), 10: (0.5,1.5)}", "float2 inputs:scale.connect = </Material.inputs:size>")
+        .replace("float inputs:rotation.timeSamples = {0: 0, 10: 90}", "float inputs:rotation.connect = </Material.inputs:angle>");
+    std::fs::write(directory.join("interface_mapped.usda"), interfaces)?;
+    let samples = [0.0, 2.5, 5.0, 7.5, 10.0].map(|time| {
+        let [u, v] = sampled_uv(time);
+        format!("{time}: [({u:.9},{v:.9})]")
+    }).join(", ");
+    let reference = std::fs::read_to_string(directory.join("reference.usda"))?.replace(
+        "{0: [(0.25,0.75)], 10: [(0.375,0.375)]}", &format!("{{{samples}}}"));
+    std::fs::write(directory.join("sampled_reference.usda"), reference)?;
+    let source = mapped
         .replace("float2 inputs:translation.timeSamples = {0: (0,0.5), 10: (0.75,0.25)}",
             "float2 inputs:translation = (0.4,0.1)\n        float2 inputs:scale = (2,3)")
         .replace("float2 inputs:scale.timeSamples = {0: (1,1), 10: (0.5,1.5)}", "float2 inputs:scale = (1,1)")
@@ -110,6 +126,14 @@ def Material "Material" {{
         .replace("token inputs:sourceColorSpace = \"sRGB\"", "token inputs:sourceColorSpace.timeSamples = {0: \"raw\", 10: \"sRGB\" }");
     std::fs::write(directory.join("color_space_samples.usda"), color)?;
     Ok(())
+}
+
+fn sampled_uv(time: f64) -> [f64; 2] {
+    let w = time / 10.0;
+    let (sin, cos) = (w * std::f64::consts::FRAC_PI_2).sin_cos();
+    let x = 0.25 * (1.0 - 0.5*w);
+    let y = 0.25 * (1.0 + 0.5*w);
+    [cos*x - sin*y + 0.75*w, sin*x + cos*y + 0.5 - 0.25*w]
 }
 
 fn shear_uv([u,v]: [f32; 2]) -> [f32; 2] {
@@ -187,13 +211,18 @@ fn fixture_samples_match_explicit_uv_endpoints() {
         usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap()
     };
     let mapped = open("mapped.usda");
-    let reference = open("reference.usda");
-    for time in [0.0, 10.0] {
+    let interfaces = open("interface_mapped.usda");
+    let reference = open("sampled_reference.usda");
+    for time in [0.0, 2.5, 5.0, 7.5, 10.0, 0.0] {
         let read = usd_bevy::read::shade::read_preview_material_at(&mapped, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
         let transform = read.uv_transform.unwrap();
+        let interface = usd_bevy::read::shade::read_preview_material_at(&interfaces, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
+        assert_eq!(interface.uv_transform, Some(transform));
         let mesh = usd_bevy::read::geom::read_mesh_at(&reference, &openusd::sdf::path("/Quad").unwrap(), Some(time)).unwrap().unwrap();
         assert!(transform.transform_point2(Vec2::splat(0.25)).abs_diff_eq(Vec2::from(mesh.uvs.unwrap().values[0]), 1e-6));
     }
+    let linear = usd_bevy::read::geom::read_mesh_at(&open("reference.usda"), &openusd::sdf::path("/Quad").unwrap(), Some(5.0)).unwrap().unwrap();
+    assert!(!Vec2::from(linear.uvs.unwrap().values[0]).abs_diff_eq(Vec2::from(sampled_uv(5.0).map(|v| v as f32)), 0.1));
 }
 
 #[test]
@@ -210,7 +239,7 @@ fn asset_server_instances_animate_uv_chains_independently() {
     app.init_asset::<Mesh>().init_asset::<StandardMaterial>();
     app.finish();
     app.cleanup();
-    let handle = app.world().resource::<AssetServer>().load("mapped.usda");
+    let handle = app.world().resource::<AssetServer>().load("interface_mapped.usda");
     let roots = [0.0, 10.0].map(|current| app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current })).id());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {

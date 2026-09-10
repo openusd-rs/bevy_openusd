@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### AssetServer UV-chain instance clocks
+
+Extended the UV fixture regression through the real file-backed AssetServer and
+USD dependency loader. Two scene roots share the source and texture while taking
+independent clocks through 0/10, 10/0, 2.5/7.5, 5/5 and 10/10. The test checks
+the resulting StandardMaterial affine matrices against independent expected
+values and verifies actual decoded quadrant image bytes, shared mesh handles,
+distinct material handles at different times and shared handles at equal times.
+Projected entities, runtime names and runtime-child parenting survive sampling;
+both root layers retain identical authored text throughout.
+
+This exercises loaded textures and instance resampling in a headless Bevy
+schedule. The earlier GPU endpoint captures remain separate evidence; this test
+does not claim OS watcher reloads or simultaneous multi-root GPU image acceptance.
+All 428 ordinary tests pass (seven native export tests ignored), plus check-all,
+build and whitespace checks. Logs: `/tmp/uv-instance-{tests,check,build}.log`.
+
 ### Affine UV-transform chains
 
 Connected `UsdTransform2d` chains now compose outer-to-inner as affine matrices,

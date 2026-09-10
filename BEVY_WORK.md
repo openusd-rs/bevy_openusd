@@ -25,11 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Configure the actual wgpu presentation mode
+
+Corrected the eframe control: eframe 0.34.3 NativeOptions.vsync only applies to
+glow, so the earlier vsync=false runs actually retained wgpu AutoVsync. The probe
+now sets WgpuConfiguration.present_mode explicitly. Its new
+`USD_HOST_PROBE_PRESENT_MODE=auto-no-vsync|auto-vsync` defaults to AutoNoVsync,
+matching Mara, and logs the selected enum. Invalid/non-Unicode options fail before
+window creation; the unit test checks defaults and accepted/rejected values.
+
+Three alternating pairs of explicit AutoNoVsync/AutoVsync runs all produced
+healthy compositor captures and direct GPU readbacks. All twelve images were
+visually inspected. Evidence:
+`target/viewer-ui-captures/eframe-{auto-no-vsync,auto-vsync}-{1,2,3}*` and
+`/tmp/eframe-present-gpu.log`. This corrects the control, but does not reproduce
+or explain the intermittent Mara host failure; neither mode is proved reliable.
+All 495 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/eframe-present-{tests,check,build}.log`. Viewer defaults are unchanged.
+
 ### Add a direct eframe GPU-readback control
 
 `examples/eframe_capture_probe.rs` draws colored panels and text with eframe's
-wgpu runner, without Mara, Bevy or USD initialization. Vsync is disabled in its
-native options. `USD_HOST_PROBE_SCREENSHOT` requests a direct egui Screenshot
+wgpu runner, without Mara, Bevy or USD initialization. These initial runs used
+wgpu's default AutoVsync: the native vsync=false option only affects the glow
+backend, contrary to the original report. `USD_HOST_PROBE_SCREENSHOT` requests a direct egui Screenshot
 readback into a new PNG; exclusive file creation preserves existing outputs.
 The unit test decodes RGBA bytes and verifies overwrite refusal. The compositor
 harness does not validate this optional readback, so its log/file must be checked

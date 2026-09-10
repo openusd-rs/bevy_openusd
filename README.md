@@ -995,7 +995,9 @@ probe's update rate independently of egui repaint requests, but blocks input
 handling too: it is a timing diagnostic, not production frame pacing.
 
 `examples/eframe_capture_probe.rs` removes the Mara runner as well, drawing only
-colored panels and text with eframe's wgpu backend (vsync disabled). Set
+colored panels and text with eframe's wgpu backend (`AutoNoVsync` by default,
+matching Mara). Set `USD_HOST_PROBE_PRESENT_MODE=auto-vsync` for the explicitly
+vsynced comparison, or `auto-no-vsync` for the default. Set
 `USD_HOST_PROBE_SCREENSHOT` to a new PNG path for eframe's direct GPU screenshot:
 
 ```sh

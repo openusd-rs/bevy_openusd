@@ -8,6 +8,14 @@ struct Probe {
     announced: bool,
 }
 
+fn present_mode(value: Option<&str>) -> Result<wgpu::PresentMode, &'static str> {
+    match value {
+        None | Some("auto-no-vsync") => Ok(wgpu::PresentMode::AutoNoVsync),
+        Some("auto-vsync") => Ok(wgpu::PresentMode::AutoVsync),
+        _ => Err("USD_HOST_PROBE_PRESENT_MODE must be auto-no-vsync or auto-vsync"),
+    }
+}
+
 fn write_capture(path: &Path, image: &egui::ColorImage) -> Result<(), Box<dyn std::error::Error>> {
     let [width, height] = image.size;
     if width == 0 || height == 0 || width.checked_mul(height) != Some(image.pixels.len()) {
@@ -66,19 +74,33 @@ impl eframe::App for Probe {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mode = std::env::var("USD_HOST_PROBE_PRESENT_MODE");
+    if matches!(mode, Err(std::env::VarError::NotUnicode(_))) {
+        return Err("USD_HOST_PROBE_PRESENT_MODE must be Unicode".into());
+    }
+    let present_mode = present_mode(mode.ok().as_deref())?;
     let output = std::env::var_os("USD_HOST_PROBE_SCREENSHOT").map(PathBuf::from);
     if let Some(path) = &output {
         if path.extension().is_none_or(|extension| extension != "png") || std::fs::symlink_metadata(path).is_ok() {
             return Err("USD_HOST_PROBE_SCREENSHOT must be a new .png path".into());
         }
     }
-    eprintln!("EFRAME_CAPTURE_PROBE no Mara runner, no Bevy app, no USD stage");
+    eprintln!("EFRAME_CAPTURE_PROBE no Mara runner, no Bevy app, no USD stage, present_mode={present_mode:?}");
     eframe::run_native("eframe capture probe", eframe::NativeOptions {
-        renderer: eframe::Renderer::Wgpu, vsync: false,
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options: egui_wgpu::WgpuConfiguration { present_mode, ..Default::default() },
         viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 920.0]).with_decorations(false),
         ..Default::default()
     }, Box::new(move |_| Ok(Box::new(Probe { output, started: Instant::now(), requested: false, announced: false }))))?;
     Ok(())
+}
+
+#[test]
+fn wgpu_present_mode_is_explicit() {
+    assert_eq!(present_mode(None), Ok(wgpu::PresentMode::AutoNoVsync));
+    assert_eq!(present_mode(Some("auto-no-vsync")), Ok(wgpu::PresentMode::AutoNoVsync));
+    assert_eq!(present_mode(Some("auto-vsync")), Ok(wgpu::PresentMode::AutoVsync));
+    for invalid in ["", "false", "fifo", "AutoVsync"] { assert!(present_mode(Some(invalid)).is_err()); }
 }
 
 #[test]

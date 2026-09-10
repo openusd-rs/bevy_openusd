@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Headless GPU-prepared deformation payload measurement
+
+The editor benchmark now accepts a third cpu|gpu-prepared argument. CPU remains
+the default. GPU-prepared installs the same UsdGpuSkinningPlugin used by the
+viewer, but retains the headless benchmark: it measures CPU-side preparation
+and retained payloads, not GPU execution, allocator overhead, RSS or VRAM.
+Unsupported cases can still select the route's CPU fallback.
+
+Bevy 0.19 stores morph targets as inline MorphAttributes slices. Inspection and
+a regression confirm the existing size_of_val calculation counts payload bytes
+correctly; the initial suspicion that it counted image handles was wrong. No
+image-handle accounting replacement was retained. The new test also opens the
+real morph_animation fixture in both modes and checks nonzero morph data only
+in GPU-prepared mode, equal mesh entity counts and no morph image allocation.
+
+Three debug/headless samples per mode retained 384 vertex bytes, 48 index bytes,
+two mesh assets and one mesh entity. CPU mode retained zero morph bytes;
+GPU-prepared retained 288 morph bytes, with zero image bytes in both modes.
+Logs: `/tmp/morph-payload-{cpu,gpu-prepared}.log`. Timings include warmup effects
+and are not a GPU speedup claim. The benchmark prints its measurement exclusions.
+All 438 ordinary workspace tests pass (seven ignored), plus check-all and build:
+`/tmp/morph-payload-{tests,check,build}.log`.
+
 ### Native texture watcher document-switch lifecycle
 
 The native editor regression now opens a second source-backed document in a

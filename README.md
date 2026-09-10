@@ -146,13 +146,21 @@ The subsequent [reload comparison](benchmarks/reload-animation.md) measures redu
 CPU reload cost from skipping an unused animation-index scan, with clock-isolation
 regressions. It does not establish GPU or frame-rate improvements.
 
-`editor_benchmark ASSET [SAMPLES]` measures the actual editor Open path and retained
+`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared]` measures the actual editor Open path and retained
 mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
 includes file reading and texture decoding, but excludes GPU work and the UI:
 
 ```sh
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/material_subsets.usda'
+make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/morph_animation.usda 3 gpu-prepared'
 ```
+
+The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
+GPU deformation routing and measures its retained CPU-side mesh/morph payloads;
+it does not create a renderer or measure GPU execution. Unsupported deformation
+can still use the route's CPU fallback. Morph bytes count inline Bevy 0.19
+attributes, separately from image bytes; asset handles and allocator overhead
+are excluded.
 
 The [real-asset baseline](benchmarks/editor-assets.md) records ANYmal and Spot
 measurements. Payload bytes are not resident-memory or VRAM measurements.

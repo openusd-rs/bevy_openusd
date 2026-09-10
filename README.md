@@ -1273,11 +1273,13 @@ make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/
 ```
 
 It generates fresh UV/texture/scalar/color/normal fixtures and compares live clock
-reversals against independent references. Twelve comparisons use zero RGB
-tolerance; the normal-interface case uses RGB tolerance 1 for the independently
-animated geometry-normal reference, matching the static fixture's precision bound.
-Metadata must confirm the reversal and two visible mesh entities;
-the morph case also verifies shared GPU material use. Renderer warnings/errors
+reversals against independent references. Thirteen comparisons use zero RGB
+tolerance; normal-interface and constant-normal cases use RGB tolerance 1 for
+independently animated geometry normals, matching the static precision bound.
+Metadata must confirm the reversal and expected visible mesh counts. The flat
+morph case verifies shared GPU material use; the morph-tangent case verifies four
+GPU-morphed ordinary/subset meshes against CPU deformation without flat materials.
+Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain
 in the output directory, including on failure. This requires native GPU access
 and uses offline Cargo through Make.

@@ -25,6 +25,34 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Verify live morph tangents and constant normals in the GPU suite
+
+The repeatable live-clock suite now has fifteen cases. It adds constant-normal
+animation against independently animated geometry normals and normal-mapped
+morph tangents with material subsets against CPU deformation. Normal constant/
+interface cases explicitly allow RGB error 1; the other thirteen remain strict
+RGB-zero checks. The morph-tangent case requires four visible meshes, four GPU
+morph entities in the live run, zero in the CPU reference, and no flat-material
+entities. All cases verify reversed clock order after 30 ready frames and reject
+renderer warnings/errors.
+
+All fifteen cases pass: `target/live-morph-tangent-regression/`,
+`/tmp/live-morph-tangent-gpu.log`. Both images for each newly added case were
+inspected. The constant-normal case has max RGB error 1; live morph tangents
+match CPU deformation exactly at endpoint clocks 10/0.
+
+A manual midpoint pair reverses 5/10 to 10/5 and also matches the CPU reference
+exactly. Both images were inspected; metadata confirms four visible meshes,
+four GPU morph entities versus zero, and a 30-frame live reversal. No renderer
+WARN/ERROR. Evidence: `target/live-morph-tangent-mid-*`,
+`/tmp/live-morph-tangent-mid-{live,reference,compare}.log`. This midpoint pair is
+additional evidence, not a sixteenth default suite case.
+
+All 507 ordinary tests pass (13 ignored), make check-all/build, shell syntax and
+git diff --check pass: `/tmp/live-morph-tangent-{tests,check,build}.log`.
+General skinning tangent fidelity, performance measurements and the full Bevy
+acceptance checklist remain open.
+
 ### Rebuild GPU morph tangents at the sampled USD clock
 
 GPU morph preparation previously supplied zero tangent deltas while retaining

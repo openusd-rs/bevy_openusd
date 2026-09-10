@@ -25,6 +25,38 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Make the Outliner eye action edit animated visibility
+
+The sampled eye indicator exposed an ineffective action: writing a visibility
+default did not override existing time samples. EditorCommand::Visibility now
+chooses AttributeSample at the current finite StageTime when the composed
+attribute has samples, otherwise Attribute. It uses the existing typed authoring
+and undo path, and pauses playback after a successful edit. The Outliner sends
+this command and its tooltip identifies current-time behavior. Local visibility
+and ordinary cross-layer strength rules remain unchanged; this does not override
+an invisible ancestor or copy weaker sample sets into stronger layers.
+
+The command regression verifies sampled and static edits, pause, unchanged sample
+keys/default value, undo/redo and exact restoration of the original layer, plus
+nonfinite-time rejection. All 509 ordinary tests pass (13 ignored), check-all/
+build and git diff --check pass: `/tmp/visibility-toggle-tests-final.log`,
+`/tmp/visibility-toggle-{check,build}.log`.
+
+`scripts/replays/visibility_toggle.replay` exercises the actual eye click on
+Animated at time 10. The inspected host screenshot shows the eye reopened and
+the formerly hidden cube visible at the left edge; Ready remains shown. Evidence:
+`target/viewer-ui-captures/animated-visibility-toggle-retry*`,
+`/tmp/visibility-toggle-retry-ui.log`. The Bevy readback occurs before the 10-second
+click and shows the initial one-cube state; it is not a post-click comparison.
+Both images were inspected and the log confirms all four replay events.
+
+The first private-Weston attempt exceeded compositor startup time before viewer
+launch. Its failed log/settings remain under `animated-visibility-toggle*` and
+`/tmp/visibility-toggle-ui.log`; retry used a new output after compilation ended.
+Known clipboard/Vulkan-layer/SSAO warnings persist on the successful retry.
+This verifies the native eye action, not all interaction states or resolution
+of intermittent host blackouts. The full Bevy checklist remains open.
+
 ### Publish projected material warnings in the Properties pane
 
 UsdMaterialWarning was attached to projected meshes but omitted from the editor's

@@ -15,6 +15,7 @@ pub enum EditorCommand {
     /// Reload source-backed images without replacing the document or edit history.
     RefreshTextures,
     Select(Option<String>),
+    Visibility { prim: String, visible: bool },
     Edit(EditorEdit),
     EditLayer(String),
     Payload { prim: String, loaded: bool },
@@ -178,6 +179,11 @@ fn process_commands(world: &mut World) {
                 })
         } else if let Some(editor) = &mut session {
             match command {
+                EditorCommand::Visibility { prim, visible } => {
+                    let time = world.resource::<crate::route::StageTime>().current;
+                    visibility_edit(editor.stage(), prim, visible, time).and_then(|edit| editor.edit(edit))
+                        .map(|_| world.resource_mut::<EditorPlayback>().0.playing = false)
+                }
                 EditorCommand::RefreshTextures => editor.source.as_ref()
                     .ok_or_else(|| anyhow::anyhow!("document has no source snapshot"))
                     .and_then(|source| refresh_textures(world, editor.stage(), source))
@@ -242,6 +248,17 @@ fn process_commands(world: &mut World) {
 }
 
 type PreparedTextures = Vec<((String, bool), Image)>;
+
+fn visibility_edit(stage: &Stage, prim: String, visible: bool, time: f64) -> anyhow::Result<EditorEdit> {
+    anyhow::ensure!(time.is_finite(), "visibility edit time must be finite");
+    let sampled = !stage.prim(openusd::sdf::path(&prim)?)?.attribute("visibility").time_sample_times()?.is_empty();
+    let value = Value::Token(if visible { "inherited" } else { "invisible" }.into());
+    Ok(if sampled {
+        EditorEdit::AttributeSample { prim, name: "visibility".into(), type_name: "token".into(), value, time }
+    } else {
+        EditorEdit::Attribute { prim, name: "visibility".into(), type_name: "token".into(), value }
+    })
+}
 
 #[derive(Resource, Default)]
 pub(crate) struct EditorTextureRequests(pub std::collections::BTreeSet<String>);
@@ -691,6 +708,44 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn visibility_commands_edit_samples_or_defaults_and_undo() {
+        let source = crate::UsdSource::snapshot("visibility.usda", include_bytes!("../../../assets/visibility_animation.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.insert_non_send(EditorSession::new(stage.clone()));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Seek(10.0)).unwrap();
+        app.update();
+        assert!(!bridge.view().unwrap().document.visibility["/Animated"]);
+        bridge.send(EditorCommand::Play(true)).unwrap();
+        bridge.send(EditorCommand::Visibility { prim: "/Animated".into(), visible: true }).unwrap();
+        app.update();
+        let view = bridge.view().unwrap();
+        assert_eq!(view.status, "Ready");
+        assert_eq!(view.timeline.current, 10.0);
+        assert!(!view.timeline.playing);
+        assert!(view.document.visibility["/Animated"]);
+        let attr = stage.prim("/Animated").unwrap().attribute("visibility");
+        assert_eq!(attr.time_sample_times().unwrap(), vec![0.0, 10.0, 20.0]);
+        assert_eq!(attr.get::<Value>().unwrap(), Some(Value::Token("inherited".into())));
+        bridge.send(EditorCommand::Undo).unwrap();
+        app.update();
+        assert!(!bridge.view().unwrap().document.visibility["/Animated"]);
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        bridge.send(EditorCommand::Redo).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().document.visibility["/Animated"]);
+        bridge.send(EditorCommand::Visibility { prim: "/Visible".into(), visible: false }).unwrap();
+        app.update();
+        assert!(!bridge.view().unwrap().document.visibility["/Visible"]);
+        assert!(stage.prim("/Visible").unwrap().attribute("visibility").time_sample_times().unwrap().is_empty());
+        for _ in 0..2 { bridge.send(EditorCommand::Undo).unwrap(); app.update(); }
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(visibility_edit(&stage, "/Animated".into(), true, f64::NAN).is_err());
+    }
     #[test]
     fn failed_texture_refresh_retains_images_and_records_requested_paths() {
         use super::*;

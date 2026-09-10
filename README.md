@@ -521,7 +521,10 @@ The editor refreshes its sampled snapshot when playback changes the clock, so
 matrix sample labels and outliner local-visibility indicators follow scene time.
 Paused unchanged clocks do not trigger another snapshot. Visibility indicators
 show the prim's local token, not inherited/effective visibility. The existing
-visibility toggle still authors a default opinion, not an animation time sample.
+visibility toggle writes a sample at the current clock when the composed attribute
+has time samples, otherwise a default opinion. Successful toggles pause playback
+and participate in undo/redo; they do not change other authored sample keys in the
+same edit layer. Normal USD strength rules still apply across edit layers.
 `assets/visibility_animation.usda` hides Animated at time 10 while Visible remains
 shown; it is a control for sampled outliner and rendered visibility.
 

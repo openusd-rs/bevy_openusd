@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Timeline playback and stepping UI acceptance
+
+Five checked-in replay scripts now exercise Play, Pause, Next time code, Previous
+time code and Go to start against animation_showcase.usda's authored 0–10 range.
+All five isolated native viewer captures were inspected. Play shows Pause and a
+nonzero time (9.139 in this run); Pause shows Play at 2.705 with the corresponding
+smaller/redder scene. Next from zero shows 1.000; Previous after typed seek to ten
+shows 9.000; Go to start after typed seek restores 0.000 and the initial small
+orange geometry. Playback times depend on scheduling and are not fixed expected
+values. Projection trace messages stop after the pause interaction settles.
+
+Artifacts: `target/viewer-ui-captures/timeline-{play,pause,next,previous,start}.png`,
+adjacent viewer logs and `/tmp/timeline-{play,pause,next,previous,start}.log`.
+These use injected egui events in a 1600x1000 isolated desktop, not OS-level
+input. Fixed capture waits and existing renderer-environment diagnostics retain
+the earlier limits; sustained playback/performance and full flagship acceptance
+are still open. Parser coverage checks all five replay files. All 447 ordinary
+workspace tests pass (seven ignored), plus check-all, build and whitespace checks:
+`/tmp/timeline-controls-{tests,check,build}.log`.
+
 ### Timeline typed-seek UI acceptance
 
 Added checked-in timeline_seek and timeline_invalid egui replay scripts, plus

@@ -543,7 +543,10 @@ Negative and fractional finite time codes are accepted. Without USD_SCREENSHOT,
 USD_CAPTURE_TIME does not enable capture or set the editor clock.
 It writes the PNG plus tightly packed `.rgba` pixels and `.capture.txt` containing
 dimensions, source texture format, row length and capture-request timing/clock
-metadata. `VIEWPORT_CAPTURE_OK` in stderr
+metadata. Effective camera eye, forward, up and column-major world-from-view /
+clip-from-view matrices use the same fields as the offscreen capture tool.
+Both snapshot the camera in `Last`, after camera/transform updates; this is
+request-time evidence, not a GPU completion timestamp. `VIEWPORT_CAPTURE_OK` in stderr
 means all three files were written; `VIEWPORT_CAPTURE_ERROR` reports a failure.
 The viewer stays open. Capture is requested once after at least 120 consecutive updates
 with the same open editor document and an active camera. Losing the camera or

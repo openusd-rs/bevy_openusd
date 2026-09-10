@@ -12,6 +12,7 @@ mod curve_quality;
 mod lighting;
 mod inspector;
 mod capture;
+mod capture_metadata;
 mod framing;
 mod timeline;
 mod ui_replay;

@@ -102,6 +102,27 @@ the existing strict RGB-zero gates and RGB-one tolerances for the two normal
 cases. Evidence: `target/live-camera-metadata-regression/results.tsv` and
 `/tmp/camera-metadata-live.log`. This does not resolve the full Bevy checklist.
 
+## Embedded viewport camera evidence
+
+The editor's `USD_SCREENSHOT` path now uses the same effective-camera metadata
+implementation as `viewer_capture`, in `src/capture_metadata.rs`. The duplicate
+offscreen helper was removed. Embedded screenshot requests run in Last after
+camera/transform updates and preserve their document/time/delay snapshot.
+Unit coverage verifies metadata survives embedded readback alongside tightly
+packed pixels. No host-window presentation or camera-framing behavior is changed.
+
+Validation: 512 ordinary tests pass, 13 ignored; check-all, viewer build and
+git diff --check pass. Logs: `/tmp/embedded-camera-{tests,check,build}.log`.
+The private Weston visibility-toggle replay at time 10 and 15000 ms capture
+delay passed, producing both host and viewport screenshots; both were inspected.
+The Animated eye is open and both cubes render after the click (the left cube
+remains partly clipped by the existing initial framing). Metadata records
+15024 ms, 341 ready updates, document 1, time 10, effective eye
+(2.063363,1.3923875,2.201329) and a computed 1440x920 projection. Evidence:
+`target/viewer-ui-captures/embedded-camera-metadata*`,
+`/tmp/embedded-camera-ui.log`. The intermittent black host-window failure is
+not fixed or disproved by this successful run. Full acceptance remains open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

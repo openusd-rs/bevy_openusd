@@ -90,19 +90,20 @@ pub fn configure(app: &mut App) {
     let Some(CaptureConfig { output, time, delay_ms }) = CaptureConfig::from_env().expect("invalid capture configuration") else { return };
     if let Some(current) = time { app.insert_resource(usd_bevy::route::StageTime { current }); }
     let started = std::time::Instant::now();
-    app.add_systems(Update, move |mut commands: Commands, cameras: Query<(&Camera, &RenderTarget), With<Camera3d>>,
+    app.add_systems(Last, move |mut commands: Commands, cameras: Query<(&Camera, &RenderTarget, &GlobalTransform), With<Camera3d>>,
         session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>| {
-        let target = cameras.iter().find(|(camera, _)| camera.is_active).map(|(_, target)| target);
-        let document = target.and_then(|_| session.as_ref().map(|session| session.document_id()));
+        let active = cameras.iter().find(|(camera, _, _)| camera.is_active);
+        let document = active.and_then(|_| session.as_ref().map(|session| session.document_id()));
         gate.delay = std::time::Duration::from_millis(delay_ms);
         let elapsed = started.elapsed();
         match gate.advance(document, elapsed) {
             CaptureAction::Timeout => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: timed out waiting for an open document, active camera and capture delay"),
             CaptureAction::Request => {
-                let target = target.expect("capture gate requires an active camera");
+                let (camera, target, transform) = active.expect("capture gate requires an active camera");
                 let output = output.clone();
-                let timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
+                let mut timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
+                timing.push_str(&crate::capture_metadata::camera_report(transform, camera.clip_from_view()));
                 commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>| {
                     match save_readback(&event.image, Path::new(&output), &timing) {
                         Ok(()) => eprintln!("VIEWPORT_CAPTURE_OK {output}"),
@@ -191,12 +192,17 @@ mod tests {
         let output = directory.join("viewport.png");
         let mut image = Image::new_target_texture(3, 2, TextureFormat::Rgba8UnormSrgb, None);
         image.data = Some((0..24).collect());
-        save_readback(&image, &output, "minimum_ready_delay_ms=15000\n").unwrap();
+        let transform = GlobalTransform::from_translation(Vec3::new(2.0, 3.0, 4.0));
+        let projection = Mat4::perspective_infinite_reverse_rh(0.8, 1.5, 0.1);
+        let timing = format!("minimum_ready_delay_ms=15000\n{}", crate::capture_metadata::camera_report(&transform, projection));
+        save_readback(&image, &output, &timing).unwrap();
         assert_eq!(std::fs::read(output.with_extension("rgba")).unwrap(), image.data.unwrap());
         let report = std::fs::read_to_string(output.with_extension("capture.txt")).unwrap();
         assert!(report.contains("width=3\nheight=2\n"));
         assert!(report.contains("row_bytes=12\nbytes=24\n"));
         assert!(report.contains("minimum_ready_delay_ms=15000\n"));
+        assert!(report.contains("camera_eye=Vec3(2.0, 3.0, 4.0)\n"));
+        assert!(report.contains(&format!("camera_clip_from_view_cols={:?}\n", projection.to_cols_array())));
         assert!(output.is_file());
         std::fs::remove_dir_all(directory).unwrap();
     }

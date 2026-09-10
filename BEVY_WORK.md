@@ -586,6 +586,35 @@ errors 5.94309e-8 and 5.89307e-8 respectively. The native gate completes with
 SUBDIVISION_ASSET_CHECK_OK in `/tmp/subdivision-native-exact-assets.log`.
 No new screenshot-based improvement is claimed for this degeneracy fix.
 
+## Limit normals after authored sharpness decays
+
+Normal selection now checks whether crease/corner sharpness is fully decayed
+after the selected number of refinement levels, rather than checking whether
+crease/corner index arrays were authored at all. Explicit zero sharpness is
+equivalent to absent sharpness. Values at or below the refinement level have
+decayed to zero; permanent sharpness and values still above the level retain the
+existing finite-normal treatment. Hole and boundary-none exclusions are unchanged.
+
+The cube regression first demonstrated the old behavior: zero crease sharpness
+produced no generated normals while the identical uncreased surface had limit
+normals. Log: `/tmp/decayed-normal-before.log`. The extended regression checks
+exact zero/absent equivalence for edges and corners, fractional-sharpness unit
+outward normals, and the 1.01 transition (finite at level 1, limit at level 2).
+The existing permanent-crease face-varying and left-handed assertions remain.
+
+Validation: 521 ordinary tests pass, 13 ignored; check-all, viewer build and
+`git diff --check` pass. Logs: `/tmp/decayed-normal-{tests,check,build}.log`.
+Four level-1 forward/shadows-off captures were inspected:
+`target/decayed-normal-{smooth,zero,fractional,hard}.png`. They use eye (3,2,4)
+and target (0,0,0); the crease fixture samples times 0, 1 and 3 for zero, 0.5 and
+permanent sharpness respectively. All report CAPTURE_OK. Fractional sharpness
+retains smooth shading; permanent creases retain flat face normals. Zero
+sharpness and the uncreased cube are pixel-identical across 921,600 pixels at
+strict RGB tolerance 0. Logs: `/tmp/decayed-normal-{smooth,zero,fractional,hard}.log`
+and `/tmp/decayed-normal-image-compare.log`.
+Remaining nonzero sharpness still uses the documented finite-normal path;
+this does not implement full semi-sharp limit derivatives.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

@@ -1023,10 +1023,12 @@ before prototype transforms and material-subset splitting, retaining shared mesh
 handles. Hierarchical prototypes remain unsupported.
 Changing or removing the settings resource automatically reprojects existing
 meshes and point instancers in live stages and asset instances, preserving each
-instance's clock and runtime-owned entities. Uncreased Catmull-Clark meshes
-without holes, using edge-only or edge-and-corner boundaries, use limit-surface
+instance's clock and runtime-owned entities. Catmull-Clark meshes with no
+remaining sharpness or holes, using edge-only or edge-and-corner boundaries, use limit-surface
 normals evaluated on the refined float positions. Disconnected vertex fans retain
-finite-mesh normals. Creases, corners, holes and boundary-none use the existing
+finite-mesh normals. Zero authored sharpness and sharpness fully decayed by the
+selected refinement level use the same limit-normal path. Remaining creases,
+corners, holes and boundary-none use the existing
 finite-normal path. Bilinear surfaces remain flat shaded. GPU subdivision and
 full USD limit-surface fidelity remain unsupported.
 With subdivision enabled, unknown/malformed scheme values are errors, not silent

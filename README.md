@@ -985,6 +985,11 @@ device and registering the Bevy texture directly. Set
 Mara's existing CPU readback/egui texture upload path. Both construction and
 per-frame drawing omit the host render state in CPU mode. This diagnostic does
 not change the viewer's transfer path or establish a production fallback.
+Set `USD_BRIDGE_PROBE_DELAY_MS=33` to deliberately block each probe UI update
+for 33 milliseconds while retaining the selected transfer path. The default is
+zero; accepted values are integer milliseconds from 0 to 1000. This bounds the
+probe's update rate independently of egui repaint requests, but blocks input
+handling too: it is a timing diagnostic, not production frame pacing.
 
 The `.settings.txt` companion records compositor backend, output/inspection
 dimensions and wait time. Set `USD_UI_CAPTURE_SCENE_GRAPH=1` to collect Weston's

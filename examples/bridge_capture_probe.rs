@@ -9,6 +9,7 @@ struct Probe {
     context: eframe::egui::Context,
     announced: bool,
     cpu_readback: bool,
+    delay: std::time::Duration,
 }
 
 fn cpu_readback(value: Option<&str>) -> Result<bool, &'static str> {
@@ -19,10 +20,19 @@ fn cpu_readback(value: Option<&str>) -> Result<bool, &'static str> {
     }
 }
 
+fn frame_delay(value: Option<&str>) -> Result<std::time::Duration, &'static str> {
+    let value = value.unwrap_or("0");
+    let millis = value.parse::<u64>().ok().filter(|millis| *millis <= 1000)
+        .filter(|_| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or("USD_BRIDGE_PROBE_DELAY_MS must be an integer from 0 to 1000")?;
+    Ok(std::time::Duration::from_millis(millis))
+}
+
 impl WindowApp for Probe {
     fn new(ctx: CreationContext<'_>) -> Self {
         let cpu_readback = cpu_readback(std::env::var("USD_BRIDGE_PROBE_TRANSFER").ok().as_deref()).unwrap();
-        eprintln!("BRIDGE_CAPTURE_PROBE Bevy viewport, no USD plugins or editor, cpu_readback={cpu_readback}");
+        let delay = frame_delay(std::env::var("USD_BRIDGE_PROBE_DELAY_MS").ok().as_deref()).unwrap();
+        eprintln!("BRIDGE_CAPTURE_PROBE Bevy viewport, no USD plugins or editor, cpu_readback={cpu_readback}, delay_ms={}", delay.as_millis());
         Self {
             viewport: if cpu_readback { mara_bevy::MaraBevyViewport::with_content(configure) }
                 else { mara_bevy::MaraBevyViewport::with_render_state_and_content(ctx.gpu(), configure) },
@@ -30,10 +40,12 @@ impl WindowApp for Probe {
             context: ctx.__internal_egui_ctx().clone(),
             announced: false,
             cpu_readback,
+            delay,
         }
     }
 
     fn update(&mut self, host: &mut MaraHostCtx<'_>) {
+        std::thread::sleep(self.delay);
         host.apply_theme(AccentColor::default(), GlassOpacity::default());
         let accent = active_accent();
         let mut view = host.view_ctx(&mut self.workspace, accent, RibbonAvoidance::all());
@@ -73,7 +85,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("USD_BRIDGE_PROBE_TRANSFER must be Unicode".into());
     }
     cpu_readback(transfer.ok().as_deref())?;
+    let delay = std::env::var("USD_BRIDGE_PROBE_DELAY_MS");
+    if matches!(delay, Err(std::env::VarError::NotUnicode(_))) {
+        return Err("USD_BRIDGE_PROBE_DELAY_MS must be Unicode".into());
+    }
+    frame_delay(delay.ok().as_deref())?;
     mara::window::run::<Probe>()
+}
+
+#[test]
+fn bridge_delay_is_bounded_and_disabled_by_default() {
+    assert_eq!(frame_delay(None).unwrap(), std::time::Duration::ZERO);
+    for millis in [0, 1, 33, 1000] {
+        assert_eq!(frame_delay(Some(&millis.to_string())).unwrap(), std::time::Duration::from_millis(millis));
+    }
+    for invalid in ["", "-1", "+1", "1.5", " 33", "1001", "18446744073709551616"] {
+        assert!(frame_delay(Some(invalid)).is_err());
+    }
 }
 
 #[test]

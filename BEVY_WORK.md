@@ -25,6 +25,26 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Control bridge update cadence independently of transfer
+
+`USD_BRIDGE_PROBE_DELAY_MS=0..1000` adds a deliberate sleep at the start of
+each minimal-probe UI update, default zero. The native transfer path is unchanged.
+Invalid/non-Unicode values fail before window creation. This blocks input too;
+it is explicitly diagnostic and is not installed in the production viewer.
+
+Three native-sharing captures with a 33 ms delay all show the cube, blue clear
+color and upright egui label, visually inspected. Weston samples show 26/26,
+26/27 and 26/26 committed/painted Hz. Evidence:
+`target/viewer-ui-captures/bridge-paced-{1,2,3}*`, `/tmp/bridge-delay-gpu.log`.
+This demonstrates healthy native transfer at reduced cadence in these runs,
+not a reliable fix or proof that high submission rate causes the intermittent
+black surface. The CPU-mode comparison cannot uniquely implicate device sharing.
+Mara still hardcodes AutoNoVsync; its runner and scheduling were not changed.
+
+All 493 ordinary tests pass (13 ignored), check-all/build and whitespace checks
+pass: `/tmp/bridge-delay-{tests,check,build}.log`. The delay regression covers
+default zero, boundaries, overflow and invalid syntax without sleeping in tests.
+
 ### Compare native sharing with CPU viewport transfer
 
 The bridge probe accepts `USD_BRIDGE_PROBE_TRANSFER=native|cpu` (native default).

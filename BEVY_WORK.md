@@ -25,6 +25,22 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Native retimed package export
+
+The new native regression exports a diskless retimed assembly as USDZ in RootLayer,
+EditLayer and Flattened modes, moves each package and invokes native usdcat
+--flatten. All three outputs succeed with empty stderr. The native-produced
+sample keys are 0/10 for the identity mount and 10/30 for offset 10, scale 2;
+endpoint and midpoint values remain 1/2/3. Input directories stay empty, and saves
+leave the editor root unchanged. This covers these positive-scale packaged
+references, not arbitrary retiming or native ordinary-file dependency bundling.
+
+All nine native export regressions pass: `/tmp/retimed-native-recheck.log`.
+The first test build used the wrong time_samples return shape; the corrected
+assertion extracts keys from its (time, value) pairs before comparing them.
+All 463 ordinary workspace tests pass (nine ignored); check-all, build and
+whitespace validation pass: `/tmp/retimed-export-{tests,check,build}.log`.
+
 ### Retimed reference assembly
 
 UsdSource::with_offset_references accepts batches with canonical sdf::LayerOffset
@@ -37,7 +53,7 @@ The source regression checks offset 10/scale 2 samples at stage times 10, 20 and
 30, retained default-prim arcs and offset metadata, deduplicated dependencies and
 invalid late entries without input mutation. The runnable retimed_sources example
 checks actual Bevy mesh radii and entity/runtime-name preservation across those
-clock changes. Native export interoperability for this new API remains unverified.
+clock changes. Native export validation was added subsequently as recorded above.
 All 463 ordinary workspace tests pass (eight ignored), as do check-all, build,
 the runnable example and whitespace checks:
 `/tmp/offset-reference-{tests,check,build,example}.log`.

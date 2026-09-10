@@ -175,6 +175,51 @@ def Sphere "Model" {
 
     #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_preserves_retimed_reference_batches() {
+        use crate::{UsdSource, editor::{EditorSession, SaveMode}};
+        use openusd::sdf::{LayerOffset, Path as SdfPath};
+        let input = tempfile::tempdir().unwrap();
+        let root = UsdSource::snapshot(input.path().join("root.usda"), &b"#usda 1.0\n"[..]).unwrap();
+        let model = UsdSource::snapshot(input.path().join("model.usda"), &br#"#usda 1.0
+(defaultPrim = "Model")
+def Sphere "Model" {
+    double radius.timeSamples = {0: 1, 10: 3}
+}
+"#[..]).unwrap();
+        let assembly = root.with_offset_references([
+            ("/Original", &model, SdfPath::default(), LayerOffset::IDENTITY),
+            ("/Retimed", &model, SdfPath::default(), LayerOffset::new(10.0, 2.0)),
+        ]).unwrap();
+        let editor = EditorSession::new(assembly.open_stage().unwrap());
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let relocated = tempfile::tempdir().unwrap();
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            let package = output.path().join(format!("{name}.usdz"));
+            editor.save(package.to_str().unwrap(), mode).unwrap();
+            let moved = relocated.path().join(format!("{name}.usdz"));
+            fs::rename(&package, &moved).unwrap();
+            assert_eq!(fs::read_dir(input.path()).unwrap().count(), 0);
+            let result = std::process::Command::new(&native).arg("--flatten").arg(&moved).output().unwrap();
+            assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+            assert!(result.stderr.is_empty(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+            let stage = UsdSource::snapshot(relocated.path().join("native.usda"), result.stdout).unwrap().open_stage().unwrap();
+            for (path, times, values) in [("/Original", [0.0, 5.0, 10.0], [1.0, 2.0, 3.0]),
+                ("/Retimed", [10.0, 20.0, 30.0], [1.0, 2.0, 3.0])] {
+                let attribute = stage.prim(path).unwrap().attribute("radius");
+                let keys: Vec<_> = attribute.time_samples().unwrap().unwrap().into_iter().map(|(time, _)| time).collect();
+                assert_eq!(keys, vec![times[0], times[2]], "{name}: {path}");
+                for (time, value) in times.into_iter().zip(values) {
+                    assert_eq!(attribute.get_at::<f64>(Some(openusd::usd::TimeCode::new(time))).unwrap(), Some(value), "{name}: {path} at {time}");
+                }
+            }
+        }
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_preserves_editor_affine_reset_command() {
         use crate::editor::{EditorEdit, EditorSession, SaveMode};
         let stage = crate::UsdSource::new("native-matrix-edit.usda", include_bytes!("../../../assets/xform_animation.usda").as_slice())

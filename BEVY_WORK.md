@@ -25,6 +25,30 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Release lifecycle and cache baseline
+
+Ran optimized source-root benchmarks at 128 and 1,024 native instances per root,
+one/four roots, plus separate source/route profiling and direct projection cache
+comparison. All commands passed their runtime assertions. Committed raw samples,
+commands, host/toolchain context and limitations in
+`benchmarks/source-lifecycle.md`; local logs are `/tmp/source-release-128.log`,
+`/tmp/source-release-1024.log`, `/tmp/source-release-profile.log` and
+`/tmp/projection-release-128.log`.
+
+At 4,096 projected shapes, dependency reload takes 596.079–870.955ms despite
+one initial mesh/material asset and preserved entities/runtime state. At 512
+shapes it takes 67.673–122.524ms. Profiling still puts projection and composition
+validation ahead of opening. Cached direct projection was slower in each
+same-index sample; asset reduction is proven, CPU acceleration is not. High
+uncontrolled host load and three samples preclude stable performance thresholds.
+These are release CPU baselines, not rendering/GPU acceptance or a before/after
+speedup attributable to the opacity-read change.
+
+The preceding `40a13c9` change passes sampled opacity from shape construction to
+its fallback material, avoiding a duplicate USD read without cross-frame caching.
+Its existing sampled-alpha regression was extended; 379 ordinary tests,
+check-all, build and whitespace checks passed (`/tmp/shape-opacity-*.log`).
+
 ### Preserve cull state during material interning
 
 Inspection of Bevy 0.19.1 StandardMaterial found that `cull_mode` is excluded from

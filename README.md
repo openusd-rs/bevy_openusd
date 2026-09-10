@@ -107,6 +107,9 @@ No clock reads are added to source publication when this resource is absent.
 The separate `projection_benchmark` measures direct LiveStage projection and edits,
 not the source-root publication path. Its timings are not interchangeable with
 the lifecycle benchmark. Debug timings are diagnostic, not production guarantees.
+The [release CPU baseline](benchmarks/source-lifecycle.md) records raw samples up
+to 4,096 projected shapes, source-phase profiles and a separate cache comparison.
+It demonstrates asset sharing, but not CPU acceleration or rendered performance.
 
 `usd_bevy::instance::UsdInstanceTime` controls each root's position in USD time
 codes. `UsdPlayback` adds pause/play, signed speed, looping and an optional

@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Render flattened clip exports against direct samples
+
+`examples/flatten_scene.rs` exports a filesystem scene through the editor's
+Flattened save path. Its test verifies reopening USDZ, refusal of an existing
+output and invalid-input failure without creating output. The initial existence
+check is not exclusive publication against concurrent writers.
+`scripts/check_clipped_sphere.sh` now accepts a third argument, `flattened`,
+which exports USDZ before loading that package through the capture AssetServer.
+
+Both retimed single-clip and switching-clip exports match their independent
+direct-sample references at 0/5/10/20 and after two live roots reverse clocks:
+all ten comparisons have zero changed RGB pixels out of 921600. Captured mesh
+counts, actual clocks and reversal metadata pass; all baked static images and
+both live/reference pairs were visually inspected without overlays. Evidence:
+`target/baked-retimed-clips-regression/`,
+`target/baked-switching-clips-regression/`, and
+`/tmp/baked-{retimed,switching}-clips-gpu.log`.
+All 479 ordinary tests pass (13 ignored), all 13 native export tests pass, and
+check-all/build/whitespace and shell syntax validation pass:
+`/tmp/baked-gpu-{tests,native,check,build}.log`.
+This establishes sampled baked-export frame equivalence, not native-renderer
+parity, complete clip schedule coverage or full viewer/compositor acceptance.
+
 ### Bake clip-resolved attributes in flattened editor saves
 
 The editor now bakes attributes whose proximal source is ValueClips into the
@@ -46,8 +69,8 @@ and untouched destinations in all four formats.
 All 478 ordinary tests pass (13 ignored), all 13 native export tests pass, and
 check-all/build/whitespace validation pass without warnings:
 `/tmp/clip-bake-{tests-final,native-final,check-final,build-final}.log`.
-This is export/value evidence, not a new GPU comparison of baked output or
-complete native parity for every clip type/schedule. Timecode retiming remains
+This slice established export/value evidence; the later GPU comparisons above
+extend coverage without proving every clip type/schedule. Timecode retiming remains
 unresolved upstream; peak flattening memory still includes expanded instances.
 
 ### Correct interpolation across active clip boundaries
@@ -59,8 +82,8 @@ now interpolates non-asset values between composed stage-time sample boundaries
 instead of using only the active clip's local sample map. An upcoming value block
 holds the preceding value until its boundary, as verified separately against
 native OpenUSD (`/tmp/native-clip-held-values.log`). Asset-valued resolution is
-unchanged. Clip baking remains disabled; full schedule/timecode parity is not
-claimed.
+unchanged. Downstream clip baking was subsequently added as described above;
+full schedule/timecode parity is not claimed.
 
 The review patch includes an upstream regression and passes reverse-apply check.
 All 55 upstream clip tests pass (`/tmp/clip-switch-upstream-complete.log`). Those
@@ -96,8 +119,8 @@ All 475 ordinary tests pass (11 ignored), all 11 native export tests pass, and
 check-all/build/whitespace validation pass without warnings:
 `/tmp/instance-flatten-{tests,native-all,check,build}.log`.
 Direct upstream Stage::flatten still expands instances, as does the intermediate
-layer here: this preserves saved-file sharing, not peak export memory. Value clips
-are still rejected by flattened editor saves; clip baking remains unfinished.
+layer here: this preserves saved-file sharing, not peak export memory. The later
+clip-baking work above replaces this slice's blanket rejection of value clips.
 
 ### Numeric clip dependency reload and recovery
 
@@ -352,6 +375,8 @@ the runnable example and whitespace validation:
 `/tmp/retimed-instance-{tests,check,build,example}.log`.
 
 ### Reject lossy value-clip flattening
+
+Historical guard, superseded by the clip-baking implementation above.
 
 EditorSession::save now checks the same ALL prim traversal used by the upstream
 flattener and rejects Flattened saves when composed clips metadata is present.

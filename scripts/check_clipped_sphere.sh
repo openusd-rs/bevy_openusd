@@ -1,8 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-[[ $# == 1 || $# == 2 ]] || { echo "usage: check_clipped_sphere.sh NEW_OUTPUT_DIRECTORY [clipped_sphere|switching_clips]" >&2; exit 2; }
+[[ $# -ge 1 && $# -le 3 ]] || { echo "usage: check_clipped_sphere.sh NEW_OUTPUT_DIRECTORY [clipped_sphere|switching_clips] [source|flattened]" >&2; exit 2; }
 fixture=${2:-clipped_sphere}
+mode=${3:-source}
+[[ "$mode" == source || "$mode" == flattened ]] || { echo "unknown export mode" >&2; exit 2; }
 [[ "$fixture" == clipped_sphere || "$fixture" == switching_clips ]] || { echo "unknown clip fixture" >&2; exit 2; }
 output=$(realpath -m "$1")
 [[ ! -e "$output" ]] || { echo "output directory must be new" >&2; exit 2; }
@@ -13,6 +15,13 @@ unset USD_CPU_SKINNING USD_CAPTURE_CAMERA USD_CAPTURE_DOME USD_SUBDIVISION_LEVEL
 unset USD_CAPTURE_INSTANCE_TIMES USD_CAPTURE_SWAP_CLOCKS USD_CAPTURE_INSTANCE_SPACING
 export USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off
 printf 'case\tstatus\n' > "$output/results.tsv"
+scene="assets/$fixture.usda"
+if [[ "$mode" == flattened ]]; then
+    printf -v args '%q ' "$scene" "$output/baked.usdz"
+    make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example flatten_scene' ARGS="${args//\$/\$\$}" \
+        > "$output/flatten.log" 2>&1
+    scene="$output/baked.usdz"
+fi
 
 for case in 0 5 10 20 clocks; do
     time=$case
@@ -32,7 +41,7 @@ for case in 0 5 10 20 clocks; do
         fi
     fi
     for kind in clipped reference; do
-        asset="assets/$fixture.usda"
+        asset="$scene"
         [[ "$kind" != reference ]] || asset="assets/${fixture}_reference.usda"
         if [[ "$case" == clocks ]]; then
             export USD_CAPTURE_INSTANCE_TIMES=10,20 USD_CAPTURE_SWAP_CLOCKS=1

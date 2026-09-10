@@ -263,6 +263,22 @@ the larger spheres separated:
 make --eval='check-switches:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW-switch-images switching_clips' check-switches
 ```
 
+Add `flattened` to export a new USDZ first and compare its rendered animation
+against the same direct-sample reference, including reversed independent clocks:
+
+```sh
+make --eval='check-baked:; @/bin/bash scripts/check_clipped_sphere.sh target/NEW-baked-images switching_clips flattened' check-baked
+```
+
+The standalone exporter accepts an input scene and a new destination path:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example flatten_scene' ARGS='assets/switching_clips.usda target/NEW-baked.usdz'
+```
+
+It refuses an already-existing output path at its initial check. This is not
+exclusive publication against another process creating that path concurrently.
+
 The local upstream patch corrects interpolation toward a subsequent clip's
 activation value and preserves value-block boundaries. These sampled cases do
 not establish all clip schedules, asset-valued clips or timecode-value parity.

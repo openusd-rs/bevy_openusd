@@ -274,6 +274,56 @@ def Material "Mat" {
                 .unwrap(),
             before
         );
+        let next_directory = tempfile::tempdir().unwrap();
+        let next_scene = next_directory.path().join("scene.usda");
+        let next_file = next_directory.path().join("pixel.png");
+        std::fs::copy(&scene, &next_scene).unwrap();
+        std::fs::write(&next_file, png([255, 255, 0, 255])).unwrap();
+        bridge
+            .send(EditorCommand::Open(next_scene.to_string_lossy().into_owned()))
+            .unwrap();
+        tick_until(&mut app, |world| {
+            world.resource::<WatchState>().paths.contains(&next_file)
+                && pixels(world) == [255, 255, 0, 255]
+        });
+        assert_ne!(bridge.view().unwrap().document.document_id, id);
+        assert_eq!(app.world().resource::<WatchState>().paths.len(), 1);
+        assert_eq!(app.world().resource::<WatchState>().watchers.len(), 1);
+        assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 1);
+        let texture_tick = app
+            .world()
+            .get_resource_ref::<crate::asset::SnapshotTextures>()
+            .unwrap()
+            .last_changed();
+        std::fs::remove_file(&file).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while std::time::Instant::now() < deadline {
+            app.update();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            app.world()
+                .get_resource_ref::<crate::asset::SnapshotTextures>()
+                .unwrap()
+                .last_changed(),
+            texture_tick
+        );
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        let next_id = bridge.view().unwrap().document.document_id;
+        bridge
+            .send(EditorCommand::Open(
+                next_directory.path().join("missing.usda").to_string_lossy().into_owned(),
+            ))
+            .unwrap();
+        tick_until(&mut app, |_| {
+            bridge.view().unwrap().status.starts_with("Failed:")
+        });
+        assert_eq!(bridge.view().unwrap().document.document_id, next_id);
+        assert!(app.world().resource::<WatchState>().paths.contains(&next_file));
+        assert_eq!(pixels(app.world()), [255, 255, 0, 255]);
+        std::fs::write(&next_file, png([255, 0, 255, 255])).unwrap();
+        tick_until(&mut app, |world| pixels(world) == [255, 0, 255, 255]);
+        assert_eq!(bridge.view().unwrap().status, "Ready");
         app.world_mut().remove_non_send::<EditorSession>();
         app.update();
         assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 0);

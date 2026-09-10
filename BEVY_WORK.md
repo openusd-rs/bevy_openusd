@@ -25,6 +25,23 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Native texture watcher document-switch lifecycle
+
+The native editor regression now opens a second source-backed document in a
+different directory after exercising refresh failure/recovery. It verifies the
+new document ID, replacement watcher/path set and yellow decoded image. Deleting
+the previous document's texture must leave the new image resource change tick
+unchanged and the editor Ready. A subsequent failed Open preserves the second
+document and its watcher; writing magenta pixels still refreshes it to Ready.
+Removing EditorSession finally releases its watcher handles.
+
+The extended regression passes three consecutive native filesystem runs in
+`/tmp/editor-watch-switch-{2,3,4}.log`. These are actual OS file events, not
+injected events or RefreshTextures commands. This adds document-switch and
+failed-Open lifecycle evidence, not UI switching or USD layer reload support.
+All 437 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/editor-watch-switch-{tests,check,build}.log`.
+
 ### Opt-in native texture watching in the viewer
 
 The root file_watcher feature forwards the library feature. USD_WATCH_TEXTURES=1

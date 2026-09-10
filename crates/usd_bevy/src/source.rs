@@ -56,6 +56,10 @@ impl UsdSource {
     }
 
     pub(crate) fn read_asset(&self, identifier: &str) -> io::Result<Vec<u8>> {
+        if !Path::new(identifier).is_absolute() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                format!("unresolved asset identifier: {identifier}")));
+        }
         SourceResolver {
             source: self.clone(),
             fallback: DefaultResolver::new(),
@@ -359,6 +363,19 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asset_reads_reject_unresolved_working_directory_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = UsdSource::new(directory.path().join("scene.usda"), &b"root bytes"[..]).unwrap();
+        let cwd_file = std::env::current_dir().unwrap().join("Cargo.toml");
+        assert!(cwd_file.is_file());
+        let error = source.read_asset("Cargo.toml").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("unresolved asset identifier"));
+        assert_eq!(source.read_asset(cwd_file.to_str().unwrap()).unwrap(), std::fs::read(cwd_file).unwrap());
+        assert_eq!(source.read_asset(source.identifier()).unwrap(), b"root bytes");
+    }
 
     #[test]
     fn captured_asset_handles_share_bytes_with_independent_cursors() {

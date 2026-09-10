@@ -25,6 +25,25 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Reject unresolved asset byte reads
+
+A regression reproduced the source byte reader opening the process working
+directory's Cargo.toml when passed that relative identifier, despite the source
+being anchored in a different temporary directory. The private read_asset
+boundary now requires an absolute resolved identifier before accessing snapshot,
+package or filesystem bytes. Unresolved texture paths fail explicitly rather
+than potentially reading a same-named unrelated file. Fully qualified reads
+and the source's in-memory root bytes remain supported.
+
+The regression checks rejection despite a real working-directory file existing,
+explicit absolute-file access and root snapshot access. Existing editor missing
+texture recovery checks exercise the new error through RefreshTextures. This
+does not restrict absolute filesystem access or replace resolver policy; it is
+not a filesystem sandbox. Reproduction log: `/tmp/unresolved-asset-before.log`.
+
+Validation: 436 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/unresolved-asset-{tests,check,build}.log`.
+
 ### Actionable editor texture errors
 
 Image preparation now identifies the requested texture path and whether reading

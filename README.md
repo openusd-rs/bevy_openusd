@@ -215,6 +215,8 @@ it as the image-icon **Refresh textures** action in the left ribbon. Errors
 appear in the outliner's Status section while the last good textures remain.
 Read and decode failures identify the texture path (resolved when available),
 including the package entry when applicable.
+Unresolved relative texture identifiers are rejected at the byte-reading
+boundary instead of being opened relative to the process working directory.
 
 Undoable authoring uses `editor::EditorSession` and `editor::EditorEdit`:
 

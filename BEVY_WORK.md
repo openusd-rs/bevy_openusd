@@ -25,6 +25,34 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Black-window capture rejection
+
+Added a low-level capture_inspect example that decodes a bounded static PNG,
+checks a caller-specified rectangular region and reports near-black versus
+nonblack pixel counts. Default threshold is RGB >8 in at least one percent of
+region pixels, ignoring alpha. Decoder and output allocations are individually
+capped at 64 MiB; encoded input at 32 MiB. Animated PNG, malformed input, invalid
+regions and nonfinite percentages are rejected. Tests cover wallpaper exclusion,
+opaque black, grayscale/alpha/RGB/16-bit decoding and threshold boundaries.
+
+The full-UI capture script now checks its fixed viewer-interior region before
+printing UI_CAPTURE_OK. Failures retain the PNG, compositor/viewer logs and
+inspect report without retrying. The region excludes wallpaper from the observed
+1600x1000 black-window screenshots. This is a known-failure guard, not proof of
+correct UI layout, GPU pipeline readiness or rendering fidelity.
+
+Live artifact checks reject all three retained black captures (50/1120000
+nonblack pixels, about 0.0045 percent) and accept three previously inspected good
+captures (about 99.9994 percent). The rejected images still contain cursor pixels;
+testing for exactly zero would have missed them. Reports: `/tmp/inspect-*.log`
+for curve-quality-64, curve-quality-64-recheck, curve-controls-default and their
+verified controls. A fresh full-script run passes and its complete viewer image
+was inspected: `target/viewer-ui-captures/inspected-curve-ui.png`, with the
+companion inspect log. Script evidence: `/tmp/capture-inspect-ui.log`.
+
+All 461 ordinary workspace tests pass (eight ignored), plus check-all, build and
+whitespace checks; `/tmp/capture-inspect-final-{tests,check,build}.log`.
+
 ### Rendering-pane curve controls
 
 The Rendering pane now exposes 1/8/32/64 sample presets and the current effective

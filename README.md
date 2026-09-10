@@ -736,7 +736,25 @@ viewer's first completed UI update, then `USD_UI_CAPTURE_WAIT` sets a 1–300 se
 delay (default 20). Build-lock waits and synchronous first-update projection do
 not consume that delay. `USD_VIEWER_STARTED` marks viewport construction;
 `USD_VIEWER_UI_UPDATED` starts the delay. Neither proves GPU pipeline readiness
-or final texture upload completion; inspect the screenshot.
+or final texture upload completion; inspect the screenshot. Before reporting
+success, the script runs `capture_inspect` on a fixed interior viewer region of
+its 1600×1000 output, excluding desktop wallpaper. Predominantly near-black
+regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
+the failure. This catches the observed black-window case, not arbitrary incorrect
+rendering or incomplete uploads.
+
+The low-level inspector also accepts explicit PNG regions:
+
+```sh
+make run RUN_WITH= APP_TARGET='--example capture_inspect' \
+  ARGS='target/viewer-ui.png 110 110 1400 800'
+```
+
+Optional final arguments set the black-channel threshold (default 8) and minimum
+nonblack percentage (default 1). The executable exits 0 for a passing region,
+1 for predominantly near-black, and 2 for invalid input; make wraps nonzero exits.
+Input is limited to 32 MiB and decoded output/decoder allocations to 64 MiB each.
+Animated PNGs are rejected. Alpha is ignored; passing is not visual acceptance.
 At render startup the viewer caps mesh allocator slabs at half the shared device's
 maximum buffer size, retaining smaller configured limits. This leaves allocation
 rounding headroom and avoids growing pooled buffers beyond the host's limit.

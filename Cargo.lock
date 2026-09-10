@@ -5924,6 +5924,7 @@ dependencies = [
  "mara",
  "openusd",
  "openusd-schemas",
+ "png 0.18.1",
  "rfd",
  "tempfile",
  "tracing",

@@ -71,4 +71,9 @@ shopt -s nullglob
 captures=(wayland-screenshot-*.png)
 [[ ${#captures[@]} == 1 ]] || { echo "expected one captured output" >&2; exit 1; }
 cp -- "${captures[0]}" "$output"
+cd "$root"
+make run RUN_WITH= CARGO="${CARGO:-cargo --offline}" APP_TARGET='--example capture_inspect' \
+    ARGS="$(printf '%q' "$output") 110 110 1400 800" > "${output%.png}.inspect.log" 2>&1 || {
+    echo "viewer capture failed region inspection; image and logs retained: $output" >&2; exit 1;
+}
 echo "UI_CAPTURE_OK $output (inspect image; fixed wait is not render readiness)"

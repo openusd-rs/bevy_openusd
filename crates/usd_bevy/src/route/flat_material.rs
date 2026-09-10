@@ -44,7 +44,8 @@ pub(crate) fn attach(world: &mut World, entity: Entity) {
     let Some(material) = world.get_resource::<Assets<StandardMaterial>>().and_then(|assets| assets.get(&base)).cloned() else { return };
     let existing = world.get::<OwnedFlatMaterial>(entity).and_then(|owned| {
         world.resource::<Assets<FlatMaterial>>().get(&owned.material)
-            .filter(|existing| existing.base.reflect_partial_eq(&material) == Some(true))
+            .filter(|existing| existing.base.cull_mode == material.cull_mode
+                && existing.base.reflect_partial_eq(&material) == Some(true))
             .map(|_| owned.material.clone())
     });
     let handle = existing.unwrap_or_else(|| world.resource_mut::<Assets<FlatMaterial>>()
@@ -88,6 +89,18 @@ mod tests {
         assert!(world.get::<MeshMaterial3d<FlatMaterial>>(entity).is_none());
         assert_eq!(world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0, base);
         clear(&mut world, entity);
+    }
+
+    #[test]
+    fn conversion_updates_culling_when_reflected_fields_are_unchanged() {
+        use bevy::render::render_resource::Face;
+        let (mut world, entity, base) = setup();
+        for cull_mode in [Some(Face::Back), None, Some(Face::Front)] {
+            world.resource_mut::<Assets<StandardMaterial>>().get_mut(&base).unwrap().cull_mode = cull_mode;
+            attach(&mut world, entity);
+            let handle = &world.get::<MeshMaterial3d<FlatMaterial>>(entity).unwrap().0;
+            assert_eq!(world.resource::<Assets<FlatMaterial>>().get(handle).unwrap().base.cull_mode, cull_mode);
+        }
     }
 
     #[test]

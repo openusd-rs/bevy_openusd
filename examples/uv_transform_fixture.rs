@@ -88,6 +88,20 @@ def Material "Material" {{
         .replace("float2 inputs:st.connect = </Material/Transform.outputs:result>",
             "float2 inputs:st.connect = </Material/Reader.outputs:result>");
     std::fs::write(directory.join("shear_lossy.usda"), text)?;
+    for (name, pixel) in [("red.png", [255,0,0,255]), ("blue.png", [0,0,255,255])] {
+        let mut image = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
+        image.data = Some(pixel.to_vec());
+        image.try_into_dynamic()?.save(directory.join(name))?;
+    }
+    let sampled = std::fs::read_to_string(directory.join("mapped.usda"))?
+        .replace("asset inputs:file = @quadrants.png@",
+            "asset inputs:file.timeSamples = {0: @red.png@, 10: @blue.png@}")
+        .replace("float2 inputs:st.connect = </Material/Transform.outputs:result>",
+            "float2 inputs:st.connect = </Material/Reader.outputs:result>");
+    std::fs::write(directory.join("file_samples.usda"), sampled)?;
+    let reference = std::fs::read_to_string(directory.join("reference.usda"))?
+        .replace("10: [(0.375,0.375)]", "10: [(0.25,0.25)]");
+    std::fs::write(directory.join("file_reference.usda"), reference)?;
     Ok(())
 }
 
@@ -109,6 +123,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() != 1 { return Err("usage: uv_transform_fixture NEW_DIRECTORY".into()); }
     write_fixture(Path::new(&args[0]))
+}
+
+#[test]
+fn sample_only_texture_fixture_selects_explicit_images() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("fixture");
+    write_fixture(&directory).unwrap();
+    let path = directory.join("file_samples.usda");
+    let stage = usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap();
+    let material = openusd::sdf::path("/Material").unwrap();
+    assert!(usd_bevy::read::shade::read_preview_material_at(&stage, &material, None).unwrap().unwrap().diffuse_texture.is_none());
+    for (time, name) in [(0.0, "red.png"), (10.0, "blue.png")] {
+        let preview = usd_bevy::read::shade::read_preview_material_at(&stage, &material, Some(time)).unwrap().unwrap();
+        assert!(Path::new(preview.diffuse_texture.as_ref().unwrap()).ends_with(name));
+        assert!(preview.uv_transform.is_none());
+    }
 }
 
 #[test]

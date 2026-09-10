@@ -25,6 +25,219 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Preserve culling changes in flat-normal material conversion
+
+A new regression reproduced a base material changing from back-face culling to
+no culling while the converted FlatMaterial incorrectly retained Some(Back).
+Bevy 0.19's StandardMaterial.cull_mode is excluded from reflection; reflected
+equality alone therefore accepted the stale converted asset. The reuse check now
+compares cull_mode explicitly as the standard-material cache already does.
+
+The regression exercises Back, None and Front while all reflected fields remain
+unchanged. Existing conversion reuse/update and external-replacement cleanup
+tests also pass. Failure evidence: `/tmp/flat-culling-before.log`; focused passing
+suite: `/tmp/flat-culling-after.log`. This verifies material asset state, not a
+new GPU screenshot. USD doubleSided edits also change a reflected field, so this
+does not claim a reproduced doubleSided-authoring failure.
+All 439 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/flat-culling-{tests,check,build}.log`.
+
+### Headless GPU-prepared deformation payload measurement
+
+The editor benchmark now accepts a third cpu|gpu-prepared argument. CPU remains
+the default. GPU-prepared installs the same UsdGpuSkinningPlugin used by the
+viewer, but retains the headless benchmark: it measures CPU-side preparation
+and retained payloads, not GPU execution, allocator overhead, RSS or VRAM.
+Unsupported cases can still select the route's CPU fallback.
+
+Bevy 0.19 stores morph targets as inline MorphAttributes slices. Inspection and
+a regression confirm the existing size_of_val calculation counts payload bytes
+correctly; the initial suspicion that it counted image handles was wrong. No
+image-handle accounting replacement was retained. The new test also opens the
+real morph_animation fixture in both modes and checks nonzero morph data only
+in GPU-prepared mode, equal mesh entity counts and no morph image allocation.
+
+Three debug/headless samples per mode retained 384 vertex bytes, 48 index bytes,
+two mesh assets and one mesh entity. CPU mode retained zero morph bytes;
+GPU-prepared retained 288 morph bytes, with zero image bytes in both modes.
+Logs: `/tmp/morph-payload-{cpu,gpu-prepared}.log`. Timings include warmup effects
+and are not a GPU speedup claim. The benchmark prints its measurement exclusions.
+All 438 ordinary workspace tests pass (seven ignored), plus check-all and build:
+`/tmp/morph-payload-{tests,check,build}.log`.
+
+### Native texture watcher document-switch lifecycle
+
+The native editor regression now opens a second source-backed document in a
+different directory after exercising refresh failure/recovery. It verifies the
+new document ID, replacement watcher/path set and yellow decoded image. Deleting
+the previous document's texture must leave the new image resource change tick
+unchanged and the editor Ready. A subsequent failed Open preserves the second
+document and its watcher; writing magenta pixels still refreshes it to Ready.
+Removing EditorSession finally releases its watcher handles.
+
+The extended regression passes three consecutive native filesystem runs in
+`/tmp/editor-watch-switch-{2,3,4}.log`. These are actual OS file events, not
+injected events or RefreshTextures commands. This adds document-switch and
+failed-Open lifecycle evidence, not UI switching or USD layer reload support.
+All 437 ordinary workspace tests pass (seven ignored), plus check-all, build and
+whitespace checks; `/tmp/editor-watch-switch-{tests,check,build}.log`.
+
+### Opt-in native texture watching in the viewer
+
+The root file_watcher feature forwards the library feature. USD_WATCH_TEXTURES=1
+installs EditorTextureWatchPlugin in the embedded editor; absent/0 stays off.
+Invalid values and feature-disabled requests fail before window startup.
+The viewer logs active file counts and setup failures. Configuration tests cover
+supported/unsupported builds and invalid values.
+
+An isolated native viewer opened a generated red-texture document, reported two
+watched files, then received an atomic red.png replacement containing blue pixels.
+No UI replay or refresh click was used. The inspected capture
+`target/viewer-ui-captures/native-texture-watch.png` shows the blue quad, Ready
+status and preserved /Quad selection. Logs: `/tmp/viewer-watch-ui.log` and the
+adjacent capture viewer log. This proves automatic external-image refresh in the
+viewer, not layer reload, package replacement or broader rendering fidelity.
+Existing clipboard/Vulkan/SSAO environment warnings remain.
+
+Validation: all 437 ordinary workspace tests pass with default features (seven
+ignored) and with file_watcher (ten ignored). Default check-all/build pass. A
+default-feature make run with USD_WATCH_TEXTURES=1 exits before UI startup with
+the expected feature-required error. Logs: `/tmp/viewer-watch-tests.log`,
+`/tmp/viewer-watch-check.log`, `/tmp/viewer-watch-default-build.log`,
+`/tmp/viewer-watch-feature-tests-recheck.log` and
+`/tmp/viewer-watch-disabled-guard.log`.
+
+### Native editor texture watcher plugin
+
+Added opt-in `editor::texture_watch::EditorTextureWatchPlugin` under the existing
+file_watcher feature. It groups installed external texture paths by parent
+directory, owns Bevy FileWatchers and queues one RefreshTextures command per
+frame with matching file events. Paths are rebuilt only when the document or
+installed image resource changes; unchanged sets retain their watchers. Events
+for unrelated files are ignored. Removing the editor document drops watchers.
+`EditorTextureWatchStatus` exposes active file count and setup errors; failed
+setup retries when the document or path set changes.
+
+The native regression uses actual atomic replacement, deletion and recreation,
+without simulated events or manual refresh. It checks decoded red/blue/green
+pixels, failed-load retention, unchanged authored USD text/document ID/selection
+and available undo history. An unrelated file write must not modify the image
+snapshot resource's change tick. Removing EditorSession clears all watcher
+handles and the active file count. This tests installed external images in a
+source-backed editor, not USD layers, package-root replacement, folder changes,
+watching missing images from a failed initial Open, or native GPU/UI acceptance.
+Viewer integration and its separate GPU/UI acceptance are recorded above.
+
+Validation: the native editor-watch test passes three consecutive Linux runs,
+`/tmp/editor-watch-repeat-{1,2,3}.log`. All 436 ordinary workspace tests pass
+(seven native export tests ignored), plus check-all, build and whitespace checks.
+The watcher-enabled library suite passes 378 tests (ten native tests ignored).
+Logs: `/tmp/editor-watch-{tests,default-check,build,feature}.log`.
+
+### Reject unresolved asset byte reads
+
+A regression reproduced the source byte reader opening the process working
+directory's Cargo.toml when passed that relative identifier, despite the source
+being anchored in a different temporary directory. The private read_asset
+boundary now requires an absolute resolved identifier before accessing snapshot,
+package or filesystem bytes. Unresolved texture paths fail explicitly rather
+than potentially reading a same-named unrelated file. Fully qualified reads
+and the source's in-memory root bytes remain supported.
+
+The regression checks rejection despite a real working-directory file existing,
+explicit absolute-file access and root snapshot access. Existing editor missing
+texture recovery checks exercise the new error through RefreshTextures. This
+does not restrict absolute filesystem access or replace resolver policy; it is
+not a filesystem sandbox. Reproduction log: `/tmp/unresolved-asset-before.log`.
+
+Validation: 436 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/unresolved-asset-{tests,check,build}.log`.
+
+### Actionable editor texture errors
+
+Image preparation now identifies the requested texture path and whether reading
+or decoding failed. Existing resolved paths include their full filename/package
+entry; an unresolved missing file can retain its authored relative path. Errors
+are formatted once at this boundary rather than repeating nested decode causes.
+The refresh regression now deletes the image before the corrupt-image case,
+checks operation-specific path diagnostics, and confirms both failures retain
+the installed texture before the existing repair/undo/redo checks.
+
+Inspected `target/viewer-ui-captures/texture-error-path.png`: after replacing a
+generated PNG with invalid bytes and replaying the ribbon click, Status visibly
+shows the full texture filename and decode error while retaining the red quad
+and /Quad selection. Run log: `/tmp/texture-error-ui.log` with adjacent viewer
+and compositor logs. The established isolated-UI environment warnings remain;
+this capture does not claim a warning-free renderer.
+
+Validation: 435 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/texture-error-{tests,check,build}.log`.
+
+### Viewer texture-refresh ribbon action
+
+The left ribbon now exposes Refresh textures with an image icon and dispatches
+the existing EditorCommand. Added a checked-in, parser-tested input replay for
+the 1600x1000 isolated viewer layout. The action is appended after the existing
+declarations; other action handlers remain unchanged.
+
+Inspected three full-window Weston captures: initial red texture, a successful
+refresh to blue, and a corrupt-image failure retaining red. In the success and
+failure runs, only a generated fixture's red.png was replaced after the viewer
+startup handshake, before the replay clicked the ribbon action. Selection stays
+on /Quad. The failure Status section visibly wraps the PNG error while the last
+good quad remains rendered. Captures:
+`target/viewer-ui-captures/refresh-{button,click,failure}.png`; replay:
+`scripts/replays/refresh_textures.replay`; run logs:
+`/tmp/refresh-ui-{capture,click,failure}.log` plus adjacent viewer/compositor logs.
+The replay feeds egui input, not native OS mouse events. Existing isolated-UI
+clipboard/Vulkan-loader diagnostics and the shared-device SSAO limit warning
+remain present; this is not a clean GPU-environment claim or automatic watching.
+
+Validation: 435 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/refresh-ui-{tests,check,build}.log`.
+
+### Explicit editor texture refresh
+
+Added `EditorCommand::RefreshTextures` for source-backed editor documents. It
+prepares all current material/dome images before publishing any replacements,
+then queues a live resync. It does not reopen layers or modify the document,
+selection, playback, or undo/redo history. Unchanged images reuse their handles;
+decode failures retain the previously installed image set and report Failed.
+No open document or a session without a source snapshot produces an error.
+
+Extended the filesystem/packaged-image editor regression with an unsaved IOR
+edit, selected prim and runtime name/child. A corrupt PNG fails without replacing
+the material texture; repairing it updates diffuse and packed metallic/roughness
+bytes while retaining the edit, document ID, entity IDs and runtime parenting.
+Undo still removes the IOR opinion, and refresh between Undo and Redo preserves
+the redo operation. This is an EditorBridge API command, not yet a viewer ribbon
+action or automatic file watcher. Package-root bytes remain the opened snapshot;
+this command does not reopen a changed USDZ archive.
+
+Validation: 434 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/editor-refresh-{tests,check,build}.log`.
+
+### Time-sampled texture GPU acceptance
+
+Extended the reproducible UV fixture with red/blue one-pixel images and a
+sample-only inputs:file scene. A separate fixed quadrant texture uses explicit
+UV samples to select the same colors. The fixture test verifies no default
+texture, correct resolved files at times 0/10 and no connected UV transform.
+All previous fixture outputs and overwrite protection remain in place.
+
+Captured two independently timed roots together for both scenes on NVIDIA/Vulkan,
+using clocks 0/10, eye (0,1,8), focus (0,1,0), shadows off. Inspected both red/blue
+panel renders; mapped versus fixed-texture reference matches all 921,600 pixels
+at strict zero RGB tolerance. Both captures report CAPTURE_OK without WARN/ERROR.
+Images: `target/texture_file_{samples,reference}.png`; fixture:
+`target/texture_file_fixture`; logs:
+`/tmp/texture-file-{fixture,focused,samples,reference,compare}.log`.
+This proves GPU endpoint texture selection in simultaneous roots, not live
+texture swapping/reload within one run, normal maps or every image format.
+
+Validation: 434 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/texture-file-{tests,check,build}.log`.
+
 ### Material-local texture sample discovery
 
 Texture discovery now collects sample times per material graph instead of using

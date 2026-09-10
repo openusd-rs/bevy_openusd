@@ -146,13 +146,21 @@ The subsequent [reload comparison](benchmarks/reload-animation.md) measures redu
 CPU reload cost from skipping an unused animation-index scan, with clock-isolation
 regressions. It does not establish GPU or frame-rate improvements.
 
-`editor_benchmark ASSET [SAMPLES]` measures the actual editor Open path and retained
+`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared]` measures the actual editor Open path and retained
 mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
 includes file reading and texture decoding, but excludes GPU work and the UI:
 
 ```sh
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/material_subsets.usda'
+make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/morph_animation.usda 3 gpu-prepared'
 ```
+
+The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
+GPU deformation routing and measures its retained CPU-side mesh/morph payloads;
+it does not create a renderer or measure GPU execution. Unsupported deformation
+can still use the route's CPU fallback. Morph bytes count inline Bevy 0.19
+attributes, separately from image bytes; asset handles and allocator overhead
+are excluded.
 
 The [real-asset baseline](benchmarks/editor-assets.md) records ANYmal and Spot
 measurements. Payload bytes are not resident-memory or VRAM measurements.
@@ -205,7 +213,39 @@ visual acceptance limits.
 
 The editor loads PNG/JPEG material images from filesystem and USDZ documents,
 refreshes them after edits, and preserves the previous document if opening fails.
-This direct editor path does not yet automatically watch filesystem image changes.
+The viewer can automatically watch installed external textures on native builds:
+
+```sh
+USD_WATCH_TEXTURES=1 make run APP_TARGET='--bin usdview --features file_watcher' ARGS='path/to/scene.usda'
+```
+
+Watching is off by default (`USD_WATCH_TEXTURES=0` also disables it). Requesting
+it without the build feature, or providing a value other than 0/1, fails before
+opening the viewer. The viewer logs active file counts and watcher setup errors.
+Library applications can opt in by enabling `usd_bevy/file_watcher` and adding
+`usd_bevy::editor::texture_watch::EditorTextureWatchPlugin` alongside
+`EditorPlugin`. It watches installed external images and sends RefreshTextures
+on native file events. `EditorTextureWatchStatus` reports active file count and
+setup errors. Watched paths update with the document/image set; idle frames do
+not reread images or rescan USD materials. Package entries, USD layers and folder
+replacement are not watched. Setup failures retry when the document or watched
+file set changes. Images missing during a failed initial Open are not watched.
+
+```sh
+make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch
+```
+
+Applications can send `EditorCommand::RefreshTextures` through `EditorBridge`
+to reread source-backed images without reopening the USD document. Successful
+refreshes preserve selection, unsaved edits, runtime entities and undo/redo;
+decode failures retain the previous image set and report an error. This command
+does not reload USD layers or changed package-root bytes. The viewer exposes
+it as the image-icon **Refresh textures** action in the left ribbon. Errors
+appear in the outliner's Status section while the last good textures remain.
+Read and decode failures identify the texture path (resolved when available),
+including the package entry when applicable.
+Unresolved relative texture identifiers are rejected at the byte-reading
+boundary instead of being opened relative to the process working directory.
 
 Undoable authoring uses `editor::EditorSession` and `editor::EditorEdit`:
 
@@ -984,6 +1024,11 @@ eye `(0,1,5)`, focus `(0,1,0)` and `USD_CAPTURE_SHADOWS=off`. On the tested Vulk
 renderer, mapped versus baked differs in 7 of 921,600 pixels (maximum RGB error
 2); the lossy control differs in 120,136 pixels (maximum error 91). These are
 recorded strict-zero comparison results, not a claim of bit-identical rendering.
+The generator also writes `file_samples.usda` (sample-only red/blue texture
+files) and `file_reference.usda` (fixed quadrant texture with explicit UV samples).
+Capture both with `USD_CAPTURE_INSTANCE_TIMES=0,10`, shadows off, eye `(0,1,8)`
+and focus `(0,1,0)`. The tested Vulkan captures match all 921,600 pixels at strict
+zero RGB tolerance. This checks simultaneous texture selection, not a live reload.
 UV transforms are read from connected texture-coordinate paths, including nodes
 outside the material's immediate children; disconnected nodes have no effect.
 Different transforms across a material's texture channels, non-finite transforms

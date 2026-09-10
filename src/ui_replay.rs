@@ -73,6 +73,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checked_in_texture_refresh_replay_is_valid() {
+        let events = parse(include_str!("../scripts/replays/refresh_textures.replay")).unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events.back().unwrap().0, Duration::from_millis(12000));
+    }
+
+    #[test]
     fn checked_in_sample_history_replay_is_valid() {
         let events = parse(include_str!("../scripts/replays/sample_history.replay")).unwrap();
         assert_eq!(events.len(), 24);

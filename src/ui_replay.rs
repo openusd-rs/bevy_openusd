@@ -80,6 +80,20 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_matrix_replays_are_valid() {
+        let load = parse(include_str!("../scripts/replays/matrix_sample_load.replay")).unwrap();
+        assert_eq!(load.len(), 3);
+        assert_eq!(load.back().unwrap().0, Duration::from_millis(5200));
+        let edit = parse(include_str!("../scripts/replays/matrix_sample_edit.replay")).unwrap();
+        assert_eq!(edit.len(), 20);
+        assert_eq!(edit.back().unwrap().0, Duration::from_millis(16200));
+        assert!(edit.iter().any(|(_, event)| matches!(event, Event::Text(text) if text == "2 0 0 1")));
+        let undo = parse(include_str!("../scripts/replays/matrix_sample_undo.replay")).unwrap();
+        assert_eq!(undo.len(), 26);
+        assert_eq!(undo.back().unwrap().0, Duration::from_millis(20200));
+    }
+
+    #[test]
     fn replay_dispatches_due_events_once_without_replacing_host_input() {
         use egui::Plugin;
         let mut replay = Replay { started: Instant::now(), events: parse("0 text   hello  \n60000 move 1 2").unwrap() };

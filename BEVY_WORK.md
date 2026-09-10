@@ -25,6 +25,35 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Matrix widget input replay
+
+The existing `USD_UI_REPLAY` hook now has checked-in matrix load/edit/undo
+sequences, plus parser regression coverage. Events enter the real egui widget
+input stream in the native viewer; these are not direct editor-command calls,
+but they do bypass physical keyboard/mouse and compositor input delivery.
+
+Using `/Affine` in `assets/xform_animation.usda` at time 5:
+
+- `matrix_sample_load.replay` clicks Load sampled matrix; the draft displays
+  the authored shear (0.5 and 0.75) instead of identity.
+- `matrix_sample_edit.replay` clears/types row 4, scrolls, clicks Apply sample,
+  then scrolls back and reloads the sampled matrix. Row 4 remains `2 0 0 1`,
+  demonstrating that the value reached the authored sample, not just the draft.
+- `matrix_sample_undo.replay` additionally clicks the Undo toolbar control and
+  reloads the sample. Row 4 returns to `0 0 0 1`, retaining the shear rows.
+
+All three end states were captured and inspected:
+`target/viewer-ui-captures/matrix-widget-load.png`,
+`matrix-widget-edit-reload.png` and `matrix-widget-undo-reload.png` in the same
+directory. Replay events are recorded in the adjacent viewer logs. The scripts
+use fixed coordinates for the 1600x1000 private capture layout, inspector open,
+selected `/Affine`, `USD_CAPTURE_TIME=5` with `USD_SCREENSHOT` enabled; edit/undo
+captures used `USD_UI_CAPTURE_WAIT=25`. Logs:
+`/tmp/matrix-widget-{load,edit-reload,undo-reload}.log`.
+Native OS input, redo-button and file-picker acceptance remain separate.
+All 408 ordinary tests pass, with seven native export tests ignored; check-all,
+build and whitespace checks pass. Logs: `/tmp/matrix-widget-{tests,check,build}.log`.
+
 ### Sampled matrix inspection and draft loading
 
 `EditorSession::snapshot_at` optionally resolves scalar `matrix4d` attributes at
@@ -37,8 +66,8 @@ Drafts are not automatically replaced during playback.
 
 Tests cover internal-reference time offset/scale mapping, interpolation, absent
 defaults, invalid inspection times, unchanged authored source/history and bridge
-publication after Seek. Native clicking of the draft-load action remains open;
-the snapshot and existing parse/authoring tests do not certify native input.
+publication after Seek. The widget replay above subsequently exercised loading,
+editing, applying and undo; the snapshot tests alone do not certify input.
 The time-5 inspector state was captured and inspected at
 `target/viewer-ui-captures/matrix-sample-load5.png`: the load action displays
 time 5, while the untouched identity draft remains separate. The capture-time

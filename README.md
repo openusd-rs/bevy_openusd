@@ -896,6 +896,12 @@ copies the matrix at the labelled scene time into the draft and sets the sample
 time field; loading alone does not author USD. Use the separate
 `TransformMatrix` API only when replacing the complete stack is intended.
 
+`scripts/replays/matrix_sample_{load,edit,undo}.replay` exercise the actual
+matrix widgets through `USD_UI_REPLAY` in the fixed 1600x1000 private capture
+layout. The edit/undo sequences reload the time sample after applying or undoing
+it, checking the authored result rather than only the text draft. See
+`BEVY_WORK.md` for capture settings and inspected evidence.
+
 `assets/point_hierarchy.usda` instances a two-mesh assembly. Its cyan child moves
 between times 0 and 10 while the red child stays fixed. Mesh/material/subset
 handles are shared across copies. Nested transforms remain on generated entities

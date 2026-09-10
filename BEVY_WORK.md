@@ -25,6 +25,35 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Atomic saves and deleted dependency recovery
+
+Extended native event acceptance to replace both a sublayer and a PNG via
+temporary-file rename, verifying changed geometry/pixels and stable runtime
+identity in two mounts. Stock Bevy 0.19.1 passes these atomic-save cases.
+Deleting a loaded sublayer exposed a separate failure: its AssetServer handles
+RemovedAsset by refreshing folders only, leaving loader dependents marked Ready.
+The failing native test is recorded in `/tmp/native-watcher-removal.log`.
+
+Added opt-in `watcher::file_source`, a read-only AssetSourceBuilder retaining
+Bevy's native reader and debounced FileWatcher. Its owned event worker forwards
+file removal as ModifiedAsset plus the original event, so AssetServer reloads
+the dependency owners, reports Failed and retains their last good projections.
+Recreating the layer restores Ready without manual reload. The worker closes
+its input and joins on source drop; setup errors are logged. Applications must
+register this source before AssetPlugin; no default sources are replaced
+implicitly. This adapter is for unprocessed native file sources, not folder
+deletion, processed pipelines or the direct editor Open path.
+
+Separate native tests preserve stock watcher coverage and exercise the adapter's
+deletion/recreation behavior. Both passed three consecutive runs on Linux:
+`/tmp/native-watcher-lifecycle-{1,2,3}.log`. These are filesystem and projected
+asset checks, not GPU screenshot acceptance during reload.
+
+Validation: 428 ordinary workspace tests pass (seven native export tests ignored),
+plus check-all, build and whitespace checks. The watcher-enabled library suite
+passes 374 tests (nine explicit native tests ignored). Logs:
+`/tmp/watcher-removal-{tests,check,build,feature}.log`.
+
 ### Native filesystem watching
 
 Added opt-in `usd_bevy/file_watcher` support, forwarding Bevy's native watcher

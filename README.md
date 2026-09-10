@@ -60,6 +60,24 @@ path. Run the explicit OS-event regression with:
 make --eval='test-file-watcher:; @$(CARGO) test -p usd_bevy --features file_watcher native_file_watcher -- --ignored --nocapture' test-file-watcher
 ```
 
+Bevy 0.19.1's default source reloads modified/replaced dependencies but does not
+invalidate them when a file is deleted. To report missing dependencies as Failed
+and recover when they reappear, register the read-only removal-aware source
+**before** adding `AssetPlugin` (or `DefaultPlugins`):
+
+```rust,ignore
+app.register_asset_source(
+    bevy::asset::io::AssetSourceId::Default,
+    usd_bevy::watcher::file_source("assets"),
+);
+```
+
+The adapter retains Bevy's file reader and debounced watcher, forwarding removal
+events as dependency invalidations as well. It supports unprocessed native file
+sources; folder removal and processed assets remain unsupported. Registration
+does not override the AssetPlugin runtime watch setting. Its event worker is
+closed and joined when the source is dropped.
+
 Before publishing a source or override revision, Bevy traverses the active
 composition, reads default attribute values and asset time samples, and checks
 reported composition errors. Failure retains any previous projection and reports

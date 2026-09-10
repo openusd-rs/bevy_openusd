@@ -5892,6 +5892,7 @@ name = "usd_bevy"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-channel",
  "bevy",
  "glam 0.30.10",
  "log",

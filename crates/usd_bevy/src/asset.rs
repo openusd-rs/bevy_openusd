@@ -732,6 +732,18 @@ def Xform "Model" (
     #[test]
     #[ignore = "requires native filesystem events"]
     fn native_file_watcher_reloads_layers_textures_and_recovers() {
+        exercise_native_file_watcher(false);
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_invalidates_removed_dependencies() {
+        exercise_native_file_watcher(true);
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    fn exercise_native_file_watcher(removal_adapter: bool) {
         let directory = tempfile::tempdir().unwrap();
         let layer = directory.path().join("models/textured.usda");
         let texture = directory.path().join("textures/pixel.png");
@@ -742,6 +754,10 @@ def Xform "Model" (
         std::fs::write(&layer, TEXTURED).unwrap();
         std::fs::write(&texture, pixel_png([255, 0, 0, 255])).unwrap();
         let mut app = App::new();
+        if removal_adapter {
+            app.register_asset_source(bevy::asset::io::AssetSourceId::Default,
+                crate::watcher::file_source(directory.path()));
+        }
         app.add_plugins((MinimalPlugins, AssetPlugin {
             file_path: directory.path().to_string_lossy().into_owned(),
             watch_for_changes_override: Some(true),
@@ -801,6 +817,31 @@ def Xform "Model" (
         std::fs::write(&layer, &edited).unwrap();
         tick_until(&mut app, |world| roots.iter().all(|root|
             world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let replacement = layer.with_extension("usda.tmp");
+        std::fs::write(&replacement, TEXTURED.replace("(1, 0, 0)", "(3, 0, 0)")).unwrap();
+        std::fs::rename(&replacement, &layer).unwrap();
+        tick_until(&mut app, |world| mesh_handles(world).iter().all(|handle| {
+            let mesh = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return false; };
+            positions.iter().any(|position| position[0] == 3.0)
+        }));
+        let replacement = texture.with_extension("png.tmp");
+        std::fs::write(&replacement, pixel_png([0, 255, 0, 255])).unwrap();
+        std::fs::rename(&replacement, &texture).unwrap();
+        tick_until(&mut app, |world| image_handles(world).iter().all(|handle|
+            world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                == Some(&[0, 255, 0, 255])));
+        if removal_adapter {
+            let retained_meshes = mesh_handles(app.world());
+            std::fs::remove_file(&layer).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            assert_eq!(mesh_handles(app.world()), retained_meshes);
+            std::fs::write(&layer, TEXTURED.replace("(1, 0, 0)", "(3, 0, 0)")).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        }
         for ((root, entity), child) in roots.into_iter().zip(entities).zip(children) {
             assert_eq!(app.world().non_send::<UsdInstances>().entity(root, "/Mesh"), Some(entity));
             assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
@@ -808,7 +849,9 @@ def Xform "Model" (
         }
         assert!(image_handles(app.world()).iter().all(|handle|
             app.world().resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
-                == Some(&[0, 0, 255, 255])));
+                == Some(&[0, 255, 0, 255])));
+        assert_eq!(mesh_handles(app.world())[0], mesh_handles(app.world())[1]);
+        assert_eq!(image_handles(app.world()), updated_images);
     }
 
     fn pixel_png(rgba: [u8; 4]) -> Vec<u8> {

@@ -770,6 +770,18 @@ USD_CAPTURE_CAMERA=/Scene/Camera make run APP_TARGET='--example viewer_capture' 
 ```
 
 Set `USD_CPU_SKINNING=1` to compare the ordinary CPU skin path.
+Set `USD_CAPTURE_INSTANCE_TIMES=0,10` to mount the same asset at independent
+time codes in one capture. One to sixteen finite values are accepted; roots are
+centered along X with 2.5-unit spacing. Use the fixed camera arguments to frame
+the group; authored-camera selection is rejected for multiple roots. The default
+remains one root at the positional TIME argument. Instance times and spacing
+are written to capture metadata, and capture waits for every root to be Ready.
+For the generated UV-transform fixture, use eye `(0,1,8)` and focus `(0,1,0)`:
+
+```bash
+USD_CAPTURE_INSTANCE_TIMES=0,10 USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='target/uv_transform_probe/mapped.usda target/two-clocks.png 0 0 1 8 0 1 0'
+```
+
 Set `USD_CAPTURE_SHADOWS=off` to disable directional, point and spot shadow maps
 for an isolated rendering comparison. The default `scene` preserves each light's
 shadow setting. This diagnostic is recorded in metadata and does not edit USD.

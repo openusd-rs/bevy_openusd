@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Simultaneous multi-instance GPU capture
+
+The low-level capture tool accepts `USD_CAPTURE_INSTANCE_TIMES`, a bounded list
+of one to sixteen finite clock values. It mounts one shared asset repeatedly
+with independent UsdInstanceTime values and centered 2.5-unit X spacing, waits
+for the expected number of Ready roots, and records the clocks and spacing.
+Single-root default behavior remains unchanged. Multiple roots reject authored
+camera selection to avoid ambiguous duplicate camera paths. Parser tests cover
+defaults, whitespace, negative/fractional times, nonfinite/invalid values and
+the root-count limit, preserving previous configuration after a failed parse.
+
+Rendered the UV-chain fixture and explicit-UV reference with clocks 0/10 and
+10/0 on NVIDIA/Vulkan, eye (0,1,8), focus (0,1,0), shadows off. Inspected all four
+captures: red/purple panels exchange places when the clocks are swapped. Both
+mapped/reference comparisons match all 921,600 pixels at strict zero RGB
+tolerance. Images: `target/multi_uv_{mapped,reference}_{0_10,10_0}.png`; logs:
+`/tmp/multi-uv-{mapped,reference,compare}-{0_10,10_0}.log`.
+This establishes simultaneous multi-root GPU endpoint acceptance, not live
+clock swapping or filesystem reload during one capture run.
+
+Validation: 431 ordinary tests pass (seven native export tests ignored), plus
+check-all, build and whitespace checks; `/tmp/multi-capture-{tests,check,build}.log`.
+
 ### Rendered affine UV shear acceptance
 
 Extended `uv_transform_fixture` with a two-node UV chain applying a 37-degree

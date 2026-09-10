@@ -113,8 +113,19 @@ fn advance_editor_time(world: &mut World) {
     world.resource_mut::<crate::route::StageTime>().current = current;
     let timeline = EditorTimeline { current, start: stage.start_time_code(), end: stage.end_time_code(),
         playing: world.resource::<EditorPlayback>().0.playing };
+    let refresh = world.resource::<EditorBridge>().0.lock()
+        .is_ok_and(|state| state.view.document.sample_time != Some(current));
+    let snapshot = refresh.then(|| world.get_non_send::<EditorSession>().unwrap().snapshot_at(Some(current)));
     let bridge = world.resource::<EditorBridge>();
-    if let Ok(mut state) = bridge.0.lock() { state.view.timeline = timeline; }
+    if let Ok(mut state) = bridge.0.lock() {
+        state.view.timeline = timeline;
+        if let Some(snapshot) = snapshot {
+            match snapshot {
+                Ok(document) => state.view.document = document,
+                Err(error) => state.view.status = format!("Inspection failed: {error:#}"),
+            }
+        }
+    }
 }
 
 fn process_commands(world: &mut World) {
@@ -602,7 +613,8 @@ impl EditorSession {
             snapshot.prims.push(path.as_str().to_owned());
         })?;
         for path in &snapshot.prims {
-            let value = self.stage.prim(openusd::sdf::path(path)?)?.attribute("visibility").get::<Value>()?;
+            let value = self.stage.prim(openusd::sdf::path(path)?)?.attribute("visibility")
+                .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?;
             snapshot.visibility.insert(path.clone(), !matches!(value, Some(Value::Token(token)) if token.as_str() == "invisible"));
         }
         if let Some(path) = &self.selected {
@@ -742,6 +754,16 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
         assert_eq!(published.timeline.current, 15.0);
         let sampled = published.document.attributes.iter().find(|attribute| attribute.name == "xformOp:transform").unwrap().sampled_matrix.unwrap();
         assert_eq!(sampled[2], 0.25);
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(100)));
+        app.world_mut().resource_mut::<EditorPlayback>().0.range = Some((10.0, 30.0));
+        bridge.send(EditorCommand::Play(true)).unwrap();
+        app.update();
+        let published = bridge.view().unwrap();
+        assert!(published.timeline.current > 15.0);
+        assert_eq!(published.document.sample_time, Some(published.timeline.current));
+        let sampled = published.document.attributes.iter().find(|attribute| attribute.name == "xformOp:transform").unwrap().sampled_matrix.unwrap();
+        assert!((sampled[2] - (published.timeline.current - 10.0) * 0.05).abs() < 1e-6);
+        assert!(!published.document.can_undo);
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
     }
 
@@ -1070,6 +1092,7 @@ def Xform "Model" (
 ( startTimeCode = 0 endTimeCode = 10 timeCodesPerSecond = 10 )
 def Xform "Mover" {
     double3 xformOp:translate.timeSamples = { 0: (0,0,0), 10: (10,0,0) }
+    token visibility.timeSamples = { 0: "inherited", 5: "invisible", 10: "inherited" }
     uniform token[] xformOpOrder = ["xformOp:translate"]
 }
 "#[..]).unwrap().open_stage().unwrap();
@@ -1086,6 +1109,8 @@ def Xform "Mover" {
         app.update();
         assert_eq!(app.world().get::<Transform>(entity).unwrap().translation.x, 5.0);
         assert_eq!(bridge.view().unwrap().timeline.current, 5.0);
+        assert_eq!(bridge.view().unwrap().document.sample_time, Some(5.0));
+        assert!(!bridge.view().unwrap().document.visibility["/Mover"]);
         assert!(!bridge.view().unwrap().document.can_undo);
         bridge.send(EditorCommand::Seek(f64::NAN)).unwrap();
         app.update();
@@ -1095,8 +1120,11 @@ def Xform "Mover" {
         bridge.send(EditorCommand::Play(true)).unwrap();
         app.update();
         assert!(bridge.view().unwrap().timeline.current.abs() < 1e-6);
+        assert!(bridge.view().unwrap().document.visibility["/Mover"]);
+        assert_eq!(bridge.view().unwrap().document.sample_time, Some(0.0));
         app.update();
         assert!((bridge.view().unwrap().timeline.current - 1.0).abs() < 1e-6);
+        assert_eq!(bridge.view().unwrap().document.sample_time, Some(1.0));
         bridge.send(EditorCommand::Play(false)).unwrap();
         app.update();
         let paused = bridge.view().unwrap().timeline.current;

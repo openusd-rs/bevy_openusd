@@ -25,6 +25,37 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Keep sampled editor snapshots synchronized with playback
+
+Visibility snapshots previously read default values even when a scene clock was
+supplied, and advance_editor_time updated only the timeline, leaving sampled
+matrix/visibility inspector data at the last command's time. Visibility now uses
+get_at with the requested TimeCode. After playback advances the clock, the editor
+refreshes its snapshot only if the published sample time differs. Paused unchanged
+clocks avoid this work; failures publish an inspection error. This adds snapshot
+work during playback and does not establish a performance improvement.
+
+Expanded regressions verify sampled visibility after seek, loop and playback,
+selected retimed matrix samples after automatic advancement, pause, document/
+entity continuity and unchanged source/undo history. All 508 ordinary tests pass
+(13 ignored), make check-all/build and git diff --check pass:
+`/tmp/editor-playback-snapshot-{tests,check,build}.log`.
+
+Added `assets/visibility_animation.usda`: Animated is hidden at time 10 while
+Visible remains shown. Paired private-Weston captures at time 10 were inspected:
+`target/viewer-ui-captures/sampled-visibility*`. The first opens the Rendering
+pane; the second (`sampled-visibility-outliner*`) shows Animated's crossed-out eye,
+Visible's open eye, Ready status and only the visible cube in both host and Bevy
+readback. Logs: `/tmp/editor-visibility-ui.log`,
+`/tmp/editor-visibility-outliner-ui.log`. Both report UI_CAPTURE_OK and their
+viewer logs report VIEWPORT_CAPTURE_OK. Known missing Vulkan layer and SSAO
+storage-limit warnings persist. These runs were nonblack; they do not resolve
+the intermittent black-host issue or verify continuous playback screenshots.
+
+Visibility indicators remain local authored/composed tokens, not inherited
+effective visibility. The toggle still authors a default opinion rather than
+an animated sample. Full native interaction and the broader checklist remain open.
+
 ### Establish a release-profile editor seek baseline
 
 Built the current editor benchmark with the repository release profile and

@@ -517,6 +517,13 @@ Open the Timeline ribbon pane to play/pause, step one USD time code, return to
 the authored start time, or enter a time code and seek. Seeking pauses playback;
 playing loops over the authored start/end range using the stage's time-code rate.
 Timeline operations change viewer time, not USD opinions or undo history.
+The editor refreshes its sampled snapshot when playback changes the clock, so
+matrix sample labels and outliner local-visibility indicators follow scene time.
+Paused unchanged clocks do not trigger another snapshot. Visibility indicators
+show the prim's local token, not inherited/effective visibility. The existing
+visibility toggle still authors a default opinion, not an animation time sample.
+`assets/visibility_animation.usda` hides Animated at time 10 while Visible remains
+shown; it is a control for sampled outliner and rendered visibility.
 
 `assets/animation_showcase.usda` combines a growing Cube, three shared animated
 mesh prototypes and an orange-to-blue material transition over time codes 0–10.

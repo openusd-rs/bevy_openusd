@@ -175,6 +175,55 @@ def Sphere "Model" {
 
     #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_instanceable_reference_contracts() {
+        use crate::{UsdSource, editor::{EditorSession, SaveMode}};
+        use openusd::sdf::{LayerOffset, Path as SdfPath};
+        let input = tempfile::tempdir().unwrap();
+        let root = UsdSource::snapshot(input.path().join("root.usda"), &b"#usda 1.0\n"[..]).unwrap();
+        let model = UsdSource::snapshot(input.path().join("model.usda"), &br#"#usda 1.0
+(defaultPrim = "Model")
+def Xform "Model" {
+    def Cube "Geometry" { double size = 2 }
+}
+"#[..]).unwrap();
+        let assembly = root.with_instanceable_references([
+            ("/First", &model, SdfPath::default(), LayerOffset::IDENTITY),
+            ("/Second", &model, SdfPath::default(), LayerOffset::IDENTITY),
+        ]).unwrap();
+        let editor = EditorSession::new(assembly.open_stage().unwrap());
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let relocated = tempfile::tempdir().unwrap();
+        let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
+        for (name, mode) in [("root", SaveMode::RootLayer), ("edit", SaveMode::EditLayer), ("flat", SaveMode::Flattened)] {
+            let package = output.path().join(format!("{name}.usdz"));
+            editor.save(package.to_str().unwrap(), mode).unwrap();
+            let moved = relocated.path().join(format!("{name}.usdz"));
+            fs::rename(&package, &moved).unwrap();
+            assert_eq!(fs::read_dir(input.path()).unwrap().count(), 0);
+            let result = std::process::Command::new(&native).arg("--flatten").arg(&moved).output().unwrap();
+            assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+            assert!(result.stderr.is_empty(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+            let stage = UsdSource::snapshot(relocated.path().join("native.usda"), result.stdout).unwrap().open_stage().unwrap();
+            let first = stage.prim("/First").unwrap();
+            let second = stage.prim("/Second").unwrap();
+            let instanced = !matches!(mode, SaveMode::Flattened);
+            assert_eq!(first.is_instance().unwrap(), instanced, "{name}");
+            assert_eq!(second.is_instance().unwrap(), instanced, "{name}");
+            assert_eq!(first.prototype().unwrap().is_some(), instanced, "{name}");
+            assert_eq!(first.prototype().unwrap(), second.prototype().unwrap(), "{name}");
+            for path in ["/First/Geometry", "/Second/Geometry"] {
+                let prim = stage.prim(path).unwrap();
+                assert_eq!(prim.is_instance_proxy().unwrap(), instanced, "{name}: {path}");
+                assert_eq!(prim.type_name().unwrap().as_deref(), Some("Cube"));
+                assert_eq!(prim.attribute("size").get::<f64>().unwrap(), Some(2.0));
+            }
+        }
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_preserves_retimed_reference_batches() {
         use crate::{UsdSource, editor::{EditorSession, SaveMode}};
         use openusd::sdf::{LayerOffset, Path as SdfPath};

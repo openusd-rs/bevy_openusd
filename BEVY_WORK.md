@@ -25,6 +25,24 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Native instanceable export contracts and flattening gap
+
+The new native USDZ regression saves and relocates a diskless two-instance assembly
+in all three modes. Root and edit-layer outputs, composed by native usdcat, retain
+two instances with a shared prototype and Cube proxy descendants of size 2.
+Flattened output instead contains two non-instance Cube copies with the same
+size. The initial preservation assertion fails only for Flattened:
+`/tmp/instance-native.log`. `vendor/openusd/crates/openusd/src/usd/flatten.rs` explicitly
+expands proxies and strips Instanceable rather than writing shared prototypes.
+
+The regression now records both contracts, including geometry preservation;
+it does not treat expanded copies as preserved instancing. Native-parity
+instance-preserving flattening remains unfinished. Save operations must leave
+the original editor root unchanged and native composition must emit no warnings.
+All ten native export tests pass (`/tmp/instance-native-contracts.log`), along
+with 465 ordinary workspace tests (ten ignored), check-all, build and whitespace
+validation: `/tmp/instance-export-{tests,check,build}.log`.
+
 ### Instanceable reference assembly
 
 UsdSource::with_instanceable_references accepts the retimed API's four-field

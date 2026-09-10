@@ -7,7 +7,7 @@ use bevy::{
 };
 use std::{collections::BTreeSet, path::PathBuf, time::{Duration, Instant}};
 
-/// Watches installed external textures and queues document-preserving refreshes.
+/// Watches requested external textures and queues document-preserving refreshes.
 /// Requires EditorPlugin. Package entries and USD layers are not watched.
 pub struct EditorTextureWatchPlugin;
 
@@ -64,7 +64,7 @@ impl Plugin for EditorTextureWatchPlugin {
 
 fn watch_textures(
     editor: Option<NonSend<EditorSession>>,
-    textures: Option<Res<crate::asset::SnapshotTextures>>,
+    textures: Option<Res<super::EditorTextureRequests>>,
     bridge: Res<EditorBridge>,
     mut state: ResMut<WatchState>,
     mut status: ResMut<EditorTextureWatchStatus>,
@@ -80,9 +80,9 @@ fn watch_textures(
             .as_ref()
             .filter(|_| document.is_some())
             .into_iter()
-            .flat_map(|textures| textures.0.keys())
-            .filter(|(path, _)| !openusd::ar::is_package_relative_path(path))
-            .map(|(path, _)| PathBuf::from(path))
+            .flat_map(|textures| textures.0.iter())
+            .filter(|path| !openusd::ar::is_package_relative_path(path))
+            .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .collect();
         if state.document != document || state.paths != paths {
@@ -261,6 +261,28 @@ def Material "Mat" {
         assert_eq!(view.document.selected.as_deref(), Some("/Mat"));
         assert_eq!(view.status, "Ready");
         assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), before);
+        bridge.send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
+            prim: "/Mat/Texture".into(), name: "inputs:file".into(), type_name: "asset".into(),
+            value: openusd::sdf::Value::AssetPath(openusd::sdf::AssetPath::new("new-images/later.png")),
+        })).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.contains("Texture loading failed"));
+        assert_eq!(pixels(app.world()), [0, 0, 255, 255]);
+        let requested = directory.path().join("new-images/later.png");
+        assert!(app.world().resource::<super::super::EditorTextureRequests>().0.contains(requested.to_str().unwrap()), "requests={:?}; status={}", app.world().resource::<super::super::EditorTextureRequests>().0, bridge.view().unwrap().status);
+        let edited = app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 0);
+        assert!(app.world().resource::<EditorTextureWatchStatus>().error.is_some());
+        std::fs::create_dir(requested.parent().unwrap()).unwrap();
+        std::fs::write(&requested, png([0, 255, 0, 255])).unwrap();
+        tick_until(&mut app, |world| pixels(world) == [0, 255, 0, 255]);
+        assert_eq!(bridge.view().unwrap().document.document_id, id);
+        assert_eq!(bridge.view().unwrap().document.selected.as_deref(), Some("/Mat"));
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), edited);
+        std::fs::write(&requested, png([255, 255, 0, 255])).unwrap();
+        tick_until(&mut app, |world| pixels(world) == [255, 255, 0, 255]);
     }
 
     #[test]

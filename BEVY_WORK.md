@@ -25,6 +25,29 @@ Do not count upstream APIs as implemented Bevy features.
 
 ## Current work
 
+### Watch failed texture requests after editor edits
+
+Editor texture refreshes now track requested paths separately from installed
+image handles. Failed reads/decodes retain the old images but update watch
+requests; successful document opens replace requests only after preparation
+succeeds. Unresolved relative paths require conservative candidate watches under
+loaded filesystem layer directories: the first native attempt exposed that the
+reader returns the unresolved relative spelling, which the watcher excluded
+(`/tmp/requested-texture-native-recheck.log`). Candidates may trigger extra
+refreshes; custom resolver/search paths and failed initial Open remain unsupported.
+Successful image loading replaces candidates with resolved paths.
+
+The native regression edits a live material to an image in a missing directory,
+checks retained pixels and failure status, creates the directory/image, verifies
+automatic recovery without changing document identity, selection or authored
+edits, then checks another pixel change is observed. A deterministic regression
+checks failed refresh retains image handles, records paths and clears requests
+when an empty image set is installed.
+All 472 ordinary tests pass (ten ignored), 402 file-watcher tests pass (15 ignored),
+and all three native editor watcher tests pass. Build/check and whitespace checks
+pass without warnings in the final logs:
+`/tmp/requested-texture-{tests-final,feature,all-native,check,build}.log`.
+
 ### Captured value clips with independent Bevy clocks
 
 `examples/clipped_sources.rs` verifies a diskless root and captured clip layer

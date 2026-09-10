@@ -348,7 +348,7 @@ visual acceptance limits.
 
 The editor loads PNG/JPEG material images from filesystem and USDZ documents,
 refreshes them after edits, and preserves the previous document if opening fails.
-The viewer can automatically watch installed external textures on native builds:
+The viewer can automatically watch requested external textures on native builds:
 
 ```sh
 USD_WATCH_TEXTURES=1 make run APP_TARGET='--bin usdview --features file_watcher' ARGS='path/to/scene.usda'
@@ -359,7 +359,7 @@ it without the build feature, or providing a value other than 0/1, fails before
 opening the viewer. The viewer logs active file counts and watcher setup errors.
 Library applications can opt in by enabling `usd_bevy/file_watcher` and adding
 `usd_bevy::editor::texture_watch::EditorTextureWatchPlugin` alongside
-`EditorPlugin`. It watches installed external images and sends RefreshTextures
+`EditorPlugin`. It watches requested external images and sends RefreshTextures
 on native file events. `EditorTextureWatchStatus` reports active file count and
 setup errors. Watched paths update with the document/image set; idle frames do
 not reread images or rescan USD materials. Package entries, USD layers and folder
@@ -367,6 +367,12 @@ replacement are not watched. Failed watcher setups retry once per second while
 the app updates, without restarting successful watchers. Recovery queues a texture
 refresh to catch edits made while unavailable. Document/path changes reset the
 retry state. Images missing during a failed initial Open are not watched.
+An edit that requests a missing or undecodable image keeps the previous image
+handles while registering the requested paths. Unresolved relative paths are
+watched conservatively under loaded filesystem layer directories; these candidate
+paths can trigger extra refreshes and are not custom-resolver/search-path support.
+Creating a missing parent directory is handled by the watcher setup retry.
+Successful loading replaces candidate paths with resolved image paths.
 
 ```sh
 make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch

@@ -168,8 +168,7 @@ fn process_commands(world: &mut World) {
             match command {
                 EditorCommand::RefreshTextures => editor.source.as_ref()
                     .ok_or_else(|| anyhow::anyhow!("document has no source snapshot"))
-                    .and_then(|source| prepare_textures(editor.stage(), source))
-                    .and_then(|textures| install_textures(world, textures))
+                    .and_then(|source| refresh_textures(world, editor.stage(), source))
                     .map(|_| {
                         if let Some(live) = world.get_non_send::<crate::live::LiveStage>() { live.enqueue_resync("/"); }
                     }),
@@ -209,7 +208,7 @@ fn process_commands(world: &mut World) {
     }
     if let Some(editor) = session.as_ref().filter(|_| texture_dirty) {
         if let Some(source) = &editor.source {
-            match prepare_textures(editor.stage(), source).and_then(|textures| install_textures(world, textures)) {
+            match refresh_textures(world, editor.stage(), source) {
                 Ok(()) => {
                     if let Some(live) = world.get_non_send::<crate::live::LiveStage>() { live.enqueue_resync("/"); }
                 }
@@ -232,9 +231,43 @@ fn process_commands(world: &mut World) {
 
 type PreparedTextures = Vec<((String, bool), Image)>;
 
+#[derive(Resource, Default)]
+pub(crate) struct EditorTextureRequests(pub std::collections::BTreeSet<String>);
+
+fn set_texture_requests(world: &mut World, paths: std::collections::BTreeSet<String>) {
+    if world.get_resource::<EditorTextureRequests>().is_none_or(|existing| existing.0 != paths) {
+        world.insert_resource(EditorTextureRequests(paths));
+    }
+}
+
+fn refresh_textures(world: &mut World, stage: &Stage, source: &crate::UsdSource) -> anyhow::Result<()> {
+    let requests = crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?;
+    let mut paths = std::collections::BTreeSet::new();
+    for (path, _) in &requests {
+        if std::path::Path::new(path).is_absolute() || openusd::ar::is_package_relative_path(path) {
+            paths.insert(path.clone());
+        } else {
+            for layer in stage.layer_identifiers() {
+                if openusd::ar::is_package_relative_path(&layer) { continue; }
+                let layer = std::path::Path::new(&layer);
+                if layer.is_absolute() && let Some(parent) = layer.parent() {
+                    paths.insert(parent.join(path).to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    set_texture_requests(world, paths);
+    let textures = decode_textures(source, requests)?;
+    install_textures(world, textures)
+}
+
 fn prepare_textures(stage: &Stage, source: &crate::UsdSource) -> anyhow::Result<PreparedTextures> {
+    decode_textures(source, crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?)
+}
+
+fn decode_textures(source: &crate::UsdSource, requests: std::collections::BTreeSet<(String, bool)>) -> anyhow::Result<PreparedTextures> {
     let mut images = Vec::new();
-    for (path, srgb) in crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)? {
+    for (path, srgb) in requests {
         let bytes = source.read_asset(&path)
             .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
         let inner = openusd::ar::split_package_relative_path_inner(&path).map(|(_, inner)| inner).unwrap_or_else(|| path.clone());
@@ -251,6 +284,7 @@ fn prepare_textures(stage: &Stage, source: &crate::UsdSource) -> anyhow::Result<
 
 fn install_textures(world: &mut World, prepared: PreparedTextures) -> anyhow::Result<()> {
     anyhow::ensure!(prepared.is_empty() || world.contains_resource::<Assets<Image>>(), "image assets are unavailable for this document");
+    set_texture_requests(world, prepared.iter().map(|((path, _), _)| path.clone()).collect());
     let old = world.remove_resource::<crate::asset::SnapshotTextures>().unwrap_or_default();
     let mut textures = crate::asset::SnapshotTextures::default();
     for (key, image) in prepared {
@@ -648,6 +682,28 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_texture_refresh_retains_images_and_records_requested_paths() {
+        use super::*;
+        let directory = tempfile::tempdir().unwrap();
+        let source = crate::UsdSource::snapshot(directory.path().join("scene.usda"), br#"#usda 1.0
+def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
+"#.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let mut world = World::new();
+        world.insert_resource(Assets::<Image>::default());
+        install_textures(&mut world, vec![(("previous.png".into(), false), Image::default())]).unwrap();
+        let previous = world.resource::<crate::asset::SnapshotTextures>().0.clone();
+        let error = refresh_textures(&mut world, &stage, &source).unwrap_err();
+        assert!(error.to_string().contains("missing.png"));
+        assert_eq!(world.resource::<crate::asset::SnapshotTextures>().0, previous);
+        assert_eq!(world.resource::<EditorTextureRequests>().0,
+            [directory.path().join("missing.png").to_string_lossy().into_owned()].into());
+        install_textures(&mut world, Vec::new()).unwrap();
+        assert!(world.resource::<EditorTextureRequests>().0.is_empty());
+        assert!(world.resource::<crate::asset::SnapshotTextures>().0.is_empty());
+    }
+
     use super::*;
 
     #[test]

@@ -1559,6 +1559,10 @@ before becoming Bevy's UV transform. Generate the animated comparison fixture:
 Its mapped and explicit-UV scenes are equivalent at times 0 and 10; intermediate
 times are not reference baselines because interpolating coordinates differs from
 interpolating rotation. Different per-texture coordinate transforms remain unsupported.
+`sampled_reference.usda` separately bakes analytic coordinates at times 0, 2.5,
+5, 7.5 and 10 using scalar sine/cosine math. Only those keys are reference
+samples; interpolation between its baked keys is not the original rotation curve.
+The live-clock suite tests 5/10 reversed to 10/5 against this reference.
 `interface_mapped.usda` drives the same transform chain through sampled Material
 inputs. Scale, rotation and translation resolve canonical value producers at each
 instance's clock; malformed connections, wrong value types and nonfinite results

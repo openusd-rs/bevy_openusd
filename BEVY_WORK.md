@@ -186,6 +186,28 @@ normal cases retain tolerance 1; other cases use zero. This is endpoint renderin
 evidence plus headless midpoint material assertions, not a rendered midpoint or
 arbitrary shader-graph acceptance claim. Full Bevy acceptance remains open.
 
+## Analytic UV midpoint image regression
+
+The UV fixture generator now writes `sampled_reference.usda`, baking UV values
+with independent f64 scalar sine/cosine equations at 0, 2.5, 5, 7.5 and 10.
+Those discrete keys are references; their intervening linear interpolation is
+not equivalent to the original animated rotation. Expanded CPU assertions compare
+both direct and material-interface transforms at every key and backward to zero.
+A negative control confirms the old endpoint-only reference differs at time 5.
+
+The live GPU suite adds `uv_interface_mid`: start two instances at 5/10,
+reverse their clocks after 30 ready updates and compare against a fresh 10/5
+explicit-UV reference. The metadata verifies final clocks and reversal timing.
+Both new images were inspected and all 921600 pixels match at strict RGB-zero
+tolerance. Evidence: `target/live-uv-mid-regression/uv_interface_mid-*`.
+All 17 live GPU cases pass, retaining the existing two RGB-one normal tolerances:
+`target/live-uv-mid-regression/results.tsv`, `/tmp/uv-mid-live.log`.
+
+Validation: 514 ordinary tests pass, 13 ignored; check-all, viewer build,
+shell syntax and git diff --check pass. Logs: `/tmp/uv-mid-{tests,check,build}.log`.
+This extends sampled-transform fidelity evidence, not arbitrary graph support,
+continuous-time reference parity or completion of the full Bevy checklist.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

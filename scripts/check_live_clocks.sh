@@ -32,19 +32,23 @@ printf 'case\tstatus\n' > "$output/results.tsv"
 
 run_case() {
     local name=$1 live=$2 reference=$3 cpu=$4 tolerance=0 meshes=2
+    local initial_times=0,10 final_times=10,0
+    if [[ "$name" == uv_interface_mid ]]; then initial_times=5,10; final_times=10,5; fi
     if [[ "$name" == normal_interface || "$name" == normal_constant ]]; then tolerance=1; fi
     if [[ "$name" == morph_tangents ]]; then meshes=4; fi
     run_options=()
     unset USD_CPU_SKINNING
-    export USD_CAPTURE_INSTANCE_TIMES=0,10 USD_CAPTURE_SWAP_CLOCKS=1
+    export USD_CAPTURE_INSTANCE_TIMES=$initial_times USD_CAPTURE_SWAP_CLOCKS=1
     run_example viewer_capture "$live" "$output/$name-live.png" 0 0 1 8 0 1 0 > "$output/$name-live.log" 2>&1 || return 1
-    export USD_CAPTURE_INSTANCE_TIMES=10,0 USD_CAPTURE_SWAP_CLOCKS=0
+    export USD_CAPTURE_INSTANCE_TIMES=$final_times USD_CAPTURE_SWAP_CLOCKS=0
     if [[ "$cpu" != 0 ]]; then export USD_CPU_SKINNING=1; fi
     run_example viewer_capture "$reference" "$output/$name-reference.png" 0 0 1 8 0 1 0 > "$output/$name-reference.log" 2>&1 || return 1
     grep -qx 'clocks_reversed_after_ready_frames=30' "$output/$name-live.capture.txt" || return 1
     grep -qx 'clocks_reversed_after_ready_frames=0' "$output/$name-reference.capture.txt" || return 1
     for mode in live reference; do
-        grep -Fxq 'instance_times=[10.0, 0.0]' "$output/$name-$mode.capture.txt" || return 1
+        local expected_times='instance_times=[10.0, 0.0]'
+        if [[ "$name" == uv_interface_mid ]]; then expected_times='instance_times=[10.0, 5.0]'; fi
+        grep -Fxq "$expected_times" "$output/$name-$mode.capture.txt" || return 1
         grep -qx "hierarchy_visible_meshes=$meshes" "$output/$name-$mode.capture.txt" || return 1
         if grep -Eq '(^|[[:space:]])(ERROR|WARN)([[:space:]]|$)' "$output/$name-$mode.log"; then return 1; fi
     done
@@ -64,10 +68,11 @@ run_case() {
 }
 
 status=0
-for name in uv uv_interface texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface normal_constant morph_tangents; do
+for name in uv uv_interface uv_interface_mid texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface normal_constant morph_tangents; do
     case "$name" in
         uv) live="$output/fixture/mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
         uv_interface) live="$output/fixture/interface_mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
+        uv_interface_mid) live="$output/fixture/interface_mapped.usda"; reference="$output/fixture/sampled_reference.usda"; cpu=0 ;;
         texture) live="$output/fixture/file_samples.usda"; reference="$output/fixture/file_reference.usda"; cpu=0 ;;
         colorspace) live="$output/fixture/color_space_samples.usda"; reference=$live; cpu=0 ;;
         morph) live="$root/assets/morph_animation.usda"; reference=$live; cpu=1 ;;

@@ -3,6 +3,28 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Mara develop regression containment
+
+The viewer now uses upstream Mara develop b792f44, rather than the sibling
+new_graph checkout. Its default GPU device exposes four storage textures per
+shader stage; dome filtering needs six. Earlier embedded dome and direct-host
+screenshot acceptance does not transfer to this revision.
+
+When the selected dome reports Unavailable, the viewer restores its studio
+ambient and directional lights without changing the selected dome, the user's
+studio preference, or authored lights. Successful attachment removes the
+fallback. Lighting displays the filtering error and an explicit fallback notice.
+This is failure handling, not a substitute for the outstanding embedded IBL fix.
+
+All 86 viewer tests, six editor benchmark tests, build and check-all pass:
+/tmp/dome-fallback-tests.log, /tmp/route-profile-tests.log,
+/tmp/dome-fallback-build.log and /tmp/dome-fallback-check.log.
+The regression checks fallback, recovery and stale errors after deselection.
+target/mara-dome-fallback.png was visually inspected: the selected dome and
+device-limit error are visible alongside a lit scene. Both desktop frame
+checks pass in /tmp/mara-dome-fallback-capture.log. This does not establish
+general compositor reliability or native rendering fidelity.
+
 ## Full-timeline animated projection measurements
 
 editor_benchmark adds seek-timeline: four warm-up seeks followed by 1000 distinct

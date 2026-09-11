@@ -15,8 +15,10 @@ The UI dependency is pinned to Mara `develop` commit `b792f44`. That upstream
 host does not yet include the local `new_graph` fixes for whole-window GPU
 screenshot requests or the device features required for dome-map filtering.
 The earlier direct-capture and embedded-dome results below apply to that local
-host, not this upstream revision. Desktop capture remains available; use studio
-lighting when running this revision.
+host, not this upstream revision. Desktop capture remains available. If dome
+filtering reports an error, the viewer temporarily restores studio lighting
+and displays the error with a fallback notice in Lighting. The requested dome
+remains selected; studio fallback ends when dome maps become available.
 
 | Location | What to inspect |
 | --- | --- |

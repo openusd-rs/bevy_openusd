@@ -46,6 +46,11 @@ fn apply(world: &mut World) {
     state.domes = domes.iter().map(|(_, path)| path.clone()).collect();
     let selected = state.selected.as_ref().and_then(|path| domes.iter().find(|(_, candidate)| candidate == path).map(|(e, _)| *e));
     let cameras: Vec<_> = world.query_filtered::<Entity, With<mara_bevy::ChaseCamera>>().iter(world).collect();
+    let fallback = selected.is_some_and(|dome| cameras.iter().any(|camera| {
+        world.get::<UsdDomeEnvironmentSource>(*camera).is_some_and(|source| source.dome == dome)
+            && matches!(world.get::<UsdDomeEnvironmentState>(*camera), Some(UsdDomeEnvironmentState::Unavailable(_)))
+    }));
+    let studio_active = state.studio || fallback;
     state.status = if state.selected.is_some() && selected.is_none() { "Selected dome is missing".into() }
         else if selected.is_some() { "Waiting for dome maps".into() }
         else if state.studio { "Studio lighting".into() }
@@ -56,7 +61,7 @@ fn apply(world: &mut World) {
             world.entity_mut(camera).insert(StudioAmbient(ambient));
         }
         let mut ambient = world.get::<StudioAmbient>(camera).unwrap().0.clone();
-        if !state.studio { ambient.brightness = 0.0; }
+        if !studio_active { ambient.brightness = 0.0; }
         world.entity_mut(camera).insert(ambient);
         if let Some(dome) = selected {
             if world.get::<UsdDomeEnvironmentSource>(camera).is_none_or(|source| source.dome != dome) {
@@ -71,8 +76,9 @@ fn apply(world: &mut World) {
             }
         } else { world.entity_mut(camera).remove::<UsdDomeEnvironmentSource>(); }
     }
+    if fallback { state.status.push_str(" — using studio lighting fallback"); }
     for (mut light, studio) in world.query::<(&mut DirectionalLight, &super::environment::StudioLight)>().iter_mut(world) {
-        light.illuminance = if state.studio { studio.0 } else { 0.0 };
+        light.illuminance = if studio_active { studio.0 } else { 0.0 };
     }
 }
 
@@ -126,6 +132,41 @@ pub(crate) fn status_lines(status: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_dome_restores_studio_until_maps_recover() {
+        let mut world = World::new();
+        let bridge = LightingBridge::default();
+        world.insert_resource(bridge.clone());
+        let dome = world.spawn((usd_bevy::UsdPrimRef::new("/Env"), usd_bevy::route::dome::UsdDomeLight::default())).id();
+        let camera = world.spawn((mara_bevy::ChaseCamera::default(), AmbientLight { brightness: 160.0, ..default() })).id();
+        let studio = world.spawn((DirectionalLight::default(), super::super::environment::StudioLight(7500.0))).id();
+        let authored = world.spawn(DirectionalLight { illuminance: 42.0, ..default() }).id();
+        {
+            let mut state = bridge.0.lock().unwrap();
+            state.selected = Some("/Env".into());
+            state.studio = false;
+        }
+        apply(&mut world);
+        world.entity_mut(camera).insert(UsdDomeEnvironmentState::Unavailable("Filtering unsupported".into()));
+        apply(&mut world);
+        assert_eq!(world.get::<AmbientLight>(camera).unwrap().brightness, 160.0);
+        assert_eq!(world.get::<DirectionalLight>(studio).unwrap().illuminance, 7500.0);
+        assert_eq!(world.get::<DirectionalLight>(authored).unwrap().illuminance, 42.0);
+        assert_eq!(world.get::<UsdDomeEnvironmentSource>(camera).unwrap().dome, dome);
+        assert!(!bridge.0.lock().unwrap().studio);
+        assert!(bridge.0.lock().unwrap().status.contains("Filtering unsupported — using studio lighting fallback"));
+        world.entity_mut(camera).insert(UsdDomeEnvironmentState::Attached);
+        apply(&mut world);
+        assert_eq!(world.get::<AmbientLight>(camera).unwrap().brightness, 0.0);
+        assert_eq!(world.get::<DirectionalLight>(studio).unwrap().illuminance, 0.0);
+        assert_eq!(bridge.0.lock().unwrap().status, "Dome maps attached");
+        bridge.0.lock().unwrap().selected = None;
+        world.entity_mut(camera).insert(UsdDomeEnvironmentState::Unavailable("stale".into()));
+        apply(&mut world);
+        assert_eq!(world.get::<DirectionalLight>(studio).unwrap().illuminance, 0.0);
+        assert_eq!(bridge.0.lock().unwrap().status, "Studio lights disabled");
+    }
 
     #[test]
     fn long_status_messages_fit_narrow_panes_without_losing_words() {

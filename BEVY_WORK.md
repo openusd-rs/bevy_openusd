@@ -3,6 +3,22 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Typed snapshot edits through live Bevy assets
+
+The source_edits example now projects original and customized assemblies through
+UsdAssetPlugin and UsdSceneRoot, checking actual mesh vertex extents: original
+Cube width 2, customized widths 1 and 4. Replacing the customized asset source
+with another with_edits result changes only its small Cube to width 6; the
+other customized Cube and independent original stay unchanged. Root entities
+and the surviving small-Cube entity retain runtime-owned marker components.
+
+The example test and check-all pass (`/tmp/source-edits-live-example.log`,
+`/tmp/source-edits-live-check.log`). This verifies headless asset revision and
+mesh projection integration, not GPU pixels, reload performance or filesystem
+watcher behavior. README now states this scope.
+The documented Make run command also exits successfully
+(`/tmp/source-edits-live-run.log`).
+
 ## Immutable typed snapshot customization
 
 UsdSource::with_edits applies EditorEdit values as one batch on an independent

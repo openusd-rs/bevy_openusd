@@ -286,6 +286,9 @@ failed batches leave the receiver unchanged. Supply new captured assets with
 API, not compile-time validation of USD schema names or general BSN equivalence.
 Run the diskless customization example with
 `make run RUN_WITH= APP_TARGET='--example source_edits' CARGO='cargo --offline'`.
+It checks projected Bevy mesh widths, independent original/customized assets and
+live source replacement while retaining runtime components on surviving entities.
+This is a headless integration check, not rendered-image acceptance.
 
 The native export test lane verifies a relocated diskless batch assembly with
 default and explicit targets, including its captured opaque asset bytes, through

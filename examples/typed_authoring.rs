@@ -13,16 +13,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn verify() -> Result<(), Box<dyn std::error::Error>> {
-    let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("typed.usda")?;
-    let sphere = Sphere::define(&stage, "/Enemy")?;
-    sphere.create_radius_attr()?.set(0.75_f64)?;
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, UsdAssetPlugin));
     app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>().register_type::<Health>();
     let registry = app.world().resource::<AppTypeRegistry>().clone();
     let health = Health { current: 30.0, max: 100.0 };
-    usd_bevy::sync::author_component_value(&registry.read(), &stage, "/Enemy", &health)?;
-    let source = UsdSource::new("typed.usda", stage.root_layer().export_to_string()?.into_bytes())?;
+    let source = UsdSource::build("typed.usda", |stage| {
+        Sphere::define(stage, "/Enemy")?.create_radius_attr()?.set(0.75_f64)?;
+        usd_bevy::sync::author_component_value(&registry.read(), stage, "/Enemy", &health)?;
+        Ok(())
+    })?;
+    let stage = source.open_stage()?;
     let handle = app.world_mut().resource_mut::<Assets<UsdScene>>().add(UsdScene { source, textures: default() });
     let first = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
     let second = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();

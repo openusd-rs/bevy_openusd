@@ -3,6 +3,26 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Typed source construction
+
+UsdSource::build accepts a .usda identifier and a callback using the canonical
+generated schema API on a fresh snapshot-only stage. It validates single-root
+composition before serialization and validates a reopened snapshot before
+publication. Errors return no source; the constructor writes no files. Captured
+dependencies are composed afterward with the existing reference helpers. This
+is ordinary trusted Rust authoring, not a sandbox or a duplicate schema API.
+
+The typed_authoring and editor_assembly examples now use it instead of manually
+creating, exporting and wrapping stages. Regressions exercise typed values,
+independent reopened stages, reusable reference composition, absent filesystem
+output, wrong extensions, callback errors and unresolved references. Existing
+example assertions retain independent Bevy components, grouped history, stable
+runtime entities and save/reopen coverage. The first test compile incorrectly
+used a nonexistent Reference::new constructor; it was corrected to the canonical
+struct before execution. Logs: /tmp/typed-builder-tests-fixed.log,
+/tmp/typed-builder-{examples,source-tests,check}.log.
+All 24 source tests and both runnable example tests pass; make check-all passes.
+
 ## Self-contained composed showcase
 
 assets/flagship_showcase.usda combines the existing animation, skeleton and morph

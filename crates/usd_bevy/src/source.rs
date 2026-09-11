@@ -22,6 +22,23 @@ pub struct UsdSource {
 }
 
 impl UsdSource {
+    /// Builds a snapshot-only USDA root using canonical typed schema APIs.
+    /// The callback authors one root layer; dependencies are composed afterward
+    /// with `with_dependency` and the reference helpers. No source file is written.
+    pub fn build(path: impl AsRef<Path>, author: impl FnOnce(&Stage) -> anyhow::Result<()>) -> anyhow::Result<Self> {
+        anyhow::ensure!(path.as_ref().extension().is_some_and(|extension| extension == "usda"),
+            "typed source construction requires a .usda identifier");
+        let mut source = Self::snapshot(path, b"#usda 1.0\n".as_slice())?;
+        let stage = source.open_stage()?;
+        author(&stage)?;
+        anyhow::ensure!(stage.layer_identifiers().len() == 1,
+            "typed source construction accepts one root layer; compose dependencies afterward");
+        Self::validate_composition(&stage)?;
+        source.bytes = stage.root_layer().export_to_string()?.into_bytes().into();
+        Self::validate_composition(&source.open_stage()?)?;
+        Ok(source)
+    }
+
     /// Anchor bytes at a filename without creating that file.
     pub fn new(path: impl AsRef<Path>, bytes: impl Into<Arc<[u8]>>) -> io::Result<Self> {
         let path = path.as_ref();
@@ -489,6 +506,42 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_builder_publishes_independent_snapshot_without_files() {
+        use openusd_schemas::geom::{Sphere, SphereSchema};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("typed.usda");
+        let source = super::UsdSource::build(&path, |stage| {
+            Sphere::define(stage, "/Model")?.create_radius_attr()?.set(2.5_f64)?;
+            Ok(())
+        }).unwrap();
+        assert!(!source.filesystem);
+        assert!(!path.exists());
+        let first = source.open_stage().unwrap();
+        Sphere::define(&first, "/Model").unwrap().create_radius_attr().unwrap().set(4.0_f64).unwrap();
+        assert_eq!(source.open_stage().unwrap().prim("/Model").unwrap().attribute("radius").get::<f64>().unwrap(), Some(2.5));
+        let assembly = super::UsdSource::build(directory.path().join("assembly.usda"), |_| Ok(())).unwrap()
+            .with_reference("/Copy", &source, openusd::sdf::path("/Model").unwrap()).unwrap();
+        assert_eq!(assembly.open_stage().unwrap().prim("/Copy").unwrap().attribute("radius").get::<f64>().unwrap(), Some(2.5));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn typed_builder_rejects_failed_authoring_and_missing_composition() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(super::UsdSource::build(directory.path().join("wrong.usdc"), |_| panic!("must reject before callback")).is_err());
+        let path = directory.path().join("failed.usda");
+        assert!(super::UsdSource::build(&path, |_| anyhow::bail!("authoring failed")).is_err());
+        assert!(super::UsdSource::build(&path, |stage| {
+            crate::authoring::define_prim(stage, "/Missing", "Xform")?;
+            crate::authoring::set_references(stage, "/Missing", &[openusd::sdf::Reference {
+                asset_path: "missing.usda".into(), ..Default::default()
+            }])?;
+            Ok(())
+        }).is_err());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
     #[test]
     fn nested_packages_preserve_relative_layers_and_asset_bytes() {
         use super::*;

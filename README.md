@@ -1207,6 +1207,29 @@ seek to time code 30 for the bent pose.
 
 ### Typed component authoring
 
+Build reusable sources directly with the canonical generated schema API:
+
+```rust,ignore
+use openusd_schemas::geom::{Sphere, SphereSchema};
+use usd_bevy::UsdSource;
+
+let model = UsdSource::build("models/sphere.usda", |stage| {
+    Sphere::define(stage, "/Model")?.create_radius_attr()?.set(0.75_f64)?;
+    Ok(())
+})?;
+let scene = UsdSource::build("scene.usda", |_| Ok(()))?
+    .with_reference("/Ball", &model, openusd::sdf::path("/Model")?)?;
+```
+
+`build` uses a snapshot-only resolver, registers the USD schemas, validates the
+authored stage and its serialized reopen, and returns no source on error. The
+callback authors a single root layer; compose captured dependencies afterward
+with the existing reference helpers. The identifier must end in `.usda`; no
+file is created. Registered Bevy components can be authored in the same callback
+with `sync::author_component_value`. The callback is ordinary Rust code, not a
+sandbox. This is USD source authoring, not Bevy's `bsn!` syntax or a replacement
+for the canonical generated schema types.
+
 `usd_bevy::sync::author_component_value(&registry, &stage, "/Enemy", &health)`
 authors a registered `Component + Reflect` value directly, without an ECS entity
 or string type-name argument. Register `ReflectComponent` for the type. All

@@ -1679,6 +1679,11 @@ textures. Other hosts retain egui defaults. Dome filtering still requires six
 storage textures and compute support; unsupported devices report `Unavailable`.
 The embedded warm-HDR fixture has inspected direct-host GPU capture evidence;
 this does not establish general lighting fidelity or desktop-capture reliability.
+The directional fixture also has embedded captures at times 0 and 10 showing
+the rotated contribution. USD_SCREENSHOT metadata records the camera's applied
+environment intensity/rotation and filtering generation counts at request time,
+not a GPU completion fence. USD_CAPTURE_TIME requires USD_SCREENSHOT; setting
+only USD_HOST_SCREENSHOT does not set the scene clock.
 
 For opt-in runtime dome IBL, add
 `usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin` and attach

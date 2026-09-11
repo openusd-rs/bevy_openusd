@@ -90,20 +90,25 @@ pub fn configure(app: &mut App) {
     let Some(CaptureConfig { output, time, delay_ms }) = CaptureConfig::from_env().expect("invalid capture configuration") else { return };
     if let Some(current) = time { app.insert_resource(usd_bevy::route::StageTime { current }); }
     let started = std::time::Instant::now();
-    app.add_systems(Last, move |mut commands: Commands, cameras: Query<(&Camera, &RenderTarget, &GlobalTransform), With<Camera3d>>,
+    app.add_systems(Last, move |mut commands: Commands, cameras: Query<(&Camera, &RenderTarget, &GlobalTransform,
+        Option<&bevy::light::EnvironmentMapLight>, Option<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState>), With<Camera3d>>,
+        generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
+        diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
         session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>| {
-        let active = cameras.iter().find(|(camera, _, _)| camera.is_active);
+        let active = cameras.iter().find(|(camera, ..)| camera.is_active);
         let document = active.and_then(|_| session.as_ref().map(|session| session.document_id()));
         gate.delay = std::time::Duration::from_millis(delay_ms);
         let elapsed = started.elapsed();
         match gate.advance(document, elapsed) {
             CaptureAction::Timeout => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: timed out waiting for an open document, active camera and capture delay"),
             CaptureAction::Request => {
-                let (camera, target, transform) = active.expect("capture gate requires an active camera");
+                let (camera, target, transform, environment, environment_state) = active.expect("capture gate requires an active camera");
                 let output = output.clone();
                 let mut timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
                 timing.push_str(&crate::capture_metadata::camera_report(transform, camera.clip_from_view()));
+                timing.push_str(&crate::capture_metadata::environment_report(environment, environment_state,
+                    diagnostics.as_ref().map_or(0, |value| value.recorded_generations), generators.iter().count()));
                 commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>| {
                     match save_readback(&event.image, Path::new(&output), &timing) {
                         Ok(()) => eprintln!("VIEWPORT_CAPTURE_OK {output}"),

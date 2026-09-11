@@ -3,6 +3,31 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Embedded directional dome controls
+
+Viewport capture metadata now records the selected camera's environment state,
+intensity and quaternion, plus recorded filtering generations and active
+generators at Last/request time. These are CPU observations, not GPU completion
+fences or timing. The metadata regression distinguishes attachment from filtering.
+The complete viewer test selection passes 84 tests; build and check-all pass.
+
+Direct whole-host images target/embedded-directional-{0,10}.png were inspected.
+Both show diffuse and metallic spheres with studio lighting disabled. Rotating
+the dome 180 degrees moves the blue contribution from right to left on both
+spheres. Companion -viewport.capture.txt reports scene times 0/10, intensity
+10000, identity/Y-half-turn quaternions, one recorded generation and zero active
+generators in each independent run. This verifies directional behavior in the
+actual embedded host, not just standalone Bevy. It does not measure performance
+or compare against a native reference renderer.
+
+Commands set USD_SCREENSHOT, USD_CAPTURE_TIME, USD_CAPTURE_DELAY_MS=15000,
+USD_HOST_SCREENSHOT, USD_HOST_SCREENSHOT_DELAY_MS=20000, USD_VIEWER_DOME=/Env
+and USD_VIEWER_PANE=lighting, running assets/dome_directional.usda through the
+Make-wrapped native UI capture with waits 23/5 seconds. The time-zero desktop
+pair still fails one region check; time-ten passes. Direct captures and failed
+desktop artifacts are preserved. Logs: /tmp/embedded-directional-{0,10}-capture.log,
+/tmp/embedded-directional-{viewer-tests,build,check}.log.
+
 ## Embedded dome filtering enabled
 
 Sibling Mara commit 97f52d0 changes only Bevy-enabled native device creation:

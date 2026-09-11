@@ -30,6 +30,11 @@ make check-all and the example build pass with offline Cargo. Logs:
 /tmp/mara-direct-capture-{1,2,3}.log. This provides direct host GPU capture, not
 yet an explanation of the intermittent presentation failure.
 
+At e989289, make test-all with offline Cargo and target/test-tmp completed:
+620 passed, zero failed, 15 ignored across 31 suites. The ignored tests were
+not exercised by this gate. Full log: /tmp/current-host-readback-workspace.log.
+Both delayed native capture pairs also passed region and panic-log checks.
+
 ## OS close confirmation routing
 
 Sibling Mara commit b3312c7 routes winit CloseRequested through egui's root

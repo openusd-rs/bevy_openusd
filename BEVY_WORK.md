@@ -3,6 +3,46 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Inspector layer muting and empty-index panic fix
+
+The Layers / edit target group now includes runtime mute/unmute controls below
+the attribute filter. Muted identifiers remain available for unmuting; the root
+and active edit layer show a protection message instead of a button. Snapshots
+now expose the root identifier explicitly. Added `assets/layer_muting.usda`, its
+weak cube layer and registered layout/toggle replays.
+
+The new live regression initially panicked after scene projection. Traces
+`/tmp/layer-muting-empty-index-{trace,second,third}.log` identify pseudo-root
+attribute resolve-info, value and definition queries caching an empty path as
+a layer dependency. A mute then tries to invalidate that empty subtree prefix.
+`patches/openusd-empty-index.patch` leaves empty paths uncached in the canonical
+index entry point, retaining the strict subtree-drop assertion. Purpose and
+visibility readers also return their defaults at the pseudo-root. Temporary
+trace instrumentation was removed; the review patch reverse-checks successfully.
+
+The query regression checks pseudo-root reads/definition tests followed by mute
+and unmute. The live regression toggles twice each way, preserving the surviving
+root entity, its runtime Name and unrelated runtime child; excluded geometry is
+despawned and recreated. All 51 nonignored editor tests, 76 viewer tests and
+check-all pass (`/tmp/layer-muting-cache-guard-tests.log`,
+`/tmp/layer-muting-controls-{tests,check}.log`).
+
+The initial `target/layer-muting-toggle-ui.png` pair retained the cube because
+the embedded Bevy app panicked, although the host kept painting and both region
+guards passed. This is a failed interaction, not acceptance. Viewer panic logs
+must also be checked; automatic rejection of such logs remains a capture-tool
+follow-up. The initial layout image was inspected and valid.
+
+After the fix, inspected `target/layer-muting-fixed-ui.png` shows no cube and an
+Unmute layer button; `.second.png` shows the cube restored in the same process.
+Both guards pass and its viewer log contains no panic markers
+(`/tmp/layer-muting-fixed-capture.log`). This verifies the runtime toggle and
+this reproduced panic, not global viewer stability or the intermittent black
+host issue. Muting does not preserve runtime components on excluded entities.
+The final full workspace gate passes 606 tests, zero failures and 14 ignored
+across 30 suites (`/tmp/layer-muting-workspace-tests.log`), with
+`TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`.
+
 ## Runtime layer-muting command baseline
 
 `EditorSession::set_layer_muted` now exposes upstream stage muting as a runtime

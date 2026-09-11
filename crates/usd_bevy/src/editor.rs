@@ -572,6 +572,7 @@ pub struct EditorSnapshot {
     pub prims: Vec<String>,
     pub visibility: std::collections::HashMap<String, bool>,
     pub layers: Vec<String>,
+    pub root_layer: String,
     pub muted_layers: Vec<String>,
     pub edit_layer: String,
     pub edit_target: Option<EditTarget>,
@@ -795,6 +796,7 @@ impl EditorSession {
             revision: self.revision,
             sample_time: time,
             layers: self.stage.layer_stack(),
+            root_layer: self.stage.root_layer().identifier().to_string(),
             muted_layers: self.stage.muted_layers(),
             edit_layer: self.stage.edit_target().layer_identifier().to_string(),
             edit_target: Some(self.stage.edit_target()),
@@ -1816,6 +1818,56 @@ over "Root" {}
         assert!(editor.snapshot().unwrap().muted_layers.is_empty());
         assert!(editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
         assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+    }
+
+    #[test]
+    fn pseudo_root_attribute_queries_do_not_poison_layer_muting() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/layer_muting.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let root = stage.root_layer().identifier().to_string();
+        let weak = stage.layer_stack().into_iter().find(|id| id != &root).unwrap();
+        for name in ["purpose", "visibility"] {
+            let attribute = stage.prim("/").unwrap().attribute(name);
+            assert!(!attribute.resolve_info().unwrap().has_authored_value());
+            assert!(attribute.get::<Value>().unwrap().is_none());
+            assert!(!attribute.is_defined().unwrap());
+        }
+        stage.mute_layer(&weak);
+        assert!(stage.is_layer_muted(&weak));
+        assert!(!stage.prim("/Root/Shape").unwrap().is_valid().unwrap());
+        stage.unmute_layer(&weak);
+        assert!(stage.prim("/Root/Shape").unwrap().is_valid().unwrap());
+    }
+
+    #[test]
+    fn checked_layer_muting_reconciles_live_geometry_without_replacing_root() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/layer_muting.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin, crate::live::LiveStagePlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        app.insert_non_send(crate::live::LiveStage::new(stage.clone()));
+        app.insert_non_send(EditorSession::new(stage));
+        app.update();
+        let root = app.world().resource::<crate::live::PrimEntities>().entity("/Root").unwrap();
+        app.world_mut().entity_mut(root).insert(Name::new("runtime name"));
+        let runtime_child = app.world_mut().spawn((ChildOf(root), Name::new("runtime child"))).id();
+        let original_shape = app.world().resource::<crate::live::PrimEntities>().entity("/Root/Shape").unwrap();
+        let snapshot = app.world().get_non_send::<EditorSession>().unwrap().snapshot().unwrap();
+        let weak = snapshot.layers.iter().find(|id| *id != &snapshot.root_layer).unwrap().clone();
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        for muted in [true, false, true, false] {
+            let snapshot = app.world().get_non_send::<EditorSession>().unwrap().snapshot().unwrap();
+            bridge.send(EditorCommand::LayerMuteChecked { identifier: weak.clone(), muted, document_id: snapshot.document_id, revision: snapshot.revision }).unwrap();
+            app.update();
+            let map = app.world().resource::<crate::live::PrimEntities>();
+            assert_eq!(map.entity("/Root"), Some(root));
+            assert_eq!(map.entity("/Root/Shape").is_none(), muted);
+            assert_eq!(app.world().get::<Name>(root).unwrap().as_str(), "runtime name");
+            assert_eq!(app.world().get::<ChildOf>(runtime_child).unwrap().parent(), root);
+            assert!(app.world().get_entity(original_shape).is_err());
+            if !muted { assert!(app.world().get::<Mesh3d>(map.entity("/Root/Shape").unwrap()).is_some()); }
+        }
     }
 
     #[test]

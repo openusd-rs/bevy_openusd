@@ -5,6 +5,15 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Empty prim-index paths
+
+`openusd-empty-index.patch` leaves the empty path uncached in `ensure_index`.
+Pseudo-root attribute queries can produce empty attribute paths; value,
+resolve-info and spec-type queries previously registered that path as a layer
+dependency. Muting a layer then attempted an invalid empty-prefix subtree drop
+and panicked. Bevy's pseudo-root-query and repeated live-muting regressions
+cover the guard without weakening the subtree-drop assertion.
+
 ## Reference custom data
 
 `openusd-reference-custom-data.patch` emits reference customData dictionaries in

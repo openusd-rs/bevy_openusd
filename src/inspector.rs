@@ -154,7 +154,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     if let Some(payload) = crate::payload_editor::pod(snapshot, bridge, &drafts.3) {
         let mut payloads = vec![payload];
         payloads.extend(crate::payload_editor::opinion_pods(snapshot));
-        payloads.extend(reference_opinion_pods(snapshot));
+        payloads.extend(reference_opinion_pods(snapshot, bridge));
         body.add_normal("editor.payloads", "Payloads / references", "document", payloads);
     }
     for (set, options) in &snapshot.variant_choices {
@@ -338,11 +338,24 @@ fn reference_opinion_lines(opinion: &usd_bevy::editor::ReferenceOpinion, index: 
     lines.into_iter().flat_map(|line| path_lines(&line)).collect()
 }
 
-fn reference_opinion_pods(snapshot: &EditorSnapshot) -> Vec<Pod> {
+fn clear_reference_command(snapshot: &EditorSnapshot, opinion: &usd_bevy::editor::ReferenceOpinion) -> Option<EditorCommand> {
+    let prim = snapshot.selected.as_ref()?;
+    let target = snapshot.edit_target.as_ref()?;
+    if opinion.layer != target.layer_identifier()
+        || target.map_to_spec_path(&openusd::sdf::path(prim).ok()?)? != opinion.prim { return None; }
+    snapshot.checked_edit(EditorEdit::ClearReferences { prim: prim.clone() })
+}
+
+fn reference_opinion_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge) -> Vec<Pod> {
     snapshot.reference_opinions.iter().enumerate().map(|(index, opinion)| {
         let lines = reference_opinion_lines(opinion, index);
-        Pod::new(Id::new(("editor.reference.opinion", index))).with_custom_units(lines.len(), move |ui| {
+        let clear = clear_reference_command(snapshot, opinion);
+        let bridge = bridge.clone();
+        Pod::new(Id::new(("editor.reference.opinion", index))).with_custom_units(lines.len()+usize::from(clear.is_some()), move |ui| {
             for line in lines { ui.label(&line); }
+            if let Some(command) = clear {
+                if ui.button("Clear local reference opinion").clicked { super::send(&bridge, command); }
+            }
         })
     }).collect()
 }
@@ -443,6 +456,23 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_clear_control_matches_mapped_target_and_retains_guard() {
+        let opinion = usd_bevy::editor::ReferenceOpinion { layer: "weak.usda".into(),
+            prim: openusd::sdf::path("/Source{choice=a}").unwrap(), offset: openusd::sdf::LayerOffset::default(),
+            operation: openusd::sdf::ReferenceListOp::explicit([]) };
+        let mut snapshot = usd_bevy::editor::EditorSnapshot { document_id: 4, revision: 9,
+            selected: Some("/Source".into()), edit_target: Some(openusd::usd::EditTarget::for_layer("root.usda")), ..Default::default() };
+        assert!(super::clear_reference_command(&snapshot, &opinion).is_none());
+        snapshot.edit_target = Some(openusd::usd::EditTarget::for_layer("weak.usda"));
+        assert!(super::clear_reference_command(&snapshot, &opinion).is_none());
+        snapshot.edit_target = Some(openusd::usd::EditTarget::for_local_direct_variant("weak.usda", "/Source{choice=a}").unwrap());
+        let Some(usd_bevy::editor::EditorCommand::EditChecked { edit: usd_bevy::editor::EditorEdit::ClearReferences { prim }, document_id, revision, target })
+            = super::clear_reference_command(&snapshot, &opinion) else { panic!("checked clear") };
+        assert_eq!((document_id, revision, prim.as_str()), (4, 9, "/Source"));
+        assert_eq!(Some(target), snapshot.edit_target);
+    }
+
     #[test]
     fn reference_readout_keeps_source_identity_buckets_and_custom_data() {
         use openusd::sdf::{LayerOffset, Reference, ReferenceListOp, Value};

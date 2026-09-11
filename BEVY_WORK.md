@@ -16,6 +16,20 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Reference opinion readouts now offer Clear local reference opinion only when
+their source layer and spec path match the active target's mapped selected prim.
+The command retains the full document/revision/target guard and uses existing
+undoable ClearReferences authoring. Other layers and unmapped variant specs do
+not expose the action. Tests check layer/spec matching and every guard field;
+all 62 viewer tests and check-all pass
+(`/tmp/reference-clear-final-{tests,check}.log`). Native
+`reference_clear.replay` removes the cube and reference readout; the
+`reference_clear_undo.replay` toolbar action restores them. Inspected
+`target/reference-clear-ui.png` and `target/reference-clear-undo-ui.png`; both
+capture guards pass (`/tmp/reference-clear-capture.log`,
+`/tmp/reference-clear-undo-capture.log`). Entry creation/replacement and
+arbitrary reference-list editing remain API-only.
+
 Reference provenance is now visible beneath the payload controls in the renamed
 Payloads / references inspector group. Readouts retain source layer/spec, authored
 asset/prim strings, list-op buckets, explicit-empty blockers, separate cumulative

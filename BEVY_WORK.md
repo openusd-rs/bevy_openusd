@@ -3,6 +3,19 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Support documentation reconciliation
+
+The existing SUPPORT.md matrix retains its detailed rendering, packaging and
+benchmark limits and now includes the recent editor, layer participation,
+diagnostics and capture work. A release-blocker summary distinguishes those
+features from unresolved host frames, native fidelity, unsaved-state handling
+and broader performance acceptance. README links to the matrix; the upgrade
+assessment is explicitly historical rather than a current missing-feature list.
+
+This is documentation-only. Local Markdown destinations and diff whitespace
+were checked; no runtime or test-suite rerun is claimed. The watcher/native
+counts below remain evidence from their recorded revision and commands.
+
 ## Capture companion preservation and current watcher gates
 
 The host capture preflight now refuses existing primary settings, Weston/viewer,

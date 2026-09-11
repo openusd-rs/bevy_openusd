@@ -199,6 +199,10 @@ not a floating dependency.
 
 ## Revised roadmap assessment
 
+This table records the migration-time assessment, not current implementation
+status. Subsequent work supersedes several gaps below; use [SUPPORT.md](SUPPORT.md)
+and the latest [work-log evidence](BEVY_WORK.md) for the current integration.
+
 These are separate questions: what upstream can represent/resolve, and what
 our Bevy runtime and editor expose. Upgrading the former does not finish the latter.
 

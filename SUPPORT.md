@@ -2,7 +2,26 @@
 
 This describes the current checkout, not every capability of upstream OpenUSD.
 Bevy is pinned to 0.19.1. OpenUSD uses the Git baseline in Cargo.toml plus the
-local writer and packaging changes recorded in `vendor/openusd/VENDORED.md`.
+review patches recorded in `vendor/openusd/VENDORED.md`.
+
+## Current release blockers
+
+- Intermittent black host frames remain unresolved; a host-only control also
+  reproduced failure. The scoped sibling-host repaint change awaits permission.
+- Spot/UR5 fidelity and broader native-render comparisons remain incomplete.
+  Do not infer full-scene parity from bounded numerical or image fixtures.
+- Complete multi-layer unsaved-state tracking and window-close handling remain
+  open. Conservative Open confirmation and texture recovery are not substitutes.
+- General typed scene-building, broader backend coverage and interactive/GPU
+  performance acceptance remain incomplete, as qualified in the matrix below.
+
+The full integration goal remains active. The [work log](BEVY_WORK.md) records
+revision-specific tests, inspected images and failed probes; historical benchmark
+numbers are not measurements of a later checkout. Recent watcher-enabled gates
+passed 616 ordinary tests and a separate 23-test native run; see that log for
+commands and scope rather than treating counts as a release certification.
+
+## Capability matrix
 
 USDZ export bundles ordinary layer and asset dependencies through the stage's
 resolver, preserving root/edit semantics and live edits. Moved-package native
@@ -45,9 +64,12 @@ entries, preserving layer composition and live edits rather than archive layout.
 | Skinning | Optional classic-linear GPU skinning, CPU fallback; vertex and constant influence sets with time-sampled indices/weights, including samples without defaults; material subsets share a palette; compatible morph targets combine before skinning | GPU limit: four normalized influences, 256 joints; unsupported morph normal modes use fallback; broader fidelity/performance remain open |
 | Morph targets | GPU position targets with generated flat normals or indexed vertex/varying authored normal deltas; standalone and combined classic-linear skinning; sparse shapes/inbetweens, cached buffers and material subsets; live independent-clock reversal captured against a CPU reference | Face-varying normals and generated smooth-normal deltas remain incomplete; target count capped at 256 and texture-backend vertex capacity; normal-map tangents and broader fidelity/performance unverified. The covered live 10,0 endpoint is pixel-identical; the separate 0,10 comparison differs by one RGB level at one pixel |
 | Instancer validation | Array lengths, prototype indices, finite transforms and nonzero quaternion checks; half/float/double quaternion decoding; last-valid projection on malformed updates | Missing prototype lists retain placeholders; unsupported prototype content still needs broader diagnostics |
-| Editor | Selection, typed property edits, variants, layers, payload controls, namespace edits, undo/redo; configurable retained command limit (default 128) | UI interaction acceptance incomplete; command count does not bound diff bytes or in-flight transaction capture |
+| Editor | Selection, typed default/sample edits, attribute filtering, matrices, relationships, variants, reference/payload list operations, namespace edits and undo/redo; configurable retained command limit (default 128) | Numeric-array text editing is bounded to 4096 scalar components / 256 KiB; unsupported types remain read-only. General interaction acceptance is incomplete; command count does not bound diff bytes or in-flight capture |
+| Runtime layer participation | Checked edit-target, payload-load and mute/unmute actions; effective load-rule/muting changes advance revision without authored undo entries; root/active edit layers are protected from muting | Muting is session-local. Undo/redo of a command targeting a muted layer requires unmuting first; runtime state on excluded/despawned entities is not restored |
+| Inspector diagnostics | Selected projection errors, subset and CPU-skin fallback reasons, missing UV/tangent inputs and generated-child material warnings with source labels | Child collection stops at 4096 visited entities / 64 warnings with an explicit truncation message; unrelated runtime subtrees and nonmaterial child issues are excluded |
+| Capture validation | Viewport readback, native host capture, replays and same-process two-frame capture; pixel and runtime-panic checks; existing companion/symlink refusal | Fixed waits and brightness are not readiness/fidelity proof. Known panic markers do not detect arbitrary hangs or unlogged failures; artifact preflight is not an atomic reservation against concurrent writers |
 | Viewer timeline | EditorBridge seek/play commands; Timeline pane with play/pause, stepping, start and typed seek; shared playback math with independent instances; inspected captures for typed seek, nonfinite rejection, play/pause, next/previous and Go to start | Interactions use injected egui input in an isolated native viewer; OS-level mouse/keyboard, long-running playback performance and broader overlay acceptance remain unverified |
-| Persistence | Explicit root-layer, edit-layer and flattened export through same-directory staging, file sync, atomic replacement and Unix directory sync; existing file permissions retained | Final symlinks, directories and read-only targets rejected; inode identity/ownership/ACL preservation and concurrent-writer conflict detection are not provided. Export modes have different composition semantics; no universal lossless flattened round trip claimed |
+| Persistence | Explicit root-layer, edit-layer and flattened export through same-directory staging, file sync, atomic replacement and Unix directory sync; existing file permissions retained | Final symlinks, directories and read-only targets rejected; inode identity/ownership/ACL preservation and concurrent-writer conflict detection are not provided. Root/edit exports retain authored muted sublayers; flattened exports omit muted opinions. Muted sets are not persisted. No universal lossless flattened round trip claimed |
 | Viewer | Studio directional lighting, infinite presentation grid, automatic scene framing | No full IBL acceptance; animated bounds and broader asset corpus need validation |
 | Animation showcase | Bundled animation_showcase.usda; inspected Vulkan captures show shape/prototype growth and material changes; Timeline replay captures exercise live playback, pause, stepping and return to start | Bounded egui replay acceptance, not OS input or a complete flagship showcase; no reference-renderer comparison for the assembled showcase |
 | Authoring | Safe snippets, typed references, immutable UsdSource::with_reference and atomic with_references composition with captured dependencies, canonical transaction-backed EditorSession with nested atomic batches; typed schema/component and reusable assembly examples; sequential/batch assembly benchmark with output equivalence checks | Nonempty source reference composition requires a USDA receiver and new destination prims; each batch opens an assembly stage and exports its root once, with validation stages per distinct source snapshot. Measurements cover a captured shared-Cube fixture, not production scene or renderer performance. General reusable typed scene-building API remains incomplete; these APIs are not full BSN equivalence |

@@ -3,6 +3,40 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Bounded editor command history
+
+EditorSession now retains at most 128 total undo/redo commands by default.
+`history_limit()` exposes the limit; `set_history_limit(n)` can change it or
+disable retained history at zero. Trimming favors newest undo commands, then
+nearest redo commands, without changing current scene data. Successful edits
+and redo trim only after the entire command completes. In-flight inverse capture
+remains unlimited so a failed multi-transaction batch can still roll back every
+transaction before any old history is evicted. This bounds retained command
+count, not transaction bytes, stage size or temporary memory during a command.
+
+The additive upstream `UndoStage::discard_oldest` drains pending edits and drops
+oldest inverse transactions without replay. It is recorded in
+`patches/openusd-undo-pruning.patch`, with reverse-apply checking. The two focused
+upstream tests pass (`/tmp/history-limit-upstream-tests.log`): recent transactions
+remain undoable, discarded edits remain authored, recording continues, oversized
+and zero requests work, and pending direct edits are included. Only the own-
+generated vendor Cargo.lock was removed afterward; no sibling or fixture state
+was deleted.
+
+Editor tests cover whole multi-transaction command eviction, undo/redo after
+eviction, nearest-redo retention, external-edit baselines, zero retention and
+rollback after 32 successful subcommands followed by a failure with full/zero
+history. The initial two focused tests pass (`/tmp/history-limit-tests.log`).
+A further 512-edit regression checks the 128-command default and exact agreement
+between retained commands and inverse transaction depth, then undoes/redoes the
+entire retained window. This supersedes earlier unbounded-retention notes, not
+the broader editor or operational acceptance checklist.
+
+Validation: 540 ordinary workspace tests pass, 13 ignored; check-all, build,
+whitespace and patch reverse-apply checks pass. Logs:
+`/tmp/history-limit-{all-tests,check,build}.log`. The two upstream pruning tests
+were run separately; omitted upstream fixture suites are not counted as passing.
+
 ## Unix asset-source root replacement
 
 The `file_source` adapter now checks the root directory's device/inode once per

@@ -532,6 +532,15 @@ editor.undo()?;
 editor.redo()?;
 ```
 
+Editor sessions retain at most 128 undo/redo commands by default. Use
+`set_history_limit(n)` to change this; zero disables retained history. Lowering
+the limit keeps newest undo commands first, then nearest redo commands. Eviction
+discards complete commands and their inverse transactions only after successful
+edits, so a failed multi-transaction batch still rolls back completely. Evicted
+edits remain in the document. This is a command-count limit, not a byte budget
+or a bound on temporary capture during a command; direct stage edits establish
+a new history baseline when the editor next synchronizes them.
+
 The old `authoring::EditHistory` API has been removed. Migrate `define`,
 `set_attr`, `rename`, `reparent` and `set_variant` calls to the corresponding
 `EditorEdit` variants; `undo`/`redo` no longer take a stage argument. Low-level

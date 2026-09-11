@@ -516,6 +516,7 @@ pub struct EditorSession {
     selected: Option<String>,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
+    history_limit: usize,
 }
 
 impl EditorSession {
@@ -528,12 +529,32 @@ impl EditorSession {
             selected: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            history_limit: 128,
         }
     }
 
     pub fn stage(&self) -> &Stage { &self.stage }
 
     pub fn document_id(&self) -> u64 { self.document_id }
+
+    /// Maximum retained undo and redo commands; defaults to 128.
+    pub fn history_limit(&self) -> usize { self.history_limit }
+
+    /// Retains newest undo commands, then nearest redo commands. Zero disables history.
+    /// Limits command count, not diff bytes or transactions inside an active command.
+    pub fn set_history_limit(&mut self, limit: usize) {
+        self.synchronize_external_edits();
+        self.history_limit = limit;
+        self.trim_history();
+    }
+
+    fn trim_history(&mut self) {
+        let excess = self.undo.len().saturating_sub(self.history_limit);
+        let transactions = self.undo.drain(..excess).map(|entry| entry.transactions).sum();
+        self.stage.discard_oldest(transactions);
+        let excess = (self.undo.len() + self.redo.len()).saturating_sub(self.history_limit);
+        self.redo.drain(..excess);
+    }
 
     pub fn select(&mut self, path: Option<String>) -> anyhow::Result<()> {
         if let Some(path) = &path {
@@ -572,6 +593,7 @@ impl EditorSession {
             self.selected = edit.selection_after(self.selected.as_deref());
             self.undo.push(HistoryEntry { edit, target, transactions, selection_before, selection_after: self.selected.clone() });
             self.redo.clear();
+            self.trim_history();
         }
         Ok(())
     }
@@ -604,6 +626,7 @@ impl EditorSession {
         entry.transactions = self.stage.undo_depth() - before;
         if entry.selection_before != entry.selection_after { self.selected = entry.selection_after.clone(); }
         self.undo.push(entry);
+        self.trim_history();
         Ok(true)
     }
 
@@ -736,6 +759,90 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn default_history_limit_bounds_retained_transactions() {
+        use super::*;
+        let stage = Stage::builder().in_memory("history-retention.usda").unwrap();
+        stage.define_prim("/Model").unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        for value in 0..512 {
+            editor.edit(EditorEdit::Attribute { prim: "/Model".into(), name: "counter".into(),
+                type_name: "int".into(), value: Value::Int(value) }).unwrap();
+            assert!(editor.undo.len() <= 128);
+            assert_eq!(editor.stage.undo_depth(), editor.undo.iter().map(|entry| entry.transactions).sum::<usize>());
+        }
+        assert_eq!(editor.undo.len(), 128);
+        for _ in 0..128 { assert!(editor.undo().unwrap()); }
+        assert!(!editor.undo().unwrap());
+        assert_eq!(stage.prim("/Model").unwrap().attribute("counter").get::<Value>().unwrap(), Some(Value::Int(383)));
+        for _ in 0..128 { assert!(editor.redo().unwrap()); }
+        assert!(!editor.redo().unwrap());
+        assert_eq!(stage.prim("/Model").unwrap().attribute("counter").get::<Value>().unwrap(), Some(Value::Int(511)));
+    }
+    #[test]
+    fn history_limit_evicts_whole_commands_after_atomic_edits() {
+        use super::*;
+        let stage = Stage::builder().in_memory("bounded-history.usda").unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        assert_eq!(editor.history_limit(), 128);
+        editor.set_history_limit(2);
+        let define = |path: &str| EditorEdit::Define { path: path.into(), type_name: "Xform".into() };
+        editor.edit(define("/Permanent")).unwrap();
+        editor.edit(EditorEdit::Batch(vec![define("/A"), define("/B")])).unwrap();
+        assert!(editor.undo.last().unwrap().transactions > 1);
+        editor.edit(define("/Newest")).unwrap();
+        assert_eq!(editor.undo.len(), 2);
+        assert!(editor.undo().unwrap());
+        assert!(editor.undo().unwrap());
+        assert!(!editor.undo().unwrap());
+        assert!(stage.prim("/Permanent").unwrap().is_valid().unwrap());
+        for path in ["/A", "/B", "/Newest"] { assert!(!stage.prim(path).unwrap().is_valid().unwrap()); }
+        assert!(editor.redo().unwrap());
+        assert!(editor.redo().unwrap());
+        assert!(!editor.redo().unwrap());
+        editor.set_history_limit(1);
+        let before = stage.root_layer().export_to_string().unwrap();
+        let depth = editor.stage.undo_depth();
+        let mut edits = (0..32).map(|i| define(&format!("/Temporary{i}"))).collect::<Vec<_>>();
+        edits.push(EditorEdit::TransformMatrix { prim: "/Missing".into(), matrix: [0.0; 16], reset: false });
+        assert!(editor.edit(EditorEdit::Batch(edits.clone())).is_err());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert_eq!(editor.stage.undo_depth(), depth);
+        assert_eq!(editor.undo.len(), 1);
+        editor.set_history_limit(0);
+        assert!(!editor.undo().unwrap());
+        assert!(!editor.redo().unwrap());
+        assert_eq!(editor.stage.undo_depth(), 0);
+        assert!(editor.edit(EditorEdit::Batch(edits)).is_err());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        editor.edit(define("/Untracked")).unwrap();
+        assert_eq!(editor.stage.undo_depth(), 0);
+        assert!(!editor.undo().unwrap());
+        assert!(stage.prim("/Untracked").unwrap().is_valid().unwrap());
+    }
+
+    #[test]
+    fn history_limit_preserves_nearest_redo_and_external_baselines() {
+        use super::*;
+        let stage = Stage::builder().in_memory("redo-limit.usda").unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let define = |path: &str| EditorEdit::Define { path: path.into(), type_name: "Xform".into() };
+        for path in ["/A", "/B", "/C", "/D"] { editor.edit(define(path)).unwrap(); }
+        for _ in 0..3 { assert!(editor.undo().unwrap()); }
+        editor.set_history_limit(2);
+        assert_eq!(editor.redo.len(), 1);
+        assert!(editor.redo().unwrap());
+        assert!(!editor.redo().unwrap());
+        assert!(stage.prim("/B").unwrap().is_valid().unwrap());
+        assert!(!stage.prim("/C").unwrap().is_valid().unwrap());
+        stage.define_prim("/External").unwrap();
+        editor.set_history_limit(1);
+        assert!(!editor.undo().unwrap());
+        editor.edit(define("/Recent")).unwrap();
+        assert!(editor.undo().unwrap());
+        assert!(stage.prim("/External").unwrap().is_valid().unwrap());
+        assert!(stage.prim("/B").unwrap().is_valid().unwrap());
+    }
     #[test]
     fn visibility_commands_edit_samples_or_defaults_and_undo() {
         let source = crate::UsdSource::snapshot("visibility.usda", include_bytes!("../../../assets/visibility_animation.usda").as_slice()).unwrap();

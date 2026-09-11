@@ -3,13 +3,20 @@
 Run from the repository root; every dependency is bundled in assets/:
 
 ```sh
-USD_VIEWER_PANE=timeline USD_VIEWER_DOME=/Showcase/Environment \
+USD_VIEWER_PANE=timeline \
   make run CARGO='cargo --offline' ARGS=assets/flagship_showcase.usda
 ```
 
-Press **Play**, or enter 0, 30 or 60 in **USD time code** and click **Seek and
+Press **Play**, drag the **Time** scrubber, or enter 0, 30 or 60 in **USD time code** and click **Seek and
 pause**. The range is 0–60 at 24 time codes per second. Open **Lighting** and
 choose **Use studio only** if the device cannot filter dome maps.
+
+The UI dependency is pinned to Mara `develop` commit `b792f44`. That upstream
+host does not yet include the local `new_graph` fixes for whole-window GPU
+screenshot requests or the device features required for dome-map filtering.
+The earlier direct-capture and embedded-dome results below apply to that local
+host, not this upstream revision. Desktop capture remains available; use studio
+lighting when running this revision.
 
 | Location | What to inspect |
 | --- | --- |
@@ -17,7 +24,7 @@ choose **Use studio only** if the device cannot filter dome maps.
 | Back row | Three instances share a growing tetrahedron prototype |
 | Front left | Two-joint bar bends at 30 and returns upright at 60 |
 | Front middle | Morph panel moves one corner out of plane |
-| Front right | Metallic sphere reflects the red/blue dome |
+| Front right | Metallic sphere; red/blue reflections require a dome-capable host |
 | Animated objects | Shared material changes orange to blue |
 
 The scene references animation_showcase.usda with time scale 6, the skeleton

@@ -32,6 +32,26 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Payload drafts with at least two rows now expose separate order controls.
+Earlier/Later swap complete rows, retaining their list mode, raw field text and
+omitted-versus-explicit offset representation. Moves touch only the draft;
+the order panel's Apply parses and sends the complete operation through source
+conflict and checked-command guards. Moving different-mode rows does not change
+bucket membership. Labels wrap asset/target paths and the panel accounts for
+wrapped labels/errors in its size. Context resets also reset the disclosure.
+
+Tests cover both directions, invalid edges/overflow, exact row and time-offset
+retention, mixed-mode movement, no authoring before Apply, composition change,
+exact-text undo and unchanged fixture bytes. The native layout capture
+`target/payload-order-layout-ui.png` shows the original Box/Ball draft and blue
+cube; the fixture's Ball entry has offset 3 and scale 2.
+`payload_order_apply.replay` moves Ball earlier and applies: inspected
+`target/payload-order-applied-ui.png` shows Ball/Box order, the orange sphere and
+the retained 3/2 authored mapping. Both capture guards pass
+(`/tmp/payload-order-{layout,applied}-capture.log`). All 69 viewer tests and
+check-all pass (`/tmp/payload-order-final-{tests,check}.log`). The latest full
+workspace gate above predates this ordering control.
+
 Payload whole-list drafts now retain the local source opinion observed when the
 draft starts or is imported. Editing any row, its mode or the row count marks the
 draft as touched. A changed source then withholds Apply unless it matches the

@@ -88,6 +88,16 @@ struct State {
     context: Option<(u64, String, String)>, target: Option<openusd::usd::EditTarget>,
     rows: Vec<Row>, error: String,
     baseline: Option<PayloadListOp>, touched: bool,
+    order_open: bool,
+}
+
+fn move_row(state: &mut State, index: usize, earlier: bool) -> bool {
+    let next = if earlier { index.checked_sub(1) } else { index.checked_add(1) };
+    let Some(next) = next.filter(|next| *next < state.rows.len()) else { return false };
+    if index >= state.rows.len() { return false; }
+    state.rows.swap(index, next);
+    state.touched = true;
+    true
 }
 
 fn source_conflicts(state: &mut State, current: Option<&PayloadListOp>) -> bool {
@@ -207,9 +217,96 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
     }))
 }
 
+fn row_target_lines(row: &Row) -> Vec<String> {
+    super::inspector::path_lines(&format!("{} <{}>", if row.asset.is_empty() { "(internal)" } else { &row.asset },
+        if row.prim.is_empty() { "defaultPrim" } else { &row.prim }))
+}
+
+pub fn order_pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraft) -> Option<Pod> {
+    let prim = snapshot.selected.as_ref()?.clone();
+    let key = (snapshot.document_id, snapshot.edit_layer.clone(), prim.clone());
+    let units = {
+        let state = draft.0.lock().ok()?;
+        if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target || state.rows.len() < 2 { return None; }
+        if state.order_open {
+            4+state.rows.iter().enumerate().map(|(index, row)| 1+row_target_lines(row).len()
+                +usize::from(index > 0)+usize::from(index+1 < state.rows.len())).sum::<usize>()
+                +if state.error.is_empty() { 0 } else { super::inspector::path_lines(&state.error).len() }
+        } else { 1 }
+    };
+    let local = local_operation(snapshot).cloned();
+    let context = EditorSnapshot { document_id: snapshot.document_id, revision: snapshot.revision,
+        edit_target: snapshot.edit_target.clone(), ..Default::default() };
+    let bridge = bridge.clone();
+    let draft = draft.clone();
+    Some(Pod::new(Id::new(("editor.payload.order", &key))).with_custom_units(units, move |ui| {
+        let Ok(mut state) = draft.0.lock() else { return };
+        if state.context.as_ref() != Some(&key) || state.target != context.edit_target { return; }
+        if ui.button(if state.order_open { "Hide payload draft order" } else { "Reorder payload draft rows" }).clicked { state.order_open = !state.order_open; }
+        if !state.order_open { return; }
+        ui.label("Moves affect the draft until Apply");
+        let mut movement = None;
+        for (index, row) in state.rows.iter().enumerate() {
+            ui.label(&format!("Payload {}: {}", index+1, row.mode.label()));
+            for line in row_target_lines(row) { ui.label(&line); }
+            if index > 0 && ui.button("Move draft row earlier").clicked { movement = Some((index, true)); }
+            if index+1 < state.rows.len() && ui.button("Move draft row later").clicked { movement = Some((index, false)); }
+        }
+        if let Some((index, earlier)) = movement { move_row(&mut state, index, earlier); }
+        if source_conflicts(&mut state, local.as_ref()) {
+            ui.label("Resolve the source conflict in the form");
+        } else if ui.button("Apply reordered payload draft").clicked {
+            match parse_rows(&state.rows) {
+                Ok(operation) => {
+                    state.error.clear();
+                    if let Some(command) = context.checked_edit(EditorEdit::PayloadListOp { prim, operation }) { super::send(&bridge, command); }
+                }
+                Err(error) => state.error = error,
+            }
+        }
+        if !state.error.is_empty() { for line in super::inspector::path_lines(&state.error) { ui.label(&line); } }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_draft_order_preserves_rows_and_undo() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/payload_order.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let original = editor.snapshot().unwrap().payload_opinions[0].operation.clone();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let mut state = State::default();
+        reload_source(&mut state, Some(&original)).unwrap();
+        assert!(!move_row(&mut state, 0, true));
+        assert!(!move_row(&mut state, 1, false));
+        assert!(!move_row(&mut state, usize::MAX, false));
+        assert!(move_row(&mut state, 1, true));
+        assert!(state.touched);
+        let moved = parse_rows(&state.rows).unwrap();
+        assert_eq!(moved.prepended_items, original.prepended_items.iter().rev().cloned().collect::<Vec<_>>());
+        assert!(!source_conflicts(&mut state, Some(&original)));
+        assert!(source_conflicts(&mut state, Some(&PayloadListOp::explicit([]))));
+        assert_eq!(parse_rows(&state.rows).unwrap(), moved);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        editor.edit(EditorEdit::PayloadListOp { prim: "/Root".into(), operation: moved }).unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert!(move_row(&mut state, 0, false));
+        assert_eq!(parse_rows(&state.rows).unwrap(), original);
+        state.rows[0].mode = Mode::Delete;
+        let first = state.rows[0].clone();
+        assert!(move_row(&mut state, 0, false));
+        assert!(state.rows[1] == first);
+        assert_eq!(parse_rows(&state.rows).unwrap().deleted_items[0], original.prepended_items[0]);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
 
     #[test]
     fn payload_source_conflicts_preserve_drafts_and_acknowledge_writes() {

@@ -96,6 +96,8 @@ mod tests {
             (include_str!("../scripts/replays/payload_source_conflict.replay"), 10, 22000),
             (include_str!("../scripts/replays/payload_source_keep.replay"), 13, 26000),
             (include_str!("../scripts/replays/payload_source_reload.replay"), 13, 26000),
+            (include_str!("../scripts/replays/payload_order_layout.replay"), 11, 22000),
+            (include_str!("../scripts/replays/payload_order_apply.replay"), 17, 28000),
             (include_str!("../scripts/replays/payload_replace.replay"), 15, 16000),
             (include_str!("../scripts/replays/payload_clear.replay"), 18, 18000),
             (include_str!("../scripts/replays/payload_invalid.replay"), 7, 14000),

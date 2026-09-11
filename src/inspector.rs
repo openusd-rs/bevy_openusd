@@ -161,6 +161,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         payloads.extend(reference_edit_pods(snapshot, bridge, drafts));
         payloads.extend(reference_structure_pods(snapshot, bridge, drafts));
         payloads.extend(reference_bucket_pods(snapshot, bridge, drafts));
+        payloads.extend(crate::payload_editor::order_pod(snapshot, bridge, &drafts.3));
         body.add_normal("editor.payloads", "Payloads / references", "document", payloads);
     }
     for (set, options) in &snapshot.variant_choices {

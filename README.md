@@ -148,6 +148,10 @@ In the viewer, click a payload row's mode button to cycle through Replace,
 Prepend, Append, Add, Delete and Order. Apply replaces the complete local
 operation with the draft; non-replacement modes can be mixed, but Replace
 cannot be mixed with them. Rows retain their order within each operation bucket.
+With two or more draft rows, the separate ordering controls move whole rows
+earlier/later without authoring. **Apply reordered payload draft** writes the
+complete operation through the same source-conflict and checked-command guards.
+Moving rows of different modes does not change their bucket membership.
 When the active edit target has a local opinion at the selected prim's mapped
 spec path, **Discard draft and load local opinion** imports it without authoring.
 Relative asset strings and omitted versus explicit time offsets are preserved.

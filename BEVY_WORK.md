@@ -5,6 +5,17 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+Inspector draft isolation now clears value, sample-time and expanded-source maps
+on document identity or complete EditTarget changes, including different variant
+mappings into the same layer. Revision/selection changes within that context do
+not erase typing. This also releases maps retained from previous documents.
+Payload drafts now compare the complete target in addition to their document,
+layer and prim key; stale closures cannot operate on a newly mapped draft.
+Tests cover all three property maps, document/layer/same-layer mapping changes,
+and preservation across revisions/selection. All 54 viewer tests, check-all and
+build pass (`/tmp/draft-context-{tests,check,build}.log`). Same-context external
+value conflict merging and exhaustive UI draft workflows remain open.
+
 The context guard now also covers every EditorEdit emitted by the property
 inspector: rename/move, variant selection, relationship replace/clear, default
 and sampled attribute writes, sample removal, value clearing and blocking.

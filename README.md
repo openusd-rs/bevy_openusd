@@ -112,6 +112,9 @@ The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
 revision and complete edit-target mapping. Payload and property inspector edits use it;
 stale commands fail before authoring instead of being redirected to a new layer
 or document. The existing unchecked `EditorCommand::Edit` remains available.
+Property value/time drafts and source-expansion state are cleared when the
+document or complete edit target changes. Ordinary revision and selection
+changes retain drafts; this is context isolation, not edit-conflict merging.
 These author layer opinions; `EditorCommand::Payload` separately changes runtime
 load rules. The inspector's Payload authoring group accepts up to 64 draft
 entries with asset, prim, offset and scale fields. Replace authors the whole list;

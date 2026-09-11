@@ -11,7 +11,20 @@ pub struct Drafts(
     Arc<Mutex<HashMap<String, (String, String)>>>,
     Arc<Mutex<HashMap<String, bool>>>,
     crate::payload_editor::PayloadDraft,
+    Arc<Mutex<Option<(u64, Option<openusd::usd::EditTarget>)>>>,
 );
+
+impl Drafts {
+    fn synchronize_context(&self, snapshot: &EditorSnapshot) {
+        let Ok(mut context) = self.4.lock() else { return };
+        let current = (snapshot.document_id, snapshot.edit_target.clone());
+        if context.as_ref() == Some(&current) { return; }
+        if let Ok(mut values) = self.0.lock() { values.clear(); }
+        if let Ok(mut times) = self.1.lock() { times.clear(); }
+        if let Ok(mut expanded) = self.2.lock() { expanded.clear(); }
+        *context = Some(current);
+    }
+}
 
 fn path_lines(path: &str) -> Vec<String> {
     path.split('\n').flat_map(|line| {
@@ -26,6 +39,7 @@ fn send_edit(bridge: &EditorBridge, snapshot: &EditorSnapshot, edit: EditorEdit)
 }
 
 pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts, current_time: f64) {
+    drafts.synchronize_context(snapshot);
     let edit_context = Arc::new(EditorSnapshot {
         document_id: snapshot.document_id, revision: snapshot.revision,
         edit_target: snapshot.edit_target.clone(), ..Default::default()
@@ -371,6 +385,35 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn drafts_reset_on_document_or_target_not_revision_or_selection() {
+        let drafts = super::Drafts::default();
+        let mut snapshot = usd_bevy::editor::EditorSnapshot {
+            document_id: 1, edit_target: Some(openusd::usd::EditTarget::for_layer("root.usda")), ..Default::default()
+        };
+        for transition in 0..4 {
+            match transition {
+                1 => snapshot.document_id = 2,
+                2 => snapshot.edit_target = Some(openusd::usd::EditTarget::for_layer("other.usda")),
+                3 => snapshot.edit_target = Some(openusd::usd::EditTarget::for_local_direct_variant("other.usda", "/Root{v=a}").unwrap()),
+                _ => {},
+            }
+            drafts.synchronize_context(&snapshot);
+            assert!(drafts.0.lock().unwrap().is_empty());
+            assert!(drafts.1.lock().unwrap().is_empty());
+            assert!(drafts.2.lock().unwrap().is_empty());
+            drafts.0.lock().unwrap().insert("field".into(), ("original".into(), "unsaved".into(), "error".into()));
+            drafts.1.lock().unwrap().insert("field".into(), ("3".into(), "error".into()));
+            drafts.2.lock().unwrap().insert("field".into(), true);
+            snapshot.revision += 1;
+            snapshot.selected = Some(format!("/Prim{transition}"));
+            drafts.synchronize_context(&snapshot);
+            assert_eq!(drafts.0.lock().unwrap()["field"].1, "unsaved");
+            assert_eq!(drafts.1.lock().unwrap()["field"].0, "3");
+            assert!(drafts.2.lock().unwrap()["field"]);
+        }
+    }
+
     #[test]
     fn inspector_edit_sender_preserves_context_and_rejects_stale_actions() {
         use bevy::prelude::*;

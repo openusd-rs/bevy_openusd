@@ -27,7 +27,10 @@ impl Row {
 }
 
 #[derive(Default)]
-struct State { context: Option<(u64, String, String)>, rows: Vec<Row>, error: String }
+struct State {
+    context: Option<(u64, String, String)>, target: Option<openusd::usd::EditTarget>,
+    rows: Vec<Row>, error: String,
+}
 
 #[derive(Clone, Default)]
 pub struct PayloadDraft(Arc<Mutex<State>>);
@@ -38,7 +41,9 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
     let key = (snapshot.document_id, snapshot.edit_layer.clone(), prim.clone());
     let count = {
         let mut state = draft.0.lock().ok()?;
-        if state.context.as_ref() != Some(&key) { *state = State { context: Some(key.clone()), ..Default::default() }; }
+        if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target {
+            *state = State { context: Some(key.clone()), target: snapshot.edit_target.clone(), ..Default::default() };
+        }
         state.rows.len()
     };
     let bridge = bridge.clone();
@@ -49,7 +54,7 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
     let draft = draft.clone();
     Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+count*6, move |ui| {
         let Ok(mut state) = draft.0.lock() else { return };
-        if state.context.as_ref() != Some(&key) { return; }
+        if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target { return; }
         ui.label("Payload list replacement");
         ui.label("Asset paths are relative to the edit layer");
         ui.label("Draft starts empty; does not copy composed arcs");
@@ -125,8 +130,14 @@ mod tests {
         let draft = PayloadDraft::default();
         let bridge = EditorBridge::default();
         let mut snapshot = EditorSnapshot { document_id: 1, selected: Some("/Root".into()), edit_layer: "root.usda".into(), ..Default::default() };
-        for change in 0..4 {
-            match change { 1 => snapshot.document_id = 2, 2 => snapshot.selected = Some("/Other".into()), 3 => snapshot.edit_layer = "weak.usda".into(), _ => {} }
+        for change in 0..5 {
+            match change {
+                1 => snapshot.document_id = 2,
+                2 => snapshot.selected = Some("/Other".into()),
+                3 => snapshot.edit_layer = "weak.usda".into(),
+                4 => snapshot.edit_target = Some(openusd::usd::EditTarget::for_local_direct_variant("weak.usda", "/Other{v=a}").unwrap()),
+                _ => {},
+            }
             assert!(pod(&snapshot, &bridge, &draft).is_some());
             assert!(draft.0.lock().unwrap().rows.is_empty());
             draft.0.lock().unwrap().rows.push(Row::default());

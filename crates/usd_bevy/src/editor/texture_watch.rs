@@ -104,6 +104,7 @@ impl Plugin for EditorTextureWatchPlugin {
 fn watch_textures(
     editor: Option<NonSend<EditorSession>>,
     textures: Option<Res<super::EditorTextureRequests>>,
+    mut pending_open: Option<ResMut<super::PendingInitialOpen>>,
     bridge: Res<EditorBridge>,
     mut state: ResMut<WatchState>,
     mut status: ResMut<EditorTextureWatchStatus>,
@@ -117,7 +118,7 @@ fn watch_textures(
     {
         let paths: BTreeSet<_> = textures
             .as_ref()
-            .filter(|_| document.is_some())
+            .filter(|_| document.is_some() || pending_open.is_some())
             .into_iter()
             .flat_map(|textures| textures.0.iter())
             .filter(|path| !openusd::ar::is_package_relative_path(path))
@@ -151,7 +152,9 @@ fn watch_textures(
         changed = true;
     }
     if !state.pending.is_empty() && state.next_attempt.is_none_or(|next| now >= next) {
+        let previous_files = status.files;
         changed |= install_watchers(&mut state, &mut status, now);
+        changed |= pending_open.is_some() && status.files > previous_files;
     }
     for (parent, receiver, _) in &state.watchers {
         while let Ok(event) = receiver.try_recv() {
@@ -170,7 +173,9 @@ fn watch_textures(
         }
     }
     if changed {
-        if let Err(error) = bridge.send(EditorCommand::RefreshTextures) {
+        if document.is_none() && let Some(pending) = pending_open.as_mut() {
+            pending.retry = true;
+        } else if let Err(error) = bridge.send(EditorCommand::RefreshTextures) {
             status.error = Some(error.to_string());
         }
     }
@@ -179,6 +184,93 @@ fn watch_textures(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_retry_yields_to_explicit_open_and_preserves_existing_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let current = directory.path().join("current.usda");
+        std::fs::write(&current, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, super::super::EditorPlugin));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        app.insert_resource(super::super::PendingInitialOpen { path: current.to_string_lossy().into_owned(), retry: true });
+        bridge.send(EditorCommand::Open(directory.path().join("absent.usda").to_string_lossy().into_owned())).unwrap();
+        app.update();
+        assert!(app.world().get_non_send::<EditorSession>().is_none());
+        assert!(!app.world().contains_resource::<super::super::PendingInitialOpen>());
+        bridge.send(EditorCommand::Open(current.to_string_lossy().into_owned())).unwrap();
+        bridge.send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
+            prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: openusd::sdf::Value::Double(17.0),
+        })).unwrap();
+        app.update();
+        let id = bridge.view().unwrap().document.document_id;
+        app.insert_resource(super::super::PendingInitialOpen { path: current.to_string_lossy().into_owned(), retry: true });
+        app.update();
+        assert_eq!(bridge.view().unwrap().document.document_id, id);
+        assert!(bridge.view().unwrap().document.can_undo);
+        let session = app.world().get_non_send::<EditorSession>().unwrap();
+        assert_eq!(session.stage().prim("/Root").unwrap().attribute("score").get::<f64>().unwrap(), Some(17.0));
+    }
+
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_editor_texture_watch_recovers_failed_initial_open() {
+        for corrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let scene = directory.path().join("scene.usda");
+            let texture = directory.path().join("pixel.png");
+            std::fs::write(&scene, r#"#usda 1.0
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Texture.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Texture" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @pixel.png@
+        float3 outputs:rgb
+    }
+}
+"#).unwrap();
+            if corrupt { std::fs::write(&texture, b"invalid png").unwrap(); }
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin,
+                super::super::EditorPlugin, EditorTextureWatchPlugin));
+            app.insert_resource(Assets::<Image>::default());
+            let bridge = app.world().resource::<EditorBridge>().clone();
+            bridge.send(EditorCommand::Open(scene.to_string_lossy().into_owned())).unwrap();
+            app.update();
+            assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+            assert!(app.world().get_non_send::<EditorSession>().is_none());
+            assert!(app.world().contains_resource::<super::super::PendingInitialOpen>());
+            tick_until(&mut app, |world| world.resource::<EditorTextureWatchStatus>().files == 1);
+            std::fs::write(&texture, png([255, 0, 255, 255])).unwrap();
+            tick_until(&mut app, |world| world.get_non_send::<EditorSession>().is_some());
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            assert!(!app.world().contains_resource::<super::super::PendingInitialOpen>());
+            let textures = app.world().resource::<crate::asset::SnapshotTextures>();
+            assert_eq!(textures.0.len(), 1);
+            let image = app.world().resource::<Assets<Image>>().get(textures.0.values().next().unwrap()).unwrap();
+            assert_eq!(image.data.as_deref(), Some([255, 0, 255, 255].as_slice()));
+            let id = bridge.view().unwrap().document.document_id;
+            let watched = app.world().resource::<super::super::EditorTextureRequests>().0.clone();
+            bridge.send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
+                prim: "/Mat".into(), name: "score".into(), type_name: "double".into(), value: openusd::sdf::Value::Double(17.0),
+            })).unwrap();
+            app.update();
+            let replacement = directory.path().join("replacement.usda");
+            std::fs::write(&replacement, std::fs::read_to_string(&scene).unwrap().replace("@pixel.png@", "@missing.png@")).unwrap();
+            bridge.send(EditorCommand::Open(replacement.to_string_lossy().into_owned())).unwrap();
+            app.update();
+            assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+            assert_eq!(bridge.view().unwrap().document.document_id, id);
+            assert!(bridge.view().unwrap().document.can_undo);
+            assert!(!app.world().contains_resource::<super::super::PendingInitialOpen>());
+            assert_eq!(app.world().resource::<super::super::EditorTextureRequests>().0, watched);
+        }
+    }
 
     #[test]
     fn idle_editor_watch_keeps_status_change_tick() {

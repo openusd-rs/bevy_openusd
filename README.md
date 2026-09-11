@@ -462,7 +462,12 @@ USD layers are not watched; directory replacement recovery is not implemented
 on non-Unix platforms. Failed watcher setups retry once per second while
 the app updates, without restarting successful watchers. Recovery queues a texture
 refresh to catch edits made while unavailable. Document/path changes reset the
-retry state. Images missing during a failed initial Open are not watched.
+retry state. When no document is open, a texture read/decode failure registers
+the requested image paths and retries the initial Open after watcher events or
+successful watcher setup. A newer explicit Open takes precedence over a pending
+retry. Failed replacement opens never enable retries over an existing document,
+so later image repairs cannot replace its edits or undo history. Composition or
+root-file failures do not enable this texture retry path.
 An edit that requests a missing or undecodable image keeps the previous image
 handles while registering the requested paths. Unresolved relative paths are
 watched conservatively under loaded filesystem layer directories; these candidate

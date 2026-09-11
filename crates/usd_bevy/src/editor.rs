@@ -132,11 +132,17 @@ fn advance_editor_time(world: &mut World) {
 
 fn process_commands(world: &mut World) {
     let bridge = world.resource::<EditorBridge>().clone();
-    let commands = match bridge.0.lock() {
+    let mut commands = match bridge.0.lock() {
         Ok(mut state) => std::mem::take(&mut state.commands),
         Err(_) => return,
     };
     let mut session = world.remove_non_send::<EditorSession>();
+    if let Some(mut pending) = world.get_resource_mut::<PendingInitialOpen>() {
+        if pending.retry && session.is_none() && !commands.iter().any(|command| matches!(command, EditorCommand::Open(_))) {
+            commands.push_front(EditorCommand::Open(pending.path.clone()));
+        }
+        pending.retry = false;
+    }
     let external = session.as_mut().is_some_and(EditorSession::synchronize_external_edits);
     if commands.is_empty() && !external {
         if let Some(session) = session { world.insert_non_send(session); }
@@ -155,11 +161,23 @@ fn process_commands(world: &mut World) {
             texture_dirty = true;
         }
         let result = if let EditorCommand::Open(path) = &command {
+            world.remove_resource::<PendingInitialOpen>();
+            if session.is_none() { set_texture_requests(world, Default::default()); }
             std::fs::read(path).map_err(anyhow::Error::from)
                 .and_then(|bytes| crate::UsdSource::new(path, bytes).map_err(anyhow::Error::from)).and_then(|source| {
                     let stage = source.open_stage()?;
                     crate::UsdSource::validate_composition(&stage)?;
-                    let textures = prepare_textures(&stage, &source)?;
+                    let textures = match prepare_textures(&stage, &source) {
+                        Ok(textures) => textures,
+                        Err(error) => {
+                            if session.is_none() {
+                                let requests = crate::UsdSource::stage_texture_requests(&stage).map_err(anyhow::Error::msg)?;
+                                set_texture_requests(world, texture_request_paths(&stage, &requests));
+                                world.insert_resource(PendingInitialOpen { path: path.clone(), retry: false });
+                            }
+                            return Err(error);
+                        }
+                    };
                     if !textures.is_empty() && !world.contains_resource::<Assets<Image>>() {
                         anyhow::bail!("image assets are unavailable for this document");
                     }
@@ -263,6 +281,12 @@ fn visibility_edit(stage: &Stage, prim: String, visible: bool, time: f64) -> any
 #[derive(Resource, Default)]
 pub(crate) struct EditorTextureRequests(pub std::collections::BTreeSet<String>);
 
+#[derive(Resource)]
+struct PendingInitialOpen {
+    path: String,
+    retry: bool,
+}
+
 fn set_texture_requests(world: &mut World, paths: std::collections::BTreeSet<String>) {
     if world.get_resource::<EditorTextureRequests>().is_none_or(|existing| existing.0 != paths) {
         world.insert_resource(EditorTextureRequests(paths));
@@ -271,8 +295,14 @@ fn set_texture_requests(world: &mut World, paths: std::collections::BTreeSet<Str
 
 fn refresh_textures(world: &mut World, stage: &Stage, source: &crate::UsdSource) -> anyhow::Result<()> {
     let requests = crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?;
+    set_texture_requests(world, texture_request_paths(stage, &requests));
+    let textures = decode_textures(source, requests)?;
+    install_textures(world, textures)
+}
+
+fn texture_request_paths(stage: &Stage, requests: &std::collections::BTreeSet<(String, bool)>) -> std::collections::BTreeSet<String> {
     let mut paths = std::collections::BTreeSet::new();
-    for (path, _) in &requests {
+    for (path, _) in requests {
         if std::path::Path::new(path).is_absolute() || openusd::ar::is_package_relative_path(path) {
             paths.insert(path.clone());
         } else {
@@ -285,9 +315,7 @@ fn refresh_textures(world: &mut World, stage: &Stage, source: &crate::UsdSource)
             }
         }
     }
-    set_texture_requests(world, paths);
-    let textures = decode_textures(source, requests)?;
-    install_textures(world, textures)
+    paths
 }
 
 fn prepare_textures(stage: &Stage, source: &crate::UsdSource) -> anyhow::Result<PreparedTextures> {

@@ -824,6 +824,44 @@ matches its pre-change image exactly across 921,600 pixels at RGB tolerance zero
 (`/tmp/texture-prune-image-compare.log`). No claim of renderer-memory reclamation,
 arbitrary workload performance or complete flagship acceptance follows.
 
+## Recover texture failures during initial editor open
+
+With the optional native editor texture watcher, a failed image read/decode
+during initial Open now registers requested image paths and retains a pending
+open path. Watcher events and successful watcher setup request a retry; command
+processing performs it only when no editor document exists and no newer Open
+is queued. Every explicit Open cancels the previous pending request. Successful
+opens clear it. Failed replacement opens retain the old document, texture watch
+set and undo history and never become deferred replacement requests.
+
+Initial watcher setup also triggers one retry, covering image repairs between
+the failed read and watcher installation. Existing failed-directory retry and
+Unix directory-identity recovery remain in place. Root/composition failures,
+USD layers, package members and non-Unix directory replacement remain outside
+this recovery path. Earlier sections listing failed initial texture Open as
+unsupported are superseded by this implementation, not by general dependency
+recovery or completion of the acceptance checklist.
+
+All four native editor watcher tests pass:
+`/tmp/initial-texture-retry-native.log`. The new native test covers absent and
+corrupt initial PNGs, file repair, Ready status, decoded magenta pixels, and a
+failed replacement preserving the document ID, undo history and watched paths.
+A deterministic test checks explicit-Open precedence and protects an edited
+document against a stale pending retry. The first targeted command omitted
+`file_watcher` and ran zero tests; the feature-enabled run executed and passed
+the test (`/tmp/initial-texture-retry-test-final.log`).
+
+The default workspace suite passes 530 ordinary tests (13 ignored); the full
+`file_watcher` workspace/all-targets suite passes 535 (20 ignored). Logs:
+`/tmp/initial-texture-retry-tests.log` and
+`/tmp/initial-texture-retry-feature-tests.log`. Default `make check-all`,
+`make build` and `git diff --check` pass; logs:
+`/tmp/initial-texture-retry-{check,build}.log`. The four native watcher tests
+above were run explicitly, rather than counted as passing from ignored results.
+No new rendered UI acceptance is claimed by these filesystem/pixel tests.
+The viewer also builds with `file_watcher` enabled:
+`/tmp/initial-texture-retry-feature-build.log`.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

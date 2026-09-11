@@ -3,6 +3,31 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Approved develop-based Mara host
+
+User approved using latest Mara with local host fixes. The fetched develop head
+remains b792f44. A separate worktree, ../mara-bevy-host, now contains branch
+fix/bevy-host-develop at ac47bfb52eb6e8840bdfbce6171fe7deac3d0f5a.
+Cargo.toml uses its mara package. The original ../mara branch new_graph is
+unchanged. Four unsigned commits carry OS close routing, GPU screenshot token
+forwarding, viewport repaint prediction compensation and supported dome GPU
+limits/features. The repaint cherry-pick required retaining develop's closure
+layout while inserting the delay helper; no other upstream code was replaced.
+
+Viewer tests: 86 passed. Mara host tests: 3 passed. Mara Bevy tests: 7 passed,
+2 ignored. make build and check-all pass. Logs:
+/tmp/mara-host-{restored-tests,device-tests,repaint-tests,restored-build,restored-check}.log.
+The initial dependency-test command incorrectly specified features outside the
+workspace; the successful command tests the packages with their resolved features.
+
+target/mara-develop-restored-host.png was directly captured from the GPU and
+visually inspected: Lighting reports Dome maps attached, the scene is lit and
+the sphere shows colored environment reflections. HOST_CAPTURE_OK confirms
+1440x920 readback. Both desktop frame checks also pass in
+/tmp/mara-develop-restored-capture.log. Fresh native OS-close interaction remains
+to be exercised; plugin tests and restored source routing are not that test.
+The host commits remain local and require this worktree; nothing was pushed.
+
 ## Current full-workspace gate
 
 At 3d3a2df, make test-all with offline Cargo completes 33 test suites:

@@ -3616,7 +3616,6 @@ dependencies = [
 [[package]]
 name = "mara"
 version = "0.4.1"
-source = "git+https://github.com/bresilla/mara?rev=b792f444f3993ead5406d318e10dde782991afd5#b792f444f3993ead5406d318e10dde782991afd5"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -3633,7 +3632,6 @@ dependencies = [
 [[package]]
 name = "mara_backend_egui"
 version = "0.4.1"
-source = "git+https://github.com/bresilla/mara?rev=b792f444f3993ead5406d318e10dde782991afd5#b792f444f3993ead5406d318e10dde782991afd5"
 dependencies = [
  "egui",
  "egui-scale",
@@ -3644,7 +3642,6 @@ dependencies = [
 [[package]]
 name = "mara_bevy"
 version = "0.4.1"
-source = "git+https://github.com/bresilla/mara?rev=b792f444f3993ead5406d318e10dde782991afd5#b792f444f3993ead5406d318e10dde782991afd5"
 dependencies = [
  "bevy",
  "crossbeam-channel",
@@ -3658,7 +3655,6 @@ dependencies = [
 [[package]]
 name = "mara_core"
 version = "0.4.1"
-source = "git+https://github.com/bresilla/mara?rev=b792f444f3993ead5406d318e10dde782991afd5#b792f444f3993ead5406d318e10dde782991afd5"
 dependencies = [
  "ahash",
  "egui",
@@ -3669,7 +3665,6 @@ dependencies = [
 [[package]]
 name = "mara_gpu"
 version = "0.4.1"
-source = "git+https://github.com/bresilla/mara?rev=b792f444f3993ead5406d318e10dde782991afd5#b792f444f3993ead5406d318e10dde782991afd5"
 dependencies = [
  "egui-wgpu",
 ]

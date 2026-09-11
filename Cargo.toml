@@ -32,7 +32,7 @@ openusd = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103
 openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0", features = ["geom", "shade"] }
 
 # mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
-mara = { git = "https://github.com/bresilla/mara", rev = "b792f444f3993ead5406d318e10dde782991afd5", default-features = false, features = ["window", "bevy"] }
+mara = { path = "../mara-bevy-host/mara", default-features = false, features = ["window", "bevy"] }
 # Native "Open USD…" file picker.
 rfd = "0.15"
 # Detailed, filterable tracing to stderr (the embedded Bevy app has no

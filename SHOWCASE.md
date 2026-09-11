@@ -3,7 +3,7 @@
 Run from the repository root; every dependency is bundled in assets/:
 
 ```sh
-USD_VIEWER_PANE=timeline \
+USD_VIEWER_PANE=timeline USD_VIEWER_DOME=/Showcase/Environment \
   make run CARGO='cargo --offline' ARGS=assets/flagship_showcase.usda
 ```
 
@@ -11,11 +11,11 @@ Press **Play**, drag the **Time** scrubber, or enter 0, 30 or 60 in **USD time c
 pause**. The range is 0–60 at 24 time codes per second. Open **Lighting** and
 choose **Use studio only** if the device cannot filter dome maps.
 
-The UI dependency is pinned to Mara `develop` commit `b792f44`. That upstream
-host does not yet include the local `new_graph` fixes for whole-window GPU
-screenshot requests or the device features required for dome-map filtering.
-The earlier direct-capture and embedded-dome results below apply to that local
-host, not this upstream revision. Desktop capture remains available. If dome
+The UI dependency uses `../mara-bevy-host/mara`: Mara `develop` commit `b792f44`
+plus four local host fixes, at `ac47bfb` on branch `fix/bevy-host-develop`.
+The original `../mara` checkout remains untouched. This separate worktree is
+required to build; its commits have not been pushed upstream. Whole-window GPU
+screenshots and embedded dome filtering are restored. If dome
 filtering reports an error, the viewer temporarily restores studio lighting
 and displays the error with a fallback notice in Lighting. The requested dome
 remains selected; studio fallback ends when dome maps become available.

@@ -16,6 +16,19 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+`EditorSnapshot::reference_opinions` now exposes typed authored reference list
+operations for contributing prim specs, strongest first. Each entry retains
+the original spec path, source layer, cumulative site offset and canonical
+customData. Collection shares the existing prim-stack walk with payload
+provenance, without reanchoring authored asset strings. These are contributing
+opinions, not a final composed reference list or a reference editor UI.
+The regression checks a root reference and a referenced variant opinion,
+source-relative `weak.usda`, `/Source{choice=a}`, offset 10 / scale 2,
+customData retention, explicit blocking, undo, unchanged layer text and clearing
+selection (`/tmp/reference-provenance-tests.log`).
+All 460 library tests and 60 viewer tests pass, with 14 library tests ignored;
+check-all passes (`/tmp/reference-provenance-{lib-tests,viewer-tests,final-check}.log`).
+
 Reference customData acceptance now covers root exports in USDA, USDC, USD and
 USDZ. The ordinary regression checks nested metadata, offset 10 / scale 2,
 external Cube composition and unchanged live root text after every export.

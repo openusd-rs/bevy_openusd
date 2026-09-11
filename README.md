@@ -115,6 +115,10 @@ explicit replacement preserve weaker composition according to their list rules.
 Malformed mixed operations and invalid entries reject before mutation. Reference
 customData is retained through USDA, USDC, USD and USDZ root exports, including
 snapshot-only reopening of a relocated package. These reference controls are API-only.
+`EditorSnapshot::reference_opinions` retains contributing authored reference
+list operations in strength order, including customData, original spec paths,
+source layer identifiers and cumulative site offsets. Relative paths remain
+anchored to those source layers; this is provenance, not a composed reference list.
 For authored list editing, `EditorEdit::PayloadListOp { prim, operation }`
 and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containing
 prepend, append, add, delete, and order entries. They replace the local operation,

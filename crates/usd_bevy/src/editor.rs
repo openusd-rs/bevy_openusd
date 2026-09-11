@@ -522,6 +522,7 @@ pub struct EditorSnapshot {
     pub reflect_issues: Vec<crate::route::reflect::ReflectIssue>,
     pub relationships: Vec<(String, Vec<String>)>,
     pub payload_opinions: Vec<PayloadOpinion>,
+    pub reference_opinions: Vec<ReferenceOpinion>,
     pub material_warnings: Vec<String>,
     pub prims: Vec<String>,
     pub visibility: std::collections::HashMap<String, bool>,
@@ -544,6 +545,15 @@ pub struct PayloadOpinion {
     pub prim: openusd::sdf::Path,
     pub offset: openusd::sdf::LayerOffset,
     pub operation: openusd::sdf::PayloadListOp,
+}
+
+/// Authored reference list operation at one contributing prim spec, strongest first.
+#[derive(Debug, Clone)]
+pub struct ReferenceOpinion {
+    pub layer: String,
+    pub prim: openusd::sdf::Path,
+    pub offset: openusd::sdf::LayerOffset,
+    pub operation: openusd::sdf::ReferenceListOp,
 }
 
 impl EditorSnapshot {
@@ -747,7 +757,14 @@ impl EditorSession {
             let prim = self.stage.prim(openusd::sdf::path(path)?)?;
             for site in prim.prim_stack()? {
                 let layer = self.stage.layer(&site.layer)
-                    .ok_or_else(|| anyhow::anyhow!("payload opinion layer is unavailable"))?;
+                    .ok_or_else(|| anyhow::anyhow!("composition opinion layer is unavailable"))?;
+                if let Some(value) = layer.data().try_field(&site.path, "references")? {
+                    if let Value::ReferenceListOp(operation) = value.as_ref() {
+                        snapshot.reference_opinions.push(ReferenceOpinion {
+                            layer: site.layer.clone(), prim: site.path.clone(), offset: site.offset, operation: operation.clone(),
+                        });
+                    }
+                }
                 if let Some(value) = layer.data().try_field(&site.path, "payload")? {
                     if let Value::PayloadListOp(operation) = value.as_ref() {
                         snapshot.payload_opinions.push(PayloadOpinion {
@@ -826,6 +843,49 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_provenance_preserves_variant_sites_custom_data_and_time() {
+        use super::*;
+        let weak = crate::UsdSource::snapshot("weak.usda", &br#"#usda 1.0
+class Xform "Model" {}
+def Xform "Source" (
+    variants = { string choice = "a" }
+    prepend variantSets = "choice"
+) {
+    variantSet "choice" = {
+        "a" ( prepend references = </Model> (customData = { string label = "inner" }) ) {}
+    }
+}
+"#[..]).unwrap();
+        let root = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale = 2) ) {}
+"#[..]).unwrap().with_dependency(&weak).unwrap();
+        let mut editor = EditorSession::new(root.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let opinions = editor.snapshot().unwrap().reference_opinions;
+        assert_eq!(opinions.len(), 2);
+        assert!(opinions[0].layer.ends_with("root.usda"));
+        assert_eq!(opinions[0].prim.as_str(), "/Root");
+        assert_eq!(opinions[0].offset, openusd::sdf::LayerOffset::default());
+        assert_eq!(opinions[0].operation.prepended_items[0].asset_path, "weak.usda");
+        assert!(opinions[1].layer.ends_with("weak.usda"));
+        assert_eq!(opinions[1].prim.as_str(), "/Source{choice=a}");
+        assert_eq!(opinions[1].offset, openusd::sdf::LayerOffset::new(10., 2.));
+        assert_eq!(opinions[1].operation.prepended_items[0].prim_path.as_str(), "/Model");
+        assert_eq!(opinions[1].operation.prepended_items[0].custom_data.get("label"), Some(&openusd::sdf::Value::String("inner".into())));
+        editor.edit(EditorEdit::References { prim: "/Root".into(), references: vec![] }).unwrap();
+        let blocked = editor.snapshot().unwrap().reference_opinions;
+        assert_eq!(blocked.len(), 1);
+        assert!(blocked[0].operation.explicit);
+        assert!(blocked[0].operation.explicit_items.is_empty());
+        editor.undo().unwrap();
+        assert_eq!(editor.snapshot().unwrap().reference_opinions.len(), 2);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        editor.select(None).unwrap();
+        assert!(editor.snapshot().unwrap().reference_opinions.is_empty());
+    }
+
     fn assert_reference_custom_data(stage: &openusd::usd::Stage) {
         let field = stage.root_layer().data().try_field(&openusd::sdf::path("/Root").unwrap(), "references").unwrap().unwrap().into_owned();
         let openusd::sdf::Value::ReferenceListOp(op) = field else { panic!("reference list op") };

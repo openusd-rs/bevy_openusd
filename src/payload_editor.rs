@@ -1,13 +1,45 @@
 use std::sync::{Arc, Mutex};
 use mara::ui::mara_core::{pod::Pod, vocab::Id};
-use openusd::sdf::{LayerOffset, Payload};
+use openusd::sdf::{LayerOffset, Payload, PayloadListOp};
 use usd_bevy::editor::{EditorBridge, EditorEdit, EditorSnapshot};
 
 #[derive(Clone)]
-struct Row { asset: String, prim: String, offset: String, scale: String }
+struct Row { asset: String, prim: String, offset: String, scale: String, mode: Mode }
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Mode { #[default] Replace, Prepend, Append, Add, Delete, Order }
+
+impl Mode {
+    fn label(self) -> &'static str {
+        match self { Self::Replace => "Replace", Self::Prepend => "Prepend", Self::Append => "Append",
+            Self::Add => "Add", Self::Delete => "Delete", Self::Order => "Order" }
+    }
+
+    fn next(self) -> Self {
+        match self { Self::Replace => Self::Prepend, Self::Prepend => Self::Append, Self::Append => Self::Add,
+            Self::Add => Self::Delete, Self::Delete => Self::Order, Self::Order => Self::Replace }
+    }
+}
 
 impl Default for Row {
-    fn default() -> Self { Self { asset: String::new(), prim: String::new(), offset: "0".into(), scale: "1".into() } }
+    fn default() -> Self { Self { asset: String::new(), prim: String::new(), offset: "0".into(), scale: "1".into(), mode: Mode::default() } }
+}
+
+fn parse_rows(rows: &[Row]) -> Result<PayloadListOp, String> {
+    let explicit = rows.iter().all(|row| row.mode == Mode::Replace);
+    if !explicit && rows.iter().any(|row| row.mode == Mode::Replace) {
+        return Err("Replace cannot be mixed with other row modes".into());
+    }
+    let mut operation = PayloadListOp { explicit, ..Default::default() };
+    for row in rows {
+        let bucket = match row.mode {
+            Mode::Replace => &mut operation.explicit_items, Mode::Prepend => &mut operation.prepended_items,
+            Mode::Append => &mut operation.appended_items, Mode::Add => &mut operation.added_items,
+            Mode::Delete => &mut operation.deleted_items, Mode::Order => &mut operation.ordered_items,
+        };
+        bucket.push(row.parse()?);
+    }
+    Ok(operation)
 }
 
 impl Row {
@@ -78,12 +110,12 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
     Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+count*6, move |ui| {
         let Ok(mut state) = draft.0.lock() else { return };
         if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target { return; }
-        ui.label("Payload list replacement");
+        ui.label("Payload list (click row mode to change)");
         ui.label("Asset paths are relative to the edit layer");
         ui.label("Draft starts empty; does not copy composed arcs");
         let mut remove = None;
         for (index, row) in state.rows.iter_mut().enumerate() {
-            ui.label(&format!("Payload {}", index+1));
+            if ui.button(&format!("Payload {}: {}", index+1, row.mode.label())).clicked { row.mode = row.mode.next(); }
             ui.text_input(&mut row.asset, "Asset path (empty = internal)");
             ui.text_input(&mut row.prim, "Prim path (empty = defaultPrim)");
             ui.text_input(&mut row.offset, "Time offset");
@@ -92,12 +124,12 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
         }
         if let Some(index) = remove { state.rows.remove(index); }
         if ui.button("Add payload entry").clicked && state.rows.len() < 64 { state.rows.push(Row::default()); }
-        let label = if state.rows.is_empty() { "Block all weaker payloads" } else { "Replace payload list with draft" };
+        let label = if state.rows.is_empty() { "Block all weaker payloads" } else { "Apply draft as local payload opinion" };
         if ui.button(label).clicked {
-            match state.rows.iter().map(Row::parse).collect::<Result<Vec<_>,_>>() {
-                Ok(payloads) => {
+            match parse_rows(&state.rows) {
+                Ok(operation) => {
                     state.error.clear();
-                    if let Some(command) = snapshot.checked_edit(EditorEdit::Payloads { prim: prim.clone(), payloads }) { super::send(&bridge, command); }
+                    if let Some(command) = snapshot.checked_edit(EditorEdit::PayloadListOp { prim: prim.clone(), operation }) { super::send(&bridge, command); }
                 }
                 Err(error) => state.error = error,
             }
@@ -113,6 +145,38 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_modes_build_complete_ops_and_reject_mixed_replacement() {
+        let row = Row { prim: "/Model".into(), ..Default::default() };
+        let payload = row.parse().unwrap();
+        let mut mode = Mode::Replace;
+        for expected in [PayloadListOp::explicit([payload.clone()]), PayloadListOp::prepended([payload.clone()]),
+            PayloadListOp::appended([payload.clone()]), PayloadListOp::added([payload.clone()]),
+            PayloadListOp::deleted([payload.clone()]), PayloadListOp::ordered([payload.clone()])] {
+            assert_eq!(parse_rows(&[Row { mode, ..row.clone() }]).unwrap(), expected);
+            mode = mode.next();
+        }
+        assert!(mode == Mode::Replace);
+        assert_eq!(parse_rows(&[]).unwrap(), PayloadListOp::explicit([]));
+        assert!(parse_rows(&[row.clone(), Row { mode: Mode::Delete, ..row.clone() }]).is_err());
+        let mixed = parse_rows(&[Row { mode: Mode::Prepend, ..row.clone() }, Row { mode: Mode::Delete, ..row }]).unwrap();
+        assert_eq!(mixed.prepended_items, vec![payload.clone()]);
+        assert_eq!(mixed.deleted_items, vec![payload]);
+        assert!(!mixed.explicit);
+    }
+
+    #[test]
+    fn delete_row_matches_omitted_identity_offset_and_undo_restores_cube() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/payload_authoring.usda");
+        let source = usd_bevy::UsdSource::new(path, std::fs::read(path).unwrap()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        let operation = parse_rows(&[Row { asset: "payload_authoring_content.usda".into(), prim: "/Box".into(), mode: Mode::Delete, ..Default::default() }]).unwrap();
+        editor.edit(EditorEdit::PayloadListOp { prim: "/Root".into(), operation }).unwrap();
+        assert!(!editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+    }
 
     #[test]
     fn parsed_payload_draft_replaces_and_clears_the_showcase() {

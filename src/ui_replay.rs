@@ -80,6 +80,7 @@ mod tests {
             (include_str!("../scripts/replays/draft_reload.replay"), 13, 18000),
             (include_str!("../scripts/replays/draft_apply.replay"), 19, 21000),
             (include_str!("../scripts/replays/payload_provenance.replay"), 3, 12000),
+            (include_str!("../scripts/replays/payload_prepend.replay"), 18, 18000),
             (include_str!("../scripts/replays/payload_replace.replay"), 15, 16000),
             (include_str!("../scripts/replays/payload_clear.replay"), 18, 18000),
             (include_str!("../scripts/replays/payload_invalid.replay"), 7, 14000),

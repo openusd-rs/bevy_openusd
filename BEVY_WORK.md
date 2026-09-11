@@ -16,6 +16,26 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+The viewer now exposes all six payload row modes through a cycling row button:
+Replace, Prepend, Append, Add, Delete and Order. The complete draft replaces the
+local operation through the checked command path. Non-explicit modes can be
+combined; mixed Replace/non-explicit rows reject locally. Empty drafts retain
+the explicit Block action. Clear still removes the local opinion; no composed
+opinion is copied or reanchored into the draft. Row order within a bucket is
+preserved. Tests cover every mode, cycling, mixed operations, invalid replacement
+mixes, and a parsed Delete with identity offset removing the weaker cube and
+undo restoring it. All 58 viewer tests and check-all pass
+(`/tmp/payload-mode-{tests,check}.log`). The native `payload_prepend.replay`
+produces an orange sphere and visibly retains Prepend mode in the form;
+inspected `target/payload-prepend-ui.png`, guard passes
+(`/tmp/payload-prepend-capture.log`). Exhaustive multi-row/multi-mode native
+interaction and layout coverage remains open.
+
+Before this UI change, the complete workspace/all-targets gate at `9a4b1c8`
+passed 573 tests with 13 ignored across 30 result suites
+(`/tmp/bevy-workspace-current.log`). This includes the previously intermittent
+nested-package reload test, but does not explain that prior timeout.
+
 The new list-op regression exposed a dependency composition bug: deleting a
 payload with explicit identity offset failed to match the same weaker payload
 with an omitted offset. Before the fix the score remained 1 instead of 2

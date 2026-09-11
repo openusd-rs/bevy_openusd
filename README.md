@@ -113,7 +113,10 @@ and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containi
 prepend, append, add, delete, and order entries. They replace the local operation,
 not the composed payload list. Explicit and non-explicit buckets cannot be mixed;
 all entries are validated before authoring. Undo/redo retains the whole operation.
-The viewer form still authors explicit replacements; other operations are API-only.
+In the viewer, click a payload row's mode button to cycle through Replace,
+Prepend, Append, Add, Delete and Order. Apply replaces the complete local
+operation with the draft; non-replacement modes can be mixed, but Replace
+cannot be mixed with them. Rows retain their order within each operation bucket.
 `EditorSnapshot::payload_opinions` exposes each contributing authored list op,
 strongest first, with its source layer, spec path and cumulative site time offset.
 The Payload authoring group displays these below the replacement form, including
@@ -135,7 +138,7 @@ exercise a variant changing a relationship while its draft is being edited;
 Keep retains the draft without applying it, while Reload discards it.
 These author layer opinions; `EditorCommand::Payload` separately changes runtime
 load rules. The inspector's Payload authoring group accepts up to 64 draft
-entries with asset, prim, offset and scale fields. Replace authors the whole list;
+entries with asset, prim, offset and scale fields. Replace-mode rows author the whole list;
 an empty draft offers an explicit Block action. Clear removes the local opinion.
 Drafts reset when the document, selected prim or edit layer changes. They start
 empty rather than copying composed relative paths into a different authoring

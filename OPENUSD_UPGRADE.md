@@ -1,5 +1,22 @@
 # OpenUSD upgrade and capability reassessment
 
+## Current nested-package support
+
+The local reading and export patches now support nested USDZ inputs through the
+stage resolver, including snapshot-only bytes, implicit default layers, explicit
+inner layers and relative PNG textures in USDA and USDC. Entry reads are bounded
+to 16 levels and 256 MiB cumulative extracted bytes per traversal; this is not a
+whole-stage memory limit. Export bundles reachable nested layers/assets into
+ordinary unique archive entries while preserving authored layer composition,
+not the original ZIP hierarchy or unused entries. Missing dependencies fail
+within the existing atomic save boundary. See PACKAGING.md for export budgets
+and unsupported resolver expressions, sequence/tile patterns and clip templates.
+
+The four textured nested input/export cases have native composition and inspected
+GPU evidence recorded in BEVY_WORK.md. AssetServer coverage also checks nested
+dependency replacement and two failure/recovery cycles across two live roots.
+These bounded cases do not establish arbitrary resolver or archive compatibility.
+
 ## Editor clip baking
 
 The Bevy editor now bakes clip-resolved attributes during flattened saves before
@@ -39,7 +56,8 @@ Packaging now accepts single-level source USDZ archives and package-relative
 layers/assets. Native tests cover snapshot-only inputs, a second re-export after
 deleting the first file, and a wrapper referring to one bare package twice.
 Containers and extracted bytes share the input budget; entry lengths are checked
-before reading. Nested packages remain unsupported. Logs:
+before reading. At that point nested packages were unsupported; the current
+reading/export support above supersedes that restriction. Historical logs:
 `/tmp/repackage-case-native.log`, `/tmp/upstream-repackage-final-tests.log`.
 
 Stage-aware packaging is now integrated as a third local upstream patch.
@@ -69,8 +87,9 @@ Logs: `/tmp/native-layered-gate.log` (before),
 
 The root Cargo patch table now uses the additive `vendor/openusd` snapshot for
 all three OpenUSD packages. Its upstream baseline remains b7df5ad, rechecked as
-upstream HEAD on 2026-09-10. Local source differences are recorded in the two
-writer patches and the stage-packaging patch. Existing xtra directories and sibling checkouts are
+upstream HEAD on 2026-09-10. Local source differences are recorded in the
+patches listed in `vendor/openusd/VENDORED.md`, including subsequent composition,
+reanchoring, clip and nested-package fixes. Existing xtra directories and sibling checkouts are
 untouched. `vendor/openusd/VENDORED.md` records included files, licenses and the
 switch-back procedure. No temporary source path or build-time patching is needed.
 

@@ -56,6 +56,37 @@ as does `git diff --check`. This adds no GPU or non-Unix runtime evidence.
 
 ## Spot visual recheck after material fixes
 
+### Current editor recheck at a6f070b
+
+Captured and inspected four new images: host windows
+`target/spot-editor-current.png` (Outliner, control cage) and
+`target/spot-editor-subdiv-current.png` (Rendering pane, level one), plus their
+`.viewport.png` companions. Both private Vulkan Weston runs passed host and
+embedded readback guards. Each viewport is 1440x920, time zero, captured after
+15 seconds of readiness; host capture waits 20 seconds. Metadata records matching
+camera position, direction and projection for the two viewports. The asset hash
+still matches the original below. No collection or sibling files changed.
+
+Both views show the robot and upright UI. The refined view exposes more obvious
+leg seams and body gaps; it is not a visual fix. Whole-viewport near-black checks
+report 1,324,800 nonblack pixels in each, not fidelity acceptance. Clipboard,
+Vulkan loader and unavailable-SSAO diagnostics remain in the viewer logs. Two
+successful launches do not resolve the intermittent black-host failure.
+Run logs: `/tmp/spot-editor{,-subdiv}-current.log`; per-capture viewer, Weston,
+inspection and camera metadata companions remain beside the images.
+
+Current `scene_report` with level one confirms the base control cage has 3,368
+indexed boundary edges versus 55 position-welded boundaries, one welded
+nonmanifold edge and exactly retained authored vertex normals. Its 1,296 source
+triangles have no reversed normal corners. Refined output has 7,776 triangles,
+14 reversed normal corners, 6,736 indexed versus 1,598 welded boundaries and two
+welded nonmanifold edges (`/tmp/spot-editor-current-topology.log`). These current
+counts supersede the older eight-corner result below. Disconnected coincident
+vertices are consistent with subdivision opening seams; this does not attribute
+every visible artifact or justify welding intended USD boundaries. Next fidelity
+work needs an isolated disconnected-topology/native comparison, not automatic
+welding or globally enabling refinement.
+
 Rechecked at `f709355` using the original collection asset
 `../usd_collection/oems/spot_boston_dynamics/spot_base_urdf/spot.usdc`.
 Its SHA-256 is

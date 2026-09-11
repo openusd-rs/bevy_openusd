@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Exclude retained warm-up GPU measurements
+
+The GPU timing collector now records its collection-start instant and ignores
+older measurements before creating pass entries. Previously a retained one-shot
+warm-up diagnostic could enter the sample set and prevent completion because
+that pass never ran again. Recurring passes could also include a pre-window sample.
+A deterministic regression covers stale-only and subsequently active passes.
+All 17 viewer_capture example tests pass in /tmp/gpu-timing-warmup-all-tests.log.
+
+A fresh 120-sample capture completed: target/post-warmup-timing.png was inspected,
+with one GPU skin mesh, one GPU morph mesh and Attached environment metadata.
+Opaque-pass median/p95/max are 0.028672/0.030720/0.031744ms; raw samples are in
+target/post-warmup-timing.capture.txt and log /tmp/post-warmup-timing.log.
+The user desktop viewer was left running: this is instrument validation, not an
+isolated performance comparison. The subsequent metadata-only change labels
+pre-collection measurements as excluded. UR5 fidelity remains unresolved.
+
 ## Capture session cleanup and playback repeat
 
 Both capture wrappers now share capture_session.sh. It forces a new session,

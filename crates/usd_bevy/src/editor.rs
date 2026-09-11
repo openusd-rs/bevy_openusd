@@ -825,6 +825,17 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 #[cfg(test)]
 mod tests {
     #[test]
+    fn explicit_identity_payload_delete_matches_native_fixture() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_identity.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = crate::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        assert!(stage.prim("/Root").unwrap().is_valid().unwrap());
+        assert!(!stage.prim("/Root/Shape").unwrap().is_valid().unwrap());
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
     fn payload_list_ops_compose_undo_and_reopen_without_flattening() {
         use super::*;
         use openusd::sdf::{Payload, PayloadListOp};
@@ -847,7 +858,9 @@ def Xform "Root" ( prepend payload = [</A>, </B>] ) {}
             (PayloadListOp::appended([payload("/C")]), Some(1.)),
             (PayloadListOp::added([payload("/C")]), Some(1.)),
             (PayloadListOp::deleted([payload("/A")]), Some(2.)),
+            (PayloadListOp::deleted([Payload { layer_offset: Some(openusd::sdf::LayerOffset::default()), ..payload("/A") }]), Some(2.)),
             (PayloadListOp::ordered([payload("/B"), payload("/A")]), Some(2.)),
+            (PayloadListOp::ordered([Payload { layer_offset: Some(openusd::sdf::LayerOffset::default()), ..payload("/B") }, payload("/A")]), Some(2.)),
             (PayloadListOp::explicit([]), None),
             (PayloadListOp { deleted_items: vec![payload("/A")], prepended_items: vec![payload("/C")], ..Default::default() }, Some(3.)),
         ] {

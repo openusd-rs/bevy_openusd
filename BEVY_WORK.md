@@ -5,6 +5,27 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+The new list-op regression exposed a dependency composition bug: deleting a
+payload with explicit identity offset failed to match the same weaker payload
+with an omitted offset. Before the fix the score remained 1 instead of 2
+(`/tmp/payload-identity-before.log`). Native USD 25.05.01 flattens
+`assets/payload_identity.usda` to an empty `/Root` without its payload child
+(`/tmp/payload-identity-native.log`). `openusd-payload-identity.patch` normalizes
+exact identity offsets in composition copies before list-op matching; authored
+fields and serialization remain unchanged. The new fixture regression agrees
+with native USD, and explicit-identity delete/order cases preserve exact
+authored text through undo/redo and reopen. Fuzzy offset equality is not added.
+
+The pre-fix full workspace gate failed in the nested-package two-instance
+reload test with an asset-operation timeout
+(`/tmp/payload-listop-workspace-tests.log`). The post-fix complete library run
+passes 456 with 13 ignored, including that reload test
+(`/tmp/payload-identity-lib-tests.log`); this rerun does not explain or resolve
+the earlier timeout. Do not count the failed workspace gate as passing.
+All 56 viewer tests and check-all also pass
+(`/tmp/payload-identity-{viewer-tests,check}.log`). The review patch passes
+reverse-apply checking against the modified vendored source.
+
 `EditorEdit::PayloadListOp` and `authoring::set_payload_list_op` now author a
 canonical complete local list operation rather than requiring an explicit-list
 replacement. Prepend, append, add, delete and order buckets are retained. Mixed

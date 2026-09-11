@@ -1,5 +1,14 @@
 # OpenUSD upgrade and capability reassessment
 
+## Payload identity matching
+
+`patches/openusd-payload-identity.patch` normalizes omitted versus explicit
+identity offsets in payload composition copies before list-op matching. This
+fixes deletes and ordering without changing authored layer data. The new
+`payload_identity.usda` fixture matches native USD 25.05.01's empty-root result;
+the Bevy regression also covers undo and source-preserving serialization.
+This is exact identity normalization, not native fuzzy LayerOffset equality.
+
 ## Current nested-package support
 
 The local reading and export patches now support nested USDZ inputs through the

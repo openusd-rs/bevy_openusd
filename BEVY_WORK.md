@@ -87,6 +87,20 @@ readback may alter timing, and no black host frame occurred in this paired run.
 
 ## Current workspace regression gate
 
+At `37b7e7a`, `TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`
+and `make check-all CARGO='cargo --offline'` completed successfully: 594 passed,
+zero failed and 14 ignored across 30 result suites
+(`/tmp/current-pacing-workspace-{tests,check}.log`). The 14 ignored native tests
+were then exercised separately with native usdcat on PATH: `make test-native
+CARGO='cargo --offline'` passed all 13 export tests
+(`/tmp/current-native-export-suite.log`), and the focused ignored
+`native_reference_custom_data_round_trip` passed
+(`/tmp/current-native-reference-roundtrip.log`). That reference regression checks
+USDA/USDC/USD metadata round trips and USDZ flattened composition, not customData
+retention through flattening. These gates do not resolve intermittent black host
+frames or establish global frame pacing. The scoped sibling Mara change remains
+pending user approval; no sibling files were edited.
+
 At `f950f58`, `TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`
 and `make check-all CARGO='cargo --offline'` passed: 591 passed, zero failed,
 14 ignored across 30 result suites

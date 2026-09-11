@@ -118,8 +118,10 @@ snapshot-only reopening of a relocated package. The viewer can create, edit and
 remove local reference entries and reorder them within their existing list-op bucket.
 Removing the last explicit entry retains an explicit-empty blocker; Clear removes
 the opinion instead. Creation retains the current explicit/non-explicit mode and
-other entries, with asset/prim and time-mapping inputs. Cross-bucket changes to
-existing entries remain API-only.
+other entries, with asset/prim and time-mapping inputs. The bucket controls move
+entries between Prepend, Append, Add, Delete and Order, appending to the destination
+and preserving the full entry. Exact destination duplicates reject. Conversion
+between explicit replacement and non-explicit operations remains API-only.
 `EditorSnapshot::reference_opinions` retains contributing authored reference
 list operations in strength order, including customData, original spec paths,
 source layer identifiers and cumulative site offsets. Relative paths remain

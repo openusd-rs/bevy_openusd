@@ -25,6 +25,24 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Reference bucket controls now move existing local entries among Prepend, Append,
+Add, Delete and Order. Destination insertion is at the end; other entries and
+the moved reference's customData/time mapping are retained. Exact destination
+duplicates, invalid indices and explicit/non-explicit conversion reject without
+mutation. Explicit opinions display the whole-operation conversion limitation.
+The controls are separately expandable and send the checked undoable command.
+
+Tests cover all twenty directed bucket pairs, populated destination/source order,
+unrelated buckets, duplicate/invalid rejection, exact-text undo/redo, retained
+metadata and unchanged fixture bytes. Inspected
+`target/reference-bucket-layout-ui.png` shows both original Prepend entries and
+the blue cube. `reference_bucket_move.replay` moves `/Box` into Append;
+inspected `target/reference-bucket-moved-ui.png` shows Prepend `/Ball`, Append
+`/Box` and the orange sphere. Both capture guards pass
+(`/tmp/reference-bucket-{layout,moved}-capture.log`). All 67 viewer tests and
+check-all pass (`/tmp/reference-bucket-registered-{tests,check}.log`).
+Whole-operation explicit conversion and arbitrary customData editing remain open.
+
 The inspector now creates local reference entries, including on prims without
 an existing local opinion. The expandable form accepts asset/prim and time
 mapping fields; new opinions default to Prepend and allow all six list modes.
@@ -41,9 +59,9 @@ empty `assets/reference_create.usda` fixture. Inspected
 `target/reference-create-closed-ui.png` is empty; inspected
 `target/reference-create-applied-ui.png` shows the orange sphere and the retained
 Prepend draft with identity mapping. Both capture guards pass
-(`/tmp/reference-create-{closed,applied}-capture.log`). Cross-bucket moves of
-existing entries, customData editing and native creation error/undo layouts
-remain open.
+(`/tmp/reference-create-{closed,applied}-capture.log`). CustomData editing and
+native creation error/undo layouts remain open; non-explicit bucket moves are
+covered above.
 
 All 66 viewer tests and check-all pass
 (`/tmp/reference-create-complete-{tests,check}.log`). The full workspace gate
@@ -66,8 +84,8 @@ orange sphere after `reference_order.replay`. Inspected
 `target/reference-remove-ui.png` shows only `/Ball`, its retained customData and
 the orange sphere after `reference_remove.replay` removes `/Box`. Capture logs
 are `/tmp/reference-order-capture.log` and `/tmp/reference-remove-capture.log`.
-Cross-bucket moves and arbitrary customData editing remain open; creation is
-covered above.
+Arbitrary customData editing remains open; creation and non-explicit bucket moves
+are covered above.
 
 Reference drafts now retain a typed whole-entry baseline in addition to field
 baselines. Any source reference change while fields are dirty, including changed

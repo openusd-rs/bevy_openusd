@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def BasisCurves "SpatialLoop" {
+    uniform token type = "cubic"
+    uniform token basis = "bspline"
+    uniform token wrap = "periodic"
+    int[] curveVertexCounts = [8]
+    point3f[] points = [(2,0,0),(1.4,1.4,1),(0,2,-0.4),(-1.4,1.4,0.7),
+                       (-2,0,-0.8),(-1.4,-1.4,0),(0,-2,1),(1.4,-1.4,-0.6)]
+    float[] widths = [0.3] ( interpolation = "constant" )
+    color3f[] primvars:displayColor = [(0.1,0.6,1)] ( interpolation = "constant" )
+}

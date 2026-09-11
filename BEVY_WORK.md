@@ -3,6 +3,29 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Non-planar periodic curve acceptance
+
+Added `assets/curve_surface_spatial.usda`, an eight-control-point spatial periodic
+B-spline tube. At 32 samples per segment and 16 sides, the mesh regression checks
+4096 vertices, constant 0.15 radius, unit normals agreeing with each triangle,
+nondegenerate faces and closed, consistently wound edge incidence. A separate
+nonuniformly sampled spatial path produces nonzero frame holonomy and checks
+constant twist per unit arc length on every edge, including the closing seam.
+The existing frame implementation passes; no renderer behavior was changed.
+
+All eight surface tests and check-all pass
+(`/tmp/curve-spatial-surface-tests.log`, `/tmp/curve-spatial-check.log`). Inspected
+`target/curve-surface-spatial.png` shows a closed blue tube with continuous visible
+shading and no apparent seam gap. The Vulkan capture reports CAPTURE_OK
+(`/tmp/curve-spatial-capture.log`), using forward rendering, shadows off, 32 steps,
+16 sides and camera eye (4,3,8), target (0,0,0). This is geometric and Bevy image
+acceptance, not native curve-renderer parity or general self-intersection safety.
+The subsequent full workspace gate passes: 599 tests, zero failures and 14
+ignored across 30 suites (`/tmp/curve-spatial-workspace-tests.log`), using
+`TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`. This run
+includes the numeric-array and inspector-filter additions. The ignored native
+tests were not rerun in this step; their earlier evidence is recorded below.
+
 ## Inspector attribute filtering
 
 The Layers / edit target group now filters displayed attribute controls by a

@@ -883,6 +883,9 @@ UVs or native curve-renderer parity. Low sampling visibly facets curved shapes.
 `assets/curve_surface_loops.usda` exercises two periodic B-spline tubes in one
 prim with indexed uniform widths and separate colors: a thick blue loop and a
 thin orange loop. The loops close independently without connecting triangles.
+`assets/curve_surface_spatial.usda` exercises a non-planar periodic tube. Its
+transported frame distributes closure twist by sampled arc length, including
+the closing edge, rather than concentrating the correction at the seam.
 Surface materials honor `doubleSided`: single-sided ribbon backs are culled,
 while double-sided backs remain visible with flipped lighting normals.
 `assets/curve_surface_sidedness.usda` shows a front-facing ribbon above a hidden

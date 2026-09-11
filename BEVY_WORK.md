@@ -671,6 +671,22 @@ mesh UVs. Live and independent-reference images match all 921,600 pixels at
 strict RGB tolerance 0 after reversing clocks. This validates the constant
 coordinate path, not arbitrary coordinate shaders or named UV-set selection.
 
+## Native gate path quoting
+
+The collection regression's nested Make invocation now uses shell-escaped argv
+and doubles dollar signs for Make expansion, matching the live-clock runner.
+Previously an apostrophe in an output path caused an unterminated shell quote
+before the first probe could run; `/tmp/native-quoted-before.log` and
+`target/native-'quoted-before/ur5-0.log` preserve that failure.
+
+Both native asset comparisons pass under an apostrophe-containing directory
+(`target/native-'quoted-final`) and a directory containing spaces, a literal
+dollar sign and double quotes (`target/native $literal "double"`). Logs:
+`/tmp/native-quoted-final.log` and `/tmp/native-dollar-final.log`. Each ends with
+SUBDIVISION_ASSET_CHECK_OK, with unchanged position/normal comparison errors.
+No Rust production code changed; ordinary/GPU suites were not rerun for this
+shell-only repair. `git diff --check` passes.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

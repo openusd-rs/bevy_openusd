@@ -19,10 +19,12 @@ for name in ur5 spot; do
     esac
     sha256sum "$asset" >"$output/$name-source.sha256"
     for level in 0 1; do
-        refinement=
-        if [[ "$level" == 1 ]]; then refinement=1; fi
+        arguments=("$asset" "$prim" "$output/$name-$level")
+        if [[ "$level" == 1 ]]; then arguments+=(1); fi
+        printf -v args '%q ' "${arguments[@]}"
+        args=${args//\$/\$\$}
         make run RUN_WITH= CARGO="$cargo" APP_TARGET='--example normal_isolation' \
-            ARGS="'$asset' '$prim' '$output/$name-$level' $refinement" \
+            ARGS="$args" \
             >"$output/$name-$level.log" 2>&1
     done
     "$tool" "$output/$name-0/with_normals.usda" "$output/$name-1/with_normals.usda" \

@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Current collection models through direct host capture
+
+At 2f791b8, the actual collection Spot and UR5 models were reopened in the
+complete viewer at time zero, default control-cage mode, with the Outliner.
+Both direct GPU images and both desktop image pairs were inspected:
+
+- target/spot-current-host-gpu.png and target/spot-current-desktop.png pair:
+  full yellow robot, legs, grid and controls are visible. Faceting and thin
+  surface discontinuities remain visible; this is not native-render parity.
+- target/ur5-current-host-gpu.png and target/ur5-current-desktop.png pair:
+  complete arm and material regions render, but the left blue joint-cap rim
+  still shows fine vertical striping in the direct GPU image. Therefore that
+  shading artifact is independent of the compositor black-frame failure.
+
+Both native capture commands pass their desktop region/panic-log checks and
+report HOST_CAPTURE_OK at 1440x920. Logs:
+/tmp/spot-current-host-capture.log and /tmp/ur5-current-host-capture.log.
+Settings: direct delay 20000ms, desktop wait 23s then 5s. Warnings remain for
+clipboard initialization and unavailable SSAO device limits; the Vulkan loader
+also reports missing libVkLayer_MESA_device_select.so. These are not clean-log
+or performance acceptance runs. No collection files or Rust source were edited.
+
+Source SHA-256 values:
+- oems/spot_boston_dynamics/spot_base_urdf/spot.usdc:
+  3d450917a26f3bb89c32f2872cf7b8be2bffac15954c0dbca6330ec780f9365b
+- matlab/ur_description/ur5.usdc:
+  66cb9b697c267577a608dd0416fdf9cfc46b8bddda29ececfc7bc0c9a71248f1
+
+The remaining UR5 rim defect needs geometry/shading isolation against the
+existing native controls, not another change to window presentation.
+
 ## Direct complete-viewer GPU screenshots
 
 USD_HOST_SCREENSHOT now requests one tagged root-viewport screenshot through

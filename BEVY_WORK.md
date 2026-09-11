@@ -51,6 +51,11 @@ the retained 3/2 authored mapping. Both capture guards pass
 (`/tmp/payload-order-{layout,applied}-capture.log`). All 69 viewer tests and
 check-all pass (`/tmp/payload-order-final-{tests,check}.log`). The latest full
 workspace gate above predates this ordering control.
+The separate `payload_order_draft.replay` stops before Apply. Inspected
+`target/payload-order-draft-ui.png` shows Ball/Box in the draft while the blue
+cube remains rendered and the authored provenance still has its original order.
+Its capture guard passes (`/tmp/payload-order-draft-capture.log`). This verifies
+the intermediate draft-only state rather than inferring it from the final image.
 
 Payload whole-list drafts now retain the local source opinion observed when the
 draft starts or is imported. Editing any row, its mode or the row count marks the
@@ -159,6 +164,19 @@ it; inspected `target/reference-identity-keep-ui.png` shows `/Box` refreshed and
 offset 5 retained without applying it. Both capture guards pass
 (`/tmp/reference-identity-capture.log`, `/tmp/reference-identity-keep-capture.log`).
 Native Reload and arbitrary multi-entry replacement remain unverified.
+
+The newer `reference_identity_reload.replay` uses bottom-clamped initial scrolling
+and clicks Reload after undoing a retarget with offset 5 still drafted. Inspected
+`target/reference-identity-reload-ui.png` shows `/Box`, offset 10, scale 2 and no
+conflict prompt; its capture guard passes. However, attempts to capture the same
+run before Reload at 30 and 29 seconds both produced black windows and failed
+the guard. Artifacts are `target/reference-identity-before-reload-ui.png` and
+`target/reference-identity-before-reload-retry-ui.png`; logs are
+`/tmp/reference-identity-before-reload[-retry]-capture.log`. These failed captures
+do not establish that this new replay reached its intended prompt, so its full
+Reload-path visual acceptance remains open. No black-window fix is claimed.
+All 69 viewer tests and check-all pass with both new replay registrations
+(`/tmp/editor-draft-resolution-{tests,check}.log`).
 
 Existing local reference entries can now be expanded for asset/prim retargeting
 and time-offset/scale editing. The four fields share property draft storage,

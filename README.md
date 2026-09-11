@@ -479,6 +479,19 @@ Successful loading replaces candidate paths with resolved image paths.
 make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch
 ```
 
+For a same-window recovery capture, put Weston and weston-screenshooter on PATH:
+
+```sh
+make --eval='capture-recovery:; @/bin/bash scripts/check_initial_texture_recovery.sh target/initial-recovery' capture-recovery
+```
+
+The output directory must be new. The script generates a fixture, captures the
+missing-texture state, repairs the PNG, and captures the recovered window plus
+Bevy viewport without restarting the viewer. Inspect `initial.png`,
+`recovered.png`, `recovered.viewport.png` and the logs; automated checks confirm
+capture completion and reject a near-black viewport, not visual correctness or
+warning-free operation. It uses a private Vulkan Weston compositor on Linux.
+
 Applications can send `EditorCommand::RefreshTextures` through `EditorBridge`
 to reread source-backed images without reopening the USD document. Successful
 refreshes preserve selection, unsaved edits, runtime entities and undo/redo;

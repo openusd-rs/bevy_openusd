@@ -862,6 +862,39 @@ No new rendered UI acceptance is claimed by these filesystem/pixel tests.
 The viewer also builds with `file_watcher` enabled:
 `/tmp/initial-texture-retry-feature-build.log`.
 
+## Same-window initial texture recovery capture
+
+`scripts/check_initial_texture_recovery.sh NEW_OUTPUT_DIRECTORY` generates its
+own color fixture, opens the scene without its PNG in a private Vulkan Weston
+session, captures the error state, repairs the PNG, and captures the recovered
+window and embedded Bevy viewport. It checks that the same launched process
+group remains alive, waits for viewport capture completion, reads capture
+dimensions for near-black inspection, and preserves logs/images on failure.
+Output directories must be new. Shell quoting supports apostrophes in paths.
+
+At production commit `b1270f4`, inspected all three images in
+`target/initial-texture-recovery-ui`: initial outliner reports an unresolved
+white.png and contains no scene; recovered outliner is Ready with Model and
+Material prims, and the blue sphere is visible in both host and viewport.
+The same process group (1257573) remained alive across repair. The reusable
+script repeated this in `target/initial-recovery-'quoted-final`, process group
+1297504. Again all three images were inspected with the same result. The
+1440x920 viewport passes near-black inspection across 1,324,800 pixels.
+
+Logs: `/tmp/initial-texture-recovery-ui-run.log` and
+`/tmp/initial-texture-recovery-tool-final.log`, plus each output's viewer.log,
+weston.log, recovery.txt and capture metadata. These runs retain clipboard
+initialization, missing libVkLayer_MESA_device_select.so and SSAO-limit warnings;
+they are not clean-log or general black-window fixes. A successful capture also
+does not prove general native-desktop behavior outside the tested compositor.
+
+The initial disposable shell probe had a newline typo before launch. The first
+reusable-tool run captured both states but failed because capture_inspect lacked
+its required region arguments; artifacts remain in
+`target/initial-recovery-'quoted` and `/tmp/initial-texture-recovery-tool.log`.
+The corrected tool derives its region from metadata. Shell syntax and
+`git diff --check` pass. No Rust source changed in this capture-tool step.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

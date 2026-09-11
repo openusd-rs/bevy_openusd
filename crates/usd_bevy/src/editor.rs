@@ -2724,6 +2724,30 @@ def Xform "Asset" (prepend variantSets = "shape") {
     }
 
     #[test]
+    fn visible_variant_fixture_preserves_selection_and_authored_history() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/editor_variants.usda");
+        let bytes = std::fs::read(&path).unwrap();
+        let source = crate::UsdSource::new(&path, bytes.clone()).unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Model".into())).unwrap();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let size = |editor: &EditorSession| editor.stage().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap();
+        assert_eq!(size(&editor), Some(1.0));
+        editor.edit(EditorEdit::Variant { prim: "/Model".into(), set: "look".into(), selection: "blue".into() }).unwrap();
+        let blue = editor.stage().root_layer().export_to_string().unwrap();
+        assert_eq!(size(&editor), Some(2.0));
+        assert_eq!(editor.snapshot().unwrap().selected.as_deref(), Some("/Model"));
+        assert!(editor.undo().unwrap());
+        assert_eq!(size(&editor), Some(1.0));
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(size(&editor), Some(2.0));
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), blue);
+        assert_eq!(editor.snapshot().unwrap().selected.as_deref(), Some("/Model"));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
     fn checked_edits_reject_changed_document_revision_and_target() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));

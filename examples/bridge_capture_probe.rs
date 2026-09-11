@@ -35,7 +35,7 @@ impl WindowApp for Probe {
         eprintln!("BRIDGE_CAPTURE_PROBE Bevy viewport, no USD plugins or editor, cpu_readback={cpu_readback}, delay_ms={}", delay.as_millis());
         Self {
             viewport: if cpu_readback { mara_bevy::MaraBevyViewport::with_content(configure) }
-                else { mara_bevy::MaraBevyViewport::with_render_state_and_content(ctx.gpu(), configure) },
+                else { mara_bevy::MaraBevyViewport::with_render_state_and_content(ctx.__internal_render_state(), configure) },
             workspace: WorkspaceStack::new("bridge-probe"),
             context: ctx.__internal_egui_ctx().clone(),
             announced: false,

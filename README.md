@@ -1207,6 +1207,77 @@ seek to time code 30 for the bent pose.
 
 ### Typed component authoring
 
+The headless editor benchmark can sample 1000 distinct times across the opened
+stage's authored timeline rather than its original fixed 0–10 range:
+
+```sh
+make run CARGO='cargo --offline' RUN_WITH= APP_TARGET='--example editor_benchmark' \
+  ARGS='assets/flagship_showcase.usda 1 gpu-prepared seek-timeline'
+```
+
+Use `cpu` for CPU deformation. `gpu-prepared` measures CPU-side preparation only,
+not GPU execution. The report prints the actual range, four warm-up seeks,
+nearest-rank percentiles, retained assets and whole-process RSS. Invalid or
+non-increasing timeline ranges are rejected.
+
+For opt-in per-render-pass GPU timing in the standalone capture tool:
+
+```sh
+USD_CAPTURE_GPU_SAMPLES=120 USD_CAPTURE_DOME=/Showcase/Environment \
+  USD_CAPTURE_SHADOWS=off make run CARGO='cargo --offline' \
+  APP_TARGET='--example viewer_capture' \
+  ARGS='assets/flagship_showcase.usda target/timed-showcase.png 30'
+```
+
+The sample count accepts 1–600. After scene/pipeline readiness and 60 warm-up
+updates, the tool collects fresh Bevy GPU timestamp diagnostics for each reported
+pass. The capture metadata retains raw milliseconds, median, p95 and maximum.
+Unsupported/missing GPU diagnostics cannot silently pass as CPU timing: the
+existing 60-second capture timeout applies. Passes can overlap/nest; do not sum
+them into frame time. This fixed-time, 60-Hz, debug capture excludes startup and
+dome filtering and does not measure animated CPU update cost or host latency.
+
+For interactive variant/history inspection, open `assets/editor_variants.usda`,
+select `/Model` and open **Inspector**. The **blue** variant doubles the cube size;
+**Undo** restores red and a clean layer, and **Redo** restores blue and modified
+status. `scripts/replays/variant_history.replay` exercises those controls in the
+isolated 1440×920 host; its coordinates are layout-dependent.
+
+Build reusable sources directly with the canonical generated schema API:
+
+```rust,ignore
+use openusd_schemas::geom::{Sphere, SphereSchema};
+use usd_bevy::UsdSource;
+
+let model = UsdSource::build("models/sphere.usda", |stage| {
+    Sphere::define(stage, "/Model")?.create_radius_attr()?.set(0.75_f64)?;
+    Ok(())
+})?;
+let scene = UsdSource::build("scene.usda", |_| Ok(()))?
+    .with_reference("/Ball", &model, openusd::sdf::path("/Model")?)?;
+```
+
+`build` uses a snapshot-only resolver, registers the USD schemas, validates the
+authored stage and its serialized reopen, and returns no source on error. The
+callback authors a single root layer; compose captured dependencies afterward
+with the existing reference helpers. The identifier must end in `.usda`; no
+file is created. Registered Bevy components can be authored in the same callback
+with `sync::author_component_value`. The callback is ordinary Rust code, not a
+sandbox. This is USD source authoring, not Bevy's `bsn!` syntax or a replacement
+for the canonical generated schema types.
+
+The `snippet_assembly` example combines `usd!` escaping with reusable source
+references and portable USDZ save/reopen after its source directory is removed:
+
+```sh
+make run CARGO='cargo --offline' RUN_WITH= APP_TARGET='--example snippet_assembly'
+```
+
+It checks that quoted injection-like text stays a string value rather than
+creating extra prims. Unquoted interpolation accepts only sealed built-in scalar
+types; runtime identifiers/values must still parse. Snippet validation is not a
+filesystem or execution sandbox for authored dependencies or Rust callbacks.
+
 `usd_bevy::sync::author_component_value(&registry, &stage, "/Enemy", &health)`
 authors a registered `Component + Reflect` value directly, without an ECS entity
 or string type-name argument. Register `ReflectComponent` for the type. All

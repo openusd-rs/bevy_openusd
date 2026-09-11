@@ -3,6 +3,220 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Release animation projection and route attribution
+
+editor_benchmark supports opt-in USD_PROFILE_ROUTES. It resets cumulative
+route counters after four warm-up seeks and prints matching/application totals
+sorted by combined cost. The release showcase run reports exactly 9000 measured
+attempts for each of 23 routes across 1000 seeks (nine animated prims), excluding
+open, idle and warm-up work. Profile log:
+/tmp/showcase-release-route-profile.log. Material application totals 276.274ms,
+skinning 252.583ms, mesh 147.890ms, instancing 136.317ms and subsets 101.141ms.
+These are totals over 1000 updates, not single-frame costs.
+
+Six unprofiled release runs follow, ordered CPU/GPU-prepared, GPU-prepared/CPU,
+CPU/GPU-prepared. Each independently opens the bundled showcase and seeks its
+full 0–60 range 1000 times, asserting document identity and exact current time.
+
+| Pair | CPU median / p95 / max ms | GPU-prepared median / p95 / max ms |
+| --- | --- | --- |
+| 1 | 1.224 / 1.456 / 2.202 | 1.266 / 1.565 / 4.833 |
+| 2 | 1.225 / 1.337 / 3.725 | 1.285 / 1.419 / 2.339 |
+| 3 | 1.232 / 1.389 / 5.554 | 1.281 / 1.517 / 5.195 |
+
+Logs: /tmp/showcase-release-{1,2,3}-{cpu,gpu-prepared}.log. Command:
+`make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--release --example editor_benchmark' ARGS='assets/flagship_showcase.usda 1 gpu-prepared seek-timeline'`.
+All runs retain nine mesh entities; CPU/GPU-prepared peaks are 12/10 mesh
+assets and 8/8 material assets. Cache payload remains 22480/28024 bytes.
+The six benchmark tests pass in /tmp/route-profile-tests.log.
+
+The earlier debug measurement does not establish a release frame-budget
+failure. Release CPU projection is below 16.67ms in these samples, but this
+headless benchmark excludes rendering, UI and plugin startup. It establishes
+neither complete viewer frame time nor a GPU speedup. Host clocks/power and
+unrelated system activity are not controlled. Fidelity and embedded IBL remain
+outstanding; no requirement is closed solely from these timings.
+
+## Mara develop regression containment
+
+The viewer now uses upstream Mara develop b792f44, rather than the sibling
+new_graph checkout. Its default GPU device exposes four storage textures per
+shader stage; dome filtering needs six. Earlier embedded dome and direct-host
+screenshot acceptance does not transfer to this revision.
+
+When the selected dome reports Unavailable, the viewer restores its studio
+ambient and directional lights without changing the selected dome, the user's
+studio preference, or authored lights. Successful attachment removes the
+fallback. Lighting displays the filtering error and an explicit fallback notice.
+This is failure handling, not a substitute for the outstanding embedded IBL fix.
+
+All 86 viewer tests, six editor benchmark tests, build and check-all pass:
+/tmp/dome-fallback-tests.log, /tmp/route-profile-tests.log,
+/tmp/dome-fallback-build.log and /tmp/dome-fallback-check.log.
+The regression checks fallback, recovery and stale errors after deselection.
+target/mara-dome-fallback.png was visually inspected: the selected dome and
+device-limit error are visible alongside a lit scene. Both desktop frame
+checks pass in /tmp/mara-dome-fallback-capture.log. This does not establish
+general compositor reliability or native rendering fidelity.
+
+## Full-timeline animated projection measurements
+
+editor_benchmark adds seek-timeline: four warm-up seeks followed by 1000 distinct
+times over the opened stage's actual start/end range. Existing seek/seek-unique
+semantics stay unchanged. Invalid ranges fail explicitly; logs print the range.
+The showcase regression verifies execution and GPU-prepared morph presence;
+all six benchmark tests and check-all pass. Logs:
+/tmp/showcase-timeline-benchmark-final-tests.log and
+/tmp/showcase-timeline-benchmark-check.log.
+
+Exploratory runs /tmp/showcase-timeline-{1,2,3}-{cpu,gpu-prepared}.log completed,
+but the first runs overlapped test/build activity, so those timings are not used
+as clean comparative evidence. A subsequent GPU-prepared/CPU pair ran after
+both jobs terminated, with no concurrent assistant-run tests/builds. Each uses
+the showcase's full 0–60 range and preserves document identity/current clock.
+
+Clean CPU: median 20.573098ms, p95 21.121957ms, max 29.493714ms per seek/update.
+Clean GPU-prepared: median 21.062160ms, p95 21.683208ms, max 34.650849ms.
+Logs: /tmp/showcase-timeline-clean-{cpu,gpu-prepared}.log. This is a single clean
+pair, not a statistically controlled speedup comparison. It excludes GPU/UI
+execution and plugin startup. Both retain nine mesh entities; CPU/GPU-prepared
+retain 12/10 meshes and bounded cache payload 22480/28024 bytes after the sweep.
+
+This reveals a concrete CPU-side projection/editor bottleneck even on the small
+showcase: median seek cost exceeds a 16.67ms frame budget in this debug build.
+GPU preparation does not remove it. Release behavior and attribution require
+measurement; no claim that shader execution or the UR5 normal rule causes it.
+The original fidelity/performance checkbox remains open.
+
+## Showcase deformation and GPU timestamp measurements
+
+The composed showcase passes GPU/CPU image comparisons at times 0, 30 and 60
+with RGB tolerance one and maximum observed error one. Captures and differences
+are retained in target/flagship-deformation-acceptance/; the time-30 GPU image
+was inspected. /tmp/flagship-deformation-acceptance.log records all three passes.
+
+viewer_capture now accepts USD_CAPTURE_GPU_SAMPLES=1..600. After its readiness
+gate and 60 warm-up updates, it collects distinct timestamp measurements per
+reported GPU pass, retaining raw milliseconds and median/p95/max in metadata.
+Missing GPU diagnostics retain the existing 60-second timeout, not a CPU substitute.
+The regression checks configuration, duplicate-measurement rejection and summary
+values. All 16 example tests and check-all pass. An initial compile exceeded
+Bevy's system-parameter count; related resources were grouped before the passing
+gate. Logs: /tmp/gpu-timing-tests-fixed.log and /tmp/gpu-timing-check.log.
+
+Six 120-sample runs at time 30 use CPU/GPU, GPU/CPU, CPU/GPU order, forward shading,
+shadows off and the selected dome. All capture; metadata verifies one GPU skin
+and morph mesh in GPU mode and zero in CPU mode. Each pair's image comparison
+passes tolerance one. target/flagship-timing-{1,2,3}-{cpu,gpu}.capture.txt retains
+every sample; /tmp/flagship-timing-*.log retains execution and comparisons.
+The instrumented pilot image target/flagship-timed-gpu.png was also inspected.
+
+Opaque-pass medians (CPU/GPU milliseconds) are 0.023552/0.023552,
+0.071680/0.072704 and 0.070656/0.023552. The roughly threefold run-to-run variation
+precludes claiming a deformation speedup. GPU clock/power state was not controlled.
+These are instrumented pass timings, not summed frame times, animated CPU costs,
+IBL filter timings or embedded-host latency. The performance/fidelity requirement
+remains open, including the UR5 shading defect.
+
+## Reconciled composition-editor acceptance
+
+The original feature requirement is implemented through EditorSession,
+EditorBridge and the Inspector, with the following acceptance scope:
+
+| Required feature | Evidence |
+| --- | --- |
+| Selection and editable inspector | selection_and_live_projection_use_the_same_stage; inspector_edit_sender_preserves_context_and_rejects_stale_actions; retained sample/matrix/numeric-array interaction captures below |
+| Layers and edit target | layer_target_undo_and_save_modes_preserve_composition; muting_ancestor_of_edit_layer_is_rejected_without_changes; re-inspected ancestor-controls-selected-ui.png shows the selected leaf and protected ancestors |
+| Variants and history | visible_variant_fixture_preserves_selection_and_authored_history plus fresh red/blue/undo/redo whole-host captures below |
+| Payload participation | payload_commands_reconcile_and_keep_unloaded_prim_selectable plus fresh editor-payload-unloaded.png and editor-payload-reloaded.png |
+| Provenance | payload_provenance_retains_weaker_ops_and_authored_anchors and reference_provenance_preserves_variant_sites_custom_data_and_time; re-inspected payload-provenance-ui.png and fresh payload captures display authored layer, spec, list operation, asset and target |
+| Explicit saves | distinct root/edit/flattened FileDialogs requests produce SaveChecked with document/layer context; checked_save_rejects_stale_document_and_layer_without_touching_output, layer_target_undo_and_save_modes_preserve_composition and the separately executed native export lane verify writes and reopening |
+
+The existing save-formats-edit.png was re-inspected: it proves native chooser
+presentation, not an end-to-end OS file selection/overwrite interaction. Save
+acceptance combines chooser/request tests with real editor writes and native
+reopen checks; it does not claim every native dialog/backend interaction works.
+Likewise replay input enters egui, not the OS pointer stack. These limits and
+the graphics-stack black-frame issue remain; the feature checkbox is not an
+unqualified GUI reliability certification.
+
+Fresh payload_load_state.replay clicks unload then load. Inspected direct GPU
+images target/editor-payload-{unloaded,reloaded}.png show the cube absent/present,
+matching status, /Root still selected, retained provenance and clean layers.
+The unloaded desktop pair passes; reloaded retains a black-frame failure.
+Logs: /tmp/editor-payload-{unloaded,reloaded}.log. The replay and variant_history
+are included in parser regression coverage. All 84 viewer tests pass at this
+step (/tmp/editor-replay-final-tests.log); the immediately preceding model gate
+passes 59 editor tests with one ignored. No production behavior changed here.
+
+## Viewer variant selection and history
+
+assets/editor_variants.usda supplies a red unit cube and a blue size-two variant.
+The checked-in variant_history.replay clicks blue, Undo and Redo through actual
+egui controls. Inspected direct host captures target/editor-variants-{blue,undo,redo}.png
+show the matching color/size, Variant: look selection and modified/clean/modified
+layer status. Selection remains /Model. The camera remains fixed, so the larger
+cube extends outside the initial framing; this is not automatic reframing evidence.
+
+The model regression verifies variant size, selected path, exact authored-layer
+undo/redo and unchanged source bytes. All 59 editor tests pass with one ignored;
+make check-all passes. A first patch accidentally inserted the regression into
+an existing raw USDA fixture string, causing that existing test to fail; it was
+moved outside the string before the passing gate. No production code changed.
+Logs: /tmp/editor-variants-model-tests-fixed.log, /tmp/editor-variants-check.log.
+
+Captures use /Model in Inspector, variant_history.replay, direct delays
+16000/23000/30000ms for blue/undo/redo and desktop waits 18/24/32 plus two seconds.
+The blue and redo desktop pairs pass, while undo retains a black-frame failure;
+all three direct GPU images are usable. Logs: /tmp/editor-variants-{blue,undo,redo}.log.
+This closes variant interaction evidence, not the entire editor acceptance item.
+
+## Reconciled typed authoring and snippet acceptance
+
+The original typed/reusable authoring API and safe snippet composition requirement
+is covered by canonical schema construction through UsdSource::build, registered
+Bevy component authoring, immutable reference/retiming batches and with_edits,
+and the existing transaction-backed EditorSession. These retain typed upstream
+schema definitions rather than introducing a second schema hierarchy or BSN
+syntax. The requirement is not full equivalence with Bevy's BSN implementation.
+
+The new snippet_assembly executable composes a snippet twice into a typed-built
+root. Quotes, braces, newlines and an injection-like prim declaration remain one
+string value; both radii and the exact two-child structure are asserted. It saves
+root-layer USDZ, removes the source directory and reopens the package to assert
+the same values and structure. Native usdcat also flattens the retained output
+target/snippet-acceptance.usdz without error; the inspected native USDA contains
+the two spheres and quoted multiline labels. The CLI refuses existing output
+paths and requires .usdz. It does not sandbox Rust or dependency access.
+
+Refreshed Make execution passes all four authoring examples (typed_authoring,
+editor_assembly, source_edits and snippet_assembly), eight snippet unit tests,
+and check-all. The previous construction gate covers all 24 source tests.
+Logs: /tmp/authoring-acceptance-{examples,snippets}.log,
+/tmp/snippet-native-{assembly,reopen}.log and /tmp/snippet-acceptance-check.log.
+README and SUPPORT document the API boundaries. GPU fidelity/performance and
+composition-editor interaction acceptance remain separate open requirements.
+
+## Typed source construction
+
+UsdSource::build accepts a .usda identifier and a callback using the canonical
+generated schema API on a fresh snapshot-only stage. It validates single-root
+composition before serialization and validates a reopened snapshot before
+publication. Errors return no source; the constructor writes no files. Captured
+dependencies are composed afterward with the existing reference helpers. This
+is ordinary trusted Rust authoring, not a sandbox or a duplicate schema API.
+
+The typed_authoring and editor_assembly examples now use it instead of manually
+creating, exporting and wrapping stages. Regressions exercise typed values,
+independent reopened stages, reusable reference composition, absent filesystem
+output, wrong extensions, callback errors and unresolved references. Existing
+example assertions retain independent Bevy components, grouped history, stable
+runtime entities and save/reopen coverage. The first test compile incorrectly
+used a nonexistent Reference::new constructor; it was corrected to the canonical
+struct before execution. Logs: /tmp/typed-builder-tests-fixed.log,
+/tmp/typed-builder-{examples,source-tests,check}.log.
+All 24 source tests and both runnable example tests pass; make check-all passes.
+
 ## Self-contained composed showcase
 
 assets/flagship_showcase.usda combines the existing animation, skeleton and morph
@@ -3181,9 +3395,9 @@ changed in this integration-regression step.
 - [x] Bevy-tracked layer/texture dependencies, reloads and explicit failure states.
 - [x] Root replacement/despawn cleanup and independent live USD instances.
 - [x] Independent clocks, variants and overrides; preserve runtime-only components.
-- [ ] Composition-aware editing: selection, editable inspector, layers/edit target,
+- [x] Composition-aware editing: selection, editable inspector, layers/edit target,
       variants/payloads, provenance, undo/redo and explicit save operations.
-- [ ] Typed/reusable authoring API and safe snippet composition.
+- [x] Typed/reusable authoring API and safe snippet composition.
 - [ ] GPU deformation and environment lighting with fidelity/performance evidence.
 - [x] Native prototype/instance projection with measured asset sharing.
 - [x] Real AssetServer, reload, multi-instance, save/reopen and image regressions.

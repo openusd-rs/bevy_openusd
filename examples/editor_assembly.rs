@@ -21,10 +21,11 @@ fn assembly(path: &str) -> Result<EditorEdit, Box<dyn std::error::Error>> {
 }
 
 fn verify(output: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    let model = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("model.usda")?;
-    Sphere::define(&model, "/Model")?.create_radius_attr()?.set(0.85_f64)?;
-    let model = UsdSource::snapshot("editor_assembly/model.usda", model.root_layer().export_to_string()?.into_bytes())?;
-    let source = UsdSource::snapshot("editor_assembly/root.usda", b"#usda 1.0\n".as_slice())?.with_dependency(&model)?;
+    let model = UsdSource::build("editor_assembly/model.usda", |stage| {
+        Sphere::define(stage, "/Model")?.create_radius_attr()?.set(0.85_f64)?;
+        Ok(())
+    })?;
+    let source = UsdSource::build("editor_assembly/root.usda", |_| Ok(()))?.with_dependency(&model)?;
     let stage = source.open_stage()?;
     let before = stage.root_layer().export_to_string()?;
     let mut editor = EditorSession::new(stage.clone());

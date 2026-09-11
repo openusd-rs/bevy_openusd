@@ -3,12 +3,12 @@ use bevy::prelude::*;
 use usd_bevy::{UsdPlugin, editor::{EditorBridge, EditorCommand, EditorPlugin}, live::LiveStagePlugin};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SeekMode { Idle, Repeated, Unique }
+enum SeekMode { Idle, Repeated, Unique, Timeline }
 
 impl SeekMode {
-    fn samples(self) -> usize { match self { Self::Idle => 0, Self::Repeated => 100, Self::Unique => 1000 } }
+    fn samples(self) -> usize { match self { Self::Idle => 0, Self::Repeated => 100, Self::Unique | Self::Timeline => 1000 } }
     fn clock(self, iteration: usize) -> f64 {
-        if self == Self::Unique && iteration >= 4 { (iteration-3) as f64*10.0/self.samples() as f64 }
+        if matches!(self, Self::Unique | Self::Timeline) && iteration >= 4 { (iteration-3) as f64*10.0/self.samples() as f64 }
         else { [0.0,5.0,10.0,5.0][iteration%4] }
     }
 }
@@ -56,6 +56,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, LiveStagePlugin, EditorPlugin));
     app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
+    if std::env::var_os("USD_PROFILE_ROUTES").is_some() { app.init_resource::<usd_bevy::route::ProjectionTimings>(); }
     app.update();
     let bridge = app.world().resource::<EditorBridge>().clone();
     bridge.send(EditorCommand::Open(path.to_str().ok_or("asset path must be UTF-8")?.into()))?;
@@ -69,9 +70,22 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     let idle = start.elapsed() / 100;
     let mut result = Measurement { open, idle, peak_asset_counts: asset_counts(app.world()), rss_before_seeks: resident_bytes(), ..default() };
     if seek != SeekMode::Idle {
+        if seek == SeekMode::Timeline {
+            if !view.timeline.start.is_finite() || !view.timeline.end.is_finite()
+                || view.timeline.end <= view.timeline.start || !(view.timeline.end-view.timeline.start).is_finite() {
+                return Err("timeline seek requires a finite increasing timeline".into());
+            }
+            println!("seek_timeline_start={} seek_timeline_end={}", view.timeline.start, view.timeline.end);
+        }
         let mut timings = Vec::with_capacity(seek.samples());
         for iteration in 0..seek.samples()+4 {
-            let time = seek.clock(iteration);
+            if iteration == 4 {
+                if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionTimings>() { timings.0.clear(); }
+            }
+            let normalized = seek.clock(iteration);
+            let time = if seek == SeekMode::Timeline {
+                view.timeline.start + (view.timeline.end-view.timeline.start) * (normalized/10.0)
+            } else { normalized };
             bridge.send(EditorCommand::Seek(time))?;
             let start = Instant::now();
             app.update();
@@ -88,6 +102,14 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
         result.seek_median = timings[timings.len().div_ceil(2)-1];
         result.seek_p95 = timings[(timings.len()*95).div_ceil(100)-1];
         result.seek_max = *timings.last().unwrap();
+        if let Some(timings) = app.world().get_resource::<usd_bevy::route::ProjectionTimings>() {
+            let mut routes: Vec<_> = timings.0.iter().collect();
+            routes.sort_by_key(|(_, timing)| std::cmp::Reverse(timing.matching + timing.application));
+            for (name, timing) in routes {
+                eprintln!("route_profile phase=measured-seeks samples={} route={name} attempts={} matches={} match_ms={:.3} apply_ms={:.3}",
+                    seek.samples(), timing.attempts, timing.matches, timing.matching.as_secs_f64()*1000.0, timing.application.as_secs_f64()*1000.0);
+            }
+        }
     }
     result.rss_after_seeks = resident_bytes();
     if let Some(cache) = app.world().get_resource::<usd_bevy::route::cache::ProjectionCache>() {
@@ -123,7 +145,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(1..=4).contains(&args.len()) { return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-unique]".into()); }
+    if !(1..=4).contains(&args.len()) { return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-unique|seek-timeline]".into()); }
     let path = std::fs::canonicalize(&args[0])?;
     let samples = args.get(1).map(|value| value.parse::<usize>()).transpose()?.unwrap_or(3);
     if !(1..=10).contains(&samples) { return Err("samples must be between 1 and 10".into()); }
@@ -131,7 +153,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => SeekMode::Idle,
         Some("seek") => SeekMode::Repeated,
         Some("seek-unique") => SeekMode::Unique,
-        _ => return Err("fourth argument must be seek or seek-unique".into()),
+        Some("seek-timeline") => SeekMode::Timeline,
+        _ => return Err("fourth argument must be seek, seek-unique or seek-timeline".into()),
     };
     let gpu_prepared = match args.get(2).map(String::as_str) {
         None | Some("cpu") => false,
@@ -143,7 +166,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if gpu_prepared { "gpu-prepared" } else { "cpu" });
     println!("payloads=retained-cpu-bytes excludes=gpu-allocation,asset-handles,allocator-overhead");
     println!("seek={seek:?} seek_clocks={} seek_warmup={} seek_samples={} seek_percentiles=nearest-rank payload_phase={}",
-        if seek == SeekMode::Unique { "1000-distinct-times-in-(0,10]" } else { "0,5,10,5" },
+        if seek == SeekMode::Timeline { "1000-distinct-times-in-authored-range" }
+        else if seek == SeekMode::Unique { "1000-distinct-times-in-(0,10]" } else { "0,5,10,5" },
         if seek == SeekMode::Idle { 0 } else { 4 }, seek.samples(), if seek != SeekMode::Idle { "after-seeks" } else { "after-idle" });
     println!("rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks peak_assets=sampled-after-updates-not-allocation-counts");
     println!("sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes");
@@ -158,6 +182,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             m.cached_meshes,m.cached_mesh_payload_bytes);
     }
     Ok(())
+}
+
+#[test]
+fn timeline_benchmark_seeks_the_composed_showcase() {
+    let mode = SeekMode::Timeline;
+    assert_eq!(mode.samples(), 1000);
+    assert_eq!(mode.clock(4), 0.01);
+    assert_eq!(mode.clock(1003), 10.0);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/flagship_showcase.usda");
+    let result = measure(&path, true, mode).unwrap();
+    assert_eq!(result.gpu_morph_entities, 1);
+    assert!(result.mesh_entities >= 8);
+    assert!(result.seek_max >= result.seek_p95 && result.seek_p95 >= result.seek_median);
 }
 
 #[test]

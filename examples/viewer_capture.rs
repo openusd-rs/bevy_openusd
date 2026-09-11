@@ -28,6 +28,8 @@ mod environment;
 mod curve_quality;
 #[path = "../src/capture_metadata.rs"]
 mod capture_metadata;
+#[path = "support/gpu_timing.rs"]
+mod gpu_timing;
 
 #[derive(Resource)]
 struct Capture {
@@ -138,6 +140,16 @@ fn reverse_capture_clocks(mut capture: ResMut<Capture>,
 }
 
 fn main() -> AppExit {
+    let timing = match std::env::var("USD_CAPTURE_GPU_SAMPLES") {
+        Ok(value) => gpu_timing::GpuTiming::parse(Some(&value)),
+        Err(std::env::VarError::NotPresent) => gpu_timing::GpuTiming::parse(None),
+        Err(error) => Err(error.to_string()),
+    };
+    let timing = match timing {
+        Ok(timing) => timing,
+        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+    };
+    let timing_enabled = timing.enabled();
     let curve_settings = match curve_quality::from_env() {
         Ok(settings) => settings,
         Err(error) => { eprintln!("{error}"); return AppExit::error(); }
@@ -182,6 +194,7 @@ fn main() -> AppExit {
     };
     let asset_dir = capture.asset.parent().unwrap().to_string_lossy().into_owned();
     let mut app = App::new();
+    app.insert_resource(timing);
     capture.curve_steps = curve_settings.cubic_steps();
     capture.curve_surface_sides = curve_settings.surface_sides();
     app.insert_resource(curve_settings);
@@ -205,6 +218,7 @@ fn main() -> AppExit {
         app.add_plugins(usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin)
             .add_systems(Update, select_dome);
     }
+    if timing_enabled { app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin); }
     app.sub_app_mut(bevy::render::RenderApp).insert_resource(progress)
         .add_systems(bevy::render::Render, pipeline_progress.after(bevy::render::RenderSystems::Render));
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
@@ -305,7 +319,7 @@ fn select_authored_camera(mut capture: ResMut<Capture>,
 }
 
 fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
-    progress: Res<PipelineProgress>,
+    timing: (Res<bevy::diagnostic::DiagnosticsStore>, ResMut<gpu_timing::GpuTiming>, Res<PipelineProgress>),
     states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
     meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>, Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>), With<Mesh3d>>,
     camera: Query<(&RenderTarget, &GlobalTransform, &Camera), With<CaptureCamera>>,
@@ -319,6 +333,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     instancer_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>,
     geometry_errors: Query<(&usd_bevy::UsdPrimRef, Option<&usd_bevy::route::shapes::UsdShapeError>, Option<&usd_bevy::route::curves::UsdCurveError>, Option<&usd_bevy::route::xform::UsdTransformError>)>,
     mut exit: MessageWriter<AppExit>) {
+    let (diagnostics, mut timing, progress) = timing;
     if capture.started.elapsed() > Duration::from_secs(60) {
         eprintln!("capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}", capture.camera_path, capture.camera_ready, progress.0.lock().unwrap());
         exit.write(AppExit::error());
@@ -385,6 +400,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     }
     capture.ready_frames += 1;
     if capture.ready_frames < 60 { return; }
+    if !timing.collect(&diagnostics) { return; }
     let Ok((target, camera_transform, camera)) = camera.single() else { return };
     let visible = meshes.iter().filter(|(_, visibility, _, _, _, _)| visibility.get()).count();
     let gpu = meshes.iter().filter(|(_, visibility, skin, _, _, _)| visibility.get() && skin.is_some()).count();
@@ -393,6 +409,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
         .filter_map(|(_, _, _, _, _, material)| material.map(|material| material.0.id())).collect();
     let flat_unique: std::collections::HashSet<_> = flat_handles.iter().copied().collect();
     capture.mesh_report = format!("hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n");
+    capture.mesh_report.push_str(&timing.report());
     capture.mesh_report.push_str(&capture_metadata::camera_report(camera_transform, camera.clip_from_view()));
     capture.mesh_report.push_str(&format!("hierarchy_visible_flat_material_entities={}\nhierarchy_visible_unique_flat_materials={}\n", flat_handles.len(), flat_unique.len()));
     capture.mesh_report.push_str(&format!("studio_baseline_lux={:?}\n", studio_lights.iter().map(|light| light.0).collect::<Vec<_>>()));

@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native Discard acceptance
+
+At a75af0d, the rebuilt viewer was run with close_discard.replay: close-button
+click at 10 seconds, explicit Discard click at 26.2 seconds. Inspected
+target/close-discard-ui.png shows the confirmation before Discard. A wrapper
+around the ordinary nixVulkan command records USD_VIEWER_EXIT_STATUS=0 in
+target/close-discard-ui.viewer.log immediately after the Discard replay events.
+The viewer therefore exits normally before capture cleanup, not through a crash
+or forced termination. Known panic-marker inspection passes.
+
+The two-frame capture intentionally does not pass: it reports "viewer exited
+before second capture" and produces no second PNG
+(/tmp/close-discard-capture.log). Its first image and logs are retained. This
+proves the bounded native Discard interaction, not a successful two-frame
+rendering run. Both Cancel and Discard replays are now registered in the parser
+regression. OS-level close handling and the other release blockers remain open.
+
 ## Viewer close-command confirmation
 
 The viewer now filters root egui Close commands before Mara consumes them.

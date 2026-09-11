@@ -21,6 +21,16 @@ capture_timeout=${USD_UI_CAPTURE_TIMEOUT:-15}
 [[ "$capture_timeout" =~ ^[1-9][0-9]*$ && "$capture_timeout" -le 120 ]] || {
     echo "USD_UI_CAPTURE_TIMEOUT must be 1..120 seconds" >&2; exit 2;
 }
+second_wait=${USD_UI_CAPTURE_SECOND_WAIT:-0}
+[[ "$second_wait" =~ ^(0|[1-9][0-9]{0,2})$ && "$second_wait" -le 300 ]] || {
+    echo "USD_UI_CAPTURE_SECOND_WAIT must be 0..300 seconds" >&2; exit 2;
+}
+second="${output%.png}.second.png"
+if [[ "$second_wait" != 0 ]]; then
+    for path in "$second" "${second%.png}.capture.log" "${second%.png}.inspect.log" "${second%.png}.settings.txt"; do
+        [[ ! -e "$path" && ! -L "$path" ]] || { echo "second capture companion must be new: $path" >&2; exit 2; }
+    done
+fi
 paired=${USD_UI_CAPTURE_VIEWPORT:-0}
 [[ "$paired" == 0 || "$paired" == 1 ]] || {
     echo "USD_UI_CAPTURE_VIEWPORT must be 0 or 1" >&2; exit 2;
@@ -54,6 +64,7 @@ printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutp
 printf 'scene_graph_requested=%s\n' "$scene_graph" >> "${output%.png}.settings.txt"
 printf 'capture_timeout_seconds=%s\n' "$capture_timeout" >> "${output%.png}.settings.txt"
 printf 'viewport_requested=%s\n' "$paired" >> "${output%.png}.settings.txt"
+printf 'second_capture_wait_seconds=%s\n' "$second_wait" >> "${output%.png}.settings.txt"
 runtime=$(mktemp -d /dev/shm/usd-viewer-ui.XXXXXX)
 chmod 700 "$runtime"
 compositor_pid=
@@ -136,23 +147,50 @@ if [[ "$scene_graph" == 1 ]]; then
         echo "warning: scene graph diagnostic failed ($status); continuing capture" >&2
     fi
 fi
-cd "$runtime"
-if timeout --kill-after=1 "$capture_timeout" weston-screenshooter > "${output%.png}.capture.log" 2>&1; then
-    echo 'screenshot_status=ok' >> "${output%.png}.settings.txt"
-else
-    status=$?
-    printf 'screenshot_status=failed:%s\n' "$status" >> "${output%.png}.settings.txt"
-    echo "screenshot command failed ($status); capture log retained: ${output%.png}.capture.log" >&2
-    exit 1
-fi
-shopt -s nullglob
-captures=(wayland-screenshot-*.png)
-[[ ${#captures[@]} == 1 ]] || { echo "expected one captured output" >&2; exit 1; }
-cp -- "${captures[0]}" "$output"
-cd "$root"
-make run RUN_WITH= CARGO="${CARGO:-cargo --offline}" APP_TARGET='--example capture_inspect' \
-    ARGS="$(printf '%q' "$output") 110 110 1400 800" > "${output%.png}.inspect.log" 2>&1 || {
-    echo "viewer capture failed region inspection; image and logs retained: $output" >&2; exit 1;
+capture_frame() {
+    local destination=$1 status
+    local -a captures
+    cd "$runtime" || return 1
+    printf 'capture_start_script_seconds=%s\n' "$SECONDS" >> "${destination%.png}.settings.txt"
+    if timeout --kill-after=1 "$capture_timeout" weston-screenshooter > "${destination%.png}.capture.log" 2>&1; then
+        echo 'screenshot_status=ok' >> "${destination%.png}.settings.txt"
+    else
+        status=$?
+        printf 'screenshot_status=failed:%s\n' "$status" >> "${destination%.png}.settings.txt"
+        echo "screenshot command failed ($status): $destination" >&2
+        return 1
+    fi
+    shopt -s nullglob
+    captures=(wayland-screenshot-*.png)
+    [[ ${#captures[@]} == 1 ]] || { echo "expected one captured output" >&2; return 1; }
+    cp -- "${captures[0]}" "$destination" || return 1
+    rm -- "${captures[0]}" || return 1
+    printf 'capture_end_script_seconds=%s\n' "$SECONDS" >> "${destination%.png}.settings.txt"
 }
+capture_ok=1
+if [[ "$second_wait" != 0 ]]; then cp -- "${output%.png}.settings.txt" "${second%.png}.settings.txt"; fi
+capture_frame "$output" || capture_ok=0
+if [[ "$second_wait" != 0 ]]; then
+    for ((i=0; i<second_wait; i++)); do
+        kill -0 "$viewer_pid" 2>/dev/null || { echo "viewer exited before second capture" >&2; exit 1; }
+        sleep 1
+    done
+    capture_frame "$second" || capture_ok=0
+fi
+cd "$root"
+outputs=("$output")
+if [[ "$second_wait" != 0 ]]; then outputs+=("$second"); fi
+for frame in "${outputs[@]}"; do
+    if [[ ! -f "$frame" ]] || ! make run RUN_WITH= CARGO="${CARGO:-cargo --offline}" APP_TARGET='--example capture_inspect' \
+        ARGS="$(printf '%q' "$frame") 110 110 1400 800" > "${frame%.png}.inspect.log" 2>&1; then
+        echo "viewer capture failed region inspection; image and logs retained: $frame" >&2
+        echo 'region_inspection_passed=0' >> "${frame%.png}.settings.txt"
+        capture_ok=0
+    else
+        echo 'region_inspection_passed=1' >> "${frame%.png}.settings.txt"
+        echo "UI_FRAME_INSPECTION_OK $frame"
+    fi
+done
+[[ "$capture_ok" == 1 ]] || exit 1
 [[ "$viewport_ok" == 1 ]] || { echo "paired viewport capture failed; artifacts retained" >&2; exit 1; }
 echo "UI_CAPTURE_OK $output (inspect image; fixed wait is not render readiness)"

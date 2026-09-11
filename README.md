@@ -1354,6 +1354,16 @@ regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
 the failure. This catches the observed black-window case, not arbitrary incorrect
 rendering or incomplete uploads.
 
+Set `USD_UI_CAPTURE_SECOND_WAIT=1..300` to capture a second host image in the same
+viewer process, after that many additional seconds (default 0 disables it).
+The companion is `.second.png`, with separate capture/inspection logs and settings;
+existing second-capture companions reject before launch. Both frames are captured
+before inspection, so a black first frame does not prevent the second capture.
+Either failed frame still fails the overall command; a later valid image never
+hides an earlier failure. Settings record capture start/end in elapsed script
+seconds, not exact GPU frame times. This is diagnostic sampling, not a readiness
+check or automatic retry.
+
 Set `USD_UI_CAPTURE_VIEWPORT=1` to additionally retain the embedded Bevy readback
 as `.viewport.png`, `.viewport.rgba` and `.viewport.capture.txt`. Its dimensions
 drive a separate full-image near-black check in `.viewport.inspect.log`. The

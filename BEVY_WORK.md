@@ -3,6 +3,35 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Same-process host capture diagnostics
+
+`USD_UI_CAPTURE_SECOND_WAIT=1..300` adds a second host screenshot without restarting
+the viewer; default zero retains single-capture behavior. The script captures both
+frames before region inspection and fails overall if either is missing/black.
+Separate `.second.png` capture/inspection logs and settings preserve evidence;
+existing secondary companions reject before launch. Settings record elapsed script
+seconds around each screenshot, not exact rendered-frame timestamps. A successful
+later frame does not turn an earlier failed frame into acceptance.
+
+With the reference Reload replay, `target/reference-reload-same-run-ui.png` was
+black at script second 31, while its `.second.png` companion showed the cube and
+restored Box/10/2 fields at second 43. Both images were inspected. The command
+failed as required (`/tmp/reference-reload-same-run-capture.log`). The viewer
+recovered in the same process; this rules out a permanently black launch for
+that run, but does not identify the rendering fault or prove the conflict prompt.
+Shell syntax, invalid second-wait arguments and existing-companion rejection
+were checked through Make targets. No renderer fix is claimed.
+
+A second run enabled the existing delayed Bevy readback at 28000 ms alongside
+the two host frames. Inspected `target/reference-reload-paired-series-ui.png`
+shows the conflict prompt and cube; its `.second.png` shows restored Box/10/2
+fields without a prompt. The `.viewport.png` shows the valid cube at 28001 ms
+ready time, 625 updates, document 1/time 0. Both host captures were at script
+seconds 31 and 43 and all guards passed
+(`/tmp/reference-reload-paired-series-capture.log`). This establishes the Reload
+interaction in that run. It does not localize the earlier black frame: the added
+readback may alter timing, and no black host frame occurred in this paired run.
+
 ## Current workspace regression gate
 
 At `af5360c` plus the payload Reload replay registration, `TMPDIR="$PWD/target/test-tmp"
@@ -163,7 +192,8 @@ whole-entry conflict instead of Apply. `reference_identity_keep.replay` resolves
 it; inspected `target/reference-identity-keep-ui.png` shows `/Box` refreshed and
 offset 5 retained without applying it. Both capture guards pass
 (`/tmp/reference-identity-capture.log`, `/tmp/reference-identity-keep-capture.log`).
-Native Reload and arbitrary multi-entry replacement remain unverified.
+Native Reload was unverified at this checkpoint; the same-process paired capture
+above subsequently covers it. Arbitrary multi-entry replacement remains unverified.
 
 The newer `reference_identity_reload.replay` uses bottom-clamped initial scrolling
 and clicks Reload after undoing a retarget with offset 5 still drafted. Inspected
@@ -174,7 +204,8 @@ the guard. Artifacts are `target/reference-identity-before-reload-ui.png` and
 `target/reference-identity-before-reload-retry-ui.png`; logs are
 `/tmp/reference-identity-before-reload[-retry]-capture.log`. These failed captures
 do not establish that this new replay reached its intended prompt, so its full
-Reload-path visual acceptance remains open. No black-window fix is claimed.
+Reload-path visual acceptance remained open until the paired capture above.
+No black-window fix is claimed.
 All 69 viewer tests and check-all pass with both new replay registrations
 (`/tmp/editor-draft-resolution-{tests,check}.log`).
 

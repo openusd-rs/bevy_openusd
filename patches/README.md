@@ -5,6 +5,16 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Payload identity offsets
+
+`openusd-payload-identity.patch` normalizes exact identity payload offsets in
+composition-only copies before list-op matching. An omitted offset and explicit
+`(offset=0, scale=1)` now match for deletion, ordering and deduplication. Authored
+layer fields and their serialized form are unchanged. This does not implement
+native fuzzy LayerOffset equality. The containing Bevy tests cover deletion,
+ordering, undo/reopen and `assets/payload_identity.usda`; native USD 25.05.01
+flattens that fixture to an empty `/Root`, with no payload child.
+
 ## Undo pruning
 
 `openusd-undo-pruning.patch` adds `UndoStage::discard_oldest`, which drains pending

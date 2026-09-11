@@ -22,6 +22,7 @@ Changes from the base source are recorded in these patches in the project root:
 - `patches/openusd-nested-package-reading.patch`
 - `patches/openusd-nested-package-export.patch`
 - `patches/openusd-undo-pruning.patch`
+- `patches/openusd-payload-identity.patch`
 
 The binary metadata patch includes sublayer StringVector encoding as well as
 token-vector child/order fields and variant-set StringListOp encoding.

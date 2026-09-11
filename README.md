@@ -108,13 +108,42 @@ An empty replacement list blocks weaker payloads; clearing removes the local
 opinion and restores weaker composition. Entries allow empty defaultPrim targets
 or absolute prim paths, with finite offsets and positive finite time scales.
 The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
+For authored list editing, `EditorEdit::PayloadListOp { prim, operation }`
+and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containing
+prepend, append, add, delete, and order entries. They replace the local operation,
+not the composed payload list. Explicit and non-explicit buckets cannot be mixed;
+all entries are validated before authoring. Undo/redo retains the whole operation.
+In the viewer, click a payload row's mode button to cycle through Replace,
+Prepend, Append, Add, Delete and Order. Apply replaces the complete local
+operation with the draft; non-replacement modes can be mixed, but Replace
+cannot be mixed with them. Rows retain their order within each operation bucket.
+When the active edit target has a local opinion at the selected prim's mapped
+spec path, **Discard draft and load local opinion** imports it without authoring.
+Relative asset strings and omitted versus explicit time offsets are preserved.
+Weaker opinions are not imported into a different layer. Operations over 64 rows
+or not representable by the form are rejected without replacing the draft.
+`EditorSnapshot::payload_opinions` exposes each contributing authored list op,
+strongest first, with its source layer, spec path and cumulative site time offset.
+The Payload authoring group displays these below the replacement form, including
+explicit-empty blockers and prepend/append/add/delete/order entries. Asset paths
+in this readout remain relative to the displayed source layer, not the edit layer;
+the readout is not the final composed payload list and does not populate the draft.
 `EditorSnapshot::checked_edit` creates a queued edit bound to the document,
-revision and complete edit-target mapping. Payload inspector actions use it;
+revision and complete edit-target mapping. Payload and property inspector edits use it;
 stale commands fail before authoring instead of being redirected to a new layer
 or document. The existing unchecked `EditorCommand::Edit` remains available.
+Property value/time drafts and source-expansion state are cleared when the
+document or complete edit target changes. Ordinary revision and selection
+changes retain drafts. If a composed value changes while its draft has edits,
+the inspector preserves the draft and requires Reload or Keep draft before
+applying it. Pristine drafts and successful writes refresh automatically. This
+is explicit conflict resolution, not field-wise merging. The
+`assets/draft_conflict.usda` fixture and `scripts/replays/draft_*.replay`
+exercise a variant changing a relationship while its draft is being edited;
+Keep retains the draft without applying it, while Reload discards it.
 These author layer opinions; `EditorCommand::Payload` separately changes runtime
 load rules. The inspector's Payload authoring group accepts up to 64 draft
-entries with asset, prim, offset and scale fields. Replace authors the whole list;
+entries with asset, prim, offset and scale fields. Replace-mode rows author the whole list;
 an empty draft offers an explicit Block action. Clear removes the local opinion.
 Drafts reset when the document, selected prim or edit layer changes. They start
 empty rather than copying composed relative paths into a different authoring

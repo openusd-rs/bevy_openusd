@@ -3,7 +3,176 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reload timeout investigation
+
+The asset-test wait helper now preserves the calling test location and reports
+each scene root's state, source revision and AssetServer load state on timeout.
+The deadline remains ten seconds; no retries or relaxed assertions were added.
+Twenty focused nested-package reload runs passed
+(`/tmp/nested-reload-stress.log`), followed by ten complete library runs of
+456 passing tests and 13 ignored each (`/tmp/reload-library-stress.log`).
+The earlier workspace timeout did not recur in these runs. Its cause remains
+unidentified; these results are not a production fix or full workspace pass.
+
 ## Typed undoable payload-list authoring
+
+The payload form can explicitly discard its draft and load the active target's
+local authored opinion. Selection uses the complete target's mapped spec path
+and layer identifier; it never imports a weaker opinion into a differently
+anchored layer. Import retains operation buckets, within-bucket ordering, asset
+strings and omitted versus explicit offsets, and does not issue an edit command.
+Oversized or unrepresentable operations reject without replacing the draft;
+in particular an empty non-explicit op is not silently turned into a blocker.
+Changing an imported omitted offset to non-identity authors the requested mapping.
+
+Tests cover bucket/offset round trips, 64/65-row bounds, nonrepresentable empty
+ops, and same-layer variant spec mapping. All 60 viewer tests and check-all pass
+(`/tmp/payload-load-{tests,check}.log`). The native `payload_load_local.replay`
+switches to the weak layer and loads its Prepend `/Box` opinion. Inspected
+`target/payload-load-local-ui.png` shows the correct edit target, imported relative
+asset, 0/1 mapping and unchanged blue cube; guard passes
+(`/tmp/payload-load-local-capture.log`). Arbitrary imported-op native interaction
+and long-form scrolling remain incompletely covered.
+
+The viewer now exposes all six payload row modes through a cycling row button:
+Replace, Prepend, Append, Add, Delete and Order. The complete draft replaces the
+local operation through the checked command path. Non-explicit modes can be
+combined; mixed Replace/non-explicit rows reject locally. Empty drafts retain
+the explicit Block action. Clear still removes the local opinion; no composed
+opinion is copied or reanchored into the draft. Row order within a bucket is
+preserved. Tests cover every mode, cycling, mixed operations, invalid replacement
+mixes, and a parsed Delete with identity offset removing the weaker cube and
+undo restoring it. All 58 viewer tests and check-all pass
+(`/tmp/payload-mode-{tests,check}.log`). The native `payload_prepend.replay`
+produces an orange sphere and visibly retains Prepend mode in the form;
+inspected `target/payload-prepend-ui.png`, guard passes
+(`/tmp/payload-prepend-capture.log`). Exhaustive multi-row/multi-mode native
+interaction and layout coverage remains open.
+
+Before this UI change, the complete workspace/all-targets gate at `9a4b1c8`
+passed 573 tests with 13 ignored across 30 result suites
+(`/tmp/bevy-workspace-current.log`). This includes the previously intermittent
+nested-package reload test, but does not explain that prior timeout.
+
+The new list-op regression exposed a dependency composition bug: deleting a
+payload with explicit identity offset failed to match the same weaker payload
+with an omitted offset. Before the fix the score remained 1 instead of 2
+(`/tmp/payload-identity-before.log`). Native USD 25.05.01 flattens
+`assets/payload_identity.usda` to an empty `/Root` without its payload child
+(`/tmp/payload-identity-native.log`). `openusd-payload-identity.patch` normalizes
+exact identity offsets in composition copies before list-op matching; authored
+fields and serialization remain unchanged. The new fixture regression agrees
+with native USD, and explicit-identity delete/order cases preserve exact
+authored text through undo/redo and reopen. Fuzzy offset equality is not added.
+
+The pre-fix full workspace gate failed in the nested-package two-instance
+reload test with an asset-operation timeout
+(`/tmp/payload-listop-workspace-tests.log`). The post-fix complete library run
+passes 456 with 13 ignored, including that reload test
+(`/tmp/payload-identity-lib-tests.log`); this rerun does not explain or resolve
+the earlier timeout. Do not count the failed workspace gate as passing.
+All 56 viewer tests and check-all also pass
+(`/tmp/payload-identity-{viewer-tests,check}.log`). The review patch passes
+reverse-apply checking against the modified vendored source.
+
+`EditorEdit::PayloadListOp` and `authoring::set_payload_list_op` now author a
+canonical complete local list operation rather than requiring an explicit-list
+replacement. Prepend, append, add, delete and order buckets are retained. Mixed
+explicit/non-explicit structures, missing asset-and-prim targets, invalid prim
+paths and unsupported time mappings reject before layer mutation. The existing
+`set_payloads` delegates to the same validation through an explicit operation.
+An empty non-explicit operation is not an explicit-empty blocker; Clear remains
+the API for removing the local field.
+
+Tests verify all six operation forms, a combined delete/prepend, composition
+strength against a weaker two-payload list, exact layer text after undo/redo,
+and USDA serialization/reopen with external sublayer composition retained.
+Malformed cases retain the complete original layer text, including an invalid
+entry after a valid entry in a different bucket. Library tests pass 455 with
+13 ignored, viewer tests pass 56, and check-all passes
+(`/tmp/payload-listop-{lib-tests,viewer-tests,check}.log`). The viewer form still
+authors explicit replacements; arbitrary list-op controls are not implemented.
+This step does not add new native OpenUSD comparison or GPU acceptance.
+
+Payload provenance is now exposed as `EditorSnapshot::payload_opinions` with
+typed canonical list ops and each contributing spec's source layer, original
+prim path, and cumulative layer offset, in prim-stack strength order. The
+inspector displays these beneath the replacement form, distinguishing explicit
+empty blockers and all list-op categories. It preserves authored asset strings;
+they remain anchored to the displayed source layer, not the active edit layer.
+These are authored opinions, including weaker opinions masked by an explicit
+replacement, not a final composed payload list or an automatic draft import.
+
+Regression coverage checks weaker relative paths, explicit-empty masking,
+clear/undo, selection removal, and a referenced variant spec with cumulative
+offset 10 / scale 2. Library tests pass 453 with 13 ignored; all 56 viewer tests
+and check-all pass (`/tmp/payload-provenance-lib-tests.log`,
+`/tmp/payload-provenance-final-{viewer-tests,check}.log`). Inspected native capture
+`target/payload-provenance-ui.png` shows the weaker layer, `/Root`, Prepend,
+relative content asset, and `/Box` with the blue cube still rendered; its guard
+passes (`/tmp/payload-provenance-capture.log`). The checked-in
+`payload_provenance.replay` supplies the readout interaction. Arbitrary list-op
+authoring controls and exhaustive multi-op native layout remain open.
+
+The `draft_apply.replay` extends conflict resolution through Keep, Set targets,
+and switching back to variant a. Inspected `target/draft-apply-ui.png` shows
+variant a with `/A/Child` and no conflict prompt; the capture guard passes
+(`/tmp/draft-apply-capture.log`). The corresponding session regression proves
+the local relationship opinion remains composed across that variant change,
+undoing the variant retains it, and undoing the relationship restores `/B`.
+It also checks that the on-disk fixture bytes remain unchanged. All 56 viewer
+tests and check-all pass (`/tmp/draft-apply-{tests,check}.log`). This establishes
+this relationship write/undo workflow, not exhaustive property conflict or
+explicit-save acceptance.
+
+Native conflict-control acceptance now uses `assets/draft_conflict.usda` and
+the `draft_conflict`, `draft_keep`, and `draft_reload` UI replays. Typing
+`/A/Child` into the relationship draft then selecting variant b changes the
+composed target to `/B` and displays the conflict prompt. Inspected captures
+`target/draft-conflict-prompt.png`, `target/draft-keep-ui.png`, and
+`target/draft-reload-ui.png` show the prompt, preserved `/A/Child` after Keep,
+and `/B` after Reload respectively. Both resolution captures pass the host
+capture guard; these choices resolve draft state, not author the draft.
+The fixture regression checks composed variant changes and undo without losing
+the draft. All 56 viewer tests and check-all pass
+(`/tmp/draft-prompt-{tests,check}.log`); the replay parser also passes after
+registering both resolution scripts (`/tmp/draft-replay-tests.log`). This does
+not resolve the intermittent black host capture failure or establish exhaustive
+attribute/matrix UI acceptance.
+
+Same-context property/relationship drafts no longer silently reset when the
+composed source text changes. Pristine drafts refresh, and a current value equal
+to the draft acknowledges a successful write. Other changed sources preserve
+the draft and show Reload current / Keep draft actions before the normal apply
+controls. Matrix drafts use the same reconciliation before editing their rows.
+Tests cover scalar, relationship and multiline matrix conflicts, repeated frames,
+pristine updates and applied-value acknowledgement. All 55 viewer tests,
+check-all and build pass (`/tmp/draft-conflict-{tests,check,build}.log`). Native
+conflict-prompt interaction/layout acceptance is recorded above; no automatic
+field-wise merge or conflict resolution across document changes is claimed.
+
+Inspector draft isolation now clears value, sample-time and expanded-source maps
+on document identity or complete EditTarget changes, including different variant
+mappings into the same layer. Revision/selection changes within that context do
+not erase typing. This also releases maps retained from previous documents.
+Payload drafts now compare the complete target in addition to their document,
+layer and prim key; stale closures cannot operate on a newly mapped draft.
+Tests cover all three property maps, document/layer/same-layer mapping changes,
+and preservation across revisions/selection. All 54 viewer tests, check-all and
+build pass (`/tmp/draft-context-{tests,check,build}.log`). Same-context external
+value conflict merging and exhaustive UI draft workflows remain open.
+
+The context guard now also covers every EditorEdit emitted by the property
+inspector: rename/move, variant selection, relationship replace/clear, default
+and sampled attribute writes, sample removal, value clearing and blocking.
+One shared lightweight snapshot is captured per inspector frame and cloned by
+Arc into its controls; no full scene snapshot is copied per attribute. Runtime
+load toggles and edit-target selection remain separate commands. A bridge test
+accepts a current attribute write, rejects a stale rename, then accepts a fresh
+rename with live namespace reconciliation and undo. All 53 viewer tests and the
+viewer build pass (`/tmp/inspector-guard-{tests,build}.log`); check-all passes
+(`/tmp/inspector-guard-check.log`). This guards queued edits, not unsaved draft
+conflict resolution or all non-inspector command paths.
 
 Payload inspector actions now use `EditorSnapshot::checked_edit` and the new
 `EditorCommand::EditChecked`. The snapshot retains the complete canonical
@@ -11,8 +180,8 @@ EditTarget, not only its layer identifier. Queue processing synchronizes externa
 edits then checks document identity, revision and full target equality before
 normal edit dispatch. Rejected requests perform no authoring. Normal dispatch
 retains namespace remapping, texture refresh, rollback and history behavior.
-Existing unchecked Edit remains an explicit API; other inspector controls have
-not yet migrated to the guard. The form captures only context fields, not another
+Existing unchecked Edit remains an explicit API; the property inspector now uses
+the guard as described above. The form captures only context fields, not another
 copy of all scene/attribute data.
 
 The bridge regression accepts selection/seek changes but rejects stale revisions,

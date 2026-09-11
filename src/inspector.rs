@@ -11,9 +11,22 @@ pub struct Drafts(
     Arc<Mutex<HashMap<String, (String, String)>>>,
     Arc<Mutex<HashMap<String, bool>>>,
     crate::payload_editor::PayloadDraft,
+    Arc<Mutex<Option<(u64, Option<openusd::usd::EditTarget>)>>>,
 );
 
-fn path_lines(path: &str) -> Vec<String> {
+impl Drafts {
+    fn synchronize_context(&self, snapshot: &EditorSnapshot) {
+        let Ok(mut context) = self.4.lock() else { return };
+        let current = (snapshot.document_id, snapshot.edit_target.clone());
+        if context.as_ref() == Some(&current) { return; }
+        if let Ok(mut values) = self.0.lock() { values.clear(); }
+        if let Ok(mut times) = self.1.lock() { times.clear(); }
+        if let Ok(mut expanded) = self.2.lock() { expanded.clear(); }
+        *context = Some(current);
+    }
+}
+
+pub(crate) fn path_lines(path: &str) -> Vec<String> {
     path.split('\n').flat_map(|line| {
         let chars: Vec<_> = line.chars().collect();
         if chars.is_empty() { vec![String::new()] }
@@ -21,7 +34,40 @@ fn path_lines(path: &str) -> Vec<String> {
     }).collect()
 }
 
+fn send_edit(bridge: &EditorBridge, snapshot: &EditorSnapshot, edit: EditorEdit) {
+    if let Some(command) = snapshot.checked_edit(edit) { super::send(bridge, command); }
+}
+
+fn draft_conflicts(draft: &mut (String, String, String), current: &str) -> bool {
+    if draft.0 == current { return false; }
+    if draft.1 == draft.0 || draft.1 == current {
+        *draft = (current.into(), current.into(), String::new());
+        false
+    } else { true }
+}
+
+fn reconcile_draft(ui: &mut mara::ui::mara_core::MaraUi<'_>, draft: &mut (String, String, String), current: &str) -> bool {
+    if !draft_conflicts(draft, current) { return true; }
+    ui.label("Source changed; your draft is preserved");
+    ui.label(&format!("Current: {}", current.chars().take(80).collect::<String>()));
+    if ui.button("Reload current value (discard draft)").clicked {
+        *draft = (current.into(), current.into(), String::new());
+        return true;
+    }
+    if ui.button("Keep draft over current value").clicked {
+        draft.0 = current.into();
+        draft.2.clear();
+        return true;
+    }
+    false
+}
+
 pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts, current_time: f64) {
+    drafts.synchronize_context(snapshot);
+    let edit_context = Arc::new(EditorSnapshot {
+        document_id: snapshot.document_id, revision: snapshot.revision,
+        edit_target: snapshot.edit_target.clone(), ..Default::default()
+    });
     let target = path_lines(&snapshot.edit_layer);
     let mut layers = vec![Pod::new("editor.target").with_custom_units(target.len() + 1, move |ui| {
         ui.label("Edit target");
@@ -79,6 +125,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             let path = path.clone();
             let drafts = drafts.clone();
             let bridge = bridge.clone();
+            let edit_context = edit_context.clone();
             pods.push(Pod::new(Id::new(&key)).with_custom_units(2, move |ui| {
                 let Ok(mut drafts) = drafts.0.lock() else { return };
                 let draft = drafts.entry(key).or_insert_with(|| (initial.clone(), initial, String::new()));
@@ -89,7 +136,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                     } else {
                         EditorEdit::Move { path, destination: draft.1.clone() }
                     };
-                    super::send(&bridge, EditorCommand::Edit(edit));
+                    send_edit(&bridge, &edit_context, edit);
                 }
             }));
         }
@@ -105,7 +152,9 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         }));
     }
     if let Some(payload) = crate::payload_editor::pod(snapshot, bridge, &drafts.3) {
-        body.add_normal("editor.payloads", "Payload authoring", "document", vec![payload]);
+        let mut payloads = vec![payload];
+        payloads.extend(crate::payload_editor::opinion_pods(snapshot));
+        body.add_normal("editor.payloads", "Payload authoring", "document", payloads);
     }
     for (set, options) in &snapshot.variant_choices {
         let key = format!("{path}:variant:{set}");
@@ -113,13 +162,14 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             .map(|(_, value)| value.clone()).unwrap_or_default();
         let (path, set, options) = (path.clone(), set.clone(), options.clone());
         let bridge = bridge.clone();
+        let edit_context = edit_context.clone();
         pods.push(Pod::new(Id::new(&key)).with_custom_units(options.len() + 1, move |ui| {
             ui.label(&format!("Variant: {set} = {selected}"));
             for selection in options {
                 if ui.button(&selection).clicked && selection != selected {
-                    super::send(&bridge, EditorCommand::Edit(EditorEdit::Variant {
+                    send_edit(&bridge, &edit_context, EditorEdit::Variant {
                         prim: path.clone(), set: set.clone(), selection,
-                    }));
+                    });
                 }
             }
         }));
@@ -130,23 +180,24 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let (path, name) = (path.clone(), name.clone());
         let drafts = drafts.clone();
         let bridge = bridge.clone();
-        pods.push(Pod::new(Id::new(&key)).with_custom_units(5, move |ui| {
+        let edit_context = edit_context.clone();
+        pods.push(Pod::new(Id::new(&key)).with_custom_units(9, move |ui| {
             ui.label(&format!("Relationship: {name}"));
             let Ok(mut drafts) = drafts.0.lock() else { return };
             let draft = drafts.entry(key).or_insert_with(|| (current.clone(), current.clone(), String::new()));
-            if draft.0 != current { *draft = (current.clone(), current, String::new()); }
+            if !reconcile_draft(ui, draft, &current) { return; }
             ui.text_input(&mut draft.1, "Absolute targets, separated by spaces");
             if ui.button("Set targets (empty blocks weaker targets)").clicked {
                 match draft.1.split_whitespace().map(openusd::sdf::path).collect::<Result<Vec<_>, _>>() {
                     Ok(targets) => {
                         draft.2.clear();
-                        super::send(&bridge, EditorCommand::Edit(EditorEdit::RelationshipTargets { prim: path.clone(), name: name.clone(), targets }));
+                        send_edit(&bridge, &edit_context, EditorEdit::RelationshipTargets { prim: path.clone(), name: name.clone(), targets });
                     }
                     Err(error) => draft.2 = error.to_string(),
                 }
             }
             if ui.button("Clear local target opinion").clicked {
-                super::send(&bridge, EditorCommand::Edit(EditorEdit::ClearRelationshipTargets { prim: path, name }));
+                send_edit(&bridge, &edit_context, EditorEdit::ClearRelationshipTargets { prim: path, name });
             }
             if !draft.2.is_empty() { ui.label(&draft.2); }
         }));
@@ -161,10 +212,11 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let drafts = drafts.clone();
         let bridge = bridge.clone();
         let source_lines = path_lines(&attribute.source);
+        let edit_context = edit_context.clone();
         let summary_lines = path_lines(&attribute.source_summary);
         let expanded = drafts.2.lock().ok().and_then(|states| states.get(&key).copied()).unwrap_or(false);
         let sample_lines = path_lines(&sample_summary(&attribute.sample_times));
-        let units = 16 + summary_lines.len() + sample_lines.len() + if expanded { source_lines.len() } else { 0 } + if matrix_attribute { 6 } else { 0 };
+        let units = 20 + summary_lines.len() + sample_lines.len() + if expanded { source_lines.len() } else { 0 } + if matrix_attribute { 6 } else { 0 };
         let destination = if matrix_attribute { &mut matrix_pods } else { &mut pods };
         destination.push(Pod::new(Id::new(&key)).with_custom_units(units, move |ui| {
             ui.label(&format!("{} ({})", attribute.name, attribute.type_name));
@@ -174,7 +226,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 let Some(current) = editable_text(&value) else { ui.label("Invalid matrix value"); return };
                 let Ok(mut state) = drafts.0.lock() else { return };
                 let draft = state.entry(key.clone()).or_insert_with(|| (current.clone(), current.clone(), String::new()));
-                if draft.0 != current { *draft = (current.clone(), current, String::new()); }
+                if !reconcile_draft(ui, draft, &current) { return; }
                 let mut loaded = None;
                 if let Some((time, matrix)) = sampled_time.zip(attribute.sampled_matrix) {
                     if ui.button(&format!("Load sampled matrix at {time}")).clicked {
@@ -202,10 +254,10 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             for line in sample_lines { ui.label(&line); }
             if attribute.blocked { ui.label("Value is blocked"); }
             if ui.button("Clear local values / samples").clicked {
-                super::send(&bridge, EditorCommand::Edit(EditorEdit::ClearAttributeValues { prim: path.clone(), name: attribute.name.clone() }));
+                send_edit(&bridge, &edit_context, EditorEdit::ClearAttributeValues { prim: path.clone(), name: attribute.name.clone() });
             }
             if ui.button("Block values and samples").clicked {
-                super::send(&bridge, EditorCommand::Edit(EditorEdit::BlockAttributeValues { prim: path.clone(), name: attribute.name.clone() }));
+                send_edit(&bridge, &edit_context, EditorEdit::BlockAttributeValues { prim: path.clone(), name: attribute.name.clone() });
             }
             let Ok(mut times) = drafts.1.lock() else { return };
             let time = times.entry(key.clone()).or_insert_with(|| (current_time.to_string(), String::new()));
@@ -215,9 +267,9 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 match parse_sample_time(&time.0) {
                     Ok(time_code) => {
                         time.1.clear();
-                        super::send(&bridge, EditorCommand::Edit(EditorEdit::ClearAttributeSample {
+                        send_edit(&bridge, &edit_context, EditorEdit::ClearAttributeSample {
                             prim: path.clone(), name: attribute.name.clone(), time: time_code,
-                        }));
+                        });
                     }
                     Err(error) => time.1 = error,
                 }
@@ -231,16 +283,16 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             let Some(current) = editable_text(&value) else { ui.label(&format!("{value:?}")); return };
             let Ok(mut drafts) = drafts.0.lock() else { return };
             let draft = drafts.entry(key).or_insert_with(|| (current.clone(), current.clone(), String::new()));
-            if draft.0 != current { *draft = (current.clone(), current, String::new()); }
+            if !reconcile_draft(ui, draft, &current) { return; }
             if !matrix_attribute { ui.text_input(&mut draft.1, "Value"); }
             if ui.button("Apply sample at time").clicked {
                 match parse_sample_time(&time.0).and_then(|time| parse_value(&value, &draft.1).map(|value| (time, value))) {
                     Ok((time_code, value)) => {
                         draft.2.clear();
                         time.1.clear();
-                        super::send(&bridge, EditorCommand::Edit(EditorEdit::AttributeSample {
+                        send_edit(&bridge, &edit_context, EditorEdit::AttributeSample {
                             prim: path.clone(), name: attribute.name.clone(), type_name: attribute.type_name.clone(), value, time: time_code,
-                        }));
+                        });
                     }
                     Err(error) => draft.2 = error,
                 }
@@ -249,9 +301,9 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 match parse_value(&value, &draft.1) {
                     Ok(value) => {
                         draft.2.clear();
-                        super::send(&bridge, EditorCommand::Edit(EditorEdit::Attribute {
+                        send_edit(&bridge, &edit_context, EditorEdit::Attribute {
                             prim: path, name: attribute.name, type_name: attribute.type_name, value,
-                        }));
+                        });
                     }
                     Err(error) => draft.2 = error,
                 }
@@ -359,6 +411,123 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn variant_composition_changes_conflict_with_relationship_drafts() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/draft_conflict.usda");
+        let source = usd_bevy::UsdSource::new(path, std::fs::read(path).unwrap()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let targets = |snapshot: usd_bevy::editor::EditorSnapshot| snapshot.relationships.into_iter()
+            .find(|(name,_)| name == "links").unwrap().1.join(" ");
+        let original = targets(editor.snapshot().unwrap());
+        assert_eq!(original, "/A");
+        let mut draft = (original, "/A/Child".into(), String::new());
+        editor.edit(usd_bevy::editor::EditorEdit::Variant { prim: "/Root".into(), set: "choice".into(), selection: "b".into() }).unwrap();
+        let current = targets(editor.snapshot().unwrap());
+        assert_eq!(current, "/B");
+        assert!(super::draft_conflicts(&mut draft, &current));
+        assert_eq!(draft.1, "/A/Child");
+        editor.undo().unwrap();
+        assert!(!super::draft_conflicts(&mut draft, &targets(editor.snapshot().unwrap())));
+        assert_eq!(draft.1, "/A/Child");
+        editor.redo().unwrap();
+        draft.0 = targets(editor.snapshot().unwrap());
+        editor.edit(usd_bevy::editor::EditorEdit::RelationshipTargets {
+            prim: "/Root".into(), name: "links".into(), targets: vec![openusd::sdf::path("/A/Child").unwrap()],
+        }).unwrap();
+        assert_eq!(targets(editor.snapshot().unwrap()), "/A/Child");
+        assert!(!super::draft_conflicts(&mut draft, &targets(editor.snapshot().unwrap())));
+        editor.edit(usd_bevy::editor::EditorEdit::Variant { prim: "/Root".into(), set: "choice".into(), selection: "a".into() }).unwrap();
+        assert_eq!(targets(editor.snapshot().unwrap()), "/A/Child");
+        editor.undo().unwrap();
+        assert_eq!(targets(editor.snapshot().unwrap()), "/A/Child");
+        editor.undo().unwrap();
+        assert_eq!(targets(editor.snapshot().unwrap()), "/B");
+        assert_eq!(std::fs::read(path).unwrap(), include_bytes!("../assets/draft_conflict.usda"));
+    }
+
+    #[test]
+    fn changed_sources_preserve_dirty_drafts_and_acknowledge_applied_values() {
+        let mut pristine = ("old".into(), "old".into(), "error".into());
+        assert!(!super::draft_conflicts(&mut pristine, "new"));
+        assert_eq!(pristine, ("new".into(), "new".into(), String::new()));
+        for (old, draft, current) in [("1", "2", "3"), ("/A", "/B /C", "/D"),
+            ("1 0\n0 1", "1 2\n3 4", "5 6\n7 8")] {
+            let mut value = (old.into(), draft.into(), "parse error".into());
+            let original = value.clone();
+            assert!(super::draft_conflicts(&mut value, current));
+            assert_eq!(value, original);
+            assert!(super::draft_conflicts(&mut value, current));
+            assert_eq!(value, original);
+            value.0 = current.into();
+            assert!(!super::draft_conflicts(&mut value, current));
+            assert_eq!(value.1, draft);
+        }
+        let mut applied = ("old".into(), "authored".into(), "error".into());
+        assert!(!super::draft_conflicts(&mut applied, "authored"));
+        assert_eq!(applied, ("authored".into(), "authored".into(), String::new()));
+    }
+
+    #[test]
+    fn drafts_reset_on_document_or_target_not_revision_or_selection() {
+        let drafts = super::Drafts::default();
+        let mut snapshot = usd_bevy::editor::EditorSnapshot {
+            document_id: 1, edit_target: Some(openusd::usd::EditTarget::for_layer("root.usda")), ..Default::default()
+        };
+        for transition in 0..4 {
+            match transition {
+                1 => snapshot.document_id = 2,
+                2 => snapshot.edit_target = Some(openusd::usd::EditTarget::for_layer("other.usda")),
+                3 => snapshot.edit_target = Some(openusd::usd::EditTarget::for_local_direct_variant("other.usda", "/Root{v=a}").unwrap()),
+                _ => {},
+            }
+            drafts.synchronize_context(&snapshot);
+            assert!(drafts.0.lock().unwrap().is_empty());
+            assert!(drafts.1.lock().unwrap().is_empty());
+            assert!(drafts.2.lock().unwrap().is_empty());
+            drafts.0.lock().unwrap().insert("field".into(), ("original".into(), "unsaved".into(), "error".into()));
+            drafts.1.lock().unwrap().insert("field".into(), ("3".into(), "error".into()));
+            drafts.2.lock().unwrap().insert("field".into(), true);
+            snapshot.revision += 1;
+            snapshot.selected = Some(format!("/Prim{transition}"));
+            drafts.synchronize_context(&snapshot);
+            assert_eq!(drafts.0.lock().unwrap()["field"].1, "unsaved");
+            assert_eq!(drafts.1.lock().unwrap()["field"].0, "3");
+            assert!(drafts.2.lock().unwrap()["field"]);
+        }
+    }
+
+    #[test]
+    fn inspector_edit_sender_preserves_context_and_rejects_stale_actions() {
+        use bevy::prelude::*;
+        use usd_bevy::editor::{EditorBridge, EditorCommand, EditorEdit, EditorPlugin, EditorSession};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, usd_bevy::live::LiveStagePlugin, EditorPlugin));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/payload_authoring.usda").into())).unwrap();
+        app.update();
+        let snapshot = bridge.view().unwrap().document;
+        super::send_edit(&bridge, &snapshot, EditorEdit::Attribute {
+            prim: "/Root".into(), name: "value".into(), type_name: "double".into(), value: openusd::sdf::Value::Double(3.),
+        });
+        app.update();
+        let stage = app.world().non_send::<EditorSession>().stage().clone();
+        assert_eq!(stage.attribute("/Root.value").unwrap().get::<f64>().unwrap(), Some(3.));
+        super::send_edit(&bridge, &snapshot, EditorEdit::Rename { path: "/Root".into(), name: "Stale".into() });
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert!(stage.prim("/Root").unwrap().is_valid().unwrap());
+        assert!(!stage.prim("/Stale").unwrap().is_valid().unwrap());
+        let snapshot = bridge.view().unwrap().document;
+        super::send_edit(&bridge, &snapshot, EditorEdit::Rename { path: "/Root".into(), name: "Renamed".into() });
+        app.update();
+        assert!(stage.prim("/Renamed").unwrap().is_valid().unwrap());
+        assert!(app.world().resource::<usd_bevy::live::PrimEntities>().entity("/Renamed").is_some());
+        bridge.send(EditorCommand::Undo).unwrap();
+        app.update();
+        assert!(stage.prim("/Root").unwrap().is_valid().unwrap());
+    }
+
     #[test]
     fn matrix_rows_preserve_double_precision_and_reject_invalid_input() {
         use openusd::sdf::Value;

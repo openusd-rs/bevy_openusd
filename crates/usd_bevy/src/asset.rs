@@ -756,6 +756,7 @@ def Xform "Model" (
         })
     }
 
+    #[track_caller]
     fn tick_until(app: &mut App, condition: impl Fn(&World) -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -763,10 +764,15 @@ def Xform "Model" (
             if condition(app.world()) {
                 return;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "asset operation timed out"
-            );
+            if std::time::Instant::now() >= deadline {
+                let world = app.world_mut();
+                let mut query = world.query::<(Entity, &UsdSceneRoot, Option<&UsdSceneState>, Option<&UsdSceneInstance>)>();
+                let states = query.iter(world).map(|(entity, root, state, instance)| {
+                    (entity, state.cloned(), instance.map(|instance| instance.revision),
+                        world.resource::<AssetServer>().get_load_state(root.0.id()))
+                }).collect::<Vec<_>>();
+                panic!("asset operation timed out: {states:?}");
+            }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }

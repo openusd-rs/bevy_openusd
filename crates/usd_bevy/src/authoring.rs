@@ -60,7 +60,20 @@ pub fn clear_references(stage: &Stage, prim: &str) -> Result<()> {
 
 /// Replaces the current edit target's payload list; an empty list blocks weaker payloads.
 pub fn set_payloads(stage: &Stage, prim: &str, payloads: &[openusd::sdf::Payload]) -> Result<()> {
-    for payload in payloads {
+    set_payload_list_op(stage, prim, &openusd::sdf::PayloadListOp::explicit(payloads.to_vec()))
+}
+
+/// Authors a complete payload list operation in the current edit target.
+pub fn set_payload_list_op(stage: &Stage, prim: &str, operation: &openusd::sdf::PayloadListOp) -> Result<()> {
+    let nonexplicit = [&operation.prepended_items, &operation.appended_items, &operation.added_items,
+        &operation.deleted_items, &operation.ordered_items];
+    anyhow::ensure!(!operation.explicit || nonexplicit.iter().all(|items| items.is_empty()),
+        "explicit payload operation cannot contain non-explicit items");
+    anyhow::ensure!(operation.explicit || operation.explicit_items.is_empty(),
+        "non-explicit payload operation cannot contain explicit items");
+    for payload in std::iter::once(&operation.explicit_items).chain(nonexplicit).flatten() {
+        anyhow::ensure!(!payload.asset_path.is_empty() || !payload.prim_path.is_empty(),
+            "payload must specify an asset or an internal prim target");
         anyhow::ensure!(payload.prim_path.is_empty() || (
             payload.prim_path.as_str().starts_with('/') && payload.prim_path.is_prim_path()
                 && !payload.prim_path.contains_prim_variant_selection()
@@ -72,7 +85,7 @@ pub fn set_payloads(stage: &Stage, prim: &str, payloads: &[openusd::sdf::Payload
     }
     let prim = stage.prim(openusd::sdf::path(prim)?)?;
     anyhow::ensure!(prim.is_valid()?, "payload owner does not exist");
-    prim.set_metadata("payload", Value::PayloadListOp(openusd::sdf::PayloadListOp::explicit(payloads.to_vec())))?;
+    prim.set_metadata("payload", Value::PayloadListOp(operation.clone()))?;
     Ok(())
 }
 
@@ -237,6 +250,26 @@ mod tests {
             .set_type_name("Xform")
             .unwrap();
         stage
+    }
+
+    #[test]
+    fn malformed_payload_list_ops_reject_before_mutation() {
+        use openusd::sdf::{Payload, PayloadListOp};
+        let stage = stage_with("/Root");
+        let valid = Payload { prim_path: openusd::sdf::path("/Root").unwrap(), ..Default::default() };
+        let before = stage.root_layer().export_to_string().unwrap();
+        for operation in [
+            PayloadListOp { explicit: true, prepended_items: vec![valid.clone()], ..Default::default() },
+            PayloadListOp { explicit_items: vec![valid.clone()], ..Default::default() },
+            PayloadListOp::deleted([Payload::default()]),
+            PayloadListOp::ordered([Payload { prim_path: openusd::sdf::path("relative").unwrap(), ..Default::default() }]),
+            PayloadListOp { prepended_items: vec![valid], appended_items: vec![Payload {
+                asset_path: "part.usda".into(), layer_offset: Some(openusd::sdf::LayerOffset::new(0., -1.)), ..Default::default()
+            }], ..Default::default() },
+        ] {
+            assert!(set_payload_list_op(&stage, "/Root", &operation).is_err());
+            assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        }
     }
 
     #[test]

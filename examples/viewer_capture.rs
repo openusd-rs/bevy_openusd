@@ -401,8 +401,9 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
         if let Ok(light) = environment_lights.single() {
             capture.mesh_report.push_str(&format!("dome_intensity={}\ndome_rotation={:?}\n", light.intensity, light.rotation));
         }
-        capture.mesh_report.push_str(&format!("active_environment_generators={}\nrecorded_environment_generations={}\n",
-            generators.iter().count(), dome_diagnostics.as_ref().map_or(0, |d| d.recorded_generations)));
+        capture.mesh_report.push_str(&capture_metadata::environment_report(environment_lights.single().ok(),
+            environments.single().ok(), dome_diagnostics.as_ref().map_or(0, |d| d.recorded_generations),
+            generators.iter().count(), "capture-ready-system"));
     }
     for (entity, visibility, _, fallback, _, _) in &meshes {
         if visibility.get() && let Some(fallback) = fallback {

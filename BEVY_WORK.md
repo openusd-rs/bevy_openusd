@@ -3,6 +3,312 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Self-contained composed showcase
+
+assets/flagship_showcase.usda combines the existing animation, skeleton and morph
+fixtures through references, retiming the ten-frame sources by six onto a 0–60
+timeline. A shared animated material, three point prototypes and a metallic
+sphere under directional HDR lighting demonstrate the projected features together.
+SHOWCASE.md provides launch, inspection and test commands and links the existing
+support/approximation and packaging matrices. No sibling collection is needed.
+The contract regression checks 0/30/60 values and remapped skeleton, blend-shape,
+prototype and material relationships. Native usdcat also flattens the scene
+without diagnostics (/tmp/flagship-native.log).
+
+Inspected complete-host target/flagship-{0,30,60}.png images show the Timeline
+values, cube/prototype growth, bar bend/return, morph change and orange-to-blue
+material progression. Companion viewport metadata confirms those times and one
+recorded dome generation with zero active generators. Desktop pairs pass at
+0 and 30; 60 retains the intermittent black-frame failure. This is not a claim
+that desktop capture reliability is fixed. Logs: /tmp/flagship-{0,30,60}-capture.log.
+
+The inspected standalone target/flagship-gpu-paths.png at time 30 additionally
+records one visible GPU-skinned mesh and one GPU-morphed mesh, with no CPU fallback
+reported. Its camera differs from the host and it is not a pixel-parity control.
+Log: /tmp/flagship-gpu-paths.log. The example exposed a new unused shared metadata
+helper warning; viewer_capture now uses the helper with its own explicit sampling
+phase, retaining existing dome fields and generation-count keys.
+
+This completes the runnable showcase plus documented matrix requirement, not the
+separate GPU fidelity/performance requirement or a claim of production readiness.
+Final targeted Make tests pass 84 viewer, 15 viewer_capture and one showcase
+contract test; make check-all passes. Logs: /tmp/flagship-final-{tests,check}.log.
+
+## Embedded directional dome controls
+
+Viewport capture metadata now records the selected camera's environment state,
+intensity and quaternion, plus recorded filtering generations and active
+generators at Last/request time. These are CPU observations, not GPU completion
+fences or timing. The metadata regression distinguishes attachment from filtering.
+The complete viewer test selection passes 84 tests; build and check-all pass.
+
+Direct whole-host images target/embedded-directional-{0,10}.png were inspected.
+Both show diffuse and metallic spheres with studio lighting disabled. Rotating
+the dome 180 degrees moves the blue contribution from right to left on both
+spheres. Companion -viewport.capture.txt reports scene times 0/10, intensity
+10000, identity/Y-half-turn quaternions, one recorded generation and zero active
+generators in each independent run. This verifies directional behavior in the
+actual embedded host, not just standalone Bevy. It does not measure performance
+or compare against a native reference renderer.
+
+Commands set USD_SCREENSHOT, USD_CAPTURE_TIME, USD_CAPTURE_DELAY_MS=15000,
+USD_HOST_SCREENSHOT, USD_HOST_SCREENSHOT_DELAY_MS=20000, USD_VIEWER_DOME=/Env
+and USD_VIEWER_PANE=lighting, running assets/dome_directional.usda through the
+Make-wrapped native UI capture with waits 23/5 seconds. The time-zero desktop
+pair still fails one region check; time-ten passes. Direct captures and failed
+desktop artifacts are preserved. Logs: /tmp/embedded-directional-{0,10}-capture.log,
+/tmp/embedded-directional-{viewer-tests,build,check}.log.
+
+## Embedded dome filtering enabled
+
+Sibling Mara commit 97f52d0 changes only Bevy-enabled native device creation:
+request up to six storage textures, bounded by adapter limits, when the adapter
+supports TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES, and enable that feature.
+Other hosts retain egui defaults. The limit regression passes, including the
+WebGL baseline; the viewer build and make check-all pass. Test execution uses
+Mara's own manifest (its lock resolves Bevy 0.19.0); the actual viewer build,
+check and GPU captures use this workspace's Bevy 0.19.1 resolution.
+
+Increasing storage limits alone exposed Bevy SSAO R16Float storage validation
+errors and left the viewport warming up. That failed image/log remains at
+target/embedded-ibl-enabled.png and embedded-ibl-desktop.viewer.log. Enabling
+supported adapter-specific formats removes those render validation errors.
+Inspected target/embedded-ibl-formats.png shows two warm-lit spheres with studio
+lights disabled and Dome maps attached in the Lighting pane. The inspected
+target/embedded-ibl-time10.png shows black sphere silhouettes at zero dome
+intensity with the same visible grid/chrome; companion viewport metadata proves
+scene_time_at_request=10. This is embedded warm-HDR on/off evidence, not general
+lighting parity or performance acceptance.
+
+The first attempted zero control, target/embedded-ibl-zero.png, is identical to
+the lit capture: USD_CAPTURE_TIME only applies when USD_SCREENSHOT is also set.
+The corrected time10 command supplies both capture outputs. No fixture changed.
+Desktop capture still intermittently returns black frames: the formats pair's
+first image fails inspection and its second passes; the corrected time10 pair
+passes. Neither the device change nor direct GPU capture fixes that stack issue.
+
+Logs: /tmp/embedded-ibl-final-test.log, /tmp/embedded-ibl-build-guarded.log,
+/tmp/embedded-ibl-check.log and /tmp/embedded-ibl-{formats,time10}-capture.log.
+The initial root-workspace test command rejected Mara as an external package;
+the successful targeted test uses --manifest-path ../mara/Cargo.toml via Make.
+
+## Reconciled image-regression acceptance
+
+At 8ace56f, scripts/check_live_clocks.sh passed all 19 cases through Make with
+offline Cargo. Results and all 38 GPU captures, raw buffers, metadata, comparison
+logs and difference images remain in target/acceptance-live-clocks/; the driver
+log is /tmp/acceptance-live-clocks.log. Each image has 921600 pixels.
+Seventeen pairs are RGB-identical. The two normal-map pairs have maximum RGB
+error one, within their explicit one-code-value tolerance; alpha is excluded.
+
+The suite reverses two live instance clocks after 30 ready frames and compares
+against fresh final-clock references. It covers UV transforms and shader
+interfaces, texture/color-space changes, scalar and RGB material inputs,
+emission, normal maps, GPU morphs against CPU references, morph tangents/subsets,
+and animated subdivision creases. Metadata checks validate clocks, visible mesh
+counts and deformation paths; capture logs pass the suite's WARN/ERROR check.
+The uv, morph, normal_interface, morph_tangents and subdivision_creases live
+images were also inspected: both instances are visibly rendered.
+
+Together with the source/AssetServer/multi-instance gates below and the 23-test
+native export/watcher lane, this completes the original regression requirement.
+In particular, native_export_reopens_captured_reference_batch saves a composed,
+edited USDZ, relocates it, flattens it with native usdcat, and checks values,
+time samples and retained asset bytes. These are targeted regression checks,
+not independent native-render parity or a GPU performance benchmark. The UR5
+shading defect remains unresolved; fidelity/performance stays unchecked.
+
+The final make test-all CARGO='cargo --offline' run at 8be9765 passes 625 tests
+across 31 suites, with zero failures and 15 ignored native-export tests.
+TMPDIR points to target/test-tmp; log: /tmp/acceptance-final-workspace.log.
+The ignored native tests have separate execution evidence below, not execution
+in this default workspace run.
+
+## Reconciled native prototype and sharing acceptance
+
+At 4a4f502, three existing runnable programs were inspected and rerun through
+Make with offline Cargo. instanceable_sources verifies upstream is_instance and
+prototype identities, retimed sample extents, shared versus distinct Mesh handles,
+stable proxy entities/runtime names, and complete root cleanup. It passes.
+
+source_benchmark 128 runs three alternating one-root/four-root samples. Each
+root has 128 native USD instances. All samples report one initial Mesh and one
+initial StandardMaterial for 128 or 512 projected mesh entities. The program
+also asserts source replacement updates geometry while preserving each proxy
+entity, runtime tag and the shared updated Mesh handle across roots.
+
+projection_benchmark 128 runs three alternating uncached/cached pairs. Asset
+counts are 129 meshes/materials uncached versus one of each cached; retained
+cache payload after editing is 1824 bytes. The edit assertion verifies changed
+geometry and stable proxy entities. CPU projection measures 181.188–182.335ms
+uncached versus 186.262–190.946ms cached in this debug run, so this is allocation
+sharing evidence, not a speedup claim. The first uncached stage-open sample is
+17.294ms versus roughly 1.55ms later; it remains in the raw log.
+
+Logs: /tmp/acceptance-instanceable-example.log,
+/tmp/acceptance-source-benchmark.log and
+/tmp/acceptance-projection-benchmark.log. These headless captured-Cube measurements
+exclude GPU execution and do not certify interactive performance or arbitrary
+asset workloads. They complete the original native prototype/instance projection
+with measured asset-sharing requirement; GPU fidelity/performance remains a
+separate unchecked requirement. No production code changed in this step.
+
+## Reconciled source and instance acceptance
+
+At 93f34ba, the first four original checklist requirements were checked against
+current implementation and refreshed targeted execution, rather than left
+unchecked because unrelated render-fidelity work is unfinished:
+
+| Requirement | Current implementation and acceptance evidence |
+| --- | --- |
+| Source-preserving loading without temporary files, including USDZ | source.rs opens a byte-backed resolver directly; source_anchor_resolves_siblings_without_writing_root and nested_packages_preserve_relative_layers_and_asset_bytes assert absent virtual files, composed data and unchanged archive bytes. packaged_relative_references_resolve_from_memory covers in-memory packages. |
+| Bevy-tracked dependencies, reloads and explicit failures | asset.rs uses the real AssetServer in named-source tests; texture_handles_use_color_spaces_and_dependency_changes_reload_owner, nested_package_dependency_reload_preserves_two_live_instances and missing_dependency_becomes_visible_failure cover dependency replacement and failure/recovery. The native watcher lane separately exercises actual filesystem changes. |
+| Root replacement/despawn cleanup and independent instances | asset_server_reload_preserves_two_live_instances_and_root_ownership replaces one root, retains the second and unowned children, removes a source component, then despawns the remaining root and asserts the instance registry is empty. package_load_and_root_removal_preserve_unowned_children covers package cleanup. |
+| Independent clocks, variants and overrides with runtime preservation | live_instances_have_independent_time_and_edits, instance_opinions_are_isolated_reloadable_and_removable, typed_component_overrides_survive_source_reload_and_removal and reload_preserves_matching_entities_and_runtime_components exercise separate clocks/opinions, retained entity identities and runtime-only components. |
+
+Refreshed Make tests with offline Cargo: source::tests 22 passed, asset::tests
+29 passed and instance::tests 3 passed, with zero failures or ignored tests in
+those selections. Logs: /tmp/acceptance-{source,asset,instance}-tests.log.
+The separate file_watcher-enabled native_ --ignored lane passes all 23 tests
+with native usdcat on PATH; /tmp/acceptance-native-watcher.log. It includes
+native export tests as well as filesystem-event tests, not 23 watcher tests.
+
+These are the four listed functional requirements, not universal USD compatibility,
+an OS/backend matrix or performance certification. The remaining six checklist
+items retain their original wording and remain open. Source code and runtime
+defaults were not changed by this acceptance reconciliation.
+
+## Rejected global edge-weighted normal replacement
+
+Native Hydra's smoothNormals.cpp sums incident edge cross-products before
+normalization, unlike our angle-weighted fallback:
+https://github.com/PixarAnimationStudios/OpenUSD/blob/v25.05.01/pxr/imaging/hd/smoothNormals.cpp
+The normal_isolation tool now also emits area_weighted_normals.usda using the
+same triangle positions/indices as its existing controls. Its scale/orientation
+regression checks an unequal-area two-face fan and degenerate triangles.
+
+The shoulder comparison in target/ur5-area-control/ was rendered through Bevy
+with /Camera, time zero, forward shading and shadows off. Both with_normals-bevy
+and area_weighted_normals-bevy images were inspected. The area-weighted version
+reduces the conspicuous jagged lower band in this local diagnostic.
+
+A temporary production replacement then summed original polygon-edge crosses,
+preserving holes and winding. It passed 479 library tests (15 ignored), 83
+viewer tests, build and check-all. However, the complete robot GPU image
+target/ur5-edge-normals-host-gpu.png shows worse vertical streaks on the left
+cylinder and increased faceting elsewhere even as the blue rim improves.
+The global replacement and its production-only test were therefore reverted;
+mesh.rs is byte-identical to the committed baseline. The viewer was rebuilt
+after reverting. Only the independent diagnostic output/test is retained.
+
+Logs: /tmp/ur5-area-isolation.log, /tmp/ur5-area-*-render.log,
+/tmp/edge-normal-lib-tests.log, /tmp/edge-normal-viewer-tests.log,
+/tmp/edge-normal-{build,check}.log, /tmp/ur5-edge-normals-host-capture.log,
+/tmp/edge-normal-reverted-build.log and /tmp/edge-normal-retained-tests.log.
+The retained probe has four passing tests. This rejects a global weighting
+switch as a demonstrated repair; it does not reject Hydra's native subdivision
+pipeline or establish general normal parity. Collection assets were untouched.
+
+## Current collection models through direct host capture
+
+At 2f791b8, the actual collection Spot and UR5 models were reopened in the
+complete viewer at time zero, default control-cage mode, with the Outliner.
+Both direct GPU images and both desktop image pairs were inspected:
+
+- target/spot-current-host-gpu.png and target/spot-current-desktop.png pair:
+  full yellow robot, legs, grid and controls are visible. Faceting and thin
+  surface discontinuities remain visible; this is not native-render parity.
+- target/ur5-current-host-gpu.png and target/ur5-current-desktop.png pair:
+  complete arm and material regions render, but the left blue joint-cap rim
+  still shows fine vertical striping in the direct GPU image. Therefore that
+  shading artifact is independent of the compositor black-frame failure.
+
+Both native capture commands pass their desktop region/panic-log checks and
+report HOST_CAPTURE_OK at 1440x920. Logs:
+/tmp/spot-current-host-capture.log and /tmp/ur5-current-host-capture.log.
+Settings: direct delay 20000ms, desktop wait 23s then 5s. Warnings remain for
+clipboard initialization and unavailable SSAO device limits; the Vulkan loader
+also reports missing libVkLayer_MESA_device_select.so. These are not clean-log
+or performance acceptance runs. No collection files or Rust source were edited.
+
+Source SHA-256 values:
+- oems/spot_boston_dynamics/spot_base_urdf/spot.usdc:
+  3d450917a26f3bb89c32f2872cf7b8be2bffac15954c0dbca6330ec780f9365b
+- matlab/ur_description/ur5.usdc:
+  66cb9b697c267577a608dd0416fdf9cfc46b8bddda29ececfc7bc0c9a71248f1
+
+The remaining UR5 rim defect needs geometry/shading isolation against the
+existing native controls, not another change to window presentation.
+
+## Direct complete-viewer GPU screenshots
+
+USD_HOST_SCREENSHOT now requests one tagged root-viewport screenshot through
+Mara's GPU painter. USD_HOST_SCREENSHOT_DELAY_MS defaults to 20000, accepts
+0..300000, and requires an output path. Only the matching screenshot callback
+is written; unrelated callbacks are ignored. A missing callback reports failure
+after 30 additional seconds. Output uses exclusive-create PNG writing, preserves
+existing files/symlinks, and leaves the viewer open. The existing png dependency
+moves from dev-dependencies to normal dependencies; no version change.
+
+The first executable build exposed that png was dev-only despite passing unit
+tests; the dependency classification was corrected before the native run.
+83 viewer tests pass, including four capture regressions for configuration,
+single tagged request/callback, timeout, exact RGBA output, invalid dimensions
+and existing-file preservation. Build and check-all pass. Logs:
+/tmp/viewer-host-capture-final-tests.log,
+/tmp/viewer-host-capture-build-final.log and /tmp/viewer-host-capture-check.log.
+
+Inspected target/viewer-host-direct-modal.png is an upright 1440x920 direct GPU
+capture showing the cube, inspector, titlebar and close confirmation. The same
+run's target/viewer-host-direct-desktop.png pair shows the modal, then the scene
+after Cancel. Both desktop region checks and panic-log inspection pass;
+HOST_CAPTURE_OK confirms the direct output. Replay: close_cancel.replay;
+asset: layer_muting.usda; selection /Root; inspector; time 0; direct delay 20s;
+desktop wait 23s plus 10s. Log: /tmp/viewer-host-direct-capture.log.
+
+GPU output is separate from compositor presentation, and the configured delay
+does not certify scene readiness. The independent vkcube black failure remains
+valid; this capture path enables UI/render inspection without hiding it.
+
+## Independent Vulkan reproduction of black frames
+
+Khronos Vulkan-Tools vkcube 1.4.341.0, without Mara/egui/Bevy/USD, reproduced
+the same whole-client black capture. Three fresh Weston compositor/client runs
+used --wsi wayland --width 1440 --height 920 --present_mode 1, with captures
+after 20 seconds and another ten seconds. All six images were inspected:
+target/vkcube-control-{1,2}.png pairs show the rotating cube;
+target/vkcube-control-3.png shows the cube, but its .second.png is black.
+That failed region contains 50 nonblack pixels of 1,120,000 (cursor only),
+matching the viewer failure signature. The command correctly fails overall.
+Logs and failed images are preserved, not retried into a passing result.
+
+The environment is headless Weston 16.0.0 with its explicitly experimental
+Vulkan renderer, NVIDIA GeForce RTX 4080 and NVIDIA 595.84 kernel driver.
+The control scene-graph snapshot identifies vkcube, 1440x920 opaque NVIDIA
+dmabuf with normal transform. Its commit rate differs substantially from the
+viewer; this is an independent reproduction, not an identical timing workload.
+Neither the compositor nor the driver is uniquely isolated by this result.
+No display-session settings or system drivers were changed.
+
+The reusable scripts/run_vulkan_control.sh uses VKCUBE (default vkcube on PATH)
+and nixVulkan. It ignores the recursive make run arguments and announces a
+synthetic startup handshake. README.md records the Make capture command.
+The initial three runs used an equivalent temporary wrapper at
+/tmp/usd-vkcube-control.sh; logs are /tmp/vkcube-control-{1,2,3}.log and the
+target/vkcube-control-* companions. Standalone source attribution:
+https://github.com/KhronosGroup/Vulkan-Tools .
+
+The checked-in wrapper was then exercised with a ten-second wait and five-second
+second wait. Inspected target/vkcube-script-control.png is black and its second
+frame shows the cube: another independent reproduction, this time recovering
+in the same process. Both failed trials retain their nonzero capture status.
+Make-driven bash -n passes; /tmp/vkcube-script-control.log records the actual
+wrapper run. No Rust source changed during this investigation.
+
+This changes the next investigation from speculative viewer edits to the
+shared graphics/capture environment. Reliable native capture remains an
+acceptance blocker, while broader USD fidelity work is independently open.
+
 ## Embedded viewport repaint interval correction
 
 Sibling Mara commit fd20c11 compensates positive embedded-viewport repaint
@@ -2871,17 +3177,17 @@ changed in this integration-regression step.
 
 ## Acceptance checklist
 
-- [ ] Source-preserving asset loading without temporary files, including USDZ.
-- [ ] Bevy-tracked layer/texture dependencies, reloads and explicit failure states.
-- [ ] Root replacement/despawn cleanup and independent live USD instances.
-- [ ] Independent clocks, variants and overrides; preserve runtime-only components.
+- [x] Source-preserving asset loading without temporary files, including USDZ.
+- [x] Bevy-tracked layer/texture dependencies, reloads and explicit failure states.
+- [x] Root replacement/despawn cleanup and independent live USD instances.
+- [x] Independent clocks, variants and overrides; preserve runtime-only components.
 - [ ] Composition-aware editing: selection, editable inspector, layers/edit target,
       variants/payloads, provenance, undo/redo and explicit save operations.
 - [ ] Typed/reusable authoring API and safe snippet composition.
 - [ ] GPU deformation and environment lighting with fidelity/performance evidence.
-- [ ] Native prototype/instance projection with measured asset sharing.
-- [ ] Real AssetServer, reload, multi-instance, save/reopen and image regressions.
-- [ ] Runnable showcase and documented support/approximation matrix.
+- [x] Native prototype/instance projection with measured asset sharing.
+- [x] Real AssetServer, reload, multi-instance, save/reopen and image regressions.
+- [x] Runnable showcase and documented support/approximation matrix.
 
 ## Verification
 

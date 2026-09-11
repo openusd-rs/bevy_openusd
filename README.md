@@ -9,6 +9,9 @@ A live [OpenUSD](https://openusd.org) editor on [Bevy](https://bevy.org) 0.19.1.
 See the [support matrix and release blockers](SUPPORT.md) for current integration
 scope, verification boundaries and runnable starting points.
 
+Try the [self-contained animation showcase](SHOWCASE.md) for composed references,
+shared prototypes, skeletal/morph animation and embedded dome lighting.
+
 The composed USD stage is the source of truth: it's held live (not baked), projected
 into Bevy entities, and kept in sync off openusd's change notifications. Edits flow
 both ways — author back to the stage, undo/redo, and save.
@@ -1079,6 +1082,10 @@ It writes `with_normals.usda` and `without_normals.usda` with identical projecte
 triangle positions/indices and a shared `/Camera`. The first copies projected
 normals; the second omits them. Both explicitly use polygon geometry. An optional
 fourth argument applies finite subdivision (1..6) before copying the triangles.
+`area_weighted_normals.usda` is a third control, summing incident triangle
+cross-products before normalization without changing points or indices. It is
+not a replacement for the production normal policy; the full UR5 comparison
+showed mixed visual results. All three outputs preserve the source asset.
 This is a time-zero diagnostic, not a scene exporter: original transforms,
 deformation, materials, subsets and other primvars are omitted. Render either
 through `viewer_capture` with `USD_CAPTURE_CAMERA=/Camera`, or through native
@@ -1468,6 +1475,46 @@ with a black host image narrows the failure to host presentation/composition or
 compositor readback, not necessarily to Weston itself. Neither near-black check
 proves scene fidelity or completed asset uploads.
 
+### Direct whole-window GPU capture
+
+Set `USD_HOST_SCREENSHOT=/absolute/new-file.png` to capture the viewer's complete
+GPU output, including panes, dialogs and titlebar. `USD_HOST_SCREENSHOT_DELAY_MS`
+defaults to 20000 and accepts 0..300000. The viewer stays open. Watch stderr for
+`HOST_CAPTURE_OK` or `HOST_CAPTURE_ERROR`; a missing callback times out after
+30 additional seconds. Existing files and symlinks are not overwritten.
+
+```sh
+USD_HOST_SCREENSHOT="$PWD/target/NEW-host-gpu.png" \
+USD_HOST_SCREENSHOT_DELAY_MS=20000 make run ARGS=assets/layer_muting.usda
+```
+
+This captures egui-wgpu output before desktop composition, not the pixels
+presented by the window system. The delay is not scene-readiness certification.
+Use it alongside compositor captures, not as a substitute for desktop acceptance.
+It is independent of `USD_SCREENSHOT`, which captures only the Bevy viewport.
+
+### Independent Vulkan control
+
+`scripts/run_vulkan_control.sh` runs the Khronos Vulkan cube without this
+project's renderer or UI libraries. Set `VKCUBE` to its executable, or put
+`vkcube` on PATH alongside Weston and nixVulkan. It uses Wayland, a 1440x920
+window and mailbox presentation. Its startup handshake is synthetic; inspect
+the images rather than treating it as render readiness.
+
+```sh
+USD_UI_CAPTURE_WAIT=20 USD_UI_CAPTURE_SECOND_WAIT=10 \
+RUN_WITH='/bin/bash scripts/run_vulkan_control.sh' \
+make --eval='capture-control:; @/bin/bash scripts/capture_viewer_ui.sh assets/layer_muting.usda target/NEW-vulkan-control.png' capture-control
+```
+
+The mandatory USD asset argument is unused by this control. On this machine,
+the third independent run produced a visible cube followed by a black capture
+under Weston's experimental Vulkan renderer. This independently reproduces the
+failure outside Mara/egui/Bevy/USD, but does not identify its graphics-stack cause.
+See `BEVY_WORK.md` for preserved images and environment details.
+
+### Host and bridge controls
+
 `examples/host_capture_probe.rs` draws colored panels and text with the same
 Mara native runner, without constructing a Bevy app or loading USD. Use it to
 isolate host/compositor failures (the script's required asset argument is ignored
@@ -1628,12 +1675,18 @@ undoing that clear (`0, 10, 25`). These are expected scene-sample keys; the defa
 value stays `5`. The replay does not save the fixture. Coordinates are layout
 dependent, so a successful capture alone does not establish the expected result.
 
-The current Mara host creates a GPU device with four storage textures per shader
-stage. Bevy's dome filtering requires at least six plus compute support, so the
-embedded viewer cannot currently filter dome maps on that device. The adapter
-reports `Unavailable` instead of waiting indefinitely. Standalone captures request
-a different device and have passed IBL checks; they do not prove embedded-host
-capability. The Mara GPU configuration hook remains a separate integration change.
+Mara's Bevy-enabled native host requests up to six storage textures per shader
+stage, bounded by adapter support, when adapter-specific texture formats are
+available. It also enables that format feature for Bevy's R16Float SSAO storage
+textures. Other hosts retain egui defaults. Dome filtering still requires six
+storage textures and compute support; unsupported devices report `Unavailable`.
+The embedded warm-HDR fixture has inspected direct-host GPU capture evidence;
+this does not establish general lighting fidelity or desktop-capture reliability.
+The directional fixture also has embedded captures at times 0 and 10 showing
+the rotated contribution. USD_SCREENSHOT metadata records the camera's applied
+environment intensity/rotation and filtering generation counts at request time,
+not a GPU completion fence. USD_CAPTURE_TIME requires USD_SCREENSHOT; setting
+only USD_HOST_SCREENSHOT does not set the scene clock.
 
 For opt-in runtime dome IBL, add
 `usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin` and attach

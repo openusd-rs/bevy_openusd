@@ -6,9 +6,11 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 
 ## Current release blockers
 
-- Intermittent black host frames remain unresolved; a host-only control also
-  reproduced failure. Direct host GPU readback is now available, but successful
-  readback and desktop captures have not isolated the failing frame.
+- Intermittent black frames remain a native-capture acceptance blocker. The
+  standalone Khronos Vulkan cube reproduced the same visible-to-black failure
+  under headless Weston Vulkan on NVIDIA, without Mara, egui, Bevy or USD.
+  This establishes an independent graphics-stack reproduction, not a viewer
+  rendering fix or identification of the faulty driver/compositor component.
 - Spot/UR5 fidelity and broader native-render comparisons remain incomplete.
   Do not infer full-scene parity from bounded numerical or image fixtures.
 - Per-layer content-based save state and guarded shell/OS window close are
@@ -61,7 +63,7 @@ entries, preserving layer composition and live edits rather than archive layout.
 | Shapes and visibility | Sampled Cube/Sphere/Cylinder/Capsule/Cone/Plane dimensions and local visibility; constant display colors/opacities with sampled indices and single unindexed values; unbound fallback opacity selects blend/opaque mode; parent hiding propagates through Bevy | Shape mesh regeneration is CPU-side; multi-value nonconstant display colors/opacities and shape face subsets are not mapped; full animated rendering corpus remains unverified |
 | Cameras | Sampled lens/aperture/clipping/projection mode; orthographic filmback dimensions and aperture offsets; perspective offsets through UsdPerspectiveProjection with frustum/sub-view support and vertical-FOV-preserving resize; no automatic Camera3d activation | Lens effects, arbitrary film-fit policies and full reference-render parity remain incomplete |
 | Lights | Sampled UsdLux color/intensity/exposure, supported light dimensions and shaping cone angle; independent root clocks | Rect/Cylinder lights remain point-light approximations; photometric conversion and rendered lighting fidelity remain incomplete |
-| Domes | Sampled data and HDR textures; explicit per-camera ambient or runtime-filtered IBL with ownership restoration; standalone directional IBL captures | No implicit global mutation; filtering requires six device storage textures and compute support. The current Mara shared device requests only four, so embedded IBL is unavailable; EXR and broader fidelity remain open |
+| Domes | Sampled data and HDR textures; explicit per-camera ambient or runtime-filtered IBL with ownership restoration; standalone directional IBL captures; embedded warm-HDR direct GPU capture | No implicit global mutation; filtering requires six device storage textures and compute support. Mara's Bevy host requests up to six on adapters supporting adapter-specific texture formats; lower-capability devices remain unavailable. EXR and broader fidelity remain open |
 | Point instancers | Direct mesh and bounded Xform/Scope/SkelRoot/mesh/primitive hierarchies with shared preview materials/subsets and CPU skin/morph geometry; Cube, Sphere, Cylinder, Capsule, Cone and Plane use the ordinary shape tessellation path, including sampled dimensions; sampled descendant transforms and inputs; stable instance IDs and prototype-path nodes; independent clocks, malformed-update suppression/recovery, sampled transforms/IDs/masks, composed typed inactiveIds | Hierarchies reject reset stacks, per-prim shear/perspective/singular transforms, unsupported node types, depth >=256 and >4096 projected nodes. Primitive tessellation is approximate; primitive face subsets are not projected. GPU prototype deformation, full hierarchy/deformation/reference parity and velocity/angular-velocity motion remain incomplete. Dependency edits reconcile the full stage; upstream USDA parsing rejects prepend/delete inactiveIds |
 | Skinning | Optional classic-linear GPU skinning, CPU fallback; vertex and constant influence sets with time-sampled indices/weights, including samples without defaults; material subsets share a palette; compatible morph targets combine before skinning | GPU limit: four normalized influences, 256 joints; unsupported morph normal modes use fallback; broader fidelity/performance remain open |
 | Morph targets | GPU position targets with generated flat normals or indexed vertex/varying authored normal deltas; standalone and combined classic-linear skinning; sparse shapes/inbetweens, cached buffers and material subsets; live independent-clock reversal captured against a CPU reference | Face-varying normals and generated smooth-normal deltas remain incomplete; target count capped at 256 and texture-backend vertex capacity; normal-map tangents and broader fidelity/performance unverified. The covered live 10,0 endpoint is pixel-identical; the separate 0,10 comparison differs by one RGB level at one pixel |
@@ -77,6 +79,11 @@ entries, preserving layer composition and live edits rather than archive layout.
 | Authoring | Safe snippets, typed references, immutable UsdSource::with_reference and atomic with_references composition with captured dependencies, canonical transaction-backed EditorSession with nested atomic batches; typed schema/component and reusable assembly examples; sequential/batch assembly benchmark with output equivalence checks | Nonempty source reference composition requires a USDA receiver and new destination prims; each batch opens an assembly stage and exports its root once, with validation stages per distinct source snapshot. Measurements cover a captured shared-Cube fixture, not production scene or renderer performance. General reusable typed scene-building API remains incomplete; these APIs are not full BSN equivalence |
 
 ## Runnable evidence
+
+The self-contained [composed showcase](SHOWCASE.md) combines retimed animation,
+shared prototypes, skeletal/morph deformation and embedded dome lighting.
+Inspected host captures at 0/30/60 and a composition contract cover this fixture;
+they do not establish native-render parity or performance certification.
 
 From the repository root, without a display or sibling asset collection:
 

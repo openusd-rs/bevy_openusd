@@ -21,6 +21,7 @@ mod ui_frame_pacing;
 mod render_settings;
 mod file_dialog;
 mod close_confirmation;
+mod host_capture;
 mod payload_editor;
 
 use mara::host::{MaraHostCtx, RibbonRail};
@@ -47,6 +48,7 @@ const LOG_FILE: &str = "/tmp/usdview.log";
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     curve_quality::from_env()?;
     capture::CaptureConfig::from_env()?;
+    host_capture::from_env()?;
     let watch = match std::env::var("USD_WATCH_TEXTURES") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
@@ -186,6 +188,7 @@ struct UsdApp {
     file_dialogs: file_dialog::FileDialogs,
     capture_handshake: bool,
     close_confirmation: close_confirmation::CloseConfirmation,
+    host_capture: Option<host_capture::Capture>,
 }
 
 impl WindowApp for UsdApp {
@@ -234,10 +237,12 @@ impl WindowApp for UsdApp {
             file_dialogs: file_dialog::FileDialogs::new(ctx.__internal_egui_ctx()),
             capture_handshake,
             close_confirmation,
+            host_capture: host_capture::from_env().expect("invalid host capture configuration"),
         }
     }
 
     fn update(&mut self, host: &mut MaraHostCtx<'_>) {
+        if let Some(capture) = &mut self.host_capture { capture.update(host.__internal_egui()); }
         self.close_confirmation.show(host.__internal_egui());
         let Self {
             bevy_view,

@@ -9,6 +9,9 @@ A live [OpenUSD](https://openusd.org) editor on [Bevy](https://bevy.org) 0.19.1.
 See the [support matrix and release blockers](SUPPORT.md) for current integration
 scope, verification boundaries and runnable starting points.
 
+Try the [self-contained animation showcase](SHOWCASE.md) for composed references,
+shared prototypes, skeletal/morph animation and embedded dome lighting.
+
 The composed USD stage is the source of truth: it's held live (not baked), projected
 into Bevy entities, and kept in sync off openusd's change notifications. Edits flow
 both ways — author back to the stage, undo/redo, and save.

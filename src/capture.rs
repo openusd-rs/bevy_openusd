@@ -108,7 +108,7 @@ pub fn configure(app: &mut App) {
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
                 timing.push_str(&crate::capture_metadata::camera_report(transform, camera.clip_from_view()));
                 timing.push_str(&crate::capture_metadata::environment_report(environment, environment_state,
-                    diagnostics.as_ref().map_or(0, |value| value.recorded_generations), generators.iter().count()));
+                    diagnostics.as_ref().map_or(0, |value| value.recorded_generations), generators.iter().count(), "Last-at-request"));
                 commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>| {
                     match save_readback(&event.image, Path::new(&output), &timing) {
                         Ok(()) => eprintln!("VIEWPORT_CAPTURE_OK {output}"),

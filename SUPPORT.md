@@ -80,6 +80,11 @@ entries, preserving layer composition and live edits rather than archive layout.
 
 ## Runnable evidence
 
+The self-contained [composed showcase](SHOWCASE.md) combines retimed animation,
+shared prototypes, skeletal/morph deformation and embedded dome lighting.
+Inspected host captures at 0/30/60 and a composition contract cover this fixture;
+they do not establish native-render parity or performance certification.
+
 From the repository root, without a display or sibling asset collection:
 
 ```sh

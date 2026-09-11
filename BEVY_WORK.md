@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Self-contained composed showcase
+
+assets/flagship_showcase.usda combines the existing animation, skeleton and morph
+fixtures through references, retiming the ten-frame sources by six onto a 0–60
+timeline. A shared animated material, three point prototypes and a metallic
+sphere under directional HDR lighting demonstrate the projected features together.
+SHOWCASE.md provides launch, inspection and test commands and links the existing
+support/approximation and packaging matrices. No sibling collection is needed.
+The contract regression checks 0/30/60 values and remapped skeleton, blend-shape,
+prototype and material relationships. Native usdcat also flattens the scene
+without diagnostics (/tmp/flagship-native.log).
+
+Inspected complete-host target/flagship-{0,30,60}.png images show the Timeline
+values, cube/prototype growth, bar bend/return, morph change and orange-to-blue
+material progression. Companion viewport metadata confirms those times and one
+recorded dome generation with zero active generators. Desktop pairs pass at
+0 and 30; 60 retains the intermittent black-frame failure. This is not a claim
+that desktop capture reliability is fixed. Logs: /tmp/flagship-{0,30,60}-capture.log.
+
+The inspected standalone target/flagship-gpu-paths.png at time 30 additionally
+records one visible GPU-skinned mesh and one GPU-morphed mesh, with no CPU fallback
+reported. Its camera differs from the host and it is not a pixel-parity control.
+Log: /tmp/flagship-gpu-paths.log. The example exposed a new unused shared metadata
+helper warning; viewer_capture now uses the helper with its own explicit sampling
+phase, retaining existing dome fields and generation-count keys.
+
+This completes the runnable showcase plus documented matrix requirement, not the
+separate GPU fidelity/performance requirement or a claim of production readiness.
+Final targeted Make tests pass 84 viewer, 15 viewer_capture and one showcase
+contract test; make check-all passes. Logs: /tmp/flagship-final-{tests,check}.log.
+
 ## Embedded directional dome controls
 
 Viewport capture metadata now records the selected camera's environment state,
@@ -3156,7 +3187,7 @@ changed in this integration-regression step.
 - [ ] GPU deformation and environment lighting with fidelity/performance evidence.
 - [x] Native prototype/instance projection with measured asset sharing.
 - [x] Real AssetServer, reload, multi-instance, save/reopen and image regressions.
-- [ ] Runnable showcase and documented support/approximation matrix.
+- [x] Runnable showcase and documented support/approximation matrix.
 
 ## Verification
 

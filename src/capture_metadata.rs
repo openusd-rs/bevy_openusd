@@ -2,8 +2,8 @@ use bevy::prelude::*;
 
 pub(crate) fn environment_report(map: Option<&bevy::light::EnvironmentMapLight>,
     state: Option<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState>,
-    recorded: u64, active: usize) -> String {
-    let mut report = format!("environment_metadata_phase=Last-at-request\nenvironment_state={state:?}\nrecorded_environment_generations={recorded}\nactive_environment_generators={active}\n");
+    recorded: u64, active: usize, phase: &str) -> String {
+    let mut report = format!("environment_metadata_phase={phase}\nenvironment_state={state:?}\nrecorded_environment_generations={recorded}\nactive_environment_generators={active}\n");
     if let Some(map) = map {
         report.push_str(&format!("environment_intensity={}\nenvironment_rotation={:?}\n", map.intensity, map.rotation));
     }
@@ -23,12 +23,12 @@ mod tests {
     #[test]
     fn environment_metadata_distinguishes_attachment_and_filtering() {
         use usd_bevy::route::dome_environment::UsdDomeEnvironmentState;
-        let absent = environment_report(None, None, 0, 0);
+        let absent = environment_report(None, None, 0, 0, "test");
         assert!(absent.contains("environment_state=None\n"));
         assert!(!absent.contains("environment_intensity="));
         let map = bevy::light::EnvironmentMapLight { intensity: 0.0,
             rotation: Quat::from_rotation_y(std::f32::consts::PI), ..Default::default() };
-        let report = environment_report(Some(&map), Some(&UsdDomeEnvironmentState::Attached), 2, 1);
+        let report = environment_report(Some(&map), Some(&UsdDomeEnvironmentState::Attached), 2, 1, "test");
         for expected in ["environment_state=Some(Attached)\n", "environment_intensity=0\n",
             "recorded_environment_generations=2\n", "active_environment_generators=1\n"] {
             assert!(report.contains(expected), "{report}");

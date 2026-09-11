@@ -18,6 +18,7 @@ pub enum EditorCommand {
     Select(Option<String>),
     Visibility { prim: String, visible: bool },
     Edit(EditorEdit),
+    EditChecked { edit: EditorEdit, document_id: u64, revision: u64, target: EditTarget },
     EditLayer(String),
     Payload { prim: String, loaded: bool },
     Undo,
@@ -152,6 +153,15 @@ fn process_commands(world: &mut World) {
     let mut status = if external { "External edits detected; undo history reset".into() } else { String::new() };
     let mut texture_dirty = external;
     for command in commands {
+        let command = if let EditorCommand::EditChecked { edit, document_id, revision, target } = command {
+            texture_dirty |= session.as_mut().is_some_and(EditorSession::synchronize_external_edits);
+            if session.as_ref().is_none_or(|editor| editor.document_id != document_id
+                || editor.revision != revision || editor.stage.edit_target() != target) {
+                status = "Failed: document or edit target changed before applying the edit; review and retry".into();
+                continue;
+            }
+            EditorCommand::Edit(edit)
+        } else { command };
         if let EditorCommand::OpenChecked { document_id, revision, .. } = &command {
             texture_dirty |= session.as_mut().is_some_and(EditorSession::synchronize_external_edits);
             let current = session.as_ref().map_or((0, 0), |editor| (editor.document_id, editor.revision));
@@ -241,7 +251,7 @@ fn process_commands(world: &mut World) {
                         Err(anyhow::anyhow!("document or edit layer changed while choosing a save destination; choose again"))
                     } else { editor.save(&filename, mode) }
                 }
-                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } => unreachable!(),
+                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } | EditorCommand::EditChecked { .. } => unreachable!(),
             }
         } else {
             Err(anyhow::anyhow!("no USD document is open"))
@@ -512,6 +522,7 @@ pub struct EditorSnapshot {
     pub visibility: std::collections::HashMap<String, bool>,
     pub layers: Vec<String>,
     pub edit_layer: String,
+    pub edit_target: Option<EditTarget>,
     pub selected: Option<String>,
     pub attributes: Vec<AttributeSnapshot>,
     pub variants: Vec<(String, String)>,
@@ -519,6 +530,15 @@ pub struct EditorSnapshot {
     pub selected_loaded: Option<bool>,
     pub can_undo: bool,
     pub can_redo: bool,
+}
+
+impl EditorSnapshot {
+    /// Captures the document revision and complete authoring target for a queued edit.
+    pub fn checked_edit(&self, edit: EditorEdit) -> Option<EditorCommand> {
+        Some(EditorCommand::EditChecked {
+            edit, document_id: self.document_id, revision: self.revision, target: self.edit_target.clone()?,
+        })
+    }
 }
 
 /// Main-thread editor model. Clone `stage()` into `LiveStage` to project the
@@ -690,6 +710,7 @@ impl EditorSession {
             sample_time: time,
             layers: self.stage.layer_stack(),
             edit_layer: self.stage.edit_target().layer_identifier().to_string(),
+            edit_target: Some(self.stage.edit_target()),
             selected: self.selected.clone(),
             can_undo: !self.undo.is_empty(),
             can_redo: !self.redo.is_empty(),
@@ -1841,6 +1862,55 @@ def Xform "Asset" (prepend variantSets = "shape") {
         assert!(!editor.snapshot().unwrap().prims.contains(&"/Mounted/Box".to_string()));
         editor.redo().unwrap();
         assert!(editor.snapshot().unwrap().prims.contains(&"/Mounted/Box".to_string()));
+    }
+
+    #[test]
+    fn checked_edits_reject_changed_document_revision_and_target() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_authoring.usda");
+        bridge.send(EditorCommand::Open(filename.into())).unwrap();
+        app.update();
+        let initial = bridge.view().unwrap().document;
+        let edit = || EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(7.) };
+        let stage = app.world().non_send::<EditorSession>().stage().clone();
+        bridge.send(EditorCommand::Select(Some("/Root".into()))).unwrap();
+        bridge.send(EditorCommand::Seek(5.)).unwrap();
+        bridge.send(initial.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert_eq!(stage.prim("/Root").unwrap().attribute("score").get::<f64>().unwrap(), Some(7.));
+        bridge.send(initial.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        let current = bridge.view().unwrap().document;
+        let before = stage.root_layer().export_to_string().unwrap();
+        let weak = current.layers.iter().find(|layer| *layer != &current.edit_layer).unwrap().clone();
+        bridge.send(EditorCommand::EditLayer(weak)).unwrap();
+        bridge.send(current.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        bridge.send(EditorCommand::EditLayer(current.edit_layer.clone())).unwrap();
+        app.update();
+        let mut mismapped = bridge.view().unwrap().document;
+        mismapped.edit_target = Some(EditTarget::for_local_direct_variant(&mismapped.edit_layer, "/Root{choice=a}").unwrap());
+        bridge.send(mismapped.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        let external = bridge.view().unwrap().document;
+        stage.create_attribute("/Root.external", "double").unwrap().set(Value::Double(1.)).unwrap();
+        bridge.send(external.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        let replaced = bridge.view().unwrap().document;
+        bridge.send(EditorCommand::Open(filename.into())).unwrap();
+        bridge.send(replaced.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert!(app.world().non_send::<EditorSession>().stage().prim("/Root").unwrap().attribute("score").get::<f64>().unwrap().is_none());
+        assert!(EditorSnapshot::default().checked_edit(edit()).is_none());
     }
 
     #[test]

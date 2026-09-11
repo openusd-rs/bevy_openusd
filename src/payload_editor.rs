@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use mara::ui::mara_core::{pod::Pod, vocab::Id};
 use openusd::sdf::{LayerOffset, Payload};
-use usd_bevy::editor::{EditorBridge, EditorCommand, EditorEdit, EditorSnapshot};
+use usd_bevy::editor::{EditorBridge, EditorEdit, EditorSnapshot};
 
 #[derive(Clone)]
 struct Row { asset: String, prim: String, offset: String, scale: String }
@@ -42,6 +42,10 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
         state.rows.len()
     };
     let bridge = bridge.clone();
+    let snapshot = EditorSnapshot {
+        document_id: snapshot.document_id, revision: snapshot.revision,
+        edit_target: snapshot.edit_target.clone(), ..Default::default()
+    };
     let draft = draft.clone();
     Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+count*6, move |ui| {
         let Ok(mut state) = draft.0.lock() else { return };
@@ -63,13 +67,16 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
         let label = if state.rows.is_empty() { "Block all weaker payloads" } else { "Replace payload list with draft" };
         if ui.button(label).clicked {
             match state.rows.iter().map(Row::parse).collect::<Result<Vec<_>,_>>() {
-                Ok(payloads) => { state.error.clear(); super::send(&bridge, EditorCommand::Edit(EditorEdit::Payloads { prim: prim.clone(), payloads })); }
+                Ok(payloads) => {
+                    state.error.clear();
+                    if let Some(command) = snapshot.checked_edit(EditorEdit::Payloads { prim: prim.clone(), payloads }) { super::send(&bridge, command); }
+                }
                 Err(error) => state.error = error,
             }
         }
         if ui.button("Clear local payload opinion").clicked {
             state.error.clear();
-            super::send(&bridge, EditorCommand::Edit(EditorEdit::ClearPayloads { prim: prim.clone() }));
+            if let Some(command) = snapshot.checked_edit(EditorEdit::ClearPayloads { prim: prim.clone() }) { super::send(&bridge, command); }
         }
         if !state.error.is_empty() { ui.label(&state.error); }
     }))

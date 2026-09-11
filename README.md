@@ -108,6 +108,10 @@ An empty replacement list blocks weaker payloads; clearing removes the local
 opinion and restores weaker composition. Entries allow empty defaultPrim targets
 or absolute prim paths, with finite offsets and positive finite time scales.
 The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
+`EditorSnapshot::checked_edit` creates a queued edit bound to the document,
+revision and complete edit-target mapping. Payload inspector actions use it;
+stale commands fail before authoring instead of being redirected to a new layer
+or document. The existing unchecked `EditorCommand::Edit` remains available.
 These author layer opinions; `EditorCommand::Payload` separately changes runtime
 load rules. The inspector's Payload authoring group accepts up to 64 draft
 entries with asset, prim, offset and scale fields. Replace authors the whole list;

@@ -5,6 +5,25 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+Payload inspector actions now use `EditorSnapshot::checked_edit` and the new
+`EditorCommand::EditChecked`. The snapshot retains the complete canonical
+EditTarget, not only its layer identifier. Queue processing synchronizes external
+edits then checks document identity, revision and full target equality before
+normal edit dispatch. Rejected requests perform no authoring. Normal dispatch
+retains namespace remapping, texture refresh, rollback and history behavior.
+Existing unchecked Edit remains an explicit API; other inspector controls have
+not yet migrated to the guard. The form captures only context fields, not another
+copy of all scene/attribute data.
+
+The bridge regression accepts selection/seek changes but rejects stale revisions,
+external edits, preceding document replacement, edit-layer changes and a differing
+variant mapping within the same layer. No-document snapshots cannot construct a
+checked command. Library tests pass 451 with 13 ignored; viewer tests pass 52;
+check-all and build pass (`/tmp/checked-edit-{lib-tests,viewer-tests,check,build}.log`).
+The existing replacement replay still produces the orange sphere through the
+guarded path; inspected `target/payload-checked-ui.png`
+(`/tmp/payload-checked-capture.log`, UI_CAPTURE_OK).
+
 Visible interaction acceptance uses the new three-layer payload_authoring
 fixture and four checked-in replays. Inspected `target/payload-replace-ui.png`
 and its viewport: filling the asset/prim fields and clicking Replace produces an

@@ -36,7 +36,20 @@ pub fn clear_relationship_targets(stage: &Stage, prim: &str, name: &str) -> Resu
 /// weaker references. Use `clear_references` to remove the local opinion.
 /// Time mappings require a finite offset and positive finite scale.
 pub fn set_references(stage: &Stage, prim: &str, references: &[openusd::sdf::Reference]) -> Result<()> {
-    for reference in references {
+    set_reference_list_op(stage, prim, &openusd::sdf::ReferenceListOp::explicit(references.to_vec()))
+}
+
+/// Authors a complete reference list operation in the current edit target.
+pub fn set_reference_list_op(stage: &Stage, prim: &str, operation: &openusd::sdf::ReferenceListOp) -> Result<()> {
+    let nonexplicit = [&operation.prepended_items, &operation.appended_items, &operation.added_items,
+        &operation.deleted_items, &operation.ordered_items];
+    anyhow::ensure!(!operation.explicit || nonexplicit.iter().all(|items| items.is_empty()),
+        "explicit reference operation cannot contain non-explicit items");
+    anyhow::ensure!(operation.explicit || operation.explicit_items.is_empty(),
+        "non-explicit reference operation cannot contain explicit items");
+    for reference in std::iter::once(&operation.explicit_items).chain(nonexplicit).flatten() {
+        anyhow::ensure!(!reference.asset_path.is_empty() || !reference.prim_path.is_empty(),
+            "reference must specify an asset or an internal prim target");
         anyhow::ensure!(reference.prim_path.is_empty() || (
             reference.prim_path.as_str().starts_with('/') && reference.prim_path.is_prim_path()
                 && !reference.prim_path.contains_prim_variant_selection()
@@ -48,7 +61,7 @@ pub fn set_references(stage: &Stage, prim: &str, references: &[openusd::sdf::Ref
     }
     let prim = stage.prim(openusd::sdf::path(prim)?)?;
     anyhow::ensure!(prim.is_valid()?, "reference owner does not exist");
-    prim.set_metadata("references", Value::ReferenceListOp(openusd::sdf::ReferenceListOp::explicit(references.to_vec())))?;
+    prim.set_metadata("references", Value::ReferenceListOp(operation.clone()))?;
     Ok(())
 }
 
@@ -250,6 +263,26 @@ mod tests {
             .set_type_name("Xform")
             .unwrap();
         stage
+    }
+
+    #[test]
+    fn malformed_reference_list_ops_reject_before_mutation() {
+        use openusd::sdf::{Reference, ReferenceListOp};
+        let stage = stage_with("/Root");
+        let valid = Reference { prim_path: openusd::sdf::path("/Root").unwrap(), ..Default::default() };
+        let before = stage.root_layer().export_to_string().unwrap();
+        for operation in [
+            ReferenceListOp { explicit: true, prepended_items: vec![valid.clone()], ..Default::default() },
+            ReferenceListOp { explicit_items: vec![valid.clone()], ..Default::default() },
+            ReferenceListOp::deleted([Reference::default()]),
+            ReferenceListOp::ordered([Reference { prim_path: openusd::sdf::path("/Root.property").unwrap(), ..Default::default() }]),
+            ReferenceListOp { prepended_items: vec![valid], appended_items: vec![Reference {
+                asset_path: "part.usda".into(), layer_offset: openusd::sdf::LayerOffset::new(0., f64::NAN), ..Default::default()
+            }], ..Default::default() },
+        ] {
+            assert!(set_reference_list_op(&stage, "/Root", &operation).is_err());
+            assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        }
     }
 
     #[test]

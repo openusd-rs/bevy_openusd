@@ -16,6 +16,27 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Reference list editing now has the parallel `EditorEdit::ReferenceListOp` and
+`authoring::set_reference_list_op` APIs. They validate all buckets before mutation
+and replace the local operation, preserving canonical reference customData.
+Tests cover all six modes, combined delete/prepend, weaker composition, exact
+undo/redo text, USDA reopen, malformed operations and invalid late-bucket entries.
+The existing whole-list `set_references` delegates to this path. Reference
+list-operation UI controls remain unimplemented.
+
+The customData round trip initially failed because the upstream USDA writer
+silently dropped the dictionary (`/tmp/reference-listop-tests.log`). The local
+`openusd-reference-custom-data.patch` fixes that writer boundary; the regression
+now passes (`/tmp/reference-listop-fixed-tests.log`). Native USD 25.05.01 accepts
+the Bevy-exported `reference_custom_data.usda` fixture and preserves its nested
+dictionary, offset 10 / scale 2 and external Cube composition through another
+serialization (`/tmp/reference-custom-data-native.log`). The dedicated native
+test is ignored by default and was explicitly run. Library tests pass 458 with
+14 ignored; check-all passes (`/tmp/reference-listop-{lib-tests,final-check}.log`).
+The review patch passes reverse-apply checking against the vendored source.
+All 60 viewer tests and the viewer build pass
+(`/tmp/reference-listop-{viewer-tests,build}.log`).
+
 The payload form can explicitly discard its draft and load the active target's
 local authored opinion. Selection uses the complete target's mapped spec path
 and layer identifier; it never imports a weaker opinion into a differently

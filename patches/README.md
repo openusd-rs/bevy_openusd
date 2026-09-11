@@ -5,7 +5,16 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
-## Payload identity offsets
+## Reference custom data
+
+`openusd-reference-custom-data.patch` emits reference customData dictionaries in
+USDA, including references with identity offsets. The existing dictionary writer
+preserves typed/nested values and propagates unsupported-value errors. The Bevy
+reference-list regression checks identity-offset custom data through undo and
+serialization; an ignored native usdcat round-trip test covers nested custom
+data together with non-identity retiming and external reference composition.
+
+## Payload identity matching
 
 `openusd-payload-identity.patch` normalizes exact identity payload offsets in
 composition-only copies before list-op matching. An omitted offset and explicit

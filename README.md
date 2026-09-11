@@ -108,6 +108,12 @@ An empty replacement list blocks weaker payloads; clearing removes the local
 opinion and restores weaker composition. Entries allow empty defaultPrim targets
 or absolute prim paths, with finite offsets and positive finite time scales.
 The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
+References also support complete authored list operations through
+`EditorEdit::ReferenceListOp { prim, operation }` and
+`authoring::set_reference_list_op`. Prepend, append, add, delete, order and
+explicit replacement preserve weaker composition according to their list rules.
+Malformed mixed operations and invalid entries reject before mutation. Reference
+customData is retained through USDA export. These reference controls are API-only.
 For authored list editing, `EditorEdit::PayloadListOp { prim, operation }`
 and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containing
 prepend, append, add, delete, and order entries. They replace the local operation,

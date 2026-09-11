@@ -393,6 +393,7 @@ pub enum EditorEdit {
     Reparent { path: String, parent: String },
     Move { path: String, destination: String },
     References { prim: String, references: Vec<openusd::sdf::Reference> },
+    ReferenceListOp { prim: String, operation: openusd::sdf::ReferenceListOp },
     ClearReferences { prim: String },
     Payloads { prim: String, payloads: Vec<openusd::sdf::Payload> },
     PayloadListOp { prim: String, operation: openusd::sdf::PayloadListOp },
@@ -453,6 +454,7 @@ impl EditorEdit {
             Self::Reparent { path, parent } => authoring::reparent_prim(stage, path, parent),
             Self::Move { path, destination } => authoring::move_prim(stage, path, destination),
             Self::References { prim, references } => authoring::set_references(stage, prim, references),
+            Self::ReferenceListOp { prim, operation } => authoring::set_reference_list_op(stage, prim, operation),
             Self::ClearReferences { prim } => authoring::clear_references(stage, prim),
             Self::Payloads { prim, payloads } => authoring::set_payloads(stage, prim, payloads),
             Self::PayloadListOp { prim, operation } => authoring::set_payload_list_op(stage, prim, operation),
@@ -824,6 +826,72 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires native usdcat"]
+    fn native_reference_custom_data_round_trip() {
+        use super::*;
+        let input = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/reference_custom_data.usda");
+        let source = crate::UsdSource::new(input, std::fs::read(input).unwrap()).unwrap();
+        let editor = EditorSession::new(source.open_stage().unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        let exported = directory.path().join("exported.usda");
+        let native = directory.path().join("native.usda");
+        editor.save(exported.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        let result = std::process::Command::new("usdcat").arg(&exported).arg("--out").arg(&native).output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let reread = crate::UsdSource::new(&native, std::fs::read(&native).unwrap()).unwrap().open_stage().unwrap();
+        let field = reread.root_layer().data().try_field(&openusd::sdf::path("/Root").unwrap(), "references").unwrap().unwrap().into_owned();
+        let openusd::sdf::Value::ReferenceListOp(op) = field else { panic!("reference list op") };
+        assert_eq!(op.prepended_items[0].custom_data.get("label"), Some(&openusd::sdf::Value::String("retained".into())));
+        assert!(matches!(op.prepended_items[0].custom_data.get("settings"), Some(openusd::sdf::Value::Dictionary(values)) if values.get("version") == Some(&openusd::sdf::Value::Int(3))));
+        assert_eq!(op.prepended_items[0].layer_offset, openusd::sdf::LayerOffset::new(10., 2.));
+        assert_eq!(reread.prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+    }
+
+    #[test]
+    fn reference_list_ops_preserve_composition_custom_data_and_history() {
+        use super::*;
+        use openusd::sdf::{Reference, ReferenceListOp};
+        let weak = crate::UsdSource::snapshot("weak.usda", &br#"#usda 1.0
+class Xform "A" { double score = 1 }
+class Xform "B" { double score = 2 }
+class Xform "C" { double score = 3 }
+def Xform "Root" ( prepend references = [</A>, </B>] ) {}
+"#[..]).unwrap();
+        let root = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+(subLayers = [@weak.usda@])
+"#[..]).unwrap().with_dependency(&weak).unwrap();
+        let mut editor = EditorSession::new(root.open_stage().unwrap());
+        let reference = |path: &str| Reference { prim_path: openusd::sdf::path(path).unwrap(), ..Default::default() };
+        let score = |stage: &Stage| stage.prim("/Root").unwrap().attribute("score").get::<f64>().unwrap();
+        let baseline = editor.stage().root_layer().export_to_string().unwrap();
+        let mut annotated = reference("/C");
+        annotated.custom_data.insert("label".into(), openusd::sdf::Value::String("retained".into()));
+        for (operation, expected) in [
+            (ReferenceListOp::prepended([annotated]), Some(3.)),
+            (ReferenceListOp::appended([reference("/C")]), Some(1.)),
+            (ReferenceListOp::added([reference("/C")]), Some(1.)),
+            (ReferenceListOp::deleted([reference("/A")]), Some(2.)),
+            (ReferenceListOp::ordered([reference("/B"), reference("/A")]), Some(2.)),
+            (ReferenceListOp::explicit([]), None),
+            (ReferenceListOp { deleted_items: vec![reference("/A")], prepended_items: vec![reference("/C")], ..Default::default() }, Some(3.)),
+        ] {
+            editor.edit(EditorEdit::ReferenceListOp { prim: "/Root".into(), operation: operation.clone() }).unwrap();
+            assert_eq!(score(editor.stage()), expected, "{operation:?}");
+            let authored = editor.stage().root_layer().export_to_string().unwrap();
+            let reopened = crate::UsdSource::snapshot("saved.usda", authored.as_bytes()).unwrap()
+                .with_dependency(&weak).unwrap().open_stage().unwrap();
+            assert_eq!(score(&reopened), expected);
+            let field = reopened.root_layer().data().try_field(&openusd::sdf::path("/Root").unwrap(), "references").unwrap().unwrap().into_owned();
+            assert_eq!(field, openusd::sdf::Value::ReferenceListOp(operation));
+            editor.undo().unwrap();
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), baseline);
+            editor.redo().unwrap();
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+            editor.undo().unwrap();
+        }
+    }
+
     #[test]
     fn explicit_identity_payload_delete_matches_native_fixture() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_identity.usda");

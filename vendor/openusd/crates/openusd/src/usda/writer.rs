@@ -1274,11 +1274,15 @@ fn write_reference(s: &mut String, r: &Reference) -> Result<(), FormatError> {
     if !r.prim_path.is_empty() {
         write!(s, "<{}>", r.prim_path.as_str())?;
     }
-    if r.layer_offset != LayerOffset::default() {
+    if r.layer_offset != LayerOffset::default() || !r.custom_data.is_empty() {
         s.push_str(" (offset = ");
         format_double(s, r.layer_offset.offset);
         s.push_str("; scale = ");
         format_double(s, r.layer_offset.scale);
+        if !r.custom_data.is_empty() {
+            s.push_str("; customData = ");
+            format_dictionary(s, &r.custom_data)?;
+        }
         s.push(')');
     }
     Ok(())

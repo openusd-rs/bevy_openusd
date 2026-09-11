@@ -3,6 +3,17 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reload timeout investigation
+
+The asset-test wait helper now preserves the calling test location and reports
+each scene root's state, source revision and AssetServer load state on timeout.
+The deadline remains ten seconds; no retries or relaxed assertions were added.
+Twenty focused nested-package reload runs passed
+(`/tmp/nested-reload-stress.log`), followed by ten complete library runs of
+456 passing tests and 13 ignored each (`/tmp/reload-library-stress.log`).
+The earlier workspace timeout did not recur in these runs. Its cause remains
+unidentified; these results are not a production fix or full workspace pass.
+
 ## Typed undoable payload-list authoring
 
 The new list-op regression exposed a dependency composition bug: deleting a

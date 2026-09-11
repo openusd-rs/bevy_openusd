@@ -3,6 +3,30 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Immutable typed snapshot customization
+
+UsdSource::with_edits applies EditorEdit values as one batch on an independent
+EditorSession, validates composition and exports the root into a new snapshot.
+Captured dependencies, source identifier and filesystem policy are retained.
+Empty batches preserve revision identity. Nonempty batches require a USDA root;
+new dependencies must be supplied explicitly or resolve through the existing
+filesystem policy. This does not introduce compile-time schema-name validation
+or claim general BSN equivalence.
+
+The regression customizes a referenced Cube, defines a Sphere and authors a
+relationship without mutating input snapshots or writing files. It checks
+dependency retention, identity, empty batches, invalid typed values after a
+successful first edit, missing references and unsupported root identifiers.
+The diskless source_edits example independently customizes two referenced cubes
+and proves the original assembly remains unchanged. README documents the API.
+
+All 22 source tests, the new example test and check-all pass:
+`/tmp/source-typed-edits-final-tests.log`,
+`/tmp/source-typed-edits-final-example.log`,
+`/tmp/source-typed-edits-final-check.log`. The initial example incorrectly used
+anyhow from the root package; its return type now follows the existing boxed
+error convention without adding a dependency. No renderer acceptance claimed.
+
 ## Preserve history for ancestor-excluded local layers
 
 History entries now record whether the edit target participated in the local

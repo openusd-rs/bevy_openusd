@@ -267,7 +267,8 @@ new. Pass `openusd::sdf::Path::default()` as the target to use the model's
 in the resolved name; a missing or unresolvable default fails. An empty typed
 path is distinct from an empty string, which the upstream path parser rejects.
 Existing prim
-patches remain explicit editor/authoring operations. Conflicting dependencies or
+patches use editor/authoring operations, including immutable `with_edits` batches.
+Conflicting dependencies or
 composition errors fail without changing either input. References use the source
 identifier as an absolute asset anchor. For a self-contained assembly with
 captured dependencies, export USDZ through the editor:
@@ -276,6 +277,15 @@ captured dependencies, export USDZ through the editor:
 usd_bevy::editor::EditorSession::new(assembly.open_stage()?)
     .save("assembly.usdz", usd_bevy::editor::SaveMode::RootLayer)?;
 ```
+
+`source.with_edits(edits)` applies `EditorEdit` values to an independent stage,
+validates composition and returns a new USDA root snapshot with the original
+captured dependencies and filesystem policy. Empty batches retain identity;
+failed batches leave the receiver unchanged. Supply new captured assets with
+`with_dependency` before authoring references or payloads. This is a typed-command
+API, not compile-time validation of USD schema names or general BSN equivalence.
+Run the diskless customization example with
+`make run RUN_WITH= APP_TARGET='--example source_edits' CARGO='cargo --offline'`.
 
 The native export test lane verifies a relocated diskless batch assembly with
 default and explicit targets, including its captured opaque asset bytes, through

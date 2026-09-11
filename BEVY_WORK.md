@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native close Cancel and Discard actions
+
+check_native_close.sh now accepts prompt, cancel or discard. The latter two
+use fixed pointer replays after a real WM_DELETE_WINDOW request, rather than
+clicking the app's own close control. Cancel requires process survival and a
+GPU capture; Discard requires process termination with exit status zero.
+An inherited USD_UI_REPLAY is cleared so it cannot supply unrelated actions.
+
+Both modes pass in /tmp/native-close-actions.log. The inspected
+target/native-close-cancel/dialog.png shows the scene without the dialog or
+modal dimming after Cancel. target/native-close-discard/viewer.log records the
+pointer replay followed by normal exit; the wrapper records
+OS_CLOSE_DISCARD_EXITED_CLEANLY. These runs use the bundled, unedited showcase
+and isolated Xwayland, not every desktop backend or unsaved-content permutation.
+Both replay fixtures are checked by the parser regression; all 86 viewer tests
+pass in /tmp/native-close-action-tests.log.
+
 ## Native OS-close confirmation evidence
 
 scripts/send_window_close.c sends WM_DELETE_WINDOW only to exactly one window

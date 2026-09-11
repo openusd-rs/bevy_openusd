@@ -18,7 +18,8 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
   routing through the guard, direct screenshots and dome-device configuration.
   It lives in the required sibling worktree `../mara-bevy-host`, not unmodified
   upstream develop. An isolated Xwayland WM_DELETE_WINDOW request now has
-  rendered confirmation-dialog evidence with the process remaining alive;
+  rendered confirmation-dialog evidence, Cancel dismissal with the viewer
+  remaining alive, and Discard exiting with status zero;
   this is not a cross-desktop/backend acceptance matrix.
   External disk-conflict detection remains open;
   Clean means matching a loaded or in-place-saved baseline, not unchanged disk.

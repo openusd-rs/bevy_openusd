@@ -1468,6 +1468,24 @@ with a black host image narrows the failure to host presentation/composition or
 compositor readback, not necessarily to Weston itself. Neither near-black check
 proves scene fidelity or completed asset uploads.
 
+### Direct whole-window GPU capture
+
+Set `USD_HOST_SCREENSHOT=/absolute/new-file.png` to capture the viewer's complete
+GPU output, including panes, dialogs and titlebar. `USD_HOST_SCREENSHOT_DELAY_MS`
+defaults to 20000 and accepts 0..300000. The viewer stays open. Watch stderr for
+`HOST_CAPTURE_OK` or `HOST_CAPTURE_ERROR`; a missing callback times out after
+30 additional seconds. Existing files and symlinks are not overwritten.
+
+```sh
+USD_HOST_SCREENSHOT="$PWD/target/NEW-host-gpu.png" \
+USD_HOST_SCREENSHOT_DELAY_MS=20000 make run ARGS=assets/layer_muting.usda
+```
+
+This captures egui-wgpu output before desktop composition, not the pixels
+presented by the window system. The delay is not scene-readiness certification.
+Use it alongside compositor captures, not as a substitute for desktop acceptance.
+It is independent of `USD_SCREENSHOT`, which captures only the Bevy viewport.
+
 ### Independent Vulkan control
 
 `scripts/run_vulkan_control.sh` runs the Khronos Vulkan cube without this

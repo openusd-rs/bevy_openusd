@@ -3,6 +3,36 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Direct complete-viewer GPU screenshots
+
+USD_HOST_SCREENSHOT now requests one tagged root-viewport screenshot through
+Mara's GPU painter. USD_HOST_SCREENSHOT_DELAY_MS defaults to 20000, accepts
+0..300000, and requires an output path. Only the matching screenshot callback
+is written; unrelated callbacks are ignored. A missing callback reports failure
+after 30 additional seconds. Output uses exclusive-create PNG writing, preserves
+existing files/symlinks, and leaves the viewer open. The existing png dependency
+moves from dev-dependencies to normal dependencies; no version change.
+
+The first executable build exposed that png was dev-only despite passing unit
+tests; the dependency classification was corrected before the native run.
+83 viewer tests pass, including four capture regressions for configuration,
+single tagged request/callback, timeout, exact RGBA output, invalid dimensions
+and existing-file preservation. Build and check-all pass. Logs:
+/tmp/viewer-host-capture-final-tests.log,
+/tmp/viewer-host-capture-build-final.log and /tmp/viewer-host-capture-check.log.
+
+Inspected target/viewer-host-direct-modal.png is an upright 1440x920 direct GPU
+capture showing the cube, inspector, titlebar and close confirmation. The same
+run's target/viewer-host-direct-desktop.png pair shows the modal, then the scene
+after Cancel. Both desktop region checks and panic-log inspection pass;
+HOST_CAPTURE_OK confirms the direct output. Replay: close_cancel.replay;
+asset: layer_muting.usda; selection /Root; inspector; time 0; direct delay 20s;
+desktop wait 23s plus 10s. Log: /tmp/viewer-host-direct-capture.log.
+
+GPU output is separate from compositor presentation, and the configured delay
+does not certify scene readiness. The independent vkcube black failure remains
+valid; this capture path enables UI/render inspection without hiding it.
+
 ## Independent Vulkan reproduction of black frames
 
 Khronos Vulkan-Tools vkcube 1.4.341.0, without Mara/egui/Bevy/USD, reproduced

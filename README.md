@@ -767,6 +767,9 @@ coincident adjacent samples and cusps. Errors clear stale geometry and appear in
 the Rendering pane. Corrected source data can recover on the same entity.
 Surfaces are fixed-sampling, open-ended polygonal approximations without caps,
 UVs or native curve-renderer parity. Low sampling visibly facets curved shapes.
+`assets/curve_surface_loops.usda` exercises two periodic B-spline tubes in one
+prim with indexed uniform widths and separate colors: a thick blue loop and a
+thin orange loop. The loops close independently without connecting triangles.
 
 Point clouds project constant/inherited and indexed vertex/varying display color
 and opacity through the same RGBA expansion as mesh vertices. The unbound

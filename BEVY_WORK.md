@@ -5,6 +5,21 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Curve width and normal reader foundation
 
+Periodic surface acceptance now includes `assets/curve_surface_loops.usda`:
+two periodic B-splines in one prim, indexed uniform widths reversing the value
+table, and distinct uniform display colors. The regression checks exact radii,
+per-curve color, no cross-curve triangles, nondegenerate faces and closed edge
+incidence: every undirected mesh edge appears exactly twice with opposite
+directions. A separate expansion-budget test accepts 12,000 linear samples at
+three sides but rejects 32 sides (2,303,808 triangle indices) before upload.
+All five focused surface tests and check-all pass
+(`/tmp/curve-loops-tests.log`, `/tmp/curve-loops-check.log`).
+Inspected `target/curve-surface-loops.png`: thick blue and thin orange loops,
+both visibly closed and disconnected. The capture reports CAPTURE_OK without
+warnings, using Vulkan, 32 cubic samples, 16 sides, forward rendering and shadows
+off (`/tmp/curve-loops-capture.log`). This checks the planar periodic fixture,
+not general twisted ribbons or native renderer pixel parity.
+
 The Rendering pane now exposes line mode and 8/16/32-sided surface controls.
 Requests preserve the selected cubic sample count, are consumed once, and ignore
 invalid side counts without replacing valid settings. Two focused bridge tests,

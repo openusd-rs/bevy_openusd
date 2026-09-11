@@ -3,6 +3,30 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Embedded viewport repaint interval correction
+
+Sibling Mara commit fd20c11 compensates positive embedded-viewport repaint
+intervals for egui's predicted_dt subtraction. Zero/invalid intervals remain
+immediate; invalid prediction contributes no extra delay and addition saturates.
+The two mara_bevy pacing tests pass, including actual egui output across five
+frames at three prediction values. The first test invocation used a nonexistent
+package name; the corrected Make invocation selected -p mara_bevy --lib
+pacing_tests and passed. Logs: /tmp/host-pacing-tests-corrected.log,
+/tmp/host-pacing-build.log and /tmp/host-pacing-check.log.
+
+Both target/host-pacing-corrected-ui.png images were inspected and show the cube,
+grid and outliner. Region/panic-log checks pass. The scene-graph snapshot reports
+66 commits and 41 painted frames per second over one second. This is not a
+controlled before/after benchmark, a hard FPS cap, or a black-window fix: other
+repaint sources remain and the host-only probe does not use this viewport.
+
+All 15 native OpenUSD tests ignored by the last ordinary workspace run now pass
+separately with native usdcat on PATH: make test with -p usd_bevy --lib native_
+-- --ignored --nocapture and offline Cargo. Log:
+/tmp/current-native-export-gate.log. This lane does not enable file_watcher.
+SUPPORT.md now reflects implemented content-based layer state and native OS
+close confirmation while retaining external disk-conflict and rendering gaps.
+
 ## Mara GPU readback boundary
 
 Sibling Mara commit 37ced29 forwards root Screenshot commands and their user

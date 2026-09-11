@@ -80,7 +80,7 @@ pub(crate) fn prepare(
         };
         let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &subset.indices));
         if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
-            super::material::warn_missing_tangents(&mesh, material, &mut warnings);
+            super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
         }
         prepared.parts.push((subset.name.clone(), super::cache::intern_mesh(world, mesh), material, warnings));
     }

@@ -1930,6 +1930,11 @@ Normal-mapped ordinary meshes, material subsets and point-instancer prototypes
 carry `UsdMaterialWarning` when the projected mesh lacks tangents. Bevy then uses
 geometric shading normals; the diagnostic does not invent a UV/tangent basis or
 validate the numerical quality of existing tangents.
+The same shared checks report missing UV0/UV1 coordinates requested by base-color,
+emissive, metallic/roughness, normal and occlusion textures. They cover ordinary
+geometry, curve surfaces, subsets and point-instancer prototypes. The warning
+identifies absent inputs; it does not generate coordinates, remove textures or
+claim that constant 1x1 textures necessarily render incorrectly without UVs.
 Material warnings on the selected prim's mapped entity appear in the Properties
 pane's render issues and clear when the warning or selection disappears. This
 does not aggregate warnings from generated subset/prototype descendants.

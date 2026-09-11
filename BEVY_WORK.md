@@ -3,6 +3,27 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Missing material texture-coordinate diagnostics
+
+The shared material geometry-input check now reports absent UV0/UV1 coordinates
+requested by the projected base-color, emissive, metallic/roughness, normal and
+occlusion textures, alongside the existing missing-tangent diagnostic. Ordinary
+geometry, curve surfaces, subsets and point-instancer prototype paths use the
+same helper. Messages group texture roles by their requested UV channel. This
+does not synthesize UVs, change rendering, validate existing UV values or imply
+that a spatially constant 1x1 texture necessarily needs authored coordinates.
+
+The channel regression exercises absent inputs, separate UV0/UV1 requests and
+clearing warnings as each channel becomes available. The integration fixture
+now also includes a width-aware curve surface and verifies coordinate/tangent
+warnings against the actual meshes across ordinary, subset and instance paths.
+All 463 nonignored library tests pass (14 native tests ignored), and check-all
+passes (`/tmp/material-missing-uv-library-tests.log`,
+`/tmp/material-missing-uv-final-check.log`). These are model/diagnostic checks,
+not a new host screenshot acceptance claim. Initial compilation exposed that
+Bevy 0.19.1's UvChannel lives in bevy::mesh and is not Copy; the final helper
+borrows the canonical channel fields without clones or re-export shims.
+
 ## Current native export and filesystem-event gates
 
 At `fd3e466`, all 13 `make test-native` export tests pass, followed by the

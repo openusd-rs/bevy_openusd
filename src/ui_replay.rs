@@ -13,6 +13,12 @@ struct Replay {
     events: VecDeque<(Duration, Event)>,
 }
 
+impl Replay {
+    fn next_delay(&self, elapsed: Duration) -> Option<Duration> {
+        self.events.front().map(|(time, _)| time.saturating_sub(elapsed))
+    }
+}
+
 impl egui::Plugin for Replay {
     fn debug_name(&self) -> &'static str { "usd-ui-replay" }
 
@@ -25,7 +31,7 @@ impl egui::Plugin for Replay {
     }
 
     fn on_end_pass(&mut self, ui: &mut egui::Ui) {
-        if !self.events.is_empty() { ui.ctx().request_repaint(); }
+        if let Some(delay) = self.next_delay(self.started.elapsed()) { ui.ctx().request_repaint_after(delay); }
     }
 }
 
@@ -174,6 +180,18 @@ mod tests {
         assert_eq!(input.events.len(), 2);
         assert!(matches!(&input.events[1], Event::Text(text) if text == "  hello  "));
         assert_eq!(replay.events.len(), 1);
+    }
+
+    #[test]
+    fn replay_waits_for_next_event_without_idle_busy_repainting() {
+        let mut replay = Replay { started: Instant::now(), events: parse("10000 move 1 2\n12000 text next").unwrap() };
+        assert_eq!(replay.next_delay(Duration::ZERO), Some(Duration::from_secs(10)));
+        assert_eq!(replay.next_delay(Duration::from_secs(9)), Some(Duration::from_secs(1)));
+        assert_eq!(replay.next_delay(Duration::from_secs(11)), Some(Duration::ZERO));
+        replay.events.pop_front();
+        assert_eq!(replay.next_delay(Duration::from_secs(11)), Some(Duration::from_secs(1)));
+        replay.events.clear();
+        assert_eq!(replay.next_delay(Duration::from_secs(20)), None);
     }
 
     #[test]

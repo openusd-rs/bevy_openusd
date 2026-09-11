@@ -1369,6 +1369,9 @@ output count, shape/text/mesh/callback counts, NaN clip rectangles and texture
 updates/frees. It is disabled by default and does not alter the output or request
 extra repaints. The samples precede backend tessellation/presentation and are not
 synchronized to screenshots; nonempty output does not prove successful rendering.
+Replay input requests its next repaint at the next event deadline rather than
+continuously while waiting. Other viewer/host repaint sources still apply; this
+does not impose a frame-rate limit.
 
 Set `USD_UI_CAPTURE_VIEWPORT=1` to additionally retain the embedded Bevy readback
 as `.viewport.png`, `.viewport.rgba` and `.viewport.capture.txt`. Its dimensions

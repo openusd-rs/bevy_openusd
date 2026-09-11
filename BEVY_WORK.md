@@ -5,6 +5,23 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Same-process host capture diagnostics
 
+The replay plugin now requests repaint at the next event deadline rather than
+immediately on every pass while any future event exists. Due events request zero
+delay, future events use a saturating remaining duration, and an empty queue
+requests nothing. A regression covers those cases and dispatch tests remain green.
+All 71 viewer tests and check-all pass (`/tmp/replay-deadline-{tests,check}.log`).
+
+Before the change, inspected `target/reference-output-scene-graph-ui.png` and its
+`.second.png` show the conflict and resolved states. Weston reports the opaque
+1440x920 viewer surface with a normal transform and NVIDIA dmabuf, at 147 commits
+versus 60 painted frames/sec. After the change, both inspected
+`target/reference-replay-deadline-ui.png` images still show the correct interaction,
+but Weston sampled 156 commits versus 60 painted frames/sec. Both capture commands
+pass (`/tmp/reference-output-scene-graph-capture.log`,
+`/tmp/reference-replay-deadline-capture.log`). The scheduling correction does not
+establish lower viewer frame rates or a black-window fix; other repaint sources
+remain, and neither diagnostic run reproduced black pixels.
+
 `USD_UI_DIAGNOSTICS=1` now installs an output-only egui plugin. It counts every
 output and samples shape categories, NaN clip rectangles, pixels-per-point and
 texture changes at most once a second. It neither modifies output nor requests
@@ -49,6 +66,13 @@ interaction in that run. It does not localize the earlier black frame: the added
 readback may alter timing, and no black host frame occurred in this paired run.
 
 ## Current workspace regression gate
+
+At `f950f58`, `TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`
+and `make check-all CARGO='cargo --offline'` passed: 591 passed, zero failed,
+14 ignored across 30 result suites
+(`/tmp/capture-diagnostics-workspace-{tests,check}.log`). This includes payload
+draft ordering and egui output diagnostics, but predates the replay scheduling
+change described below.
 
 At `af5360c` plus the payload Reload replay registration, `TMPDIR="$PWD/target/test-tmp"
 make test-all CARGO='cargo --offline'` and `make check-all CARGO='cargo --offline'`

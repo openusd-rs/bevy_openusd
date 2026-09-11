@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Machine USDZ collection: initial acceptance
+
+The user supplied /home/bresilla/machines/usd as an additional asset corpus:
+Fendt and Kubota tractors, Ropa and Oxbo harvesters, Claas and Krampe trailers,
+and a Knoche disc harrow. All seven archives pass unzip -t integrity checks.
+Only Fendt has been inspected in the viewer at this step; archive integrity is
+not USD semantic or rendering validation for the other six.
+
+The Make-driven scene_report for fendt_tractor.usdz reports 258 meshes and
+413643 triangles, with zero degenerate triangles, invalid referenced normals
+and invalid indices. Log: /tmp/fendt-machine-report.log.
+The inspected target/fendt-machine-desktop.png shows the complete green tractor,
+red wheels, cabin and decals. The earlier direct host image captured renderer
+warm-up instead, so it is not scene-rendering evidence. Capture log:
+/tmp/fendt-machine-capture.log. Source archives were not changed. Material,
+transparency and native-reference parity still require targeted comparisons.
+
 ## Whole-UR5 native subdivision audit
 
 Rebuilt scripts/compare_subdivision_reference.cpp against OpenSubdiv and ran

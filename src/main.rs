@@ -22,6 +22,7 @@ mod render_settings;
 mod file_dialog;
 mod close_confirmation;
 mod host_capture;
+mod toolbar_icons;
 mod payload_editor;
 
 use mara::host::{MaraHostCtx, RibbonRail};
@@ -288,7 +289,7 @@ impl WindowApp for UsdApp {
             })
             .pane(
                 PANE_OUTLINER,
-                "list",
+                toolbar_icons::OUTLINER,
                 "Outliner",
                 PaneAnchor::LeftRail(RailZone::Start),
                 |body| {
@@ -297,40 +298,40 @@ impl WindowApp for UsdApp {
             )
             .pane(
                 PANE_PROPERTIES,
-                "options",
+                toolbar_icons::PROPERTIES,
                 "Properties",
                 PaneAnchor::LeftRail(RailZone::Middle),
                 |body| {
                     inspector::show(body, &view.document, editor, drafts, view.timeline.current);
                 },
             )
-            .pane(PANE_TIMELINE, "options", "Timeline", PaneAnchor::LeftRail(RailZone::Middle), |body| {
+            .pane(PANE_TIMELINE, toolbar_icons::TIMELINE, "Timeline", PaneAnchor::LeftRail(RailZone::Middle), |body| {
                 timeline::show(body, &view.timeline, editor, timeline_draft);
             })
-            .pane(PANE_LIGHTING, "options", "Lighting", PaneAnchor::LeftRail(RailZone::Middle), |body| {
+            .pane(PANE_LIGHTING, toolbar_icons::LIGHTING, "Lighting", PaneAnchor::LeftRail(RailZone::Middle), |body| {
                 lighting::show(body, lighting);
             })
-            .pane(PANE_RENDERING, "options", "Rendering", PaneAnchor::LeftRail(RailZone::Middle), |body| {
+            .pane(PANE_RENDERING, toolbar_icons::RENDERING, "Rendering", PaneAnchor::LeftRail(RailZone::Middle), |body| {
                 render_settings::show(body, rendering);
             })
             .action(
                 ACTION_OPEN,
-                "folder",
+                toolbar_icons::OPEN,
                 "Open USD…",
                 ribbon_action(ACTION_OPEN),
             )
             .action(
                 ACTION_SAVE,
-                "document",
+                toolbar_icons::SAVE_ROOT,
                 "Save root layer as…",
                 ribbon_action(ACTION_SAVE),
             )
-            .action(ACTION_SAVE_LAYER, "document", "Save edit layer as…", ribbon_action(ACTION_SAVE_LAYER))
-            .action(ACTION_FLATTEN, "document", "Export flattened…", ribbon_action(ACTION_FLATTEN))
-            .action(ACTION_UNDO, "arrow-left", "Undo", ribbon_action(ACTION_UNDO))
-            .action(ACTION_REDO, "arrow-right", "Redo", ribbon_action(ACTION_REDO))
-            .action(ACTION_REFRESH_TEXTURES, "image", "Refresh textures", ribbon_action(ACTION_REFRESH_TEXTURES))
-            .action(ACTION_FRAME, "maximize", "Frame visible scene", ribbon_action(ACTION_FRAME));
+            .action(ACTION_SAVE_LAYER, toolbar_icons::SAVE_LAYER, "Save edit layer as…", ribbon_action(ACTION_SAVE_LAYER))
+            .action(ACTION_FLATTEN, toolbar_icons::EXPORT, "Export flattened…", ribbon_action(ACTION_FLATTEN))
+            .action(ACTION_UNDO, toolbar_icons::UNDO, "Undo", ribbon_action(ACTION_UNDO))
+            .action(ACTION_REDO, toolbar_icons::REDO, "Redo", ribbon_action(ACTION_REDO))
+            .action(ACTION_REFRESH_TEXTURES, toolbar_icons::REFRESH_TEXTURES, "Refresh textures", ribbon_action(ACTION_REFRESH_TEXTURES))
+            .action(ACTION_FRAME, toolbar_icons::FRAME, "Frame visible scene", ribbon_action(ACTION_FRAME));
         for click in host.show_ribbon_rail(rail, accent) {
             if click.action == ribbon_action(ACTION_FRAME) { framing.request(); }
             if click.action == ribbon_action(ACTION_SAVE) || click.action == ribbon_action(ACTION_SAVE_LAYER)

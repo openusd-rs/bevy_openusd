@@ -552,6 +552,7 @@ impl EditorEdit {
 struct HistoryEntry {
     edit: EditorEdit,
     target: EditTarget,
+    local_target: bool,
     transactions: usize,
     selection_before: Option<String>,
     selection_after: Option<String>,
@@ -731,6 +732,7 @@ impl EditorSession {
     pub fn edit(&mut self, edit: EditorEdit) -> anyhow::Result<()> {
         self.synchronize_external_edits();
         let target = self.stage.edit_target();
+        let local_target = self.stage.layer_stack().iter().any(|layer| layer == target.layer_identifier());
         let before = self.stage.undo_depth();
         if let Err(error) = edit.apply(&self.stage) {
             while self.stage.undo_depth() > before { self.stage.undo()?; }
@@ -741,7 +743,7 @@ impl EditorSession {
             self.revision = self.revision.wrapping_add(1);
             let selection_before = self.selected.clone();
             self.selected = edit.selection_after(self.selected.as_deref());
-            self.undo.push(HistoryEntry { edit, target, transactions, selection_before, selection_after: self.selected.clone() });
+            self.undo.push(HistoryEntry { edit, target, local_target, transactions, selection_before, selection_after: self.selected.clone() });
             self.redo.clear();
             self.trim_history();
         }
@@ -752,6 +754,8 @@ impl EditorSession {
         self.synchronize_external_edits();
         let Some(entry) = self.undo.last_mut() else { return Ok(false) };
         anyhow::ensure!(!self.stage.is_layer_muted(entry.target.layer_identifier()), "unmute {} before undo", entry.target.layer_identifier());
+        anyhow::ensure!(!entry.local_target || self.stage.layer_stack().iter().any(|layer| layer == entry.target.layer_identifier()),
+            "restore layer participation for {} before undo", entry.target.layer_identifier());
         while entry.transactions > 0 {
             anyhow::ensure!(self.stage.undo()?, "editor transaction history is inconsistent");
             entry.transactions -= 1;
@@ -766,6 +770,8 @@ impl EditorSession {
         self.synchronize_external_edits();
         let Some(entry) = self.redo.last() else { return Ok(false) };
         anyhow::ensure!(!self.stage.is_layer_muted(entry.target.layer_identifier()), "unmute {} before redo", entry.target.layer_identifier());
+        anyhow::ensure!(!entry.local_target || self.stage.layer_stack().iter().any(|layer| layer == entry.target.layer_identifier()),
+            "restore layer participation for {} before redo", entry.target.layer_identifier());
         let target = self.stage.edit_target();
         self.stage.set_edit_target(entry.target.clone())?;
         let before = self.stage.undo_depth();
@@ -1832,6 +1838,30 @@ def Xform "Root" { def Cube "Shape" {} }
         assert!(!editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
         editor.set_layer_muted(&layers[1], false).unwrap();
         assert!(editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
+        editor.set_edit_layer(&layers[2]).unwrap();
+        let original = editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(4.) }).unwrap();
+        let edited = editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap();
+        editor.set_edit_layer(&layers[0]).unwrap();
+        editor.set_layer_muted(&layers[1], true).unwrap();
+        let revision = editor.snapshot().unwrap().revision;
+        assert!(editor.undo().is_err());
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        assert!(editor.snapshot().unwrap().can_undo);
+        assert_eq!(editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap(), edited);
+        editor.set_layer_muted(&layers[1], false).unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap(), original);
+        editor.set_layer_muted(&layers[1], true).unwrap();
+        let revision = editor.snapshot().unwrap().revision;
+        assert!(editor.redo().is_err());
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        assert!(editor.snapshot().unwrap().can_redo);
+        assert_eq!(editor.stage().edit_target().layer_identifier(), layers[0]);
+        assert_eq!(editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap(), original);
+        editor.set_layer_muted(&layers[1], false).unwrap();
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap(), edited);
     }
 
     #[test]

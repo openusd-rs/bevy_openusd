@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Preserve history for ancestor-excluded local layers
+
+History entries now record whether the edit target participated in the local
+layer stack before authoring. Undo/redo of such an entry requires that target
+to participate again, before consuming transactions or changing the edit target.
+This extends direct-muted-layer checks to leaves excluded by parent muting.
+Mapped nonlocal reference targets are not required to join the local stack.
+
+The nested-layer regression initially failed because undo silently succeeded
+while the edited leaf was hidden (`/tmp/ancestor-history-before.log`). It now
+checks rejection with unchanged revision, retained history and exact leaf text,
+then successful undo/redo after unmuting the parent. The current root edit
+target is preserved. All 55 ordinary editor tests pass (one native test ignored)
+and check-all passes (`/tmp/ancestor-history-editor-tests.log`,
+`/tmp/ancestor-history-check.log`). This does not address selecting an already
+excluded layer as a new edit target or general nonlocal participation tracking.
+The broader default library gate also passes 474 tests with 15 opt-in tests
+ignored (`/tmp/ancestor-history-library-tests.log`). No native capture was rerun.
+
 ## Native ancestor-protection acceptance and retained failures
 
 Built the viewer with `make build CARGO='cargo --offline'`. The temporary fixture

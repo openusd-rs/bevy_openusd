@@ -99,6 +99,20 @@ mod tests {
     }
 
     #[test]
+    fn close_queued_between_frames_reaches_confirmation() {
+        let ctx = egui::Context::default();
+        let confirmation = install(&ctx, EditorBridge::default());
+        ctx.send_viewport_cmd(ViewportCommand::Close);
+        let output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        assert!(confirmation.state.lock().unwrap().pending);
+        assert!(!output.viewport_output[&ViewportId::ROOT].commands.contains(&ViewportCommand::Close));
+        let unguarded = egui::Context::default();
+        unguarded.send_viewport_cmd(ViewportCommand::Close);
+        let output = unguarded.run_ui(egui::RawInput::default(), |_| {});
+        assert!(output.viewport_output[&ViewportId::ROOT].commands.contains(&ViewportCommand::Close));
+    }
+
+    #[test]
     fn modal_pointer_events_and_escape_do_not_reenter_plugin_lock() {
         let ctx = egui::Context::default();
         let confirmation = install(&ctx, EditorBridge::default());

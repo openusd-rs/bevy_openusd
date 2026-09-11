@@ -3,6 +3,33 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## OS close confirmation routing
+
+Sibling Mara commit b3312c7 routes winit CloseRequested through egui's root
+Close command and schedules a redraw instead of immediately exiting. The
+viewer output filter can now intercept OS close as well as shell close.
+A regression queues Close between frames, verifies confirmation intercepts
+it, and verifies unguarded egui still emits Close normally.
+
+A temporary Weston module called weston_desktop_surface_close on the Mara
+surface after 12 seconds, sending a real Wayland close request without clicking
+the titlebar. target/os-close-discard-ui.png was inspected: the scene and
+confirmation are visible. Its Weston log records OS_CLOSE_SENT and its viewer
+log records USD_VIEWER_EXIT_STATUS=0 after the replay clicks Discard at 26.2
+seconds. The paired capture correctly fails because the viewer exits before
+the second capture; this is native shutdown evidence, not a two-frame pass.
+
+The earlier target/os-close-cancel-ui.png and its second frame were black;
+both failures remain retained. OS routing does not fix the intermittent black
+host. Current validation: 79 viewer tests pass and make check-all passes with
+offline Cargo (/tmp/os-close-final-tests.log and /tmp/os-close-final-check.log).
+The subsequent target/os-close-cancel-confirm-ui.png pair was inspected: first
+the confirmation, then the retained scene with the modal dismissed. Both region
+checks and the panic-log check pass. This closes native OS Cancel/Discard
+acceptance at the current button coordinates, not global rendering acceptance.
+Workspace fmt --check still reports formatting differences in other existing
+code; no broad formatting rewrite was included in this fix.
+
 ## Content-based per-layer save state
 
 Editor snapshots now distinguish Clean, Modified and Unknown per loaded layer.

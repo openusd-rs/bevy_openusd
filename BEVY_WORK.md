@@ -3,6 +3,29 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Per-layer authored change tracking foundation
+
+EditorSession now owns a StageSink-backed layer change tracker and publishes
+layer_revisions in EditorSnapshot. It counts nonempty per-layer committed change
+records, including undo/redo and authoring outside the command queue, rather
+than attributing a multi-layer transaction only to its strongest layer.
+Counters saturate at u64::MAX. Snapshot reads drain pending stage changes; the
+tracker removes its sink when dropped even if another owner retains the stage.
+
+These are commit counts since session creation, not saved/dirty flags. In this
+upstream version Layer::is_dirty only reports uncommitted overlay writes. The
+current Save commands export copies and do not rebase document source identity;
+exports therefore do not reset these counts. A complete unsaved-state model
+still needs persisted per-layer baselines, unknown-source handling, content
+equivalence after undo, explicit export/save distinctions and close integration.
+No new confirmation bypass or clean-state claim is introduced.
+
+Regression coverage checks separate root/weak-layer changes, undo/redo, external
+authoring, runtime muting/selection, unchanged counters after export and sink
+detachment. All 57 editor-module tests pass (one native test ignored), and
+check-all passes (`/tmp/editor-layer-revisions-final-tests.log`,
+`/tmp/editor-layer-revisions-check.log`). No UI layout or renderer change.
+
 ## Native export of immutable snapshot edits
 
 The existing native captured-reference-batch export regression now applies

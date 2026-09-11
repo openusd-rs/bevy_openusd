@@ -6,6 +6,8 @@ use bevy::prelude::*;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+mod layer_changes;
+
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
 pub mod texture_watch;
 
@@ -582,6 +584,8 @@ pub struct AttributeSnapshot {
 pub struct EditorSnapshot {
     pub document_id: u64,
     pub revision: u64,
+    /// Authored commit counts per layer since this editor session opened; not saved-state flags.
+    pub layer_revisions: std::collections::BTreeMap<String, u64>,
     pub sample_time: Option<f64>,
     pub asset_info: Option<crate::read::geom::CustomDict>,
     pub render_issues: Vec<String>,
@@ -645,11 +649,13 @@ pub struct EditorSession {
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     history_limit: usize,
+    layer_changes: layer_changes::LayerChanges,
 }
 
 impl EditorSession {
     pub fn new(stage: Stage) -> Self {
         static NEXT_DOCUMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let layer_changes = layer_changes::LayerChanges::new(&stage);
         Self {
             document_id: NEXT_DOCUMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             revision: 0,
@@ -659,6 +665,7 @@ impl EditorSession {
             undo: Vec::new(),
             redo: Vec::new(),
             history_limit: 128,
+            layer_changes,
         }
     }
 
@@ -828,6 +835,7 @@ impl EditorSession {
         let mut snapshot = EditorSnapshot {
             document_id: self.document_id,
             revision: self.revision,
+            layer_revisions: self.layer_changes.revisions(),
             sample_time: time,
             layers: self.stage.layer_stack(),
             root_layer: self.stage.root_layer().identifier().to_string(),
@@ -1802,6 +1810,42 @@ def Xform "Model" (
         assert_eq!(bridge.view().unwrap().status, "Ready");
         let reopened = crate::UsdSource::new(&output, std::fs::read(&output).unwrap()).unwrap().open_stage().unwrap();
         assert_eq!(reopened.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Scope"));
+    }
+
+    #[test]
+    fn layer_revisions_track_authored_changes_not_runtime_or_exports() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/layer_muting.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let snapshot = editor.snapshot().unwrap();
+        assert!(snapshot.layer_revisions.is_empty());
+        let root = snapshot.root_layer;
+        let weak = snapshot.layers.into_iter().find(|id| id != &root).unwrap();
+        let edit = || EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(4.) };
+        editor.edit(edit()).unwrap();
+        let first = editor.snapshot().unwrap().layer_revisions;
+        assert!(first[&root] > 0);
+        assert!(!first.contains_key(&weak));
+        editor.set_edit_layer(&weak).unwrap();
+        editor.edit(edit()).unwrap();
+        let second = editor.snapshot().unwrap().layer_revisions;
+        assert!(second[&weak] > 0);
+        assert_eq!(second[&root], first[&root]);
+        editor.undo().unwrap();
+        let undone = editor.snapshot().unwrap().layer_revisions;
+        assert!(undone[&weak] > second[&weak]);
+        editor.redo().unwrap();
+        stage.prim("/Root").unwrap().attribute("score").set(7_f64).unwrap();
+        let external = editor.snapshot().unwrap().layer_revisions;
+        assert!(external[&weak] > undone[&weak]);
+        editor.set_edit_layer(&root).unwrap();
+        editor.set_layer_muted(&weak, true).unwrap();
+        editor.set_layer_muted(&weak, false).unwrap();
+        editor.select(Some("/Root".into())).unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_revisions, external);
+        let output = tempfile::tempdir().unwrap();
+        editor.save(output.path().join("copy.usda").to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_revisions, external);
     }
 
     #[test]

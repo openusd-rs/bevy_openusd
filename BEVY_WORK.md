@@ -3,6 +3,39 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native ancestor-protection acceptance and retained failures
+
+Built the viewer with `make build CARGO='cargo --offline'`. The temporary fixture
+`/tmp/bevy-mute-root.usda` sublayers `bevy-mute-parent.usda`, which sublayers
+`bevy-mute-leaf.usda`; the leaf authors /Root/Shape as a blue Cube. Root is Y-up.
+All captures use the native capture Make temporary target, /Root selection,
+inspector pane and time zero.
+
+Inspected `target/ancestor-controls-layout-ui.png` is black and correctly fails
+region validation. A separate diagnostic run with 20-second initial and second
+waits produced black `target/ancestor-controls-series-ui.png`, then a visible
+cube and inspector in `.second.png` within the same process. The overall run
+still fails. Neither run has known runtime-panic markers; these observations do
+not identify the host failure's cause. Logs: `/tmp/ancestor-controls-layout-capture.log`
+and `/tmp/ancestor-controls-series-capture.log`. Failed artifacts are retained.
+
+The subsequent interaction run selects the leaf edit target and scrolls the
+left pane. Both inspected `target/ancestor-controls-selected-ui.png` and
+`.second.png` show the leaf active, all three protected labels readable and no
+Mute buttons for the root, parent or leaf. Cube and grid remain visible. Both
+region checks and the panic-log check pass
+(`/tmp/ancestor-controls-selected-capture.log`). This closes the bounded label
+acceptance below, not the intermittent black-host blocker. Replay used:
+
+```text
+10000 move 260 480
+10100 down 260 480
+10200 up 260 480
+12000 move 300 450
+12100 scroll 0 -1200
+16000 move 1100 100
+```
+
 ## Inspector ancestor-muting protection
 
 EditorSnapshot now publishes mute_protected_layers for the visible layer stack:

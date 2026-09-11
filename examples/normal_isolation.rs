@@ -105,6 +105,16 @@ fn filtered_normal_report(points: &[[f32;3]], normals: &[[f32;3]], indices: &[us
     output
 }
 
+fn area_weighted_normals(points: &[[f32; 3]], indices: &[usize]) -> Vec<[f32; 3]> {
+    let mut sums = vec![bevy::math::DVec3::ZERO; points.len()];
+    for triangle in indices.chunks_exact(3) {
+        let p = [triangle[0], triangle[1], triangle[2]].map(|i| Vec3::from(points[i]).as_dvec3());
+        let normal = (p[1] - p[0]).cross(p[2] - p[0]);
+        for index in triangle { sums[*index] += normal; }
+    }
+    sums.into_iter().map(|normal| normal.normalize_or_zero().as_vec3().to_array()).collect()
+}
+
 fn write_probe(mesh: &Mesh, directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let Some(VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return Err("missing positions".into()); };
     let Some(VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { return Err("missing normals".into()); };
@@ -131,8 +141,10 @@ fn write_probe(mesh: &Mesh, directory: &Path) -> Result<(), Box<dyn std::error::
     let index_text = indices.iter().map(usize::to_string).collect::<Vec<_>>().join(",");
     let counts = vec!["3"; indices.len()/3].join(",");
     std::fs::create_dir(directory)?;
-    for authored in [false, true] {
-        let normal = if authored { format!("normal3f[] normals = [{normal_text}] (interpolation = \"vertex\")") } else { String::new() };
+    let area_text = vectors(&area_weighted_normals(points, &indices));
+    for (name, values) in [("without_normals", None), ("with_normals", Some(&normal_text)),
+        ("area_weighted_normals", Some(&area_text))] {
+        let normal = values.map(|values| format!("normal3f[] normals = [{values}] (interpolation = \"vertex\")")).unwrap_or_default();
         let text = format!(r#"#usda 1.0
 ( upAxis = "Y" )
 def Mesh "Probe" {{
@@ -151,7 +163,7 @@ def Camera "Camera" {{
     uniform token[] xformOpOrder = ["xformOp:transform"]
 }}
 "#, near=(radius*0.001).max(0.00001), far=(radius*100.0).max(1000.0));
-        std::fs::write(directory.join(if authored { "with_normals.usda" } else { "without_normals.usda" }), text)?;
+        std::fs::write(directory.join(format!("{name}.usda")), text)?;
     }
     println!("local_triangle_probe vertices={} triangles={} materials_subsets_transforms_deformation_omitted=true", points.len(), indices.len()/3);
     Ok(())
@@ -172,6 +184,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         read = usd_bevy::subdivision::refine_mesh(&read, &rules, levels)?;
     }
     write_probe(&usd_bevy::mesh::mesh_from_usd(&read), Path::new(&args[2]))
+}
+
+#[test]
+fn area_weights_preserve_triangle_area_ratio_and_orientation() {
+    for scale in [1e-12, 1.0, 1e12] {
+        let points = [[0.,0.,0.], [1.,0.,0.], [0.,1.,0.], [0.,0.,4.]]
+            .map(|point| point.map(|v| v * scale));
+        let normals = area_weighted_normals(&points, &[0,1,2,0,3,1]);
+        let expected = Vec3::new(0.,4.,1.).normalize();
+        assert!(Vec3::from(normals[0]).abs_diff_eq(expected, 1e-6));
+        let reversed = area_weighted_normals(&points, &[0,2,1,0,1,3]);
+        assert!(Vec3::from(reversed[0]).abs_diff_eq(-expected, 1e-6));
+        assert_eq!(area_weighted_normals(&points, &[0,0,0]), vec![[0.;3]; 4]);
+    }
 }
 
 #[test]

@@ -1079,6 +1079,10 @@ It writes `with_normals.usda` and `without_normals.usda` with identical projecte
 triangle positions/indices and a shared `/Camera`. The first copies projected
 normals; the second omits them. Both explicitly use polygon geometry. An optional
 fourth argument applies finite subdivision (1..6) before copying the triangles.
+`area_weighted_normals.usda` is a third control, summing incident triangle
+cross-products before normalization without changing points or indices. It is
+not a replacement for the production normal policy; the full UR5 comparison
+showed mixed visual results. All three outputs preserve the source asset.
 This is a time-zero diagnostic, not a scene exporter: original transforms,
 deformation, materials, subsets and other primvars are omitted. Render either
 through `viewer_capture` with `USD_CAPTURE_CAMERA=/Camera`, or through native

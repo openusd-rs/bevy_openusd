@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Rejected global edge-weighted normal replacement
+
+Native Hydra's smoothNormals.cpp sums incident edge cross-products before
+normalization, unlike our angle-weighted fallback:
+https://github.com/PixarAnimationStudios/OpenUSD/blob/v25.05.01/pxr/imaging/hd/smoothNormals.cpp
+The normal_isolation tool now also emits area_weighted_normals.usda using the
+same triangle positions/indices as its existing controls. Its scale/orientation
+regression checks an unequal-area two-face fan and degenerate triangles.
+
+The shoulder comparison in target/ur5-area-control/ was rendered through Bevy
+with /Camera, time zero, forward shading and shadows off. Both with_normals-bevy
+and area_weighted_normals-bevy images were inspected. The area-weighted version
+reduces the conspicuous jagged lower band in this local diagnostic.
+
+A temporary production replacement then summed original polygon-edge crosses,
+preserving holes and winding. It passed 479 library tests (15 ignored), 83
+viewer tests, build and check-all. However, the complete robot GPU image
+target/ur5-edge-normals-host-gpu.png shows worse vertical streaks on the left
+cylinder and increased faceting elsewhere even as the blue rim improves.
+The global replacement and its production-only test were therefore reverted;
+mesh.rs is byte-identical to the committed baseline. The viewer was rebuilt
+after reverting. Only the independent diagnostic output/test is retained.
+
+Logs: /tmp/ur5-area-isolation.log, /tmp/ur5-area-*-render.log,
+/tmp/edge-normal-lib-tests.log, /tmp/edge-normal-viewer-tests.log,
+/tmp/edge-normal-{build,check}.log, /tmp/ur5-edge-normals-host-capture.log,
+/tmp/edge-normal-reverted-build.log and /tmp/edge-normal-retained-tests.log.
+The retained probe has four passing tests. This rejects a global weighting
+switch as a demonstrated repair; it does not reject Hydra's native subdivision
+pipeline or establish general normal parity. Collection assets were untouched.
+
 ## Current collection models through direct host capture
 
 At 2f791b8, the actual collection Spot and UR5 models were reopened in the

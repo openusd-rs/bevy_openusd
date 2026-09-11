@@ -158,6 +158,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         payloads.extend(crate::payload_editor::opinion_pods(snapshot));
         payloads.extend(reference_opinion_pods(snapshot, bridge, drafts));
         payloads.extend(reference_edit_pods(snapshot, bridge, drafts));
+        payloads.extend(reference_structure_pods(snapshot, bridge, drafts));
         body.add_normal("editor.payloads", "Payloads / references", "document", payloads);
     }
     for (set, options) in &snapshot.variant_choices {
@@ -356,10 +357,12 @@ fn reference_opinion_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, draf
         let expanded = drafts.2.clone();
         let key = format!("reference.edit:{}:{}", opinion.layer, opinion.prim);
         let bridge = bridge.clone();
-        Pod::new(Id::new(("editor.reference.opinion", index))).with_custom_units(lines.len()+2*usize::from(clear.is_some()), move |ui| {
+        Pod::new(Id::new(("editor.reference.opinion", index))).with_custom_units(lines.len()+3*usize::from(clear.is_some()), move |ui| {
             for line in lines { ui.label(&line); }
             if let Some(command) = clear {
                 if let Ok(mut expanded) = expanded.lock() {
+                    let manage = expanded.entry(format!("{key}:structure")).or_default();
+                    if ui.button(if *manage { "Hide reference order controls" } else { "Manage reference order / removal" }).clicked { *manage = !*manage; }
                     let open = expanded.entry(key).or_default();
                     if ui.button(if *open { "Hide reference entry fields" } else { "Edit local reference entries" }).clicked { *open = !*open; }
                 }
@@ -400,6 +403,7 @@ fn reference_edit_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts:
         if clear_reference_command(snapshot, opinion).is_none() { continue; }
         let key = format!("reference.edit:{}:{}", opinion.layer, opinion.prim);
         if !drafts.2.lock().is_ok_and(|expanded| expanded.get(&key) == Some(&true)) { continue; }
+        let operation = Arc::new(opinion.operation.clone());
         for (bucket, entries) in [("Explicit", &opinion.operation.explicit_items), ("Prepend", &opinion.operation.prepended_items),
             ("Append", &opinion.operation.appended_items), ("Add", &opinion.operation.added_items),
             ("Delete", &opinion.operation.deleted_items), ("Order", &opinion.operation.ordered_items)] {
@@ -411,7 +415,7 @@ fn reference_edit_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts:
                     values.get(&format!("{key}:{field}")).is_some_and(|draft|
                         draft.0 != **source && draft.1 != draft.0 && draft.1 != **source)).count()).unwrap_or(0);
                 let reference = reference.clone();
-                let mut operation = opinion.operation.clone();
+                let operation = operation.clone();
                 let drafts = drafts.clone();
                 let bridge = bridge.clone();
                 let prim = snapshot.selected.clone().unwrap();
@@ -454,6 +458,7 @@ fn reference_edit_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts:
                     if ready && ui.button("Apply reference entry").clicked {
                         match edited_reference(&reference, &fields) {
                             Ok(reference) => {
+                                let mut operation = (*operation).clone();
                                 let entries = match bucket { "Explicit" => &mut operation.explicit_items, "Prepend" => &mut operation.prepended_items,
                                     "Append" => &mut operation.appended_items, "Add" => &mut operation.added_items,
                                     "Delete" => &mut operation.deleted_items, _ => &mut operation.ordered_items };
@@ -465,6 +470,63 @@ fn reference_edit_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts:
                         }
                     }
                     if !error.is_empty() { ui.label(error); }
+                }));
+            }
+        }
+    }
+    pods
+}
+
+#[derive(Clone, Copy)]
+enum ReferenceStructure { Earlier, Later, Remove }
+
+fn change_reference_structure(source: &openusd::sdf::ReferenceListOp, bucket: &str, index: usize, action: ReferenceStructure) -> Option<openusd::sdf::ReferenceListOp> {
+    let mut operation = source.clone();
+    let entries = match bucket { "Explicit" => &mut operation.explicit_items, "Prepend" => &mut operation.prepended_items,
+        "Append" => &mut operation.appended_items, "Add" => &mut operation.added_items,
+        "Delete" => &mut operation.deleted_items, "Order" => &mut operation.ordered_items, _ => return None };
+    if index >= entries.len() { return None; }
+    match action {
+        ReferenceStructure::Earlier if index > 0 => entries.swap(index, index-1),
+        ReferenceStructure::Later if index+1 < entries.len() => entries.swap(index, index+1),
+        ReferenceStructure::Remove => { entries.remove(index); }
+        _ => return None,
+    }
+    Some(operation)
+}
+
+fn reference_structure_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts) -> Vec<Pod> {
+    let mut pods = Vec::new();
+    for opinion in &snapshot.reference_opinions {
+        if clear_reference_command(snapshot, opinion).is_none() { continue; }
+        let key = format!("reference.edit:{}:{}:structure", opinion.layer, opinion.prim);
+        if !drafts.2.lock().is_ok_and(|expanded| expanded.get(&key) == Some(&true)) { continue; }
+        let operation = Arc::new(opinion.operation.clone());
+        for (bucket, entries) in [("Explicit", &opinion.operation.explicit_items), ("Prepend", &opinion.operation.prepended_items),
+            ("Append", &opinion.operation.appended_items), ("Add", &opinion.operation.added_items),
+            ("Delete", &opinion.operation.deleted_items), ("Order", &opinion.operation.ordered_items)] {
+            for index in 0..entries.len() {
+                let count = entries.len();
+                let reference = &entries[index];
+                let target_lines = path_lines(&format!("{} <{}>",
+                    if reference.asset_path.is_empty() { "(internal)" } else { &reference.asset_path },
+                    if reference.prim_path.is_empty() { "defaultPrim" } else { reference.prim_path.as_str() }));
+                let operation = operation.clone();
+                let bridge = bridge.clone();
+                let prim = snapshot.selected.clone().unwrap();
+                let context = EditorSnapshot { document_id: snapshot.document_id, revision: snapshot.revision,
+                    edit_target: snapshot.edit_target.clone(), ..Default::default() };
+                pods.push(Pod::new(Id::new((&key, bucket, index))).with_custom_units(5+target_lines.len(), move |ui| {
+                    ui.label(&format!("Manage {bucket} reference {}", index+1));
+                    for line in target_lines { ui.label(&line); }
+                    if bucket == "Explicit" && count == 1 { ui.label("Removing this entry blocks weaker refs"); }
+                    let mut action = None;
+                    if index > 0 && ui.button("Move earlier in this bucket").clicked { action = Some(ReferenceStructure::Earlier); }
+                    if index+1 < count && ui.button("Move later in this bucket").clicked { action = Some(ReferenceStructure::Later); }
+                    if ui.button("Remove local entry").clicked { action = Some(ReferenceStructure::Remove); }
+                    if let Some(operation) = action.and_then(|action| change_reference_structure(&operation, bucket, index, action)) {
+                        send_edit(&bridge, &context, EditorEdit::ReferenceListOp { prim, operation });
+                    }
                 }));
             }
         }
@@ -568,6 +630,36 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_structure_edits_preserve_data_strength_and_undo() {
+        use super::{change_reference_structure, ReferenceStructure};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/reference_order.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let original = editor.snapshot().unwrap().reference_opinions[0].operation.clone();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        for (index, action) in [(1, ReferenceStructure::Earlier), (0, ReferenceStructure::Later), (0, ReferenceStructure::Remove)] {
+            let operation = change_reference_structure(&original, "Prepend", index, action).unwrap();
+            assert_eq!(operation.prepended_items[0], original.prepended_items[1]);
+            editor.edit(usd_bevy::editor::EditorEdit::ReferenceListOp { prim: "/Root".into(), operation }).unwrap();
+            assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+            editor.undo().unwrap();
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        }
+        assert!(change_reference_structure(&original, "Prepend", 0, ReferenceStructure::Earlier).is_none());
+        assert!(change_reference_structure(&original, "Prepend", 1, ReferenceStructure::Later).is_none());
+        assert!(change_reference_structure(&original, "Prepend", 2, ReferenceStructure::Remove).is_none());
+        assert!(change_reference_structure(&original, "unknown", 0, ReferenceStructure::Remove).is_none());
+        let explicit = openusd::sdf::ReferenceListOp::explicit([original.prepended_items[0].clone()]);
+        let empty = change_reference_structure(&explicit, "Explicit", 0, ReferenceStructure::Remove).unwrap();
+        assert!(empty.explicit && empty.explicit_items.is_empty());
+        let single = openusd::sdf::ReferenceListOp::prepended([original.prepended_items[0].clone()]);
+        assert!(!change_reference_structure(&single, "Prepend", 0, ReferenceStructure::Remove).unwrap().explicit);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
     #[test]
     fn reference_source_changes_preserve_dirty_fields_and_acknowledge_writes() {
         use openusd::sdf::{LayerOffset, Reference, Value};

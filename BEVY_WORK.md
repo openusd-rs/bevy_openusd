@@ -16,6 +16,25 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Local reference opinions now expose separate order/removal controls with asset
+and target labels. Earlier/Later move entries within their existing bucket;
+Remove retains the operation type, including explicit-empty blocking semantics.
+Actions use the checked document/revision/edit-target command and preserve other
+entries and customData. Entry editors share one immutable operation clone per
+opinion rather than cloning the entire list for every entry each frame; mutable
+copies are made only when applying an action. No performance benchmark is claimed.
+
+The regression covers both move directions, removal, invalid indices/buckets,
+exact-text undo, retained reference data and unchanged fixture bytes. All 65
+viewer tests and check-all pass
+(`/tmp/reference-structure-final-{tests,check}.log`). Inspected native
+`target/reference-order-ui.png` shows `/Ball` before `/Box` and the expected
+orange sphere after `reference_order.replay`. Inspected
+`target/reference-remove-ui.png` shows only `/Ball`, its retained customData and
+the orange sphere after `reference_remove.replay` removes `/Box`. Capture logs
+are `/tmp/reference-order-capture.log` and `/tmp/reference-remove-capture.log`.
+Entry creation, cross-bucket moves and arbitrary customData editing remain open.
+
 Reference drafts now retain a typed whole-entry baseline in addition to field
 baselines. Any source reference change while fields are dirty, including changed
 customData or a changed occupant of an indexed list slot, withholds Apply and
@@ -42,7 +61,8 @@ cannot operate after context replacement. Applying replaces only the selected
 entry in a cloned operation, retaining its bucket, other entries and customData,
 through the checked reference-list command. Input validation rejects invalid
 targets, missing asset-and-target pairs and non-finite/non-positive mappings.
-Entry creation/removal/reordering and arbitrary customData editing remain open.
+Entry creation and arbitrary customData editing remain open; order/removal
+controls are covered above.
 
 The regression retargets the fixture to Sphere, changes its mapping, preserves
 customData, undoes to the exact original reference and verifies unchanged disk

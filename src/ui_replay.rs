@@ -88,6 +88,8 @@ mod tests {
             (include_str!("../scripts/replays/reference_edit.replay"), 18, 23000),
             (include_str!("../scripts/replays/reference_identity_conflict.replay"), 28, 30000),
             (include_str!("../scripts/replays/reference_identity_keep.replay"), 34, 36000),
+            (include_str!("../scripts/replays/reference_order.replay"), 11, 22000),
+            (include_str!("../scripts/replays/reference_remove.replay"), 11, 22000),
             (include_str!("../scripts/replays/payload_replace.replay"), 15, 16000),
             (include_str!("../scripts/replays/payload_clear.replay"), 18, 18000),
             (include_str!("../scripts/replays/payload_invalid.replay"), 7, 14000),

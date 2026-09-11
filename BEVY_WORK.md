@@ -5,6 +5,21 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+Native conflict-control acceptance now uses `assets/draft_conflict.usda` and
+the `draft_conflict`, `draft_keep`, and `draft_reload` UI replays. Typing
+`/A/Child` into the relationship draft then selecting variant b changes the
+composed target to `/B` and displays the conflict prompt. Inspected captures
+`target/draft-conflict-prompt.png`, `target/draft-keep-ui.png`, and
+`target/draft-reload-ui.png` show the prompt, preserved `/A/Child` after Keep,
+and `/B` after Reload respectively. Both resolution captures pass the host
+capture guard; these choices resolve draft state, not author the draft.
+The fixture regression checks composed variant changes and undo without losing
+the draft. All 56 viewer tests and check-all pass
+(`/tmp/draft-prompt-{tests,check}.log`); the replay parser also passes after
+registering both resolution scripts (`/tmp/draft-replay-tests.log`). This does
+not resolve the intermittent black host capture failure or establish exhaustive
+attribute/matrix UI acceptance.
+
 Same-context property/relationship drafts no longer silently reset when the
 composed source text changes. Pristine drafts refresh, and a current value equal
 to the draft acknowledges a successful write. Other changed sources preserve
@@ -13,7 +28,7 @@ controls. Matrix drafts use the same reconciliation before editing their rows.
 Tests cover scalar, relationship and multiline matrix conflicts, repeated frames,
 pristine updates and applied-value acknowledgement. All 55 viewer tests,
 check-all and build pass (`/tmp/draft-conflict-{tests,check,build}.log`). Native
-conflict-prompt interaction/layout acceptance remains pending; no automatic
+conflict-prompt interaction/layout acceptance is recorded above; no automatic
 field-wise merge or conflict resolution across document changes is claimed.
 
 Inspector draft isolation now clears value, sample-time and expanded-source maps

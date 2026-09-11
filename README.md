@@ -117,7 +117,10 @@ document or complete edit target changes. Ordinary revision and selection
 changes retain drafts. If a composed value changes while its draft has edits,
 the inspector preserves the draft and requires Reload or Keep draft before
 applying it. Pristine drafts and successful writes refresh automatically. This
-is explicit conflict resolution, not field-wise merging.
+is explicit conflict resolution, not field-wise merging. The
+`assets/draft_conflict.usda` fixture and `scripts/replays/draft_*.replay`
+exercise a variant changing a relationship while its draft is being edited;
+Keep retains the draft without applying it, while Reload discards it.
 These author layer opinions; `EditorCommand::Payload` separately changes runtime
 load rules. The inspector's Payload authoring group accepts up to 64 draft
 entries with asset, prim, offset and scale fields. Replace authors the whole list;

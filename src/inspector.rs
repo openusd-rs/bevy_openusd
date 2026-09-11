@@ -410,6 +410,27 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn variant_composition_changes_conflict_with_relationship_drafts() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/draft_conflict.usda");
+        let source = usd_bevy::UsdSource::new(path, std::fs::read(path).unwrap()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let targets = |snapshot: usd_bevy::editor::EditorSnapshot| snapshot.relationships.into_iter()
+            .find(|(name,_)| name == "links").unwrap().1.join(" ");
+        let original = targets(editor.snapshot().unwrap());
+        assert_eq!(original, "/A");
+        let mut draft = (original, "/A/Child".into(), String::new());
+        editor.edit(usd_bevy::editor::EditorEdit::Variant { prim: "/Root".into(), set: "choice".into(), selection: "b".into() }).unwrap();
+        let current = targets(editor.snapshot().unwrap());
+        assert_eq!(current, "/B");
+        assert!(super::draft_conflicts(&mut draft, &current));
+        assert_eq!(draft.1, "/A/Child");
+        editor.undo().unwrap();
+        assert!(!super::draft_conflicts(&mut draft, &targets(editor.snapshot().unwrap())));
+        assert_eq!(draft.1, "/A/Child");
+    }
+
+    #[test]
     fn changed_sources_preserve_dirty_drafts_and_acknowledge_applied_values() {
         let mut pristine = ("old".into(), "old".into(), "error".into());
         assert!(!super::draft_conflicts(&mut pristine, "new"));

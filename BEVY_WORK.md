@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Curve-width rendering baseline
+
+Added `assets/curve_widths.usda` with a fixed /Camera and five rows: constant
+linear tube width, tapered vertex width, cubic varying width, a normal-oriented
+ribbon, and primvars:widths overriding the built-in widths attribute. The
+[OpenUSD BasisCurves contract](https://openusd.org/dev/api/class_usd_geom_basis_curves.html)
+distinguishes width-only tubes (radius width/2) from curves with normals, which
+are oriented ribbons. Width interpolation defaults to vertex; the generic
+primvar takes precedence when specified. These semantics must not be replaced
+by treating every curve as a constant-radius tube.
+
+Captured and inspected the current Bevy baseline at 416789c:
+`target/curve-widths-before.png`, `/tmp/curve-widths-before.log`. At time zero,
+1280x720, forward rendering and shadows off, all five rows remain one-pixel
+lines. The authored camera is at (0,2,10), focal length 50, apertures 36/20.25.
+CAPTURE_OK establishes this as a rendered unsupported-width baseline, not a
+completed width-aware implementation. Existing line rendering is unchanged.
+
+Native OpenUSD 25.05.01 Embree with the same authored camera reports BasisCurves
+unsupported and writes a black image (`target/curve-widths-native-000.png`,
+inspected; `/tmp/curve-widths-native-final.log`). It also warns about GPU-disabled
+color correction. This cannot serve as a curve visual reference. The first
+near-black check reports zero nonblack pixels out of 921,600 and rejects the
+image (`/tmp/curve-widths-native-inspect.log`). The first
+command was rejected because an explicit frame requires an output-number
+placeholder (`/tmp/curve-widths-native.log`); the corrected command completed.
+Next: width/normal sampling with strict interpolation and primvar precedence,
+then bounded tube/ribbon geometry and live settings/clock regression coverage.
+Do not silently change line-mode semantics or claim native image parity from
+the unsupported Embree capture.
+
 ## Revision-checked asynchronous opens
 
 File-dialog Open requests now retain the published document id and authored

@@ -809,6 +809,18 @@ USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='ass
 
 Each row should have matching shapes and endpoint heights. Tessellation defaults
 to eight samples per segment rather than adaptive or exact-limit rendering.
+
+`assets/curve_widths.usda` is a width/ribbon acceptance fixture with an authored
+camera. The current line renderer ignores these widths and normals; it is not
+yet a tube/ribbon showcase. Capture its current baseline with:
+
+```bash
+USD_CAPTURE_CAMERA=/Camera USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='assets/curve_widths.usda target/NEW_CURVE_WIDTHS.png 0'
+```
+
+The local native Embree renderer rejects BasisCurves, so its black capture is
+not a reference for this fixture.
+
 Library applications can choose 1–64 samples per cubic segment:
 
 ```rust

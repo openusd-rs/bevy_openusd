@@ -13,6 +13,12 @@ struct Replay {
     events: VecDeque<(Duration, Event)>,
 }
 
+impl Replay {
+    fn next_delay(&self, elapsed: Duration) -> Option<Duration> {
+        self.events.front().map(|(time, _)| time.saturating_sub(elapsed))
+    }
+}
+
 impl egui::Plugin for Replay {
     fn debug_name(&self) -> &'static str { "usd-ui-replay" }
 
@@ -25,7 +31,7 @@ impl egui::Plugin for Replay {
     }
 
     fn on_end_pass(&mut self, ui: &mut egui::Ui) {
-        if !self.events.is_empty() { ui.ctx().request_repaint(); }
+        if let Some(delay) = self.next_delay(self.started.elapsed()) { ui.ctx().request_repaint_after(delay); }
     }
 }
 
@@ -88,11 +94,20 @@ mod tests {
             (include_str!("../scripts/replays/reference_edit.replay"), 18, 23000),
             (include_str!("../scripts/replays/reference_identity_conflict.replay"), 28, 30000),
             (include_str!("../scripts/replays/reference_identity_keep.replay"), 34, 36000),
+            (include_str!("../scripts/replays/reference_identity_reload.replay"), 34, 36000),
             (include_str!("../scripts/replays/reference_order.replay"), 11, 22000),
             (include_str!("../scripts/replays/reference_remove.replay"), 11, 22000),
             (include_str!("../scripts/replays/reference_create.replay"), 17, 25000),
             (include_str!("../scripts/replays/reference_bucket_layout.replay"), 8, 18000),
             (include_str!("../scripts/replays/reference_bucket_move.replay"), 11, 24000),
+            (include_str!("../scripts/replays/payload_source_conflict.replay"), 10, 22000),
+            (include_str!("../scripts/replays/payload_source_keep.replay"), 13, 26000),
+            (include_str!("../scripts/replays/payload_source_reload.replay"), 13, 26000),
+            (include_str!("../scripts/replays/payload_order_layout.replay"), 11, 22000),
+            (include_str!("../scripts/replays/payload_order_apply.replay"), 17, 28000),
+            (include_str!("../scripts/replays/payload_order_draft.replay"), 14, 26000),
+            (include_str!("../scripts/replays/numeric_array_layout.replay"), 3, 14000),
+            (include_str!("../scripts/replays/numeric_array_apply.replay"), 13, 23000),
             (include_str!("../scripts/replays/payload_replace.replay"), 15, 16000),
             (include_str!("../scripts/replays/payload_clear.replay"), 18, 18000),
             (include_str!("../scripts/replays/payload_invalid.replay"), 7, 14000),
@@ -167,6 +182,18 @@ mod tests {
         assert_eq!(input.events.len(), 2);
         assert!(matches!(&input.events[1], Event::Text(text) if text == "  hello  "));
         assert_eq!(replay.events.len(), 1);
+    }
+
+    #[test]
+    fn replay_waits_for_next_event_without_idle_busy_repainting() {
+        let mut replay = Replay { started: Instant::now(), events: parse("10000 move 1 2\n12000 text next").unwrap() };
+        assert_eq!(replay.next_delay(Duration::ZERO), Some(Duration::from_secs(10)));
+        assert_eq!(replay.next_delay(Duration::from_secs(9)), Some(Duration::from_secs(1)));
+        assert_eq!(replay.next_delay(Duration::from_secs(11)), Some(Duration::ZERO));
+        replay.events.pop_front();
+        assert_eq!(replay.next_delay(Duration::from_secs(11)), Some(Duration::from_secs(1)));
+        replay.events.clear();
+        assert_eq!(replay.next_delay(Duration::from_secs(20)), None);
     }
 
     #[test]

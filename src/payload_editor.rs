@@ -3,7 +3,7 @@ use mara::ui::mara_core::{pod::Pod, vocab::Id};
 use openusd::sdf::{LayerOffset, Payload, PayloadListOp};
 use usd_bevy::editor::{EditorBridge, EditorEdit, EditorSnapshot};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Row { asset: String, prim: String, offset: String, scale: String, mode: Mode, authored_offset: bool }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -87,6 +87,32 @@ fn rows_from_operation(operation: &PayloadListOp) -> Result<Vec<Row>, String> {
 struct State {
     context: Option<(u64, String, String)>, target: Option<openusd::usd::EditTarget>,
     rows: Vec<Row>, error: String,
+    baseline: Option<PayloadListOp>, touched: bool,
+    order_open: bool,
+}
+
+fn move_row(state: &mut State, index: usize, earlier: bool) -> bool {
+    let next = if earlier { index.checked_sub(1) } else { index.checked_add(1) };
+    let Some(next) = next.filter(|next| *next < state.rows.len()) else { return false };
+    if index >= state.rows.len() { return false; }
+    state.rows.swap(index, next);
+    state.touched = true;
+    true
+}
+
+fn source_conflicts(state: &mut State, current: Option<&PayloadListOp>) -> bool {
+    if state.baseline.as_ref() == current { return false; }
+    if !state.touched || current.is_some_and(|current| parse_rows(&state.rows).is_ok_and(|draft| &draft == current)) {
+        state.baseline = current.cloned();
+        return false;
+    }
+    true
+}
+
+fn reload_source(state: &mut State, current: Option<&PayloadListOp>) -> Result<(), String> {
+    let rows = current.map(rows_from_operation).transpose()?.unwrap_or_default();
+    state.rows = rows; state.baseline = current.cloned(); state.touched = current.is_some(); state.error.clear();
+    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -119,27 +145,41 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
     let prim = snapshot.selected.as_ref()?.clone();
     if prim == "/" { return None; }
     let key = (snapshot.document_id, snapshot.edit_layer.clone(), prim.clone());
-    let count = {
+    let local = local_operation(snapshot).cloned();
+    let (count, conflict) = {
         let mut state = draft.0.lock().ok()?;
         if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target {
-            *state = State { context: Some(key.clone()), target: snapshot.edit_target.clone(), ..Default::default() };
+            *state = State { context: Some(key.clone()), target: snapshot.edit_target.clone(), baseline: local.clone(), ..Default::default() };
         }
-        state.rows.len()
+        (state.rows.len(), source_conflicts(&mut state, local.as_ref()))
     };
     let bridge = bridge.clone();
-    let local = local_operation(snapshot).cloned();
     let snapshot = EditorSnapshot {
         document_id: snapshot.document_id, revision: snapshot.revision,
         edit_target: snapshot.edit_target.clone(), ..Default::default()
     };
     let draft = draft.clone();
-    Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+count*6+usize::from(local.is_some()), move |ui| {
+    Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+3*usize::from(conflict)+count*6+usize::from(local.is_some()), move |ui| {
         let Ok(mut state) = draft.0.lock() else { return };
         if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target { return; }
         ui.label("Payload list (click row mode to change)");
         ui.label("Asset paths are relative to the edit layer");
         ui.label("Draft starts empty; does not copy composed arcs");
+        let mut ready = !source_conflicts(&mut state, local.as_ref());
+        if !ready {
+            ui.label("Payload source changed; draft preserved");
+            if ui.button("Discard draft and reload current opinion").clicked {
+                match reload_source(&mut state, local.as_ref()) {
+                    Ok(()) => ready = true,
+                    Err(error) => state.error = error,
+                }
+            }
+            if ui.button("Keep draft over changed payload opinion").clicked {
+                state.baseline = local.clone(); state.error.clear(); ready = true;
+            }
+        }
         let mut remove = None;
+        let before = state.rows.clone();
         for (index, row) in state.rows.iter_mut().enumerate() {
             if ui.button(&format!("Payload {}: {}", index+1, row.mode.label())).clicked { row.mode = row.mode.next(); }
             ui.text_input(&mut row.asset, "Asset path (empty = internal)");
@@ -150,8 +190,9 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
         }
         if let Some(index) = remove { state.rows.remove(index); }
         if ui.button("Add payload entry").clicked && state.rows.len() < 64 { state.rows.push(Row::default()); }
+        if before != state.rows { state.touched = true; }
         let label = if state.rows.is_empty() { "Block all weaker payloads" } else { "Apply draft as local payload opinion" };
-        if ui.button(label).clicked {
+        if ready && ui.button(label).clicked {
             match parse_rows(&state.rows) {
                 Ok(operation) => {
                     state.error.clear();
@@ -167,7 +208,7 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
         if let Some(operation) = &local {
             if ui.button("Discard draft and load local opinion").clicked {
                 match rows_from_operation(operation) {
-                    Ok(rows) => { state.rows = rows; state.error.clear(); }
+                    Ok(rows) => { state.rows = rows; state.baseline = Some(operation.clone()); state.touched = true; state.error.clear(); }
                     Err(error) => state.error = error,
                 }
             }
@@ -176,9 +217,127 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
     }))
 }
 
+fn row_target_lines(row: &Row) -> Vec<String> {
+    super::inspector::path_lines(&format!("{} <{}>", if row.asset.is_empty() { "(internal)" } else { &row.asset },
+        if row.prim.is_empty() { "defaultPrim" } else { &row.prim }))
+}
+
+pub fn order_pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraft) -> Option<Pod> {
+    let prim = snapshot.selected.as_ref()?.clone();
+    let key = (snapshot.document_id, snapshot.edit_layer.clone(), prim.clone());
+    let units = {
+        let state = draft.0.lock().ok()?;
+        if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target || state.rows.len() < 2 { return None; }
+        if state.order_open {
+            4+state.rows.iter().enumerate().map(|(index, row)| 1+row_target_lines(row).len()
+                +usize::from(index > 0)+usize::from(index+1 < state.rows.len())).sum::<usize>()
+                +if state.error.is_empty() { 0 } else { super::inspector::path_lines(&state.error).len() }
+        } else { 1 }
+    };
+    let local = local_operation(snapshot).cloned();
+    let context = EditorSnapshot { document_id: snapshot.document_id, revision: snapshot.revision,
+        edit_target: snapshot.edit_target.clone(), ..Default::default() };
+    let bridge = bridge.clone();
+    let draft = draft.clone();
+    Some(Pod::new(Id::new(("editor.payload.order", &key))).with_custom_units(units, move |ui| {
+        let Ok(mut state) = draft.0.lock() else { return };
+        if state.context.as_ref() != Some(&key) || state.target != context.edit_target { return; }
+        if ui.button(if state.order_open { "Hide payload draft order" } else { "Reorder payload draft rows" }).clicked { state.order_open = !state.order_open; }
+        if !state.order_open { return; }
+        ui.label("Moves affect the draft until Apply");
+        let mut movement = None;
+        for (index, row) in state.rows.iter().enumerate() {
+            ui.label(&format!("Payload {}: {}", index+1, row.mode.label()));
+            for line in row_target_lines(row) { ui.label(&line); }
+            if index > 0 && ui.button("Move draft row earlier").clicked { movement = Some((index, true)); }
+            if index+1 < state.rows.len() && ui.button("Move draft row later").clicked { movement = Some((index, false)); }
+        }
+        if let Some((index, earlier)) = movement { move_row(&mut state, index, earlier); }
+        if source_conflicts(&mut state, local.as_ref()) {
+            ui.label("Resolve the source conflict in the form");
+        } else if ui.button("Apply reordered payload draft").clicked {
+            match parse_rows(&state.rows) {
+                Ok(operation) => {
+                    state.error.clear();
+                    if let Some(command) = context.checked_edit(EditorEdit::PayloadListOp { prim, operation }) { super::send(&bridge, command); }
+                }
+                Err(error) => state.error = error,
+            }
+        }
+        if !state.error.is_empty() { for line in super::inspector::path_lines(&state.error) { ui.label(&line); } }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_draft_order_preserves_rows_and_undo() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/payload_order.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let original = editor.snapshot().unwrap().payload_opinions[0].operation.clone();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let mut state = State::default();
+        reload_source(&mut state, Some(&original)).unwrap();
+        assert!(!move_row(&mut state, 0, true));
+        assert!(!move_row(&mut state, 1, false));
+        assert!(!move_row(&mut state, usize::MAX, false));
+        assert!(move_row(&mut state, 1, true));
+        assert!(state.touched);
+        let moved = parse_rows(&state.rows).unwrap();
+        assert_eq!(moved.prepended_items, original.prepended_items.iter().rev().cloned().collect::<Vec<_>>());
+        assert!(!source_conflicts(&mut state, Some(&original)));
+        assert!(source_conflicts(&mut state, Some(&PayloadListOp::explicit([]))));
+        assert_eq!(parse_rows(&state.rows).unwrap(), moved);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        editor.edit(EditorEdit::PayloadListOp { prim: "/Root".into(), operation: moved }).unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert!(move_row(&mut state, 0, false));
+        assert_eq!(parse_rows(&state.rows).unwrap(), original);
+        state.rows[0].mode = Mode::Delete;
+        let first = state.rows[0].clone();
+        assert!(move_row(&mut state, 0, false));
+        assert!(state.rows[1] == first);
+        assert_eq!(parse_rows(&state.rows).unwrap().deleted_items[0], original.prepended_items[0]);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn payload_source_conflicts_preserve_drafts_and_acknowledge_writes() {
+        let first = PayloadListOp::prepended([Payload { asset_path: "first.usda".into(), ..Default::default() }]);
+        let second = PayloadListOp::prepended([Payload { asset_path: "second.usda".into(), ..Default::default() }]);
+        let mut state = State { baseline: Some(first.clone()), ..Default::default() };
+        assert!(!source_conflicts(&mut state, Some(&second)));
+        assert_eq!(state.baseline, Some(second.clone()));
+        reload_source(&mut state, Some(&first)).unwrap();
+        state.rows[0].offset = "7".into();
+        assert!(source_conflicts(&mut state, Some(&second)));
+        assert_eq!(state.baseline, Some(first.clone()));
+        assert_eq!(state.rows[0].offset, "7");
+        state.baseline = Some(second.clone());
+        assert!(!source_conflicts(&mut state, Some(&second)));
+        assert_eq!(state.rows[0].asset, "first.usda");
+        let written = parse_rows(&state.rows).unwrap();
+        assert!(!source_conflicts(&mut state, Some(&written)));
+        assert_eq!(state.baseline, Some(written));
+        assert!(source_conflicts(&mut state, None));
+        state.rows[0].scale = "invalid".into();
+        assert!(source_conflicts(&mut state, None));
+        assert!(state.baseline.is_some());
+        reload_source(&mut state, Some(&second)).unwrap();
+        assert_eq!(parse_rows(&state.rows).unwrap(), second);
+        let unrepresentable = PayloadListOp::default();
+        assert!(reload_source(&mut state, Some(&unrepresentable)).is_err());
+        assert_eq!(parse_rows(&state.rows).unwrap(), second);
+        reload_source(&mut state, None).unwrap();
+        assert!(state.rows.is_empty() && !state.touched && state.baseline.is_none());
+    }
 
     #[test]
     fn local_draft_import_preserves_buckets_offsets_and_rejects_loss() {

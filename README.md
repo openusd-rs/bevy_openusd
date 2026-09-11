@@ -148,11 +148,20 @@ In the viewer, click a payload row's mode button to cycle through Replace,
 Prepend, Append, Add, Delete and Order. Apply replaces the complete local
 operation with the draft; non-replacement modes can be mixed, but Replace
 cannot be mixed with them. Rows retain their order within each operation bucket.
+With two or more draft rows, the separate ordering controls move whole rows
+earlier/later without authoring. **Apply reordered payload draft** writes the
+complete operation through the same source-conflict and checked-command guards.
+Moving rows of different modes does not change their bucket membership.
 When the active edit target has a local opinion at the selected prim's mapped
 spec path, **Discard draft and load local opinion** imports it without authoring.
 Relative asset strings and omitted versus explicit time offsets are preserved.
 Weaker opinions are not imported into a different layer. Operations over 64 rows
 or not representable by the form are rejected without replacing the draft.
+Once edited or imported, payload drafts retain a source-opinion baseline. A
+changed source withholds Apply until Reload discards the draft or Keep explicitly
+accepts replacing the changed opinion. Keep does not author anything. Successful
+matching writes acknowledge their new baseline; unrepresentable reloads preserve
+the draft. Payload drafts reset when the selected prim or edit context changes.
 `EditorSnapshot::payload_opinions` exposes each contributing authored list op,
 strongest first, with its source layer, spec path and cumulative site time offset.
 The Payload authoring group displays these below the replacement form, including
@@ -520,6 +529,13 @@ preserve property metadata; they differ from `authoring::clear_attribute`, which
 removes the local property spec. Clearing values reveals weaker-layer opinions.
 Supported attributes without resolved values use their declared USD type to prepare
 an editable draft; nothing is authored until an apply button is pressed.
+Numeric-array drafts support `int[]`, `int64[]`, `uint[]`, `uint64[]`, `float[]`,
+`double[]`, and float/double three-component arrays including point/vector/normal/
+color aliases. Enter whitespace-separated numbers; vector values use groups of
+three and empty input authors an empty array. Values must fit their declared type
+and floating-point values must be finite. The text editor allows at most 4096
+scalar components and 256 KiB of text; larger arrays remain read-only here rather
+than being truncated. This is not an unrestricted bulk-mesh editor.
 “Apply default value” edits the default opinion, not an animation time sample.
 “Apply sample at time” uses the explicit scene-time field; “Use timeline time”
 copies the current timeline position into that field. “Clear sample at time”
@@ -1344,6 +1360,29 @@ its 1600×1000 output, excluding desktop wallpaper. Predominantly near-black
 regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
 the failure. This catches the observed black-window case, not arbitrary incorrect
 rendering or incomplete uploads.
+
+Set `USD_UI_CAPTURE_SECOND_WAIT=1..300` to capture a second host image in the same
+viewer process, after that many additional seconds (default 0 disables it).
+The companion is `.second.png`, with separate capture/inspection logs and settings;
+existing second-capture companions reject before launch. Both frames are captured
+before inspection, so a black first frame does not prevent the second capture.
+Either failed frame still fails the overall command; a later valid image never
+hides an earlier failure. Settings record capture start/end in elapsed script
+seconds, not exact GPU frame times. This is diagnostic sampling, not a readiness
+check or automatic retry.
+
+`USD_UI_DIAGNOSTICS=1` logs egui output statistics at most once per second:
+output count, shape/text/mesh/callback counts, NaN clip rectangles and texture
+updates/frees. It also logs the root repaint delay and up to 32 previous-pass
+repaint causes. It is disabled by default and does not alter the output or request
+extra repaints. The samples precede backend tessellation/presentation and are not
+synchronized to screenshots; nonempty output does not prove successful rendering.
+Replay input requests its next repaint at the next event deadline rather than
+continuously while waiting. Other viewer/host repaint sources still apply; this
+does not impose a frame-rate limit.
+The viewer's periodic repaint request compensates for egui's predicted-frame
+subtraction to retain a 1/60-second delay from that request. Input and host repaint
+sources can request earlier frames, so this is not a global frame-rate cap.
 
 Set `USD_UI_CAPTURE_VIEWPORT=1` to additionally retain the embedded Bevy readback
 as `.viewport.png`, `.viewport.rgba` and `.viewport.capture.txt`. Its dimensions

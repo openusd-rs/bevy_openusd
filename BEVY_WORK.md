@@ -3,7 +3,117 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Same-process host capture diagnostics
+
+Repaint diagnostics now include the root output delay and up to 32 previous-pass
+egui repaint causes. The trace identifies the viewer's periodic request and
+Mara's Bevy viewport request (`../mara/hosts/bevy/src/egui_view.rs:520`). Current
+egui 0.34.3 subtracts `input.predicted_dt` inside `request_repaint_after`, so the
+viewer's previous 1/60-second request became zero with the default prediction.
+`ui_frame_pacing` now adds the predicted duration to retain a 1/60-second delay
+from this request. Tests exercise real egui output at three prediction intervals
+and invalid prediction fallback. Input/host repaints remain independent.
+
+All 73 viewer tests and check-all pass
+(`/tmp/viewer-frame-pacing-{tests,check}.log`). Inspected
+`target/reference-paced-repaint-ui.png` and `.second.png` show the conflict and
+resolved fields; both capture guards pass
+(`/tmp/reference-paced-repaint-capture.log`). The compositor still sampled 139
+commits versus 60 painted frames/sec, and output delay samples still include zero
+with the Mara Bevy repaint source present. That sibling also requests intervals
+as low as 1/60 second before egui's subtraction. No sibling file was modified.
+This fixes the viewer's own request semantics, not global pacing or black frames;
+the one sampled rate is not a performance benchmark.
+
+The replay plugin now requests repaint at the next event deadline rather than
+immediately on every pass while any future event exists. Due events request zero
+delay, future events use a saturating remaining duration, and an empty queue
+requests nothing. A regression covers those cases and dispatch tests remain green.
+All 71 viewer tests and check-all pass (`/tmp/replay-deadline-{tests,check}.log`).
+
+Before the change, inspected `target/reference-output-scene-graph-ui.png` and its
+`.second.png` show the conflict and resolved states. Weston reports the opaque
+1440x920 viewer surface with a normal transform and NVIDIA dmabuf, at 147 commits
+versus 60 painted frames/sec. After the change, both inspected
+`target/reference-replay-deadline-ui.png` images still show the correct interaction,
+but Weston sampled 156 commits versus 60 painted frames/sec. Both capture commands
+pass (`/tmp/reference-output-scene-graph-capture.log`,
+`/tmp/reference-replay-deadline-capture.log`). The scheduling correction does not
+establish lower viewer frame rates or a black-window fix; other repaint sources
+remain, and neither diagnostic run reproduced black pixels.
+
+`USD_UI_DIAGNOSTICS=1` now installs an output-only egui plugin. It counts every
+output and samples shape categories, NaN clip rectangles, pixels-per-point and
+texture changes at most once a second. It neither modifies output nor requests
+repaints and is absent by default. Tests cover nested shapes, NaN clipping,
+texture-free counts, output preservation and throttling. All 70 viewer tests and
+check-all pass (`/tmp/ui-output-diagnostics-final-{tests,check}.log`).
+
+The diagnostic replay's two inspected images
+`target/reference-output-diagnostics-ui.png` and `.second.png` show the conflict
+and resolved fields, respectively. Both capture guards pass
+(`/tmp/reference-output-diagnostics-capture.log`). Between 28.5 and 31.6 seconds,
+the log samples contain 295 clipped shapes, 117 text shapes, five meshes, no NaN
+clips and no texture updates/frees; output counts continue advancing. This run
+did not reproduce black pixels, so it does not establish output statistics during
+the failure or localize its cause. The plugin is instrumentation, not a fix.
+
+`USD_UI_CAPTURE_SECOND_WAIT=1..300` adds a second host screenshot without restarting
+the viewer; default zero retains single-capture behavior. The script captures both
+frames before region inspection and fails overall if either is missing/black.
+Separate `.second.png` capture/inspection logs and settings preserve evidence;
+existing secondary companions reject before launch. Settings record elapsed script
+seconds around each screenshot, not exact rendered-frame timestamps. A successful
+later frame does not turn an earlier failed frame into acceptance.
+
+With the reference Reload replay, `target/reference-reload-same-run-ui.png` was
+black at script second 31, while its `.second.png` companion showed the cube and
+restored Box/10/2 fields at second 43. Both images were inspected. The command
+failed as required (`/tmp/reference-reload-same-run-capture.log`). The viewer
+recovered in the same process; this rules out a permanently black launch for
+that run, but does not identify the rendering fault or prove the conflict prompt.
+Shell syntax, invalid second-wait arguments and existing-companion rejection
+were checked through Make targets. No renderer fix is claimed.
+
+A second run enabled the existing delayed Bevy readback at 28000 ms alongside
+the two host frames. Inspected `target/reference-reload-paired-series-ui.png`
+shows the conflict prompt and cube; its `.second.png` shows restored Box/10/2
+fields without a prompt. The `.viewport.png` shows the valid cube at 28001 ms
+ready time, 625 updates, document 1/time 0. Both host captures were at script
+seconds 31 and 43 and all guards passed
+(`/tmp/reference-reload-paired-series-capture.log`). This establishes the Reload
+interaction in that run. It does not localize the earlier black frame: the added
+readback may alter timing, and no black host frame occurred in this paired run.
+
 ## Current workspace regression gate
+
+At `37b7e7a`, `TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`
+and `make check-all CARGO='cargo --offline'` completed successfully: 594 passed,
+zero failed and 14 ignored across 30 result suites
+(`/tmp/current-pacing-workspace-{tests,check}.log`). The 14 ignored native tests
+were then exercised separately with native usdcat on PATH: `make test-native
+CARGO='cargo --offline'` passed all 13 export tests
+(`/tmp/current-native-export-suite.log`), and the focused ignored
+`native_reference_custom_data_round_trip` passed
+(`/tmp/current-native-reference-roundtrip.log`). That reference regression checks
+USDA/USDC/USD metadata round trips and USDZ flattened composition, not customData
+retention through flattening. These gates do not resolve intermittent black host
+frames or establish global frame pacing. The scoped sibling Mara change remains
+pending user approval; no sibling files were edited.
+
+At `f950f58`, `TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`
+and `make check-all CARGO='cargo --offline'` passed: 591 passed, zero failed,
+14 ignored across 30 result suites
+(`/tmp/capture-diagnostics-workspace-{tests,check}.log`). This includes payload
+draft ordering and egui output diagnostics, but predates the replay scheduling
+change described below.
+
+At `af5360c` plus the payload Reload replay registration, `TMPDIR="$PWD/target/test-tmp"
+make test-all CARGO='cargo --offline'` and `make check-all CARGO='cargo --offline'`
+completed successfully: 589 passed, zero failed and 14 ignored across 30 result
+suites (`/tmp/editor-authoring-workspace-{tests,check}.log`). This covers reference
+creation, bucket moves and payload source-conflict protection. Ignored native
+tests are not counted as passing; the earlier reload timeout remains unexplained.
 
 At `0b5ec99`, `TMPDIR="$PWD/target/test-tmp" make test-all
 CARGO='cargo --offline'` completed successfully: 586 passed, zero failed and 14
@@ -24,6 +134,81 @@ The earlier workspace timeout did not recur in these runs. Its cause remains
 unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
+
+Numeric attribute arrays are now editable through the existing property draft,
+conflict, checked-command and undo paths. Supported types are signed/unsigned
+32/64-bit arrays, float/double arrays and float/double three-component arrays with
+their schema aliases. Whitespace separates scalars; vector arrays require whole
+triples. Empty text produces an empty typed array. Parsing rejects non-finite
+floats, integer/type overflow, incomplete triples, over 4096 scalar components
+and over 256 KiB input. Oversized source arrays are read-only without truncation
+or a full Debug dump. Larger bulk edits and other array kinds remain outside this
+text editor; the existing typed authoring API is not restricted by these UI limits.
+
+The regression round-trips all supported value variants and empty templates,
+checks invalid/oversized inputs and performs color-array authoring with exact-text
+undo and unchanged source bytes. All 74 viewer tests and check-all pass
+(`/tmp/numeric-array-final-{tests,check}.log`). Inspected
+`target/numeric-array-layout-fixed-ui.png` shows the blue cube and color attribute;
+`numeric_array_apply.replay` enters `1 0.3 0.05` and applies the default.
+Inspected `target/numeric-array-applied-ui.png` shows the orange cube and new array
+text. Both capture guards pass (`/tmp/numeric-array-layout-fixed-capture.log`,
+`/tmp/numeric-array-applied-capture.log`). The original layout replay scrolled the
+viewport because x=1100 lay outside the property pane; it was corrected to x=1000.
+That initial artifact is not a rendering regression or array-edit acceptance.
+Native sampled-array editing and large-array error layouts remain unverified.
+
+Payload drafts with at least two rows now expose separate order controls.
+Earlier/Later swap complete rows, retaining their list mode, raw field text and
+omitted-versus-explicit offset representation. Moves touch only the draft;
+the order panel's Apply parses and sends the complete operation through source
+conflict and checked-command guards. Moving different-mode rows does not change
+bucket membership. Labels wrap asset/target paths and the panel accounts for
+wrapped labels/errors in its size. Context resets also reset the disclosure.
+
+Tests cover both directions, invalid edges/overflow, exact row and time-offset
+retention, mixed-mode movement, no authoring before Apply, composition change,
+exact-text undo and unchanged fixture bytes. The native layout capture
+`target/payload-order-layout-ui.png` shows the original Box/Ball draft and blue
+cube; the fixture's Ball entry has offset 3 and scale 2.
+`payload_order_apply.replay` moves Ball earlier and applies: inspected
+`target/payload-order-applied-ui.png` shows Ball/Box order, the orange sphere and
+the retained 3/2 authored mapping. Both capture guards pass
+(`/tmp/payload-order-{layout,applied}-capture.log`). All 69 viewer tests and
+check-all pass (`/tmp/payload-order-final-{tests,check}.log`). The latest full
+workspace gate above predates this ordering control.
+The separate `payload_order_draft.replay` stops before Apply. Inspected
+`target/payload-order-draft-ui.png` shows Ball/Box in the draft while the blue
+cube remains rendered and the authored provenance still has its original order.
+Its capture guard passes (`/tmp/payload-order-draft-capture.log`). This verifies
+the intermediate draft-only state rather than inferring it from the final image.
+
+Payload whole-list drafts now retain the local source opinion observed when the
+draft starts or is imported. Editing any row, its mode or the row count marks the
+draft as touched. A changed source then withholds Apply unless it matches the
+draft's successful write. Reload discards the draft only after the current opinion
+can be represented; Keep advances the baseline without authoring and explicitly
+permits whole-op replacement. A missing current opinion reloads to an untouched
+empty draft without writing an explicit blocker. Selection/full-context resets
+still discard draft state. This closes silent source replacement after an imported
+or edited payload draft outlives its source opinion.
+
+The regression checks untouched refresh, dirty conflict preservation, explicit
+Keep acknowledgement, successful-write acknowledgement, source removal with
+valid or invalid drafts, reload and rejection of unrepresentable reloads without
+data loss. Parsing failure is never treated as a matching missing source.
+Inspected `target/payload-source-conflict-ui.png` shows the preserved `/Box`
+draft, Reload/Keep controls and no Apply after the replay imports the weak opinion
+and clears it. The viewport remains empty, matching the cleared source.
+Inspected `target/payload-source-keep-ui.png` restores Apply and retains the
+draft while the viewport stays empty: Keep does not author. Both capture guards
+pass (`/tmp/payload-source-{conflict,keep}-capture.log`). All 68 viewer tests and
+check-all pass (`/tmp/payload-conflict-final-{tests,check}.log`).
+`payload_source_reload.replay` exercises the other conflict action: inspected
+`target/payload-source-reload-ui.png` has no draft rows, no conflict prompt and no
+local-opinion import action, with the viewport still empty. Reload did not author
+an explicit blocker. Its capture guard passes
+(`/tmp/payload-source-reload-capture.log`); current full-workspace evidence is above.
 
 Reference bucket controls now move existing local entries among Prepend, Append,
 Add, Delete and Order. Destination insertion is at the end; other entries and
@@ -104,7 +289,22 @@ whole-entry conflict instead of Apply. `reference_identity_keep.replay` resolves
 it; inspected `target/reference-identity-keep-ui.png` shows `/Box` refreshed and
 offset 5 retained without applying it. Both capture guards pass
 (`/tmp/reference-identity-capture.log`, `/tmp/reference-identity-keep-capture.log`).
-Native Reload and arbitrary multi-entry replacement remain unverified.
+Native Reload was unverified at this checkpoint; the same-process paired capture
+above subsequently covers it. Arbitrary multi-entry replacement remains unverified.
+
+The newer `reference_identity_reload.replay` uses bottom-clamped initial scrolling
+and clicks Reload after undoing a retarget with offset 5 still drafted. Inspected
+`target/reference-identity-reload-ui.png` shows `/Box`, offset 10, scale 2 and no
+conflict prompt; its capture guard passes. However, attempts to capture the same
+run before Reload at 30 and 29 seconds both produced black windows and failed
+the guard. Artifacts are `target/reference-identity-before-reload-ui.png` and
+`target/reference-identity-before-reload-retry-ui.png`; logs are
+`/tmp/reference-identity-before-reload[-retry]-capture.log`. These failed captures
+do not establish that this new replay reached its intended prompt, so its full
+Reload-path visual acceptance remained open until the paired capture above.
+No black-window fix is claimed.
+All 69 viewer tests and check-all pass with both new replay registrations
+(`/tmp/editor-draft-resolution-{tests,check}.log`).
 
 Existing local reference entries can now be expanded for asset/prim retargeting
 and time-offset/scale editing. The four fields share property draft storage,

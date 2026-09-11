@@ -139,6 +139,9 @@ show a protection message instead of a Mute button. `assets/layer_muting.usda`
 demonstrates a cube contributed by a weak layer. Muting a layer removes its
 excluded prim entities; unmuting recreates them, rather than restoring runtime
 components that belonged to those removed entities.
+Undo/redo of a command targeting a muted layer asks you to unmute that layer
+first. The error names the layer and preserves the pending history entry and
+current edit target; commands targeting an unmuted layer remain available.
 
 The inspector's **Payloads / references** group displays reference opinions below
 the payload controls, including source paths, list modes, separate site/arc time

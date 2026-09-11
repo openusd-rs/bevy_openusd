@@ -3,6 +3,24 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## History guards for muted edit layers
+
+Undo/redo now rejects a command whose captured edit layer is muted, naming the
+layer to unmute. This applies the editor's existing no-authoring-to-muted-layer
+policy to history rather than silently changing hidden opinions. The command,
+revision and current edit target remain unchanged on rejection; after unmuting,
+the same pending history operation works normally. Commands on unmuted layers
+are unaffected, including root edits while another layer is muted.
+
+The regression first reproduced undo succeeding on the muted weak layer
+(`/tmp/muted-layer-history-before.log`). The corrected test checks undo and redo
+rejection, exact weak-layer text before/after unmuting, preserved history flags,
+revision/edit-target stability and successful undo/redo once visible again.
+All 52 nonignored editor tests and check-all pass (one native test ignored):
+`/tmp/muted-layer-history-final-tests.log`,
+`/tmp/muted-layer-history-final-check.log`. This is authored-state regression
+coverage; no new native UI capture is claimed for this guard.
+
 ## Capture runtime-panic rejection
 
 `capture_viewer_ui.sh` now checks the viewer log after pixel inspections and

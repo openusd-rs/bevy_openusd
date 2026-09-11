@@ -725,6 +725,7 @@ impl EditorSession {
     pub fn undo(&mut self) -> anyhow::Result<bool> {
         self.synchronize_external_edits();
         let Some(entry) = self.undo.last_mut() else { return Ok(false) };
+        anyhow::ensure!(!self.stage.is_layer_muted(entry.target.layer_identifier()), "unmute {} before undo", entry.target.layer_identifier());
         while entry.transactions > 0 {
             anyhow::ensure!(self.stage.undo()?, "editor transaction history is inconsistent");
             entry.transactions -= 1;
@@ -738,6 +739,7 @@ impl EditorSession {
     pub fn redo(&mut self) -> anyhow::Result<bool> {
         self.synchronize_external_edits();
         let Some(entry) = self.redo.last() else { return Ok(false) };
+        anyhow::ensure!(!self.stage.is_layer_muted(entry.target.layer_identifier()), "unmute {} before redo", entry.target.layer_identifier());
         let target = self.stage.edit_target();
         self.stage.set_edit_target(entry.target.clone())?;
         let before = self.stage.undo_depth();
@@ -1818,6 +1820,40 @@ over "Root" {}
         assert!(editor.snapshot().unwrap().muted_layers.is_empty());
         assert!(editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
         assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+    }
+
+    #[test]
+    fn history_for_muted_layers_requires_unmute_without_losing_commands() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/layer_muting.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage);
+        let snapshot = editor.snapshot().unwrap();
+        let weak = snapshot.layers.iter().find(|id| *id != &snapshot.root_layer).unwrap().clone();
+        editor.set_edit_layer(&weak).unwrap();
+        let original = editor.stage().layer(&weak).unwrap().export_to_string().unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(4.) }).unwrap();
+        let edited = editor.stage().layer(&weak).unwrap().export_to_string().unwrap();
+        editor.set_edit_layer(&snapshot.root_layer).unwrap();
+        editor.set_layer_muted(&weak, true).unwrap();
+        let revision = editor.snapshot().unwrap().revision;
+        assert!(editor.undo().unwrap_err().to_string().contains("unmute"));
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        assert_eq!(editor.stage().edit_target().layer_identifier(), snapshot.root_layer);
+        assert!(editor.snapshot().unwrap().can_undo);
+        editor.set_layer_muted(&weak, false).unwrap();
+        assert_eq!(editor.stage().layer(&weak).unwrap().export_to_string().unwrap(), edited);
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().layer(&weak).unwrap().export_to_string().unwrap(), original);
+        editor.set_layer_muted(&weak, true).unwrap();
+        let revision = editor.snapshot().unwrap().revision;
+        assert!(editor.redo().unwrap_err().to_string().contains("unmute"));
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        assert_eq!(editor.stage().edit_target().layer_identifier(), snapshot.root_layer);
+        assert!(editor.snapshot().unwrap().can_redo);
+        editor.set_layer_muted(&weak, false).unwrap();
+        assert_eq!(editor.stage().layer(&weak).unwrap().export_to_string().unwrap(), original);
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().layer(&weak).unwrap().export_to_string().unwrap(), edited);
     }
 
     #[test]

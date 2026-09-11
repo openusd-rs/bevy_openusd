@@ -3,6 +3,32 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reconciled image-regression acceptance
+
+At 8ace56f, scripts/check_live_clocks.sh passed all 19 cases through Make with
+offline Cargo. Results and all 38 GPU captures, raw buffers, metadata, comparison
+logs and difference images remain in target/acceptance-live-clocks/; the driver
+log is /tmp/acceptance-live-clocks.log. Each image has 921600 pixels.
+Seventeen pairs are RGB-identical. The two normal-map pairs have maximum RGB
+error one, within their explicit one-code-value tolerance; alpha is excluded.
+
+The suite reverses two live instance clocks after 30 ready frames and compares
+against fresh final-clock references. It covers UV transforms and shader
+interfaces, texture/color-space changes, scalar and RGB material inputs,
+emission, normal maps, GPU morphs against CPU references, morph tangents/subsets,
+and animated subdivision creases. Metadata checks validate clocks, visible mesh
+counts and deformation paths; capture logs pass the suite's WARN/ERROR check.
+The uv, morph, normal_interface, morph_tangents and subdivision_creases live
+images were also inspected: both instances are visibly rendered.
+
+Together with the source/AssetServer/multi-instance gates below and the 23-test
+native export/watcher lane, this completes the original regression requirement.
+In particular, native_export_reopens_captured_reference_batch saves a composed,
+edited USDZ, relocates it, flattens it with native usdcat, and checks values,
+time samples and retained asset bytes. These are targeted regression checks,
+not independent native-render parity or a GPU performance benchmark. The UR5
+shading defect remains unresolved; fidelity/performance stays unchecked.
+
 ## Reconciled native prototype and sharing acceptance
 
 At 4a4f502, three existing runnable programs were inspected and rerun through
@@ -3065,7 +3091,7 @@ changed in this integration-regression step.
 - [ ] Typed/reusable authoring API and safe snippet composition.
 - [ ] GPU deformation and environment lighting with fidelity/performance evidence.
 - [x] Native prototype/instance projection with measured asset sharing.
-- [ ] Real AssetServer, reload, multi-instance, save/reopen and image regressions.
+- [x] Real AssetServer, reload, multi-instance, save/reopen and image regressions.
 - [ ] Runnable showcase and documented support/approximation matrix.
 
 ## Verification

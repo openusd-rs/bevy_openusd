@@ -101,6 +101,15 @@ reported composition errors. Failure retains any previous projection and reports
 The viewer's Open command applies the same composition validation before replacing
 the current document. Rejected opens retain selection and edit history; long
 failure messages wrap in the outliner's Status section.
+
+For undoable payload authoring, use `EditorEdit::Payloads { prim, payloads }`
+with canonical `openusd::sdf::Payload` entries, or `EditorEdit::ClearPayloads`.
+An empty replacement list blocks weaker payloads; clearing removes the local
+opinion and restores weaker composition. Entries allow empty defaultPrim targets
+or absolute prim paths, with finite offsets and positive finite time scales.
+The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
+These author layer opinions; `EditorCommand::Payload` separately changes runtime
+load rules. No payload-list inspector UI is provided yet.
 The viewer warns before opening the file picker when a document is already open.
 Cancel keeps the current document and lets you save the required layers first.
 The warning is conservative: it appears even for a saved document, without

@@ -58,6 +58,30 @@ pub fn clear_references(stage: &Stage, prim: &str) -> Result<()> {
     Ok(())
 }
 
+/// Replaces the current edit target's payload list; an empty list blocks weaker payloads.
+pub fn set_payloads(stage: &Stage, prim: &str, payloads: &[openusd::sdf::Payload]) -> Result<()> {
+    for payload in payloads {
+        anyhow::ensure!(payload.prim_path.is_empty() || (
+            payload.prim_path.as_str().starts_with('/') && payload.prim_path.is_prim_path()
+                && !payload.prim_path.contains_prim_variant_selection()
+                && payload.prim_path.as_str() != "/"
+        ), "payload target must be an absolute prim path or empty for defaultPrim");
+        anyhow::ensure!(payload.layer_offset.is_none_or(|offset| offset.offset.is_finite()
+            && offset.scale.is_finite() && offset.scale > 0.0),
+            "payload time mapping must have a finite offset and positive finite scale");
+    }
+    let prim = stage.prim(openusd::sdf::path(prim)?)?;
+    anyhow::ensure!(prim.is_valid()?, "payload owner does not exist");
+    prim.set_metadata("payload", Value::PayloadListOp(openusd::sdf::PayloadListOp::explicit(payloads.to_vec())))?;
+    Ok(())
+}
+
+/// Removes the current edit target's payload-list opinion.
+pub fn clear_payloads(stage: &Stage, prim: &str) -> Result<()> {
+    stage.prim(openusd::sdf::path(prim)?)?.clear_metadata("payload")?;
+    Ok(())
+}
+
 // ─── Namespace ops ──────────────────────────────────────────────────
 
 /// Define (create) a prim of `type_name` at `path`.
@@ -213,6 +237,37 @@ mod tests {
             .set_type_name("Xform")
             .unwrap();
         stage
+    }
+
+    #[test]
+    fn payload_clear_restores_weaker_opinions_and_validation_is_atomic() {
+        let weak = crate::UsdSource::snapshot("weak.usda", &br#"#usda 1.0
+class Xform "Model" { double score = 7 }
+def Xform "Instance" ( prepend payload = </Model> ) {}
+"#[..]).unwrap();
+        let root = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+(subLayers = [@weak.usda@])
+"#[..]).unwrap().with_dependency(&weak).unwrap();
+        let stage = root.open_stage().unwrap();
+        let score = || stage.prim("/Instance").unwrap().attribute("score").get::<f64>().unwrap();
+        assert_eq!(score(), Some(7.));
+        set_payloads(&stage, "/Instance", &[]).unwrap();
+        assert_eq!(score(), None);
+        clear_payloads(&stage, "/Instance").unwrap();
+        assert_eq!(score(), Some(7.));
+        let before = stage.root_layer().export_to_string().unwrap();
+        for target in ["relative", "/", "/Model.score", "/Model{choice=a}"] {
+            let payload = openusd::sdf::Payload { prim_path: openusd::sdf::path(target).unwrap(), ..Default::default() };
+            assert!(set_payloads(&stage, "/Instance", &[payload]).is_err());
+            assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        }
+        assert!(set_payloads(&stage, "/Absent", &[]).is_err());
+        let invalid = openusd::sdf::Payload {
+            prim_path: openusd::sdf::path("/Model").unwrap(),
+            layer_offset: Some(openusd::sdf::LayerOffset::new(f64::INFINITY,1.)), ..Default::default()
+        };
+        assert!(set_payloads(&stage, "/Instance", &[invalid]).is_err());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
     }
 
     #[test]

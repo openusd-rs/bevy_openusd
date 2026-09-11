@@ -384,6 +384,8 @@ pub enum EditorEdit {
     Move { path: String, destination: String },
     References { prim: String, references: Vec<openusd::sdf::Reference> },
     ClearReferences { prim: String },
+    Payloads { prim: String, payloads: Vec<openusd::sdf::Payload> },
+    ClearPayloads { prim: String },
     RelationshipTargets { prim: String, name: String, targets: Vec<openusd::sdf::Path> },
     ClearRelationshipTargets { prim: String, name: String },
 }
@@ -441,6 +443,8 @@ impl EditorEdit {
             Self::Move { path, destination } => authoring::move_prim(stage, path, destination),
             Self::References { prim, references } => authoring::set_references(stage, prim, references),
             Self::ClearReferences { prim } => authoring::clear_references(stage, prim),
+            Self::Payloads { prim, payloads } => authoring::set_payloads(stage, prim, payloads),
+            Self::ClearPayloads { prim } => authoring::clear_payloads(stage, prim),
             Self::RelationshipTargets { prim, name, targets } => authoring::set_relationship_targets(stage, prim, name, targets),
             Self::ClearRelationshipTargets { prim, name } => authoring::clear_relationship_targets(stage, prim, name),
         }
@@ -831,6 +835,45 @@ mod tests {
         bridge.send(EditorCommand::Open(first)).unwrap();
         app.update();
         assert!(bridge.view().unwrap().document.prims.contains(&"/First".into()));
+    }
+
+    #[test]
+    fn payload_list_authoring_retimes_and_roundtrips_history() {
+        let stage = crate::UsdSource::snapshot("payload-authoring.usda", &br#"#usda 1.0
+class Xform "Model" {
+    double score.timeSamples = {0: 1, 10: 3}
+}
+def Xform "Instance" {}
+"#[..]).unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let before = stage.root_layer().export_to_string().unwrap();
+        let payload = openusd::sdf::Payload {
+            prim_path: openusd::sdf::path("/Model").unwrap(),
+            layer_offset: Some(openusd::sdf::LayerOffset::new(10.,2.)), ..Default::default()
+        };
+        editor.edit(EditorEdit::Payloads { prim: "/Instance".into(), payloads: vec![payload.clone()] }).unwrap();
+        for (time, expected) in [(10.,1.), (20.,2.), (30.,3.)] {
+            assert_eq!(stage.prim("/Instance").unwrap().attribute("score")
+                .get_at::<f64>(Some(openusd::usd::TimeCode::new(time))).unwrap(), Some(expected));
+        }
+        let authored = stage.root_layer().export_to_string().unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
+        for scale in [0., -1., f64::NAN, f64::INFINITY] {
+            let invalid = openusd::sdf::Payload { layer_offset: Some(openusd::sdf::LayerOffset::new(0.,scale)), ..payload.clone() };
+            assert!(editor.edit(EditorEdit::Payloads { prim: "/Instance".into(), payloads: vec![payload.clone(), invalid] }).is_err());
+            assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
+        }
+        editor.edit(EditorEdit::Payloads { prim: "/Instance".into(), payloads: vec![] }).unwrap();
+        assert!(stage.prim("/Instance").unwrap().attribute("score").get::<f64>().unwrap().is_none());
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
+        editor.edit(EditorEdit::ClearPayloads { prim: "/Instance".into() }).unwrap();
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
     }
 
     #[test]

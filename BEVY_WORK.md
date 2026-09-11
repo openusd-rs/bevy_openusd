@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Typed undoable payload-list authoring
+
+Added `authoring::{set_payloads,clear_payloads}` and matching
+`EditorEdit::{Payloads,ClearPayloads}` using canonical upstream Payload and
+PayloadListOp types. Validation checks every entry before mutation: absolute
+prim targets or empty defaultPrim, no property/root/variant-selection targets,
+finite optional offset and positive finite scale. The owner must exist. Empty
+lists author an explicit block; clearing restores weaker opinions. These edits
+use existing transaction history and do not change runtime payload load rules.
+
+Tests demonstrate internal payload composition, offset/scale midpoint sampling,
+exact root-layer restoration through undo/redo, atomic invalid-entry rejection,
+and blocking/clearing a payload authored in a snapshot-only weaker sublayer.
+Invalid owner, target, offset and scale cases preserve authored layer text.
+The library suite passes 449 tests, 13 ignored; check-all and viewer build pass
+(`/tmp/payload-authoring-lib-tests.log`, `/tmp/payload-authoring-check.log`,
+`/tmp/payload-authoring-build.log`). This is the reusable authoring API, not a
+payload-list inspector UI or new external-payload native export acceptance.
+
 ## Curve surface sidedness correction
 
 Removed the surface route's unconditional cull-mode override. Unbound surfaces

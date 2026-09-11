@@ -6,6 +6,17 @@ struct Probe {
     announced: bool,
 }
 
+impl eframe::App for Probe {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        paint(ui.ctx());
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(1.0 / 60.0));
+        if !self.announced {
+            eprintln!("USD_VIEWER_UI_UPDATED");
+            self.announced = true;
+        }
+    }
+}
+
 impl WindowApp for Probe {
     fn new(ctx: CreationContext<'_>) -> Self {
         eprintln!("HOST_CAPTURE_PROBE no Bevy app, no USD stage");
@@ -37,7 +48,24 @@ fn paint(ctx: &egui::Context) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    mara::window::run::<Probe>()
+    let runner = std::env::var("USD_HOST_PROBE_RUNNER").unwrap_or_else(|_| "mara".into());
+    match runner.as_str() {
+        "mara" => mara::window::run::<Probe>(),
+        "eframe" => {
+            eprintln!("HOST_CAPTURE_PROBE eframe control, no Mara runner, no Bevy app, no USD stage");
+            eframe::run_native("Host capture control", eframe::NativeOptions {
+                viewport: egui::ViewportBuilder::default().with_inner_size([1440.,920.]).with_decorations(false),
+                renderer: eframe::Renderer::Wgpu,
+                wgpu_options: egui_wgpu::WgpuConfiguration {
+                    present_mode: wgpu::PresentMode::AutoNoVsync,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }, Box::new(|ctx| Ok(Box::new(Probe { context: ctx.egui_ctx.clone(), announced: false }))))
+                .map_err(|error| error.into())
+        }
+        _ => Err("USD_HOST_PROBE_RUNNER must be mara or eframe".into()),
+    }
 }
 
 #[test]

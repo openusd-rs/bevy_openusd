@@ -18,6 +18,7 @@ pub enum EditorCommand {
     Select(Option<String>),
     Visibility { prim: String, visible: bool },
     Edit(EditorEdit),
+    EditChecked { edit: EditorEdit, document_id: u64, revision: u64, target: EditTarget },
     EditLayer(String),
     Payload { prim: String, loaded: bool },
     Undo,
@@ -152,6 +153,15 @@ fn process_commands(world: &mut World) {
     let mut status = if external { "External edits detected; undo history reset".into() } else { String::new() };
     let mut texture_dirty = external;
     for command in commands {
+        let command = if let EditorCommand::EditChecked { edit, document_id, revision, target } = command {
+            texture_dirty |= session.as_mut().is_some_and(EditorSession::synchronize_external_edits);
+            if session.as_ref().is_none_or(|editor| editor.document_id != document_id
+                || editor.revision != revision || editor.stage.edit_target() != target) {
+                status = "Failed: document or edit target changed before applying the edit; review and retry".into();
+                continue;
+            }
+            EditorCommand::Edit(edit)
+        } else { command };
         if let EditorCommand::OpenChecked { document_id, revision, .. } = &command {
             texture_dirty |= session.as_mut().is_some_and(EditorSession::synchronize_external_edits);
             let current = session.as_ref().map_or((0, 0), |editor| (editor.document_id, editor.revision));
@@ -241,7 +251,7 @@ fn process_commands(world: &mut World) {
                         Err(anyhow::anyhow!("document or edit layer changed while choosing a save destination; choose again"))
                     } else { editor.save(&filename, mode) }
                 }
-                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } => unreachable!(),
+                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } | EditorCommand::EditChecked { .. } => unreachable!(),
             }
         } else {
             Err(anyhow::anyhow!("no USD document is open"))
@@ -384,6 +394,8 @@ pub enum EditorEdit {
     Move { path: String, destination: String },
     References { prim: String, references: Vec<openusd::sdf::Reference> },
     ClearReferences { prim: String },
+    Payloads { prim: String, payloads: Vec<openusd::sdf::Payload> },
+    ClearPayloads { prim: String },
     RelationshipTargets { prim: String, name: String, targets: Vec<openusd::sdf::Path> },
     ClearRelationshipTargets { prim: String, name: String },
 }
@@ -441,6 +453,8 @@ impl EditorEdit {
             Self::Move { path, destination } => authoring::move_prim(stage, path, destination),
             Self::References { prim, references } => authoring::set_references(stage, prim, references),
             Self::ClearReferences { prim } => authoring::clear_references(stage, prim),
+            Self::Payloads { prim, payloads } => authoring::set_payloads(stage, prim, payloads),
+            Self::ClearPayloads { prim } => authoring::clear_payloads(stage, prim),
             Self::RelationshipTargets { prim, name, targets } => authoring::set_relationship_targets(stage, prim, name, targets),
             Self::ClearRelationshipTargets { prim, name } => authoring::clear_relationship_targets(stage, prim, name),
         }
@@ -508,6 +522,7 @@ pub struct EditorSnapshot {
     pub visibility: std::collections::HashMap<String, bool>,
     pub layers: Vec<String>,
     pub edit_layer: String,
+    pub edit_target: Option<EditTarget>,
     pub selected: Option<String>,
     pub attributes: Vec<AttributeSnapshot>,
     pub variants: Vec<(String, String)>,
@@ -515,6 +530,15 @@ pub struct EditorSnapshot {
     pub selected_loaded: Option<bool>,
     pub can_undo: bool,
     pub can_redo: bool,
+}
+
+impl EditorSnapshot {
+    /// Captures the document revision and complete authoring target for a queued edit.
+    pub fn checked_edit(&self, edit: EditorEdit) -> Option<EditorCommand> {
+        Some(EditorCommand::EditChecked {
+            edit, document_id: self.document_id, revision: self.revision, target: self.edit_target.clone()?,
+        })
+    }
 }
 
 /// Main-thread editor model. Clone `stage()` into `LiveStage` to project the
@@ -686,6 +710,7 @@ impl EditorSession {
             sample_time: time,
             layers: self.stage.layer_stack(),
             edit_layer: self.stage.edit_target().layer_identifier().to_string(),
+            edit_target: Some(self.stage.edit_target()),
             selected: self.selected.clone(),
             can_undo: !self.undo.is_empty(),
             can_redo: !self.redo.is_empty(),
@@ -831,6 +856,45 @@ mod tests {
         bridge.send(EditorCommand::Open(first)).unwrap();
         app.update();
         assert!(bridge.view().unwrap().document.prims.contains(&"/First".into()));
+    }
+
+    #[test]
+    fn payload_list_authoring_retimes_and_roundtrips_history() {
+        let stage = crate::UsdSource::snapshot("payload-authoring.usda", &br#"#usda 1.0
+class Xform "Model" {
+    double score.timeSamples = {0: 1, 10: 3}
+}
+def Xform "Instance" {}
+"#[..]).unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let before = stage.root_layer().export_to_string().unwrap();
+        let payload = openusd::sdf::Payload {
+            prim_path: openusd::sdf::path("/Model").unwrap(),
+            layer_offset: Some(openusd::sdf::LayerOffset::new(10.,2.)), ..Default::default()
+        };
+        editor.edit(EditorEdit::Payloads { prim: "/Instance".into(), payloads: vec![payload.clone()] }).unwrap();
+        for (time, expected) in [(10.,1.), (20.,2.), (30.,3.)] {
+            assert_eq!(stage.prim("/Instance").unwrap().attribute("score")
+                .get_at::<f64>(Some(openusd::usd::TimeCode::new(time))).unwrap(), Some(expected));
+        }
+        let authored = stage.root_layer().export_to_string().unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(editor.redo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
+        for scale in [0., -1., f64::NAN, f64::INFINITY] {
+            let invalid = openusd::sdf::Payload { layer_offset: Some(openusd::sdf::LayerOffset::new(0.,scale)), ..payload.clone() };
+            assert!(editor.edit(EditorEdit::Payloads { prim: "/Instance".into(), payloads: vec![payload.clone(), invalid] }).is_err());
+            assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
+        }
+        editor.edit(EditorEdit::Payloads { prim: "/Instance".into(), payloads: vec![] }).unwrap();
+        assert!(stage.prim("/Instance").unwrap().attribute("score").get::<f64>().unwrap().is_none());
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
+        editor.edit(EditorEdit::ClearPayloads { prim: "/Instance".into() }).unwrap();
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(editor.undo().unwrap());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
     }
 
     #[test]
@@ -1798,6 +1862,109 @@ def Xform "Asset" (prepend variantSets = "shape") {
         assert!(!editor.snapshot().unwrap().prims.contains(&"/Mounted/Box".to_string()));
         editor.redo().unwrap();
         assert!(editor.snapshot().unwrap().prims.contains(&"/Mounted/Box".to_string()));
+    }
+
+    #[test]
+    fn checked_edits_reject_changed_document_revision_and_target() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_authoring.usda");
+        bridge.send(EditorCommand::Open(filename.into())).unwrap();
+        app.update();
+        let initial = bridge.view().unwrap().document;
+        let edit = || EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(7.) };
+        let stage = app.world().non_send::<EditorSession>().stage().clone();
+        bridge.send(EditorCommand::Select(Some("/Root".into()))).unwrap();
+        bridge.send(EditorCommand::Seek(5.)).unwrap();
+        bridge.send(initial.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert_eq!(stage.prim("/Root").unwrap().attribute("score").get::<f64>().unwrap(), Some(7.));
+        bridge.send(initial.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        let current = bridge.view().unwrap().document;
+        let before = stage.root_layer().export_to_string().unwrap();
+        let weak = current.layers.iter().find(|layer| *layer != &current.edit_layer).unwrap().clone();
+        bridge.send(EditorCommand::EditLayer(weak)).unwrap();
+        bridge.send(current.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        bridge.send(EditorCommand::EditLayer(current.edit_layer.clone())).unwrap();
+        app.update();
+        let mut mismapped = bridge.view().unwrap().document;
+        mismapped.edit_target = Some(EditTarget::for_local_direct_variant(&mismapped.edit_layer, "/Root{choice=a}").unwrap());
+        bridge.send(mismapped.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        let external = bridge.view().unwrap().document;
+        stage.create_attribute("/Root.external", "double").unwrap().set(Value::Double(1.)).unwrap();
+        bridge.send(external.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        let replaced = bridge.view().unwrap().document;
+        bridge.send(EditorCommand::Open(filename.into())).unwrap();
+        bridge.send(replaced.checked_edit(edit()).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert!(app.world().non_send::<EditorSession>().stage().prim("/Root").unwrap().attribute("score").get::<f64>().unwrap().is_none());
+        assert!(EditorSnapshot::default().checked_edit(edit()).is_none());
+    }
+
+    #[test]
+    fn authored_external_payloads_reconcile_live_history_and_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let part = directory.path().join("part.usda");
+        let part_text = "#usda 1.0\n(defaultPrim = \"Part\")\ndef Xform \"Part\" { def Cube \"Shape\" {} }\n";
+        std::fs::write(&part, part_text).unwrap();
+        let root = directory.path().join("assembly.usda");
+        std::fs::write(&root, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::UsdPlugin, crate::live::LiveStagePlugin, EditorPlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(root.to_string_lossy().into_owned())).unwrap();
+        bridge.send(EditorCommand::Select(Some("/Root".into()))).unwrap();
+        app.update();
+        let parent = app.world().resource::<crate::live::PrimEntities>().entity("/Root").unwrap();
+        app.world_mut().entity_mut(parent).insert(Name::new("runtime parent"));
+        bridge.send(EditorCommand::Edit(EditorEdit::Payloads {
+            prim: "/Root".into(), payloads: vec![openusd::sdf::Payload { asset_path: "part.usda".into(), ..Default::default() }],
+        })).unwrap();
+        app.update();
+        for (command, visible) in [(None, true), (Some(EditorCommand::Undo), false), (Some(EditorCommand::Redo), true),
+            (Some(EditorCommand::Payload { prim: "/Root".into(), loaded: false }), false),
+            (Some(EditorCommand::Payload { prim: "/Root".into(), loaded: true }), true)] {
+            if let Some(command) = command { bridge.send(command).unwrap(); app.update(); }
+            let map = app.world().resource::<crate::live::PrimEntities>();
+            assert_eq!(map.entity("/Root"), Some(parent));
+            assert_eq!(app.world().get::<Name>(parent).unwrap().as_str(), "runtime parent");
+            assert_eq!(bridge.view().unwrap().document.selected.as_deref(), Some("/Root"));
+            assert_eq!(map.entity("/Root/Shape").is_some(), visible);
+            if visible { assert!(app.world().get::<Mesh3d>(map.entity("/Root/Shape").unwrap()).is_some()); }
+        }
+        let output = directory.path().join("saved.usda");
+        bridge.send(EditorCommand::Save { filename: output.to_string_lossy().into_owned(), mode: SaveMode::RootLayer }).unwrap();
+        app.update();
+        let reopened = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(output.to_str().unwrap()).unwrap();
+        assert!(reopened.prim("/Root/Shape").unwrap().is_valid().unwrap());
+        assert!(matches!(reopened.prim("/Root").unwrap().get_metadata::<Value>("payload").unwrap(), Some(Value::PayloadListOp(_))));
+        assert_eq!(std::fs::read_to_string(part).unwrap(), part_text);
+        let stage = app.world().non_send::<EditorSession>().stage().clone();
+        let before = stage.root_layer().export_to_string().unwrap();
+        bridge.send(EditorCommand::Edit(EditorEdit::Batch(vec![
+            EditorEdit::ClearPayloads { prim: "/Root".into() },
+            EditorEdit::Payloads { prim: "/Root".into(), payloads: vec![openusd::sdf::Payload {
+                asset_path: "part.usda".into(), prim_path: openusd::sdf::path("/Part.size").unwrap(), ..Default::default()
+            }] },
+        ]))).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(app.world().resource::<crate::live::PrimEntities>().entity("/Root/Shape").is_some());
+        assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/Root"), Some(parent));
     }
 
     #[test]

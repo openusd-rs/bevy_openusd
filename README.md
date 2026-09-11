@@ -101,6 +101,37 @@ reported composition errors. Failure retains any previous projection and reports
 The viewer's Open command applies the same composition validation before replacing
 the current document. Rejected opens retain selection and edit history; long
 failure messages wrap in the outliner's Status section.
+
+For undoable payload authoring, use `EditorEdit::Payloads { prim, payloads }`
+with canonical `openusd::sdf::Payload` entries, or `EditorEdit::ClearPayloads`.
+An empty replacement list blocks weaker payloads; clearing removes the local
+opinion and restores weaker composition. Entries allow empty defaultPrim targets
+or absolute prim paths, with finite offsets and positive finite time scales.
+The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
+`EditorSnapshot::checked_edit` creates a queued edit bound to the document,
+revision and complete edit-target mapping. Payload inspector actions use it;
+stale commands fail before authoring instead of being redirected to a new layer
+or document. The existing unchecked `EditorCommand::Edit` remains available.
+These author layer opinions; `EditorCommand::Payload` separately changes runtime
+load rules. The inspector's Payload authoring group accepts up to 64 draft
+entries with asset, prim, offset and scale fields. Replace authors the whole list;
+an empty draft offers an explicit Block action. Clear removes the local opinion.
+Drafts reset when the document, selected prim or edit layer changes. They start
+empty rather than copying composed relative paths into a different authoring
+layer. Existing list-op provenance and in-place composed-list editing are not
+displayed by this form.
+`assets/payload_authoring.usda` is a visible authoring fixture: the weaker layer
+loads a blue cube from `payload_authoring_content.usda` at `/Box`. Replacing the
+payload with that same asset at `/Ball` loads an orange sphere; clearing the
+root-layer opinion restores the cube. Matching inspector replays live in
+`scripts/replays/payload_{replace,clear,invalid,scroll}.replay`.
+The viewer warns before opening the file picker when a document is already open.
+Cancel keeps the current document and lets you save the required layers first.
+The warning is conservative: it appears even for a saved document, without
+claiming to track every layer's unsaved state. The original document/revision
+token remains checked after selection, so edits during the warning or picker
+invalidate the replacement. This does not add a window-close guard or change
+the explicitly unchecked programmatic `EditorCommand::Open` API.
 Flattened editor exports also validate the active composition before writing.
 Reported composition errors preserve the existing destination. Root/edit-layer
 exports retain authored unresolved references for repair rather than requiring
@@ -747,8 +778,33 @@ or arbitrary shader primvar networks.
 `assets/point_curve_animation.usda` exercises sampled Points and BasisCurves
 without default positions. From time 0 to 10, four points and a line move upward;
 the line splits into two disjoint segments at time 10. Both routes follow each
-scene root's clock. Unbound geometry uses an unlit point/line preview; USD widths
-and full curve surface shading are not represented.
+scene root's clock. Default unbound geometry uses an unlit point/line preview.
+Points remain one-pixel marks; curves optionally project width-aware surfaces.
+
+In the Rendering pane, choose **Width surfaces** with 8, 16 or 32 tube sides,
+or **Use lines** to restore the default. Sampling and surface mode can change
+without reopening the scene. Startup accepts `USD_CURVE_SURFACE_SIDES=3..32`:
+
+```bash
+USD_CURVE_STEPS=32 USD_CURVE_SURFACE_SIDES=16 make run ARGS='assets/curve_widths.usda'
+```
+
+Widths are object-space diameters. Composed `primvars:widths` override built-in
+widths; indexed constant, uniform, vertex and varying values follow curve
+sampling. Authored normals select oriented ribbons; otherwise curves form tubes.
+Missing widths fall back to lines. Surface mode rejects invalid cardinality,
+nonfinite/negative widths, zero ribbon normals, parallel normal/tangent pairs,
+coincident adjacent samples and cusps. Errors clear stale geometry and appear in
+the Rendering pane. Corrected source data can recover on the same entity.
+Surfaces are fixed-sampling, open-ended polygonal approximations without caps,
+UVs or native curve-renderer parity. Low sampling visibly facets curved shapes.
+`assets/curve_surface_loops.usda` exercises two periodic B-spline tubes in one
+prim with indexed uniform widths and separate colors: a thick blue loop and a
+thin orange loop. The loops close independently without connecting triangles.
+Surface materials honor `doubleSided`: single-sided ribbon backs are culled,
+while double-sided backs remain visible with flipped lighting normals.
+`assets/curve_surface_sidedness.usda` shows a front-facing ribbon above a hidden
+single-sided back and a visible double-sided back below it.
 
 Point clouds project constant/inherited and indexed vertex/varying display color
 and opacity through the same RGBA expansion as mesh vertices. The unbound
@@ -779,11 +835,11 @@ counts below three are not supported. Display primvars validate interpolation
 cardinality, index bounds and finite authored values; single unindexed values
 retain their broadcast behavior. `assets/invalid_curves.usda`,
 `assets/invalid_curve_layout.usda` and `assets/invalid_curve_colors.usda` are
-negative capture fixtures. Width and normal primvar validation remains open.
+negative capture fixtures. Width and normal validation applies in surface mode.
 Curve color/opacity interpolation uses f64 intermediates. Generated values that
 cannot be represented as finite f32 RGBA report `UsdCurveError` before upload;
 the renderer does not receive NaN or infinity from this path.
-Curve projection also rejects output above 1,000,000 vertices or 2,000,000 line
+Curve projection also rejects output above 1,000,000 vertices or 2,000,000
 indices per prim before allocating tessellation buffers. These limits include
 all curves in the prim and use checked arithmetic. They do not bound source
 decoding, the number of prims, asset-cache memory or total GPU memory.

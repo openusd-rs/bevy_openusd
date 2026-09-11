@@ -139,7 +139,6 @@ pub(super) fn project(ctx: &RouteCtx, world: &mut World, entity: Entity, steps: 
     let translucent = matches!(mesh.attribute(Mesh::ATTRIBUTE_COLOR), Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) if colors.iter().any(|color| color[3] < 1.0));
     let handle = super::super::cache::intern_mesh(world, mesh);
     let mut material = super::super::material::default_material(ctx);
-    material.cull_mode = None;
     material.alpha_mode = if translucent { AlphaMode::Blend } else { AlphaMode::Opaque };
     let material = super::super::cache::intern_material(world, material);
     world.entity_mut(entity).remove::<bevy::camera::primitives::Aabb>()
@@ -155,6 +154,84 @@ mod tests {
     fn positions(mesh: &Mesh) -> &[[f32;3]] {
         let Some(VertexAttributeValues::Float32x3(values)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("positions") };
         values
+    }
+
+    #[test]
+    fn surface_material_respects_authored_sidedness() {
+        let source = crate::UsdSource::new("widths.usda", include_bytes!("../../../../../assets/curve_widths.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let path = openusd::sdf::path("/Ribbon").unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.insert_resource(UsdCurveSettings::default().with_surface_sides(Some(12)).unwrap());
+        let entity = world.spawn_empty().id();
+        for double_sided in [false, true, false] {
+            stage.create_attribute("/Ribbon.doubleSided", "bool").unwrap().set(Value::Bool(double_sided)).unwrap();
+            CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+            let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
+            let material = world.resource::<Assets<StandardMaterial>>().get(handle).unwrap();
+            assert_eq!(material.double_sided, double_sided);
+            assert_eq!(material.cull_mode, if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) });
+            assert!(!material.unlit);
+        }
+    }
+
+    #[test]
+    fn surface_budget_counts_triangle_expansion_before_upload() {
+        let source = crate::UsdSource::new("widths.usda", include_bytes!("../../../../../assets/curve_widths.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        stage.attribute("/ConstantTube.points").unwrap().set(Value::Vec3fVec(
+            (0..12000).map(|i| [i as f32,0.,0.].into()).collect(),
+        )).unwrap();
+        stage.attribute("/ConstantTube.curveVertexCounts").unwrap().set(Value::IntVec(vec![12000])).unwrap();
+        let path = openusd::sdf::path("/ConstantTube").unwrap();
+        let ctx = RouteCtx::new(&stage, &path);
+        validate_curves(&ctx, 8).unwrap();
+        let error = build(&ctx, 8, 32).unwrap_err();
+        assert!(error.contains("2303808 indices exceeds limits"), "{error}");
+        assert!(build(&ctx, 8, 3).unwrap().is_some());
+    }
+
+    #[test]
+    fn periodic_indexed_surfaces_close_without_connecting_curves() {
+        let source = crate::UsdSource::new("loops.usda", include_bytes!("../../../../../assets/curve_surface_loops.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let path = openusd::sdf::path("/Loops").unwrap();
+        let ctx = RouteCtx::new(&stage, &path);
+        validate_curves(&ctx, 8).unwrap();
+        let center = centerlines(&ctx, 8).unwrap();
+        let mesh = build(&ctx, 8, 12).unwrap().unwrap();
+        let points = positions(&mesh);
+        let vertices_per_curve = 32*12;
+        assert_eq!(points.len(), vertices_per_curve*2);
+        let mut edges = std::collections::HashMap::<(usize,usize), (usize,i32)>::new();
+        let indices = mesh.indices().unwrap().iter().collect::<Vec<_>>();
+        assert_eq!(indices.len(), 2*32*12*6);
+        for triangle in indices.chunks_exact(3) {
+            assert!(triangle.iter().all(|index| index/vertices_per_curve == triangle[0]/vertices_per_curve));
+            let [a,b,c] = std::array::from_fn::<_,3,_>(|i| DVec3::from_array(points[triangle[i]].map(f64::from)));
+            assert!((b-a).cross(c-a).length() > 1e-8);
+            for i in 0..3 {
+                let (a,b) = (triangle[i], triangle[(i+1)%3]);
+                let entry = edges.entry((a.min(b), a.max(b))).or_default();
+                entry.0 += 1;
+                entry.1 += if a < b { 1 } else { -1 };
+            }
+        }
+        assert!(edges.values().all(|value| *value == (2,0)), "open or inconsistently wound seam");
+        let Some(VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colors") };
+        for curve in 0..2 {
+            let radius = [0.2,0.06][curve];
+            for ring in 0..32 {
+                let midpoint = Vec3::from_array(center.points[center.spans[curve].0.start+ring]);
+                for side in 0..12 {
+                    let index = curve*vertices_per_curve+ring*12+side;
+                    assert!((Vec3::from_array(points[index]).distance(midpoint)-radius).abs() < 1e-6);
+                    assert_eq!(colors[index], [[0.1,0.6,1.,1.],[1.,0.3,0.05,1.]][curve]);
+                }
+            }
+        }
     }
 
     #[test]

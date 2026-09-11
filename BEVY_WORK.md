@@ -3,7 +3,211 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
-## Curve width and normal reader foundation
+## Typed undoable payload-list authoring
+
+Payload inspector actions now use `EditorSnapshot::checked_edit` and the new
+`EditorCommand::EditChecked`. The snapshot retains the complete canonical
+EditTarget, not only its layer identifier. Queue processing synchronizes external
+edits then checks document identity, revision and full target equality before
+normal edit dispatch. Rejected requests perform no authoring. Normal dispatch
+retains namespace remapping, texture refresh, rollback and history behavior.
+Existing unchecked Edit remains an explicit API; other inspector controls have
+not yet migrated to the guard. The form captures only context fields, not another
+copy of all scene/attribute data.
+
+The bridge regression accepts selection/seek changes but rejects stale revisions,
+external edits, preceding document replacement, edit-layer changes and a differing
+variant mapping within the same layer. No-document snapshots cannot construct a
+checked command. Library tests pass 451 with 13 ignored; viewer tests pass 52;
+check-all and build pass (`/tmp/checked-edit-{lib-tests,viewer-tests,check,build}.log`).
+The existing replacement replay still produces the orange sphere through the
+guarded path; inspected `target/payload-checked-ui.png`
+(`/tmp/payload-checked-capture.log`, UI_CAPTURE_OK).
+
+Visible interaction acceptance uses the new three-layer payload_authoring
+fixture and four checked-in replays. Inspected `target/payload-replace-ui.png`
+and its viewport: filling the asset/prim fields and clicking Replace produces an
+orange sphere. `target/payload-clear-ui.png` restores the weaker blue cube after
+Clear. `target/payload-invalid-ui.png` shows the empty-row validation error while
+the cube remains. `target/payload-scroll-retry.png` shows the second row and all
+bottom actions after scrolling; its first attempt `target/payload-scroll-ui.png`
+was black and rejected, not accepted. Logs are `/tmp/payload-{replace,clear,
+invalid,scroll}-capture.log` and `/tmp/payload-scroll-retry.log`. Runs use the
+inspector with /Root selected in the private 1440x920 Vulkan Weston viewer.
+
+The form-to-editor fixture regression independently checks cube/sphere/clear/
+undo composition and unchanged source bytes. All 52 viewer tests and check-all
+pass (`/tmp/payload-interaction-tests.log`, `/tmp/payload-interaction-check.log`).
+This establishes the sampled one/two-row interactions, not exhaustive 64-row
+keyboard/accessibility coverage or automatic composed-list editing.
+
+Inspector integration adds a dedicated Payload authoring group with up to 64
+draft rows, asset/prim/offset/scale fields, row add/remove, explicit whole-list
+replacement/blocking, and local-opinion clearing. Draft state is bounded to one
+document/prim/edit-layer context and resets across those boundaries. It does not
+prefill composed relative asset paths or claim list-op provenance. Invalid rows
+show a local error before commands are sent. The first test caught the canonical
+path parser rejecting empty paths; defaultPrim now uses sdf::Path::default().
+
+All 51 viewer tests, check-all and build pass
+(`/tmp/payload-ui-{tests,check,build}.log`). The first screenshot clipped Clear in
+the existing Properties group; the dedicated group fixes that. Inspected
+`target/payload-editor-group.png` and `target/payload-editor-entry.png`: all
+initial actions and one added row's four fields/removal/replacement actions fit.
+The latter uses `/tmp/payload-add.replay`; logs are
+`/tmp/payload-ui-{group,entry}-capture.log`. End-to-end replacement/error/clear UI
+interaction and larger row-count scrolling still need acceptance; headless API
+behavior is covered separately below.
+
+Follow-up live regression authors an external relative/defaultPrim payload through
+EditorBridge, verifies its child has a projected Bevy mesh, and exercises undo,
+redo, unload and reload while retaining the parent entity, runtime Name and
+selection. A root-layer save reopens with the external child and payload metadata;
+the referenced source bytes remain unchanged. A batch that first clears the
+payload then supplies an invalid property target rolls back exact layer text and
+restores the child projection. Focused test and check-all pass
+(`/tmp/payload-live-tests.log`, `/tmp/payload-live-check.log`). This is a headless
+Bevy integration/self-reopen gate, not native OpenUSD or UI click acceptance.
+
+Added `authoring::{set_payloads,clear_payloads}` and matching
+`EditorEdit::{Payloads,ClearPayloads}` using canonical upstream Payload and
+PayloadListOp types. Validation checks every entry before mutation: absolute
+prim targets or empty defaultPrim, no property/root/variant-selection targets,
+finite optional offset and positive finite scale. The owner must exist. Empty
+lists author an explicit block; clearing restores weaker opinions. These edits
+use existing transaction history and do not change runtime payload load rules.
+
+Tests demonstrate internal payload composition, offset/scale midpoint sampling,
+exact root-layer restoration through undo/redo, atomic invalid-entry rejection,
+and blocking/clearing a payload authored in a snapshot-only weaker sublayer.
+Invalid owner, target, offset and scale cases preserve authored layer text.
+The library suite passes 449 tests, 13 ignored; check-all and viewer build pass
+(`/tmp/payload-authoring-lib-tests.log`, `/tmp/payload-authoring-check.log`,
+`/tmp/payload-authoring-build.log`). This is the reusable authoring API, not a
+payload-list inspector UI or new external-payload native export acceptance.
+
+## Curve surface sidedness correction
+
+Removed the surface route's unconditional cull-mode override. Unbound surfaces
+now retain the canonical material helper's authored doubleSided handling, like
+bound materials. A regression toggles false/true/false on the same ribbon and
+checks both backface culling and normal-flip material flags. This follows the
+[OpenUSD Gprim sidedness contract](https://openusd.org/dev/api/class_usd_geom_basis_curves.html),
+not an assumption that every ribbon is two-sided.
+
+Inspected `target/curve-surface-sidedness.png` from the new fixture: front-facing
+top ribbon visible, single-sided middle back culled, double-sided bottom back
+visible with matching front-facing illumination. Capture uses Vulkan, forward
+rendering, shadows off, 12 sides, camera (0,0,8) looking at the origin; CAPTURE_OK
+without warnings (`/tmp/curve-sidedness-capture.log`). Six focused surface tests
+and check-all pass (`/tmp/curve-sidedness-{tests,check}.log`). Explicit curve
+orientation-token behavior and general normal-mapped surfaces remain separate
+acceptance gaps.
+The complete usd_bevy library suite passes 447 tests with 13 ignored, and the
+viewer builds (`/tmp/curve-sidedness-lib-tests.log`, `/tmp/curve-sidedness-build.log`).
+
+## Independent host-runner control
+
+`examples/host_capture_probe.rs` accepts `USD_HOST_PROBE_RUNNER=mara|eframe`.
+Both branches use the same RGB paint function without creating a Bevy app or
+USD stage. The eframe branch uses Wgpu, AutoNoVsync, a borderless 1440x920 window
+and the same requested 60 Hz repaint interval. Mara additionally paints its
+runner-owned chrome and has different event-loop scheduling; this is a runner
+control, not an assertion of identical frame timing. The shared paint text still
+says Mara host in both branches; the selected runner is identified in stderr.
+
+Under private Vulkan Weston with a 20-second capture wait, the eframe image
+`target/host-control-eframe.png` shows upright RGB thirds and text. The subsequent
+Mara-only `target/host-control-mara.png` is black (50/1,120,000 nonblack region
+pixels, cursor only), despite the first-update handshake. Both images were
+inspected. Logs: `/tmp/host-control-{eframe,mara}.log` and the matching
+`target/host-control-*.viewer.log`/`.inspect.log`. The black failure therefore
+does not require Bevy/USD initialization. One successful eframe control is not
+proof that eframe cannot fail or that the compositor/driver is innocent.
+The host probe test and check-all pass
+(`/tmp/host-control-tests.log`, `/tmp/host-control-check.log`).
+
+Reproduce either runner with `USD_HOST_PROBE_RUNNER=eframe` (or `mara`) and
+`make run APP_TARGET='--example host_capture_probe'`. For the existing private
+capture script, pass the same APP_TARGET on the outer make command so recursive
+make selects the probe. The mandatory asset argument is ignored by this example.
+No sibling Mara files were changed. Its runner still passes an empty screenshot
+request list to the painter, so direct Mara surface readback remains unavailable.
+
+## Document replacement confirmation
+
+The viewer's Open action now waits for an in-editor modal confirmation before
+creating the native file picker when a document is present. Cancel/backdrop/
+Escape emit no replacement command. Initial open skips confirmation. The
+document/revision token is captured before the warning and retained through
+selection; existing OpenChecked rejection covers intervening edits. This warns
+for every current document, including saved ones: multi-layer dirty tracking
+and window-close confirmation are still open. Programmatic unchecked Open is
+unchanged. No automatic save or source writes are introduced.
+
+The first approach using rfd message dialogs was replaced before commit:
+rfd 0.15.4's XDG message backend invokes Zenity, which is absent here. The egui
+modal needs no external confirmation utility. Eight focused dialog tests,
+check-all and build pass (`/tmp/open-confirm-{tests,check,build}.log`). Tests cover
+pending confirmation, cancellation before picker creation, initial-open bypass,
+accepted revision-token forwarding and one-shot command delivery. Inspected
+`target/open-confirmation.png` shows the warning over the existing scene with
+Cancel and Choose another document buttons (`/tmp/open-confirm-capture.log`).
+The cancellation capture `target/open-confirmation-cancel.png` hit the existing
+black host failure and was rejected by region inspection
+(`/tmp/open-confirm-cancel-capture.log`); it does not establish native Cancel
+interaction acceptance. Cancellation and picker sequencing are unit-tested.
+Follow-up acceptance: inspected `target/open-confirmation-cancel-retry.png`
+shows the warning dismissed and the original curve scene still displayed after
+the Cancel click (`/tmp/open-confirm-cancel-retry.log`, UI_CAPTURE_OK). The
+original black capture remains a recorded failure. The actual egui modal test
+now runs two request/Escape cycles, verifies duplicate requests retain the first
+document token, and checks cancellation consumes pending state without emitting
+an editor command. Portable replay inputs are checked in as
+`scripts/replays/open_confirmation{,_cancel}.replay`; they use the 1440x920
+viewer with the Rendering pane active and the default private-compositor scale.
+All 49 viewer tests and check-all pass without new warnings
+(`/tmp/open-modal-final-tests.log`, `/tmp/open-modal-final-check.log`).
+
+## Curve surface validation
+
+Periodic surface acceptance now includes `assets/curve_surface_loops.usda`:
+two periodic B-splines in one prim, indexed uniform widths reversing the value
+table, and distinct uniform display colors. The regression checks exact radii,
+per-curve color, no cross-curve triangles, nondegenerate faces and closed edge
+incidence: every undirected mesh edge appears exactly twice with opposite
+directions. A separate expansion-budget test accepts 12,000 linear samples at
+three sides but rejects 32 sides (2,303,808 triangle indices) before upload.
+All five focused surface tests and check-all pass
+(`/tmp/curve-loops-tests.log`, `/tmp/curve-loops-check.log`).
+Inspected `target/curve-surface-loops.png`: thick blue and thin orange loops,
+both visibly closed and disconnected. The capture reports CAPTURE_OK without
+warnings, using Vulkan, 32 cubic samples, 16 sides, forward rendering and shadows
+off (`/tmp/curve-loops-capture.log`). This checks the planar periodic fixture,
+not general twisted ribbons or native renderer pixel parity.
+
+The Rendering pane now exposes line mode and 8/16/32-sided surface controls.
+Requests preserve the selected cubic sample count, are consumed once, and ignore
+invalid side counts without replacing valid settings. Two focused bridge tests,
+check-all and viewer build pass (`/tmp/curve-ui-{tests,check,build}.log`). README
+documents startup configuration, controls and the approximation/error boundaries.
+
+Editor acceptance: the first host image `target/curve-surfaces-editor.png` was
+black despite a valid paired viewport showing all five width-aware curves. Its
+region check correctly failed. A fresh 30-second capture
+`target/curve-surfaces-editor-retry.png` shows the entire Rendering pane with all
+new controls and the 32-sample/16-side status. The scripted Use lines click in
+`target/curve-surfaces-editor-lines.png` changes the status to one-pixel lines;
+the inspected paired viewport shows all five centerlines instead of surfaces.
+Logs: `/tmp/curve-ui-capture.log`, `/tmp/curve-ui-capture-retry.log`,
+`/tmp/curve-ui-lines-capture.log`. The intermittent black host remains unresolved;
+the successful retry does not supersede that failure.
+The reverse replay clicks Use lines then Width surfaces: 16 sides in the same
+viewer. Both `target/curve-surfaces-editor-restored.png` and its paired viewport
+were inspected: status returns to 16 sides and all five surfaces return, with
+32 samples preserved (`/tmp/curve-ui-restored-capture.log`). Replay inputs are
+`/tmp/curve-surface-lines.replay` and `/tmp/curve-surface-restore.replay`; pointer
+coordinates are window-local for the 1440x920 private-compositor viewer.
 
 Surface projection now supports opt-in
 `USD_CURVE_SURFACE_SIDES=3..32` in the viewer and capture example. Missing widths

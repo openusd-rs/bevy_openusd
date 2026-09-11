@@ -1,0 +1,17 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def BasisCurves "Loops" {
+    uniform token type = "cubic"
+    uniform token basis = "bspline"
+    uniform token wrap = "periodic"
+    int[] curveVertexCounts = [4,4]
+    point3f[] points = [(-3,-1,0),(-1,-1,0),(-1,1,0),(-3,1,0),
+                       (1,-1,0),(3,-1,0),(3,1,0),(1,1,0)]
+    float[] primvars:widths = [0.12,0.4] ( interpolation = "uniform" )
+    int[] primvars:widths:indices = [1,0]
+    color3f[] primvars:displayColor = [(0.1,0.6,1),(1,0.3,0.05)] ( interpolation = "uniform" )
+}

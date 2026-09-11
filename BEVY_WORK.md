@@ -5,6 +5,25 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+`EditorEdit::PayloadListOp` and `authoring::set_payload_list_op` now author a
+canonical complete local list operation rather than requiring an explicit-list
+replacement. Prepend, append, add, delete and order buckets are retained. Mixed
+explicit/non-explicit structures, missing asset-and-prim targets, invalid prim
+paths and unsupported time mappings reject before layer mutation. The existing
+`set_payloads` delegates to the same validation through an explicit operation.
+An empty non-explicit operation is not an explicit-empty blocker; Clear remains
+the API for removing the local field.
+
+Tests verify all six operation forms, a combined delete/prepend, composition
+strength against a weaker two-payload list, exact layer text after undo/redo,
+and USDA serialization/reopen with external sublayer composition retained.
+Malformed cases retain the complete original layer text, including an invalid
+entry after a valid entry in a different bucket. Library tests pass 455 with
+13 ignored, viewer tests pass 56, and check-all passes
+(`/tmp/payload-listop-{lib-tests,viewer-tests,check}.log`). The viewer form still
+authors explicit replacements; arbitrary list-op controls are not implemented.
+This step does not add new native OpenUSD comparison or GPU acceptance.
+
 Payload provenance is now exposed as `EditorSnapshot::payload_opinions` with
 typed canonical list ops and each contributing spec's source layer, original
 prim path, and cumulative layer offset, in prim-stack strength order. The

@@ -395,6 +395,7 @@ pub enum EditorEdit {
     References { prim: String, references: Vec<openusd::sdf::Reference> },
     ClearReferences { prim: String },
     Payloads { prim: String, payloads: Vec<openusd::sdf::Payload> },
+    PayloadListOp { prim: String, operation: openusd::sdf::PayloadListOp },
     ClearPayloads { prim: String },
     RelationshipTargets { prim: String, name: String, targets: Vec<openusd::sdf::Path> },
     ClearRelationshipTargets { prim: String, name: String },
@@ -454,6 +455,7 @@ impl EditorEdit {
             Self::References { prim, references } => authoring::set_references(stage, prim, references),
             Self::ClearReferences { prim } => authoring::clear_references(stage, prim),
             Self::Payloads { prim, payloads } => authoring::set_payloads(stage, prim, payloads),
+            Self::PayloadListOp { prim, operation } => authoring::set_payload_list_op(stage, prim, operation),
             Self::ClearPayloads { prim } => authoring::clear_payloads(stage, prim),
             Self::RelationshipTargets { prim, name, targets } => authoring::set_relationship_targets(stage, prim, name, targets),
             Self::ClearRelationshipTargets { prim, name } => authoring::clear_relationship_targets(stage, prim, name),
@@ -822,6 +824,49 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn payload_list_ops_compose_undo_and_reopen_without_flattening() {
+        use super::*;
+        use openusd::sdf::{Payload, PayloadListOp};
+        let weak = crate::UsdSource::snapshot("weak.usda", &br#"#usda 1.0
+class Xform "A" { double score = 1 }
+class Xform "B" { double score = 2 }
+class Xform "C" { double score = 3 }
+def Xform "Root" ( prepend payload = [</A>, </B>] ) {}
+"#[..]).unwrap();
+        let root = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+(subLayers = [@weak.usda@])
+"#[..]).unwrap().with_dependency(&weak).unwrap();
+        let mut editor = EditorSession::new(root.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let payload = |path: &str| Payload { prim_path: openusd::sdf::path(path).unwrap(), ..Default::default() };
+        let score = |stage: &Stage| stage.prim("/Root").unwrap().attribute("score").get::<f64>().unwrap();
+        let baseline = editor.stage().root_layer().export_to_string().unwrap();
+        for (operation, expected) in [
+            (PayloadListOp::prepended([payload("/C")]), Some(3.)),
+            (PayloadListOp::appended([payload("/C")]), Some(1.)),
+            (PayloadListOp::added([payload("/C")]), Some(1.)),
+            (PayloadListOp::deleted([payload("/A")]), Some(2.)),
+            (PayloadListOp::ordered([payload("/B"), payload("/A")]), Some(2.)),
+            (PayloadListOp::explicit([]), None),
+            (PayloadListOp { deleted_items: vec![payload("/A")], prepended_items: vec![payload("/C")], ..Default::default() }, Some(3.)),
+        ] {
+            editor.edit(EditorEdit::PayloadListOp { prim: "/Root".into(), operation: operation.clone() }).unwrap();
+            assert_eq!(score(editor.stage()), expected, "{operation:?}");
+            assert_eq!(editor.snapshot().unwrap().payload_opinions[0].operation, operation);
+            let authored = editor.stage().root_layer().export_to_string().unwrap();
+            let reopened = crate::UsdSource::snapshot("saved.usda", authored.as_bytes()).unwrap()
+                .with_dependency(&weak).unwrap().open_stage().unwrap();
+            assert_eq!(score(&reopened), expected);
+            editor.undo().unwrap();
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), baseline);
+            assert_eq!(score(editor.stage()), Some(1.));
+            editor.redo().unwrap();
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+            editor.undo().unwrap();
+        }
+    }
+
     #[test]
     fn payload_provenance_preserves_reference_and_variant_spec_mapping() {
         use super::*;

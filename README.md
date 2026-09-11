@@ -108,6 +108,12 @@ An empty replacement list blocks weaker payloads; clearing removes the local
 opinion and restores weaker composition. Entries allow empty defaultPrim targets
 or absolute prim paths, with finite offsets and positive finite time scales.
 The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
+For authored list editing, `EditorEdit::PayloadListOp { prim, operation }`
+and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containing
+prepend, append, add, delete, and order entries. They replace the local operation,
+not the composed payload list. Explicit and non-explicit buckets cannot be mixed;
+all entries are validated before authoring. Undo/redo retains the whole operation.
+The viewer form still authors explicit replacements; other operations are API-only.
 `EditorSnapshot::payload_opinions` exposes each contributing authored list op,
 strongest first, with its source layer, spec path and cumulative site time offset.
 The Payload authoring group displays these below the replacement form, including

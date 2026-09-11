@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Current workspace regression gate
+
+At `0b5ec99`, `TMPDIR="$PWD/target/test-tmp" make test-all
+CARGO='cargo --offline'` completed successfully: 586 passed, zero failed and 14
+ignored across 30 result suites (`/tmp/reference-structure-workspace-tests.log`).
+This includes the reference authoring/provenance/editor changes below. Ignored
+native tests are not counted as passing. The earlier reload timeout remains
+unexplained; this successful run does not establish its cause or a fix.
+
 ## Reload timeout investigation
 
 The asset-test wait helper now preserves the calling test location and reports
@@ -15,6 +24,183 @@ The earlier workspace timeout did not recur in these runs. Its cause remains
 unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
+
+Reference bucket controls now move existing local entries among Prepend, Append,
+Add, Delete and Order. Destination insertion is at the end; other entries and
+the moved reference's customData/time mapping are retained. Exact destination
+duplicates, invalid indices and explicit/non-explicit conversion reject without
+mutation. Explicit opinions display the whole-operation conversion limitation.
+The controls are separately expandable and send the checked undoable command.
+
+Tests cover all twenty directed bucket pairs, populated destination/source order,
+unrelated buckets, duplicate/invalid rejection, exact-text undo/redo, retained
+metadata and unchanged fixture bytes. Inspected
+`target/reference-bucket-layout-ui.png` shows both original Prepend entries and
+the blue cube. `reference_bucket_move.replay` moves `/Box` into Append;
+inspected `target/reference-bucket-moved-ui.png` shows Prepend `/Ball`, Append
+`/Box` and the orange sphere. Both capture guards pass
+(`/tmp/reference-bucket-{layout,moved}-capture.log`). All 67 viewer tests and
+check-all pass (`/tmp/reference-bucket-registered-{tests,check}.log`).
+Whole-operation explicit conversion and arbitrary customData editing remain open.
+
+The inspector now creates local reference entries, including on prims without
+an existing local opinion. The expandable form accepts asset/prim and time
+mapping fields; new opinions default to Prepend and allow all six list modes.
+Existing explicit opinions only allow explicit insertion, while non-explicit
+opinions retain their structure and offer the five non-explicit buckets. Insert
+preserves other entries/customData, rejects exact duplicates in the chosen bucket
+and invalid field values, and sends the checked undoable ReferenceListOp command.
+Draft storage is scoped by prim and resets on document/full-edit-target changes.
+
+Tests cover every insertion bucket, incompatible modes, duplicate/invalid input,
+retained data, creation on an empty prim, exact-text undo/redo and unchanged disk
+bytes. Native `reference_create.replay` enters a relative asset and `/Ball` on the
+empty `assets/reference_create.usda` fixture. Inspected
+`target/reference-create-closed-ui.png` is empty; inspected
+`target/reference-create-applied-ui.png` shows the orange sphere and the retained
+Prepend draft with identity mapping. Both capture guards pass
+(`/tmp/reference-create-{closed,applied}-capture.log`). CustomData editing and
+native creation error/undo layouts remain open; non-explicit bucket moves are
+covered above.
+
+All 66 viewer tests and check-all pass
+(`/tmp/reference-create-complete-{tests,check}.log`). The full workspace gate
+above predates this creation form and is not a full-workspace result for it.
+
+Local reference opinions now expose separate order/removal controls with asset
+and target labels. Earlier/Later move entries within their existing bucket;
+Remove retains the operation type, including explicit-empty blocking semantics.
+Actions use the checked document/revision/edit-target command and preserve other
+entries and customData. Entry editors share one immutable operation clone per
+opinion rather than cloning the entire list for every entry each frame; mutable
+copies are made only when applying an action. No performance benchmark is claimed.
+
+The regression covers both move directions, removal, invalid indices/buckets,
+exact-text undo, retained reference data and unchanged fixture bytes. All 65
+viewer tests and check-all pass
+(`/tmp/reference-structure-final-{tests,check}.log`). Inspected native
+`target/reference-order-ui.png` shows `/Ball` before `/Box` and the expected
+orange sphere after `reference_order.replay`. Inspected
+`target/reference-remove-ui.png` shows only `/Ball`, its retained customData and
+the orange sphere after `reference_remove.replay` removes `/Box`. Capture logs
+are `/tmp/reference-order-capture.log` and `/tmp/reference-remove-capture.log`.
+Arbitrary customData editing remains open; creation and non-explicit bucket moves
+are covered above.
+
+Reference drafts now retain a typed whole-entry baseline in addition to field
+baselines. Any source reference change while fields are dirty, including changed
+customData or a changed occupant of an indexed list slot, withholds Apply and
+offers Reload/Keep. Keep preserves only dirty fields and refreshes untouched
+fields; a matching successful write acknowledges its new baseline. These typed
+baselines clear on document/edit-target changes. This closes the case where a
+dirty time field could otherwise silently follow a changed reference target.
+
+Tests cover changed targets/customData, pristine refresh, successful-write
+acknowledgement and context reset. All 64 viewer tests and check-all pass
+(`/tmp/reference-identity-final-{tests,check}.log`). Native
+`reference_identity_conflict.replay` retargets to Ball, types offset 5, then undoes
+the retarget; inspected `target/reference-identity-conflict-ui.png` shows the
+whole-entry conflict instead of Apply. `reference_identity_keep.replay` resolves
+it; inspected `target/reference-identity-keep-ui.png` shows `/Box` refreshed and
+offset 5 retained without applying it. Both capture guards pass
+(`/tmp/reference-identity-capture.log`, `/tmp/reference-identity-keep-capture.log`).
+Native Reload and arbitrary multi-entry replacement remain unverified.
+
+Existing local reference entries can now be expanded for asset/prim retargeting
+and time-offset/scale editing. The four fields share property draft storage,
+per-field conflict reconciliation and document/edit-target resets. Old closures
+cannot operate after context replacement. Applying replaces only the selected
+entry in a cloned operation, retaining its bucket, other entries and customData,
+through the checked reference-list command. Input validation rejects invalid
+targets, missing asset-and-target pairs and non-finite/non-positive mappings.
+Arbitrary customData editing remains open; creation and order/removal controls
+are covered above.
+
+The regression retargets the fixture to Sphere, changes its mapping, preserves
+customData, undoes to the exact original reference and verifies unchanged disk
+bytes; invalid field inputs reject. All 63 viewer tests and check-all pass
+(`/tmp/reference-entry-final-{tests,check}.log`). Inspected native layout
+`target/reference-edit-layout-ui.png`, then the checked-in `reference_edit.replay`
+retargeted `/Box` to `/Ball`: `target/reference-edit-applied-ui.png` shows the
+orange sphere and retained 10/2 fields. Both capture guards pass
+(`/tmp/reference-edit-{layout,applied}-capture.log`). Native conflict resolution,
+multi-entry ordering and error-state layouts remain incompletely covered.
+
+Reference opinion readouts now offer Clear local reference opinion only when
+their source layer and spec path match the active target's mapped selected prim.
+The command retains the full document/revision/target guard and uses existing
+undoable ClearReferences authoring. Other layers and unmapped variant specs do
+not expose the action. Tests check layer/spec matching and every guard field;
+all 62 viewer tests and check-all pass
+(`/tmp/reference-clear-final-{tests,check}.log`). Native
+`reference_clear.replay` removes the cube and reference readout; the
+`reference_clear_undo.replay` toolbar action restores them. Inspected
+`target/reference-clear-ui.png` and `target/reference-clear-undo-ui.png`; both
+capture guards pass (`/tmp/reference-clear-capture.log`,
+`/tmp/reference-clear-undo-capture.log`). Entry creation/replacement and
+arbitrary reference-list editing remain API-only.
+
+Reference provenance is now visible beneath the payload controls in the renamed
+Payloads / references inspector group. Readouts retain source layer/spec, authored
+asset/prim strings, list-op buckets, explicit-empty blockers, separate cumulative
+site and authored arc offsets, and customData. Lines wrap to 40 Unicode characters;
+top-level customData keys are sorted. This adds inspection, not reference editing
+controls or a composed reference-list view.
+The formatter regression checks long paths, variant specs, delete/block modes,
+customData and both time mappings. All 61 viewer tests and check-all pass
+(`/tmp/reference-readout-{tests,check}.log`). Native
+`reference_provenance.replay` exposes the source and nested dictionary without
+clipping the last line in the tested layout; inspected
+`target/reference-provenance-ui.png`, capture guard passes
+(`/tmp/reference-readout-capture.log`). The referenced blue cube remains visible.
+
+`EditorSnapshot::reference_opinions` now exposes typed authored reference list
+operations for contributing prim specs, strongest first. Each entry retains
+the original spec path, source layer, cumulative site offset and canonical
+customData. Collection shares the existing prim-stack walk with payload
+provenance, without reanchoring authored asset strings. These are contributing
+opinions, not a final composed reference list or a reference editor UI.
+The regression checks a root reference and a referenced variant opinion,
+source-relative `weak.usda`, `/Source{choice=a}`, offset 10 / scale 2,
+customData retention, explicit blocking, undo, unchanged layer text and clearing
+selection (`/tmp/reference-provenance-tests.log`).
+All 460 library tests and 60 viewer tests pass, with 14 library tests ignored;
+check-all passes (`/tmp/reference-provenance-{lib-tests,viewer-tests,final-check}.log`).
+
+Reference customData acceptance now covers root exports in USDA, USDC, USD and
+USDZ. The ordinary regression checks nested metadata, offset 10 / scale 2,
+external Cube composition and unchanged live root text after every export.
+The package also reopens from snapshot-only bytes under a relocated identifier,
+without disk fallback (`/tmp/reference-formats-portable-tests.log`). Native
+USD 25.05.01 round trips USDA/USDC/USD metadata and composition; its USDZ branch
+flattens the package and confirms the Cube. The native package branch verifies
+composition, not preservation of reference metadata through flattening
+(`/tmp/reference-formats-native-final.log`). Check-all passes
+(`/tmp/reference-formats-final-check.log`). No production behavior changed in
+this verification step.
+The complete library run passes 459 tests with 14 ignored
+(`/tmp/reference-formats-lib-tests.log`).
+
+Reference list editing now has the parallel `EditorEdit::ReferenceListOp` and
+`authoring::set_reference_list_op` APIs. They validate all buckets before mutation
+and replace the local operation, preserving canonical reference customData.
+Tests cover all six modes, combined delete/prepend, weaker composition, exact
+undo/redo text, USDA reopen, malformed operations and invalid late-bucket entries.
+The existing whole-list `set_references` delegates to this path. Reference
+list-operation UI controls remain unimplemented.
+
+The customData round trip initially failed because the upstream USDA writer
+silently dropped the dictionary (`/tmp/reference-listop-tests.log`). The local
+`openusd-reference-custom-data.patch` fixes that writer boundary; the regression
+now passes (`/tmp/reference-listop-fixed-tests.log`). Native USD 25.05.01 accepts
+the Bevy-exported `reference_custom_data.usda` fixture and preserves its nested
+dictionary, offset 10 / scale 2 and external Cube composition through another
+serialization (`/tmp/reference-custom-data-native.log`). The dedicated native
+test is ignored by default and was explicitly run. Library tests pass 458 with
+14 ignored; check-all passes (`/tmp/reference-listop-{lib-tests,final-check}.log`).
+The review patch passes reverse-apply checking against the vendored source.
+All 60 viewer tests and the viewer build pass
+(`/tmp/reference-listop-{viewer-tests,build}.log`).
 
 The payload form can explicitly discard its draft and load the active target's
 local authored opinion. Selection uses the complete target's mapped spec path

@@ -1,5 +1,13 @@
 # OpenUSD upgrade and capability reassessment
 
+## Reference customData serialization
+
+`patches/openusd-reference-custom-data.patch` fixes USDA reference serialization
+that silently omitted customData. The writer now emits the typed dictionary
+alongside the reference's offset and scale, including identity-offset references.
+The Bevy round-trip regression exposed the loss; the native usdcat regression
+checks nested data, non-identity retiming and external reference composition.
+
 ## Payload identity matching
 
 `patches/openusd-payload-identity.patch` normalizes omitted versus explicit

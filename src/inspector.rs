@@ -12,6 +12,7 @@ pub struct Drafts(
     Arc<Mutex<HashMap<String, bool>>>,
     crate::payload_editor::PayloadDraft,
     Arc<Mutex<Option<(u64, Option<openusd::usd::EditTarget>)>>>,
+    Arc<Mutex<HashMap<String, openusd::sdf::Reference>>>,
 );
 
 impl Drafts {
@@ -22,6 +23,7 @@ impl Drafts {
         if let Ok(mut values) = self.0.lock() { values.clear(); }
         if let Ok(mut times) = self.1.lock() { times.clear(); }
         if let Ok(mut expanded) = self.2.lock() { expanded.clear(); }
+        if let Ok(mut references) = self.5.lock() { references.clear(); }
         *context = Some(current);
     }
 }
@@ -154,7 +156,12 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     if let Some(payload) = crate::payload_editor::pod(snapshot, bridge, &drafts.3) {
         let mut payloads = vec![payload];
         payloads.extend(crate::payload_editor::opinion_pods(snapshot));
-        body.add_normal("editor.payloads", "Payload authoring", "document", payloads);
+        payloads.extend(reference_creation_pod(snapshot, bridge, drafts));
+        payloads.extend(reference_opinion_pods(snapshot, bridge, drafts));
+        payloads.extend(reference_edit_pods(snapshot, bridge, drafts));
+        payloads.extend(reference_structure_pods(snapshot, bridge, drafts));
+        payloads.extend(reference_bucket_pods(snapshot, bridge, drafts));
+        body.add_normal("editor.payloads", "Payloads / references", "document", payloads);
     }
     for (set, options) in &snapshot.variant_choices {
         let key = format!("{path}:variant:{set}");
@@ -315,6 +322,371 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     body.add_normal("editor.attributes", "Composed properties", "options", pods);
 }
 
+fn reference_opinion_lines(opinion: &usd_bevy::editor::ReferenceOpinion, index: usize) -> Vec<String> {
+    let mut lines = vec![format!("Reference opinion {} (strongest first)", index+1), "Asset paths relative to source layer".into()];
+    lines.extend(path_lines(&opinion.layer));
+    lines.extend(path_lines(opinion.prim.as_str()));
+    lines.push(format!("Site time: offset {}, scale {}", opinion.offset.offset, opinion.offset.scale));
+    let op = &opinion.operation;
+    if op.explicit && op.explicit_items.is_empty() { lines.push("Explicit empty list (blocks weaker references)".into()); }
+    for (name, entries) in [("Explicit", &op.explicit_items), ("Prepend", &op.prepended_items),
+        ("Append", &op.appended_items), ("Add", &op.added_items), ("Delete", &op.deleted_items), ("Order", &op.ordered_items)] {
+        for reference in entries {
+            lines.push(name.into());
+            lines.push(format!("Asset: {}", if reference.asset_path.is_empty() { "(internal)" } else { &reference.asset_path }));
+            lines.push(format!("Prim: {}", if reference.prim_path.is_empty() { "(defaultPrim)" } else { reference.prim_path.as_str() }));
+            lines.push(format!("Arc time: offset {}, scale {}", reference.layer_offset.offset, reference.layer_offset.scale));
+            let mut keys = reference.custom_data.keys().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys { lines.push(format!("customData {key}: {:?}", reference.custom_data[key])); }
+        }
+    }
+    lines.into_iter().flat_map(|line| path_lines(&line)).collect()
+}
+
+fn clear_reference_command(snapshot: &EditorSnapshot, opinion: &usd_bevy::editor::ReferenceOpinion) -> Option<EditorCommand> {
+    let prim = snapshot.selected.as_ref()?;
+    let target = snapshot.edit_target.as_ref()?;
+    if opinion.layer != target.layer_identifier()
+        || target.map_to_spec_path(&openusd::sdf::path(prim).ok()?)? != opinion.prim { return None; }
+    snapshot.checked_edit(EditorEdit::ClearReferences { prim: prim.clone() })
+}
+
+fn reference_opinion_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts) -> Vec<Pod> {
+    snapshot.reference_opinions.iter().enumerate().map(|(index, opinion)| {
+        let lines = reference_opinion_lines(opinion, index);
+        let clear = clear_reference_command(snapshot, opinion);
+        let expanded = drafts.2.clone();
+        let key = format!("reference.edit:{}:{}", opinion.layer, opinion.prim);
+        let bridge = bridge.clone();
+        Pod::new(Id::new(("editor.reference.opinion", index))).with_custom_units(lines.len()+4*usize::from(clear.is_some()), move |ui| {
+            for line in lines { ui.label(&line); }
+            if let Some(command) = clear {
+                if let Ok(mut expanded) = expanded.lock() {
+                    let buckets = expanded.entry(format!("{key}:buckets")).or_default();
+                    if ui.button(if *buckets { "Hide reference bucket controls" } else { "Change reference list buckets" }).clicked { *buckets = !*buckets; }
+                    let manage = expanded.entry(format!("{key}:structure")).or_default();
+                    if ui.button(if *manage { "Hide reference order controls" } else { "Manage reference order / removal" }).clicked { *manage = !*manage; }
+                    let open = expanded.entry(key).or_default();
+                    if ui.button(if *open { "Hide reference entry fields" } else { "Edit local reference entries" }).clicked { *open = !*open; }
+                }
+                if ui.button("Clear local reference opinion").clicked { super::send(&bridge, command); }
+            }
+        })
+    }).collect()
+}
+
+fn edited_reference(base: &openusd::sdf::Reference, fields: &[String; 4]) -> Result<openusd::sdf::Reference, String> {
+    let mut reference = base.clone();
+    reference.asset_path = fields[0].clone();
+    reference.prim_path = if fields[1].trim().is_empty() { openusd::sdf::Path::default() }
+        else { openusd::sdf::path(fields[1].trim()).map_err(|error| error.to_string())? };
+    if reference.asset_path.is_empty() && reference.prim_path.is_empty() { return Err("Specify an asset or internal target".into()); }
+    if !reference.prim_path.is_empty() && (!reference.prim_path.as_str().starts_with('/')
+        || !reference.prim_path.is_prim_path() || reference.prim_path.as_str() == "/"
+        || reference.prim_path.contains_prim_variant_selection()) { return Err("Use an absolute prim target or empty defaultPrim".into()); }
+    reference.layer_offset = openusd::sdf::LayerOffset::new(
+        fields[2].trim().parse().map_err(|_| "Invalid time offset")?,
+        fields[3].trim().parse().map_err(|_| "Invalid time scale")?);
+    if !reference.layer_offset.offset.is_finite() || !reference.layer_offset.scale.is_finite()
+        || reference.layer_offset.scale <= 0. { return Err("Use a finite offset and positive finite scale".into()); }
+    Ok(reference)
+}
+
+fn insert_reference(source: Option<&openusd::sdf::ReferenceListOp>, bucket: &str, fields: &[String; 4]) -> Result<openusd::sdf::ReferenceListOp, String> {
+    let reference = edited_reference(&Default::default(), fields)?;
+    if source.is_some_and(|source| source.explicit != (bucket == "Explicit")) {
+        return Err("Cannot mix explicit replacement with other list modes".into());
+    }
+    let mut operation = source.cloned().unwrap_or_else(|| openusd::sdf::ReferenceListOp {
+        explicit: bucket == "Explicit", ..Default::default()
+    });
+    let entries = match bucket {
+        "Explicit" => &mut operation.explicit_items, "Prepend" => &mut operation.prepended_items,
+        "Append" => &mut operation.appended_items, "Add" => &mut operation.added_items,
+        "Delete" => &mut operation.deleted_items, "Order" => &mut operation.ordered_items,
+        _ => return Err("Unknown reference list mode".into()),
+    };
+    if entries.contains(&reference) { return Err("This reference already exists in this bucket".into()); }
+    entries.push(reference);
+    Ok(operation)
+}
+
+fn reference_creation_pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts) -> Option<Pod> {
+    let prim = snapshot.selected.as_ref()?.clone();
+    let target = snapshot.edit_target.as_ref()?;
+    target.map_to_spec_path(&openusd::sdf::path(&prim).ok()?)?;
+    let key = format!("reference.create:{prim}");
+    let open = drafts.2.lock().ok()?.get(&key).copied().unwrap_or(false);
+    let errors = drafts.0.lock().ok()?.get(&format!("{key}:error"))
+        .filter(|draft| !draft.2.is_empty()).map_or(0, |draft| path_lines(&draft.2).len());
+    let local = snapshot.reference_opinions.iter().find(|opinion| clear_reference_command(snapshot, opinion).is_some())
+        .map(|opinion| opinion.operation.clone());
+    let context = EditorSnapshot { document_id: snapshot.document_id, revision: snapshot.revision,
+        edit_target: snapshot.edit_target.clone(), ..Default::default() };
+    let drafts = drafts.clone();
+    let bridge = bridge.clone();
+    Some(Pod::new(Id::new(&key)).with_custom_units(if open { 13+errors } else { 1 }, move |ui| {
+        if !drafts.4.lock().is_ok_and(|current| current.as_ref() == Some(&(context.document_id, context.edit_target.clone()))) { return; }
+        if ui.button(if open { "Hide new reference fields" } else { "Create local reference entry" }).clicked {
+            if let Ok(mut expanded) = drafts.2.lock() { expanded.insert(key.clone(), !open); }
+        }
+        if !open { return; }
+        ui.label("Asset paths are relative to the edit layer");
+        let Ok(mut values) = drafts.0.lock() else { return };
+        let modes: &[&str] = match local.as_ref().map(|operation| operation.explicit) {
+            Some(true) => &["Explicit"], Some(false) => &["Prepend", "Append", "Add", "Delete", "Order"],
+            None => &["Prepend", "Append", "Add", "Delete", "Order", "Explicit"],
+        };
+        let mode = values.entry(format!("{key}:mode")).or_insert_with(|| (String::new(), modes[0].into(), String::new()));
+        if !modes.contains(&mode.1.as_str()) { mode.1 = modes[0].into(); }
+        if ui.button(&format!("New reference mode: {}", mode.1)).clicked {
+            let index = modes.iter().position(|candidate| *candidate == mode.1).unwrap_or(0);
+            mode.1 = modes[(index+1)%modes.len()].into();
+        }
+        let mode = mode.1.clone();
+        let mut fields = [String::new(), String::new(), "0".into(), "1".into()];
+        for (index, label) in ["Asset path (empty = internal)", "Prim path (empty = defaultPrim)", "Time offset", "Time scale"].into_iter().enumerate() {
+            let draft = values.entry(format!("{key}:{index}")).or_insert_with(|| (String::new(), fields[index].clone(), String::new()));
+            ui.label(label);
+            ui.text_input(&mut draft.1, label);
+            fields[index] = draft.1.clone();
+        }
+        let error = values.entry(format!("{key}:error")).or_default();
+        if ui.button("Insert reference into local opinion").clicked {
+            match insert_reference(local.as_ref(), &mode, &fields) {
+                Ok(operation) => {
+                    error.2.clear();
+                    send_edit(&bridge, &context, EditorEdit::ReferenceListOp { prim, operation });
+                }
+                Err(message) => error.2 = message,
+            }
+        }
+        if !error.2.is_empty() { for line in path_lines(&error.2) { ui.label(&line); } }
+    }))
+}
+
+fn reference_source_conflicts(baseline: &mut openusd::sdf::Reference, current: &openusd::sdf::Reference, fields: &[String; 4], dirty: bool) -> bool {
+    if baseline == current { return false; }
+    if !dirty || edited_reference(baseline, fields).ok().as_ref() == Some(current) {
+        *baseline = current.clone();
+        false
+    } else { true }
+}
+
+fn reference_edit_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts) -> Vec<Pod> {
+    let mut pods = Vec::new();
+    for opinion in &snapshot.reference_opinions {
+        if clear_reference_command(snapshot, opinion).is_none() { continue; }
+        let key = format!("reference.edit:{}:{}", opinion.layer, opinion.prim);
+        if !drafts.2.lock().is_ok_and(|expanded| expanded.get(&key) == Some(&true)) { continue; }
+        let operation = Arc::new(opinion.operation.clone());
+        for (bucket, entries) in [("Explicit", &opinion.operation.explicit_items), ("Prepend", &opinion.operation.prepended_items),
+            ("Append", &opinion.operation.appended_items), ("Add", &opinion.operation.added_items),
+            ("Delete", &opinion.operation.deleted_items), ("Order", &opinion.operation.ordered_items)] {
+            for (index, reference) in entries.iter().enumerate() {
+                let key = format!("reference:{}:{}:{bucket}:{index}", opinion.layer, opinion.prim);
+                let current = [reference.asset_path.clone(), reference.prim_path.to_string(),
+                    reference.layer_offset.offset.to_string(), reference.layer_offset.scale.to_string()];
+                let conflicts = drafts.0.lock().map(|values| current.iter().enumerate().filter(|(field, source)|
+                    values.get(&format!("{key}:{field}")).is_some_and(|draft|
+                        draft.0 != **source && draft.1 != draft.0 && draft.1 != **source)).count()).unwrap_or(0);
+                let reference = reference.clone();
+                let operation = operation.clone();
+                let drafts = drafts.clone();
+                let bridge = bridge.clone();
+                let prim = snapshot.selected.clone().unwrap();
+                let context = EditorSnapshot { document_id: snapshot.document_id, revision: snapshot.revision,
+                    edit_target: snapshot.edit_target.clone(), ..Default::default() };
+                pods.push(Pod::new(Id::new(&key)).with_custom_units(12+conflicts*4, move |ui| {
+                    let Ok(active) = drafts.4.lock() else { return };
+                    if active.as_ref() != Some(&(context.document_id, context.edit_target.clone())) { return; }
+                    drop(active);
+                    let Ok(mut values) = drafts.0.lock() else { return };
+                    ui.label(&format!("Edit reference: {bucket} {}", index+1));
+                    ui.label("Other entries and customData are retained");
+                    let fields = std::array::from_fn(|field| values.get(&format!("{key}:{field}")).map_or_else(|| current[field].clone(), |draft| draft.1.clone()));
+                    let dirty_fields: [bool; 4] = std::array::from_fn(|field| values.get(&format!("{key}:{field}")).is_some_and(|draft| draft.1 != draft.0));
+                    let dirty = dirty_fields.iter().any(|dirty| *dirty);
+                    let Ok(mut identities) = drafts.5.lock() else { return };
+                    let baseline = identities.entry(key.clone()).or_insert_with(|| reference.clone());
+                    if reference_source_conflicts(baseline, &reference, &fields, dirty) {
+                        ui.label("Reference source changed; draft preserved");
+                        let reload = ui.button("Discard draft and reload reference").clicked;
+                        let keep = ui.button("Keep draft over changed reference").clicked;
+                        if !reload && !keep { return; }
+                        for field in 0..4 {
+                            values.insert(format!("{key}:{field}"), (current[field].clone(),
+                                if reload || !dirty_fields[field] { current[field].clone() } else { fields[field].clone() }, String::new()));
+                        }
+                        values.remove(&format!("{key}:error"));
+                        *baseline = reference.clone();
+                    }
+                    drop(identities);
+                    let mut fields = current.clone();
+                    let mut ready = true;
+                    for (field, label) in ["Asset path", "Prim target (empty = defaultPrim)", "Time offset", "Time scale"].into_iter().enumerate() {
+                        let draft = values.entry(format!("{key}:{field}")).or_insert_with(|| (current[field].clone(), current[field].clone(), String::new()));
+                        ui.label(label);
+                        if reconcile_draft(ui, draft, &current[field]) { ui.text_input(&mut draft.1, label); fields[field] = draft.1.clone(); }
+                        else { ready = false; }
+                    }
+                    let error = &mut values.entry(format!("{key}:error")).or_default().2;
+                    if ready && ui.button("Apply reference entry").clicked {
+                        match edited_reference(&reference, &fields) {
+                            Ok(reference) => {
+                                let mut operation = (*operation).clone();
+                                let entries = match bucket { "Explicit" => &mut operation.explicit_items, "Prepend" => &mut operation.prepended_items,
+                                    "Append" => &mut operation.appended_items, "Add" => &mut operation.added_items,
+                                    "Delete" => &mut operation.deleted_items, _ => &mut operation.ordered_items };
+                                entries[index] = reference;
+                                error.clear();
+                                send_edit(&bridge, &context, EditorEdit::ReferenceListOp { prim, operation });
+                            }
+                            Err(message) => *error = message,
+                        }
+                    }
+                    if !error.is_empty() { ui.label(error); }
+                }));
+            }
+        }
+    }
+    pods
+}
+
+#[derive(Clone, Copy)]
+enum ReferenceStructure { Earlier, Later, Remove }
+
+fn change_reference_structure(source: &openusd::sdf::ReferenceListOp, bucket: &str, index: usize, action: ReferenceStructure) -> Option<openusd::sdf::ReferenceListOp> {
+    let mut operation = source.clone();
+    let entries = match bucket { "Explicit" => &mut operation.explicit_items, "Prepend" => &mut operation.prepended_items,
+        "Append" => &mut operation.appended_items, "Add" => &mut operation.added_items,
+        "Delete" => &mut operation.deleted_items, "Order" => &mut operation.ordered_items, _ => return None };
+    if index >= entries.len() { return None; }
+    match action {
+        ReferenceStructure::Earlier if index > 0 => entries.swap(index, index-1),
+        ReferenceStructure::Later if index+1 < entries.len() => entries.swap(index, index+1),
+        ReferenceStructure::Remove => { entries.remove(index); }
+        _ => return None,
+    }
+    Some(operation)
+}
+
+fn reference_structure_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts) -> Vec<Pod> {
+    let mut pods = Vec::new();
+    for opinion in &snapshot.reference_opinions {
+        if clear_reference_command(snapshot, opinion).is_none() { continue; }
+        let key = format!("reference.edit:{}:{}:structure", opinion.layer, opinion.prim);
+        if !drafts.2.lock().is_ok_and(|expanded| expanded.get(&key) == Some(&true)) { continue; }
+        let operation = Arc::new(opinion.operation.clone());
+        for (bucket, entries) in [("Explicit", &opinion.operation.explicit_items), ("Prepend", &opinion.operation.prepended_items),
+            ("Append", &opinion.operation.appended_items), ("Add", &opinion.operation.added_items),
+            ("Delete", &opinion.operation.deleted_items), ("Order", &opinion.operation.ordered_items)] {
+            for index in 0..entries.len() {
+                let count = entries.len();
+                let reference = &entries[index];
+                let target_lines = path_lines(&format!("{} <{}>",
+                    if reference.asset_path.is_empty() { "(internal)" } else { &reference.asset_path },
+                    if reference.prim_path.is_empty() { "defaultPrim" } else { reference.prim_path.as_str() }));
+                let operation = operation.clone();
+                let bridge = bridge.clone();
+                let prim = snapshot.selected.clone().unwrap();
+                let context = EditorSnapshot { document_id: snapshot.document_id, revision: snapshot.revision,
+                    edit_target: snapshot.edit_target.clone(), ..Default::default() };
+                pods.push(Pod::new(Id::new((&key, bucket, index))).with_custom_units(5+target_lines.len(), move |ui| {
+                    ui.label(&format!("Manage {bucket} reference {}", index+1));
+                    for line in target_lines { ui.label(&line); }
+                    if bucket == "Explicit" && count == 1 { ui.label("Removing this entry blocks weaker refs"); }
+                    let mut action = None;
+                    if index > 0 && ui.button("Move earlier in this bucket").clicked { action = Some(ReferenceStructure::Earlier); }
+                    if index+1 < count && ui.button("Move later in this bucket").clicked { action = Some(ReferenceStructure::Later); }
+                    if ui.button("Remove local entry").clicked { action = Some(ReferenceStructure::Remove); }
+                    if let Some(operation) = action.and_then(|action| change_reference_structure(&operation, bucket, index, action)) {
+                        send_edit(&bridge, &context, EditorEdit::ReferenceListOp { prim, operation });
+                    }
+                }));
+            }
+        }
+    }
+    pods
+}
+
+fn move_reference_bucket(source: &openusd::sdf::ReferenceListOp, from: &str, index: usize, to: &str) -> Result<openusd::sdf::ReferenceListOp, String> {
+    fn entries<'a>(operation: &'a mut openusd::sdf::ReferenceListOp, bucket: &str) -> Result<&'a mut Vec<openusd::sdf::Reference>, String> {
+        match bucket {
+            "Prepend" => Ok(&mut operation.prepended_items), "Append" => Ok(&mut operation.appended_items),
+            "Add" => Ok(&mut operation.added_items), "Delete" => Ok(&mut operation.deleted_items),
+            "Order" => Ok(&mut operation.ordered_items), _ => Err("Choose a non-explicit reference bucket".into()),
+        }
+    }
+    if source.explicit { return Err("Explicit replacement requires whole-op conversion".into()); }
+    if from == to { return Err("Choose a different destination bucket".into()); }
+    let mut operation = source.clone();
+    let source_entries = entries(&mut operation, from)?;
+    if index >= source_entries.len() { return Err("Reference entry no longer exists".into()); }
+    let reference = source_entries.remove(index);
+    let destination = entries(&mut operation, to)?;
+    if destination.contains(&reference) { return Err("Reference already exists in destination".into()); }
+    destination.push(reference);
+    Ok(operation)
+}
+
+fn reference_bucket_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts) -> Vec<Pod> {
+    let mut pods = Vec::new();
+    for opinion in &snapshot.reference_opinions {
+        if clear_reference_command(snapshot, opinion).is_none() { continue; }
+        let key = format!("reference.edit:{}:{}:buckets", opinion.layer, opinion.prim);
+        if !drafts.2.lock().is_ok_and(|expanded| expanded.get(&key) == Some(&true)) { continue; }
+        if opinion.operation.explicit {
+            pods.push(Pod::new(Id::new(&key)).with_custom_units(2, |ui| {
+                ui.label("Explicit lists cannot mix other buckets");
+                ui.label("Whole-op conversion is not available here");
+            }));
+            continue;
+        }
+        let operation = Arc::new(opinion.operation.clone());
+        for (bucket, entries) in [("Prepend", &operation.prepended_items), ("Append", &operation.appended_items),
+            ("Add", &operation.added_items), ("Delete", &operation.deleted_items), ("Order", &operation.ordered_items)] {
+            for (index, reference) in entries.iter().enumerate() {
+                let entry_key = format!("{key}:{bucket}:{index}");
+                let lines = path_lines(&format!("{} <{}>", if reference.asset_path.is_empty() { "(internal)" } else { &reference.asset_path },
+                    if reference.prim_path.is_empty() { "defaultPrim" } else { reference.prim_path.as_str() }));
+                let errors = drafts.0.lock().ok().and_then(|values| values.get(&entry_key).map(|value| path_lines(&value.2).len())).unwrap_or(0);
+                let operation = operation.clone();
+                let bridge = bridge.clone();
+                let drafts = drafts.clone();
+                let prim = snapshot.selected.clone().unwrap();
+                let context = EditorSnapshot { document_id: snapshot.document_id, revision: snapshot.revision,
+                    edit_target: snapshot.edit_target.clone(), ..Default::default() };
+                pods.push(Pod::new(Id::new(&entry_key)).with_custom_units(4+lines.len()+errors, move |ui| {
+                    if !drafts.4.lock().is_ok_and(|current| current.as_ref() == Some(&(context.document_id, context.edit_target.clone()))) { return; }
+                    ui.label(&format!("Move {bucket} reference {}", index+1));
+                    for line in lines { ui.label(&line); }
+                    let Ok(mut values) = drafts.0.lock() else { return };
+                    let modes: Vec<_> = ["Prepend", "Append", "Add", "Delete", "Order"].into_iter().filter(|mode| *mode != bucket).collect();
+                    let draft = values.entry(entry_key).or_insert_with(|| (String::new(), modes[0].into(), String::new()));
+                    if ui.button(&format!("Destination: {}", draft.1)).clicked {
+                        let current = modes.iter().position(|mode| *mode == draft.1).unwrap_or(0);
+                        draft.1 = modes[(current+1)%modes.len()].into();
+                        draft.2.clear();
+                    }
+                    if ui.button("Move entry to destination bucket").clicked {
+                        match move_reference_bucket(&operation, bucket, index, &draft.1) {
+                            Ok(operation) => {
+                                draft.2.clear();
+                                send_edit(&bridge, &context, EditorEdit::ReferenceListOp { prim, operation });
+                            }
+                            Err(error) => draft.2 = error,
+                        }
+                    }
+                    if !draft.2.is_empty() { for line in path_lines(&draft.2) { ui.label(&line); } }
+                }));
+            }
+        }
+    }
+    pods
+}
+
 fn parse_sample_time(input: &str) -> Result<f64, String> {
     input.trim().parse::<f64>().ok().filter(|time| time.is_finite())
         .ok_or_else(|| "Sample time must be a finite number".into())
@@ -411,6 +783,223 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_bucket_moves_preserve_data_and_compose_with_undo() {
+        use super::move_reference_bucket;
+        use openusd::sdf::{Reference, ReferenceListOp, LayerOffset, Value};
+        let reference = Reference { asset_path: "relative.usda".into(), prim_path: openusd::sdf::path("/Source").unwrap(),
+            layer_offset: LayerOffset::new(12., 3.), custom_data: [("label".into(), Value::String("retained".into()))].into() };
+        let modes = ["Prepend", "Append", "Add", "Delete", "Order"];
+        fn bucket<'a>(op: &'a ReferenceListOp, mode: &str) -> &'a [Reference] {
+            match mode { "Prepend" => &op.prepended_items, "Append" => &op.appended_items,
+                "Add" => &op.added_items, "Delete" => &op.deleted_items, _ => &op.ordered_items }
+        }
+        for from in modes {
+            let mut source = ReferenceListOp::default();
+            match from { "Prepend" => source.prepended_items.push(reference.clone()), "Append" => source.appended_items.push(reference.clone()),
+                "Add" => source.added_items.push(reference.clone()), "Delete" => source.deleted_items.push(reference.clone()),
+                _ => source.ordered_items.push(reference.clone()) }
+            for to in modes.into_iter().filter(|mode| *mode != from) {
+                let changed = move_reference_bucket(&source, from, 0, to).unwrap();
+                assert!(bucket(&changed, from).is_empty());
+                assert_eq!(bucket(&changed, to), &[reference.clone()]);
+                assert_eq!(bucket(&source, from), &[reference.clone()]);
+                assert!(!changed.explicit);
+            }
+        }
+        let duplicate = ReferenceListOp { prepended_items: vec![reference.clone()], appended_items: vec![reference.clone()], ..Default::default() };
+        let other = Reference { prim_path: openusd::sdf::path("/Other").unwrap(), ..reference.clone() };
+        let populated = ReferenceListOp { prepended_items: vec![reference.clone(), other.clone()],
+            appended_items: vec![other.clone()], deleted_items: vec![other.clone()], ..Default::default() };
+        let moved = move_reference_bucket(&populated, "Prepend", 0, "Append").unwrap();
+        assert_eq!(moved.prepended_items, vec![other.clone()]);
+        assert_eq!(moved.appended_items, vec![other.clone(), reference.clone()]);
+        assert_eq!(moved.deleted_items, populated.deleted_items);
+        for (from, index, to) in [("Prepend", 0, "Append"), ("Prepend", 1, "Add"), ("Prepend", 0, "Prepend"),
+            ("Unknown", 0, "Add"), ("Prepend", 0, "Explicit")] {
+            assert!(move_reference_bucket(&duplicate, from, index, to).is_err());
+        }
+        assert!(move_reference_bucket(&ReferenceListOp::explicit([reference]), "Explicit", 0, "Append").is_err());
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/reference_order.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let original = editor.snapshot().unwrap().reference_opinions[0].operation.clone();
+        let moved = move_reference_bucket(&original, "Prepend", 0, "Append").unwrap();
+        assert_eq!(moved.appended_items[0], original.prepended_items[0]);
+        assert_eq!(moved.prepended_items[0], original.prepended_items[1]);
+        editor.edit(usd_bevy::editor::EditorEdit::ReferenceListOp { prim: "/Root".into(), operation: moved }).unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        editor.redo().unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn reference_creation_preserves_operations_and_undo() {
+        use super::insert_reference;
+        use openusd::sdf::{Reference, ReferenceListOp, Value};
+        let fields = ["payload_authoring_content.usda".into(), "/Ball".into(), "0".into(), "1".into()];
+        let existing = Reference { asset_path: "payload_authoring_content.usda".into(), prim_path: openusd::sdf::path("/Box").unwrap(),
+            custom_data: [("label".into(), Value::String("retained".into()))].into(), ..Default::default() };
+        for bucket in ["Explicit", "Prepend", "Append", "Add", "Delete", "Order"] {
+            let operation = insert_reference(None, bucket, &fields).unwrap();
+            assert!(insert_reference(Some(&operation), bucket, &fields).is_err());
+            let base = if bucket == "Explicit" { ReferenceListOp::explicit([existing.clone()]) }
+                else { ReferenceListOp::prepended([existing.clone()]) };
+            let changed = insert_reference(Some(&base), bucket, &fields).unwrap();
+            let inserted = match bucket {
+                "Explicit" => &changed.explicit_items, "Prepend" => &changed.prepended_items,
+                "Append" => &changed.appended_items, "Add" => &changed.added_items,
+                "Delete" => &changed.deleted_items, _ => &changed.ordered_items,
+            };
+            assert_eq!(inserted.last().unwrap().prim_path.as_str(), "/Ball");
+            assert_eq!(inserted.len(), if bucket == "Explicit" || bucket == "Prepend" { 2 } else { 1 });
+            if bucket == "Explicit" { assert_eq!(changed.explicit_items[0], existing); }
+            else { assert_eq!(changed.prepended_items[0], existing); }
+            assert_eq!(base.explicit, changed.explicit);
+        }
+        assert!(insert_reference(Some(&ReferenceListOp::explicit([])), "Prepend", &fields).is_err());
+        assert!(insert_reference(Some(&ReferenceListOp::default()), "Explicit", &fields).is_err());
+        assert!(insert_reference(None, "Unknown", &fields).is_err());
+        assert!(insert_reference(None, "Prepend", &["".into(), "".into(), "0".into(), "1".into()]).is_err());
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/reference_create.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        editor.edit(usd_bevy::editor::EditorEdit::ReferenceListOp {
+            prim: "/Root".into(), operation: insert_reference(None, "Prepend", &fields).unwrap(),
+        }).unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        editor.redo().unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn reference_structure_edits_preserve_data_strength_and_undo() {
+        use super::{change_reference_structure, ReferenceStructure};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/reference_order.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let original = editor.snapshot().unwrap().reference_opinions[0].operation.clone();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        for (index, action) in [(1, ReferenceStructure::Earlier), (0, ReferenceStructure::Later), (0, ReferenceStructure::Remove)] {
+            let operation = change_reference_structure(&original, "Prepend", index, action).unwrap();
+            assert_eq!(operation.prepended_items[0], original.prepended_items[1]);
+            editor.edit(usd_bevy::editor::EditorEdit::ReferenceListOp { prim: "/Root".into(), operation }).unwrap();
+            assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+            editor.undo().unwrap();
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        }
+        assert!(change_reference_structure(&original, "Prepend", 0, ReferenceStructure::Earlier).is_none());
+        assert!(change_reference_structure(&original, "Prepend", 1, ReferenceStructure::Later).is_none());
+        assert!(change_reference_structure(&original, "Prepend", 2, ReferenceStructure::Remove).is_none());
+        assert!(change_reference_structure(&original, "unknown", 0, ReferenceStructure::Remove).is_none());
+        let explicit = openusd::sdf::ReferenceListOp::explicit([original.prepended_items[0].clone()]);
+        let empty = change_reference_structure(&explicit, "Explicit", 0, ReferenceStructure::Remove).unwrap();
+        assert!(empty.explicit && empty.explicit_items.is_empty());
+        let single = openusd::sdf::ReferenceListOp::prepended([original.prepended_items[0].clone()]);
+        assert!(!change_reference_structure(&single, "Prepend", 0, ReferenceStructure::Remove).unwrap().explicit);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn reference_source_changes_preserve_dirty_fields_and_acknowledge_writes() {
+        use openusd::sdf::{LayerOffset, Reference, Value};
+        let original = Reference { asset_path: "part.usda".into(), prim_path: openusd::sdf::path("/A").unwrap(), ..Default::default() };
+        let fields = ["part.usda".into(), "/A".into(), "5".into(), "1".into()];
+        let mut baseline = original.clone();
+        let changed = Reference { prim_path: openusd::sdf::path("/B").unwrap(), ..original.clone() };
+        assert!(super::reference_source_conflicts(&mut baseline, &changed, &fields, true));
+        assert_eq!(baseline, original);
+        let mut metadata = original.clone();
+        metadata.custom_data.insert("identity".into(), Value::Int(2));
+        assert!(super::reference_source_conflicts(&mut baseline, &metadata, &fields, true));
+        assert_eq!(baseline, original);
+        let applied = Reference { layer_offset: LayerOffset::new(5., 1.), ..original.clone() };
+        assert!(!super::reference_source_conflicts(&mut baseline, &applied, &fields, true));
+        assert_eq!(baseline, applied);
+        assert!(!super::reference_source_conflicts(&mut baseline, &metadata, &fields, false));
+        assert_eq!(baseline, metadata);
+        let drafts = super::Drafts::default();
+        drafts.synchronize_context(&usd_bevy::editor::EditorSnapshot { document_id: 1, ..Default::default() });
+        drafts.5.lock().unwrap().insert("entry".into(), original);
+        drafts.synchronize_context(&usd_bevy::editor::EditorSnapshot { document_id: 2, ..Default::default() });
+        assert!(drafts.5.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reference_entry_edit_preserves_custom_data_and_undo() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/reference_custom_data.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let mut operation = editor.snapshot().unwrap().reference_opinions[0].operation.clone();
+        let base = operation.prepended_items[0].clone();
+        let fields = [base.asset_path.clone(), "/Ball".into(), "12.5".into(), "3".into()];
+        let edited = super::edited_reference(&base, &fields).unwrap();
+        assert_eq!(edited.custom_data, base.custom_data);
+        assert_eq!(edited.layer_offset, openusd::sdf::LayerOffset::new(12.5, 3.));
+        operation.prepended_items[0] = edited;
+        editor.edit(usd_bevy::editor::EditorEdit::ReferenceListOp { prim: "/Root".into(), operation }).unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        editor.undo().unwrap();
+        assert_eq!(editor.snapshot().unwrap().reference_opinions[0].operation.prepended_items[0], base);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        for (field, value) in [(1, "relative"), (1, "/Root.attr"), (1, "/Root{v=a}"), (2, "NaN"), (3, "0"), (3, "-1")] {
+            let mut invalid = fields.clone();
+            invalid[field] = value.into();
+            assert!(super::edited_reference(&base, &invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn reference_clear_control_matches_mapped_target_and_retains_guard() {
+        let opinion = usd_bevy::editor::ReferenceOpinion { layer: "weak.usda".into(),
+            prim: openusd::sdf::path("/Source{choice=a}").unwrap(), offset: openusd::sdf::LayerOffset::default(),
+            operation: openusd::sdf::ReferenceListOp::explicit([]) };
+        let mut snapshot = usd_bevy::editor::EditorSnapshot { document_id: 4, revision: 9,
+            selected: Some("/Source".into()), edit_target: Some(openusd::usd::EditTarget::for_layer("root.usda")), ..Default::default() };
+        assert!(super::clear_reference_command(&snapshot, &opinion).is_none());
+        snapshot.edit_target = Some(openusd::usd::EditTarget::for_layer("weak.usda"));
+        assert!(super::clear_reference_command(&snapshot, &opinion).is_none());
+        snapshot.edit_target = Some(openusd::usd::EditTarget::for_local_direct_variant("weak.usda", "/Source{choice=a}").unwrap());
+        let Some(usd_bevy::editor::EditorCommand::EditChecked { edit: usd_bevy::editor::EditorEdit::ClearReferences { prim }, document_id, revision, target })
+            = super::clear_reference_command(&snapshot, &opinion) else { panic!("checked clear") };
+        assert_eq!((document_id, revision, prim.as_str()), (4, 9, "/Source"));
+        assert_eq!(Some(target), snapshot.edit_target);
+    }
+
+    #[test]
+    fn reference_readout_keeps_source_identity_buckets_and_custom_data() {
+        use openusd::sdf::{LayerOffset, Reference, ReferenceListOp, Value};
+        let reference = Reference { asset_path: "long relative path with spaces/model.usda".into(),
+            prim_path: openusd::sdf::path("/Original").unwrap(), layer_offset: LayerOffset::new(10., 2.),
+            custom_data: [("label".into(), Value::String("retained".into()))].into_iter().collect() };
+        let mut opinion = usd_bevy::editor::ReferenceOpinion { layer: "source.usda".into(),
+            prim: openusd::sdf::path("/Source{choice=a}").unwrap(), offset: LayerOffset::new(20., 3.),
+            operation: ReferenceListOp::deleted([reference]) };
+        let lines = super::reference_opinion_lines(&opinion, 0);
+        assert!(lines.iter().all(|line| line.chars().count() <= 40));
+        let text = lines.join("");
+        for expected in ["source.usda", "/Source{choice=a}", "Delete", "long relative path with spaces/model.usda", "/Original", "offset 20, scale 3", "offset 10, scale 2", "label", "retained"] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        opinion.operation = ReferenceListOp::explicit([]);
+        assert!(super::reference_opinion_lines(&opinion, 0).join("").contains("blocks weaker references"));
+    }
+
     #[test]
     fn variant_composition_changes_conflict_with_relationship_drafts() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/draft_conflict.usda");

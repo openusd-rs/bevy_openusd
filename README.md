@@ -108,6 +108,37 @@ An empty replacement list blocks weaker payloads; clearing removes the local
 opinion and restores weaker composition. Entries allow empty defaultPrim targets
 or absolute prim paths, with finite offsets and positive finite time scales.
 The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
+References also support complete authored list operations through
+`EditorEdit::ReferenceListOp { prim, operation }` and
+`authoring::set_reference_list_op`. Prepend, append, add, delete, order and
+explicit replacement preserve weaker composition according to their list rules.
+Malformed mixed operations and invalid entries reject before mutation. Reference
+customData is retained through USDA, USDC, USD and USDZ root exports, including
+snapshot-only reopening of a relocated package. The viewer can create, edit and
+remove local reference entries and reorder them within their existing list-op bucket.
+Removing the last explicit entry retains an explicit-empty blocker; Clear removes
+the opinion instead. Creation retains the current explicit/non-explicit mode and
+other entries, with asset/prim and time-mapping inputs. The bucket controls move
+entries between Prepend, Append, Add, Delete and Order, appending to the destination
+and preserving the full entry. Exact destination duplicates reject. Conversion
+between explicit replacement and non-explicit operations remains API-only.
+`EditorSnapshot::reference_opinions` retains contributing authored reference
+list operations in strength order, including customData, original spec paths,
+source layer identifiers and cumulative site offsets. Relative paths remain
+anchored to those source layers; this is provenance, not a composed reference list.
+The inspector's **Payloads / references** group displays reference opinions below
+the payload controls, including source paths, list modes, separate site/arc time
+mappings and customData. A matching active edit target exposes **Clear local
+reference opinion**; it removes that local field through the checked undoable
+command path. Other layers' opinions cannot be cleared from their readouts.
+**Edit local reference entries** exposes asset path, prim target, time offset and
+scale fields for matching local entries. Apply retains the operation bucket,
+other entries and customData. Per-field source conflicts require Reload or Keep;
+queued edits retain the document/revision/edit-target guard.
+If the whole reference changes while any field is dirty, including a customData
+change or another entry occupying its list position, Apply is withheld until
+Reload or Keep. Keep retains edited fields only; untouched fields refresh from
+the current reference. A successful write is acknowledged without a new conflict.
 For authored list editing, `EditorEdit::PayloadListOp { prim, operation }`
 and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containing
 prepend, append, add, delete, and order entries. They replace the local operation,

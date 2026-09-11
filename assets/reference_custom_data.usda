@@ -1,0 +1,11 @@
+#usda 1.0
+def Xform "Root" (
+    prepend references = @payload_authoring_content.usda@</Box> (
+        offset = 10
+        scale = 2
+        customData = {
+            string label = "retained"
+            dictionary settings = { int version = 3 }
+        }
+    )
+) {}

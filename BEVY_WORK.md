@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Current workspace regression gate
+
+At `0b5ec99`, `TMPDIR="$PWD/target/test-tmp" make test-all
+CARGO='cargo --offline'` completed successfully: 586 passed, zero failed and 14
+ignored across 30 result suites (`/tmp/reference-structure-workspace-tests.log`).
+This includes the reference authoring/provenance/editor changes below. Ignored
+native tests are not counted as passing. The earlier reload timeout remains
+unexplained; this successful run does not establish its cause or a fix.
+
 ## Reload timeout investigation
 
 The asset-test wait helper now preserves the calling test location and reports

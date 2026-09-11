@@ -3,6 +3,33 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Viewer close-command confirmation
+
+The viewer now filters root egui Close commands before Mara consumes them.
+An application-update modal offers Cancel or Discard and close; approval is
+single-output-use and checked against the current document ID/revision. Missing
+document state fails closed. Confirmation is conservative for every document,
+not conditional on an unproven clean-state flag. Non-close viewport commands
+are preserved. scripts/replays/close_cancel.replay exercises the title-bar close
+button followed by cancellation.
+
+The first native implementation rendered inside Plugin::on_end_pass and
+deadlocked when widget pointer handling re-entered the plugin mutex. Its failed
+artifacts remain at target/close-confirmation-ui.png and .second.png, with the
+panic in its viewer log. The corrected implementation renders in UsdApp::update;
+only output filtering remains in the plugin. Both inspected frames from
+target/close-confirmation-cancel-ui.png and .second.png show, respectively, the
+readable modal over the scene and the retained scene after Cancel. Both pixel
+checks and the panic-log check pass (/tmp/close-confirmation-cancel-capture.log).
+The final approval-consumption tightening does not change modal layout.
+
+All 78 viewer tests and check-all pass (/tmp/close-confirmation-final-tests.log,
+/tmp/close-confirmation-final-check.log). Tests cover stale/missing context,
+single-use approval, unrelated commands, real modal pointer events and Escape.
+Native Discard interaction remains to verify. This does NOT cover OS-level
+WindowEvent::CloseRequested: Mara exits directly before application hooks, so
+complete close protection still needs the pending sibling-host approval.
+
 ## Per-layer authored change tracking foundation
 
 EditorSession now owns a StageSink-backed layer change tracker and publishes

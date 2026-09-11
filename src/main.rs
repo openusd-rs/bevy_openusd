@@ -20,6 +20,7 @@ mod ui_diagnostics;
 mod ui_frame_pacing;
 mod render_settings;
 mod file_dialog;
+mod close_confirmation;
 mod payload_editor;
 
 use mara::host::{MaraHostCtx, RibbonRail};
@@ -184,6 +185,7 @@ struct UsdApp {
     framing: framing::FrameRequest,
     file_dialogs: file_dialog::FileDialogs,
     capture_handshake: bool,
+    close_confirmation: close_confirmation::CloseConfirmation,
 }
 
 impl WindowApp for UsdApp {
@@ -195,6 +197,7 @@ impl WindowApp for UsdApp {
             .ok()
             .or_else(|| std::env::args().nth(1));
         let editor = EditorBridge::default();
+        let close_confirmation = close_confirmation::install(ctx.__internal_egui_ctx(), editor.clone());
         if let Some(path) = path { send(&editor, EditorCommand::Open(path)); }
         if let Ok(path) = std::env::var("USD_VIEWER_SELECT") { send(&editor, EditorCommand::Select(Some(path))); }
         let bridge = editor.clone();
@@ -230,10 +233,12 @@ impl WindowApp for UsdApp {
             framing,
             file_dialogs: file_dialog::FileDialogs::new(ctx.__internal_egui_ctx()),
             capture_handshake,
+            close_confirmation,
         }
     }
 
     fn update(&mut self, host: &mut MaraHostCtx<'_>) {
+        self.close_confirmation.show(host.__internal_egui());
         let Self {
             bevy_view,
             workspace,

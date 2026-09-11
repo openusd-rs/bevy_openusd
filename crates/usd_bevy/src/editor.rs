@@ -826,6 +826,36 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    fn assert_reference_custom_data(stage: &openusd::usd::Stage) {
+        let field = stage.root_layer().data().try_field(&openusd::sdf::path("/Root").unwrap(), "references").unwrap().unwrap().into_owned();
+        let openusd::sdf::Value::ReferenceListOp(op) = field else { panic!("reference list op") };
+        assert_eq!(op.prepended_items[0].custom_data.get("label"), Some(&openusd::sdf::Value::String("retained".into())));
+        assert!(matches!(op.prepended_items[0].custom_data.get("settings"), Some(openusd::sdf::Value::Dictionary(values)) if values.get("version") == Some(&openusd::sdf::Value::Int(3))));
+        assert_eq!(op.prepended_items[0].layer_offset, openusd::sdf::LayerOffset::new(10., 2.));
+        assert_eq!(stage.prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+    }
+
+    #[test]
+    fn reference_custom_data_survives_all_root_export_formats() {
+        use super::*;
+        let input = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/reference_custom_data.usda");
+        let source = crate::UsdSource::new(input, std::fs::read(input).unwrap()).unwrap();
+        let editor = EditorSession::new(source.open_stage().unwrap());
+        let original = editor.stage().root_layer().export_to_string().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        for extension in ["usda", "usdc", "usd", "usdz"] {
+            let exported = directory.path().join(format!("exported.{extension}"));
+            editor.save(exported.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+            let reread = crate::UsdSource::new(&exported, std::fs::read(&exported).unwrap()).unwrap().open_stage().unwrap();
+            assert_reference_custom_data(&reread);
+            if extension == "usdz" {
+                let portable = crate::UsdSource::snapshot("relocated/reference.usdz", std::fs::read(&exported).unwrap()).unwrap().open_stage().unwrap();
+                assert_reference_custom_data(&portable);
+            }
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
+        }
+    }
+
     #[test]
     #[ignore = "requires native usdcat"]
     fn native_reference_custom_data_round_trip() {
@@ -834,18 +864,20 @@ mod tests {
         let source = crate::UsdSource::new(input, std::fs::read(input).unwrap()).unwrap();
         let editor = EditorSession::new(source.open_stage().unwrap());
         let directory = tempfile::tempdir().unwrap();
-        let exported = directory.path().join("exported.usda");
-        let native = directory.path().join("native.usda");
-        editor.save(exported.to_str().unwrap(), SaveMode::RootLayer).unwrap();
-        let result = std::process::Command::new("usdcat").arg(&exported).arg("--out").arg(&native).output().unwrap();
-        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-        let reread = crate::UsdSource::new(&native, std::fs::read(&native).unwrap()).unwrap().open_stage().unwrap();
-        let field = reread.root_layer().data().try_field(&openusd::sdf::path("/Root").unwrap(), "references").unwrap().unwrap().into_owned();
-        let openusd::sdf::Value::ReferenceListOp(op) = field else { panic!("reference list op") };
-        assert_eq!(op.prepended_items[0].custom_data.get("label"), Some(&openusd::sdf::Value::String("retained".into())));
-        assert!(matches!(op.prepended_items[0].custom_data.get("settings"), Some(openusd::sdf::Value::Dictionary(values)) if values.get("version") == Some(&openusd::sdf::Value::Int(3))));
-        assert_eq!(op.prepended_items[0].layer_offset, openusd::sdf::LayerOffset::new(10., 2.));
-        assert_eq!(reread.prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+        for extension in ["usda", "usdc", "usd", "usdz"] {
+            let exported = directory.path().join(format!("exported.{extension}"));
+            let native = directory.path().join(format!("native-{extension}.usda"));
+            editor.save(exported.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+            let mut command = std::process::Command::new("usdcat");
+            command.arg(&exported).arg("--out").arg(&native);
+            if extension == "usdz" { command.arg("--flatten"); }
+            let result = command.output().unwrap();
+            assert!(result.status.success(), "{extension}: {}", String::from_utf8_lossy(&result.stderr));
+            let reread = crate::UsdSource::new(&native, std::fs::read(&native).unwrap()).unwrap().open_stage().unwrap();
+            if extension == "usdz" {
+                assert_eq!(reread.prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+            } else { assert_reference_custom_data(&reread); }
+        }
     }
 
     #[test]

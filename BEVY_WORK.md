@@ -16,6 +16,20 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Reference customData acceptance now covers root exports in USDA, USDC, USD and
+USDZ. The ordinary regression checks nested metadata, offset 10 / scale 2,
+external Cube composition and unchanged live root text after every export.
+The package also reopens from snapshot-only bytes under a relocated identifier,
+without disk fallback (`/tmp/reference-formats-portable-tests.log`). Native
+USD 25.05.01 round trips USDA/USDC/USD metadata and composition; its USDZ branch
+flattens the package and confirms the Cube. The native package branch verifies
+composition, not preservation of reference metadata through flattening
+(`/tmp/reference-formats-native-final.log`). Check-all passes
+(`/tmp/reference-formats-final-check.log`). No production behavior changed in
+this verification step.
+The complete library run passes 459 tests with 14 ignored
+(`/tmp/reference-formats-lib-tests.log`).
+
 Reference list editing now has the parallel `EditorEdit::ReferenceListOp` and
 `authoring::set_reference_list_op` APIs. They validate all buckets before mutation
 and replace the local operation, preserving canonical reference customData.

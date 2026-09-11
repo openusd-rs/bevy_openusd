@@ -103,7 +103,8 @@ int main(int argc,char **argv) try {
                 double length=std::hypot(n[0],n[1],n[2]), error=0;
                 for(int k=0;k<3;++k) error=std::max(error,std::abs(normals[i*3+k]-(length==0?0:n[k]/length)));
                 if(error>1e-5 && mismatches<8) {
-                    std::cout<<std::setprecision(17)<<"normal_mismatch_vertex="<<i<<" native_vertex="<<map[i]<<" cross_length="<<length<<" expected=";
+                    std::cout<<std::setprecision(17)<<"normal_mismatch_vertex="<<i<<" native_vertex="<<map[i]
+                        <<" nonmanifold="<<ref->GetLevel(1).IsVertexNonManifold(map[i])<<" cross_length="<<length<<" expected=";
                     for(int k=0;k<3;++k) std::cout<<(k?",":"")<<(length==0?0:n[k]/length);
                     std::cout<<" actual="<<normals[i*3]<<','<<normals[i*3+1]<<','<<normals[i*3+2]<<'\n';
                 }

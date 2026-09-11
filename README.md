@@ -946,8 +946,12 @@ zero selected meshes or any failure returns nonzero. Native normal comparisons
 print up to eight mismatching vertex indices and normal vectors.
 `assets/subdivision_bowtie.usda` is a known-failing two-triangle normal witness
 from Spot: matching positions, but opposite fallback/native normals at the
-shared vertex whose two incident triangles share no edge. This non-manifold
-normal case is unresolved, not excluded from the result.
+shared vertex whose two incident triangles share no edge. Both face windings
+point +Y, agreeing with Bevy's fallback, while the native corner tangent cross
+points -Y. The cyclic-index control reproduces the same difference. The native
+tool labels the vertex non-manifold and still reports failure; this discrepancy
+is not grounds to flip Bevy's normal. General non-manifold normal parity is not
+claimed.
 
 Both native checks require a new output directory and retain logs and generated
 assets on failure. The asset check additionally requires the collection; the

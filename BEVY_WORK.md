@@ -56,6 +56,36 @@ as does `git diff --check`. This adds no GPU or non-Unix runtime evidence.
 
 ## Spot visual recheck after material fixes
 
+### Bowtie normal reference boundary
+
+The isolated lower-leg mismatch does not establish that Bevy's fallback is
+backwards. Both incident triangle windings independently point +Y, matching the
+current fallback. Native OpenSubdiv's corner tangent cross points -Y. Its
+`assignCornerLimitTangentMasks` uses only the first two incident edges, rather
+than a per-face normal. This was checked in the installed 3.7.0 SDK and the
+[versioned upstream source](https://github.com/PixarAnimationStudios/OpenSubdiv/blob/v3_7_0/opensubdiv/sdc/catmarkScheme.h).
+Do not change the renderer merely to make this non-manifold vertex match that
+single native normal.
+
+The fixture now includes a cyclic-index reference control with unchanged face
+winding. Both variants reproduce the mismatch and the comparator explicitly
+reports `nonmanifold=1` (`target/bowtie-cyclic-native/`,
+`/tmp/bowtie-cyclic-native.log`). The comparison remains a failure; no vertices
+are silently excluded. The updated comparator passes its existing native tool
+checks (`/tmp/bowtie-native-tool-check.log`).
+
+New ordinary regression `bowtie_fallback_normals_preserve_face_winding` checks
+both source triangles' geometric normals and every refined normal for both
+variants at scales 1e-12, 1 and 1e12, with right- and left-handed orientation.
+All 12 combinations preserve the correct orientation, 13 refined points and
+the shared corner position (`/tmp/bowtie-fallback-test.log`). This protects the
+bounded fallback case, not general non-manifold surface or normal equivalence.
+No production normal algorithm or source topology was changed.
+
+Validation: 537 ordinary tests pass, 13 ignored; check-all, build and whitespace
+checks pass (`/tmp/bowtie-fallback-{all-tests,check,build}.log`). The native bowtie
+comparison still fails as described; ordinary success is not native parity.
+
 ### All visible-mesh native comparison and bowtie witness
 
 The new `scripts/check_subdivision_meshes.sh` uses scene_report to enumerate

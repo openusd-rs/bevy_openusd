@@ -3,6 +3,32 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Current native export and filesystem-event gates
+
+At `fd3e466`, all 13 `make test-native` export tests pass, followed by the
+separate `native_reference_custom_data_round_trip` test. Logs:
+`/tmp/spatial-current-native-export.log` and
+`/tmp/spatial-current-native-reference.log`. These refresh the 14 ignored tests
+from the preceding default-feature workspace gate.
+
+The optional watcher lane also passes all 22 selected native tests, comprising
+those 14 OpenUSD checks and eight real filesystem-event tests. The additional
+cases cover numeric clip reloads, layer/texture reload recovery, removed
+dependencies, missing initial roots, failed initial editor textures, failed
+watch-directory retries, missed-pixel recovery and document-preserving editor
+texture recovery. These tests are feature-gated and are not included in the
+default-feature gate's ignored count. Command:
+
+```sh
+PATH=/nix/store/61sjr1grxn63r6xpidrlysj5jm7l1vpa-python3.13-openusd-25.05.01/bin:$PATH \
+TMPDIR="$PWD/target/test-tmp" make test CARGO='cargo --offline' \
+APP_TARGET='-p usd_bevy --features file_watcher --lib native_ -- --ignored --nocapture'
+```
+
+Evidence: `/tmp/spatial-current-native-watcher.log` (22 passed, zero failures,
+9.26-second test execution after compilation). This is one successful native
+event run, not a stress/flakiness result or a fix for intermittent host rendering.
+
 ## Non-planar periodic curve acceptance
 
 Added `assets/curve_surface_spatial.usda`, an eight-control-point spatial periodic

@@ -114,8 +114,8 @@ References also support complete authored list operations through
 explicit replacement preserve weaker composition according to their list rules.
 Malformed mixed operations and invalid entries reject before mutation. Reference
 customData is retained through USDA, USDC, USD and USDZ root exports, including
-snapshot-only reopening of a relocated package. Creating or editing reference
-list entries remains API-only.
+snapshot-only reopening of a relocated package. Adding, removing or reordering
+individual reference entries remains API-only.
 `EditorSnapshot::reference_opinions` retains contributing authored reference
 list operations in strength order, including customData, original spec paths,
 source layer identifiers and cumulative site offsets. Relative paths remain
@@ -125,6 +125,10 @@ the payload controls, including source paths, list modes, separate site/arc time
 mappings and customData. A matching active edit target exposes **Clear local
 reference opinion**; it removes that local field through the checked undoable
 command path. Other layers' opinions cannot be cleared from their readouts.
+**Edit local reference entries** exposes asset path, prim target, time offset and
+scale fields for matching local entries. Apply retains the operation bucket,
+other entries and customData. Per-field source conflicts require Reload or Keep;
+queued edits retain the document/revision/edit-target guard.
 For authored list editing, `EditorEdit::PayloadListOp { prim, operation }`
 and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containing
 prepend, append, add, delete, and order entries. They replace the local operation,

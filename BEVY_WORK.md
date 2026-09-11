@@ -16,6 +16,25 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Existing local reference entries can now be expanded for asset/prim retargeting
+and time-offset/scale editing. The four fields share property draft storage,
+per-field conflict reconciliation and document/edit-target resets. Old closures
+cannot operate after context replacement. Applying replaces only the selected
+entry in a cloned operation, retaining its bucket, other entries and customData,
+through the checked reference-list command. Input validation rejects invalid
+targets, missing asset-and-target pairs and non-finite/non-positive mappings.
+Entry creation/removal/reordering and arbitrary customData editing remain open.
+
+The regression retargets the fixture to Sphere, changes its mapping, preserves
+customData, undoes to the exact original reference and verifies unchanged disk
+bytes; invalid field inputs reject. All 63 viewer tests and check-all pass
+(`/tmp/reference-entry-final-{tests,check}.log`). Inspected native layout
+`target/reference-edit-layout-ui.png`, then the checked-in `reference_edit.replay`
+retargeted `/Box` to `/Ball`: `target/reference-edit-applied-ui.png` shows the
+orange sphere and retained 10/2 fields. Both capture guards pass
+(`/tmp/reference-edit-{layout,applied}-capture.log`). Native conflict resolution,
+multi-entry ordering and error-state layouts remain incompletely covered.
+
 Reference opinion readouts now offer Clear local reference opinion only when
 their source layer and spec path match the active target's mapped selected prim.
 The command retains the full document/revision/target guard and uses existing

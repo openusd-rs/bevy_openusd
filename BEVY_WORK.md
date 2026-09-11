@@ -3,6 +3,26 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Selected subset and CPU-skin fallback diagnostics
+
+Selected-entity render issues now include `UsdSubsetWarning` and
+`UsdCpuSkinFallback`, labelled Material subsets and CPU skinning fallback.
+These existing projection components previously did not reach the inspector.
+The bridge regression checks publishing and clearing both. A real subset-route
+regression authors invalid face index 99, confirms the whole mesh remains and
+the inspector receives the subset warning, then restores index 0. The same
+mapped root survives, the invalid-subset warning clears and the generated
+subset's independent material warning becomes visible.
+
+All 48 nonignored editor tests and check-all pass (one native test ignored):
+`/tmp/subset-fallback-editor-tests.log`, `/tmp/subset-fallback-check.log`.
+Inspected `target/invalid-subset-warning-ui.png`, captured from the new
+`assets/material_subset_invalid.usda`: /Root displays the invalid/overlapping
+subset explanation and whole-mesh fallback while the plane remains visible.
+Both capture guards pass (`/tmp/invalid-subset-capture.log`). CPU-skin fallback
+publication has component-level regression coverage here, not a new GPU/host
+capture; skinning behavior is unchanged.
+
 ## Selected-parent generated material warnings
 
 The editor now collects material warnings from generated subsets, point-instance

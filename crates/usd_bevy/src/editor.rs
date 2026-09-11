@@ -87,7 +87,8 @@ fn publish_projection_issues(
     rendering: Query<(Option<&crate::route::subdivision::UsdSubdivisionError>,
         Option<&crate::route::skel::UsdDeformationError>, Option<&crate::route::instancer::UsdInstancerWarning>,
         Option<&crate::route::shapes::UsdShapeError>, Option<&crate::route::curves::UsdCurveError>,
-        Option<&crate::route::xform::UsdTransformError>, Option<&crate::route::material::UsdMaterialWarning>)>,
+        Option<&crate::route::xform::UsdTransformError>, Option<&crate::route::material::UsdMaterialWarning>,
+        Option<&crate::route::subset::UsdSubsetWarning>, Option<&crate::route::gpu_skin::UsdCpuSkinFallback>)>,
     generated: Query<(Option<&Children>, Option<&crate::route::subset::UsdSubset>,
         Option<&crate::route::instancer::UsdPrototypePart>, Has<crate::route::instancer::UsdInstance>,
         Option<&crate::route::instancer::UsdInstanceId>, Option<&crate::route::material::UsdMaterialWarning>)>,
@@ -100,14 +101,16 @@ fn publish_projection_issues(
     state.view.document.render_issues = state.view.document.selected.as_deref()
         .and_then(|path| prims.as_ref()?.entity(path))
         .and_then(|entity| rendering.get(entity).ok())
-        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve, transform, material)| {
+        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve, transform, material, subset, fallback)| {
             [subdivision.map(|error| format!("Subdivision: {}", error.0)),
                 deformation.map(|error| format!("Deformation: {}", error.0)),
                 instancer.map(|error| format!("Point instancer: {}", error.0)),
                 shape.map(|error| format!("Shape: {}", error.0)),
                 curve.map(|error| format!("Curve: {}", error.0)),
                 transform.map(|error| format!("Transform: {}", error.0)),
-                material.map(|warning| format!("Material: {}", warning.0))]
+                material.map(|warning| format!("Material: {}", warning.0)),
+                subset.map(|warning| format!("Material subsets: {}", warning.0)),
+                fallback.map(|warning| format!("CPU skinning fallback: {}", warning.0))]
                 .into_iter().flatten().collect()
         });
     let selected = state.view.document.selected.as_deref().and_then(|path| prims.as_ref()?.entity(path));
@@ -1734,6 +1737,7 @@ def Xform "Model" (
 
     #[test]
     fn selected_render_failures_publish_and_clear() {
+        use crate::route::{subset::UsdSubsetWarning, gpu_skin::UsdCpuSkinFallback};
         use crate::route::{subdivision::UsdSubdivisionError, skel::UsdDeformationError, instancer::UsdInstancerWarning, shapes::UsdShapeError, curves::UsdCurveError};
         use crate::route::xform::UsdTransformError;
         use crate::route::material::UsdMaterialWarning;
@@ -1741,14 +1745,16 @@ def Xform "Model" (
         app.add_plugins((MinimalPlugins, EditorPlugin));
         app.init_resource::<crate::live::PrimEntities>();
         let entity = app.world_mut().spawn((UsdSubdivisionError("unsupported holes".into()),
-            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()), UsdTransformError("projective matrix".into()), UsdMaterialWarning("missing tangent frame".into()))).id();
+            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()), UsdTransformError("projective matrix".into()), UsdMaterialWarning("missing tangent frame".into()),
+            UsdSubsetWarning("overlapping faces".into()), UsdCpuSkinFallback("unsupported joint layout".into()))).id();
         app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Prim", entity);
         let bridge = app.world().resource::<EditorBridge>().clone();
         bridge.0.lock().unwrap().view.document.selected = Some("/Prim".into());
         app.update();
         assert_eq!(bridge.view().unwrap().document.render_issues,
-            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts", "Transform: projective matrix", "Material: missing tangent frame"]);
-        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError, UsdTransformError, UsdMaterialWarning)>();
+            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts", "Transform: projective matrix", "Material: missing tangent frame",
+            "Material subsets: overlapping faces", "CPU skinning fallback: unsupported joint layout"]);
+        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError, UsdTransformError, UsdMaterialWarning, UsdSubsetWarning, UsdCpuSkinFallback)>();
         app.update();
         assert!(bridge.view().unwrap().document.render_issues.is_empty());
         app.world_mut().entity_mut(entity).insert(UsdSubdivisionError("unsupported holes".into()));
@@ -1758,6 +1764,35 @@ def Xform "Model" (
         bridge.0.lock().unwrap().view.document.selected = None;
         app.update();
         assert!(bridge.view().unwrap().document.render_issues.is_empty());
+    }
+
+    #[test]
+    fn projected_subset_failure_reaches_inspector_and_recovers() {
+        let stage = crate::UsdSource::snapshot("subset.usda", include_bytes!("../../../assets/material_subset_warning.usda").as_slice()).unwrap().open_stage().unwrap();
+        let live = crate::live::LiveStage::new(stage);
+        let indices = live.stage.prim("/Root/Faces").unwrap().attribute("indices");
+        indices.clone().set(Value::IntVec(vec![99])).unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>().init_resource::<Assets<Image>>();
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(app.world_mut(), &live, &mut map);
+        let root = map.entity("/Root").unwrap();
+        app.insert_resource(map);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.0.lock().unwrap().view.document.selected = Some("/Root".into());
+        app.update();
+        assert!(bridge.view().unwrap().document.render_issues.iter().any(|issue| issue.starts_with("Material subsets:")));
+        assert!(app.world().get::<Mesh3d>(root).is_some());
+        indices.set(Value::IntVec(vec![0])).unwrap();
+        let mut map = app.world_mut().remove_resource::<crate::live::PrimEntities>().unwrap();
+        crate::live::apply_changes(app.world_mut(), &live, &mut map);
+        assert_eq!(map.entity("/Root"), Some(root));
+        app.insert_resource(map);
+        app.update();
+        let issues = bridge.view().unwrap().document.render_issues;
+        assert!(!issues.iter().any(|issue| issue.starts_with("Material subsets:")));
+        assert!(issues.iter().any(|issue| issue.starts_with("Material (subset Faces):")));
     }
 
     #[test]

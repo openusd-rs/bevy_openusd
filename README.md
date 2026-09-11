@@ -1943,6 +1943,10 @@ follows only generated-child markers, skips unrelated runtime subtrees and stops
 at 4096 visited child entities or 64 child warnings with a truncation message.
 It does not aggregate arbitrary authored prim descendants or nonmaterial child
 diagnostics.
+Selected-entity render issues also include invalid material-subset warnings and
+CPU skinning fallback reasons. These describe the active fallback, not a failure
+to render the whole entity. `assets/material_subset_invalid.usda` demonstrates
+out-of-range subset indices with the whole-mesh fallback retained.
 
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:

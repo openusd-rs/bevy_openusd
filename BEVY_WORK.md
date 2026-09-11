@@ -135,6 +135,29 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Numeric attribute arrays are now editable through the existing property draft,
+conflict, checked-command and undo paths. Supported types are signed/unsigned
+32/64-bit arrays, float/double arrays and float/double three-component arrays with
+their schema aliases. Whitespace separates scalars; vector arrays require whole
+triples. Empty text produces an empty typed array. Parsing rejects non-finite
+floats, integer/type overflow, incomplete triples, over 4096 scalar components
+and over 256 KiB input. Oversized source arrays are read-only without truncation
+or a full Debug dump. Larger bulk edits and other array kinds remain outside this
+text editor; the existing typed authoring API is not restricted by these UI limits.
+
+The regression round-trips all supported value variants and empty templates,
+checks invalid/oversized inputs and performs color-array authoring with exact-text
+undo and unchanged source bytes. All 74 viewer tests and check-all pass
+(`/tmp/numeric-array-final-{tests,check}.log`). Inspected
+`target/numeric-array-layout-fixed-ui.png` shows the blue cube and color attribute;
+`numeric_array_apply.replay` enters `1 0.3 0.05` and applies the default.
+Inspected `target/numeric-array-applied-ui.png` shows the orange cube and new array
+text. Both capture guards pass (`/tmp/numeric-array-layout-fixed-capture.log`,
+`/tmp/numeric-array-applied-capture.log`). The original layout replay scrolled the
+viewport because x=1100 lay outside the property pane; it was corrected to x=1000.
+That initial artifact is not a rendering regression or array-edit acceptance.
+Native sampled-array editing and large-array error layouts remain unverified.
+
 Payload drafts with at least two rows now expose separate order controls.
 Earlier/Later swap complete rows, retaining their list mode, raw field text and
 omitted-versus-explicit offset representation. Moves touch only the draft;

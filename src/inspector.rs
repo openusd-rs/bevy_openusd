@@ -288,11 +288,15 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 ui.label("This USD type is read-only");
                 return;
             };
-            let Some(current) = editable_text(&value) else { ui.label(&format!("{value:?}")); return };
+            let Some(current) = editable_text(&value) else {
+                if numeric_array_len(&value).is_some() { ui.label("Numeric array exceeds text editor limits"); }
+                else { ui.label(&format!("{value:?}")); }
+                return;
+            };
             let Ok(mut drafts) = drafts.0.lock() else { return };
             let draft = drafts.entry(key).or_insert_with(|| (current.clone(), current.clone(), String::new()));
             if !reconcile_draft(ui, draft, &current) { return; }
-            if !matrix_attribute { ui.text_input(&mut draft.1, "Value"); }
+            if !matrix_attribute { ui.text_input(&mut draft.1, if numeric_array_len(&value).is_some() { "Whitespace-separated numbers; empty = []" } else { "Value" }); }
             if ui.button("Apply sample at time").clicked {
                 match parse_sample_time(&time.0).and_then(|time| parse_value(&value, &draft.1).map(|value| (time, value))) {
                     Ok((time_code, value)) => {
@@ -709,6 +713,14 @@ fn value_template(type_name: &str) -> Option<Value> {
         "uint64" => Value::Uint64(0),
         "float" => Value::Float(0.0),
         "double" => Value::Double(0.0),
+        "int[]" => Value::IntVec(Vec::new()),
+        "int64[]" => Value::Int64Vec(Vec::new()),
+        "uint[]" => Value::UintVec(Vec::new()),
+        "uint64[]" => Value::Uint64Vec(Vec::new()),
+        "float[]" => Value::FloatVec(Vec::new()),
+        "double[]" => Value::DoubleVec(Vec::new()),
+        "float3[]" | "point3f[]" | "vector3f[]" | "normal3f[]" | "color3f[]" => Value::Vec3fVec(Vec::new()),
+        "double3[]" | "point3d[]" | "vector3d[]" | "normal3d[]" | "color3d[]" => Value::Vec3dVec(Vec::new()),
         "matrix4d" => Value::Matrix4d(openusd::gf::Matrix4d([1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0])),
         "string" => Value::String(String::new()),
         "token" => Value::Token("".into()),
@@ -719,8 +731,34 @@ fn value_template(type_name: &str) -> Option<Value> {
     })
 }
 
-fn editable_text(value: &Value) -> Option<String> {
+fn numeric_array_len(value: &Value) -> Option<usize> {
     Some(match value {
+        Value::IntVec(v) => v.len(), Value::Int64Vec(v) => v.len(), Value::UintVec(v) => v.len(), Value::Uint64Vec(v) => v.len(),
+        Value::FloatVec(v) => v.len(), Value::DoubleVec(v) => v.len(),
+        Value::Vec3fVec(v) => v.len().saturating_mul(3), Value::Vec3dVec(v) => v.len().saturating_mul(3),
+        _ => return None,
+    })
+}
+
+fn numeric_array_text<T: ToString>(values: &[T]) -> String {
+    values.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")
+}
+
+fn parse_numeric_array<T: std::str::FromStr>(input: &str, finite: impl Fn(&T) -> bool) -> Result<Vec<T>, String> {
+    if input.len() > 262144 { return Err("Numeric array text exceeds 256 KiB".into()); }
+    let mut values = Vec::new();
+    for token in input.split_whitespace() {
+        if values.len() == 4096 { return Err("Numeric arrays allow at most 4096 scalar values".into()); }
+        let value = token.parse().map_err(|_| "Use whitespace-separated numbers of the declared type")?;
+        if !finite(&value) { return Err("Numeric array values must be finite".into()); }
+        values.push(value);
+    }
+    Ok(values)
+}
+
+fn editable_text(value: &Value) -> Option<String> {
+    if numeric_array_len(value).is_some_and(|len| len > 4096) { return None; }
+    let text = match value {
         Value::Bool(v) => v.to_string(),
         Value::Int(v) => v.to_string(),
         Value::Int64(v) => v.to_string(),
@@ -728,6 +766,11 @@ fn editable_text(value: &Value) -> Option<String> {
         Value::Uint64(v) => v.to_string(),
         Value::Float(v) => v.to_string(),
         Value::Double(v) => v.to_string(),
+        Value::IntVec(v) => numeric_array_text(v), Value::Int64Vec(v) => numeric_array_text(v),
+        Value::UintVec(v) => numeric_array_text(v), Value::Uint64Vec(v) => numeric_array_text(v),
+        Value::FloatVec(v) => numeric_array_text(v), Value::DoubleVec(v) => numeric_array_text(v),
+        Value::Vec3fVec(v) => v.iter().map(|v| format!("{} {} {}", v.x, v.y, v.z)).collect::<Vec<_>>().join("\n"),
+        Value::Vec3dVec(v) => v.iter().map(|v| format!("{} {} {}", v.x, v.y, v.z)).collect::<Vec<_>>().join("\n"),
         Value::String(v) => v.clone(),
         Value::Token(v) => v.as_str().into(),
         Value::AssetPath(v) => v.as_str().into(),
@@ -735,13 +778,30 @@ fn editable_text(value: &Value) -> Option<String> {
         Value::Vec3d(v) => format!("{} {} {}", v.x, v.y, v.z),
         Value::Matrix4d(v) => v.0.chunks_exact(4).map(|row| row.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n"),
         _ => return None,
-    })
+    };
+    if numeric_array_len(value).is_some() && text.len() > 262144 { None } else { Some(text) }
 }
 
 fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
     let invalid = || "Invalid value for this USD type".to_string();
     let text = input.trim();
     Ok(match template {
+        Value::IntVec(_) => Value::IntVec(parse_numeric_array(input, |_| true)?),
+        Value::Int64Vec(_) => Value::Int64Vec(parse_numeric_array(input, |_| true)?),
+        Value::UintVec(_) => Value::UintVec(parse_numeric_array(input, |_| true)?),
+        Value::Uint64Vec(_) => Value::Uint64Vec(parse_numeric_array(input, |_| true)?),
+        Value::FloatVec(_) => Value::FloatVec(parse_numeric_array(input, |v: &f32| v.is_finite())?),
+        Value::DoubleVec(_) => Value::DoubleVec(parse_numeric_array(input, |v: &f64| v.is_finite())?),
+        Value::Vec3fVec(_) => {
+            let values = parse_numeric_array(input, |v: &f32| v.is_finite())?;
+            if values.len()%3 != 0 { return Err("Vector arrays need groups of three numbers".into()); }
+            Value::Vec3fVec(values.chunks_exact(3).map(|v| [v[0], v[1], v[2]].into()).collect())
+        }
+        Value::Vec3dVec(_) => {
+            let values = parse_numeric_array(input, |v: &f64| v.is_finite())?;
+            if values.len()%3 != 0 { return Err("Vector arrays need groups of three numbers".into()); }
+            Value::Vec3dVec(values.chunks_exact(3).map(|v| [v[0], v[1], v[2]].into()).collect())
+        }
         Value::Bool(_) => Value::Bool(text.parse().map_err(|_| invalid())?),
         Value::Int(_) => Value::Int(text.parse().map_err(|_| invalid())?),
         Value::Int64(_) => Value::Int64(text.parse().map_err(|_| invalid())?),
@@ -784,6 +844,46 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn numeric_array_edits_preserve_types_and_undo() {
+        use super::{editable_text, parse_value, value_template};
+        use openusd::sdf::Value;
+        for value in [Value::IntVec(vec![i32::MIN, i32::MAX]), Value::Int64Vec(vec![i64::MIN, i64::MAX]),
+            Value::UintVec(vec![0, u32::MAX]), Value::Uint64Vec(vec![0, u64::MAX]), Value::FloatVec(vec![0., -0.25, 1.]),
+            Value::DoubleVec(vec![1e100, 1e-100]), Value::Vec3fVec(vec![[1., 2., 3.].into(), [-1., 0., 0.5].into()]),
+            Value::Vec3dVec(vec![[1e100, -2., 0.].into()])] {
+            assert_eq!(parse_value(&value, &editable_text(&value).unwrap()).unwrap(), value);
+        }
+        for name in ["int[]", "int64[]", "uint[]", "uint64[]", "float[]", "double[]", "float3[]", "point3f[]",
+            "vector3f[]", "normal3f[]", "color3f[]", "double3[]", "point3d[]", "vector3d[]", "normal3d[]", "color3d[]"] {
+            let template = value_template(name).unwrap();
+            assert_eq!(parse_value(&template, " ").unwrap(), template);
+        }
+        for (name, input) in [("float[]", "1 NaN"), ("float[]", "1e100"), ("double[]", "inf"),
+            ("uint[]", "-1"), ("int[]", "2147483648"), ("float3[]", "1 2"), ("float3[]", "1 2 inf"), ("int[]", "[1, 2]")] {
+            assert!(parse_value(&value_template(name).unwrap(), input).is_err(), "{name}: {input}");
+        }
+        let template = Value::FloatVec(Vec::new());
+        assert!(parse_value(&template, &"1 ".repeat(4096)).is_ok());
+        assert!(parse_value(&template, &"1 ".repeat(4097)).is_err());
+        assert!(parse_value(&template, &" ".repeat(262145)).is_err());
+        assert!(editable_text(&Value::FloatVec(vec![0.;4097])).is_none());
+        assert!(editable_text(&Value::DoubleVec(vec![f64::MAX;4096])).is_none());
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/numeric_array.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let value = parse_value(&value_template("color3f[]").unwrap(), "1 0.3 0.05").unwrap();
+        editor.edit(usd_bevy::editor::EditorEdit::Attribute { prim: "/Root".into(), name: "primvars:displayColor".into(),
+            type_name: "color3f[]".into(), value: value.clone() }).unwrap();
+        assert_eq!(editor.snapshot().unwrap().attributes.iter().find(|attribute| attribute.name == "primvars:displayColor").unwrap().value, Some(value));
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
     #[test]
     fn reference_bucket_moves_preserve_data_and_compose_with_undo() {
         use super::move_reference_bucket;
@@ -1182,7 +1282,7 @@ def Xform "M" {
             let text = super::editable_text(&template).unwrap();
             assert_eq!(super::parse_value(&template, &text).unwrap(), template, "{name}");
         }
-        for name in ["", "float[]", "unknown"] { assert!(super::value_template(name).is_none()); }
+        for name in ["", "string[]", "unknown"] { assert!(super::value_template(name).is_none()); }
         let template = super::value_template("asset").unwrap();
         let path = "../textures/材質 with  spaces.exr";
         let value = super::parse_value(&template, path).unwrap();

@@ -529,6 +529,13 @@ preserve property metadata; they differ from `authoring::clear_attribute`, which
 removes the local property spec. Clearing values reveals weaker-layer opinions.
 Supported attributes without resolved values use their declared USD type to prepare
 an editable draft; nothing is authored until an apply button is pressed.
+Numeric-array drafts support `int[]`, `int64[]`, `uint[]`, `uint64[]`, `float[]`,
+`double[]`, and float/double three-component arrays including point/vector/normal/
+color aliases. Enter whitespace-separated numbers; vector values use groups of
+three and empty input authors an empty array. Values must fit their declared type
+and floating-point values must be finite. The text editor allows at most 4096
+scalar components and 256 KiB of text; larger arrays remain read-only here rather
+than being truncated. This is not an unrestricted bulk-mesh editor.
 “Apply default value” edits the default opinion, not an animation time sample.
 “Apply sample at time” uses the explicit scene-time field; “Use timeline time”
 copies the current timeline position into that field. “Clear sample at time”

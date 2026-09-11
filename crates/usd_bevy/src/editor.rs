@@ -1844,6 +1844,60 @@ def Xform "Asset" (prepend variantSets = "shape") {
     }
 
     #[test]
+    fn authored_external_payloads_reconcile_live_history_and_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let part = directory.path().join("part.usda");
+        let part_text = "#usda 1.0\n(defaultPrim = \"Part\")\ndef Xform \"Part\" { def Cube \"Shape\" {} }\n";
+        std::fs::write(&part, part_text).unwrap();
+        let root = directory.path().join("assembly.usda");
+        std::fs::write(&root, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::UsdPlugin, crate::live::LiveStagePlugin, EditorPlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(root.to_string_lossy().into_owned())).unwrap();
+        bridge.send(EditorCommand::Select(Some("/Root".into()))).unwrap();
+        app.update();
+        let parent = app.world().resource::<crate::live::PrimEntities>().entity("/Root").unwrap();
+        app.world_mut().entity_mut(parent).insert(Name::new("runtime parent"));
+        bridge.send(EditorCommand::Edit(EditorEdit::Payloads {
+            prim: "/Root".into(), payloads: vec![openusd::sdf::Payload { asset_path: "part.usda".into(), ..Default::default() }],
+        })).unwrap();
+        app.update();
+        for (command, visible) in [(None, true), (Some(EditorCommand::Undo), false), (Some(EditorCommand::Redo), true),
+            (Some(EditorCommand::Payload { prim: "/Root".into(), loaded: false }), false),
+            (Some(EditorCommand::Payload { prim: "/Root".into(), loaded: true }), true)] {
+            if let Some(command) = command { bridge.send(command).unwrap(); app.update(); }
+            let map = app.world().resource::<crate::live::PrimEntities>();
+            assert_eq!(map.entity("/Root"), Some(parent));
+            assert_eq!(app.world().get::<Name>(parent).unwrap().as_str(), "runtime parent");
+            assert_eq!(bridge.view().unwrap().document.selected.as_deref(), Some("/Root"));
+            assert_eq!(map.entity("/Root/Shape").is_some(), visible);
+            if visible { assert!(app.world().get::<Mesh3d>(map.entity("/Root/Shape").unwrap()).is_some()); }
+        }
+        let output = directory.path().join("saved.usda");
+        bridge.send(EditorCommand::Save { filename: output.to_string_lossy().into_owned(), mode: SaveMode::RootLayer }).unwrap();
+        app.update();
+        let reopened = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(output.to_str().unwrap()).unwrap();
+        assert!(reopened.prim("/Root/Shape").unwrap().is_valid().unwrap());
+        assert!(matches!(reopened.prim("/Root").unwrap().get_metadata::<Value>("payload").unwrap(), Some(Value::PayloadListOp(_))));
+        assert_eq!(std::fs::read_to_string(part).unwrap(), part_text);
+        let stage = app.world().non_send::<EditorSession>().stage().clone();
+        let before = stage.root_layer().export_to_string().unwrap();
+        bridge.send(EditorCommand::Edit(EditorEdit::Batch(vec![
+            EditorEdit::ClearPayloads { prim: "/Root".into() },
+            EditorEdit::Payloads { prim: "/Root".into(), payloads: vec![openusd::sdf::Payload {
+                asset_path: "part.usda".into(), prim_path: openusd::sdf::path("/Part.size").unwrap(), ..Default::default()
+            }] },
+        ]))).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert!(app.world().resource::<crate::live::PrimEntities>().entity("/Root/Shape").is_some());
+        assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/Root"), Some(parent));
+    }
+
+    #[test]
     fn payload_commands_reconcile_and_keep_unloaded_prim_selectable() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_test.usda");
         let mut app = App::new();

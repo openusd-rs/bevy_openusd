@@ -5,6 +5,16 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+Follow-up live regression authors an external relative/defaultPrim payload through
+EditorBridge, verifies its child has a projected Bevy mesh, and exercises undo,
+redo, unload and reload while retaining the parent entity, runtime Name and
+selection. A root-layer save reopens with the external child and payload metadata;
+the referenced source bytes remain unchanged. A batch that first clears the
+payload then supplies an invalid property target rolls back exact layer text and
+restores the child projection. Focused test and check-all pass
+(`/tmp/payload-live-tests.log`, `/tmp/payload-live-check.log`). This is a headless
+Bevy integration/self-reopen gate, not native OpenUSD or UI click acceptance.
+
 Added `authoring::{set_payloads,clear_payloads}` and matching
 `EditorEdit::{Payloads,ClearPayloads}` using canonical upstream Payload and
 PayloadListOp types. Validation checks every entry before mutation: absolute

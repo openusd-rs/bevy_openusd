@@ -3,6 +3,229 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Typed snapshot edits through live Bevy assets
+
+The source_edits example now projects original and customized assemblies through
+UsdAssetPlugin and UsdSceneRoot, checking actual mesh vertex extents: original
+Cube width 2, customized widths 1 and 4. Replacing the customized asset source
+with another with_edits result changes only its small Cube to width 6; the
+other customized Cube and independent original stay unchanged. Root entities
+and the surviving small-Cube entity retain runtime-owned marker components.
+
+The example test and check-all pass (`/tmp/source-edits-live-example.log`,
+`/tmp/source-edits-live-check.log`). This verifies headless asset revision and
+mesh projection integration, not GPU pixels, reload performance or filesystem
+watcher behavior. README now states this scope.
+The documented Make run command also exits successfully
+(`/tmp/source-edits-live-run.log`).
+
+## Immutable typed snapshot customization
+
+UsdSource::with_edits applies EditorEdit values as one batch on an independent
+EditorSession, validates composition and exports the root into a new snapshot.
+Captured dependencies, source identifier and filesystem policy are retained.
+Empty batches preserve revision identity. Nonempty batches require a USDA root;
+new dependencies must be supplied explicitly or resolve through the existing
+filesystem policy. This does not introduce compile-time schema-name validation
+or claim general BSN equivalence.
+
+The regression customizes a referenced Cube, defines a Sphere and authors a
+relationship without mutating input snapshots or writing files. It checks
+dependency retention, identity, empty batches, invalid typed values after a
+successful first edit, missing references and unsupported root identifiers.
+The diskless source_edits example independently customizes two referenced cubes
+and proves the original assembly remains unchanged. README documents the API.
+
+All 22 source tests, the new example test and check-all pass:
+`/tmp/source-typed-edits-final-tests.log`,
+`/tmp/source-typed-edits-final-example.log`,
+`/tmp/source-typed-edits-final-check.log`. The initial example incorrectly used
+anyhow from the root package; its return type now follows the existing boxed
+error convention without adding a dependency. No renderer acceptance claimed.
+
+## Preserve history for ancestor-excluded local layers
+
+History entries now record whether the edit target participated in the local
+layer stack before authoring. Undo/redo of such an entry requires that target
+to participate again, before consuming transactions or changing the edit target.
+This extends direct-muted-layer checks to leaves excluded by parent muting.
+Mapped nonlocal reference targets are not required to join the local stack.
+
+The nested-layer regression initially failed because undo silently succeeded
+while the edited leaf was hidden (`/tmp/ancestor-history-before.log`). It now
+checks rejection with unchanged revision, retained history and exact leaf text,
+then successful undo/redo after unmuting the parent. The current root edit
+target is preserved. All 55 ordinary editor tests pass (one native test ignored)
+and check-all passes (`/tmp/ancestor-history-editor-tests.log`,
+`/tmp/ancestor-history-check.log`). This does not address selecting an already
+excluded layer as a new edit target or general nonlocal participation tracking.
+The broader default library gate also passes 474 tests with 15 opt-in tests
+ignored (`/tmp/ancestor-history-library-tests.log`). No native capture was rerun.
+
+## Native ancestor-protection acceptance and retained failures
+
+Built the viewer with `make build CARGO='cargo --offline'`. The temporary fixture
+`/tmp/bevy-mute-root.usda` sublayers `bevy-mute-parent.usda`, which sublayers
+`bevy-mute-leaf.usda`; the leaf authors /Root/Shape as a blue Cube. Root is Y-up.
+All captures use the native capture Make temporary target, /Root selection,
+inspector pane and time zero.
+
+Inspected `target/ancestor-controls-layout-ui.png` is black and correctly fails
+region validation. A separate diagnostic run with 20-second initial and second
+waits produced black `target/ancestor-controls-series-ui.png`, then a visible
+cube and inspector in `.second.png` within the same process. The overall run
+still fails. Neither run has known runtime-panic markers; these observations do
+not identify the host failure's cause. Logs: `/tmp/ancestor-controls-layout-capture.log`
+and `/tmp/ancestor-controls-series-capture.log`. Failed artifacts are retained.
+
+The subsequent interaction run selects the leaf edit target and scrolls the
+left pane. Both inspected `target/ancestor-controls-selected-ui.png` and
+`.second.png` show the leaf active, all three protected labels readable and no
+Mute buttons for the root, parent or leaf. Cube and grid remain visible. Both
+region checks and the panic-log check pass
+(`/tmp/ancestor-controls-selected-capture.log`). This closes the bounded label
+acceptance below, not the intermittent black-host blocker. Replay used:
+
+```text
+10000 move 260 480
+10100 down 260 480
+10200 up 260 480
+12000 move 300 450
+12100 scroll 0 -1200
+16000 move 1100 100
+```
+
+## Inspector ancestor-muting protection
+
+EditorSnapshot now publishes mute_protected_layers for the visible layer stack:
+the root, active edit layer and its sublayer ancestors. The inspector uses this
+list to show a protected label instead of offering a Mute button that the model
+would reject. The nested-layer regression verifies all three layers are
+protected with the leaf selected, and only the root after switching back.
+
+All 55 ordinary editor tests (one native test ignored), 76 viewer tests and
+check-all pass (`/tmp/mute-protection-snapshot-tests.log`,
+`/tmp/mute-protection-viewer-tests.log`, `/tmp/mute-protection-check.log`).
+Native visual acceptance of the new label remains pending; these test results
+do not certify layout or rendering.
+
+## Protect active edit layers from ancestor muting
+
+The editor now rejects muting a layer whose sublayer stack contains the active
+edit target, before changing runtime participation. Direct-layer protection did
+not cover this case: the new three-layer regression failed against the previous
+implementation (`/tmp/muting-ancestor-before.log`). The guard is conservative
+when a layer occurs through multiple sublayer paths.
+
+The regression checks unchanged revision, edit target, authored layer texts,
+history and visible prim after rejection, then proves parent mute/unmute still
+works after switching the edit target to the root. All 55 ordinary editor tests
+pass (one native test ignored), and check-all passes
+(`/tmp/muting-ancestor-editor-tests.log`, `/tmp/muting-ancestor-check.log`).
+This is a model guard; no new UI layout or native screenshot is claimed.
+Ancestor exclusion during edit-target selection and retained history still
+needs separate coverage; this does not complete unsaved-state handling.
+
+## Support documentation reconciliation
+
+The existing SUPPORT.md matrix retains its detailed rendering, packaging and
+benchmark limits and now includes the recent editor, layer participation,
+diagnostics and capture work. A release-blocker summary distinguishes those
+features from unresolved host frames, native fidelity, unsaved-state handling
+and broader performance acceptance. README links to the matrix; the upgrade
+assessment is explicitly historical rather than a current missing-feature list.
+
+This is documentation-only. Local Markdown destinations and diff whitespace
+were checked; no runtime or test-suite rerun is claimed. The watcher/native
+counts below remain evidence from their recorded revision and commands.
+
+## Capture companion preservation and current watcher gates
+
+The host capture preflight now refuses existing primary settings, Weston/viewer,
+capture/inspection and scene-graph logs, including dangling symlinks. It rejects
+a symlink PNG before realpath resolution. This preserves evidence from failed
+runs that never produced their PNG. Existing second-frame/viewport checks remain.
+These are preflight guards, not atomic reservations against concurrent writers.
+
+`scripts/check_capture_preflight_tests.sh` tests regular files and dangling
+symlinks for all six primary companions plus a dangling PNG symlink, asserting
+exit 2, unchanged evidence and no additional artifacts. Fake compositor commands
+are present only to satisfy discovery; refusal occurs before launching them.
+The Make-driven shell suite and syntax check pass
+(`/tmp/capture-preflight-tests.log`). A fresh native capture also passes pixel
+and panic-log checks: inspected `target/capture-new-companions-ui.png` shows the
+cube and inspector (`/tmp/capture-new-companions-probe.log`).
+
+The broader post-editor-change watcher-enabled workspace gate passes 616 tests,
+zero failures and 23 ignored across 30 suites
+(`/tmp/current-editor-watcher-workspace.log`). Command: Make temporary target
+running `cargo --offline test --workspace --all-targets --features file_watcher`,
+with TMPDIR set to target/test-tmp. The subsequent native lane passes all 23
+selected tests, including real filesystem-event and usdcat cases
+(`/tmp/current-editor-watcher-native.log`), using
+`make test CARGO='cargo --offline' APP_TARGET='-p usd_bevy --features file_watcher --lib native_ -- --ignored --nocapture'`
+with the installed OpenUSD bin directory in PATH. This is one successful suite
+run, not a flakiness/performance benchmark or general rendering acceptance.
+
+## Payload load-rule revision tracking
+
+`EditorSession::set_payload_loaded` now takes `&mut self`, synchronizes external
+edits and advances the revision when the canonical load-rule table changes.
+Identical repeated requests retain the revision. This closes a gap in checked
+command ordering: an unload followed by an authored edit from the same rendered
+snapshot now rejects that stale edit instead of accepting it against changed
+composition. Runtime loading still authors no layer contents or undo commands.
+The two persistence callers now hold mutable sessions.
+
+The regression queues unload and an old-snapshot edit together, checks rejection
+and exact layer text, then verifies unload/load no-ops and invalid-path revision
+stability. All 54 nonignored editor tests and check-all pass (one native test
+ignored): `/tmp/payload-revision-editor-tests.log` and
+`/tmp/payload-revision-check.log`. All 24 persistence tests, including the 14
+native usdcat cases, also pass with `--include-ignored`
+(`/tmp/payload-revision-export-tests.log`). No new UI layout or screenshot claim
+is made.
+
+## Snapshot-checked inspector runtime actions
+
+Inspector edit-target selection and payload load/unload now enqueue
+`EditLayerChecked` and `PayloadChecked`, carrying the rendered document ID and
+revision. The command processor rejects stale contexts before target/load-rule
+changes, texture refresh or reprojection. Successful requests follow the existing
+runtime paths. Unchecked variants remain available to programmatic callers;
+controls and layout are unchanged.
+
+The regression uses two sessions with identical source paths, proving an old
+document's request cannot alter the replacement. It also checks stale revisions,
+unchanged edit targets/load states/root text on rejection, successful current
+requests and absence of authored undo entries. All 53 nonignored editor tests,
+76 viewer tests and check-all pass (one native editor test ignored):
+`/tmp/checked-inspector-actions-tests.log`,
+`/tmp/checked-inspector-actions-viewer-tests.log`,
+`/tmp/checked-inspector-actions-final-check.log`. This is command-dispatch
+regression evidence, not a new screenshot acceptance claim.
+
+## Muted-layer export semantics
+
+Added ordinary and native export regressions for root, edit-layer (root target)
+and flattened saves in USDA, USDC, USD and USDZ. With the weak layer muted,
+root/edit exports retain the authored two-layer stack and cube; flattened exports
+contain a single layer without that cube. Reopened stages have no muted set.
+Each package also opens through an isolated relocated snapshot, retaining the
+same stack/shape expectations. Source file bytes, live root-layer text and the
+session's muted state remain unchanged by export.
+
+Native `usdcat --flatten` succeeds without stderr for all 12 mode/format cases
+and its output has the expected cube inclusion. Both final focused tests pass
+after strengthening layer-stack assertions, along with check-all:
+`/tmp/muted-layer-export-final-tests.log`,
+`/tmp/muted-layer-export-final-check.log`. The earlier full native export lane
+passes all 14 tests (`/tmp/muted-layer-export-native-tests.log`), and the ordinary
+persistence lane passes 10 with 14 ignored
+(`/tmp/muted-layer-export-persistence-tests.log`). The new ignored native test
+is selected by the existing make test-native target. No production export code
+changed; this does not establish behavior for every nested/session-layer case.
+
 ## History guards for muted edit layers
 
 Undo/redo now rejects a command whose captured edit layer is muted, naming the

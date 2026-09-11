@@ -20,8 +20,10 @@ pub enum EditorCommand {
     Edit(EditorEdit),
     EditChecked { edit: EditorEdit, document_id: u64, revision: u64, target: EditTarget },
     EditLayer(String),
+    EditLayerChecked { identifier: String, document_id: u64, revision: u64 },
     LayerMuteChecked { identifier: String, muted: bool, document_id: u64, revision: u64 },
     Payload { prim: String, loaded: bool },
+    PayloadChecked { prim: String, loaded: bool, document_id: u64, revision: u64 },
     Undo,
     Redo,
     Seek(f64),
@@ -205,6 +207,23 @@ fn process_commands(world: &mut World) {
                 continue;
             }
         }
+        let command = match command {
+            EditorCommand::EditLayerChecked { identifier, document_id, revision } => {
+                if session.as_ref().is_none_or(|editor| (editor.document_id, editor.revision) != (document_id, revision)) {
+                    status = "Failed: document changed before selecting an edit layer; review and retry".into();
+                    continue;
+                }
+                EditorCommand::EditLayer(identifier)
+            }
+            EditorCommand::PayloadChecked { prim, loaded, document_id, revision } => {
+                if session.as_ref().is_none_or(|editor| (editor.document_id, editor.revision) != (document_id, revision)) {
+                    status = "Failed: document changed before changing payload loading; review and retry".into();
+                    continue;
+                }
+                EditorCommand::Payload { prim, loaded }
+            }
+            command => command,
+        };
         let movements = session.as_ref().map_or_else(Vec::new, |editor| match &command {
             EditorCommand::Edit(edit) => edit.namespace_moves(),
             EditorCommand::Undo => editor.undo.last().map(|entry| entry.edit.namespace_moves().into_iter().rev().map(|(old, new)| (new, old)).collect()).unwrap_or_default(),
@@ -296,7 +315,8 @@ fn process_commands(world: &mut World) {
                         Err(anyhow::anyhow!("document or edit layer changed while choosing a save destination; choose again"))
                     } else { editor.save(&filename, mode) }
                 }
-                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } | EditorCommand::EditChecked { .. } => unreachable!(),
+                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } | EditorCommand::EditChecked { .. }
+                    | EditorCommand::EditLayerChecked { .. } | EditorCommand::PayloadChecked { .. } => unreachable!(),
             }
         } else {
             Err(anyhow::anyhow!("no USD document is open"))
@@ -532,6 +552,7 @@ impl EditorEdit {
 struct HistoryEntry {
     edit: EditorEdit,
     target: EditTarget,
+    local_target: bool,
     transactions: usize,
     selection_before: Option<String>,
     selection_after: Option<String>,
@@ -574,6 +595,7 @@ pub struct EditorSnapshot {
     pub layers: Vec<String>,
     pub root_layer: String,
     pub muted_layers: Vec<String>,
+    pub mute_protected_layers: Vec<String>,
     pub edit_layer: String,
     pub edit_target: Option<EditTarget>,
     pub selected: Option<String>,
@@ -685,6 +707,8 @@ impl EditorSession {
         if muted {
             anyhow::ensure!(self.stage.root_layer().identifier() != identifier, "cannot mute the root layer");
             anyhow::ensure!(self.stage.edit_target().layer_identifier() != identifier, "cannot mute the active edit layer");
+            anyhow::ensure!(!self.stage.sub_layers(identifier).iter().any(|layer| layer == self.stage.edit_target().layer_identifier()),
+                "cannot mute a sublayer ancestor of the active edit layer");
         }
         if self.stage.is_layer_muted(identifier) == muted { return Ok(()); }
         if muted { self.stage.mute_layer(identifier); } else { self.stage.unmute_layer(identifier); }
@@ -694,17 +718,21 @@ impl EditorSession {
     }
 
     /// Changes runtime load rules without authoring layer opinions.
-    pub fn set_payload_loaded(&self, path: &str, loaded: bool) -> anyhow::Result<()> {
+    pub fn set_payload_loaded(&mut self, path: &str, loaded: bool) -> anyhow::Result<()> {
+        self.synchronize_external_edits();
         let path = openusd::sdf::path(path)?;
         anyhow::ensure!(self.stage.prim(path.clone())?.is_valid()?, "payload prim does not exist");
+        let before = self.stage.load_rules();
         if loaded { self.stage.load(path, openusd::usd::LoadPolicy::WithDescendants)?; }
         else { self.stage.unload(path)?; }
+        if self.stage.load_rules() != before { self.revision = self.revision.wrapping_add(1); }
         Ok(())
     }
 
     pub fn edit(&mut self, edit: EditorEdit) -> anyhow::Result<()> {
         self.synchronize_external_edits();
         let target = self.stage.edit_target();
+        let local_target = self.stage.layer_stack().iter().any(|layer| layer == target.layer_identifier());
         let before = self.stage.undo_depth();
         if let Err(error) = edit.apply(&self.stage) {
             while self.stage.undo_depth() > before { self.stage.undo()?; }
@@ -715,7 +743,7 @@ impl EditorSession {
             self.revision = self.revision.wrapping_add(1);
             let selection_before = self.selected.clone();
             self.selected = edit.selection_after(self.selected.as_deref());
-            self.undo.push(HistoryEntry { edit, target, transactions, selection_before, selection_after: self.selected.clone() });
+            self.undo.push(HistoryEntry { edit, target, local_target, transactions, selection_before, selection_after: self.selected.clone() });
             self.redo.clear();
             self.trim_history();
         }
@@ -726,6 +754,8 @@ impl EditorSession {
         self.synchronize_external_edits();
         let Some(entry) = self.undo.last_mut() else { return Ok(false) };
         anyhow::ensure!(!self.stage.is_layer_muted(entry.target.layer_identifier()), "unmute {} before undo", entry.target.layer_identifier());
+        anyhow::ensure!(!entry.local_target || self.stage.layer_stack().iter().any(|layer| layer == entry.target.layer_identifier()),
+            "restore layer participation for {} before undo", entry.target.layer_identifier());
         while entry.transactions > 0 {
             anyhow::ensure!(self.stage.undo()?, "editor transaction history is inconsistent");
             entry.transactions -= 1;
@@ -740,6 +770,8 @@ impl EditorSession {
         self.synchronize_external_edits();
         let Some(entry) = self.redo.last() else { return Ok(false) };
         anyhow::ensure!(!self.stage.is_layer_muted(entry.target.layer_identifier()), "unmute {} before redo", entry.target.layer_identifier());
+        anyhow::ensure!(!entry.local_target || self.stage.layer_stack().iter().any(|layer| layer == entry.target.layer_identifier()),
+            "restore layer participation for {} before redo", entry.target.layer_identifier());
         let target = self.stage.edit_target();
         self.stage.set_edit_target(entry.target.clone())?;
         let before = self.stage.undo_depth();
@@ -807,6 +839,10 @@ impl EditorSession {
             can_redo: !self.redo.is_empty(),
             ..Default::default()
         };
+        snapshot.mute_protected_layers = snapshot.layers.iter().filter(|layer| {
+            *layer == &snapshot.root_layer || *layer == &snapshot.edit_layer
+                || self.stage.sub_layers(layer).contains(&snapshot.edit_layer)
+        }).cloned().collect();
         let predicate = openusd::usd::PrimPredicate::new(
             openusd::usd::PrimStatus::ACTIVE.union(openusd::usd::PrimStatus::DEFINED),
             openusd::usd::PrimStatus::ABSTRACT,
@@ -1769,6 +1805,66 @@ def Xform "Model" (
     }
 
     #[test]
+    fn muting_ancestor_of_edit_layer_is_rejected_without_changes() {
+        let leaf = crate::UsdSource::snapshot("leaf.usda", &br#"#usda 1.0
+def Xform "Root" { def Cube "Shape" {} }
+"#[..]).unwrap();
+        let parent = crate::UsdSource::snapshot("parent.usda", &br#"#usda 1.0
+(subLayers = [@leaf.usda@])
+"#[..]).unwrap().with_dependency(&leaf).unwrap();
+        let source = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+(subLayers = [@parent.usda@])
+"#[..]).unwrap().with_dependency(&parent).unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        let layers = editor.stage().layer_stack();
+        assert_eq!(layers.len(), 3);
+        editor.set_edit_layer(&layers[2]).unwrap();
+        let before = editor.snapshot().unwrap();
+        let contents: Vec<_> = layers.iter().map(|id| editor.stage().layer(id).unwrap().export_to_string().unwrap()).collect();
+        assert_eq!(before.mute_protected_layers, layers);
+        assert!(editor.set_layer_muted(&layers[1], true).is_err());
+        let after = editor.snapshot().unwrap();
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.edit_target, before.edit_target);
+        assert!(after.muted_layers.is_empty());
+        assert!(!after.can_undo);
+        assert!(editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
+        for (id, text) in layers.iter().zip(contents) {
+            assert_eq!(editor.stage().layer(id).unwrap().export_to_string().unwrap(), text);
+        }
+        editor.set_edit_layer(&layers[0]).unwrap();
+        assert_eq!(editor.snapshot().unwrap().mute_protected_layers, [layers[0].clone()]);
+        editor.set_layer_muted(&layers[1], true).unwrap();
+        assert!(!editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
+        editor.set_layer_muted(&layers[1], false).unwrap();
+        assert!(editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
+        editor.set_edit_layer(&layers[2]).unwrap();
+        let original = editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(4.) }).unwrap();
+        let edited = editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap();
+        editor.set_edit_layer(&layers[0]).unwrap();
+        editor.set_layer_muted(&layers[1], true).unwrap();
+        let revision = editor.snapshot().unwrap().revision;
+        assert!(editor.undo().is_err());
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        assert!(editor.snapshot().unwrap().can_undo);
+        assert_eq!(editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap(), edited);
+        editor.set_layer_muted(&layers[1], false).unwrap();
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap(), original);
+        editor.set_layer_muted(&layers[1], true).unwrap();
+        let revision = editor.snapshot().unwrap().revision;
+        assert!(editor.redo().is_err());
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        assert!(editor.snapshot().unwrap().can_redo);
+        assert_eq!(editor.stage().edit_target().layer_identifier(), layers[0]);
+        assert_eq!(editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap(), original);
+        editor.set_layer_muted(&layers[1], false).unwrap();
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().layer(&layers[2]).unwrap().export_to_string().unwrap(), edited);
+    }
+
+    #[test]
     fn layer_muting_preserves_authored_history_and_rejects_stale_commands() {
         let weak = crate::UsdSource::snapshot("weak.usda", &br#"#usda 1.0
 def Xform "Root" { def Sphere "FromWeak" {} }
@@ -1820,6 +1916,77 @@ over "Root" {}
         assert!(editor.snapshot().unwrap().muted_layers.is_empty());
         assert!(editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
         assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+    }
+
+    #[test]
+    fn payload_load_changes_invalidate_queued_edits_but_noops_do_not() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_authoring.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let editor = EditorSession::new(stage);
+        let snapshot = editor.snapshot().unwrap();
+        let original = editor.stage().root_layer().export_to_string().unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.insert_non_send(editor);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::PayloadChecked { prim: "/Root".into(), loaded: false,
+            document_id: snapshot.document_id, revision: snapshot.revision }).unwrap();
+        bridge.send(snapshot.checked_edit(EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(),
+            type_name: "double".into(), value: Value::Double(4.) }).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.contains("changed before applying the edit"));
+        let mut editor = app.world_mut().remove_non_send::<EditorSession>().unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
+        assert!(!editor.snapshot().unwrap().can_undo);
+        let unloaded = editor.snapshot().unwrap().revision;
+        assert_eq!(unloaded, snapshot.revision + 1);
+        editor.set_payload_loaded("/Root", false).unwrap();
+        assert_eq!(editor.snapshot().unwrap().revision, unloaded);
+        editor.set_payload_loaded("/Root", true).unwrap();
+        let loaded = editor.snapshot().unwrap().revision;
+        assert_eq!(loaded, unloaded + 1);
+        editor.set_payload_loaded("/Root", true).unwrap();
+        assert_eq!(editor.snapshot().unwrap().revision, loaded);
+        assert!(editor.set_payload_loaded("/Missing", false).is_err());
+        assert_eq!(editor.snapshot().unwrap().revision, loaded);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
+    }
+
+    #[test]
+    fn checked_inspector_runtime_actions_reject_stale_documents_and_revisions() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_authoring.usda");
+        let source = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap();
+        for payload in [false, true] {
+            let old = EditorSession::new(source.open_stage().unwrap()).snapshot().unwrap();
+            let editor = EditorSession::new(source.open_stage().unwrap());
+            let current = editor.snapshot().unwrap();
+            let weak = current.layers.iter().find(|id| *id != &current.root_layer).unwrap().clone();
+            let original = editor.stage().root_layer().export_to_string().unwrap();
+            let command = |document_id, revision| if payload {
+                EditorCommand::PayloadChecked { prim: "/Root".into(), loaded: false, document_id, revision }
+            } else { EditorCommand::EditLayerChecked { identifier: weak.clone(), document_id, revision } };
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, EditorPlugin));
+            app.insert_non_send(editor);
+            let bridge = app.world().resource::<EditorBridge>().clone();
+            for (id, revision) in [(old.document_id, old.revision), (current.document_id, current.revision.wrapping_add(1))] {
+                bridge.send(command(id, revision)).unwrap();
+                app.update();
+                assert!(bridge.view().unwrap().status.contains("document changed"));
+                let editor = app.world().get_non_send::<EditorSession>().unwrap();
+                assert_eq!(editor.stage().edit_target().layer_identifier(), current.root_layer);
+                assert!(editor.stage().prim("/Root").unwrap().is_loaded().unwrap());
+                assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
+            }
+            bridge.send(command(current.document_id, current.revision)).unwrap();
+            app.update();
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            let editor = app.world().get_non_send::<EditorSession>().unwrap();
+            if payload { assert!(!editor.stage().prim("/Root").unwrap().is_loaded().unwrap()); }
+            else { assert_eq!(editor.stage().edit_target().layer_identifier(), weak); }
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
+            assert!(!editor.snapshot().unwrap().can_undo);
+        }
     }
 
     #[test]

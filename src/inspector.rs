@@ -87,10 +87,13 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let lines = path_lines(&layer);
         let active = layer == snapshot.edit_layer;
         let bridge = bridge.clone();
+        let (document_id, revision) = (snapshot.document_id, snapshot.revision);
         layers.push(Pod::new(Id::new(("editor.layer", &layer))).with_custom_units(lines.len() + 1, move |ui| {
             for line in lines { ui.label(&line); }
             if active { ui.label("Active edit target"); }
-            else if ui.button("Use as edit target").clicked { super::send(&bridge, EditorCommand::EditLayer(layer)); }
+            else if ui.button("Use as edit target").clicked {
+                super::send(&bridge, EditorCommand::EditLayerChecked { identifier: layer, document_id, revision });
+            }
         }));
     }
     let filter = drafts.6.lock().map(|filter| filter.clone()).unwrap_or_default();
@@ -110,14 +113,14 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     for layer in &snapshot.muted_layers { if !mute_layers.contains(layer) { mute_layers.push(layer.clone()); } }
     for layer in mute_layers {
         let muted = snapshot.muted_layers.contains(&layer);
-        let protected = layer == snapshot.root_layer || layer == snapshot.edit_layer;
+        let protected = snapshot.mute_protected_layers.contains(&layer);
         let lines = path_lines(&layer);
         let bridge = bridge.clone();
         let (document_id, revision) = (snapshot.document_id, snapshot.revision);
         layers.push(Pod::new(Id::new(("editor.layer.muting", &layer))).with_custom_units(lines.len() + 2, move |ui| {
             ui.label(if muted { "Muted layer (runtime)" } else { "Layer participation (runtime)" });
             for line in lines { ui.label(&line); }
-            if protected { ui.label("Root / active edit layer cannot be muted"); }
+            if protected { ui.label("Root, edit layer or its ancestor: cannot mute"); }
             else if ui.button(if muted { "Unmute layer" } else { "Mute layer" }).clicked {
                 super::send(&bridge, EditorCommand::LayerMuteChecked { identifier: layer, muted: !muted, document_id, revision });
             }
@@ -183,10 +186,11 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     if let Some(loaded) = snapshot.selected_loaded {
         let bridge = bridge.clone();
         let path = path.clone();
+        let (document_id, revision) = (snapshot.document_id, snapshot.revision);
         pods.push(Pod::new("editor.payload").with_custom_units(2, move |ui| {
             ui.readout("Payload state", if loaded { "Loaded" } else { "Unloaded" });
             if ui.button(if loaded { "Unload payloads" } else { "Load payloads" }).clicked {
-                super::send(&bridge, EditorCommand::Payload { prim: path, loaded: !loaded });
+                super::send(&bridge, EditorCommand::PayloadChecked { prim: path, loaded: !loaded, document_id, revision });
             }
         }));
     }

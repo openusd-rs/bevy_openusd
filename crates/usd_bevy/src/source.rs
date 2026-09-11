@@ -159,6 +159,23 @@ impl UsdSource {
         Ok(combined)
     }
 
+    /// Applies typed editor commands atomically to a USDA root snapshot.
+    /// Retains captured dependencies and filesystem policy; never writes input files.
+    /// New asset dependencies must be supplied with `with_dependency` or resolve
+    /// through the receiver's filesystem policy. Empty batches preserve identity.
+    pub fn with_edits(&self, edits: impl IntoIterator<Item = crate::editor::EditorEdit>) -> anyhow::Result<Self> {
+        let edits: Vec<_> = edits.into_iter().collect();
+        if edits.is_empty() { return Ok(self.clone()); }
+        anyhow::ensure!(self.identifier.ends_with(".usda"), "snapshot editing requires a .usda root identifier");
+        let mut editor = crate::editor::EditorSession::new(self.open_stage()?);
+        editor.edit(crate::editor::EditorEdit::Batch(edits))?;
+        Self::validate_composition(editor.stage())?;
+        let mut edited = self.clone();
+        edited.bytes = editor.stage().root_layer().export_to_string()?.into_bytes().into();
+        edited.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
+        Ok(edited)
+    }
+
     /// Mounts a source prim at a new absolute prim path in a USDA root snapshot.
     /// Captured dependencies and the receiver's filesystem policy are retained.
     /// Existing destinations, missing targets and conflicting source bytes fail.
@@ -603,6 +620,49 @@ def Sphere "Model" { double radius.timeSamples = {0: 1, 10: 3} }
             model_stage.root_layer().export_to_string().unwrap());
         assert!(!root.filesystem && !first.filesystem && !second.filesystem);
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn typed_snapshot_edits_preserve_dependencies_and_inputs() {
+        use crate::editor::EditorEdit;
+        use openusd::sdf::Value;
+        let directory = tempfile::tempdir().unwrap();
+        let model = UsdSource::snapshot(directory.path().join("model.usda"), &b"#usda 1.0\ndef Cube \"Model\" {}\n"[..]).unwrap();
+        let source = UsdSource::snapshot(directory.path().join("root.usda"), &b"#usda 1.0\n"[..]).unwrap()
+            .with_reference("/Object", &model, "/Model").unwrap();
+        let original = source.bytes.clone();
+        let edited = source.with_edits([
+            EditorEdit::Attribute { prim: "/Object".into(), name: "size".into(), type_name: "double".into(), value: Value::Double(3.) },
+            EditorEdit::Define { path: "/Other".into(), type_name: "Sphere".into() },
+            EditorEdit::RelationshipTargets { prim: "/Other".into(), name: "peer".into(), targets: vec![openusd::sdf::path("/Object").unwrap()] },
+        ]).unwrap();
+        let stage = edited.open_stage().unwrap();
+        assert_eq!(stage.prim("/Object").unwrap().attribute("size").get::<f64>().unwrap(), Some(3.));
+        assert!(stage.prim("/Other").unwrap().is_valid().unwrap());
+        assert_eq!(edited.files, source.files);
+        assert!(!edited.filesystem);
+        assert_eq!(edited.identifier, source.identifier);
+        assert_ne!(edited.revision(), source.revision());
+        assert_eq!(source.bytes, original);
+        assert!(!source.open_stage().unwrap().prim("/Other").unwrap().is_valid().unwrap());
+        assert_eq!(model.open_stage().unwrap().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap(), Some(2.));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        assert_eq!(source.with_edits([]).unwrap().revision(), source.revision());
+        assert!(source.with_edits([
+            EditorEdit::Define { path: "/Partial".into(), type_name: "Cube".into() },
+            EditorEdit::Attribute { prim: "/Partial".into(), name: "size".into(), type_name: "double".into(), value: Value::String("invalid".into()) },
+        ]).is_err());
+        assert_eq!(source.bytes, original);
+        assert!(!source.open_stage().unwrap().prim("/Partial").unwrap().is_valid().unwrap());
+        assert!(source.with_edits([
+            EditorEdit::Define { path: "/Broken".into(), type_name: String::new() },
+            EditorEdit::References { prim: "/Broken".into(), references: vec![openusd::sdf::Reference {
+                asset_path: "missing.usda".into(), prim_path: openusd::sdf::path("/Model").unwrap(), ..Default::default()
+            }] },
+        ]).is_err());
+        assert_eq!(source.bytes, original);
+        let binary_name = UsdSource::snapshot("root.usdc", &b"#usda 1.0\n"[..]).unwrap();
+        assert!(binary_name.with_edits([EditorEdit::Define { path: "/New".into(), type_name: "Cube".into() }]).is_err());
     }
 
     #[test]

@@ -59,6 +59,63 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
 
 #[cfg(test)]
 mod tests {
+    fn check_muted_layer_exports(native: bool) {
+        use crate::editor::{EditorSession, SaveMode};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("layer_muting.usda");
+        let weak = directory.path().join("layer_muting_weak.usda");
+        let root_bytes = include_bytes!("../../../assets/layer_muting.usda");
+        let weak_bytes = include_bytes!("../../../assets/layer_muting_weak.usda");
+        std::fs::write(&root, root_bytes).unwrap();
+        std::fs::write(&weak, weak_bytes).unwrap();
+        let stage = crate::UsdSource::new(&root, root_bytes.as_slice()).unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage);
+        let snapshot = editor.snapshot().unwrap();
+        let weak_id = snapshot.layers.iter().find(|id| *id != &snapshot.root_layer).unwrap();
+        editor.set_layer_muted(weak_id, true).unwrap();
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        for (label, mode, visible) in [("root", SaveMode::RootLayer, true),
+            ("edit", SaveMode::EditLayer, true), ("flat", SaveMode::Flattened, false)] {
+            for extension in ["usda", "usdc", "usd", "usdz"] {
+                let path = output.path().join(format!("{label}.{extension}"));
+                editor.save(path.to_str().unwrap(), mode).unwrap();
+                let saved = if native {
+                    let result = std::process::Command::new(std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into()))
+                        .arg("--flatten").arg(&path).output().unwrap();
+                    assert!(result.status.success(), "{label}.{extension}: {}", String::from_utf8_lossy(&result.stderr));
+                    assert!(result.stderr.is_empty(), "{label}.{extension}: {}", String::from_utf8_lossy(&result.stderr));
+                    crate::UsdSource::snapshot("native.usda", result.stdout).unwrap().open_stage().unwrap()
+                } else {
+                    crate::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap()
+                };
+                assert_eq!(saved.prim("/Root/Shape").unwrap().is_valid().unwrap(), visible, "{label}.{extension}");
+                assert!(saved.muted_layers().is_empty());
+                if !native { assert_eq!(saved.layer_stack().len(), if visible { 2 } else { 1 }); }
+                if extension == "usdz" {
+                    let portable = crate::UsdSource::snapshot("relocated/package.usdz", std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap();
+                    assert_eq!(portable.prim("/Root/Shape").unwrap().is_valid().unwrap(), visible);
+                    assert_eq!(portable.layer_stack().len(), if visible { 2 } else { 1 });
+                }
+                assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+                assert!(editor.stage().is_layer_muted(weak_id));
+            }
+        }
+        assert_eq!(std::fs::read(root).unwrap(), root_bytes);
+        assert_eq!(std::fs::read(weak).unwrap(), weak_bytes);
+    }
+
+    #[test]
+    fn muted_layer_exports_preserve_authored_vs_composed_semantics() {
+        check_muted_layer_exports(false);
+    }
+
+    #[test]
+    #[ignore = "requires native OpenUSD usdcat; run make test-native"]
+    fn native_export_muted_layer_composition() {
+        check_muted_layer_exports(true);
+    }
+
     #[test]
     #[ignore = "requires native OpenUSD usdcat"]
     fn native_export_baked_clip_values() {
@@ -399,7 +456,7 @@ def Scope "Model" (
         use crate::editor::SaveMode;
         let source = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
-        let editor = variant_payload_fixture(source.path());
+        let mut editor = variant_payload_fixture(source.path());
         editor.set_payload_loaded("/Model/Content", false).unwrap();
         let before = editor.stage().root_layer().export_to_string().unwrap();
         let path = output.path().join("unloaded.usdz");
@@ -427,7 +484,7 @@ def Scope "Model" (
         use std::{io::Read, process::Command};
         let source = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
-        let editor = variant_payload_fixture(source.path());
+        let mut editor = variant_payload_fixture(source.path());
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
         let control = Command::new(&native).arg("--flatten").arg(source.path().join("root.usda")).output().unwrap();
         assert!(control.status.success(), "{}", String::from_utf8_lossy(&control.stderr));

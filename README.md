@@ -6,6 +6,9 @@
 
 A live [OpenUSD](https://openusd.org) editor on [Bevy](https://bevy.org) 0.19.1.
 
+See the [support matrix and release blockers](SUPPORT.md) for current integration
+scope, verification boundaries and runnable starting points.
+
 The composed USD stage is the source of truth: it's held live (not baked), projected
 into Bevy entities, and kept in sync off openusd's change notifications. Edits flow
 both ways — author back to the stage, undo/redo, and save.
@@ -131,6 +134,15 @@ layer contents or adding undo commands. It rejects unknown layers and muting the
 root or active edit layer. A muted layer cannot become the edit target until it
 is unmuted. `EditorSnapshot::muted_layers` retains the sorted muted identifiers;
 `EditorCommand::LayerMuteChecked` guards queued toggles by document and revision.
+The inspector also uses `EditLayerChecked` and `PayloadChecked` for target
+selection and payload load toggles. Both reject a changed document or revision
+before applying the request. The unchecked `EditLayer`/`Payload` commands remain
+available for programmatic callers that intentionally operate on the current
+session.
+`EditorSession::set_payload_loaded` requires a mutable session and advances the
+revision when its load-rule table changes. An identical repeated request leaves
+the revision unchanged. Payload toggles still do not author layer contents or
+add undo commands, but queued edits from an older composition are rejected.
 An effective toggle advances the editor revision; a no-op does not. Layer muting
 is session-local, not persisted USD metadata. The inspector's **Layers / edit
 target** group includes runtime participation controls below the attribute filter.
@@ -142,6 +154,11 @@ components that belonged to those removed entities.
 Undo/redo of a command targeting a muted layer asks you to unmute that layer
 first. The error names the layer and preserves the pending history entry and
 current edit target; commands targeting an unmuted layer remain available.
+Root/edit-layer exports preserve authored sublayers even when muted at runtime;
+reopening them does not restore the muted set. Flattened exports instead capture
+the currently composed scene and therefore omit opinions excluded by muting.
+The muted-layer export regression covers USDA, USDC, USD and portable USDZ with
+the root as edit target, including native `usdcat` validation.
 
 The inspector's **Payloads / references** group displays reference opinions below
 the payload controls, including source paths, list modes, separate site/arc time
@@ -250,7 +267,8 @@ new. Pass `openusd::sdf::Path::default()` as the target to use the model's
 in the resolved name; a missing or unresolvable default fails. An empty typed
 path is distinct from an empty string, which the upstream path parser rejects.
 Existing prim
-patches remain explicit editor/authoring operations. Conflicting dependencies or
+patches use editor/authoring operations, including immutable `with_edits` batches.
+Conflicting dependencies or
 composition errors fail without changing either input. References use the source
 identifier as an absolute asset anchor. For a self-contained assembly with
 captured dependencies, export USDZ through the editor:
@@ -259,6 +277,18 @@ captured dependencies, export USDZ through the editor:
 usd_bevy::editor::EditorSession::new(assembly.open_stage()?)
     .save("assembly.usdz", usd_bevy::editor::SaveMode::RootLayer)?;
 ```
+
+`source.with_edits(edits)` applies `EditorEdit` values to an independent stage,
+validates composition and returns a new USDA root snapshot with the original
+captured dependencies and filesystem policy. Empty batches retain identity;
+failed batches leave the receiver unchanged. Supply new captured assets with
+`with_dependency` before authoring references or payloads. This is a typed-command
+API, not compile-time validation of USD schema names or general BSN equivalence.
+Run the diskless customization example with
+`make run RUN_WITH= APP_TARGET='--example source_edits' CARGO='cargo --offline'`.
+It checks projected Bevy mesh widths, independent original/customized assets and
+live source replacement while retaining runtime components on surviving entities.
+This is a headless integration check, not rendered-image acceptance.
 
 The native export test lane verifies a relocated diskless batch assembly with
 default and explicit targets, including its captured opaque asset bytes, through
@@ -1392,6 +1422,10 @@ valid-looking image. Missing/unreadable logs fail closed. Settings record
 `viewer_runtime_log_passed` for each captured frame; this is the shared log check
 at validation time, not a per-frame timestamp. It does not detect arbitrary
 hangs, swallowed errors or panics that occur after the check.
+Primary settings and log companions must also be new, even if a prior failed
+run never wrote its PNG. Existing companions and symlink output paths reject
+before launch without overwriting evidence. This is a preflight check, not an
+atomic reservation against concurrent writers.
 
 Set `USD_UI_CAPTURE_SECOND_WAIT=1..300` to capture a second host image in the same
 viewer process, after that many additional seconds (default 0 disables it).

@@ -1269,6 +1269,62 @@ def Material "Mat" {
     }
 
     #[test]
+    fn nested_package_dependency_reload_preserves_two_live_instances() {
+        #[derive(Component)]
+        struct Runtime;
+        fn package(pixel: Option<[u8; 4]>) -> Vec<u8> {
+            let mut inner = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+            let text = TEXTURED.replace("normal3f inputs:normal.connect = </Mat/Tex.outputs:rgb>", "");
+            inner.add_layer("models/textured.usda", text.as_bytes()).unwrap();
+            if let Some(pixel) = pixel { inner.add_layer("textures/pixel.png", &pixel_png(pixel)).unwrap(); }
+            let mut outer = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+            outer.add_layer("root.usda", b"#usda 1.0\n(subLayers = [@inner.usdz@])\n").unwrap();
+            outer.add_layer("inner.usdz", &inner.finish().unwrap().into_inner()).unwrap();
+            outer.finish().unwrap().into_inner()
+        }
+        let (mut app, directory, changed) = watched_memory_app();
+        directory.insert_asset_text(Path::new("root.usda"), "#usda 1.0\n(subLayers = [@bundle.usdz@])\n");
+        directory.insert_asset(Path::new("bundle.usdz"), package(Some([255, 0, 0, 255])));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://root.usda");
+        let roots = [app.world_mut().spawn(UsdSceneRoot(handle.clone())).id(),
+            app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 10.0 })).id()];
+        tick_until(&mut app, |world| roots.iter().all(|root| world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Mesh"));
+        app.world_mut().entity_mut(entities[0]).insert(Runtime);
+        let image_handle = |world: &World, entity| {
+            let material = world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap();
+            world.resource::<Assets<StandardMaterial>>().get(&material.0).unwrap().base_color_texture.clone().unwrap()
+        };
+        assert_eq!(image_handle(app.world(), entities[0]), image_handle(app.world(), entities[1]));
+        directory.insert_asset(Path::new("bundle.usdz"), package(Some([255, 255, 0, 255])));
+        changed("bundle.usdz");
+        tick_until(&mut app, |world| entities.iter().all(|entity|
+            world.resource::<Assets<Image>>().get(&image_handle(world, *entity)).unwrap().data.as_deref() == Some([255, 255, 0, 255].as_slice())));
+        for pixel in [[0, 255, 0, 255], [0, 0, 255, 255]] {
+            let retained = entities.map(|entity| image_handle(app.world(), entity));
+            directory.insert_asset(Path::new("bundle.usdz"), package(None));
+            changed("bundle.usdz");
+            tick_until(&mut app, |world| roots.iter().all(|root| matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            for (entity, image) in entities.into_iter().zip(&retained) {
+                assert_eq!(image_handle(app.world(), entity), *image);
+                assert!(app.world().resource::<Assets<Image>>().contains(image));
+            }
+            directory.insert_asset(Path::new("bundle.usdz"), package(Some(pixel)));
+            changed("bundle.usdz");
+            tick_until(&mut app, |world| roots.iter().all(|root| world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+                && entities.iter().all(|entity| world.resource::<Assets<Image>>().get(&image_handle(world, *entity)).unwrap().data.as_deref() == Some(pixel.as_slice())));
+            assert_eq!(roots.map(|root| instance_entity(app.world(), root, "/Mesh")), entities);
+            assert!(app.world().get::<Runtime>(entities[0]).is_some());
+            assert_eq!(app.world().get::<UsdInstanceTime>(roots[1]).unwrap().current, 10.0);
+            assert_eq!(image_handle(app.world(), entities[0]), image_handle(app.world(), entities[1]));
+        }
+        app.world_mut().entity_mut(roots[0]).remove::<UsdSceneRoot>();
+        app.update();
+        assert!(app.world().get_entity(entities[0]).is_err());
+        assert!(app.world().get_entity(entities[1]).is_ok());
+    }
+
+    #[test]
     fn packaged_material_images_are_labeled_assets() {
         let (mut app, directory) = memory_app();
         let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));

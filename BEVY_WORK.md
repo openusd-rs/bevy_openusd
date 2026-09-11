@@ -1052,6 +1052,32 @@ zero across 921,600 pixels. All four report CAPTURE_OK without WARN/ERROR;
 This supersedes earlier blanket nested-export exclusions, not the broader
 resolver, pattern, large-workload, archive-layout or flagship acceptance limits.
 
+## Nested dependency reload through AssetServer
+
+Added `asset::tests::nested_package_dependency_reload_preserves_two_live_instances`.
+A named in-memory Bevy asset source serves an unchanged root USDA whose sublayer
+is an outer USDZ, which itself sublayers an inner USDZ containing the mesh,
+material and relative PNG. Two live roots share the same UsdScene asset. Only
+the bundle dependency bytes and its Bevy ModifiedAsset event change.
+
+The regression covers a healthy red-to-yellow image update, two missing-inner-
+texture failure/repair cycles ending green and blue, explicit Failed/Ready root
+states, unchanged projected mesh entities, retained image handles during failure,
+shared current image handles after repair, a preserved runtime-only component
+and unchanged second-instance time of ten. Removing the first root's scene
+component removes its projected entity without removing the second instance.
+
+The initial targeted failure/recovery test passes:
+`/tmp/nested-assetserver-reload-test.log`. The subsequent full-suite run includes
+the added healthy-to-healthy update. This is actual AssetServer/loader/dependency
+machinery with synthetic source events, not native OS watching or new GPU-frame
+acceptance. It does not establish animated motion from the retained clock alone.
+
+Full workspace validation passes 535 ordinary tests (13 ignored), check-all,
+build and `git diff --check`. Logs:
+`/tmp/nested-assetserver-{all-tests,check,build}.log`. No production behavior
+changed in this integration-regression step.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

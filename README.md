@@ -1382,7 +1382,13 @@ success, the script runs `capture_inspect` on a fixed interior viewer region of
 its 1600×1000 output, excluding desktop wallpaper. Predominantly near-black
 regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
 the failure. This catches the observed black-window case, not arbitrary incorrect
-rendering or incomplete uploads.
+rendering or incomplete uploads. Before reporting success, it also runs
+`scripts/check_viewer_log.sh` against the viewer log. Known Rust/Bevy panic and
+fatal-runtime markers fail the overall command even if the host still paints a
+valid-looking image. Missing/unreadable logs fail closed. Settings record
+`viewer_runtime_log_passed` for each captured frame; this is the shared log check
+at validation time, not a per-frame timestamp. It does not detect arbitrary
+hangs, swallowed errors or panics that occur after the check.
 
 Set `USD_UI_CAPTURE_SECOND_WAIT=1..300` to capture a second host image in the same
 viewer process, after that many additional seconds (default 0 disables it).

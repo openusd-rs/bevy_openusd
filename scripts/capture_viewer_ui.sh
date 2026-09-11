@@ -59,7 +59,7 @@ case "$renderer" in
 esac
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 mkdir -p "$(dirname "$output")"
-printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutput_height=1000\ninspection_region=110,110,1400,800\nvalidation=near-black-only\n' \
+printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutput_height=1000\ninspection_region=110,110,1400,800\nvalidation=near-black-and-panic-log\n' \
     "$renderer" "$delay" > "${output%.png}.settings.txt"
 printf 'scene_graph_requested=%s\n' "$scene_graph" >> "${output%.png}.settings.txt"
 printf 'capture_timeout_seconds=%s\n' "$capture_timeout" >> "${output%.png}.settings.txt"
@@ -190,6 +190,14 @@ for frame in "${outputs[@]}"; do
         echo 'region_inspection_passed=1' >> "${frame%.png}.settings.txt"
         echo "UI_FRAME_INSPECTION_OK $frame"
     fi
+done
+runtime_log_ok=1
+if ! /bin/bash "$root/scripts/check_viewer_log.sh" "${output%.png}.viewer.log"; then
+    runtime_log_ok=0
+    capture_ok=0
+fi
+for frame in "${outputs[@]}"; do
+    printf 'viewer_runtime_log_passed=%s\n' "$runtime_log_ok" >> "${frame%.png}.settings.txt"
 done
 [[ "$capture_ok" == 1 ]] || exit 1
 [[ "$viewport_ok" == 1 ]] || { echo "paired viewport capture failed; artifacts retained" >&2; exit 1; }

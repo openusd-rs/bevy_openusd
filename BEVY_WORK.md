@@ -3,6 +3,35 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Capture runtime-panic rejection
+
+`capture_viewer_ui.sh` now checks the viewer log after pixel inspections and
+before UI_CAPTURE_OK. The reusable `check_viewer_log.sh` rejects known Rust
+thread-panic, Bevy system-panic, non-unwinding-panic and fatal-runtime markers;
+missing/unreadable logs and grep errors fail closed. All artifacts remain.
+Each frame's settings record the shared `viewer_runtime_log_passed` result.
+This closes the capture-tool follow-up from the failed layer-muting run: a
+painted host is no longer sufficient when the embedded app logs a panic.
+
+The shell regression covers old/new Rust thread formats, system and fatal
+markers, benign text, empty logs and invalid paths/arguments. Empty logs pass
+this marker-only helper; the containing capture still requires its UI handshake.
+Run through Make's temporary check-capture-log/check-capture-syntax targets;
+evidence is `/tmp/capture-runtime-log-tests.log`. The historical real panic log
+`target/layer-muting-toggle-ui.viewer.log` rejects, while the fixed run's log
+passes. No Rust source changed in this step.
+
+End-to-end GPU acceptance uses an explicitly synthetic marker emitted by
+`/tmp/usd-capture-panic-marker-probe.sh` before launching the normal viewer.
+Inspected `target/capture-panic-marker-ui.png` is a valid-looking cube and UI;
+region inspection passes, runtime-log inspection fails and Make exits 2 without
+UI_CAPTURE_OK (`/tmp/capture-panic-marker-probe.log`). The clean control
+`target/capture-runtime-clean-ui.png` was also inspected and passes both checks
+(`/tmp/capture-runtime-clean-probe.log`). Settings record runtime results 0/1
+respectively. The synthetic run tests rejection wiring, not a reproduced panic.
+The guard does not detect arbitrary hangs, unlogged failures, or future panics
+after validation, and it does not resolve the intermittent black-host issue.
+
 ## Inspector layer muting and empty-index panic fix
 
 The Layers / edit target group now includes runtime mute/unmute controls below

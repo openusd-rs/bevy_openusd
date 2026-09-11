@@ -1207,6 +1207,23 @@ seek to time code 30 for the bent pose.
 
 ### Typed component authoring
 
+For opt-in per-render-pass GPU timing in the standalone capture tool:
+
+```sh
+USD_CAPTURE_GPU_SAMPLES=120 USD_CAPTURE_DOME=/Showcase/Environment \
+  USD_CAPTURE_SHADOWS=off make run CARGO='cargo --offline' \
+  APP_TARGET='--example viewer_capture' \
+  ARGS='assets/flagship_showcase.usda target/timed-showcase.png 30'
+```
+
+The sample count accepts 1–600. After scene/pipeline readiness and 60 warm-up
+updates, the tool collects fresh Bevy GPU timestamp diagnostics for each reported
+pass. The capture metadata retains raw milliseconds, median, p95 and maximum.
+Unsupported/missing GPU diagnostics cannot silently pass as CPU timing: the
+existing 60-second capture timeout applies. Passes can overlap/nest; do not sum
+them into frame time. This fixed-time, 60-Hz, debug capture excludes startup and
+dome filtering and does not measure animated CPU update cost or host latency.
+
 For interactive variant/history inspection, open `assets/editor_variants.usda`,
 select `/Model` and open **Inspector**. The **blue** variant doubles the cube size;
 **Undo** restores red and a clean layer, and **Redo** restores blue and modified

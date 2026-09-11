@@ -3,6 +3,36 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Showcase deformation and GPU timestamp measurements
+
+The composed showcase passes GPU/CPU image comparisons at times 0, 30 and 60
+with RGB tolerance one and maximum observed error one. Captures and differences
+are retained in target/flagship-deformation-acceptance/; the time-30 GPU image
+was inspected. /tmp/flagship-deformation-acceptance.log records all three passes.
+
+viewer_capture now accepts USD_CAPTURE_GPU_SAMPLES=1..600. After its readiness
+gate and 60 warm-up updates, it collects distinct timestamp measurements per
+reported GPU pass, retaining raw milliseconds and median/p95/max in metadata.
+Missing GPU diagnostics retain the existing 60-second timeout, not a CPU substitute.
+The regression checks configuration, duplicate-measurement rejection and summary
+values. All 16 example tests and check-all pass. An initial compile exceeded
+Bevy's system-parameter count; related resources were grouped before the passing
+gate. Logs: /tmp/gpu-timing-tests-fixed.log and /tmp/gpu-timing-check.log.
+
+Six 120-sample runs at time 30 use CPU/GPU, GPU/CPU, CPU/GPU order, forward shading,
+shadows off and the selected dome. All capture; metadata verifies one GPU skin
+and morph mesh in GPU mode and zero in CPU mode. Each pair's image comparison
+passes tolerance one. target/flagship-timing-{1,2,3}-{cpu,gpu}.capture.txt retains
+every sample; /tmp/flagship-timing-*.log retains execution and comparisons.
+The instrumented pilot image target/flagship-timed-gpu.png was also inspected.
+
+Opaque-pass medians (CPU/GPU milliseconds) are 0.023552/0.023552,
+0.071680/0.072704 and 0.070656/0.023552. The roughly threefold run-to-run variation
+precludes claiming a deformation speedup. GPU clock/power state was not controlled.
+These are instrumented pass timings, not summed frame times, animated CPU costs,
+IBL filter timings or embedded-host latency. The performance/fidelity requirement
+remains open, including the UR5 shading defect.
+
 ## Reconciled composition-editor acceptance
 
 The original feature requirement is implemented through EditorSession,

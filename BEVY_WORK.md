@@ -895,6 +895,49 @@ its required region arguments; artifacts remain in
 The corrected tool derives its region from metadata. Shell syntax and
 `git diff --check` pass. No Rust source changed in this capture-tool step.
 
+## Nested USDZ loading baseline
+
+The [USDZ specification](https://openusd.org/dev/spec_usdz.html) permits packages
+inside packages and nested bracket asset paths. `examples/nested_package_fixture.rs`
+generates two equivalent outer packages: a reference to `inner.usdz` and a
+reference to `inner.usdz[scenes/model.usda]`. The inner default layer references
+its sibling `part.usda`, which defines a cube of size two. Memory-backed probes
+use nonexistent virtual source filenames, preventing filesystem fallback from
+masking snapshot-resolver failures. Both cases are attempted, and the example
+exits unsuccessfully unless both compose `/Root/Box` with size two.
+
+Run through Make with a new output directory:
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example nested_package_fixture' ARGS='target/nested-package-probe'
+```
+
+Current valid-fixture evidence is `target/nested-package-baseline-final` and
+`/tmp/nested-package-baseline-final.log`: implicit nested packages fail the
+vendored `UsdzFileFormat::refuse_nested_package` check; explicit nested entries
+are unresolved by SourceResolver's flat ZIP-entry lookup. Native OpenUSD
+25.05.01 usdcat --flatten loads both packages, with `/Root/Box` size two verified
+in both exported layers and no composition warnings:
+`/tmp/nested-package-native-final.log`, `*.native.usda` in the output directory.
+Nested support is still unimplemented; this is a failing compatibility probe,
+not a passing acceptance gate.
+
+The inner-package control test passes without creating its virtual source file,
+and `make check-all` passes (`/tmp/nested-package-fixture-tests.log`,
+`/tmp/nested-package-check.log`). Initial example compilation incorrectly used
+a crate-private validator and an unavailable root anyhow dependency; corrected
+to public stage traversal/errors and boxed errors. The first generated fixture
+also used one-line attribute syntax rejected by native USD; corrected to
+multiline USDA. Failed artifacts remain in `target/nested-package-baseline`,
+`/tmp/nested-package-baseline.log` and `/tmp/nested-package-native.log`.
+Native usdcat returned zero despite those composition warnings, so native exit
+status alone is not proof of a valid composed fixture.
+
+Implementation must address nested entry access in both snapshot and default
+resolvers, default-layer anchoring for inner packages, resource/depth bounds,
+relative inner-layer assets and explicit errors, without extracting files or
+silently flattening the source. Package writing remains a separate limitation.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

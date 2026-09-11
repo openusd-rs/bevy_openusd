@@ -6,9 +6,11 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 
 ## Current release blockers
 
-- Intermittent black host frames remain unresolved; a host-only control also
-  reproduced failure. Direct host GPU readback is now available, but successful
-  readback and desktop captures have not isolated the failing frame.
+- Intermittent black frames remain a native-capture acceptance blocker. The
+  standalone Khronos Vulkan cube reproduced the same visible-to-black failure
+  under headless Weston Vulkan on NVIDIA, without Mara, egui, Bevy or USD.
+  This establishes an independent graphics-stack reproduction, not a viewer
+  rendering fix or identification of the faulty driver/compositor component.
 - Spot/UR5 fidelity and broader native-render comparisons remain incomplete.
   Do not infer full-scene parity from bounded numerical or image fixtures.
 - Per-layer content-based save state and guarded shell/OS window close are

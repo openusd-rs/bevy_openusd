@@ -1468,6 +1468,28 @@ with a black host image narrows the failure to host presentation/composition or
 compositor readback, not necessarily to Weston itself. Neither near-black check
 proves scene fidelity or completed asset uploads.
 
+### Independent Vulkan control
+
+`scripts/run_vulkan_control.sh` runs the Khronos Vulkan cube without this
+project's renderer or UI libraries. Set `VKCUBE` to its executable, or put
+`vkcube` on PATH alongside Weston and nixVulkan. It uses Wayland, a 1440x920
+window and mailbox presentation. Its startup handshake is synthetic; inspect
+the images rather than treating it as render readiness.
+
+```sh
+USD_UI_CAPTURE_WAIT=20 USD_UI_CAPTURE_SECOND_WAIT=10 \
+RUN_WITH='/bin/bash scripts/run_vulkan_control.sh' \
+make --eval='capture-control:; @/bin/bash scripts/capture_viewer_ui.sh assets/layer_muting.usda target/NEW-vulkan-control.png' capture-control
+```
+
+The mandatory USD asset argument is unused by this control. On this machine,
+the third independent run produced a visible cube followed by a black capture
+under Weston's experimental Vulkan renderer. This independently reproduces the
+failure outside Mara/egui/Bevy/USD, but does not identify its graphics-stack cause.
+See `BEVY_WORK.md` for preserved images and environment details.
+
+### Host and bridge controls
+
 `examples/host_capture_probe.rs` draws colored panels and text with the same
 Mara native runner, without constructing a Bevy app or loading USD. Use it to
 isolate host/compositor failures (the script's required asset argument is ignored

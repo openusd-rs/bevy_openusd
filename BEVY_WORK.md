@@ -3,6 +3,45 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Independent Vulkan reproduction of black frames
+
+Khronos Vulkan-Tools vkcube 1.4.341.0, without Mara/egui/Bevy/USD, reproduced
+the same whole-client black capture. Three fresh Weston compositor/client runs
+used --wsi wayland --width 1440 --height 920 --present_mode 1, with captures
+after 20 seconds and another ten seconds. All six images were inspected:
+target/vkcube-control-{1,2}.png pairs show the rotating cube;
+target/vkcube-control-3.png shows the cube, but its .second.png is black.
+That failed region contains 50 nonblack pixels of 1,120,000 (cursor only),
+matching the viewer failure signature. The command correctly fails overall.
+Logs and failed images are preserved, not retried into a passing result.
+
+The environment is headless Weston 16.0.0 with its explicitly experimental
+Vulkan renderer, NVIDIA GeForce RTX 4080 and NVIDIA 595.84 kernel driver.
+The control scene-graph snapshot identifies vkcube, 1440x920 opaque NVIDIA
+dmabuf with normal transform. Its commit rate differs substantially from the
+viewer; this is an independent reproduction, not an identical timing workload.
+Neither the compositor nor the driver is uniquely isolated by this result.
+No display-session settings or system drivers were changed.
+
+The reusable scripts/run_vulkan_control.sh uses VKCUBE (default vkcube on PATH)
+and nixVulkan. It ignores the recursive make run arguments and announces a
+synthetic startup handshake. README.md records the Make capture command.
+The initial three runs used an equivalent temporary wrapper at
+/tmp/usd-vkcube-control.sh; logs are /tmp/vkcube-control-{1,2,3}.log and the
+target/vkcube-control-* companions. Standalone source attribution:
+https://github.com/KhronosGroup/Vulkan-Tools .
+
+The checked-in wrapper was then exercised with a ten-second wait and five-second
+second wait. Inspected target/vkcube-script-control.png is black and its second
+frame shows the cube: another independent reproduction, this time recovering
+in the same process. Both failed trials retain their nonzero capture status.
+Make-driven bash -n passes; /tmp/vkcube-script-control.log records the actual
+wrapper run. No Rust source changed during this investigation.
+
+This changes the next investigation from speculative viewer edits to the
+shared graphics/capture environment. Reliable native capture remains an
+acceptance blocker, while broader USD fidelity work is independently open.
+
 ## Embedded viewport repaint interval correction
 
 Sibling Mara commit fd20c11 compensates positive embedded-viewport repaint

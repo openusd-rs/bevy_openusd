@@ -78,20 +78,27 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         edit_target: snapshot.edit_target.clone(), ..Default::default()
     });
     let target = path_lines(&snapshot.edit_layer);
+    let modified = snapshot.layer_save_states.values().filter(|state| **state == usd_bevy::editor::save_state::LayerSaveState::Modified).count();
+    let unknown = snapshot.layer_save_states.values().filter(|state| **state == usd_bevy::editor::save_state::LayerSaveState::Unknown).count();
     let mut layers = vec![Pod::new("editor.target").with_custom_units(target.len() + 1, move |ui| {
-        ui.label("Edit target");
+        ui.label(&format!("Target | {modified} modified / {unknown} unknown"));
         for line in target { ui.label(&line); }
     })];
     for layer in &snapshot.layers {
         let layer = layer.clone();
         let lines = path_lines(&layer);
         let active = layer == snapshot.edit_layer;
+        let state = match snapshot.layer_save_states.get(&layer) {
+            Some(usd_bevy::editor::save_state::LayerSaveState::Clean) => "clean",
+            Some(usd_bevy::editor::save_state::LayerSaveState::Modified) => "modified",
+            _ => "unknown",
+        };
         let bridge = bridge.clone();
         let (document_id, revision) = (snapshot.document_id, snapshot.revision);
         layers.push(Pod::new(Id::new(("editor.layer", &layer))).with_custom_units(lines.len() + 1, move |ui| {
             for line in lines { ui.label(&line); }
-            if active { ui.label("Active edit target"); }
-            else if ui.button("Use as edit target").clicked {
+            if active { ui.label(&format!("Active edit target ({state})")); }
+            else if ui.button(&format!("Use as edit target ({state})")).clicked {
                 super::send(&bridge, EditorCommand::EditLayerChecked { identifier: layer, document_id, revision });
             }
         }));

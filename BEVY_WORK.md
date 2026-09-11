@@ -3,6 +3,39 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Content-based per-layer save state
+
+Editor snapshots now distinguish Clean, Modified and Unknown per loaded layer.
+Clean means authored content matches its loaded baseline or last successful
+in-place source save; it does not claim another process has left the disk file
+unchanged. Sessions constructed from arbitrary stages start Unknown. The viewer
+establishes loaded baselines only after successful document loading. Newly seen
+unmodified resolved layers can acquire a loaded baseline; absent or unreadable
+baseline layers remain Unknown rather than disappearing from the report.
+
+BLAKE3 hashes of canonical layer exports bound retained baseline storage.
+Per-layer commit revisions cache current hashes; structural resyncs invalidate
+the cache. Undo/redo and external authoring are compared by content, not merely
+by command count. Successful root/edit export refreshes only that layer's
+baseline, only when the destination canonicalizes to its source path. Failed
+saves, exported copies and flattened exports clear no layer states. Packaged
+source paths that cannot identify an in-place file remain conservative.
+
+The inspector shows per-layer state and document-wide modified/unknown counts;
+the close modal reports those counts without bypassing confirmation. Both
+inspected target/save-state-close-ui.png and .second.png show an authored orange
+Cube, one modified layer, and then a close warning reporting that same count.
+The native run passed both region checks and panic-log inspection. Existing
+close replay button coordinates move down nine pixels for the added status row.
+Native Cancel/Discard acceptance at those adjusted coordinates remains to rerun.
+
+The model regression covers unknown stages, loaded baselines, independent root
+and weak edits, failed/copy/flatten saves, per-layer in-place saves, undo/redo
+back to saved content, muting and external value changes. Current Make validation
+logs are /tmp/save-state-commit-editor.log, /tmp/save-state-commit-viewer.log and
+/tmp/save-state-commit-check.log. OS-close routing, external file-conflict
+detection and the other release blockers are not resolved by this change.
+
 ## Native Discard acceptance
 
 At a75af0d, the rebuilt viewer was run with close_discard.replay: close-button

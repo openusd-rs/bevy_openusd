@@ -1,11 +1,14 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::{Cell, RefCell}, collections::BTreeMap, rc::Rc};
 use openusd::usd::{CommittedChange, Stage, StageSink, StageSinkId};
 
 #[derive(Clone, Default)]
-struct Changes(Rc<RefCell<BTreeMap<String, u64>>>);
+struct Changes(Rc<RefCell<BTreeMap<String, u64>>>, Rc<Cell<u64>>);
 
 impl StageSink for Changes {
     fn after_commit(&self, _stage: &Stage, change: &CommittedChange<'_>) {
+        if change.resynced.iter().any(|path| path.is_prim_path()) {
+            self.1.set(self.1.get().saturating_add(1));
+        }
         let mut revisions = self.0.borrow_mut();
         for (layer, changes) in change.layer_changes {
             if !changes.is_empty() {
@@ -33,6 +36,8 @@ impl LayerChanges {
         let _ = self.stage.layer_count();
         self.changes.0.borrow().clone()
     }
+
+    pub fn structural_revision(&self) -> u64 { self.changes.1.get() }
 }
 
 impl Drop for LayerChanges {

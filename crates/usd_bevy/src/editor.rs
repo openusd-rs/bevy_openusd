@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 mod layer_changes;
+pub mod save_state;
 
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
 pub mod texture_watch;
@@ -263,6 +264,7 @@ fn process_commands(world: &mut World) {
                     world.insert_resource(crate::live::PrimEntities::default());
                     world.insert_non_send(crate::live::LiveStage::new(stage.clone()));
                     let mut editor = EditorSession::new(stage);
+                    editor.save_state.borrow_mut().opened(editor.stage(), &editor.layer_changes.revisions());
                     editor.source = Some(source);
                     install_textures(world, textures)?;
                     world.resource_mut::<EditorPlayback>().0.playing = false;
@@ -586,6 +588,7 @@ pub struct EditorSnapshot {
     pub revision: u64,
     /// Authored commit counts per layer since this editor session opened; not saved-state flags.
     pub layer_revisions: std::collections::BTreeMap<String, u64>,
+    pub layer_save_states: std::collections::BTreeMap<String, save_state::LayerSaveState>,
     pub sample_time: Option<f64>,
     pub asset_info: Option<crate::read::geom::CustomDict>,
     pub render_issues: Vec<String>,
@@ -650,6 +653,7 @@ pub struct EditorSession {
     redo: Vec<HistoryEntry>,
     history_limit: usize,
     layer_changes: layer_changes::LayerChanges,
+    save_state: std::cell::RefCell<save_state::SaveState>,
 }
 
 impl EditorSession {
@@ -666,6 +670,7 @@ impl EditorSession {
             redo: Vec::new(),
             history_limit: 128,
             layer_changes,
+            save_state: Default::default(),
         }
     }
 
@@ -822,6 +827,12 @@ impl EditorSession {
                 crate::persistence::export_layer(&self.stage, &crate::persistence::flatten::preserving_instances(&self.stage)?, filename)?;
             }
         }
+        let saved_layer = match mode {
+            SaveMode::RootLayer => Some(self.stage.root_layer().identifier().to_string()),
+            SaveMode::EditLayer => Some(self.stage.edit_target().layer_identifier().to_string()),
+            SaveMode::Flattened => None,
+        };
+        if let Some(layer) = saved_layer { self.save_state.borrow_mut().saved_to_source(&self.stage, &layer, filename); }
         Ok(())
     }
 
@@ -851,6 +862,7 @@ impl EditorSession {
             *layer == &snapshot.root_layer || *layer == &snapshot.edit_layer
                 || self.stage.sub_layers(layer).contains(&snapshot.edit_layer)
         }).cloned().collect();
+        snapshot.layer_save_states = self.save_state.borrow_mut().states(&self.stage, &snapshot.layer_revisions, self.layer_changes.structural_revision());
         let predicate = openusd::usd::PrimPredicate::new(
             openusd::usd::PrimStatus::ACTIVE.union(openusd::usd::PrimStatus::DEFINED),
             openusd::usd::PrimStatus::ABSTRACT,
@@ -1810,6 +1822,57 @@ def Xform "Model" (
         assert_eq!(bridge.view().unwrap().status, "Ready");
         let reopened = crate::UsdSource::new(&output, std::fs::read(&output).unwrap()).unwrap().open_stage().unwrap();
         assert_eq!(reopened.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Scope"));
+    }
+
+    #[test]
+    fn layer_save_states_follow_content_and_only_source_saves() {
+        use save_state::LayerSaveState::{Clean, Modified, Unknown};
+        let directory = tempfile::tempdir().unwrap();
+        let root_file = directory.path().join("root.usda");
+        let weak_file = directory.path().join("weak.usda");
+        std::fs::write(&root_file, "#usda 1.0\n(subLayers = [@weak.usda@])\nover \"Root\" {}\n").unwrap();
+        std::fs::write(&weak_file, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        let source = crate::UsdSource::new(&root_file, std::fs::read(&root_file).unwrap()).unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        assert!(editor.snapshot().unwrap().layer_save_states.values().all(|state| *state == Unknown));
+        editor.save_state.borrow_mut().opened(editor.stage(), &editor.layer_changes.revisions());
+        let initial = editor.snapshot().unwrap();
+        assert!(initial.layer_save_states.values().all(|state| *state == Clean));
+        let root = initial.root_layer;
+        let weak = initial.layers.into_iter().find(|id| id != &root).unwrap();
+        let edit = || EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(4.) };
+        editor.edit(edit()).unwrap();
+        editor.set_edit_layer(&weak).unwrap();
+        editor.edit(edit()).unwrap();
+        let both = editor.snapshot().unwrap().layer_save_states;
+        assert_eq!(both[&root], Modified);
+        assert_eq!(both[&weak], Modified);
+        for mode in [SaveMode::RootLayer, SaveMode::EditLayer, SaveMode::Flattened] {
+            editor.save(directory.path().join("copy.usda").to_str().unwrap(), mode).unwrap();
+            assert_eq!(editor.snapshot().unwrap().layer_save_states, both);
+        }
+        assert!(editor.save(directory.path().join("missing/out.usda").to_str().unwrap(), SaveMode::RootLayer).is_err());
+        assert_eq!(editor.snapshot().unwrap().layer_save_states, both);
+        editor.save(root_file.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Clean);
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&weak], Modified);
+        editor.undo().unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&weak], Clean);
+        editor.redo().unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&weak], Modified);
+        editor.save(weak_file.to_str().unwrap(), SaveMode::EditLayer).unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&weak], Clean);
+        editor.undo().unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&weak], Modified);
+        editor.redo().unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&weak], Clean);
+        editor.set_edit_layer(&root).unwrap();
+        editor.set_layer_muted(&weak, true).unwrap();
+        assert!(editor.snapshot().unwrap().layer_save_states.values().all(|state| *state == Clean));
+        editor.stage().prim("/Root").unwrap().attribute("score").set(9_f64).unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Modified);
+        editor.stage().prim("/Root").unwrap().attribute("score").set(4_f64).unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Clean);
     }
 
     #[test]

@@ -45,13 +45,20 @@ impl State {
 impl CloseConfirmation {
     pub fn show(&self, ctx: &egui::Context) {
         if !self.state.lock().unwrap().pending { return; }
-        let context = self.context();
+        let view = self.bridge.view().ok();
+        let context = view.as_ref().map(|view| (view.document.document_id, view.document.revision));
         let mut cancel = false;
         let mut discard = false;
         let response = egui::Modal::new(egui::Id::new("usd.close.confirmation")).show(ctx, |ui| {
             ui.set_max_width(420.);
             ui.heading("Close USD viewer?");
             ui.label("Changes you have not saved will be lost. Cancel to export the layers you need first.");
+            if let Some(view) = &view {
+                use usd_bevy::editor::save_state::LayerSaveState;
+                let modified = view.document.layer_save_states.values().filter(|state| **state == LayerSaveState::Modified).count();
+                let unknown = view.document.layer_save_states.values().filter(|state| **state == LayerSaveState::Unknown).count();
+                ui.label(format!("Layers: {modified} modified, {unknown} with unknown save state."));
+            }
             if context.is_none() { ui.label("Document state is unavailable; close confirmation is disabled."); }
             ui.horizontal(|ui| {
                 cancel = ui.button("Cancel").clicked();

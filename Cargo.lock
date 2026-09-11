@@ -5894,6 +5894,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "bevy",
+ "blake3",
  "glam 0.30.10",
  "half",
  "log",

@@ -3,6 +3,34 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Capture companion preservation and current watcher gates
+
+The host capture preflight now refuses existing primary settings, Weston/viewer,
+capture/inspection and scene-graph logs, including dangling symlinks. It rejects
+a symlink PNG before realpath resolution. This preserves evidence from failed
+runs that never produced their PNG. Existing second-frame/viewport checks remain.
+These are preflight guards, not atomic reservations against concurrent writers.
+
+`scripts/check_capture_preflight_tests.sh` tests regular files and dangling
+symlinks for all six primary companions plus a dangling PNG symlink, asserting
+exit 2, unchanged evidence and no additional artifacts. Fake compositor commands
+are present only to satisfy discovery; refusal occurs before launching them.
+The Make-driven shell suite and syntax check pass
+(`/tmp/capture-preflight-tests.log`). A fresh native capture also passes pixel
+and panic-log checks: inspected `target/capture-new-companions-ui.png` shows the
+cube and inspector (`/tmp/capture-new-companions-probe.log`).
+
+The broader post-editor-change watcher-enabled workspace gate passes 616 tests,
+zero failures and 23 ignored across 30 suites
+(`/tmp/current-editor-watcher-workspace.log`). Command: Make temporary target
+running `cargo --offline test --workspace --all-targets --features file_watcher`,
+with TMPDIR set to target/test-tmp. The subsequent native lane passes all 23
+selected tests, including real filesystem-event and usdcat cases
+(`/tmp/current-editor-watcher-native.log`), using
+`make test CARGO='cargo --offline' APP_TARGET='-p usd_bevy --features file_watcher --lib native_ -- --ignored --nocapture'`
+with the installed OpenUSD bin directory in PATH. This is one successful suite
+run, not a flakiness/performance benchmark or general rendering acceptance.
+
 ## Payload load-rule revision tracking
 
 `EditorSession::set_payload_loaded` now takes `&mut self`, synchronizes external

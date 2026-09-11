@@ -9,10 +9,15 @@ for command in weston weston-screenshooter setsid make realpath grep timeout; do
     command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 2; }
 done
 asset=$(realpath "$1")
+[[ ! -L "$2" ]] || { echo "output must be new, not a symlink: $2" >&2; exit 2; }
 output=$(realpath -m "$2")
 [[ -f "$asset" && "$output" == *.png && ! -e "$output" ]] || {
     echo "asset must exist; output must be a new .png path" >&2; exit 2;
 }
+for suffix in settings.txt weston.log viewer.log capture.log inspect.log scene-graph.log; do
+    path="${output%.png}.$suffix"
+    [[ ! -e "$path" && ! -L "$path" ]] || { echo "capture companion must be new: $path" >&2; exit 2; }
+done
 delay=${USD_UI_CAPTURE_WAIT:-20}
 [[ "$delay" =~ ^[1-9][0-9]*$ && "$delay" -le 300 ]] || {
     echo "USD_UI_CAPTURE_WAIT must be 1..300 seconds" >&2; exit 2;

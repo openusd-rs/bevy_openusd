@@ -126,6 +126,23 @@ between explicit replacement and non-explicit operations remains API-only.
 list operations in strength order, including customData, original spec paths,
 source layer identifiers and cumulative site offsets. Relative paths remain
 anchored to those source layers; this is provenance, not a composed reference list.
+`EditorSession::set_layer_muted` changes runtime composition without authoring
+layer contents or adding undo commands. It rejects unknown layers and muting the
+root or active edit layer. A muted layer cannot become the edit target until it
+is unmuted. `EditorSnapshot::muted_layers` retains the sorted muted identifiers;
+`EditorCommand::LayerMuteChecked` guards queued toggles by document and revision.
+An effective toggle advances the editor revision; a no-op does not. Layer muting
+is session-local, not persisted USD metadata. The inspector's **Layers / edit
+target** group includes runtime participation controls below the attribute filter.
+Muted layers remain listed with an Unmute action; root and active edit layers
+show a protection message instead of a Mute button. `assets/layer_muting.usda`
+demonstrates a cube contributed by a weak layer. Muting a layer removes its
+excluded prim entities; unmuting recreates them, rather than restoring runtime
+components that belonged to those removed entities.
+Undo/redo of a command targeting a muted layer asks you to unmute that layer
+first. The error names the layer and preserves the pending history entry and
+current edit target; commands targeting an unmuted layer remain available.
+
 The inspector's **Payloads / references** group displays reference opinions below
 the payload controls, including source paths, list modes, separate site/arc time
 mappings and customData. A matching active edit target exposes **Clear local
@@ -536,6 +553,12 @@ three and empty input authors an empty array. Values must fit their declared typ
 and floating-point values must be finite. The text editor allows at most 4096
 scalar components and 256 KiB of text; larger arrays remain read-only here rather
 than being truncated. This is not an unrestricted bulk-mesh editor.
+The **Layers / edit target** group includes an attribute filter matching a
+case-insensitive substring of an attribute name or USD type. Its count includes
+schema attributes. Filtering only changes displayed attribute controls, including
+matrix controls; it does not author data or discard hidden drafts. Selection
+changes retain the query; document or edit-target changes clear it. Prim,
+relationship, variant, payload and reference controls are not filtered.
 “Apply default value” edits the default opinion, not an animation time sample.
 “Apply sample at time” uses the explicit scene-time field; “Use timeline time”
 copies the current timeline position into that field. “Clear sample at time”
@@ -877,6 +900,9 @@ UVs or native curve-renderer parity. Low sampling visibly facets curved shapes.
 `assets/curve_surface_loops.usda` exercises two periodic B-spline tubes in one
 prim with indexed uniform widths and separate colors: a thick blue loop and a
 thin orange loop. The loops close independently without connecting triangles.
+`assets/curve_surface_spatial.usda` exercises a non-planar periodic tube. Its
+transported frame distributes closure twist by sampled arc length, including
+the closing edge, rather than concentrating the correction at the seam.
 Surface materials honor `doubleSided`: single-sided ribbon backs are culled,
 while double-sided backs remain visible with flipped lighting normals.
 `assets/curve_surface_sidedness.usda` shows a front-facing ribbon above a hidden
@@ -1359,7 +1385,13 @@ success, the script runs `capture_inspect` on a fixed interior viewer region of
 its 1600×1000 output, excluding desktop wallpaper. Predominantly near-black
 regions fail and retain the PNG plus `.inspect.log`; no automatic retry hides
 the failure. This catches the observed black-window case, not arbitrary incorrect
-rendering or incomplete uploads.
+rendering or incomplete uploads. Before reporting success, it also runs
+`scripts/check_viewer_log.sh` against the viewer log. Known Rust/Bevy panic and
+fatal-runtime markers fail the overall command even if the host still paints a
+valid-looking image. Missing/unreadable logs fail closed. Settings record
+`viewer_runtime_log_passed` for each captured frame; this is the shared log check
+at validation time, not a per-frame timestamp. It does not detect arbitrary
+hangs, swallowed errors or panics that occur after the check.
 
 Set `USD_UI_CAPTURE_SECOND_WAIT=1..300` to capture a second host image in the same
 viewer process, after that many additional seconds (default 0 disables it).
@@ -1921,9 +1953,23 @@ Normal-mapped ordinary meshes, material subsets and point-instancer prototypes
 carry `UsdMaterialWarning` when the projected mesh lacks tangents. Bevy then uses
 geometric shading normals; the diagnostic does not invent a UV/tangent basis or
 validate the numerical quality of existing tangents.
+The same shared checks report missing UV0/UV1 coordinates requested by base-color,
+emissive, metallic/roughness, normal and occlusion textures. They cover ordinary
+geometry, curve surfaces, subsets and point-instancer prototypes. The warning
+identifies absent inputs; it does not generate coordinates, remove textures or
+claim that constant 1x1 textures necessarily render incorrectly without UVs.
 Material warnings on the selected prim's mapped entity appear in the Properties
-pane's render issues and clear when the warning or selection disappears. This
-does not aggregate warnings from generated subset/prototype descendants.
+pane's render issues and clear when the warning or selection disappears.
+Generated subset and point-instancer child material warnings are also shown,
+labelled with subset/prototype names and instance IDs when available. Collection
+follows only generated-child markers, skips unrelated runtime subtrees and stops
+at 4096 visited child entities or 64 child warnings with a truncation message.
+It does not aggregate arbitrary authored prim descendants or nonmaterial child
+diagnostics.
+Selected-entity render issues also include invalid material-subset warnings and
+CPU skinning fallback reasons. These describe the active fallback, not a failure
+to render the whole entity. `assets/material_subset_invalid.usda` demonstrates
+out-of-range subset indices with the whole-mesh fallback retained.
 
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:

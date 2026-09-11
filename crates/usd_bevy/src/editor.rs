@@ -20,6 +20,7 @@ pub enum EditorCommand {
     Edit(EditorEdit),
     EditChecked { edit: EditorEdit, document_id: u64, revision: u64, target: EditTarget },
     EditLayer(String),
+    LayerMuteChecked { identifier: String, muted: bool, document_id: u64, revision: u64 },
     Payload { prim: String, loaded: bool },
     Undo,
     Redo,
@@ -87,7 +88,11 @@ fn publish_projection_issues(
     rendering: Query<(Option<&crate::route::subdivision::UsdSubdivisionError>,
         Option<&crate::route::skel::UsdDeformationError>, Option<&crate::route::instancer::UsdInstancerWarning>,
         Option<&crate::route::shapes::UsdShapeError>, Option<&crate::route::curves::UsdCurveError>,
-        Option<&crate::route::xform::UsdTransformError>, Option<&crate::route::material::UsdMaterialWarning>)>,
+        Option<&crate::route::xform::UsdTransformError>, Option<&crate::route::material::UsdMaterialWarning>,
+        Option<&crate::route::subset::UsdSubsetWarning>, Option<&crate::route::gpu_skin::UsdCpuSkinFallback>)>,
+    generated: Query<(Option<&Children>, Option<&crate::route::subset::UsdSubset>,
+        Option<&crate::route::instancer::UsdPrototypePart>, Has<crate::route::instancer::UsdInstance>,
+        Option<&crate::route::instancer::UsdInstanceId>, Option<&crate::route::material::UsdMaterialWarning>)>,
 ) {
     let Ok(mut state) = bridge.0.lock() else { return };
     state.view.document.reflect_issues = state.view.document.selected.as_deref()
@@ -97,16 +102,46 @@ fn publish_projection_issues(
     state.view.document.render_issues = state.view.document.selected.as_deref()
         .and_then(|path| prims.as_ref()?.entity(path))
         .and_then(|entity| rendering.get(entity).ok())
-        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve, transform, material)| {
+        .map_or_else(Vec::new, |(subdivision, deformation, instancer, shape, curve, transform, material, subset, fallback)| {
             [subdivision.map(|error| format!("Subdivision: {}", error.0)),
                 deformation.map(|error| format!("Deformation: {}", error.0)),
                 instancer.map(|error| format!("Point instancer: {}", error.0)),
                 shape.map(|error| format!("Shape: {}", error.0)),
                 curve.map(|error| format!("Curve: {}", error.0)),
                 transform.map(|error| format!("Transform: {}", error.0)),
-                material.map(|warning| format!("Material: {}", warning.0))]
+                material.map(|warning| format!("Material: {}", warning.0)),
+                subset.map(|warning| format!("Material subsets: {}", warning.0)),
+                fallback.map(|warning| format!("CPU skinning fallback: {}", warning.0))]
                 .into_iter().flatten().collect()
         });
+    let selected = state.view.document.selected.as_deref().and_then(|path| prims.as_ref()?.entity(path));
+    if let Some(entity) = selected {
+        let mut pending = generated.get(entity).ok().and_then(|data| data.0)
+            .map(|children| children.iter().rev().take(4097).map(|child| (child, String::new())).collect::<Vec<_>>()).unwrap_or_default();
+        let mut visited = 0;
+        let mut reported = 0;
+        while let Some((entity, parent)) = pending.pop() {
+            if visited == 4096 || reported == 64 {
+                state.view.document.render_issues.push("Generated material diagnostics truncated (4096 entities / 64 warnings)".into());
+                break;
+            }
+            visited += 1;
+            let Ok((children, subset, part, instance, id, warning)) = generated.get(entity) else { continue };
+            let label = if let Some(subset) = subset { format!("subset {}", subset.0) }
+                else if let Some(part) = part { format!("prototype {}", part.0) }
+                else if instance { id.map_or_else(|| "instance".into(), |id| format!("instance {}", id.0)) }
+                else { continue };
+            let label = if parent.is_empty() { label } else { format!("{parent} / {label}") };
+            if let Some(warning) = warning {
+                state.view.document.render_issues.push(format!("Material ({label}): {}", warning.0));
+                reported += 1;
+            }
+            if let Some(children) = children {
+                let remaining = 4097usize.saturating_sub(visited + pending.len());
+                pending.extend(children.iter().rev().take(remaining).map(|child| (child, label.clone())));
+            }
+        }
+    }
 }
 
 fn advance_editor_time(world: &mut World) {
@@ -230,6 +265,16 @@ fn process_commands(world: &mut World) {
                 EditorCommand::Select(path) => editor.select(path),
                 EditorCommand::Edit(edit) => editor.edit(edit),
                 EditorCommand::EditLayer(identifier) => editor.set_edit_layer(&identifier),
+                EditorCommand::LayerMuteChecked { identifier, muted, document_id, revision } => {
+                    if editor.document_id != document_id || editor.revision != revision {
+                        Err(anyhow::anyhow!("document changed before changing layer muting; review and retry"))
+                    } else {
+                        editor.set_layer_muted(&identifier, muted).map(|_| {
+                            texture_dirty = true;
+                            if let Some(live) = world.get_non_send::<crate::live::LiveStage>() { live.enqueue_resync("/"); }
+                        })
+                    }
+                }
                 EditorCommand::Payload { prim, loaded } => editor.set_payload_loaded(&prim, loaded).map(|_| {
                     if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
                         live.enqueue_resync(&prim);
@@ -527,6 +572,8 @@ pub struct EditorSnapshot {
     pub prims: Vec<String>,
     pub visibility: std::collections::HashMap<String, bool>,
     pub layers: Vec<String>,
+    pub root_layer: String,
+    pub muted_layers: Vec<String>,
     pub edit_layer: String,
     pub edit_target: Option<EditTarget>,
     pub selected: Option<String>,
@@ -626,7 +673,23 @@ impl EditorSession {
     }
 
     pub fn set_edit_layer(&self, identifier: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.stage.is_layer_muted(identifier), "cannot edit a muted layer; unmute it first");
         self.stage.set_edit_target(EditTarget::for_layer(identifier))?;
+        Ok(())
+    }
+
+    /// Changes runtime layer participation without authoring layer contents or adding undo commands.
+    pub fn set_layer_muted(&mut self, identifier: &str, muted: bool) -> anyhow::Result<()> {
+        self.synchronize_external_edits();
+        anyhow::ensure!(self.stage.layer(identifier).is_some() || self.stage.is_layer_muted(identifier), "unknown layer");
+        if muted {
+            anyhow::ensure!(self.stage.root_layer().identifier() != identifier, "cannot mute the root layer");
+            anyhow::ensure!(self.stage.edit_target().layer_identifier() != identifier, "cannot mute the active edit layer");
+        }
+        if self.stage.is_layer_muted(identifier) == muted { return Ok(()); }
+        if muted { self.stage.mute_layer(identifier); } else { self.stage.unmute_layer(identifier); }
+        anyhow::ensure!(self.stage.is_layer_muted(identifier) == muted, "layer muting did not change");
+        self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
 
@@ -662,6 +725,7 @@ impl EditorSession {
     pub fn undo(&mut self) -> anyhow::Result<bool> {
         self.synchronize_external_edits();
         let Some(entry) = self.undo.last_mut() else { return Ok(false) };
+        anyhow::ensure!(!self.stage.is_layer_muted(entry.target.layer_identifier()), "unmute {} before undo", entry.target.layer_identifier());
         while entry.transactions > 0 {
             anyhow::ensure!(self.stage.undo()?, "editor transaction history is inconsistent");
             entry.transactions -= 1;
@@ -675,6 +739,7 @@ impl EditorSession {
     pub fn redo(&mut self) -> anyhow::Result<bool> {
         self.synchronize_external_edits();
         let Some(entry) = self.redo.last() else { return Ok(false) };
+        anyhow::ensure!(!self.stage.is_layer_muted(entry.target.layer_identifier()), "unmute {} before redo", entry.target.layer_identifier());
         let target = self.stage.edit_target();
         self.stage.set_edit_target(entry.target.clone())?;
         let before = self.stage.undo_depth();
@@ -733,6 +798,8 @@ impl EditorSession {
             revision: self.revision,
             sample_time: time,
             layers: self.stage.layer_stack(),
+            root_layer: self.stage.root_layer().identifier().to_string(),
+            muted_layers: self.stage.muted_layers(),
             edit_layer: self.stage.edit_target().layer_identifier().to_string(),
             edit_target: Some(self.stage.edit_target()),
             selected: self.selected.clone(),
@@ -1702,7 +1769,146 @@ def Xform "Model" (
     }
 
     #[test]
+    fn layer_muting_preserves_authored_history_and_rejects_stale_commands() {
+        let weak = crate::UsdSource::snapshot("weak.usda", &br#"#usda 1.0
+def Xform "Root" { def Sphere "FromWeak" {} }
+"#[..]).unwrap();
+        let source = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+(subLayers = [@weak.usda@])
+over "Root" {}
+"#[..]).unwrap().with_dependency(&weak).unwrap();
+        let independent = source.open_stage().unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        let root = editor.stage().root_layer().identifier().to_string();
+        let weak = editor.snapshot().unwrap().layers.into_iter().find(|id| id != &root).unwrap();
+        let baseline = editor.stage().root_layer().export_to_string().unwrap();
+        assert!(editor.set_layer_muted(&root, true).is_err());
+        assert!(editor.set_layer_muted("unknown.usda", true).is_err());
+        editor.set_edit_layer(&weak).unwrap();
+        assert!(editor.set_layer_muted(&weak, true).is_err());
+        editor.set_edit_layer(&root).unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(2.) }).unwrap();
+        let authored = editor.stage().root_layer().export_to_string().unwrap();
+        let before = editor.snapshot().unwrap();
+        editor.set_layer_muted(&weak, true).unwrap();
+        assert_eq!(editor.snapshot().unwrap().muted_layers, [weak.clone()]);
+        assert!(!editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
+        assert!(independent.prim("/Root/FromWeak").unwrap().is_valid().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+        assert!(editor.set_edit_layer(&weak).is_err());
+        assert!(!editor.synchronize_external_edits());
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), baseline);
+        assert!(editor.stage().is_layer_muted(&weak));
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+        let revision = editor.snapshot().unwrap().revision;
+        editor.set_layer_muted(&weak, true).unwrap();
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.insert_non_send(editor);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::LayerMuteChecked { identifier: weak.clone(), muted: false, document_id: before.document_id, revision: before.revision }).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.contains("document changed"));
+        assert!(app.world().get_non_send::<EditorSession>().unwrap().stage().is_layer_muted(&weak));
+        let current = app.world().get_non_send::<EditorSession>().unwrap().snapshot().unwrap();
+        bridge.send(EditorCommand::LayerMuteChecked { identifier: weak.clone(), muted: false, document_id: current.document_id, revision: current.revision }).unwrap();
+        app.update();
+        let editor = app.world().get_non_send::<EditorSession>().unwrap();
+        assert!(editor.snapshot().unwrap().muted_layers.is_empty());
+        assert!(editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+    }
+
+    #[test]
+    fn history_for_muted_layers_requires_unmute_without_losing_commands() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/layer_muting.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage);
+        let snapshot = editor.snapshot().unwrap();
+        let weak = snapshot.layers.iter().find(|id| *id != &snapshot.root_layer).unwrap().clone();
+        editor.set_edit_layer(&weak).unwrap();
+        let original = editor.stage().layer(&weak).unwrap().export_to_string().unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(4.) }).unwrap();
+        let edited = editor.stage().layer(&weak).unwrap().export_to_string().unwrap();
+        editor.set_edit_layer(&snapshot.root_layer).unwrap();
+        editor.set_layer_muted(&weak, true).unwrap();
+        let revision = editor.snapshot().unwrap().revision;
+        assert!(editor.undo().unwrap_err().to_string().contains("unmute"));
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        assert_eq!(editor.stage().edit_target().layer_identifier(), snapshot.root_layer);
+        assert!(editor.snapshot().unwrap().can_undo);
+        editor.set_layer_muted(&weak, false).unwrap();
+        assert_eq!(editor.stage().layer(&weak).unwrap().export_to_string().unwrap(), edited);
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().layer(&weak).unwrap().export_to_string().unwrap(), original);
+        editor.set_layer_muted(&weak, true).unwrap();
+        let revision = editor.snapshot().unwrap().revision;
+        assert!(editor.redo().unwrap_err().to_string().contains("unmute"));
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        assert_eq!(editor.stage().edit_target().layer_identifier(), snapshot.root_layer);
+        assert!(editor.snapshot().unwrap().can_redo);
+        editor.set_layer_muted(&weak, false).unwrap();
+        assert_eq!(editor.stage().layer(&weak).unwrap().export_to_string().unwrap(), original);
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().layer(&weak).unwrap().export_to_string().unwrap(), edited);
+    }
+
+    #[test]
+    fn pseudo_root_attribute_queries_do_not_poison_layer_muting() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/layer_muting.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let root = stage.root_layer().identifier().to_string();
+        let weak = stage.layer_stack().into_iter().find(|id| id != &root).unwrap();
+        for name in ["purpose", "visibility"] {
+            let attribute = stage.prim("/").unwrap().attribute(name);
+            assert!(!attribute.resolve_info().unwrap().has_authored_value());
+            assert!(attribute.get::<Value>().unwrap().is_none());
+            assert!(!attribute.is_defined().unwrap());
+        }
+        stage.mute_layer(&weak);
+        assert!(stage.is_layer_muted(&weak));
+        assert!(!stage.prim("/Root/Shape").unwrap().is_valid().unwrap());
+        stage.unmute_layer(&weak);
+        assert!(stage.prim("/Root/Shape").unwrap().is_valid().unwrap());
+    }
+
+    #[test]
+    fn checked_layer_muting_reconciles_live_geometry_without_replacing_root() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/layer_muting.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin, crate::live::LiveStagePlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        app.insert_non_send(crate::live::LiveStage::new(stage.clone()));
+        app.insert_non_send(EditorSession::new(stage));
+        app.update();
+        let root = app.world().resource::<crate::live::PrimEntities>().entity("/Root").unwrap();
+        app.world_mut().entity_mut(root).insert(Name::new("runtime name"));
+        let runtime_child = app.world_mut().spawn((ChildOf(root), Name::new("runtime child"))).id();
+        let original_shape = app.world().resource::<crate::live::PrimEntities>().entity("/Root/Shape").unwrap();
+        let snapshot = app.world().get_non_send::<EditorSession>().unwrap().snapshot().unwrap();
+        let weak = snapshot.layers.iter().find(|id| *id != &snapshot.root_layer).unwrap().clone();
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        for muted in [true, false, true, false] {
+            let snapshot = app.world().get_non_send::<EditorSession>().unwrap().snapshot().unwrap();
+            bridge.send(EditorCommand::LayerMuteChecked { identifier: weak.clone(), muted, document_id: snapshot.document_id, revision: snapshot.revision }).unwrap();
+            app.update();
+            let map = app.world().resource::<crate::live::PrimEntities>();
+            assert_eq!(map.entity("/Root"), Some(root));
+            assert_eq!(map.entity("/Root/Shape").is_none(), muted);
+            assert_eq!(app.world().get::<Name>(root).unwrap().as_str(), "runtime name");
+            assert_eq!(app.world().get::<ChildOf>(runtime_child).unwrap().parent(), root);
+            assert!(app.world().get_entity(original_shape).is_err());
+            if !muted { assert!(app.world().get::<Mesh3d>(map.entity("/Root/Shape").unwrap()).is_some()); }
+        }
+    }
+
+    #[test]
     fn selected_render_failures_publish_and_clear() {
+        use crate::route::{subset::UsdSubsetWarning, gpu_skin::UsdCpuSkinFallback};
         use crate::route::{subdivision::UsdSubdivisionError, skel::UsdDeformationError, instancer::UsdInstancerWarning, shapes::UsdShapeError, curves::UsdCurveError};
         use crate::route::xform::UsdTransformError;
         use crate::route::material::UsdMaterialWarning;
@@ -1710,14 +1916,16 @@ def Xform "Model" (
         app.add_plugins((MinimalPlugins, EditorPlugin));
         app.init_resource::<crate::live::PrimEntities>();
         let entity = app.world_mut().spawn((UsdSubdivisionError("unsupported holes".into()),
-            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()), UsdTransformError("projective matrix".into()), UsdMaterialWarning("missing tangent frame".into()))).id();
+            UsdDeformationError("invalid influences".into()), UsdInstancerWarning("missing prototype".into()), UsdShapeError("invalid dimensions".into()), UsdCurveError("invalid counts".into()), UsdTransformError("projective matrix".into()), UsdMaterialWarning("missing tangent frame".into()),
+            UsdSubsetWarning("overlapping faces".into()), UsdCpuSkinFallback("unsupported joint layout".into()))).id();
         app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Prim", entity);
         let bridge = app.world().resource::<EditorBridge>().clone();
         bridge.0.lock().unwrap().view.document.selected = Some("/Prim".into());
         app.update();
         assert_eq!(bridge.view().unwrap().document.render_issues,
-            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts", "Transform: projective matrix", "Material: missing tangent frame"]);
-        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError, UsdTransformError, UsdMaterialWarning)>();
+            ["Subdivision: unsupported holes", "Deformation: invalid influences", "Point instancer: missing prototype", "Shape: invalid dimensions", "Curve: invalid counts", "Transform: projective matrix", "Material: missing tangent frame",
+            "Material subsets: overlapping faces", "CPU skinning fallback: unsupported joint layout"]);
+        app.world_mut().entity_mut(entity).remove::<(UsdSubdivisionError, UsdDeformationError, UsdInstancerWarning, UsdShapeError, UsdCurveError, UsdTransformError, UsdMaterialWarning, UsdSubsetWarning, UsdCpuSkinFallback)>();
         app.update();
         assert!(bridge.view().unwrap().document.render_issues.is_empty());
         app.world_mut().entity_mut(entity).insert(UsdSubdivisionError("unsupported holes".into()));
@@ -1727,6 +1935,88 @@ def Xform "Model" (
         bridge.0.lock().unwrap().view.document.selected = None;
         app.update();
         assert!(bridge.view().unwrap().document.render_issues.is_empty());
+    }
+
+    #[test]
+    fn projected_subset_failure_reaches_inspector_and_recovers() {
+        let stage = crate::UsdSource::snapshot("subset.usda", include_bytes!("../../../assets/material_subset_warning.usda").as_slice()).unwrap().open_stage().unwrap();
+        let live = crate::live::LiveStage::new(stage);
+        let indices = live.stage.prim("/Root/Faces").unwrap().attribute("indices");
+        indices.clone().set(Value::IntVec(vec![99])).unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>().init_resource::<Assets<Image>>();
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(app.world_mut(), &live, &mut map);
+        let root = map.entity("/Root").unwrap();
+        app.insert_resource(map);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.0.lock().unwrap().view.document.selected = Some("/Root".into());
+        app.update();
+        assert!(bridge.view().unwrap().document.render_issues.iter().any(|issue| issue.starts_with("Material subsets:")));
+        assert!(app.world().get::<Mesh3d>(root).is_some());
+        indices.set(Value::IntVec(vec![0])).unwrap();
+        let mut map = app.world_mut().remove_resource::<crate::live::PrimEntities>().unwrap();
+        crate::live::apply_changes(app.world_mut(), &live, &mut map);
+        assert_eq!(map.entity("/Root"), Some(root));
+        app.insert_resource(map);
+        app.update();
+        let issues = bridge.view().unwrap().document.render_issues;
+        assert!(!issues.iter().any(|issue| issue.starts_with("Material subsets:")));
+        assert!(issues.iter().any(|issue| issue.starts_with("Material (subset Faces):")));
+    }
+
+    #[test]
+    fn generated_material_issues_follow_owned_children_and_clear() {
+        use crate::route::{material::UsdMaterialWarning, subset::UsdSubset,
+            instancer::{UsdInstance, UsdInstanceId, UsdPrototypePart}};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.init_resource::<crate::live::PrimEntities>();
+        let root = app.world_mut().spawn_empty().id();
+        let subset = app.world_mut().spawn((ChildOf(root), UsdSubset("/Root/Faces".into()), UsdMaterialWarning("no UV0".into()))).id();
+        let instance = app.world_mut().spawn((ChildOf(root), UsdInstance, UsdInstanceId(7))).id();
+        let part = app.world_mut().spawn((ChildOf(instance), UsdPrototypePart("/Proto/Mesh".into()), UsdMaterialWarning("no tangent frame".into()))).id();
+        let unrelated = app.world_mut().spawn((ChildOf(root), UsdMaterialWarning("runtime warning".into()))).id();
+        app.world_mut().spawn((ChildOf(unrelated), UsdSubset("unrelated".into()), UsdMaterialWarning("hidden".into())));
+        app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Root", root);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.0.lock().unwrap().view.document.selected = Some("/Root".into());
+        app.update();
+        assert_eq!(bridge.view().unwrap().document.render_issues, [
+            "Material (subset /Root/Faces): no UV0",
+            "Material (instance 7 / prototype /Proto/Mesh): no tangent frame"]);
+        app.world_mut().entity_mut(subset).remove::<UsdMaterialWarning>();
+        app.world_mut().entity_mut(part).remove::<UsdMaterialWarning>();
+        app.update();
+        assert!(bridge.view().unwrap().document.render_issues.is_empty());
+        app.world_mut().entity_mut(part).insert(UsdMaterialWarning("returned".into()));
+        bridge.0.lock().unwrap().view.document.selected = None;
+        app.update();
+        assert!(bridge.view().unwrap().document.render_issues.is_empty());
+    }
+
+    #[test]
+    fn generated_material_issue_collection_reports_limits() {
+        use crate::route::{material::UsdMaterialWarning, subset::UsdSubset};
+        for (count, warnings, expected, truncated) in [(64, true, 64, false), (65, true, 65, true),
+            (4096, false, 0, false), (4097, false, 1, true)] {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, EditorPlugin));
+            app.init_resource::<crate::live::PrimEntities>();
+            let root = app.world_mut().spawn_empty().id();
+            for i in 0..count {
+                let mut child = app.world_mut().spawn((ChildOf(root), UsdSubset(format!("/Root/Part{i}"))));
+                if warnings { child.insert(UsdMaterialWarning("missing coordinates".into())); }
+            }
+            app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Root", root);
+            let bridge = app.world().resource::<EditorBridge>().clone();
+            bridge.0.lock().unwrap().view.document.selected = Some("/Root".into());
+            app.update();
+            let issues = bridge.view().unwrap().document.render_issues;
+            assert_eq!(issues.len(), expected);
+            assert_eq!(issues.last().is_some_and(|issue| issue.contains("diagnostics truncated")), truncated);
+        }
     }
 
     #[test]

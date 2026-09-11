@@ -13,6 +13,7 @@ pub struct Drafts(
     crate::payload_editor::PayloadDraft,
     Arc<Mutex<Option<(u64, Option<openusd::usd::EditTarget>)>>>,
     Arc<Mutex<HashMap<String, openusd::sdf::Reference>>>,
+    Arc<Mutex<String>>,
 );
 
 impl Drafts {
@@ -24,6 +25,7 @@ impl Drafts {
         if let Ok(mut times) = self.1.lock() { times.clear(); }
         if let Ok(mut expanded) = self.2.lock() { expanded.clear(); }
         if let Ok(mut references) = self.5.lock() { references.clear(); }
+        if let Ok(mut filter) = self.6.lock() { filter.clear(); }
         *context = Some(current);
     }
 }
@@ -38,6 +40,11 @@ pub(crate) fn path_lines(path: &str) -> Vec<String> {
 
 fn send_edit(bridge: &EditorBridge, snapshot: &EditorSnapshot, edit: EditorEdit) {
     if let Some(command) = snapshot.checked_edit(edit) { super::send(bridge, command); }
+}
+
+fn attribute_matches(name: &str, type_name: &str, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty() || name.to_lowercase().contains(&query) || type_name.to_lowercase().contains(&query)
 }
 
 fn draft_conflicts(draft: &mut (String, String, String), current: &str) -> bool {
@@ -84,6 +91,36 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             for line in lines { ui.label(&line); }
             if active { ui.label("Active edit target"); }
             else if ui.button("Use as edit target").clicked { super::send(&bridge, EditorCommand::EditLayer(layer)); }
+        }));
+    }
+    let filter = drafts.6.lock().map(|filter| filter.clone()).unwrap_or_default();
+    let matching = snapshot.attributes.iter().filter(|attribute| attribute_matches(&attribute.name, &attribute.type_name, &filter)).count();
+    let total = snapshot.attributes.len();
+    let search_drafts = drafts.clone();
+    let search_context = (snapshot.document_id, snapshot.edit_target.clone());
+    layers.push(Pod::new("editor.attribute.filter").with_custom_units(4, move |ui| {
+        if !search_drafts.4.lock().is_ok_and(|active| active.as_ref() == Some(&search_context)) { return; }
+        let Ok(mut filter) = search_drafts.6.lock() else { return };
+        ui.label("Inspector attribute filter");
+        ui.text_input(&mut filter, "Attribute name or USD type");
+        ui.label(&format!("Attributes: {matching} / {total}"));
+        if !filter.is_empty() && ui.button("Clear attribute filter").clicked { filter.clear(); }
+    }));
+    let mut mute_layers = snapshot.layers.clone();
+    for layer in &snapshot.muted_layers { if !mute_layers.contains(layer) { mute_layers.push(layer.clone()); } }
+    for layer in mute_layers {
+        let muted = snapshot.muted_layers.contains(&layer);
+        let protected = layer == snapshot.root_layer || layer == snapshot.edit_layer;
+        let lines = path_lines(&layer);
+        let bridge = bridge.clone();
+        let (document_id, revision) = (snapshot.document_id, snapshot.revision);
+        layers.push(Pod::new(Id::new(("editor.layer.muting", &layer))).with_custom_units(lines.len() + 2, move |ui| {
+            ui.label(if muted { "Muted layer (runtime)" } else { "Layer participation (runtime)" });
+            for line in lines { ui.label(&line); }
+            if protected { ui.label("Root / active edit layer cannot be muted"); }
+            else if ui.button(if muted { "Unmute layer" } else { "Mute layer" }).clicked {
+                super::send(&bridge, EditorCommand::LayerMuteChecked { identifier: layer, muted: !muted, document_id, revision });
+            }
         }));
     }
     body.add_normal("editor.layers", "Layers / edit target", "document", layers);
@@ -212,6 +249,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     }
     let mut matrix_pods = Vec::new();
     for attribute in &snapshot.attributes {
+        if !attribute_matches(&attribute.name, &attribute.type_name, &filter) { continue; }
         let matrix_attribute = attribute.type_name == "matrix4d";
         let sampled_time = snapshot.sample_time;
         let key = format!("{}:{}:{path}:{}", snapshot.document_id, snapshot.edit_layer, attribute.name);
@@ -844,6 +882,60 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn attribute_filter_matches_types_and_preserves_drafts() {
+        use super::{attribute_matches, Drafts};
+        use usd_bevy::editor::EditorSnapshot;
+        assert!(attribute_matches("primvars:displayColor", "color3f[]", " DISPLAYcolor "));
+        assert!(attribute_matches("primvars:displayColor", "color3f[]", "COLOR3F[]"));
+        assert!(attribute_matches("custom:Étage", "int", "étage"));
+        assert!(attribute_matches("size", "double", " \n"));
+        assert!(!attribute_matches("size", "double", "color"));
+        let drafts = Drafts::default();
+        let mut snapshot = EditorSnapshot { document_id: 1, selected: Some("/A".into()), ..Default::default() };
+        drafts.synchronize_context(&snapshot);
+        *drafts.6.lock().unwrap() = "color".into();
+        drafts.0.lock().unwrap().insert("hidden".into(), ("old".into(), "edited".into(), String::new()));
+        snapshot.selected = Some("/B".into()); snapshot.revision += 1;
+        drafts.synchronize_context(&snapshot);
+        assert_eq!(*drafts.6.lock().unwrap(), "color");
+        assert_eq!(drafts.0.lock().unwrap()["hidden"].1, "edited");
+        drafts.6.lock().unwrap().clear();
+        assert_eq!(drafts.0.lock().unwrap()["hidden"].1, "edited");
+        *drafts.6.lock().unwrap() = "size".into();
+        snapshot.document_id = 2;
+        drafts.synchronize_context(&snapshot);
+        assert!(drafts.6.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn numeric_array_samples_preserve_defaults_and_clear_undo() {
+        use usd_bevy::editor::{EditorEdit, EditorSession};
+        use openusd::{sdf::Value, usd::TimeCode};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/numeric_array.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let stage = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let attribute = stage.attribute("/Root.primvars:displayColor").unwrap();
+        let original = attribute.get::<Value>().unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let value = super::parse_value(&super::value_template("color3f[]").unwrap(), "1 0.3 0.05").unwrap();
+        editor.edit(EditorEdit::AttributeSample { prim: "/Root".into(), name: "primvars:displayColor".into(),
+            type_name: "color3f[]".into(), value: value.clone(), time: 2. }).unwrap();
+        assert_eq!(attribute.get::<Value>().unwrap(), original);
+        assert_eq!(attribute.get_at::<Value>(Some(TimeCode::new(2.))).unwrap(), Some(value));
+        assert_eq!(attribute.time_sample_times().unwrap(), vec![2.]);
+        let sampled = stage.root_layer().export_to_string().unwrap();
+        editor.edit(EditorEdit::ClearAttributeSample { prim: "/Root".into(), name: "primvars:displayColor".into(), time: 2. }).unwrap();
+        assert!(attribute.time_sample_times().unwrap().is_empty());
+        assert_eq!(attribute.get::<Value>().unwrap(), original);
+        editor.undo().unwrap();
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), sampled);
+        editor.undo().unwrap();
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
     #[test]
     fn numeric_array_edits_preserve_types_and_undo() {
         use super::{editable_text, parse_value, value_template};

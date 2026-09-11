@@ -235,6 +235,63 @@ mod tests {
     }
 
     #[test]
+    fn spatial_periodic_surface_has_closed_topology_and_finite_normals() {
+        let source = crate::UsdSource::new("spatial.usda", include_bytes!("../../../../../assets/curve_surface_spatial.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let path = openusd::sdf::path("/SpatialLoop").unwrap();
+        let ctx = RouteCtx::new(&stage, &path);
+        validate_curves(&ctx, 32).unwrap();
+        let center = centerlines(&ctx, 32).unwrap();
+        let mesh = build(&ctx, 32, 16).unwrap().unwrap();
+        let points = positions(&mesh);
+        assert_eq!(points.len(), 8*32*16);
+        let Some(VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
+        let mut edges = std::collections::HashMap::<(usize,usize), (usize,i32)>::new();
+        let indices = mesh.indices().unwrap().iter().collect::<Vec<_>>();
+        for triangle in indices.chunks_exact(3) {
+            let [a,b,c] = std::array::from_fn::<_,3,_>(|i| Vec3::from_array(points[triangle[i]]));
+            let face = (b-a).cross(c-a);
+            assert!(face.length() > 1e-8);
+            for i in 0..3 {
+                assert!(face.dot(Vec3::from_array(normals[triangle[i]])) > 0.);
+                let (a,b) = (triangle[i], triangle[(i+1)%3]);
+                let entry = edges.entry((a.min(b), a.max(b))).or_default();
+                entry.0 += 1;
+                entry.1 += if a < b { 1 } else { -1 };
+            }
+        }
+        assert!(edges.values().all(|value| *value == (2,0)));
+        for (i, (point, normal)) in points.iter().zip(normals).enumerate() {
+            assert!((Vec3::from_array(*point).distance(Vec3::from_array(center.points[i/16]))-0.15).abs() < 1e-6);
+            assert!((Vec3::from_array(*normal).length()-1.).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn periodic_frame_twist_is_distributed_by_arc_length_including_seam() {
+        let points = (0..64).map(|i| {
+            let angle = std::f64::consts::TAU*(i as f64/64.).powf(1.3);
+            DVec3::new((1.+0.3*(3.*angle).cos())*angle.cos(),
+                (1.+0.3*(3.*angle).cos())*angle.sin(), 0.4*(3.*angle).sin())
+        }).collect::<Vec<_>>();
+        let (tangents, transverse) = frames(&points, true).unwrap();
+        let mut twist_rates = Vec::new();
+        let mut total_twist = 0.;
+        for i in 0..points.len() {
+            let next = (i+1)%points.len();
+            let transported = DQuat::from_rotation_arc(tangents[i], tangents[next])*transverse[i];
+            let twist = tangents[next].dot(transported.cross(transverse[next]))
+                .atan2(transported.dot(transverse[next]));
+            twist_rates.push(twist/points[i].distance(points[next]));
+            total_twist += twist;
+            assert!(tangents[i].dot(transverse[i]).abs() < 1e-12);
+            assert!((transverse[i].length()-1.).abs() < 1e-12);
+        }
+        assert!(total_twist.abs() > 0.01, "fixture must exercise nonzero holonomy");
+        for rate in &twist_rates { assert!((rate-twist_rates[0]).abs() < 1e-11, "localized seam twist: {twist_rates:?}"); }
+    }
+
+    #[test]
     fn transported_frames_are_orthonormal_and_reject_degeneracy() {
         let points = (0..24).map(|i| {
             let angle = std::f64::consts::TAU*i as f64/24.;

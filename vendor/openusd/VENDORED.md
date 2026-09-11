@@ -13,6 +13,7 @@ workspace supplies its toolchain and lockfile. No sibling checkout is required.
 
 Changes from the base source are recorded in these patches in the project root:
 
+- `patches/openusd-empty-index.patch`
 - `patches/openusd-singleton-listops.patch`
 - `patches/openusd-token-vector-fields.patch`
 - `patches/openusd-stage-packaging.patch`

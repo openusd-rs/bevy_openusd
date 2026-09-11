@@ -1,5 +1,15 @@
 # OpenUSD upgrade and capability reassessment
 
+## Empty prim-index query guard
+
+`patches/openusd-empty-index.patch` prevents an empty path from being cached as
+a prim index. Pseudo-root attribute reads and definition checks could previously
+register the empty path as a dependency; subsequent layer muting panicked while
+dropping that invalid subtree prefix. The guard preserves the strict subtree
+assertion. Bevy purpose/visibility readers also stop at the pseudo-root. The
+model query regression and repeated live mute/unmute regression cover the
+failure and recovery; this is not a rewrite of layer-mutating semantics.
+
 ## Reference customData serialization
 
 `patches/openusd-reference-custom-data.patch` fixes USDA reference serialization

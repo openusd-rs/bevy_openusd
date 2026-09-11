@@ -598,6 +598,7 @@ pub fn read_purpose(stage: &Stage, prim: &Path) -> anyhow::Result<String> {
 pub fn read_effective_purpose(stage: &Stage, prim: &Path) -> anyhow::Result<String> {
     let mut cur = prim.clone();
     loop {
+        if cur.is_abs_root() || cur.is_empty() { return Ok("default".to_string()); }
         let attr = stage.prim(cur.clone())?.attribute("purpose");
         if attr.resolve_info()?.has_authored_value() {
             if let Some(t) = read_token(stage, &cur, "purpose")? {
@@ -623,6 +624,7 @@ pub fn read_visibility(stage: &Stage, prim: &Path) -> anyhow::Result<VisibilityS
 
 /// Read the prim's local visibility at a USD time code.
 pub fn read_visibility_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Result<VisibilityState> {
+    if prim.is_abs_root() || prim.is_empty() { return Ok(VisibilityState::Inherited); }
     Ok(match attr_at(stage, prim, "visibility", time)? {
         Some(Value::Token(value)) if value.as_str() == "invisible" => VisibilityState::Invisible,
         Some(Value::String(value)) if value == "invisible" => VisibilityState::Invisible,

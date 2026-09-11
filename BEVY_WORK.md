@@ -3,6 +3,245 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## History guards for muted edit layers
+
+Undo/redo now rejects a command whose captured edit layer is muted, naming the
+layer to unmute. This applies the editor's existing no-authoring-to-muted-layer
+policy to history rather than silently changing hidden opinions. The command,
+revision and current edit target remain unchanged on rejection; after unmuting,
+the same pending history operation works normally. Commands on unmuted layers
+are unaffected, including root edits while another layer is muted.
+
+The regression first reproduced undo succeeding on the muted weak layer
+(`/tmp/muted-layer-history-before.log`). The corrected test checks undo and redo
+rejection, exact weak-layer text before/after unmuting, preserved history flags,
+revision/edit-target stability and successful undo/redo once visible again.
+All 52 nonignored editor tests and check-all pass (one native test ignored):
+`/tmp/muted-layer-history-final-tests.log`,
+`/tmp/muted-layer-history-final-check.log`. This is authored-state regression
+coverage; no new native UI capture is claimed for this guard.
+
+## Capture runtime-panic rejection
+
+`capture_viewer_ui.sh` now checks the viewer log after pixel inspections and
+before UI_CAPTURE_OK. The reusable `check_viewer_log.sh` rejects known Rust
+thread-panic, Bevy system-panic, non-unwinding-panic and fatal-runtime markers;
+missing/unreadable logs and grep errors fail closed. All artifacts remain.
+Each frame's settings record the shared `viewer_runtime_log_passed` result.
+This closes the capture-tool follow-up from the failed layer-muting run: a
+painted host is no longer sufficient when the embedded app logs a panic.
+
+The shell regression covers old/new Rust thread formats, system and fatal
+markers, benign text, empty logs and invalid paths/arguments. Empty logs pass
+this marker-only helper; the containing capture still requires its UI handshake.
+Run through Make's temporary check-capture-log/check-capture-syntax targets;
+evidence is `/tmp/capture-runtime-log-tests.log`. The historical real panic log
+`target/layer-muting-toggle-ui.viewer.log` rejects, while the fixed run's log
+passes. No Rust source changed in this step.
+
+End-to-end GPU acceptance uses an explicitly synthetic marker emitted by
+`/tmp/usd-capture-panic-marker-probe.sh` before launching the normal viewer.
+Inspected `target/capture-panic-marker-ui.png` is a valid-looking cube and UI;
+region inspection passes, runtime-log inspection fails and Make exits 2 without
+UI_CAPTURE_OK (`/tmp/capture-panic-marker-probe.log`). The clean control
+`target/capture-runtime-clean-ui.png` was also inspected and passes both checks
+(`/tmp/capture-runtime-clean-probe.log`). Settings record runtime results 0/1
+respectively. The synthetic run tests rejection wiring, not a reproduced panic.
+The guard does not detect arbitrary hangs, unlogged failures, or future panics
+after validation, and it does not resolve the intermittent black-host issue.
+
+## Inspector layer muting and empty-index panic fix
+
+The Layers / edit target group now includes runtime mute/unmute controls below
+the attribute filter. Muted identifiers remain available for unmuting; the root
+and active edit layer show a protection message instead of a button. Snapshots
+now expose the root identifier explicitly. Added `assets/layer_muting.usda`, its
+weak cube layer and registered layout/toggle replays.
+
+The new live regression initially panicked after scene projection. Traces
+`/tmp/layer-muting-empty-index-{trace,second,third}.log` identify pseudo-root
+attribute resolve-info, value and definition queries caching an empty path as
+a layer dependency. A mute then tries to invalidate that empty subtree prefix.
+`patches/openusd-empty-index.patch` leaves empty paths uncached in the canonical
+index entry point, retaining the strict subtree-drop assertion. Purpose and
+visibility readers also return their defaults at the pseudo-root. Temporary
+trace instrumentation was removed; the review patch reverse-checks successfully.
+
+The query regression checks pseudo-root reads/definition tests followed by mute
+and unmute. The live regression toggles twice each way, preserving the surviving
+root entity, its runtime Name and unrelated runtime child; excluded geometry is
+despawned and recreated. All 51 nonignored editor tests, 76 viewer tests and
+check-all pass (`/tmp/layer-muting-cache-guard-tests.log`,
+`/tmp/layer-muting-controls-{tests,check}.log`).
+
+The initial `target/layer-muting-toggle-ui.png` pair retained the cube because
+the embedded Bevy app panicked, although the host kept painting and both region
+guards passed. This is a failed interaction, not acceptance. Viewer panic logs
+must also be checked; automatic rejection of such logs remains a capture-tool
+follow-up. The initial layout image was inspected and valid.
+
+After the fix, inspected `target/layer-muting-fixed-ui.png` shows no cube and an
+Unmute layer button; `.second.png` shows the cube restored in the same process.
+Both guards pass and its viewer log contains no panic markers
+(`/tmp/layer-muting-fixed-capture.log`). This verifies the runtime toggle and
+this reproduced panic, not global viewer stability or the intermittent black
+host issue. Muting does not preserve runtime components on excluded entities.
+The final full workspace gate passes 606 tests, zero failures and 14 ignored
+across 30 suites (`/tmp/layer-muting-workspace-tests.log`), with
+`TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`.
+
+## Runtime layer-muting command baseline
+
+`EditorSession::set_layer_muted` now exposes upstream stage muting as a runtime
+composition operation. It rejects unknown layers, root-layer muting and active
+edit-layer muting; `set_edit_layer` rejects muted layers. Effective changes
+advance the editor revision without adding authored undo entries; no-ops retain
+the revision. Snapshots include sorted muted identifiers so excluded layers can
+still be offered for unmuting. `LayerMuteChecked` rejects stale document/revision
+requests and requests root reprojection plus source-texture refresh on success.
+
+The regression verifies a weak-layer prim disappears and returns, an independent
+stage remains unchanged, root-layer text remains exact, undo/redo stays usable
+without undoing the runtime toggle, invalid targets reject, no-ops retain their
+revision, and stale/current bridge requests reject/succeed respectively. All 49
+nonignored editor tests and check-all pass (one native test ignored):
+`/tmp/layer-muting-editor-tests.log`, `/tmp/layer-muting-final-check.log`.
+Inspector controls and native interaction acceptance remain the next step; this
+is the model/command baseline, not completed viewer-layer muting acceptance.
+
+## Selected subset and CPU-skin fallback diagnostics
+
+Selected-entity render issues now include `UsdSubsetWarning` and
+`UsdCpuSkinFallback`, labelled Material subsets and CPU skinning fallback.
+These existing projection components previously did not reach the inspector.
+The bridge regression checks publishing and clearing both. A real subset-route
+regression authors invalid face index 99, confirms the whole mesh remains and
+the inspector receives the subset warning, then restores index 0. The same
+mapped root survives, the invalid-subset warning clears and the generated
+subset's independent material warning becomes visible.
+
+All 48 nonignored editor tests and check-all pass (one native test ignored):
+`/tmp/subset-fallback-editor-tests.log`, `/tmp/subset-fallback-check.log`.
+Inspected `target/invalid-subset-warning-ui.png`, captured from the new
+`assets/material_subset_invalid.usda`: /Root displays the invalid/overlapping
+subset explanation and whole-mesh fallback while the plane remains visible.
+Both capture guards pass (`/tmp/invalid-subset-capture.log`). CPU-skin fallback
+publication has component-level regression coverage here, not a new GPU/host
+capture; skinning behavior is unchanged.
+
+## Selected-parent generated material warnings
+
+The editor now collects material warnings from generated subsets, point-instance
+wrappers and prototype parts beneath the selected mapped entity. Labels include
+subset/prototype names and instance IDs when present. Traversal does not enter
+unrelated runtime children or arbitrary authored-prim subtrees. Direct selected
+entity diagnostics remain unchanged. Child scanning stops at 4096 visited
+entities or 64 warnings and explicitly reports truncation; the pending queue is
+bounded as well. Nonmaterial child diagnostics are not aggregated.
+
+Two regressions cover nested instance/part labels, unrelated-subtree exclusion,
+warning removal, selection clearing, and exact/over-limit entity and message
+counts. All 465 nonignored library tests and check-all pass (14 native tests
+ignored): `/tmp/generated-material-library-tests.log` and
+`/tmp/generated-material-current-check.log`.
+
+Added `assets/material_subset_warning.usda`. Inspected the native host capture
+`target/generated-material-warning-ui.png`: selecting /Root shows
+`Material (subset Faces)` and its missing-tangent explanation above the prim
+controls, while the mesh remains visible. Capture guards pass
+(`/tmp/generated-material-capture.log`). This exposes a generated child's
+existing diagnostic; it does not repair the absent tangent frame or establish
+that intermittent host black frames are fixed.
+
+## Missing material texture-coordinate diagnostics
+
+The shared material geometry-input check now reports absent UV0/UV1 coordinates
+requested by the projected base-color, emissive, metallic/roughness, normal and
+occlusion textures, alongside the existing missing-tangent diagnostic. Ordinary
+geometry, curve surfaces, subsets and point-instancer prototype paths use the
+same helper. Messages group texture roles by their requested UV channel. This
+does not synthesize UVs, change rendering, validate existing UV values or imply
+that a spatially constant 1x1 texture necessarily needs authored coordinates.
+
+The channel regression exercises absent inputs, separate UV0/UV1 requests and
+clearing warnings as each channel becomes available. The integration fixture
+now also includes a width-aware curve surface and verifies coordinate/tangent
+warnings against the actual meshes across ordinary, subset and instance paths.
+All 463 nonignored library tests pass (14 native tests ignored), and check-all
+passes (`/tmp/material-missing-uv-library-tests.log`,
+`/tmp/material-missing-uv-final-check.log`). These are model/diagnostic checks,
+not a new host screenshot acceptance claim. Initial compilation exposed that
+Bevy 0.19.1's UvChannel lives in bevy::mesh and is not Copy; the final helper
+borrows the canonical channel fields without clones or re-export shims.
+
+## Current native export and filesystem-event gates
+
+At `fd3e466`, all 13 `make test-native` export tests pass, followed by the
+separate `native_reference_custom_data_round_trip` test. Logs:
+`/tmp/spatial-current-native-export.log` and
+`/tmp/spatial-current-native-reference.log`. These refresh the 14 ignored tests
+from the preceding default-feature workspace gate.
+
+The optional watcher lane also passes all 22 selected native tests, comprising
+those 14 OpenUSD checks and eight real filesystem-event tests. The additional
+cases cover numeric clip reloads, layer/texture reload recovery, removed
+dependencies, missing initial roots, failed initial editor textures, failed
+watch-directory retries, missed-pixel recovery and document-preserving editor
+texture recovery. These tests are feature-gated and are not included in the
+default-feature gate's ignored count. Command:
+
+```sh
+PATH=/nix/store/61sjr1grxn63r6xpidrlysj5jm7l1vpa-python3.13-openusd-25.05.01/bin:$PATH \
+TMPDIR="$PWD/target/test-tmp" make test CARGO='cargo --offline' \
+APP_TARGET='-p usd_bevy --features file_watcher --lib native_ -- --ignored --nocapture'
+```
+
+Evidence: `/tmp/spatial-current-native-watcher.log` (22 passed, zero failures,
+9.26-second test execution after compilation). This is one successful native
+event run, not a stress/flakiness result or a fix for intermittent host rendering.
+
+## Non-planar periodic curve acceptance
+
+Added `assets/curve_surface_spatial.usda`, an eight-control-point spatial periodic
+B-spline tube. At 32 samples per segment and 16 sides, the mesh regression checks
+4096 vertices, constant 0.15 radius, unit normals agreeing with each triangle,
+nondegenerate faces and closed, consistently wound edge incidence. A separate
+nonuniformly sampled spatial path produces nonzero frame holonomy and checks
+constant twist per unit arc length on every edge, including the closing seam.
+The existing frame implementation passes; no renderer behavior was changed.
+
+All eight surface tests and check-all pass
+(`/tmp/curve-spatial-surface-tests.log`, `/tmp/curve-spatial-check.log`). Inspected
+`target/curve-surface-spatial.png` shows a closed blue tube with continuous visible
+shading and no apparent seam gap. The Vulkan capture reports CAPTURE_OK
+(`/tmp/curve-spatial-capture.log`), using forward rendering, shadows off, 32 steps,
+16 sides and camera eye (4,3,8), target (0,0,0). This is geometric and Bevy image
+acceptance, not native curve-renderer parity or general self-intersection safety.
+The subsequent full workspace gate passes: 599 tests, zero failures and 14
+ignored across 30 suites (`/tmp/curve-spatial-workspace-tests.log`), using
+`TMPDIR="$PWD/target/test-tmp" make test-all CARGO='cargo --offline'`. This run
+includes the numeric-array and inspector-filter additions. The ignored native
+tests were not rerun in this step; their earlier evidence is recorded below.
+
+## Inspector attribute filtering
+
+The Layers / edit target group now filters displayed attribute controls by a
+case-insensitive name or USD type substring, including matrix controls. It shows
+matching/total counts and a clear action. Filtering does not author values or
+discard hidden drafts. Selection and revision changes retain the query; document
+or full edit-target changes reset it. Other composition controls remain visible.
+
+All 76 viewer tests and check-all pass
+(`/tmp/attribute-filter-replay-{tests,check}.log`). Regression coverage includes
+name/type matching, whitespace, Unicode lowercasing, draft retention and document
+reset. The registered `attribute_filter.replay` types `color3f[]` and clears it
+in one native viewer process. Inspected `target/attribute-filter-interaction-ui.png`
+shows 1 / 9 attributes and the display-color editor; `.second.png` shows 9 / 9
+and restored schema controls. Both retain the blue cube and both capture guards
+pass (`/tmp/attribute-filter-interaction-capture.log`). The initial layout image
+`target/attribute-filter-layout-ui.png` was also inspected. This does not resolve
+the intermittent host black-frame issue or establish full rendering fidelity.
+
 ## Same-process host capture diagnostics
 
 Repaint diagnostics now include the root output delay and up to 32 previous-pass
@@ -156,7 +395,22 @@ text. Both capture guards pass (`/tmp/numeric-array-layout-fixed-capture.log`,
 `/tmp/numeric-array-applied-capture.log`). The original layout replay scrolled the
 viewport because x=1100 lay outside the property pane; it was corrected to x=1000.
 That initial artifact is not a rendering regression or array-edit acceptance.
-Native sampled-array editing and large-array error layouts remain unverified.
+Large-array error layouts remain unverified.
+
+The numeric-array sample regression now checks that a parsed color sample at
+scene time 2 leaves the authored blue default intact, resolves to the sample at
+time 2, and can be cleared without changing that default. Undo restores exact
+sampled layer text and then exact original layer text; fixture bytes stay
+unchanged. Native `numeric_array_sample.replay` authors that sample: inspected
+`target/numeric-array-sample-ui.png` shows Scene samples: 2 and the orange cube.
+The capture runs at time 0, where the single time sample holds its value; this is
+not an interpolation or clock-mapping acceptance test.
+The two inspected `target/numeric-array-sample-clear-ui.png` frames show sample 2
+with the orange cube, then no samples with the original blue cube after Clear.
+The orange draft remains unapplied. All capture guards pass
+(`/tmp/numeric-array-sample-capture.log`, `/tmp/numeric-array-sample-clear-capture.log`).
+All 75 viewer tests and check-all pass
+(`/tmp/numeric-array-sample-final-{tests,check}.log`).
 
 Payload drafts with at least two rows now expose separate order controls.
 Earlier/Later swap complete rows, retaining their list mode, raw field text and

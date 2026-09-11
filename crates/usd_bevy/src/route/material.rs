@@ -17,7 +17,21 @@ pub struct MaterialRoute;
 #[derive(Component, Debug)]
 pub struct UsdMaterialWarning(pub String);
 
-pub(crate) fn warn_missing_tangents(mesh: &Mesh, material: &StandardMaterial, warnings: &mut Vec<String>) {
+pub(crate) fn warn_geometry_inputs(mesh: &Mesh, material: &StandardMaterial, warnings: &mut Vec<String>) {
+    for (channel, attribute, label) in [
+        (bevy::mesh::UvChannel::Uv0, Mesh::ATTRIBUTE_UV_0, "UV0"),
+        (bevy::mesh::UvChannel::Uv1, Mesh::ATTRIBUTE_UV_1, "UV1"),
+    ] {
+        if mesh.attribute(attribute).is_some() { continue; }
+        let textures = [
+            ("base color", material.base_color_texture.is_some(), &material.base_color_channel),
+            ("emissive", material.emissive_texture.is_some(), &material.emissive_channel),
+            ("metallic/roughness", material.metallic_roughness_texture.is_some(), &material.metallic_roughness_channel),
+            ("normal", material.normal_map_texture.is_some(), &material.normal_map_channel),
+            ("occlusion", material.occlusion_texture.is_some(), &material.occlusion_channel),
+        ].into_iter().filter_map(|(name, present, requested)| (present && requested == &channel).then_some(name)).collect::<Vec<_>>();
+        if !textures.is_empty() { warnings.push(format!("mesh has no {label} coordinates requested by {} textures", textures.join(", "))); }
+    }
     if material.normal_map_texture.is_some() && mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none() {
         warnings.push("normal mapping is ignored because the mesh has no tangent frame; provide nondegenerate UVs".into());
     }
@@ -176,7 +190,7 @@ impl PrimRoute for MaterialRoute {
         if let Some(mesh) = world.get::<Mesh3d>(entity)
             .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
             && let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&handle) {
-            warn_missing_tangents(mesh, material, &mut warnings);
+            warn_geometry_inputs(mesh, material, &mut warnings);
         }
         if warnings.is_empty() {
             world.entity_mut(entity).remove::<UsdMaterialWarning>();
@@ -195,6 +209,31 @@ impl PrimRoute for MaterialRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn texture_coordinate_diagnostics_follow_requested_channels() {
+        let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+        let mut material = StandardMaterial::default();
+        let mut warnings = Vec::new();
+        warn_geometry_inputs(&mesh, &material, &mut warnings);
+        assert!(warnings.is_empty());
+        material.base_color_texture = Some(Handle::default());
+        material.emissive_texture = Some(Handle::default());
+        material.emissive_channel = bevy::mesh::UvChannel::Uv1;
+        material.metallic_roughness_texture = Some(Handle::default());
+        material.occlusion_texture = Some(Handle::default());
+        warn_geometry_inputs(&mesh, &material, &mut warnings);
+        assert_eq!(warnings, ["mesh has no UV0 coordinates requested by base color, metallic/roughness, occlusion textures",
+            "mesh has no UV1 coordinates requested by emissive textures"]);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.,0.];3]);
+        warnings.clear();
+        warn_geometry_inputs(&mesh, &material, &mut warnings);
+        assert_eq!(warnings, ["mesh has no UV1 coordinates requested by emissive textures"]);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.,0.];3]);
+        warnings.clear();
+        warn_geometry_inputs(&mesh, &material, &mut warnings);
+        assert!(warnings.is_empty());
+    }
 
     #[test]
     fn normal_tangent_diagnostics_cover_mesh_subsets_and_prototypes() {
@@ -217,6 +256,13 @@ mod tests {
             let text = format!(r#"#usda 1.0
 def Mesh "Plain" {{ {mesh} }}
 def Mesh "Proto" {{ {mesh} }}
+def BasisCurves "Curve" {{
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(0,0,0),(1,0,0)]
+    float[] widths = [0.2,0.2]
+    rel material:binding = </Mat>
+}}
 def PointInstancer "Copies" {{
     rel prototypes = [</Proto>]
     int[] protoIndices = [0]
@@ -234,18 +280,21 @@ def Material "Mat" {{
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
             app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>().init_resource::<Assets<Image>>();
+            app.insert_resource(super::super::curves::UsdCurveSettings::default().with_surface_sides(Some(8)).unwrap());
             let source = crate::UsdSource::snapshot("normal.usda", text.as_bytes()).unwrap();
             let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
             app.world_mut().spawn(crate::UsdSceneRoot(handle));
             app.update();
             let mut count = 0;
             let mut query = app.world_mut().query::<(&Mesh3d, &MeshMaterial3d<StandardMaterial>, Option<&UsdMaterialWarning>)>();
-            for (_, material, warning) in query.iter(app.world()) {
+            for (mesh, material, warning) in query.iter(app.world()) {
                 if app.world().resource::<Assets<StandardMaterial>>().get(&material.0).unwrap().normal_map_texture.is_none() { continue; }
                 count += 1;
-                assert_eq!(warning.is_some_and(|warning| warning.0.contains("no tangent frame")), !uv);
+                let mesh = app.world().resource::<Assets<Mesh>>().get(&mesh.0).unwrap();
+                assert_eq!(warning.is_some_and(|warning| warning.0.contains("no tangent frame")), mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
+                assert_eq!(warning.is_some_and(|warning| warning.0.contains("no UV0 coordinates")), mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_none());
             }
-            assert!(count >= 4, "expected ordinary, subset and instanced material entities, got {count}");
+            assert!(count >= 5, "expected ordinary, subset, curve and instanced material entities, got {count}");
         }
     }
 

@@ -1366,12 +1366,16 @@ check or automatic retry.
 
 `USD_UI_DIAGNOSTICS=1` logs egui output statistics at most once per second:
 output count, shape/text/mesh/callback counts, NaN clip rectangles and texture
-updates/frees. It is disabled by default and does not alter the output or request
+updates/frees. It also logs the root repaint delay and up to 32 previous-pass
+repaint causes. It is disabled by default and does not alter the output or request
 extra repaints. The samples precede backend tessellation/presentation and are not
 synchronized to screenshots; nonempty output does not prove successful rendering.
 Replay input requests its next repaint at the next event deadline rather than
 continuously while waiting. Other viewer/host repaint sources still apply; this
 does not impose a frame-rate limit.
+The viewer's periodic repaint request compensates for egui's predicted-frame
+subtraction to retain a 1/60-second delay from that request. Input and host repaint
+sources can request earlier frames, so this is not a global frame-rate cap.
 
 Set `USD_UI_CAPTURE_VIEWPORT=1` to additionally retain the embedded Bevy readback
 as `.viewport.png`, `.viewport.rgba` and `.viewport.capture.txt`. Its dimensions

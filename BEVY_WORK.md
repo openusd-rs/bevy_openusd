@@ -5,6 +5,26 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Same-process host capture diagnostics
 
+Repaint diagnostics now include the root output delay and up to 32 previous-pass
+egui repaint causes. The trace identifies the viewer's periodic request and
+Mara's Bevy viewport request (`../mara/hosts/bevy/src/egui_view.rs:520`). Current
+egui 0.34.3 subtracts `input.predicted_dt` inside `request_repaint_after`, so the
+viewer's previous 1/60-second request became zero with the default prediction.
+`ui_frame_pacing` now adds the predicted duration to retain a 1/60-second delay
+from this request. Tests exercise real egui output at three prediction intervals
+and invalid prediction fallback. Input/host repaints remain independent.
+
+All 73 viewer tests and check-all pass
+(`/tmp/viewer-frame-pacing-{tests,check}.log`). Inspected
+`target/reference-paced-repaint-ui.png` and `.second.png` show the conflict and
+resolved fields; both capture guards pass
+(`/tmp/reference-paced-repaint-capture.log`). The compositor still sampled 139
+commits versus 60 painted frames/sec, and output delay samples still include zero
+with the Mara Bevy repaint source present. That sibling also requests intervals
+as low as 1/60 second before egui's subtraction. No sibling file was modified.
+This fixes the viewer's own request semantics, not global pacing or black frames;
+the one sampled rate is not a performance benchmark.
+
 The replay plugin now requests repaint at the next event deadline rather than
 immediately on every pass while any future event exists. Due events request zero
 delay, future events use a saturating remaining duration, and an empty queue

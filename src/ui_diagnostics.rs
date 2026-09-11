@@ -6,7 +6,7 @@ pub fn install(ctx: &egui::Context) -> Result<(), String> {
         Err(std::env::VarError::NotPresent) => Ok(()),
         Ok(value) if value == "0" => Ok(()),
         Ok(value) if value == "1" => {
-            ctx.add_plugin(Diagnostics { started: Instant::now(), last: None, frames: 0 });
+            ctx.add_plugin(Diagnostics { started: Instant::now(), last: None, frames: 0, previous_causes: Vec::new() });
             Ok(())
         }
         _ => Err("USD_UI_DIAGNOSTICS must be 0 or 1".into()),
@@ -43,18 +43,27 @@ fn stats(output: &FullOutput) -> OutputStats {
     stats
 }
 
-struct Diagnostics { started: Instant, last: Option<Instant>, frames: u64 }
+struct Diagnostics { started: Instant, last: Option<Instant>, frames: u64, previous_causes: Vec<egui::RepaintCause> }
 
 impl egui::Plugin for Diagnostics {
     fn debug_name(&self) -> &'static str { "usd-ui-diagnostics" }
+
+    fn on_end_pass(&mut self, ui: &mut egui::Ui) {
+        if self.last.is_none_or(|last| last.elapsed() >= Duration::from_secs(1)) {
+            self.previous_causes = ui.ctx().repaint_causes();
+            self.previous_causes.truncate(32);
+        }
+    }
 
     fn output_hook(&mut self, output: &mut FullOutput) {
         self.frames = self.frames.saturating_add(1);
         let now = Instant::now();
         if self.last.is_some_and(|last| now.duration_since(last) < Duration::from_secs(1)) { return; }
         self.last = Some(now);
+        let repaint_delay_ms = output.viewport_output.get(&egui::ViewportId::ROOT).map(|viewport| viewport.repaint_delay.as_secs_f64()*1000.);
         tracing::info!(target: "usdview::ui_diagnostics", millis = self.started.elapsed().as_millis(),
-            frames = self.frames, pixels_per_point = output.pixels_per_point, stats = ?stats(output), "egui output before backend");
+            frames = self.frames, pixels_per_point = output.pixels_per_point, repaint_delay_ms,
+            previous_repaint_causes = ?self.previous_causes, stats = ?stats(output), "egui output before backend");
     }
 }
 
@@ -75,7 +84,7 @@ mod tests {
             texture_frees: 1, ..Default::default() });
         let before = format!("{:?}", output.shapes);
         let free = output.textures_delta.free.clone();
-        let mut diagnostics = Diagnostics { started: Instant::now(), last: None, frames: 0 };
+        let mut diagnostics = Diagnostics { started: Instant::now(), last: None, frames: 0, previous_causes: Vec::new() };
         diagnostics.output_hook(&mut output);
         let last = diagnostics.last;
         diagnostics.output_hook(&mut output);
@@ -84,5 +93,15 @@ mod tests {
         assert_eq!(format!("{:?}", output.shapes), before);
         assert_eq!(output.textures_delta.free, free);
         assert!(output.textures_delta.set.is_empty());
+    }
+
+    #[test]
+    fn diagnostic_reads_previous_pass_repaint_causes() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(Default::default(), |ui| ui.ctx().request_repaint_after(Duration::from_millis(17)));
+        let mut diagnostics = Diagnostics { started: Instant::now(), last: None, frames: 0, previous_causes: Vec::new() };
+        let _ = ctx.run_ui(Default::default(), |ui| diagnostics.on_end_pass(ui));
+        assert!(diagnostics.previous_causes.iter().any(|cause| cause.file.ends_with("ui_diagnostics.rs")));
+        assert!(diagnostics.previous_causes.len() <= 32);
     }
 }

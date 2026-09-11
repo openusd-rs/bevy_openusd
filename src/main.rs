@@ -17,6 +17,7 @@ mod framing;
 mod timeline;
 mod ui_replay;
 mod ui_diagnostics;
+mod ui_frame_pacing;
 mod render_settings;
 mod file_dialog;
 mod payload_editor;
@@ -255,8 +256,8 @@ impl WindowApp for UsdApp {
 
         // Viewport (root, behind the ribbon-avoiding panes).
         {
+            ui_frame_pacing::request(host.__internal_egui());
             let mut vctx = host.view_ctx(workspace, accent, RibbonAvoidance::all());
-            vctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 / 60.0));
             bevy_view.show(&mut vctx, host.gpu(), accent);
         }
 

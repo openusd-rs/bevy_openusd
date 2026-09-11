@@ -113,14 +113,14 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     for layer in &snapshot.muted_layers { if !mute_layers.contains(layer) { mute_layers.push(layer.clone()); } }
     for layer in mute_layers {
         let muted = snapshot.muted_layers.contains(&layer);
-        let protected = layer == snapshot.root_layer || layer == snapshot.edit_layer;
+        let protected = snapshot.mute_protected_layers.contains(&layer);
         let lines = path_lines(&layer);
         let bridge = bridge.clone();
         let (document_id, revision) = (snapshot.document_id, snapshot.revision);
         layers.push(Pod::new(Id::new(("editor.layer.muting", &layer))).with_custom_units(lines.len() + 2, move |ui| {
             ui.label(if muted { "Muted layer (runtime)" } else { "Layer participation (runtime)" });
             for line in lines { ui.label(&line); }
-            if protected { ui.label("Root / active edit layer cannot be muted"); }
+            if protected { ui.label("Root, edit layer or its ancestor: cannot mute"); }
             else if ui.button(if muted { "Unmute layer" } else { "Mute layer" }).clicked {
                 super::send(&bridge, EditorCommand::LayerMuteChecked { identifier: layer, muted: !muted, document_id, revision });
             }

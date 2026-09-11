@@ -594,6 +594,7 @@ pub struct EditorSnapshot {
     pub layers: Vec<String>,
     pub root_layer: String,
     pub muted_layers: Vec<String>,
+    pub mute_protected_layers: Vec<String>,
     pub edit_layer: String,
     pub edit_target: Option<EditTarget>,
     pub selected: Option<String>,
@@ -832,6 +833,10 @@ impl EditorSession {
             can_redo: !self.redo.is_empty(),
             ..Default::default()
         };
+        snapshot.mute_protected_layers = snapshot.layers.iter().filter(|layer| {
+            *layer == &snapshot.root_layer || *layer == &snapshot.edit_layer
+                || self.stage.sub_layers(layer).contains(&snapshot.edit_layer)
+        }).cloned().collect();
         let predicate = openusd::usd::PrimPredicate::new(
             openusd::usd::PrimStatus::ACTIVE.union(openusd::usd::PrimStatus::DEFINED),
             openusd::usd::PrimStatus::ABSTRACT,
@@ -1810,6 +1815,7 @@ def Xform "Root" { def Cube "Shape" {} }
         editor.set_edit_layer(&layers[2]).unwrap();
         let before = editor.snapshot().unwrap();
         let contents: Vec<_> = layers.iter().map(|id| editor.stage().layer(id).unwrap().export_to_string().unwrap()).collect();
+        assert_eq!(before.mute_protected_layers, layers);
         assert!(editor.set_layer_muted(&layers[1], true).is_err());
         let after = editor.snapshot().unwrap();
         assert_eq!(after.revision, before.revision);
@@ -1821,6 +1827,7 @@ def Xform "Root" { def Cube "Shape" {} }
             assert_eq!(editor.stage().layer(id).unwrap().export_to_string().unwrap(), text);
         }
         editor.set_edit_layer(&layers[0]).unwrap();
+        assert_eq!(editor.snapshot().unwrap().mute_protected_layers, [layers[0].clone()]);
         editor.set_layer_muted(&layers[1], true).unwrap();
         assert!(!editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
         editor.set_layer_muted(&layers[1], false).unwrap();

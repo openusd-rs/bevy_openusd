@@ -3,6 +3,20 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Inspector ancestor-muting protection
+
+EditorSnapshot now publishes mute_protected_layers for the visible layer stack:
+the root, active edit layer and its sublayer ancestors. The inspector uses this
+list to show a protected label instead of offering a Mute button that the model
+would reject. The nested-layer regression verifies all three layers are
+protected with the leaf selected, and only the root after switching back.
+
+All 55 ordinary editor tests (one native test ignored), 76 viewer tests and
+check-all pass (`/tmp/mute-protection-snapshot-tests.log`,
+`/tmp/mute-protection-viewer-tests.log`, `/tmp/mute-protection-check.log`).
+Native visual acceptance of the new label remains pending; these test results
+do not certify layout or rendering.
+
 ## Protect active edit layers from ancestor muting
 
 The editor now rejects muting a layer whose sublayer stack contains the active

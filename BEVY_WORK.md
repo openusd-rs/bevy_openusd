@@ -5,6 +5,17 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+Same-context property/relationship drafts no longer silently reset when the
+composed source text changes. Pristine drafts refresh, and a current value equal
+to the draft acknowledges a successful write. Other changed sources preserve
+the draft and show Reload current / Keep draft actions before the normal apply
+controls. Matrix drafts use the same reconciliation before editing their rows.
+Tests cover scalar, relationship and multiline matrix conflicts, repeated frames,
+pristine updates and applied-value acknowledgement. All 55 viewer tests,
+check-all and build pass (`/tmp/draft-conflict-{tests,check,build}.log`). Native
+conflict-prompt interaction/layout acceptance remains pending; no automatic
+field-wise merge or conflict resolution across document changes is claimed.
+
 Inspector draft isolation now clears value, sample-time and expanded-source maps
 on document identity or complete EditTarget changes, including different variant
 mappings into the same layer. Revision/selection changes within that context do

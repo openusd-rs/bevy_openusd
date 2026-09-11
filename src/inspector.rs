@@ -38,6 +38,30 @@ fn send_edit(bridge: &EditorBridge, snapshot: &EditorSnapshot, edit: EditorEdit)
     if let Some(command) = snapshot.checked_edit(edit) { super::send(bridge, command); }
 }
 
+fn draft_conflicts(draft: &mut (String, String, String), current: &str) -> bool {
+    if draft.0 == current { return false; }
+    if draft.1 == draft.0 || draft.1 == current {
+        *draft = (current.into(), current.into(), String::new());
+        false
+    } else { true }
+}
+
+fn reconcile_draft(ui: &mut mara::ui::mara_core::MaraUi<'_>, draft: &mut (String, String, String), current: &str) -> bool {
+    if !draft_conflicts(draft, current) { return true; }
+    ui.label("Source changed; your draft is preserved");
+    ui.label(&format!("Current: {}", current.chars().take(80).collect::<String>()));
+    if ui.button("Reload current value (discard draft)").clicked {
+        *draft = (current.into(), current.into(), String::new());
+        return true;
+    }
+    if ui.button("Keep draft over current value").clicked {
+        draft.0 = current.into();
+        draft.2.clear();
+        return true;
+    }
+    false
+}
+
 pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts, current_time: f64) {
     drafts.synchronize_context(snapshot);
     let edit_context = Arc::new(EditorSnapshot {
@@ -155,11 +179,11 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let drafts = drafts.clone();
         let bridge = bridge.clone();
         let edit_context = edit_context.clone();
-        pods.push(Pod::new(Id::new(&key)).with_custom_units(5, move |ui| {
+        pods.push(Pod::new(Id::new(&key)).with_custom_units(9, move |ui| {
             ui.label(&format!("Relationship: {name}"));
             let Ok(mut drafts) = drafts.0.lock() else { return };
             let draft = drafts.entry(key).or_insert_with(|| (current.clone(), current.clone(), String::new()));
-            if draft.0 != current { *draft = (current.clone(), current, String::new()); }
+            if !reconcile_draft(ui, draft, &current) { return; }
             ui.text_input(&mut draft.1, "Absolute targets, separated by spaces");
             if ui.button("Set targets (empty blocks weaker targets)").clicked {
                 match draft.1.split_whitespace().map(openusd::sdf::path).collect::<Result<Vec<_>, _>>() {
@@ -190,7 +214,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let summary_lines = path_lines(&attribute.source_summary);
         let expanded = drafts.2.lock().ok().and_then(|states| states.get(&key).copied()).unwrap_or(false);
         let sample_lines = path_lines(&sample_summary(&attribute.sample_times));
-        let units = 16 + summary_lines.len() + sample_lines.len() + if expanded { source_lines.len() } else { 0 } + if matrix_attribute { 6 } else { 0 };
+        let units = 20 + summary_lines.len() + sample_lines.len() + if expanded { source_lines.len() } else { 0 } + if matrix_attribute { 6 } else { 0 };
         let destination = if matrix_attribute { &mut matrix_pods } else { &mut pods };
         destination.push(Pod::new(Id::new(&key)).with_custom_units(units, move |ui| {
             ui.label(&format!("{} ({})", attribute.name, attribute.type_name));
@@ -200,7 +224,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 let Some(current) = editable_text(&value) else { ui.label("Invalid matrix value"); return };
                 let Ok(mut state) = drafts.0.lock() else { return };
                 let draft = state.entry(key.clone()).or_insert_with(|| (current.clone(), current.clone(), String::new()));
-                if draft.0 != current { *draft = (current.clone(), current, String::new()); }
+                if !reconcile_draft(ui, draft, &current) { return; }
                 let mut loaded = None;
                 if let Some((time, matrix)) = sampled_time.zip(attribute.sampled_matrix) {
                     if ui.button(&format!("Load sampled matrix at {time}")).clicked {
@@ -257,7 +281,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             let Some(current) = editable_text(&value) else { ui.label(&format!("{value:?}")); return };
             let Ok(mut drafts) = drafts.0.lock() else { return };
             let draft = drafts.entry(key).or_insert_with(|| (current.clone(), current.clone(), String::new()));
-            if draft.0 != current { *draft = (current.clone(), current, String::new()); }
+            if !reconcile_draft(ui, draft, &current) { return; }
             if !matrix_attribute { ui.text_input(&mut draft.1, "Value"); }
             if ui.button("Apply sample at time").clicked {
                 match parse_sample_time(&time.0).and_then(|time| parse_value(&value, &draft.1).map(|value| (time, value))) {
@@ -385,6 +409,28 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changed_sources_preserve_dirty_drafts_and_acknowledge_applied_values() {
+        let mut pristine = ("old".into(), "old".into(), "error".into());
+        assert!(!super::draft_conflicts(&mut pristine, "new"));
+        assert_eq!(pristine, ("new".into(), "new".into(), String::new()));
+        for (old, draft, current) in [("1", "2", "3"), ("/A", "/B /C", "/D"),
+            ("1 0\n0 1", "1 2\n3 4", "5 6\n7 8")] {
+            let mut value = (old.into(), draft.into(), "parse error".into());
+            let original = value.clone();
+            assert!(super::draft_conflicts(&mut value, current));
+            assert_eq!(value, original);
+            assert!(super::draft_conflicts(&mut value, current));
+            assert_eq!(value, original);
+            value.0 = current.into();
+            assert!(!super::draft_conflicts(&mut value, current));
+            assert_eq!(value.1, draft);
+        }
+        let mut applied = ("old".into(), "authored".into(), "error".into());
+        assert!(!super::draft_conflicts(&mut applied, "authored"));
+        assert_eq!(applied, ("authored".into(), "authored".into(), String::new()));
+    }
+
     #[test]
     fn drafts_reset_on_document_or_target_not_revision_or_selection() {
         let drafts = super::Drafts::default();

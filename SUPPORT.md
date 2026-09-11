@@ -18,7 +18,7 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 The full integration goal remains active. The [work log](BEVY_WORK.md) records
 revision-specific tests, inspected images and failed probes; historical benchmark
 numbers are not measurements of a later checkout. Recent watcher-enabled gates
-passed 616 ordinary tests and a separate 23-test native run; see that log for
+passed 619 ordinary tests and a separate 23-test native run; see that log for
 commands and scope rather than treating counts as a release certification.
 
 ## Capability matrix

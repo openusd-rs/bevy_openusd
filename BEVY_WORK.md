@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Post-customization workspace and native gates
+
+At d675c23, the watcher-enabled workspace passes 619 tests, zero failures and
+23 ignored across 31 suites (`/tmp/post-source-edits-watcher-workspace.log`).
+Command: `TMPDIR="$PWD/target/test-tmp" make CARGO='cargo --offline'`
+with temporary target running
+`cargo --offline test --workspace --all-targets --features file_watcher`.
+This includes the new live source-edits example and current editor-history guards.
+
+The separate native lane passes all 23 selected tests, zero failures and none
+ignored (`/tmp/post-source-edits-watcher-native.log`):
+`make test CARGO='cargo --offline' APP_TARGET='-p usd_bevy --features file_watcher --lib native_ -- --ignored --nocapture'`,
+with target/test-tmp as TMPDIR and installed OpenUSD 25.05.01 tools on PATH.
+This covers the opted-in filesystem watcher and native USD export cases. It is
+one suite run, not a flakiness or performance certification. Black-host frames,
+broader fidelity, unsaved-state handling and other release blockers remain open.
+
 ## Typed snapshot edits through live Bevy assets
 
 The source_edits example now projects original and customized assemblies through

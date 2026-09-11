@@ -1207,6 +1207,19 @@ seek to time code 30 for the bent pose.
 
 ### Typed component authoring
 
+The headless editor benchmark can sample 1000 distinct times across the opened
+stage's authored timeline rather than its original fixed 0–10 range:
+
+```sh
+make run CARGO='cargo --offline' RUN_WITH= APP_TARGET='--example editor_benchmark' \
+  ARGS='assets/flagship_showcase.usda 1 gpu-prepared seek-timeline'
+```
+
+Use `cpu` for CPU deformation. `gpu-prepared` measures CPU-side preparation only,
+not GPU execution. The report prints the actual range, four warm-up seeks,
+nearest-rank percentiles, retained assets and whole-process RSS. Invalid or
+non-increasing timeline ranges are rejected.
+
 For opt-in per-render-pass GPU timing in the standalone capture tool:
 
 ```sh

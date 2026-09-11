@@ -3,6 +3,35 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Full-timeline animated projection measurements
+
+editor_benchmark adds seek-timeline: four warm-up seeks followed by 1000 distinct
+times over the opened stage's actual start/end range. Existing seek/seek-unique
+semantics stay unchanged. Invalid ranges fail explicitly; logs print the range.
+The showcase regression verifies execution and GPU-prepared morph presence;
+all six benchmark tests and check-all pass. Logs:
+/tmp/showcase-timeline-benchmark-final-tests.log and
+/tmp/showcase-timeline-benchmark-check.log.
+
+Exploratory runs /tmp/showcase-timeline-{1,2,3}-{cpu,gpu-prepared}.log completed,
+but the first runs overlapped test/build activity, so those timings are not used
+as clean comparative evidence. A subsequent GPU-prepared/CPU pair ran after
+both jobs terminated, with no concurrent assistant-run tests/builds. Each uses
+the showcase's full 0–60 range and preserves document identity/current clock.
+
+Clean CPU: median 20.573098ms, p95 21.121957ms, max 29.493714ms per seek/update.
+Clean GPU-prepared: median 21.062160ms, p95 21.683208ms, max 34.650849ms.
+Logs: /tmp/showcase-timeline-clean-{cpu,gpu-prepared}.log. This is a single clean
+pair, not a statistically controlled speedup comparison. It excludes GPU/UI
+execution and plugin startup. Both retain nine mesh entities; CPU/GPU-prepared
+retain 12/10 meshes and bounded cache payload 22480/28024 bytes after the sweep.
+
+This reveals a concrete CPU-side projection/editor bottleneck even on the small
+showcase: median seek cost exceeds a 16.67ms frame budget in this debug build.
+GPU preparation does not remove it. Release behavior and attribution require
+measurement; no claim that shader execution or the UR5 normal rule causes it.
+The original fidelity/performance checkbox remains open.
+
 ## Showcase deformation and GPU timestamp measurements
 
 The composed showcase passes GPU/CPU image comparisons at times 0, 30 and 60

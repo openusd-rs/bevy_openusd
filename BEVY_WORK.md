@@ -3,6 +3,27 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Muted-layer export semantics
+
+Added ordinary and native export regressions for root, edit-layer (root target)
+and flattened saves in USDA, USDC, USD and USDZ. With the weak layer muted,
+root/edit exports retain the authored two-layer stack and cube; flattened exports
+contain a single layer without that cube. Reopened stages have no muted set.
+Each package also opens through an isolated relocated snapshot, retaining the
+same stack/shape expectations. Source file bytes, live root-layer text and the
+session's muted state remain unchanged by export.
+
+Native `usdcat --flatten` succeeds without stderr for all 12 mode/format cases
+and its output has the expected cube inclusion. Both final focused tests pass
+after strengthening layer-stack assertions, along with check-all:
+`/tmp/muted-layer-export-final-tests.log`,
+`/tmp/muted-layer-export-final-check.log`. The earlier full native export lane
+passes all 14 tests (`/tmp/muted-layer-export-native-tests.log`), and the ordinary
+persistence lane passes 10 with 14 ignored
+(`/tmp/muted-layer-export-persistence-tests.log`). The new ignored native test
+is selected by the existing make test-native target. No production export code
+changed; this does not establish behavior for every nested/session-layer case.
+
 ## History guards for muted edit layers
 
 Undo/redo now rejects a command whose captured edit layer is muted, naming the

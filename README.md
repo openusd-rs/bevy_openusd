@@ -142,6 +142,11 @@ components that belonged to those removed entities.
 Undo/redo of a command targeting a muted layer asks you to unmute that layer
 first. The error names the layer and preserves the pending history entry and
 current edit target; commands targeting an unmuted layer remain available.
+Root/edit-layer exports preserve authored sublayers even when muted at runtime;
+reopening them does not restore the muted set. Flattened exports instead capture
+the currently composed scene and therefore omit opinions excluded by muting.
+The muted-layer export regression covers USDA, USDC, USD and portable USDZ with
+the root as edit target, including native `usdcat` validation.
 
 The inspector's **Payloads / references** group displays reference opinions below
 the payload controls, including source paths, list modes, separate site/arc time

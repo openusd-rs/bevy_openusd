@@ -439,7 +439,13 @@ mapped through the active edit target; defaults are left intact. These operation
 participate in editor undo/redo. The lower-level authoring functions are
 `set_attribute_sample` and `clear_attribute_sample`.
 The ribbon provides undo/redo and
-separate root-layer, edit-layer and flattened export dialogs. Unsupported value
+separate root-layer, edit-layer and flattened export dialogs. Open selections
+carry the document id and authored revision from the picker request; changes
+made while choosing a file reject the delayed result and retain the document.
+This works with undo history disabled, but is not an unsaved-work confirmation
+for edits predating the request. Programmatic `EditorCommand::Open` remains
+unconditional; integrations can use `OpenChecked` with an `EditorSnapshot` token.
+Unsupported value
 types are displayed read-only; see `BEVY_WORK.md` for remaining editor work and
 visual acceptance limits.
 

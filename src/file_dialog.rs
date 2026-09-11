@@ -14,11 +14,15 @@ fn save_labels(mode: SaveMode) -> (&'static str, &'static str) {
 
 #[derive(Clone)]
 pub enum Request {
-    Open,
+    Open { document_id: u64, revision: u64 },
     Save { mode: SaveMode, document_id: u64, edit_layer: String },
 }
 
 impl Request {
+    pub fn open(snapshot: &EditorSnapshot) -> Self {
+        Self::Open { document_id: snapshot.document_id, revision: snapshot.revision }
+    }
+
     pub fn save(mode: SaveMode, snapshot: &EditorSnapshot) -> Self {
         Self::Save { mode, document_id: snapshot.document_id, edit_layer: snapshot.edit_layer.clone() }
     }
@@ -26,7 +30,7 @@ impl Request {
     fn command(self, path: PathBuf) -> Result<EditorCommand, String> {
         let filename = path.into_os_string().into_string().map_err(|_| "USD paths must be UTF-8".to_owned())?;
         Ok(match self {
-            Self::Open => EditorCommand::Open(filename),
+            Self::Open { document_id, revision } => EditorCommand::OpenChecked { filename, document_id, revision },
             Self::Save { mode, document_id, edit_layer } => {
                 let extension = Path::new(&filename).extension().and_then(|value| value.to_str()).unwrap_or("");
                 if !USD_EXTENSIONS.iter().any(|supported| extension.eq_ignore_ascii_case(supported)) {
@@ -61,7 +65,7 @@ impl FileDialogs {
         if self.pending.is_some() { return; }
         let dialog = rfd::AsyncFileDialog::new();
         let future: Selection = match &request {
-            Request::Open => {
+            Request::Open { .. } => {
                 let selection = dialog.add_filter("USD", USD_EXTENSIONS).pick_file();
                 Box::pin(async move { selection.await.map(|file| file.path().to_owned()) })
             }
@@ -102,10 +106,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn open_selection_retains_document_revision_context() {
+        let snapshot = EditorSnapshot { document_id: 42, revision: 7, ..Default::default() };
+        let command = Request::open(&snapshot).command("selected.usda".into()).unwrap();
+        assert!(matches!(command, EditorCommand::OpenChecked { document_id: 42, revision: 7, filename } if filename == "selected.usda"));
+    }
+
+    #[test]
     fn pending_dialog_does_not_block_or_allow_duplicate_requests() {
         let mut dialogs = FileDialogs::new(&egui::Context::default());
-        dialogs.begin(Request::Open, Box::pin(std::future::pending()));
-        dialogs.begin(Request::Open, Box::pin(async { Some(PathBuf::from("wrong.usda")) }));
+        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(std::future::pending()));
+        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(PathBuf::from("wrong.usda")) }));
         for _ in 0..3 { assert!(dialogs.poll().is_none()); }
         assert_eq!(dialogs.status(), Some("Waiting for file selection"));
     }
@@ -113,11 +124,11 @@ mod tests {
     #[test]
     fn cancellation_and_completion_are_consumed_once() {
         let mut dialogs = FileDialogs::new(&egui::Context::default());
-        dialogs.begin(Request::Open, Box::pin(async { None }));
+        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { None }));
         assert!(dialogs.poll().is_none());
         assert!(dialogs.status().is_none());
-        dialogs.begin(Request::Open, Box::pin(async { Some(PathBuf::from("path with spaces.usda")) }));
-        assert!(matches!(dialogs.poll(), Some(EditorCommand::Open(path)) if path == "path with spaces.usda"));
+        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(PathBuf::from("path with spaces.usda")) }));
+        assert!(matches!(dialogs.poll(), Some(EditorCommand::OpenChecked { filename, document_id: 0, revision: 0 }) if filename == "path with spaces.usda"));
         assert!(dialogs.poll().is_none());
         assert!(dialogs.status().is_none());
     }
@@ -142,13 +153,13 @@ mod tests {
         let mut dialogs = FileDialogs::new(&egui::Context::default());
         let counter = Arc::new(Counter(AtomicUsize::new(0)));
         dialogs.waker = Waker::from(counter.clone());
-        dialogs.begin(Request::Open, Box::pin(future));
+        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(future));
         assert!(dialogs.poll().is_none());
         assert_eq!(counter.0.load(Ordering::SeqCst), 1);
         ready.store(true, Ordering::SeqCst);
         registered.lock().unwrap().take().unwrap().wake();
         assert_eq!(counter.0.load(Ordering::SeqCst), 2);
-        assert!(matches!(dialogs.poll(), Some(EditorCommand::Open(path)) if path == "delayed.usda"));
+        assert!(matches!(dialogs.poll(), Some(EditorCommand::OpenChecked { filename, document_id: 0, revision: 0 }) if filename == "delayed.usda"));
         assert!(dialogs.poll().is_none());
     }
 
@@ -182,7 +193,7 @@ mod tests {
     fn non_utf8_selection_reports_error_instead_of_changing_the_path() {
         use std::os::unix::ffi::OsStringExt;
         let mut dialogs = FileDialogs::new(&egui::Context::default());
-        dialogs.begin(Request::Open, Box::pin(async { Some(std::ffi::OsString::from_vec(vec![0xff]).into()) }));
+        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(std::ffi::OsString::from_vec(vec![0xff]).into()) }));
         assert!(dialogs.poll().is_none());
         assert_eq!(dialogs.status(), Some("USD paths must be UTF-8"));
     }

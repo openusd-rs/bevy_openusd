@@ -329,7 +329,7 @@ impl WindowApp for UsdApp {
             } else if click.action == ribbon_action(ACTION_REDO) {
                 send(editor, EditorCommand::Redo);
             } else if click.action == ribbon_action(ACTION_OPEN) {
-                file_dialogs.start(file_dialog::Request::Open);
+                file_dialogs.start(file_dialog::Request::open(&view.document));
             } else if click.action == ribbon_action(ACTION_REFRESH_TEXTURES) {
                 send(editor, EditorCommand::RefreshTextures);
             }

@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Revision-checked asynchronous opens
+
+File-dialog Open requests now retain the published document id and authored
+revision. Their `EditorCommand::OpenChecked` result is rejected before source
+I/O if either changed while choosing the file. Snapshot revisions advance on
+successful edits, undo/redo and detected external stage edits, independently of
+undo retention; disabling history therefore does not disable the guard. Failed
+rolled-back edits, empty edits, selection and playback changes do not invalidate
+an otherwise current open request. A pending initial texture retry yields to
+both explicit Open variants.
+
+Explicit programmatic `EditorCommand::Open` remains unconditional. The guarded
+path protects changes made after the dialog request; it is not an unsaved-work
+confirmation for edits that already existed when the picker opened. Existing
+atomic preparation still retains the old document if the chosen file cannot
+be opened or validated. The revision is an opaque wrapping u64 change token,
+not a persisted document version or a command count.
+
+Coverage exercises stale edit tokens with history disabled, external edits,
+document replacement, initial no-document context, pending-open retry priority,
+selection/seek without authored changes, missing-file retention and explicit
+unconditional opens. Separate tests cover undo/redo revision changes, failed and
+empty edits, and preservation of the dialog's token through path selection.
+These use real App/command processing and synthetic dialog futures, not an OS
+file-picker interaction acceptance test.
+
+Validation: the focused App regression passes (`/tmp/checked-open-test.log`).
+The final workspace suite passes 543 ordinary tests, 13 ignored; check-all,
+build and whitespace checks pass. Logs: `/tmp/checked-open-all-tests.log`,
+`/tmp/checked-open-check-final.log`, `/tmp/checked-open-build.log`.
+
 ## Bounded editor command history
 
 EditorSession now retains at most 128 total undo/redo commands by default.

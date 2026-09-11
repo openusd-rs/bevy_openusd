@@ -12,6 +12,7 @@ pub mod texture_watch;
 #[derive(Debug, Clone)]
 pub enum EditorCommand {
     Open(String),
+    OpenChecked { filename: String, document_id: u64, revision: u64 },
     /// Reload source-backed images without replacing the document or edit history.
     RefreshTextures,
     Select(Option<String>),
@@ -138,7 +139,7 @@ fn process_commands(world: &mut World) {
     };
     let mut session = world.remove_non_send::<EditorSession>();
     if let Some(mut pending) = world.get_resource_mut::<PendingInitialOpen>() {
-        if pending.retry && session.is_none() && !commands.iter().any(|command| matches!(command, EditorCommand::Open(_))) {
+        if pending.retry && session.is_none() && !commands.iter().any(|command| matches!(command, EditorCommand::Open(_) | EditorCommand::OpenChecked { .. })) {
             commands.push_front(EditorCommand::Open(pending.path.clone()));
         }
         pending.retry = false;
@@ -151,6 +152,14 @@ fn process_commands(world: &mut World) {
     let mut status = if external { "External edits detected; undo history reset".into() } else { String::new() };
     let mut texture_dirty = external;
     for command in commands {
+        if let EditorCommand::OpenChecked { document_id, revision, .. } = &command {
+            texture_dirty |= session.as_mut().is_some_and(EditorSession::synchronize_external_edits);
+            let current = session.as_ref().map_or((0, 0), |editor| (editor.document_id, editor.revision));
+            if current != (*document_id, *revision) {
+                status = "Failed: document changed while choosing an open file; choose again".into();
+                continue;
+            }
+        }
         let movements = session.as_ref().map_or_else(Vec::new, |editor| match &command {
             EditorCommand::Edit(edit) => edit.namespace_moves(),
             EditorCommand::Undo => editor.undo.last().map(|entry| entry.edit.namespace_moves().into_iter().rev().map(|(old, new)| (new, old)).collect()).unwrap_or_default(),
@@ -160,7 +169,7 @@ fn process_commands(world: &mut World) {
         if matches!(&command, EditorCommand::Edit(_) | EditorCommand::Undo | EditorCommand::Redo | EditorCommand::Payload { .. }) {
             texture_dirty = true;
         }
-        let result = if let EditorCommand::Open(path) = &command {
+        let result = if let EditorCommand::Open(path) | EditorCommand::OpenChecked { filename: path, .. } = &command {
             world.remove_resource::<PendingInitialOpen>();
             if session.is_none() { set_texture_requests(world, Default::default()); }
             std::fs::read(path).map_err(anyhow::Error::from)
@@ -232,7 +241,7 @@ fn process_commands(world: &mut World) {
                         Err(anyhow::anyhow!("document or edit layer changed while choosing a save destination; choose again"))
                     } else { editor.save(&filename, mode) }
                 }
-                EditorCommand::Open(_) => unreachable!(),
+                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } => unreachable!(),
             }
         } else {
             Err(anyhow::anyhow!("no USD document is open"))
@@ -488,6 +497,7 @@ pub struct AttributeSnapshot {
 #[derive(Debug, Clone, Default)]
 pub struct EditorSnapshot {
     pub document_id: u64,
+    pub revision: u64,
     pub sample_time: Option<f64>,
     pub asset_info: Option<crate::read::geom::CustomDict>,
     pub render_issues: Vec<String>,
@@ -511,6 +521,7 @@ pub struct EditorSnapshot {
 /// same document; route undoable authoring through `edit()`.
 pub struct EditorSession {
     document_id: u64,
+    revision: u64,
     source: Option<crate::UsdSource>,
     stage: UndoStage,
     selected: Option<String>,
@@ -524,6 +535,7 @@ impl EditorSession {
         static NEXT_DOCUMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             document_id: NEXT_DOCUMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            revision: 0,
             source: None,
             stage: UndoStage::with_capacity(stage, usize::MAX),
             selected: None,
@@ -589,6 +601,7 @@ impl EditorSession {
         }
         let transactions = self.stage.undo_depth() - before;
         if transactions > 0 {
+            self.revision = self.revision.wrapping_add(1);
             let selection_before = self.selected.clone();
             self.selected = edit.selection_after(self.selected.as_deref());
             self.undo.push(HistoryEntry { edit, target, transactions, selection_before, selection_after: self.selected.clone() });
@@ -604,6 +617,7 @@ impl EditorSession {
         while entry.transactions > 0 {
             anyhow::ensure!(self.stage.undo()?, "editor transaction history is inconsistent");
             entry.transactions -= 1;
+            self.revision = self.revision.wrapping_add(1);
         }
         if entry.selection_before != entry.selection_after { self.selected = entry.selection_before.clone(); }
         self.redo.push(self.undo.pop().unwrap());
@@ -626,6 +640,7 @@ impl EditorSession {
         entry.transactions = self.stage.undo_depth() - before;
         if entry.selection_before != entry.selection_after { self.selected = entry.selection_after.clone(); }
         self.undo.push(entry);
+        self.revision = self.revision.wrapping_add(1);
         self.trim_history();
         Ok(true)
     }
@@ -634,6 +649,7 @@ impl EditorSession {
     pub fn synchronize_external_edits(&mut self) -> bool {
         let tracked: usize = self.undo.iter().map(|entry| entry.transactions).sum();
         if tracked == self.stage.undo_depth() { return false; }
+        self.revision = self.revision.wrapping_add(1);
         self.stage.reset();
         self.undo.clear();
         self.redo.clear();
@@ -666,6 +682,7 @@ impl EditorSession {
         anyhow::ensure!(time.is_none_or(f64::is_finite), "inspection time must be finite");
         let mut snapshot = EditorSnapshot {
             document_id: self.document_id,
+            revision: self.revision,
             sample_time: time,
             layers: self.stage.layer_stack(),
             edit_layer: self.stage.edit_target().layer_identifier().to_string(),
@@ -759,6 +776,81 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn checked_open_rejects_edits_and_replacements_but_allows_current_context() {
+        use super::*;
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.usda").to_string_lossy().into_owned();
+        let second = directory.path().join("second.usda").to_string_lossy().into_owned();
+        std::fs::write(&first, "#usda 1.0\ndef Xform \"First\" {}\n").unwrap();
+        std::fs::write(&second, "#usda 1.0\ndef Xform \"Second\" {}\n").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        let open = |filename: &str, snapshot: &EditorSnapshot| EditorCommand::OpenChecked {
+            filename: filename.into(), document_id: snapshot.document_id, revision: snapshot.revision,
+        };
+        app.world_mut().insert_resource(PendingInitialOpen { path: second.clone(), retry: true });
+        bridge.send(open(&first, &EditorSnapshot::default())).unwrap();
+        app.update();
+        let initial = bridge.view().unwrap().document;
+        assert_ne!(initial.document_id, 0);
+        assert!(initial.prims.contains(&"/First".into()));
+        app.world_mut().non_send_mut::<EditorSession>().set_history_limit(0);
+        bridge.send(EditorCommand::Edit(EditorEdit::Define { path: "/Unsaved".into(), type_name: "Xform".into() })).unwrap();
+        bridge.send(open(&second, &initial)).unwrap();
+        app.update();
+        let edited = bridge.view().unwrap();
+        assert!(edited.status.contains("document changed"));
+        assert_eq!(edited.document.document_id, initial.document_id);
+        assert!(edited.document.prims.contains(&"/Unsaved".into()));
+        assert!(!edited.document.can_undo);
+        assert_ne!(edited.document.revision, initial.revision);
+        let stage = app.world().non_send::<EditorSession>().stage().clone();
+        stage.define_prim("/External").unwrap();
+        bridge.send(open(&second, &edited.document)).unwrap();
+        app.update();
+        let external = bridge.view().unwrap();
+        assert!(external.status.contains("document changed"));
+        assert!(external.document.prims.contains(&"/External".into()));
+        bridge.send(EditorCommand::Select(Some("/First".into()))).unwrap();
+        bridge.send(EditorCommand::Seek(10.0)).unwrap();
+        bridge.send(open(&second, &external.document)).unwrap();
+        app.update();
+        let replaced = bridge.view().unwrap();
+        assert_eq!(replaced.status, "Ready");
+        assert_ne!(replaced.document.document_id, initial.document_id);
+        assert!(replaced.document.prims.contains(&"/Second".into()));
+        bridge.send(open(&first, &external.document)).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.contains("document changed"));
+        assert_eq!(bridge.view().unwrap().document.document_id, replaced.document.document_id);
+        bridge.send(open(&directory.path().join("missing.usda").to_string_lossy(), &replaced.document)).unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().document.document_id, replaced.document.document_id);
+        bridge.send(EditorCommand::Open(first)).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().document.prims.contains(&"/First".into()));
+    }
+
+    #[test]
+    fn document_revision_tracks_undo_redo_not_failed_or_empty_edits() {
+        use super::*;
+        let stage = Stage::builder().in_memory("revision.usda").unwrap();
+        let mut editor = EditorSession::new(stage);
+        editor.edit(EditorEdit::Batch(Vec::new())).unwrap();
+        assert_eq!(editor.snapshot().unwrap().revision, 0);
+        editor.edit(EditorEdit::Define { path: "/A".into(), type_name: "Xform".into() }).unwrap();
+        let authored = editor.snapshot().unwrap().revision;
+        assert!(authored > 0);
+        assert!(editor.edit(EditorEdit::TransformMatrix { prim: "/Missing".into(), matrix: [0.0;16], reset: false }).is_err());
+        assert_eq!(editor.snapshot().unwrap().revision, authored);
+        editor.undo().unwrap();
+        let undone = editor.snapshot().unwrap().revision;
+        assert!(undone > authored);
+        editor.redo().unwrap();
+        assert!(editor.snapshot().unwrap().revision > undone);
+    }
     #[test]
     fn default_history_limit_bounds_retained_transactions() {
         use super::*;

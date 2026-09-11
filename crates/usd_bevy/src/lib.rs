@@ -57,6 +57,7 @@ impl Plugin for UsdPlugin {
         app.init_resource::<route::cache::ProjectionCache>();
         app.add_systems(bevy::prelude::Last, route::cache::prune_mesh_cache);
         app.init_resource::<route::cache::MaterialCache>();
+        app.add_systems(bevy::prelude::Last, route::cache::prune_material_cache);
         // Which USD `purpose` classes are displayed (Phase A). Default: show
         // proxy, hide render + guide.
         app.init_resource::<DisplayPurposes>();

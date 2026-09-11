@@ -184,6 +184,15 @@ fn unique_seek_schedule_and_resident_measurement_are_explicit() {
 }
 
 #[test]
+fn animated_materials_do_not_retain_every_sample() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/animation_showcase.usda");
+    for gpu_prepared in [false, true] {
+        let result = measure(&path, gpu_prepared, SeekMode::Unique).unwrap();
+        assert!(result.peak_asset_counts[1] <= 16, "{result:?}");
+    }
+}
+
+#[test]
 fn editor_benchmark_counts_subset_payload_and_rejects_failed_opens() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let m = measure(&root.join("assets/material_subsets.usda"), false, SeekMode::Idle).unwrap();

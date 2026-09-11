@@ -757,6 +757,36 @@ pre-pruning capture across 921,600 pixels at strict RGB tolerance 0;
 Material/texture retention, longer representative runs and maintenance cost on
 large unique static scenes remain outside this completed mesh-retention fix.
 
+## Release cache-only historical materials
+
+Standard and flat-normal material caches now discard missing assets and handles
+without another strong owner in `Last`. Entity and external ownership preserves
+sharing; existing 1024-entry caps remain. Asset tracking, rather than explicit
+asset removal, reclaims released materials and their texture references.
+The same ownership predicate is shared with mesh-cache maintenance.
+
+The release editor benchmark on `assets/animation_showcase.usda`, three CPU
+samples of 1,000 distinct clocks, previously peaked at 1,003 standard materials
+in every sample. It now peaks at four in every sample. Logs:
+`/tmp/material-retention-{before,after}.log`. This fixture has no images and
+does not prove texture/VRAM reclamation or a frame-time improvement.
+
+Tests cover entity/external ownership, stale assets, sharing, flat-to-standard
+restoration, and the distinct-clock bound in CPU and GPU-prepared modes.
+The ordinary suite passes 527 tests with 13 ignored:
+`/tmp/material-prune-tests-final.log`. The first compile attempt exposed a
+mutable-handle reborrow error in flat-cache maintenance; it was corrected
+before this successful run (`/tmp/material-prune-tests.log`).
+
+`make check-all`, `make build` and `git diff --check` pass; logs:
+`/tmp/material-prune-{check,build}.log`. All 19 GPU live-clock cases pass in
+`target/live-material-prune-regression` (`/tmp/live-material-prune-regression.log`).
+The scalar and morph-tangent live captures were inspected: both instances remain
+visible, with the expected distinct sampled material/deformation states.
+The scalar live image matches its pre-change capture exactly across 921,600
+pixels at RGB tolerance zero (`/tmp/material-prune-image-compare.log`).
+Broader texture-lifetime, renderer-memory and flagship acceptance remain open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

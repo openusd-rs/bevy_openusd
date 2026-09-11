@@ -405,6 +405,10 @@ shared Bevy assets: clone the material into a new asset and replace the entity's
 handle before making an entity-local runtime modification. USD-authored material
 changes are reprojected into matching/new handles rather than mutating a shared
 material in place. Remove `route::cache::MaterialCache` to disable material sharing.
+Standard and flat-normal material caches release cache-only handles in `Last`;
+entity-owned and externally held materials remain eligible for sharing within
+the 1024-entry limits. Bevy asset tracking performs subsequent reclamation.
+Revisiting an unowned historical material can allocate a new handle.
 
 The viewer's outliner and Properties pane operate on the rendered live document.
 Properties supports scalar, string/token/asset-path and three-vector edits, relationship

@@ -108,3 +108,24 @@ cases pass after pruning. The morph-tangent live capture also matches its
 pre-pruning image exactly at RGB tolerance 0; `/tmp/cache-prune-before-after.log`.
 These checks preserve the tested visual states and sharing behavior, not all
 possible scene/performance workloads.
+
+## Animated material retention
+
+The same release benchmark was run with `assets/animation_showcase.usda 3 cpu
+seek-unique`. Before ownership-aware material-cache maintenance, each sample
+peaked at 1,003 standard material assets; afterward each peaked at four. Mesh
+assets remained five and image assets zero. Logs:
+`/tmp/material-retention-before.log`, `/tmp/material-retention-after.log`.
+
+Sample-zero update median/p95/max changed from 420.874/499.251/734.979 us to
+440.395/762.054/923.693 us. Whole-process RSS before/after seeks was
+48,455,680/49,324,032 bytes before the change and 50,581,504/50,765,824 after.
+These are separate processes with uncontrolled host load: this demonstrates
+lower material retention, not faster updates or lower absolute RSS.
+
+Standard and flat-normal cache maintenance releases cache-only handles in
+`Last`, leaving entity/external ownership and normal asset tracking intact.
+The 1024-entry caps remain. Unit tests cover ownership and stale assets in both
+caches; the benchmark regression checks at most 16 peak standard materials in
+both CPU and GPU-prepared modes. This texture-free fixture does not measure
+texture lifetime, flat-material asset counts, renderer allocations or VRAM.

@@ -24,10 +24,16 @@ struct FlatMaterialCache(std::collections::HashMap<AssetId<StandardMaterial>, Ha
 
 pub(crate) fn configure(app: &mut App) {
     app.init_resource::<FlatMaterialCache>();
+    app.add_systems(Last, prune_cache);
     bevy::asset::embedded_asset!(app, "flat_material.wgsl");
     bevy::asset::embedded_asset!(app, "flat_prepass.wgsl");
     bevy::asset::embedded_asset!(app, "flat_functions.wgsl");
     app.add_plugins(MaterialPlugin::<FlatMaterial>::default());
+}
+
+fn prune_cache(cache: Option<ResMut<FlatMaterialCache>>, assets: Option<Res<Assets<FlatMaterial>>>) {
+    let (Some(mut cache), Some(assets)) = (cache, assets) else { return };
+    cache.0.retain(|_, handle| assets.contains(handle.id()) && super::cache::externally_owned(handle));
 }
 
 pub(crate) fn clear(world: &mut World, entity: Entity) {
@@ -88,6 +94,28 @@ mod tests {
         let base = world.resource_mut::<Assets<StandardMaterial>>().add(StandardMaterial::default());
         let entity = world.spawn(MeshMaterial3d(base.clone())).id();
         (world, entity, base)
+    }
+
+    #[test]
+    fn pruning_preserves_owned_materials_and_releases_history() {
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut world, entity, base) = setup();
+        attach(&mut world, entity);
+        let handle = world.get::<MeshMaterial3d<FlatMaterial>>(entity).unwrap().0.clone();
+        world.run_system_once(prune_cache).unwrap();
+        assert_eq!(world.resource::<FlatMaterialCache>().0.len(), 1);
+        clear(&mut world, entity);
+        world.run_system_once(prune_cache).unwrap();
+        assert_eq!(world.resource::<FlatMaterialCache>().0.len(), 1);
+        drop(handle);
+        world.run_system_once(prune_cache).unwrap();
+        assert!(world.resource::<FlatMaterialCache>().0.is_empty());
+        assert_eq!(world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0, base);
+        attach(&mut world, entity);
+        let handle = world.get::<MeshMaterial3d<FlatMaterial>>(entity).unwrap().0.clone();
+        world.resource_mut::<Assets<FlatMaterial>>().remove(handle.id());
+        world.run_system_once(prune_cache).unwrap();
+        assert!(world.resource::<FlatMaterialCache>().0.is_empty());
     }
 
     #[test]

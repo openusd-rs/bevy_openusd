@@ -22,6 +22,22 @@ pub struct MaterialCache {
     count: usize,
 }
 
+pub(crate) fn externally_owned<A: Asset>(handle: &Handle<A>) -> bool {
+    match handle {
+        Handle::Strong(strong) => std::sync::Arc::strong_count(strong) > 1,
+        Handle::Uuid(..) => true,
+    }
+}
+
+pub(crate) fn prune_material_cache(cache: Option<ResMut<MaterialCache>>, assets: Option<Res<Assets<StandardMaterial>>>) {
+    let (Some(mut cache), Some(assets)) = (cache, assets) else { return };
+    cache.materials.retain(|_, candidates| {
+        candidates.retain(|handle| assets.contains(handle) && externally_owned(handle));
+        !candidates.is_empty()
+    });
+    cache.count = cache.materials.values().map(Vec::len).sum();
+}
+
 /// Shares fully equal materials while retaining at most 1024 cached handles.
 pub fn intern_material(world: &mut World, material: StandardMaterial) -> Handle<StandardMaterial> {
     if !world.contains_resource::<MaterialCache>() {
@@ -90,10 +106,7 @@ impl ProjectionCache {
         self.count = 0;
         self.payload_bytes = 0;
         self.meshes.retain(|_, candidates| {
-            candidates.retain(|(handle, _)| assets.get(handle).is_some() && match handle {
-                Handle::Strong(strong) => std::sync::Arc::strong_count(strong)>1,
-                Handle::Uuid(..) => true,
-            });
+            candidates.retain(|(handle, _)| assets.get(handle).is_some() && externally_owned(handle));
             self.count += candidates.len();
             self.payload_bytes += candidates.iter().map(|(_, bytes)| bytes).sum::<usize>();
             !candidates.is_empty()
@@ -206,6 +219,31 @@ fn meshes_equal(a: &Mesh, b: &Mesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pruning_materials_preserves_sharing_and_external_ownership() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<MaterialCache>();
+        let first = intern_material(&mut world, StandardMaterial::default());
+        let entity = world.spawn(MeshMaterial3d(first.clone())).id();
+        drop(intern_material(&mut world, StandardMaterial { perceptual_roughness: 0.17, ..default() }));
+        world.run_system_once(prune_material_cache).unwrap();
+        assert_eq!(world.resource::<MaterialCache>().count, 1);
+        assert_eq!(intern_material(&mut world, StandardMaterial::default()), first);
+        world.despawn(entity);
+        world.run_system_once(prune_material_cache).unwrap();
+        assert_eq!(world.resource::<MaterialCache>().count, 1);
+        drop(first);
+        world.run_system_once(prune_material_cache).unwrap();
+        assert_eq!(world.resource::<MaterialCache>().count, 0);
+        assert!(world.resource::<MaterialCache>().materials.is_empty());
+        let stale = intern_material(&mut world, StandardMaterial::default());
+        world.resource_mut::<Assets<StandardMaterial>>().remove(stale.id());
+        world.run_system_once(prune_material_cache).unwrap();
+        assert_eq!(world.resource::<MaterialCache>().count, 0);
+    }
 
     #[test]
     fn pruning_releases_only_cache_owned_meshes_and_preserves_sharing() {

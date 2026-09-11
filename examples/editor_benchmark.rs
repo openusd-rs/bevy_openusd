@@ -56,6 +56,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, LiveStagePlugin, EditorPlugin));
     app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
+    if std::env::var_os("USD_PROFILE_ROUTES").is_some() { app.init_resource::<usd_bevy::route::ProjectionTimings>(); }
     app.update();
     let bridge = app.world().resource::<EditorBridge>().clone();
     bridge.send(EditorCommand::Open(path.to_str().ok_or("asset path must be UTF-8")?.into()))?;
@@ -78,6 +79,9 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
         }
         let mut timings = Vec::with_capacity(seek.samples());
         for iteration in 0..seek.samples()+4 {
+            if iteration == 4 {
+                if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionTimings>() { timings.0.clear(); }
+            }
             let normalized = seek.clock(iteration);
             let time = if seek == SeekMode::Timeline {
                 view.timeline.start + (view.timeline.end-view.timeline.start) * (normalized/10.0)
@@ -98,6 +102,14 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
         result.seek_median = timings[timings.len().div_ceil(2)-1];
         result.seek_p95 = timings[(timings.len()*95).div_ceil(100)-1];
         result.seek_max = *timings.last().unwrap();
+        if let Some(timings) = app.world().get_resource::<usd_bevy::route::ProjectionTimings>() {
+            let mut routes: Vec<_> = timings.0.iter().collect();
+            routes.sort_by_key(|(_, timing)| std::cmp::Reverse(timing.matching + timing.application));
+            for (name, timing) in routes {
+                eprintln!("route_profile phase=measured-seeks samples={} route={name} attempts={} matches={} match_ms={:.3} apply_ms={:.3}",
+                    seek.samples(), timing.attempts, timing.matches, timing.matching.as_secs_f64()*1000.0, timing.application.as_secs_f64()*1000.0);
+            }
+        }
     }
     result.rss_after_seeks = resident_bytes();
     if let Some(cache) = app.world().get_resource::<usd_bevy::route::cache::ProjectionCache>() {

@@ -3,6 +3,40 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Release animation projection and route attribution
+
+editor_benchmark supports opt-in USD_PROFILE_ROUTES. It resets cumulative
+route counters after four warm-up seeks and prints matching/application totals
+sorted by combined cost. The release showcase run reports exactly 9000 measured
+attempts for each of 23 routes across 1000 seeks (nine animated prims), excluding
+open, idle and warm-up work. Profile log:
+/tmp/showcase-release-route-profile.log. Material application totals 276.274ms,
+skinning 252.583ms, mesh 147.890ms, instancing 136.317ms and subsets 101.141ms.
+These are totals over 1000 updates, not single-frame costs.
+
+Six unprofiled release runs follow, ordered CPU/GPU-prepared, GPU-prepared/CPU,
+CPU/GPU-prepared. Each independently opens the bundled showcase and seeks its
+full 0–60 range 1000 times, asserting document identity and exact current time.
+
+| Pair | CPU median / p95 / max ms | GPU-prepared median / p95 / max ms |
+| --- | --- | --- |
+| 1 | 1.224 / 1.456 / 2.202 | 1.266 / 1.565 / 4.833 |
+| 2 | 1.225 / 1.337 / 3.725 | 1.285 / 1.419 / 2.339 |
+| 3 | 1.232 / 1.389 / 5.554 | 1.281 / 1.517 / 5.195 |
+
+Logs: /tmp/showcase-release-{1,2,3}-{cpu,gpu-prepared}.log. Command:
+`make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--release --example editor_benchmark' ARGS='assets/flagship_showcase.usda 1 gpu-prepared seek-timeline'`.
+All runs retain nine mesh entities; CPU/GPU-prepared peaks are 12/10 mesh
+assets and 8/8 material assets. Cache payload remains 22480/28024 bytes.
+The six benchmark tests pass in /tmp/route-profile-tests.log.
+
+The earlier debug measurement does not establish a release frame-budget
+failure. Release CPU projection is below 16.67ms in these samples, but this
+headless benchmark excludes rendering, UI and plugin startup. It establishes
+neither complete viewer frame time nor a GPU speedup. Host clocks/power and
+unrelated system activity are not controlled. Fidelity and embedded IBL remain
+outstanding; no requirement is closed solely from these timings.
+
 ## Mara develop regression containment
 
 The viewer now uses upstream Mara develop b792f44, rather than the sibling

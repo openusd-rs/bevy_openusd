@@ -7,18 +7,20 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 ## Current release blockers
 
 - Intermittent black host frames remain unresolved; a host-only control also
-  reproduced failure. The scoped sibling-host repaint change awaits permission.
+  reproduced failure. Direct host GPU readback is now available, but successful
+  readback and desktop captures have not isolated the failing frame.
 - Spot/UR5 fidelity and broader native-render comparisons remain incomplete.
   Do not infer full-scene parity from bounded numerical or image fixtures.
-- Complete multi-layer unsaved-state tracking and window-close handling remain
-  open. Conservative Open confirmation and texture recovery are not substitutes.
+- Per-layer content-based save state and guarded shell/OS window close are
+  implemented and tested. External disk-conflict detection remains open;
+  Clean means matching a loaded or in-place-saved baseline, not unchanged disk.
 - General typed scene-building, broader backend coverage and interactive/GPU
   performance acceptance remain incomplete, as qualified in the matrix below.
 
 The full integration goal remains active. The [work log](BEVY_WORK.md) records
 revision-specific tests, inspected images and failed probes; historical benchmark
 numbers are not measurements of a later checkout. Recent watcher-enabled gates
-passed 616 ordinary tests and a separate 23-test native run; see that log for
+passed 619 ordinary tests and a separate 23-test native run; see that log for
 commands and scope rather than treating counts as a release certification.
 
 ## Capability matrix

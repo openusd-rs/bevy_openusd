@@ -3,6 +3,221 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Embedded viewport repaint interval correction
+
+Sibling Mara commit fd20c11 compensates positive embedded-viewport repaint
+intervals for egui's predicted_dt subtraction. Zero/invalid intervals remain
+immediate; invalid prediction contributes no extra delay and addition saturates.
+The two mara_bevy pacing tests pass, including actual egui output across five
+frames at three prediction values. The first test invocation used a nonexistent
+package name; the corrected Make invocation selected -p mara_bevy --lib
+pacing_tests and passed. Logs: /tmp/host-pacing-tests-corrected.log,
+/tmp/host-pacing-build.log and /tmp/host-pacing-check.log.
+
+Both target/host-pacing-corrected-ui.png images were inspected and show the cube,
+grid and outliner. Region/panic-log checks pass. The scene-graph snapshot reports
+66 commits and 41 painted frames per second over one second. This is not a
+controlled before/after benchmark, a hard FPS cap, or a black-window fix: other
+repaint sources remain and the host-only probe does not use this viewport.
+
+All 15 native OpenUSD tests ignored by the last ordinary workspace run now pass
+separately with native usdcat on PATH: make test with -p usd_bevy --lib native_
+-- --ignored --nocapture and offline Cargo. Log:
+/tmp/current-native-export-gate.log. This lane does not enable file_watcher.
+SUPPORT.md now reflects implemented content-based layer state and native OS
+close confirmation while retaining external disk-conflict and rendering gaps.
+
+## Mara GPU readback boundary
+
+Sibling Mara commit 37ced29 forwards root Screenshot commands and their user
+data to the egui-wgpu painter instead of discarding them. Its existing screenshot
+event delivery now receives actual images. The eframe_capture_probe example
+supports USD_HOST_PROBE_RUNNER=mara|eframe (default eframe) with shared painting
+and PNG writing, plus USD_HOST_PROBE_DELAY_MS=0..60000. New output files remain
+exclusive-create; screenshot requests are single-use and time out after an
+additional 30 seconds. The Mara branch uses the runner's existing present mode;
+USD_HOST_PROBE_PRESENT_MODE only configures the eframe branch.
+
+Three native Mara trials produced inspected upright RGB GPU readbacks at
+target/mara-direct-readback-{1,2,3}.png. Trial 1 requested readback on startup;
+its compositor image target/mara-direct-host-1.png was black at 20 seconds,
+then its second frame showed RGB panels. This reproduces the intermittent
+failure despite an earlier valid readback, not during the same GPU frame.
+Trials 2 and 3 delayed readback to 20 seconds; their compositor image pairs
+showed RGB panels and chrome. Readback changes rendering/copy timing, so these
+successful later trials do not establish a black-window fix or clear the driver.
+All nine images were inspected. Trial 1's failed region check remains retained.
+
+The probe's three tests pass, including delayed single-use request coverage;
+make check-all and the example build pass with offline Cargo. Logs:
+/tmp/mara-readback-final-{tests,check,build}.log and
+/tmp/mara-direct-capture-{1,2,3}.log. This provides direct host GPU capture, not
+yet an explanation of the intermittent presentation failure.
+
+At e989289, make test-all with offline Cargo and target/test-tmp completed:
+620 passed, zero failed, 15 ignored across 31 suites. The ignored tests were
+not exercised by this gate. Full log: /tmp/current-host-readback-workspace.log.
+Both delayed native capture pairs also passed region and panic-log checks.
+
+## OS close confirmation routing
+
+Sibling Mara commit b3312c7 routes winit CloseRequested through egui's root
+Close command and schedules a redraw instead of immediately exiting. The
+viewer output filter can now intercept OS close as well as shell close.
+A regression queues Close between frames, verifies confirmation intercepts
+it, and verifies unguarded egui still emits Close normally.
+
+A temporary Weston module called weston_desktop_surface_close on the Mara
+surface after 12 seconds, sending a real Wayland close request without clicking
+the titlebar. target/os-close-discard-ui.png was inspected: the scene and
+confirmation are visible. Its Weston log records OS_CLOSE_SENT and its viewer
+log records USD_VIEWER_EXIT_STATUS=0 after the replay clicks Discard at 26.2
+seconds. The paired capture correctly fails because the viewer exits before
+the second capture; this is native shutdown evidence, not a two-frame pass.
+
+The earlier target/os-close-cancel-ui.png and its second frame were black;
+both failures remain retained. OS routing does not fix the intermittent black
+host. Current validation: 79 viewer tests pass and make check-all passes with
+offline Cargo (/tmp/os-close-final-tests.log and /tmp/os-close-final-check.log).
+The subsequent target/os-close-cancel-confirm-ui.png pair was inspected: first
+the confirmation, then the retained scene with the modal dismissed. Both region
+checks and the panic-log check pass. This closes native OS Cancel/Discard
+acceptance at the current button coordinates, not global rendering acceptance.
+Workspace fmt --check still reports formatting differences in other existing
+code; no broad formatting rewrite was included in this fix.
+
+## Content-based per-layer save state
+
+Editor snapshots now distinguish Clean, Modified and Unknown per loaded layer.
+Clean means authored content matches its loaded baseline or last successful
+in-place source save; it does not claim another process has left the disk file
+unchanged. Sessions constructed from arbitrary stages start Unknown. The viewer
+establishes loaded baselines only after successful document loading. Newly seen
+unmodified resolved layers can acquire a loaded baseline; absent or unreadable
+baseline layers remain Unknown rather than disappearing from the report.
+
+BLAKE3 hashes of canonical layer exports bound retained baseline storage.
+Per-layer commit revisions cache current hashes; structural resyncs invalidate
+the cache. Undo/redo and external authoring are compared by content, not merely
+by command count. Successful root/edit export refreshes only that layer's
+baseline, only when the destination canonicalizes to its source path. Failed
+saves, exported copies and flattened exports clear no layer states. Packaged
+source paths that cannot identify an in-place file remain conservative.
+
+The inspector shows per-layer state and document-wide modified/unknown counts;
+the close modal reports those counts without bypassing confirmation. Both
+inspected target/save-state-close-ui.png and .second.png show an authored orange
+Cube, one modified layer, and then a close warning reporting that same count.
+The native run passed both region checks and panic-log inspection. Existing
+close replay button coordinates move down nine pixels for the added status row.
+Native Cancel/Discard acceptance at those adjusted coordinates remains to rerun.
+
+The model regression covers unknown stages, loaded baselines, independent root
+and weak edits, failed/copy/flatten saves, per-layer in-place saves, undo/redo
+back to saved content, muting and external value changes. Current Make validation
+logs are /tmp/save-state-commit-editor.log, /tmp/save-state-commit-viewer.log and
+/tmp/save-state-commit-check.log. OS-close routing, external file-conflict
+detection and the other release blockers are not resolved by this change.
+
+## Native Discard acceptance
+
+At a75af0d, the rebuilt viewer was run with close_discard.replay: close-button
+click at 10 seconds, explicit Discard click at 26.2 seconds. Inspected
+target/close-discard-ui.png shows the confirmation before Discard. A wrapper
+around the ordinary nixVulkan command records USD_VIEWER_EXIT_STATUS=0 in
+target/close-discard-ui.viewer.log immediately after the Discard replay events.
+The viewer therefore exits normally before capture cleanup, not through a crash
+or forced termination. Known panic-marker inspection passes.
+
+The two-frame capture intentionally does not pass: it reports "viewer exited
+before second capture" and produces no second PNG
+(/tmp/close-discard-capture.log). Its first image and logs are retained. This
+proves the bounded native Discard interaction, not a successful two-frame
+rendering run. Both Cancel and Discard replays are now registered in the parser
+regression. OS-level close handling and the other release blockers remain open.
+
+## Viewer close-command confirmation
+
+The viewer now filters root egui Close commands before Mara consumes them.
+An application-update modal offers Cancel or Discard and close; approval is
+single-output-use and checked against the current document ID/revision. Missing
+document state fails closed. Confirmation is conservative for every document,
+not conditional on an unproven clean-state flag. Non-close viewport commands
+are preserved. scripts/replays/close_cancel.replay exercises the title-bar close
+button followed by cancellation.
+
+The first native implementation rendered inside Plugin::on_end_pass and
+deadlocked when widget pointer handling re-entered the plugin mutex. Its failed
+artifacts remain at target/close-confirmation-ui.png and .second.png, with the
+panic in its viewer log. The corrected implementation renders in UsdApp::update;
+only output filtering remains in the plugin. Both inspected frames from
+target/close-confirmation-cancel-ui.png and .second.png show, respectively, the
+readable modal over the scene and the retained scene after Cancel. Both pixel
+checks and the panic-log check pass (/tmp/close-confirmation-cancel-capture.log).
+The final approval-consumption tightening does not change modal layout.
+
+All 78 viewer tests and check-all pass (/tmp/close-confirmation-final-tests.log,
+/tmp/close-confirmation-final-check.log). Tests cover stale/missing context,
+single-use approval, unrelated commands, real modal pointer events and Escape.
+Native Discard interaction remains to verify. This does NOT cover OS-level
+WindowEvent::CloseRequested: Mara exits directly before application hooks, so
+complete close protection still needs the pending sibling-host approval.
+
+## Per-layer authored change tracking foundation
+
+EditorSession now owns a StageSink-backed layer change tracker and publishes
+layer_revisions in EditorSnapshot. It counts nonempty per-layer committed change
+records, including undo/redo and authoring outside the command queue, rather
+than attributing a multi-layer transaction only to its strongest layer.
+Counters saturate at u64::MAX. Snapshot reads drain pending stage changes; the
+tracker removes its sink when dropped even if another owner retains the stage.
+
+These are commit counts since session creation, not saved/dirty flags. In this
+upstream version Layer::is_dirty only reports uncommitted overlay writes. The
+current Save commands export copies and do not rebase document source identity;
+exports therefore do not reset these counts. A complete unsaved-state model
+still needs persisted per-layer baselines, unknown-source handling, content
+equivalence after undo, explicit export/save distinctions and close integration.
+No new confirmation bypass or clean-state claim is introduced.
+
+Regression coverage checks separate root/weak-layer changes, undo/redo, external
+authoring, runtime muting/selection, unchanged counters after export and sink
+detachment. All 57 editor-module tests pass (one native test ignored), and
+check-all passes (`/tmp/editor-layer-revisions-final-tests.log`,
+`/tmp/editor-layer-revisions-check.log`). No UI layout or renderer change.
+
+## Native export of immutable snapshot edits
+
+The existing native captured-reference-batch export regression now applies
+with_edits before packaging: the explicit reference receives radius default 3
+and radius sample 4 at time 2, while the defaultPrim reference stays at 1.5.
+It verifies the original assembly still reads 1.5, exports a root-layer USDZ,
+relocates the package and invokes native usdcat --flatten with empty stderr.
+Native output retains both customized values and the untouched reference.
+Existing assertions still verify captured opaque asset bytes and package paths.
+
+The focused ignored test passes with installed OpenUSD tools, and check-all
+passes (`/tmp/customized-reference-native-export.log`,
+`/tmp/customized-reference-export-check.log`). The test remains included in
+make test-native. This is value/asset portability evidence, not rendered parity.
+
+## Post-customization workspace and native gates
+
+At d675c23, the watcher-enabled workspace passes 619 tests, zero failures and
+23 ignored across 31 suites (`/tmp/post-source-edits-watcher-workspace.log`).
+Command: `TMPDIR="$PWD/target/test-tmp" make CARGO='cargo --offline'`
+with temporary target running
+`cargo --offline test --workspace --all-targets --features file_watcher`.
+This includes the new live source-edits example and current editor-history guards.
+
+The separate native lane passes all 23 selected tests, zero failures and none
+ignored (`/tmp/post-source-edits-watcher-native.log`):
+`make test CARGO='cargo --offline' APP_TARGET='-p usd_bevy --features file_watcher --lib native_ -- --ignored --nocapture'`,
+with target/test-tmp as TMPDIR and installed OpenUSD 25.05.01 tools on PATH.
+This covers the opted-in filesystem watcher and native USD export cases. It is
+one suite run, not a flakiness or performance certification. Black-host frames,
+broader fidelity, unsaved-state handling and other release blockers remain open.
+
 ## Typed snapshot edits through live Bevy assets
 
 The source_edits example now projects original and customized assemblies through

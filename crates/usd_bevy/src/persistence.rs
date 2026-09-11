@@ -203,7 +203,8 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
     #[test]
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_reopens_captured_reference_batch() {
-        use crate::{UsdSource, editor::{EditorSession, SaveMode}};
+        use crate::{UsdSource, editor::{EditorEdit, EditorSession, SaveMode}};
+        use openusd::sdf::Value;
         use std::io::Read;
         let input = tempfile::tempdir().unwrap();
         let root = UsdSource::snapshot(input.path().join("root.usda"), &b"#usda 1.0\n"[..]).unwrap();
@@ -219,7 +220,12 @@ def Sphere "Model" {
             ("/Default", &model, openusd::sdf::Path::default()),
             ("/Explicit", &model, openusd::sdf::path("/Model").unwrap()),
         ]).unwrap();
-        let editor = EditorSession::new(assembly.open_stage().unwrap());
+        let customized = assembly.with_edits([
+            EditorEdit::Attribute { prim: "/Explicit".into(), name: "radius".into(), type_name: "double".into(), value: Value::Double(3.) },
+            EditorEdit::AttributeSample { prim: "/Explicit".into(), name: "radius".into(), type_name: "double".into(), value: Value::Double(4.), time: 2. },
+        ]).unwrap();
+        assert_eq!(assembly.open_stage().unwrap().prim("/Explicit").unwrap().attribute("radius").get::<f64>().unwrap(), Some(1.5));
+        let editor = EditorSession::new(customized.open_stage().unwrap());
         let output = tempfile::tempdir().unwrap();
         let package = output.path().join("assembly.usdz");
         editor.save(package.to_str().unwrap(), SaveMode::RootLayer).unwrap();
@@ -236,7 +242,10 @@ def Sphere "Model" {
         for path in ["/Default", "/Explicit"] {
             let prim = stage.prim(path).unwrap();
             assert_eq!(prim.type_name().unwrap().as_deref(), Some("Sphere"));
-            assert_eq!(prim.attribute("radius").get::<f64>().unwrap(), Some(1.5));
+            assert_eq!(prim.attribute("radius").get::<f64>().unwrap(), Some(if path == "/Explicit" { 3. } else { 1.5 }));
+            if path == "/Explicit" {
+                assert_eq!(prim.attribute("radius").get_at::<f64>(Some(openusd::usd::TimeCode::new(2.))).unwrap(), Some(4.));
+            }
             let openusd::sdf::Value::AssetPath(asset) = prim.attribute("payload").get::<openusd::sdf::Value>().unwrap().unwrap() else { panic!() };
             let (outer, entry) = openusd::ar::split_package_relative_path_outer(&asset.authored_path).unwrap();
             assert_eq!(Path::new(&outer), moved.as_path());

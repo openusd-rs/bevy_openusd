@@ -3,6 +3,21 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native export of immutable snapshot edits
+
+The existing native captured-reference-batch export regression now applies
+with_edits before packaging: the explicit reference receives radius default 3
+and radius sample 4 at time 2, while the defaultPrim reference stays at 1.5.
+It verifies the original assembly still reads 1.5, exports a root-layer USDZ,
+relocates the package and invokes native usdcat --flatten with empty stderr.
+Native output retains both customized values and the untouched reference.
+Existing assertions still verify captured opaque asset bytes and package paths.
+
+The focused ignored test passes with installed OpenUSD tools, and check-all
+passes (`/tmp/customized-reference-native-export.log`,
+`/tmp/customized-reference-export-check.log`). The test remains included in
+make test-native. This is value/asset portability evidence, not rendered parity.
+
 ## Post-customization workspace and native gates
 
 At d675c23, the watcher-enabled workspace passes 619 tests, zero failures and

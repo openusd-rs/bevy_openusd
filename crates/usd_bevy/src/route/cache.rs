@@ -53,13 +53,11 @@ const MAX_INTERNED: usize = 8192;
 /// Interns projected meshes by geometry signature so identical prims share one
 /// [`Handle<Mesh>`]. Insert via [`crate::UsdPlugin`]; absent ⇒ no interning.
 ///
-/// Interning is only worthwhile for geometry that repeats or persists (static
-/// prototypes). Per-frame-unique geometry — notably CPU-skinned meshes, which
-/// re-deform every time code — deliberately bypasses the cache (see
-/// [`intern_mesh`]'s callers) so it neither bloats the map nor pins dead meshes.
+/// `UsdPlugin` releases cache-only handles in `Last`. Meshes owned by entities
+/// or external strong handles remain eligible for sharing, subject to budgets.
 #[derive(Resource)]
 pub struct ProjectionCache {
-    meshes: HashMap<u64, Vec<Handle<Mesh>>>,
+    meshes: HashMap<u64, Vec<(Handle<Mesh>, usize)>>,
     count: usize,
     payload_bytes: usize,
     byte_budget: usize,
@@ -87,10 +85,28 @@ impl ProjectionCache {
     pub fn is_empty(&self) -> bool {
         self.meshes.is_empty()
     }
+
+    fn retain_live(&mut self, assets: &Assets<Mesh>) {
+        self.count = 0;
+        self.payload_bytes = 0;
+        self.meshes.retain(|_, candidates| {
+            candidates.retain(|(handle, _)| assets.get(handle).is_some() && match handle {
+                Handle::Strong(strong) => std::sync::Arc::strong_count(strong)>1,
+                Handle::Uuid(..) => true,
+            });
+            self.count += candidates.len();
+            self.payload_bytes += candidates.iter().map(|(_, bytes)| bytes).sum::<usize>();
+            !candidates.is_empty()
+        });
+    }
+}
+
+pub(crate) fn prune_mesh_cache(cache: Option<ResMut<ProjectionCache>>, assets: Option<Res<Assets<Mesh>>>) {
+    if let (Some(mut cache), Some(assets)) = (cache,assets) { cache.retain_live(&assets); }
 }
 
 /// Add `mesh` to `Assets<Mesh>`, reusing an existing handle when a mesh with
-/// identical geometry was already interned this session. Falls back to a plain
+/// identical geometry remains interned. Falls back to a plain
 /// `add` when there is no [`ProjectionCache`] resource.
 pub fn intern_mesh(world: &mut World, mesh: Mesh) -> Handle<Mesh> {
     // No cache resource → behave exactly like `Assets::add`.
@@ -109,7 +125,7 @@ pub fn intern_mesh(world: &mut World, mesh: Mesh) -> Handle<Mesh> {
         .get(&sig)
     {
         let assets = world.resource::<Assets<Mesh>>();
-        for existing in candidates {
+        for (existing, _) in candidates {
             if assets.get(existing).is_some_and(|cached| meshes_equal(cached, &mesh)) {
                 return existing.clone();
             }
@@ -123,7 +139,7 @@ pub fn intern_mesh(world: &mut World, mesh: Mesh) -> Handle<Mesh> {
         cache.count = 0;
         cache.payload_bytes = 0;
     }
-    cache.meshes.entry(sig).or_default().push(handle.clone());
+    cache.meshes.entry(sig).or_default().push((handle.clone(),payload_bytes));
     cache.count += 1;
     cache.payload_bytes += payload_bytes;
     handle
@@ -190,6 +206,34 @@ fn meshes_equal(a: &Mesh, b: &Mesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pruning_releases_only_cache_owned_meshes_and_preserves_sharing() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<ProjectionCache>();
+        let mesh = Mesh::from(Cuboid::from_length(1.0));
+        let bytes = mesh_payload_bytes(&mesh);
+        let first = intern_mesh(&mut world,mesh.clone());
+        let entity = world.spawn(Mesh3d(first.clone())).id();
+        drop(intern_mesh(&mut world,Mesh::from(Cuboid::from_length(2.0))));
+        let prune = |world: &mut World| world.resource_scope(|world,mut cache: Mut<ProjectionCache>| cache.retain_live(world.resource::<Assets<Mesh>>()));
+        prune(&mut world);
+        assert_eq!(world.resource::<ProjectionCache>().len(),1);
+        assert_eq!(world.resource::<ProjectionCache>().retained_payload_bytes(),bytes);
+        assert_eq!(intern_mesh(&mut world,mesh.clone()),first);
+        world.despawn(entity);
+        prune(&mut world);
+        assert_eq!(world.resource::<ProjectionCache>().len(),1);
+        drop(first);
+        prune(&mut world);
+        assert!(world.resource::<ProjectionCache>().is_empty());
+        assert_eq!(world.resource::<ProjectionCache>().retained_payload_bytes(),0);
+        let stale = intern_mesh(&mut world,mesh);
+        world.resource_mut::<Assets<Mesh>>().remove(stale.id());
+        prune(&mut world);
+        assert!(world.resource::<ProjectionCache>().is_empty());
+    }
 
     #[test]
     fn mesh_byte_budget_bounds_retention_without_removing_live_assets() {
@@ -340,7 +384,7 @@ mod tests {
         world.insert_resource(Assets::<Mesh>::default());
         world.insert_resource(ProjectionCache::default());
         let old = world.resource_mut::<Assets<Mesh>>().add(a);
-        world.resource_mut::<ProjectionCache>().meshes.insert(mesh_signature(&b), vec![old.clone()]);
+        world.resource_mut::<ProjectionCache>().meshes.insert(mesh_signature(&b), vec![(old.clone(),0)]);
         let new = intern_mesh(&mut world, b.clone());
         assert_ne!(old, new);
         assert_eq!(intern_mesh(&mut world, b), new);

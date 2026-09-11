@@ -55,6 +55,7 @@ impl Plugin for UsdPlugin {
         }
         // Intern projected meshes so identical prims share one GPU asset (6d).
         app.init_resource::<route::cache::ProjectionCache>();
+        app.add_systems(bevy::prelude::Last, route::cache::prune_mesh_cache);
         app.init_resource::<route::cache::MaterialCache>();
         // Which USD `purpose` classes are displayed (Phase A). Default: show
         // proxy, hide render + guide.

@@ -711,6 +711,52 @@ No production projection/cache behavior changed. The full ordinary/GPU suites
 were not rerun for this benchmark-only extension. `git diff --check` passes.
 Streaming retention policy and broader performance acceptance remain open.
 
+## Release cache-only historical mesh states
+
+`UsdPlugin` now runs mesh-cache pruning in `Last`. Entries survive while another
+strong handle owns the mesh; cache-only handles and missing assets are removed.
+Entities, external consumers and rendering references therefore retain ownership
+and sharing. Bevy asset tracking performs actual asset removal after handle drop;
+the cache does not forcibly remove live Assets. Revisited unowned historical
+states may receive new handles. Existing entry/byte limits still apply, including
+in bare Worlds without the plugin's maintenance system.
+
+Each cache entry now retains its insertion-time payload size so pruning updates
+accounting without rescanning or reinterpreting mutable mesh payloads. The
+maintenance scan is proportional to the cache contents; its frame-time impact
+must be measured rather than assumed free. Material-cache policy is unchanged.
+
+The ownership regression checks entity and external handles, continued sharing,
+release after the last external handle drops, missing assets and payload counts.
+The subset benchmark's obsolete whole-mesh intermediate is now collected: three
+retained assets and eight vertices replace four assets and sixteen vertices,
+while the three mesh entities/two subsets remain. The initial expectation failure
+is retained in `/tmp/cache-prune-benchmark-tests.log`; verified payload output is
+`/tmp/cache-prune-subset-payload.log` (256 vertex bytes, 48 index bytes).
+The 1,000-distinct-clock benchmark test now covers both deformation modes on the
+morph-tangent fixture and checks at most 16 peak mesh assets / four cached meshes.
+
+Release reruns of all four benchmark configurations (three samples each) now
+report six peak/final mesh assets and two cache entries for both repeated and
+distinct clocks in CPU and GPU-prepared modes. Cache payload is 312 bytes for
+CPU and 600 bytes for GPU-prepared. This replaces 2,004/3,004 retained assets
+after distinct clocks in the baseline; it is not a frame-time speedup claim.
+Full timing/RSS results and exclusions are appended to
+`benchmarks/unique-clock-retention.md`. Logs:
+`/tmp/pruned-editor-{cpu,gpu-prepared}-{seek,seek-unique}.log`.
+All 524 ordinary tests pass (13 ignored), check-all and viewer build pass;
+all four benchmark tests also pass in release. Logs:
+`/tmp/cache-prune-{tests,check,build,release-tests}.log`.
+
+All 19 GPU live-clock cases pass in `target/live-cache-prune-regression`
+(`/tmp/live-cache-prune-regression.log`). Inspected both morph-tangent captures
+and the live crease-transition capture: geometry remains visible and the tested
+layouts agree. The morph-tangent live image is also pixel-identical to the
+pre-pruning capture across 921,600 pixels at strict RGB tolerance 0;
+`/tmp/cache-prune-before-after.log`. `git diff --check` passes.
+Material/texture retention, longer representative runs and maintenance cost on
+large unique static scenes remain outside this completed mesh-retention fix.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

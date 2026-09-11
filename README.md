@@ -364,6 +364,12 @@ The initial [morph-tangent seek measurements](benchmarks/morph-tangent-seek.md)
 record debug and release CPU/GPU-prepared runs with explicit limitations.
 The [distinct-clock retention baseline](benchmarks/unique-clock-retention.md)
 records cache growth that the repeated-clock workload does not expose.
+`UsdPlugin` now prunes mesh-cache entries in `Last` when the cache is their sole
+strong owner. Entity-owned and externally held meshes remain shared; revisiting
+an unused historical state can allocate a new handle. Bevy's asset tracking
+performs subsequent asset removal. Bare Worlds using the cache without the
+plugin retain the existing entry/byte-budget behavior. Cache payload accounting
+keeps insertion-time sizes; material-cache retention is unchanged.
 
 The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
 GPU deformation routing and measures its retained CPU-side mesh/morph payloads;

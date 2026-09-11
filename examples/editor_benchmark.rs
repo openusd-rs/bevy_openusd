@@ -172,20 +172,24 @@ fn unique_seek_schedule_and_resident_measurement_are_explicit() {
     assert_eq!(parse_rss("VmRSS: missing kB"),None);
     assert_eq!(parse_rss("Name: probe"),None);
     assert_eq!(parse_rss(&format!("VmRSS: {} kB",usize::MAX)),None);
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/morph_animation.usda");
-    let result = measure(&path,false,SeekMode::Unique).unwrap();
-    assert!(result.seek_median>Duration::ZERO);
-    assert!(result.seek_median<=result.seek_p95 && result.seek_p95<=result.seek_max);
-    assert!(result.peak_asset_counts[0]>=result.mesh_assets);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/morph_tangent_normals.usda");
+    for gpu_prepared in [false,true] {
+        let result = measure(&path,gpu_prepared,SeekMode::Unique).unwrap();
+        assert!(result.seek_median>Duration::ZERO);
+        assert!(result.seek_median<=result.seek_p95 && result.seek_p95<=result.seek_max);
+        assert!(result.peak_asset_counts[0]>=result.mesh_assets);
+        assert!(result.peak_asset_counts[0]<=16,"{result:?}");
+        assert!(result.cached_meshes<=4,"{result:?}");
+    }
 }
 
 #[test]
 fn editor_benchmark_counts_subset_payload_and_rejects_failed_opens() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let m = measure(&root.join("assets/material_subsets.usda"), false, SeekMode::Idle).unwrap();
-    assert_eq!((m.mesh_entities, m.subset_entities, m.mesh_assets), (3, 2, 4));
-    assert_eq!((m.vertices, m.unreferenced_vertices), (16, 0));
-    assert_eq!((m.vertex_bytes, m.index_bytes, m.morph_bytes, m.image_bytes), (512, 96, 0, 0));
+    assert_eq!((m.mesh_entities, m.subset_entities, m.mesh_assets), (3, 2, 3));
+    assert_eq!((m.vertices, m.unreferenced_vertices), (8, 0));
+    assert_eq!((m.vertex_bytes, m.index_bytes, m.morph_bytes, m.image_bytes), (256, 48, 0, 0));
     assert!(measure(&root.join("assets/missing-editor-benchmark.usda"), false, SeekMode::Idle).is_err());
 }
 

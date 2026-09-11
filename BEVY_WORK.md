@@ -5,6 +5,29 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Curve width and normal reader foundation
 
+The Rendering pane now exposes line mode and 8/16/32-sided surface controls.
+Requests preserve the selected cubic sample count, are consumed once, and ignore
+invalid side counts without replacing valid settings. Two focused bridge tests,
+check-all and viewer build pass (`/tmp/curve-ui-{tests,check,build}.log`). README
+documents startup configuration, controls and the approximation/error boundaries.
+
+Editor acceptance: the first host image `target/curve-surfaces-editor.png` was
+black despite a valid paired viewport showing all five width-aware curves. Its
+region check correctly failed. A fresh 30-second capture
+`target/curve-surfaces-editor-retry.png` shows the entire Rendering pane with all
+new controls and the 32-sample/16-side status. The scripted Use lines click in
+`target/curve-surfaces-editor-lines.png` changes the status to one-pixel lines;
+the inspected paired viewport shows all five centerlines instead of surfaces.
+Logs: `/tmp/curve-ui-capture.log`, `/tmp/curve-ui-capture-retry.log`,
+`/tmp/curve-ui-lines-capture.log`. The intermittent black host remains unresolved;
+the successful retry does not supersede that failure.
+The reverse replay clicks Use lines then Width surfaces: 16 sides in the same
+viewer. Both `target/curve-surfaces-editor-restored.png` and its paired viewport
+were inspected: status returns to 16 sides and all five surfaces return, with
+32 samples preserved (`/tmp/curve-ui-restored-capture.log`). Replay inputs are
+`/tmp/curve-surface-lines.replay` and `/tmp/curve-surface-restore.replay`; pointer
+coordinates are window-local for the 1440x920 private-compositor viewer.
+
 Surface projection now supports opt-in
 `USD_CURVE_SURFACE_SIDES=3..32` in the viewer and capture example. Missing widths
 retain the line fallback. Authored normals select oriented ribbons; other curves

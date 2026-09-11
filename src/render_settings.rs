@@ -10,6 +10,7 @@ use usd_bevy::route::curves::{UsdCurveSettings, UsdCurveError};
 struct State {
     requested: Option<u32>,
     requested_curve_steps: Option<usize>,
+    requested_curve_surface_sides: Option<Option<usize>>,
     curve_steps: usize,
     curve_surface_sides: Option<usize>,
     level: u32,
@@ -64,7 +65,9 @@ fn bound_mesh_slabs(settings: &mut MeshAllocatorSettings, device_limit: u64) {
 
 fn apply(world: &mut World) {
     let bridge = world.resource::<RenderSettingsBridge>().clone();
-    let Some((level, steps)) = bridge.0.lock().ok().map(|mut state| (state.requested.take(), state.requested_curve_steps.take())) else { return };
+    let Some((level, steps, sides)) = bridge.0.lock().ok().map(|mut state| (
+        state.requested.take(), state.requested_curve_steps.take(), state.requested_curve_surface_sides.take(),
+    )) else { return };
     if let Some(level) = level {
         if level == 0 { world.remove_resource::<UsdSubdivisionSettings>(); }
         else if let Ok(settings) = UsdSubdivisionSettings::new(level) { world.insert_resource(settings); }
@@ -72,6 +75,10 @@ fn apply(world: &mut World) {
     if let Some(steps) = steps && let Ok(settings) = UsdCurveSettings::new(steps) {
         let sides = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().surface_sides();
         world.insert_resource(settings.with_surface_sides(sides).unwrap());
+    }
+    if let Some(sides) = sides {
+        let current = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default();
+        if let Ok(settings) = current.with_surface_sides(sides) { world.insert_resource(settings); }
     }
 }
 
@@ -144,7 +151,16 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
             }
         }));
     }
-    body.add_normal("rendering.curves", "Cubic curves", "options", curve_pods);
+    for sides in [None, Some(8), Some(16), Some(32)] {
+        let bridge = bridge.clone();
+        curve_pods.push(Pod::new(Id::new(("rendering.curves.surface", sides))).with_custom_units(1, move |ui| {
+            let label = match sides { None => "Use lines".into(), Some(sides) => format!("Width surfaces: {sides} sides") };
+            if ui.button(&label).clicked && let Ok(mut state) = bridge.0.lock() {
+                state.requested_curve_surface_sides = Some(sides);
+            }
+        }));
+    }
+    body.add_normal("rendering.curves", "Curves", "options", curve_pods);
     body.add_normal("rendering.scene", "Scene assets", "options", vec![
         Pod::new("rendering.scene.counts").with_custom_units(5, move |ui| {
             ui.label(&format!("USD mesh entities: {}", state.mesh_entities));
@@ -255,6 +271,34 @@ mod tests {
         assert_eq!(settings.max_slab_size, 16 * 1024);
         assert_eq!(settings.min_slab_size, 16 * 1024);
         assert_eq!(settings.large_threshold, 16 * 1024);
+    }
+
+    #[test]
+    fn curve_surface_controls_preserve_sampling_and_consume_requests() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let bridge = RenderSettingsBridge::default();
+        configure(&mut app, bridge.clone());
+        for sides in [Some(8), Some(16), None, Some(32)] {
+            {
+                let mut state = bridge.0.lock().unwrap();
+                state.requested_curve_steps = Some(32);
+                state.requested_curve_surface_sides = Some(sides);
+            }
+            app.update();
+            let settings = app.world().resource::<UsdCurveSettings>();
+            assert_eq!(settings.cubic_steps(), 32);
+            assert_eq!(settings.surface_sides(), sides);
+            let state = bridge.0.lock().unwrap();
+            assert_eq!(state.curve_surface_sides, sides);
+            assert_eq!(state.requested_curve_surface_sides, None);
+        }
+        bridge.0.lock().unwrap().requested_curve_surface_sides = Some(Some(2));
+        app.update();
+        assert_eq!(app.world().resource::<UsdCurveSettings>().surface_sides(), Some(32));
+        app.world_mut().insert_resource(UsdCurveSettings::default());
+        app.update();
+        assert_eq!(bridge.0.lock().unwrap().curve_surface_sides, None);
     }
 
     #[test]

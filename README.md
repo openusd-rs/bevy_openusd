@@ -747,8 +747,26 @@ or arbitrary shader primvar networks.
 `assets/point_curve_animation.usda` exercises sampled Points and BasisCurves
 without default positions. From time 0 to 10, four points and a line move upward;
 the line splits into two disjoint segments at time 10. Both routes follow each
-scene root's clock. Unbound geometry uses an unlit point/line preview; USD widths
-and full curve surface shading are not represented.
+scene root's clock. Default unbound geometry uses an unlit point/line preview.
+Points remain one-pixel marks; curves optionally project width-aware surfaces.
+
+In the Rendering pane, choose **Width surfaces** with 8, 16 or 32 tube sides,
+or **Use lines** to restore the default. Sampling and surface mode can change
+without reopening the scene. Startup accepts `USD_CURVE_SURFACE_SIDES=3..32`:
+
+```bash
+USD_CURVE_STEPS=32 USD_CURVE_SURFACE_SIDES=16 make run ARGS='assets/curve_widths.usda'
+```
+
+Widths are object-space diameters. Composed `primvars:widths` override built-in
+widths; indexed constant, uniform, vertex and varying values follow curve
+sampling. Authored normals select oriented ribbons; otherwise curves form tubes.
+Missing widths fall back to lines. Surface mode rejects invalid cardinality,
+nonfinite/negative widths, zero ribbon normals, parallel normal/tangent pairs,
+coincident adjacent samples and cusps. Errors clear stale geometry and appear in
+the Rendering pane. Corrected source data can recover on the same entity.
+Surfaces are fixed-sampling, open-ended polygonal approximations without caps,
+UVs or native curve-renderer parity. Low sampling visibly facets curved shapes.
 
 Point clouds project constant/inherited and indexed vertex/varying display color
 and opacity through the same RGBA expansion as mesh vertices. The unbound
@@ -779,11 +797,11 @@ counts below three are not supported. Display primvars validate interpolation
 cardinality, index bounds and finite authored values; single unindexed values
 retain their broadcast behavior. `assets/invalid_curves.usda`,
 `assets/invalid_curve_layout.usda` and `assets/invalid_curve_colors.usda` are
-negative capture fixtures. Width and normal primvar validation remains open.
+negative capture fixtures. Width and normal validation applies in surface mode.
 Curve color/opacity interpolation uses f64 intermediates. Generated values that
 cannot be represented as finite f32 RGBA report `UsdCurveError` before upload;
 the renderer does not receive NaN or infinity from this path.
-Curve projection also rejects output above 1,000,000 vertices or 2,000,000 line
+Curve projection also rejects output above 1,000,000 vertices or 2,000,000
 indices per prim before allocating tessellation buffers. These limits include
 all curves in the prim and use checked arithmetic. They do not bound source
 decoding, the number of prims, asset-cache memory or total GPU memory.

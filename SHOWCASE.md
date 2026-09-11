@@ -12,13 +12,15 @@ pause**. The range is 0–60 at 24 time codes per second. Open **Lighting** and
 choose **Use studio only** if the device cannot filter dome maps.
 
 The UI dependency uses `../mara-bevy-host/mara`: Mara `develop` commit `b792f44`
-plus four local host fixes, at `ac47bfb` on branch `fix/bevy-host-develop`.
+plus local host fixes, at `15a2e9d` on branch `fix/bevy-host-develop`.
 The original `../mara` checkout remains untouched. This separate worktree is
 required to build; its commits have not been pushed upstream. Whole-window GPU
 screenshots and embedded dome filtering are restored. If dome
 filtering reports an error, the viewer temporarily restores studio lighting
 and displays the error with a fallback notice in Lighting. The requested dome
 remains selected; studio fallback ends when dome maps become available.
+Playback uses the host's active viewport rate without requiring mouse movement;
+paused scenes retain idle throttling.
 
 | Location | What to inspect |
 | --- | --- |

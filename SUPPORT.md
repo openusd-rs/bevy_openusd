@@ -14,7 +14,7 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 - Spot/UR5 fidelity and broader native-render comparisons remain incomplete.
   Do not infer full-scene parity from bounded numerical or image fixtures.
 - Per-layer content-based save state and guarded in-app close are implemented
-  and tested. The local Mara develop-based host at ac47bfb restores OS close
+  and tested. The local Mara develop-based host at 15a2e9d restores OS close
   routing through the guard, direct screenshots and dome-device configuration.
   It lives in the required sibling worktree `../mara-bevy-host`, not unmodified
   upstream develop. An isolated Xwayland WM_DELETE_WINDOW request now has

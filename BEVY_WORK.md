@@ -3,6 +3,36 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Active-rate embedded playback
+
+A release viewer probe found UI output near 60Hz while animated mesh projection
+ran at 19.883Hz with no pointer activity. Mara selected its idle 24Hz interval
+even during playback; alignment with the UI tick reduced actual updates further.
+Mara branch fix/bevy-host-develop now has 15a2e9d: an explicit continuous-rendering
+flag selects the active interval, preserving idle policy for static content.
+The viewer forwards its existing timeline snapshot's playing state without an
+extra snapshot read. Native/Web active/idle selection has a regression test.
+
+The corrected timeline_play replay clicks the compact transport's actual Play
+button. capture_viewer_ui.sh accepts debug/release through USD_UI_CAPTURE_PROFILE
+and records the chosen profile. In the 15–30s window, the release probe changes
+from UI/scene rates 59.655/19.883Hz to 59.709/59.650Hz. Scene cadence counts the
+same animated Morph/Face projection trace; UI cadence uses output-hook counters.
+These are wall-clock cadences, not GPU timestamp frame durations.
+
+Both direct GPU images were inspected and show Playing with lit, animated
+geometry: target/{release,continuous}-playback-host.png. Raw logs and desktop
+images use the matching *-playback-desktop prefix. Summaries are in
+/tmp/release-playback-{before,after}-cadence.txt. Viewer tests pass 86; Mara Bevy
+tests pass 8 with 2 ignored; release build passes. Logs use
+/tmp/continuous-viewport-{tests,host-tests,build}.log.
+
+Capture cleanup was also found to leave some viewer groups running because
+the setsid wrapper PID differed from the session leader. Identified test viewers
+were terminated using their exact capture-path environment and actual process
+group. No user desktop viewer was targeted. Fixing wrapper cleanup and a clean
+repeat remain necessary before treating the timing comparison as controlled.
+
 ## Native close Cancel and Discard actions
 
 check_native_close.sh now accepts prompt, cancel or discard. The latter two

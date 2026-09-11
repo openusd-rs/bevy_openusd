@@ -19,6 +19,8 @@ for suffix in settings.txt weston.log viewer.log capture.log inspect.log scene-g
     [[ ! -e "$path" && ! -L "$path" ]] || { echo "capture companion must be new: $path" >&2; exit 2; }
 done
 delay=${USD_UI_CAPTURE_WAIT:-20}
+profile=${USD_UI_CAPTURE_PROFILE:-debug}
+case "$profile" in debug|release) ;; *) echo 'USD_UI_CAPTURE_PROFILE must be debug or release' >&2; exit 2;; esac
 [[ "$delay" =~ ^[1-9][0-9]*$ && "$delay" -le 300 ]] || {
     echo "USD_UI_CAPTURE_WAIT must be 1..300 seconds" >&2; exit 2;
 }
@@ -67,6 +69,7 @@ mkdir -p "$(dirname "$output")"
 printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutput_height=1000\ninspection_region=110,110,1400,800\nvalidation=near-black-and-panic-log\n' \
     "$renderer" "$delay" > "${output%.png}.settings.txt"
 printf 'scene_graph_requested=%s\n' "$scene_graph" >> "${output%.png}.settings.txt"
+printf 'viewer_profile=%s\n' "$profile" >> "${output%.png}.settings.txt"
 printf 'capture_timeout_seconds=%s\n' "$capture_timeout" >> "${output%.png}.settings.txt"
 printf 'viewport_requested=%s\n' "$paired" >> "${output%.png}.settings.txt"
 printf 'second_capture_wait_seconds=%s\n' "$second_wait" >> "${output%.png}.settings.txt"
@@ -100,6 +103,7 @@ done
 [[ -S "$runtime/$WAYLAND_DISPLAY" ]] || { echo "compositor startup timed out" >&2; exit 1; }
 cd "$root"
 viewer=(env USD_UI_CAPTURE_HANDSHAKE=1 make run WAYLAND_DISPLAY="$WAYLAND_DISPLAY" CARGO="${CARGO:-cargo --offline}" ARGS="$(printf '%q' "$asset")")
+if [[ "$profile" == release ]]; then viewer+=("APP_TARGET=--release --bin usdview"); fi
 if [[ "$paired" == 1 ]]; then
     viewer=(env "USD_SCREENSHOT=$viewport" "${viewer[@]}")
 fi

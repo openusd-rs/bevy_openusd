@@ -428,6 +428,20 @@ mod tests {
         editor.undo().unwrap();
         assert!(!super::draft_conflicts(&mut draft, &targets(editor.snapshot().unwrap())));
         assert_eq!(draft.1, "/A/Child");
+        editor.redo().unwrap();
+        draft.0 = targets(editor.snapshot().unwrap());
+        editor.edit(usd_bevy::editor::EditorEdit::RelationshipTargets {
+            prim: "/Root".into(), name: "links".into(), targets: vec![openusd::sdf::path("/A/Child").unwrap()],
+        }).unwrap();
+        assert_eq!(targets(editor.snapshot().unwrap()), "/A/Child");
+        assert!(!super::draft_conflicts(&mut draft, &targets(editor.snapshot().unwrap())));
+        editor.edit(usd_bevy::editor::EditorEdit::Variant { prim: "/Root".into(), set: "choice".into(), selection: "a".into() }).unwrap();
+        assert_eq!(targets(editor.snapshot().unwrap()), "/A/Child");
+        editor.undo().unwrap();
+        assert_eq!(targets(editor.snapshot().unwrap()), "/A/Child");
+        editor.undo().unwrap();
+        assert_eq!(targets(editor.snapshot().unwrap()), "/B");
+        assert_eq!(std::fs::read(path).unwrap(), include_bytes!("../assets/draft_conflict.usda"));
     }
 
     #[test]

@@ -5,6 +5,17 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+The `draft_apply.replay` extends conflict resolution through Keep, Set targets,
+and switching back to variant a. Inspected `target/draft-apply-ui.png` shows
+variant a with `/A/Child` and no conflict prompt; the capture guard passes
+(`/tmp/draft-apply-capture.log`). The corresponding session regression proves
+the local relationship opinion remains composed across that variant change,
+undoing the variant retains it, and undoing the relationship restores `/B`.
+It also checks that the on-disk fixture bytes remain unchanged. All 56 viewer
+tests and check-all pass (`/tmp/draft-apply-{tests,check}.log`). This establishes
+this relationship write/undo workflow, not exhaustive property conflict or
+explicit-save acceptance.
+
 Native conflict-control acceptance now uses `assets/draft_conflict.usda` and
 the `draft_conflict`, `draft_keep`, and `draft_reload` UI replays. Typing
 `/A/Child` into the relationship draft then selecting variant b changes the

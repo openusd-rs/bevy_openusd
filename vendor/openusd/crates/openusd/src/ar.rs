@@ -421,12 +421,7 @@ impl Resolver for DefaultResolver {
                 )
             })?;
 
-            let mut archive = open_package_archive(Path::new(&package))?;
-            let mut entry = archive.by_name(&inner).map_err(io::Error::other)?;
-
-            let mut buffer = Vec::new();
-            entry.read_to_end(&mut buffer)?;
-
+            let buffer = read_package_entry(Box::new(fs::File::open(package)?), &inner)?;
             return Ok(Box::new(io::Cursor::new(buffer)));
         }
 
@@ -664,10 +659,71 @@ fn join_packaged_path(dir: &str, rel: &str) -> String {
 /// `leaf` is nested into the innermost bracket so the result stays well-formed
 /// (`pkg[inner[leaf]]`) rather than gaining a stray second bracket pair
 /// (`pkg[inner][leaf]`), which no split or resolve step can interpret.
-fn nest_packaged_path(base: &str, leaf: &str) -> String {
+pub(crate) fn nest_packaged_path(base: &str, leaf: &str) -> String {
     match split_package_relative_path_outer(base) {
         Some((package, inner)) => join_package_relative_path(&package, &nest_packaged_path(&inner, leaf)),
         None => join_package_relative_path(base, leaf),
+    }
+}
+
+/// Reads an entry through at most 16 package levels and 256 MiB of entry data.
+pub fn read_package_entry(asset: Box<dyn Asset>, inner: &str) -> io::Result<Vec<u8>> {
+    read_package_entry_with_budget(asset, inner, 256 * 1024 * 1024)
+}
+
+fn read_package_entry_with_budget(mut asset: Box<dyn Asset>, inner: &str, mut budget: u64) -> io::Result<Vec<u8>> {
+    let mut names = Vec::new();
+    let mut remaining = inner.to_owned();
+    while let Some((package, child)) = split_package_relative_path_outer(&remaining) {
+        names.push(package);
+        remaining = child;
+        if names.len() >= 16 { return Err(io::Error::other("USD package nesting exceeds 16 levels")); }
+    }
+    names.push(remaining);
+    let count = names.len();
+    for (index, name) in names.into_iter().enumerate() {
+        let bytes = {
+            let mut archive = zip::ZipArchive::new(asset).map_err(io::Error::other)?;
+            let entry = archive.by_name(&name).map_err(io::Error::other)?;
+            if entry.size() > budget { return Err(io::Error::other("USD package entries exceed 256 MiB")); }
+            let mut bytes = Vec::new();
+            entry.take(budget + 1).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > budget { return Err(io::Error::other("USD package entries exceed 256 MiB")); }
+            budget -= bytes.len() as u64;
+            bytes
+        };
+        if index + 1 == count { return Ok(bytes); }
+        asset = Box::new(io::Cursor::new(bytes));
+    }
+    unreachable!()
+}
+
+#[cfg(test)]
+mod package_entry_tests {
+    use super::*;
+
+    fn package(name: &str, bytes: &[u8]) -> Vec<u8> {
+        let mut writer = crate::usdz::ArchiveWriter::new(io::Cursor::new(Vec::new()));
+        writer.add_layer(name, bytes).unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn nested_entry_reads_are_depth_and_cumulative_byte_bounded() {
+        let inner = package("payload", b"hello");
+        let outer = package("inner.usdz", &inner);
+        let budget = inner.len() as u64 + 5;
+        assert_eq!(read_package_entry_with_budget(Box::new(io::Cursor::new(outer.clone())), "inner.usdz[payload]", budget).unwrap(), b"hello");
+        assert!(read_package_entry_with_budget(Box::new(io::Cursor::new(outer.clone())), "inner.usdz[payload]", budget - 1).is_err());
+        assert!(read_package_entry(Box::new(io::Cursor::new(outer)), "inner.usdz[missing]").is_err());
+        let mut bytes = package("payload", b"hello");
+        let mut path = "payload".to_owned();
+        for _ in 0..15 { bytes = package("inner.usdz", &bytes); path = format!("inner.usdz[{path}]"); }
+        assert_eq!(read_package_entry(Box::new(io::Cursor::new(bytes.clone())), &path).unwrap(), b"hello");
+        bytes = package("inner.usdz", &bytes);
+        path = format!("inner.usdz[{path}]");
+        assert!(read_package_entry(Box::new(io::Cursor::new(bytes)), &path).unwrap_err().to_string().contains("16 levels"));
+        assert!(read_package_entry(Box::new(io::Cursor::new(package("inner.usdz", b"corrupt"))), "inner.usdz[payload]").is_err());
     }
 }
 

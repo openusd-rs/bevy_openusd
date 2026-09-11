@@ -44,8 +44,8 @@ pub enum ArchiveError {
     #[error("no USD layer found in USDZ archive")]
     NoDefaultLayer,
 
-    /// The entry is itself a package; nested packages are not supported.
-    #[error("Nested USDZ files are not yet supported: '{path}'")]
+    /// The raw archive reader was asked to decode a package as a USD layer.
+    #[error("Package entry requires resolver-backed layer loading: '{path}'")]
     NestedPackage {
         /// The nested package's entry path.
         path: String,
@@ -114,24 +114,6 @@ pub struct UsdzFileFormat;
 /// the first entry).
 const USDZ_LAYER_NAME: &str = "layer.usdc";
 
-impl UsdzFileFormat {
-    /// Refuses a package named inside another package.
-    ///
-    /// A package-relative path reaches this format only when its named entry is
-    /// itself a package — an ordinary inner layer dispatches to its own format
-    /// — and a nested package is unsupported. Only a resolved path can say
-    /// this, so it is asked of the asset being opened, never of the label
-    /// [`read_bytes`](sdf::FileFormat::read_bytes) carries.
-    fn refuse_nested_package(resolved: &str) -> Result<(), sdf::FormatError> {
-        match ar::split_package_relative_path_outer(resolved) {
-            Some((_, inner)) => Err(sdf::FormatError::Decode(Box::new(ArchiveError::NestedPackage {
-                path: inner,
-            }))),
-            None => Ok(()),
-        }
-    }
-}
-
 impl sdf::FileFormat for UsdzFileFormat {
     fn format_id(&self) -> tf::Token {
         tf::Token::new("usdz")
@@ -149,13 +131,7 @@ impl sdf::FileFormat for UsdzFileFormat {
     }
 
     fn resolve_layer(&self, resolver: &dyn ar::Resolver, resolved: &ar::ResolvedPath) -> Option<ar::ResolvedPath> {
-        // An already package-relative path (`pkg.usdz[inner]`, including a nested
-        // `pkg.usdz[inner.usdz]`) already names its entry; only a bare package is
-        // anchored to its default — first — packaged layer.
         let package = resolved.to_string_lossy();
-        if ar::is_package_relative_path(&package) {
-            return Some(resolved.clone());
-        }
         // A package that cannot be opened, or that lists no default layer, falls
         // back to the bare package path so `read` surfaces the precise zip/parse
         // error, rather than being demoted to an unresolved (missing) asset.
@@ -170,7 +146,7 @@ impl sdf::FileFormat for UsdzFileFormat {
             .ok()
             .and_then(|a| a.first_layer_name())
         {
-            Some(first) => Some(ar::ResolvedPath::new(ar::join_package_relative_path(&package, &first))),
+            Some(first) => Some(ar::ResolvedPath::new(ar::nest_packaged_path(&package, &first))),
             None => Some(resolved.clone()),
         }
     }
@@ -180,10 +156,7 @@ impl sdf::FileFormat for UsdzFileFormat {
         resolver: &dyn ar::Resolver,
         resolved: &ar::ResolvedPath,
     ) -> Result<sdf::LayerData, sdf::FormatError> {
-        // Refused before the asset is opened: reading a whole package only to
-        // discard it is the expensive way to reach the same error.
         let source_name = resolved.to_string();
-        Self::refuse_nested_package(&source_name)?;
 
         let bytes = resolver.open_asset(resolved)?.read_all()?;
         self.read_bytes(bytes.into(), &source_name)

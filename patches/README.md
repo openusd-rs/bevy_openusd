@@ -5,6 +5,20 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Nested package reading
+
+`openusd-nested-package-reading.patch` applies after the earlier local patches.
+It shares bounded in-memory ZIP entry traversal between the default resolver
+and Bevy's snapshot resolver, and anchors a referenced inner USDZ to its default
+layer using nested bracket syntax. Each entry traversal is limited to 16 package
+levels and 256 MiB of cumulative decompressed entry bytes. Root archive storage,
+central-directory metadata and total stage work are not covered by this limit.
+Raw Archive::read still decodes native USD entries, not packages; nested package
+layers load through the resolver-backed file format. Packaging/export limitations
+are unchanged. The patch includes depth, byte-budget, missing-entry and corrupt
+inner-package tests; the Bevy project tests snapshot/filesystem composition and
+relative asset bytes.
+
 ## Clip activation samples
 
 `openusd-clip-activation-samples.patch` fixes interpolation across active-clip

@@ -938,6 +938,52 @@ resolvers, default-layer anchoring for inner packages, resource/depth bounds,
 relative inner-layer assets and explicit errors, without extracting files or
 silently flattening the source. Package writing remains a separate limitation.
 
+## Bounded nested USDZ reads
+
+The snapshot and default filesystem resolvers now use canonical
+`openusd::ar::read_package_entry` to walk nested ZIP entries in memory. The USDZ
+file format resolves an inner package to its default native layer using nested
+bracket syntax. Source files are not extracted, rewritten or flattened. Both
+previously failing probe cases now pass in `target/nested-package-reading`:
+`/tmp/nested-package-reading.log`.
+
+Each entry traversal permits at most 16 package levels and 256 MiB of cumulative
+decompressed entry bytes. Root archive storage, central-directory metadata,
+repeated resolver work and total stage memory remain outside this budget.
+The raw Archive::read API still decodes only native USD entries; package layers
+use resolver-backed loading. Nested dependency packaging/export remains rejected.
+The canonical dependency changes are recorded in
+`patches/openusd-nested-package-reading.patch` and `vendor/openusd/VENDORED.md`.
+
+A source regression verifies implicit/explicit nested references, a relative
+sibling layer, resolved relative asset bytes, unchanged authored asset paths,
+missing-entry errors, nonexistent virtual source files and unchanged disk
+packages. It exercises snapshot and DefaultResolver-backed stages. The upstream
+reader test checks successful 16-level access, rejection at 17, cumulative byte
+budget accounting, a missing leaf and a corrupt intermediate package.
+Logs: `/tmp/nested-package-source-tests.log` and
+`/tmp/nested-package-upstream-tests-verified.log`.
+
+Upstream tests required the existing writable Cargo cache
+`/tmp/bevy-usd-upstream-cargo`, `CARGO_WORKSPACE_DIR=$PWD/vendor/openusd` and the
+shared project target directory. Initial attempts hit read-only cache unpacking
+and a missing CARGO_WORKSPACE_DIR compile-time variable; those setup failures
+are retained in `/tmp/nested-package-upstream-tests{,-final}.log`. Only the
+named upstream reader test was run, not the omitted external fixture corpus.
+
+Full workspace validation passes 532 ordinary tests (13 ignored), check-all
+and build: `/tmp/nested-reading-{tests,check,build}.log`. The review patch passes
+reverse-apply checking and `git diff --check` passes.
+
+Inspected `target/nested-{implicit,explicit,reference}-reading.png`: each shows
+the same visible cube. The reference is the native-flattened valid fixture
+rendered in Bevy, not a native-renderer image. All three report CAPTURE_OK without
+WARN/ERROR. Both nested images match the reference exactly across 921,600 pixels
+at RGB tolerance zero; `/tmp/nested-reading-captures.log` and
+`/tmp/nested-reading-image-compare.log`. These checks cover nested USDA cube
+composition and relative asset byte access, not rendered nested image materials,
+all binary/default-layer variants or nested export acceptance.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

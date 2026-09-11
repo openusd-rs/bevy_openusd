@@ -11,6 +11,12 @@ package re-export. Nested packages, expressions and tile/sequence patterns remai
 old destination. Limits and remaining acceptance work are in `PACKAGING.md`.
 Passing data tests do not establish rendered fidelity or production performance.
 
+Nested USDZ reading supports implicit inner default layers, explicit bracket
+paths and inner relative references/assets through filesystem and snapshot
+resolvers without extraction. Each entry traversal is bounded to 16 package
+levels and 256 MiB of decompressed entry bytes. This does not bound root archive
+storage or total stage work, and does not enable nested-package export.
+
 | Area | Implemented integration | Limits / outstanding acceptance |
 | --- | --- | --- |
 | Asset loading | Source-backed USD and in-memory USDZ; relative layer and image dependencies through AssetServer | Nested packages unsupported; dependency discovery follows composed variant selections |

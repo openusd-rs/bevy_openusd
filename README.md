@@ -441,6 +441,11 @@ visual acceptance limits.
 
 The editor loads PNG/JPEG material images from filesystem and USDZ documents,
 refreshes them after edits, and preserves the previous document if opening fails.
+Nested USDZ reads support inner-package default layers, explicit bracket paths
+and relative inner-layer assets without extraction, through both filesystem and
+snapshot resolvers. Each entry traversal permits at most 16 package levels and
+256 MiB of cumulative decompressed entry bytes; this is not a total-stage memory
+limit. Exporting nested package dependencies remains unsupported.
 The viewer can automatically watch requested external textures on native builds:
 
 ```sh

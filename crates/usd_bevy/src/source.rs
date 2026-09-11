@@ -366,7 +366,10 @@ impl SourceResolver {
             return false;
         };
         zip::ZipArchive::new(Cursor::new(bytes.as_ref()))
-            .map(|mut archive| archive.by_name(&inner).is_ok())
+            .map(|mut archive| {
+                let entry = openusd::ar::split_package_relative_path_outer(&inner).map(|(package, _)| package).unwrap_or(inner);
+                archive.by_name(&entry).is_ok()
+            })
             .unwrap_or(false)
     }
 
@@ -377,18 +380,7 @@ impl SourceResolver {
         let Some(bytes) = self.bytes(&package) else {
             return Ok(None);
         };
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_ref())).map_err(io::Error::other)?;
-        let entry = archive.by_name(&inner).map_err(io::Error::other)?;
-        const LIMIT: u64 = 256 * 1024 * 1024;
-        if entry.size() > LIMIT {
-            return Err(io::Error::other("USD package entry exceeds 256 MiB"));
-        }
-        let mut bytes = Vec::new();
-        entry.take(LIMIT + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > LIMIT {
-            return Err(io::Error::other("USD package entry exceeds 256 MiB"));
-        }
-        Ok(Some(bytes))
+        openusd::ar::read_package_entry(Box::new(SharedAsset(Cursor::new(Arc::clone(bytes)))), &inner).map(Some)
     }
 }
 
@@ -480,6 +472,44 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nested_packages_preserve_relative_layers_and_asset_bytes() {
+        use super::*;
+        fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+            let mut writer = openusd::usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
+            for (name, bytes) in entries { writer.add_layer(name, bytes).unwrap(); }
+            writer.finish().unwrap().into_inner()
+        }
+        let inner = archive(&[
+            ("scenes/model.usda", b"#usda 1.0\n(defaultPrim = \"Model\")\ndef Xform \"Model\" (references = @part.usda@</Part>) {}\n"),
+            ("scenes/part.usda", b"#usda 1.0\ndef Xform \"Part\" {\n    asset paint = @pixel.png@\n    def Cube \"Box\" {}\n}\n"),
+            ("scenes/pixel.png", b"captured nested pixels"),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        for (name, reference) in [("implicit", "inner.usdz"), ("explicit", "inner.usdz[scenes/model.usda]")] {
+            let root = format!("#usda 1.0\ndef Xform \"Root\" (references = @{reference}@</Model>) {{}}\n");
+            let bytes = archive(&[("root.usda", root.as_bytes()), ("inner.usdz", &inner)]);
+            let virtual_path = directory.path().join(format!("virtual-{name}.usdz"));
+            let source = UsdSource::snapshot(&virtual_path, bytes.clone()).unwrap();
+            let stage = source.open_stage().unwrap();
+            UsdSource::validate_composition(&stage).unwrap();
+            assert!(stage.prim("/Root/Box").unwrap().is_valid().unwrap());
+            let asset = stage.prim("/Root").unwrap().attribute("paint").get::<openusd::sdf::AssetPath>().unwrap().unwrap();
+            assert_eq!(asset.authored_path, "pixel.png");
+            assert_eq!(source.read_asset(asset.resolved_path().unwrap()).unwrap(), b"captured nested pixels");
+            assert!(!virtual_path.exists());
+            assert!(source.read_asset(&format!("{}[inner.usdz[missing.png]]", source.identifier())).is_err());
+            let disk = directory.path().join(format!("{name}.usdz"));
+            std::fs::write(&disk, &bytes).unwrap();
+            let stage = Stage::open(disk.to_str().unwrap()).unwrap();
+            UsdSource::validate_composition(&stage).unwrap();
+            assert!(stage.prim("/Root/Box").unwrap().is_valid().unwrap());
+            let asset = stage.prim("/Root").unwrap().attribute("paint").get::<openusd::sdf::AssetPath>().unwrap().unwrap();
+            assert_eq!(DefaultResolver::new().open_asset(&ResolvedPath::new(asset.resolved_path().unwrap())).unwrap().read_all().unwrap(), b"captured nested pixels");
+            assert_eq!(std::fs::read(&disk).unwrap(), bytes);
+        }
+    }
+
     #[test]
     fn clip_switch_interpolates_to_the_next_activation_sample() {
         let directory = tempfile::tempdir().unwrap();

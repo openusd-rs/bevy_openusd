@@ -787,6 +787,43 @@ The scalar live image matches its pre-change capture exactly across 921,600
 pixels at RGB tolerance zero (`/tmp/material-prune-image-compare.log`).
 Broader texture-lifetime, renderer-memory and flagship acceptance remain open.
 
+## Release cache-only converted textures
+
+RGB/normal conversion, scalar packing and alpha packing now discard cache-only
+or missing image handles in `Last`. Retained key/image byte estimates are
+recounted from remaining entries; each existing 64 MiB budget is unchanged.
+Source snapshot and AssetServer ownership is unchanged. Revisited historical
+conversions can allocate new handles; conversion still computes pixels before
+looking up the content cache.
+
+The release editor benchmark used the generated
+`target/live-material-prune-regression/rgb-fixture/alpha_interface_animated.usda`,
+three CPU samples and 1,000 distinct clocks. All samples previously peaked at
+2,003 image assets and retained 16,020 image payload bytes. After maintenance,
+all peak at five images and retain 36 payload bytes; meshes/materials remain
+one/three at peak. Logs: `/tmp/texture-retention-{before,after}.log`.
+These are one-pixel fixtures and CPU asset counts, not representative VRAM or
+frame-time acceptance.
+
+A regression first failed because generated normal images exceeded eight
+retained assets (`/tmp/texture-prune-before-test.log`). It now exercises 1,000
+normal changes for both standard and flat-normal material owners, bounds image
+assets at eight, and verifies zero images/cache bytes after despawning and eight
+updates. Additional tests check sharing, external ownership, missing assets and
+retained-byte accounting for color, scalar and alpha caches. All 530 ordinary
+tests pass, 13 ignored (`/tmp/texture-prune-tests.log`). A private system-parameter
+visibility error in the first implementation was corrected by registering each
+maintenance system inside its owning module (`/tmp/texture-prune-after-test.log`).
+
+`make check-all`, `make build` and `git diff --check` pass; logs:
+`/tmp/texture-prune-{check,build}.log`. All 19 GPU live-clock cases pass in
+`target/live-texture-prune-regression` (`/tmp/live-texture-prune-regression.log`).
+The alpha/color and constant-normal live captures were inspected: both instances
+remain visible with their distinct sampled appearances. The alpha/color image
+matches its pre-change image exactly across 921,600 pixels at RGB tolerance zero
+(`/tmp/texture-prune-image-compare.log`). No claim of renderer-memory reclamation,
+arbitrary workload performance or complete flagship acceptance follows.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

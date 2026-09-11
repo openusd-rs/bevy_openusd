@@ -49,6 +49,7 @@ pub struct UsdPlugin;
 impl Plugin for UsdPlugin {
     fn build(&self, app: &mut App) {
         route::xform::configure(app);
+        route::configure_texture_caches(app);
         app.register_type::<UsdPrimRef>();
         if !app.world().contains_resource::<SchemaRegistry>() {
             app.insert_resource(SchemaRegistry::builtin());

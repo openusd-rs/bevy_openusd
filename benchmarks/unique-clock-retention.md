@@ -129,3 +129,24 @@ The 1024-entry caps remain. Unit tests cover ownership and stale assets in both
 caches; the benchmark regression checks at most 16 peak standard materials in
 both CPU and GPU-prepared modes. This texture-free fixture does not measure
 texture lifetime, flat-material asset counts, renderer allocations or VRAM.
+
+## Converted-image retention
+
+Using the generated color fixture's `alpha_interface_animated.usda`, three CPU
+release samples with 1,000 distinct clocks peaked at 2,003 images before texture
+maintenance and five afterward. Retained image payload went from 16,020 to 36
+bytes in every sample; peak meshes/materials stayed one/three. Logs:
+`/tmp/texture-retention-{before,after}.log`. The fixture is
+`target/live-material-prune-regression/rgb-fixture/alpha_interface_animated.usda`.
+
+Sample-zero median/p95/max update times were 212.519/422.182/1443.077 us before
+and 202.268/275.615/1100.716 us after. Whole-process RSS before/after seeks was
+48,332,800/49,696,768 bytes before maintenance and 50,597,888/50,794,496 after.
+This is retention evidence on one-pixel textures, not a speedup, absolute RSS
+reduction or GPU-memory measurement. Conversion still computes output pixels
+before cache lookup; source-image ownership is unchanged.
+
+A separate headless lifecycle test performs 1,000 generated-normal changes
+with standard and flat-normal material owners, bounds retained image assets at
+eight, then despawns the owner and verifies all generated images disappear
+within eight updates. It does not prove renderer-side reclamation timing.

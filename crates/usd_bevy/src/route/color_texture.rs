@@ -7,6 +7,14 @@ struct ColorTextures {
     bytes: usize,
 }
 
+pub(super) fn configure(app: &mut App) { app.add_systems(Last, prune_cache); }
+
+fn prune_cache(cache: Option<ResMut<ColorTextures>>, assets: Option<Res<Assets<Image>>>) {
+    let (Some(mut cache), Some(assets)) = (cache, assets) else { return };
+    cache.images.retain(|_, handle| assets.contains(handle.id()) && super::cache::externally_owned(handle));
+    cache.bytes = cache.images.keys().map(|key| key.2.len() * 2).sum();
+}
+
 pub(super) fn append_rgba(data: &mut Vec<u8>, rgba: [f32; 4]) -> anyhow::Result<()> {
     for value in rgba {
         let value = half::f16::from_f32(value);
@@ -74,6 +82,50 @@ fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pruning_preserves_shared_images_and_recounts_payload() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let read = ReadPreviewMaterial { normal: Some([0.0, 0.5, 0.5]), ..default() };
+        let handle = transformed(&mut world, &read, "normal").unwrap().unwrap();
+        world.run_system_once(prune_cache).unwrap();
+        assert_eq!(world.resource::<ColorTextures>().bytes, 16);
+        assert_eq!(transformed(&mut world, &read, "normal").unwrap().unwrap(), handle);
+        world.resource_mut::<Assets<Image>>().remove(handle.id());
+        world.run_system_once(prune_cache).unwrap();
+        assert_eq!(world.resource::<ColorTextures>().bytes, 0);
+        drop(transformed(&mut world, &read, "normal").unwrap());
+        world.run_system_once(prune_cache).unwrap();
+        assert!(world.resource::<ColorTextures>().images.is_empty());
+        assert_eq!(world.resource::<ColorTextures>().bytes, 0);
+    }
+
+    #[test]
+    fn animated_conversions_release_images_after_material_owners_disappear() {
+        for flat in [false, true] {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, AssetPlugin::default(), crate::UsdPlugin));
+            app.init_asset::<StandardMaterial>().init_asset::<Image>();
+            if flat { app.add_plugins(super::super::gpu_skin::UsdGpuSkinningPlugin); }
+            let entity = app.world_mut().spawn_empty().id();
+            for step in 0..1000 {
+                let read = ReadPreviewMaterial { normal: Some([step as f32 / 1000.0, 0.5, 0.5]), ..default() };
+                let image = transformed(app.world_mut(), &read, "normal").unwrap().unwrap();
+                let material = super::super::cache::intern_material(app.world_mut(),
+                    StandardMaterial { normal_map_texture: Some(image), ..default() });
+                app.world_mut().entity_mut(entity).insert(MeshMaterial3d(material));
+                if flat { super::super::flat_material::attach(app.world_mut(), entity); }
+                app.update();
+                assert!(app.world().resource::<Assets<Image>>().len() <= 8);
+            }
+            app.world_mut().despawn(entity);
+            for _ in 0..8 { app.update(); }
+            assert_eq!(app.world().resource::<Assets<Image>>().len(), 0);
+            assert_eq!(app.world().resource::<ColorTextures>().bytes, 0);
+        }
+    }
 
     #[test]
     fn constant_normals_encode_cache_and_reject_invalid_vectors() {

@@ -409,6 +409,9 @@ Standard and flat-normal material caches release cache-only handles in `Last`;
 entity-owned and externally held materials remain eligible for sharing within
 the 1024-entry limits. Bevy asset tracking performs subsequent reclamation.
 Revisiting an unowned historical material can allocate a new handle.
+Converted RGB/normal, scalar-packed and alpha-packed texture caches likewise
+release cache-only images in `Last`, retaining their existing 64 MiB budgets.
+Source snapshot and AssetServer texture ownership is unchanged.
 
 The viewer's outliner and Properties pane operate on the rendered live document.
 Properties supports scalar, string/token/asset-path and three-vector edits, relationship

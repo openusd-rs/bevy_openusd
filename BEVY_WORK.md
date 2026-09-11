@@ -3,6 +3,33 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Mara GPU readback boundary
+
+Sibling Mara commit 37ced29 forwards root Screenshot commands and their user
+data to the egui-wgpu painter instead of discarding them. Its existing screenshot
+event delivery now receives actual images. The eframe_capture_probe example
+supports USD_HOST_PROBE_RUNNER=mara|eframe (default eframe) with shared painting
+and PNG writing, plus USD_HOST_PROBE_DELAY_MS=0..60000. New output files remain
+exclusive-create; screenshot requests are single-use and time out after an
+additional 30 seconds. The Mara branch uses the runner's existing present mode;
+USD_HOST_PROBE_PRESENT_MODE only configures the eframe branch.
+
+Three native Mara trials produced inspected upright RGB GPU readbacks at
+target/mara-direct-readback-{1,2,3}.png. Trial 1 requested readback on startup;
+its compositor image target/mara-direct-host-1.png was black at 20 seconds,
+then its second frame showed RGB panels. This reproduces the intermittent
+failure despite an earlier valid readback, not during the same GPU frame.
+Trials 2 and 3 delayed readback to 20 seconds; their compositor image pairs
+showed RGB panels and chrome. Readback changes rendering/copy timing, so these
+successful later trials do not establish a black-window fix or clear the driver.
+All nine images were inspected. Trial 1's failed region check remains retained.
+
+The probe's three tests pass, including delayed single-use request coverage;
+make check-all and the example build pass with offline Cargo. Logs:
+/tmp/mara-readback-final-{tests,check,build}.log and
+/tmp/mara-direct-capture-{1,2,3}.log. This provides direct host GPU capture, not
+yet an explanation of the intermittent presentation failure.
+
 ## OS close confirmation routing
 
 Sibling Mara commit b3312c7 routes winit CloseRequested through egui's root

@@ -865,6 +865,50 @@ def Sphere "Model" (
         exercise_native_file_watcher(true);
     }
 
+    #[cfg(all(feature = "file_watcher", unix))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_recovers_missing_initial_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("missing/root");
+        let mut app = App::new();
+        app.register_asset_source(bevy::asset::io::AssetSourceId::Default,
+            crate::watcher::file_source(&source));
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: source.to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true), ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>();
+        app.finish();
+        app.cleanup();
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("root.usda");
+        let roots = [0.0, 10.0].map(|current| app.world_mut()
+            .spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+        std::fs::create_dir_all(&source).unwrap();
+        let layer = source.join("root.usda");
+        std::fs::write(&layer, "#usda 1.0\ndef Sphere \"Model\" { double radius = 1 }\n").unwrap();
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Model"));
+        let meshes = entities.map(|entity| app.world().get::<Mesh3d>(entity).unwrap().0.clone());
+        for entity in entities { app.world_mut().entity_mut(entity).insert(Name::new("runtime name")); }
+        std::fs::write(&layer, "#usda 1.0\ndef Sphere \"Model\" { double radius = 3 }\n").unwrap();
+        tick_until(&mut app, |world| entities.into_iter().zip(&meshes).all(|(entity, old)|
+            world.get::<Mesh3d>(entity).is_some_and(|mesh| mesh.0 != *old)));
+        for (index, (root, entity)) in roots.into_iter().zip(entities).enumerate() {
+            assert_eq!(instance_entity(app.world(), root, "/Model"), entity);
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+            assert_eq!(app.world().get::<UsdInstanceTime>(root).unwrap().current, index as f64 * 10.0);
+            let mesh = app.world().resource::<Assets<Mesh>>()
+                .get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                else { panic!("sphere positions missing") };
+            assert!(points.iter().all(|point| (Vec3::from_array(*point).length() - 3.0).abs() < 0.0001));
+        }
+    }
+
     #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
     fn exercise_native_file_watcher(removal_adapter: bool) {
         let directory = tempfile::tempdir().unwrap();

@@ -87,7 +87,8 @@ Paths are retained until the source is dropped; this is not an active-handle-onl
 index. On Unix, the adapter checks the source root's device/inode once per second,
 invalidates requested paths when it disappears or changes, and re-arms watching
 when a replacement directory exists. Event forwarding polls at 250 ms intervals
-in addition to Bevy's 300 ms debounce. The root must exist at initial setup.
+in addition to Bevy's 300 ms debounce. Failed initial setup retries on Unix once
+per second when the root is a directory, including roots created after startup.
 Processed assets and non-Unix source-root replacement remain unsupported. Registration
 does not override the AssetPlugin runtime watch setting. Its event worker is
 closed and joined when the source is dropped.

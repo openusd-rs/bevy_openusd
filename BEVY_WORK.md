@@ -13,7 +13,7 @@ paths again. Pending old-watcher events are drained before re-arming. Worker
 shutdown still closes its channel and joins the thread. Ordinary forwarding
 uses 250 ms polling in addition to the native 300 ms debounce.
 
-The root must exist at initial setup. Processed sources and non-Unix root
+Processed sources and non-Unix root
 replacement remain unsupported; requested paths remain source-lifetime state.
 This supersedes the root-replacement limitation in the older folder dependency
 invalidation section, not the separate editor USD-layer watching limitation.
@@ -33,6 +33,26 @@ and build pass. Logs: `/tmp/source-root-feature-tests.log`,
 `/tmp/source-root-native-tests.log`, `/tmp/source-root-{check,build}.log`.
 Default-feature test-all also passes: 535 ordinary tests, 13 ignored
 (`/tmp/source-root-default-tests.log`). `git diff --check` passes.
+
+### Missing source root at startup
+
+Unix workers now remain alive after initial watcher setup failure. Once the root
+is a directory, one-second retries install a watcher and invalidate previously
+requested paths, including failed reads. No directory is created by the adapter.
+Non-Unix setup failures still disable watching. Initial errors remain logged.
+
+The native regression starts AssetServer and two independent roots before their
+source directory exists, requires both Failed, creates the directory and scene,
+then requires both Ready without explicit reload. A subsequent sphere-radius
+edit must reload while preserving projected entities, runtime names and clocks.
+Before the change it timed out (`/tmp/initial-root-before.log`).
+
+Validation: all three native AssetServer watcher tests pass, including explicit
+radius-three vertex checks after the post-recovery edit
+(`/tmp/initial-root-native-final.log`). Feature-enabled workspace tests pass:
+541 ordinary tests, 21 ignored (`/tmp/initial-root-feature-tests.log`).
+Default-feature check-all and build pass (`/tmp/initial-root-{check,build}.log`),
+as does `git diff --check`. This adds no GPU or non-Unix runtime evidence.
 
 ## Spot visual recheck after material fixes
 

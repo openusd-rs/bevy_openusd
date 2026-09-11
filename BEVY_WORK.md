@@ -3,6 +3,16 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Current full-workspace gate
+
+At 3d3a2df, make test-all with offline Cargo completes 33 test suites:
+638 passed, zero failed and 15 ignored. Log:
+/tmp/current-bevy-workspace-tests.log. make build also completes successfully
+in /tmp/current-bevy-viewer-build.log. This gate includes the latest sampler,
+studio fallback, playback controls and pinned Mara develop dependency. The
+ignored native/file-watcher lanes were not run by this command. Green tests
+do not restore the missing upstream host fixes or establish native-render parity.
+
 ## Post-sampler GPU acceptance and upstream host audit
 
 At e58f7f0, compare_deformation.sh passes the composed showcase at times 0, 30

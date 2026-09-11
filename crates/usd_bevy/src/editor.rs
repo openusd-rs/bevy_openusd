@@ -88,6 +88,9 @@ fn publish_projection_issues(
         Option<&crate::route::skel::UsdDeformationError>, Option<&crate::route::instancer::UsdInstancerWarning>,
         Option<&crate::route::shapes::UsdShapeError>, Option<&crate::route::curves::UsdCurveError>,
         Option<&crate::route::xform::UsdTransformError>, Option<&crate::route::material::UsdMaterialWarning>)>,
+    generated: Query<(Option<&Children>, Option<&crate::route::subset::UsdSubset>,
+        Option<&crate::route::instancer::UsdPrototypePart>, Has<crate::route::instancer::UsdInstance>,
+        Option<&crate::route::instancer::UsdInstanceId>, Option<&crate::route::material::UsdMaterialWarning>)>,
 ) {
     let Ok(mut state) = bridge.0.lock() else { return };
     state.view.document.reflect_issues = state.view.document.selected.as_deref()
@@ -107,6 +110,34 @@ fn publish_projection_issues(
                 material.map(|warning| format!("Material: {}", warning.0))]
                 .into_iter().flatten().collect()
         });
+    let selected = state.view.document.selected.as_deref().and_then(|path| prims.as_ref()?.entity(path));
+    if let Some(entity) = selected {
+        let mut pending = generated.get(entity).ok().and_then(|data| data.0)
+            .map(|children| children.iter().rev().take(4097).map(|child| (child, String::new())).collect::<Vec<_>>()).unwrap_or_default();
+        let mut visited = 0;
+        let mut reported = 0;
+        while let Some((entity, parent)) = pending.pop() {
+            if visited == 4096 || reported == 64 {
+                state.view.document.render_issues.push("Generated material diagnostics truncated (4096 entities / 64 warnings)".into());
+                break;
+            }
+            visited += 1;
+            let Ok((children, subset, part, instance, id, warning)) = generated.get(entity) else { continue };
+            let label = if let Some(subset) = subset { format!("subset {}", subset.0) }
+                else if let Some(part) = part { format!("prototype {}", part.0) }
+                else if instance { id.map_or_else(|| "instance".into(), |id| format!("instance {}", id.0)) }
+                else { continue };
+            let label = if parent.is_empty() { label } else { format!("{parent} / {label}") };
+            if let Some(warning) = warning {
+                state.view.document.render_issues.push(format!("Material ({label}): {}", warning.0));
+                reported += 1;
+            }
+            if let Some(children) = children {
+                let remaining = 4097usize.saturating_sub(visited + pending.len());
+                pending.extend(children.iter().rev().take(remaining).map(|child| (child, label.clone())));
+            }
+        }
+    }
 }
 
 fn advance_editor_time(world: &mut World) {
@@ -1727,6 +1758,59 @@ def Xform "Model" (
         bridge.0.lock().unwrap().view.document.selected = None;
         app.update();
         assert!(bridge.view().unwrap().document.render_issues.is_empty());
+    }
+
+    #[test]
+    fn generated_material_issues_follow_owned_children_and_clear() {
+        use crate::route::{material::UsdMaterialWarning, subset::UsdSubset,
+            instancer::{UsdInstance, UsdInstanceId, UsdPrototypePart}};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.init_resource::<crate::live::PrimEntities>();
+        let root = app.world_mut().spawn_empty().id();
+        let subset = app.world_mut().spawn((ChildOf(root), UsdSubset("/Root/Faces".into()), UsdMaterialWarning("no UV0".into()))).id();
+        let instance = app.world_mut().spawn((ChildOf(root), UsdInstance, UsdInstanceId(7))).id();
+        let part = app.world_mut().spawn((ChildOf(instance), UsdPrototypePart("/Proto/Mesh".into()), UsdMaterialWarning("no tangent frame".into()))).id();
+        let unrelated = app.world_mut().spawn((ChildOf(root), UsdMaterialWarning("runtime warning".into()))).id();
+        app.world_mut().spawn((ChildOf(unrelated), UsdSubset("unrelated".into()), UsdMaterialWarning("hidden".into())));
+        app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Root", root);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.0.lock().unwrap().view.document.selected = Some("/Root".into());
+        app.update();
+        assert_eq!(bridge.view().unwrap().document.render_issues, [
+            "Material (subset /Root/Faces): no UV0",
+            "Material (instance 7 / prototype /Proto/Mesh): no tangent frame"]);
+        app.world_mut().entity_mut(subset).remove::<UsdMaterialWarning>();
+        app.world_mut().entity_mut(part).remove::<UsdMaterialWarning>();
+        app.update();
+        assert!(bridge.view().unwrap().document.render_issues.is_empty());
+        app.world_mut().entity_mut(part).insert(UsdMaterialWarning("returned".into()));
+        bridge.0.lock().unwrap().view.document.selected = None;
+        app.update();
+        assert!(bridge.view().unwrap().document.render_issues.is_empty());
+    }
+
+    #[test]
+    fn generated_material_issue_collection_reports_limits() {
+        use crate::route::{material::UsdMaterialWarning, subset::UsdSubset};
+        for (count, warnings, expected, truncated) in [(64, true, 64, false), (65, true, 65, true),
+            (4096, false, 0, false), (4097, false, 1, true)] {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, EditorPlugin));
+            app.init_resource::<crate::live::PrimEntities>();
+            let root = app.world_mut().spawn_empty().id();
+            for i in 0..count {
+                let mut child = app.world_mut().spawn((ChildOf(root), UsdSubset(format!("/Root/Part{i}"))));
+                if warnings { child.insert(UsdMaterialWarning("missing coordinates".into())); }
+            }
+            app.world_mut().resource_mut::<crate::live::PrimEntities>().insert("/Root", root);
+            let bridge = app.world().resource::<EditorBridge>().clone();
+            bridge.0.lock().unwrap().view.document.selected = Some("/Root".into());
+            app.update();
+            let issues = bridge.view().unwrap().document.render_issues;
+            assert_eq!(issues.len(), expected);
+            assert_eq!(issues.last().is_some_and(|issue| issue.contains("diagnostics truncated")), truncated);
+        }
     }
 
     #[test]

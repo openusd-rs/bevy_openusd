@@ -1936,8 +1936,13 @@ geometry, curve surfaces, subsets and point-instancer prototypes. The warning
 identifies absent inputs; it does not generate coordinates, remove textures or
 claim that constant 1x1 textures necessarily render incorrectly without UVs.
 Material warnings on the selected prim's mapped entity appear in the Properties
-pane's render issues and clear when the warning or selection disappears. This
-does not aggregate warnings from generated subset/prototype descendants.
+pane's render issues and clear when the warning or selection disappears.
+Generated subset and point-instancer child material warnings are also shown,
+labelled with subset/prototype names and instance IDs when available. Collection
+follows only generated-child markers, skips unrelated runtime subtrees and stops
+at 4096 visited child entities or 64 child warnings with a truncation message.
+It does not aggregate arbitrary authored prim descendants or nonmaterial child
+diagnostics.
 
 `UsdTransform2d` scale/rotation/translation is converted through the mesh V-flip
 before becoming Bevy's UV transform. Generate the animated comparison fixture:

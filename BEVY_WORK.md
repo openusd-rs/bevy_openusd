@@ -3,6 +3,30 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Selected-parent generated material warnings
+
+The editor now collects material warnings from generated subsets, point-instance
+wrappers and prototype parts beneath the selected mapped entity. Labels include
+subset/prototype names and instance IDs when present. Traversal does not enter
+unrelated runtime children or arbitrary authored-prim subtrees. Direct selected
+entity diagnostics remain unchanged. Child scanning stops at 4096 visited
+entities or 64 warnings and explicitly reports truncation; the pending queue is
+bounded as well. Nonmaterial child diagnostics are not aggregated.
+
+Two regressions cover nested instance/part labels, unrelated-subtree exclusion,
+warning removal, selection clearing, and exact/over-limit entity and message
+counts. All 465 nonignored library tests and check-all pass (14 native tests
+ignored): `/tmp/generated-material-library-tests.log` and
+`/tmp/generated-material-current-check.log`.
+
+Added `assets/material_subset_warning.usda`. Inspected the native host capture
+`target/generated-material-warning-ui.png`: selecting /Root shows
+`Material (subset Faces)` and its missing-tangent explanation above the prim
+controls, while the mesh remains visible. Capture guards pass
+(`/tmp/generated-material-capture.log`). This exposes a generated child's
+existing diagnostic; it does not repair the absent tangent frame or establish
+that intermittent host black frames are fixed.
+
 ## Missing material texture-coordinate diagnostics
 
 The shared material geometry-input check now reports absent UV0/UV1 coordinates

@@ -5,6 +5,24 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+Inspector integration adds a dedicated Payload authoring group with up to 64
+draft rows, asset/prim/offset/scale fields, row add/remove, explicit whole-list
+replacement/blocking, and local-opinion clearing. Draft state is bounded to one
+document/prim/edit-layer context and resets across those boundaries. It does not
+prefill composed relative asset paths or claim list-op provenance. Invalid rows
+show a local error before commands are sent. The first test caught the canonical
+path parser rejecting empty paths; defaultPrim now uses sdf::Path::default().
+
+All 51 viewer tests, check-all and build pass
+(`/tmp/payload-ui-{tests,check,build}.log`). The first screenshot clipped Clear in
+the existing Properties group; the dedicated group fixes that. Inspected
+`target/payload-editor-group.png` and `target/payload-editor-entry.png`: all
+initial actions and one added row's four fields/removal/replacement actions fit.
+The latter uses `/tmp/payload-add.replay`; logs are
+`/tmp/payload-ui-{group,entry}-capture.log`. End-to-end replacement/error/clear UI
+interaction and larger row-count scrolling still need acceptance; headless API
+behavior is covered separately below.
+
 Follow-up live regression authors an external relative/defaultPrim payload through
 EditorBridge, verifies its child has a projected Bevy mesh, and exercises undo,
 redo, unload and reload while retaining the parent entity, runtime Name and

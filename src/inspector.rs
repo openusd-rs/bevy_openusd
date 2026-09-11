@@ -10,6 +10,7 @@ pub struct Drafts(
     Arc<Mutex<HashMap<String, (String, String, String)>>>,
     Arc<Mutex<HashMap<String, (String, String)>>>,
     Arc<Mutex<HashMap<String, bool>>>,
+    crate::payload_editor::PayloadDraft,
 );
 
 fn path_lines(path: &str) -> Vec<String> {
@@ -102,6 +103,9 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 super::send(&bridge, EditorCommand::Payload { prim: path, loaded: !loaded });
             }
         }));
+    }
+    if let Some(payload) = crate::payload_editor::pod(snapshot, bridge, &drafts.3) {
+        body.add_normal("editor.payloads", "Payload authoring", "document", vec![payload]);
     }
     for (set, options) in &snapshot.variant_choices {
         let key = format!("{path}:variant:{set}");

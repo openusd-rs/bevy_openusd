@@ -18,6 +18,7 @@ mod timeline;
 mod ui_replay;
 mod render_settings;
 mod file_dialog;
+mod payload_editor;
 
 use mara::host::{MaraHostCtx, RibbonRail};
 use mara::ui::mara_core;

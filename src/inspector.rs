@@ -13,6 +13,7 @@ pub struct Drafts(
     crate::payload_editor::PayloadDraft,
     Arc<Mutex<Option<(u64, Option<openusd::usd::EditTarget>)>>>,
     Arc<Mutex<HashMap<String, openusd::sdf::Reference>>>,
+    Arc<Mutex<String>>,
 );
 
 impl Drafts {
@@ -24,6 +25,7 @@ impl Drafts {
         if let Ok(mut times) = self.1.lock() { times.clear(); }
         if let Ok(mut expanded) = self.2.lock() { expanded.clear(); }
         if let Ok(mut references) = self.5.lock() { references.clear(); }
+        if let Ok(mut filter) = self.6.lock() { filter.clear(); }
         *context = Some(current);
     }
 }
@@ -38,6 +40,11 @@ pub(crate) fn path_lines(path: &str) -> Vec<String> {
 
 fn send_edit(bridge: &EditorBridge, snapshot: &EditorSnapshot, edit: EditorEdit) {
     if let Some(command) = snapshot.checked_edit(edit) { super::send(bridge, command); }
+}
+
+fn attribute_matches(name: &str, type_name: &str, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty() || name.to_lowercase().contains(&query) || type_name.to_lowercase().contains(&query)
 }
 
 fn draft_conflicts(draft: &mut (String, String, String), current: &str) -> bool {
@@ -86,6 +93,19 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             else if ui.button("Use as edit target").clicked { super::send(&bridge, EditorCommand::EditLayer(layer)); }
         }));
     }
+    let filter = drafts.6.lock().map(|filter| filter.clone()).unwrap_or_default();
+    let matching = snapshot.attributes.iter().filter(|attribute| attribute_matches(&attribute.name, &attribute.type_name, &filter)).count();
+    let total = snapshot.attributes.len();
+    let search_drafts = drafts.clone();
+    let search_context = (snapshot.document_id, snapshot.edit_target.clone());
+    layers.push(Pod::new("editor.attribute.filter").with_custom_units(4, move |ui| {
+        if !search_drafts.4.lock().is_ok_and(|active| active.as_ref() == Some(&search_context)) { return; }
+        let Ok(mut filter) = search_drafts.6.lock() else { return };
+        ui.label("Inspector attribute filter");
+        ui.text_input(&mut filter, "Attribute name or USD type");
+        ui.label(&format!("Attributes: {matching} / {total}"));
+        if !filter.is_empty() && ui.button("Clear attribute filter").clicked { filter.clear(); }
+    }));
     body.add_normal("editor.layers", "Layers / edit target", "document", layers);
     let Some(path) = &snapshot.selected else {
         body.add_normal("editor.selection", "Selection", "options",
@@ -212,6 +232,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     }
     let mut matrix_pods = Vec::new();
     for attribute in &snapshot.attributes {
+        if !attribute_matches(&attribute.name, &attribute.type_name, &filter) { continue; }
         let matrix_attribute = attribute.type_name == "matrix4d";
         let sampled_time = snapshot.sample_time;
         let key = format!("{}:{}:{path}:{}", snapshot.document_id, snapshot.edit_layer, attribute.name);
@@ -844,6 +865,32 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn attribute_filter_matches_types_and_preserves_drafts() {
+        use super::{attribute_matches, Drafts};
+        use usd_bevy::editor::EditorSnapshot;
+        assert!(attribute_matches("primvars:displayColor", "color3f[]", " DISPLAYcolor "));
+        assert!(attribute_matches("primvars:displayColor", "color3f[]", "COLOR3F[]"));
+        assert!(attribute_matches("custom:Étage", "int", "étage"));
+        assert!(attribute_matches("size", "double", " \n"));
+        assert!(!attribute_matches("size", "double", "color"));
+        let drafts = Drafts::default();
+        let mut snapshot = EditorSnapshot { document_id: 1, selected: Some("/A".into()), ..Default::default() };
+        drafts.synchronize_context(&snapshot);
+        *drafts.6.lock().unwrap() = "color".into();
+        drafts.0.lock().unwrap().insert("hidden".into(), ("old".into(), "edited".into(), String::new()));
+        snapshot.selected = Some("/B".into()); snapshot.revision += 1;
+        drafts.synchronize_context(&snapshot);
+        assert_eq!(*drafts.6.lock().unwrap(), "color");
+        assert_eq!(drafts.0.lock().unwrap()["hidden"].1, "edited");
+        drafts.6.lock().unwrap().clear();
+        assert_eq!(drafts.0.lock().unwrap()["hidden"].1, "edited");
+        *drafts.6.lock().unwrap() = "size".into();
+        snapshot.document_id = 2;
+        drafts.synchronize_context(&snapshot);
+        assert!(drafts.6.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn numeric_array_samples_preserve_defaults_and_clear_undo() {
         use usd_bevy::editor::{EditorEdit, EditorSession};

@@ -536,6 +536,12 @@ three and empty input authors an empty array. Values must fit their declared typ
 and floating-point values must be finite. The text editor allows at most 4096
 scalar components and 256 KiB of text; larger arrays remain read-only here rather
 than being truncated. This is not an unrestricted bulk-mesh editor.
+The **Layers / edit target** group includes an attribute filter matching a
+case-insensitive substring of an attribute name or USD type. Its count includes
+schema attributes. Filtering only changes displayed attribute controls, including
+matrix controls; it does not author data or discard hidden drafts. Selection
+changes retain the query; document or edit-target changes clear it. Prim,
+relationship, variant, payload and reference controls are not filtered.
 “Apply default value” edits the default opinion, not an animation time sample.
 “Apply sample at time” uses the explicit scene-time field; “Use timeline time”
 copies the current timeline position into that field. “Clear sample at time”

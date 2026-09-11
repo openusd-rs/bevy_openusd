@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Inspector attribute filtering
+
+The Layers / edit target group now filters displayed attribute controls by a
+case-insensitive name or USD type substring, including matrix controls. It shows
+matching/total counts and a clear action. Filtering does not author values or
+discard hidden drafts. Selection and revision changes retain the query; document
+or full edit-target changes reset it. Other composition controls remain visible.
+
+All 76 viewer tests and check-all pass
+(`/tmp/attribute-filter-replay-{tests,check}.log`). Regression coverage includes
+name/type matching, whitespace, Unicode lowercasing, draft retention and document
+reset. The registered `attribute_filter.replay` types `color3f[]` and clears it
+in one native viewer process. Inspected `target/attribute-filter-interaction-ui.png`
+shows 1 / 9 attributes and the display-color editor; `.second.png` shows 9 / 9
+and restored schema controls. Both retain the blue cube and both capture guards
+pass (`/tmp/attribute-filter-interaction-capture.log`). The initial layout image
+`target/attribute-filter-layout-ui.png` was also inspected. This does not resolve
+the intermittent host black-frame issue or establish full rendering fidelity.
+
 ## Same-process host capture diagnostics
 
 Repaint diagnostics now include the root output delay and up to 32 previous-pass

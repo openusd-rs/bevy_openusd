@@ -17,8 +17,9 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
   and tested. The local Mara develop-based host at ac47bfb restores OS close
   routing through the guard, direct screenshots and dome-device configuration.
   It lives in the required sibling worktree `../mara-bevy-host`, not unmodified
-  upstream develop. OS-close routing is restored in source; a fresh native
-  OS-close interaction test is still outstanding for this worktree.
+  upstream develop. An isolated Xwayland WM_DELETE_WINDOW request now has
+  rendered confirmation-dialog evidence with the process remaining alive;
+  this is not a cross-desktop/backend acceptance matrix.
   External disk-conflict detection remains open;
   Clean means matching a loaded or in-place-saved baseline, not unchanged disk.
 - General typed scene-building, broader backend coverage and interactive/GPU

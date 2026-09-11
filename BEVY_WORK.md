@@ -3,6 +3,29 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native OS-close confirmation evidence
+
+scripts/send_window_close.c sends WM_DELETE_WINDOW only to exactly one window
+with the requested title advertising that protocol. It traverses reparented
+windows, rejects missing/ambiguous targets and does not destroy the window.
+scripts/check_native_close.sh launches an isolated Weston/Xwayland instance,
+waits for viewer startup, sends the native request, checks process survival and
+retains a direct GPU image. It cleans up only its own process groups.
+
+Run through Make with Weston on PATH:
+`make --eval='verify-native-close:; @bash scripts/check_native_close.sh target/NEW_CLOSE_CAPTURE' verify-native-close`.
+The helper compiles with -Wall -Wextra -Werror and Xlib via pkg-config. Usage
+and invalid-display failures were checked. The script passes bash -n.
+
+target/native-close-confirmation/dialog.png was inspected: Close USD viewer?,
+Cancel, Discard and close, and the dimmed scene are visible. Native request
+log and HOST_CAPTURE_OK are in /tmp/native-close-confirmation.log; the viewer
+remained alive. This verifies native Xwayland event routing into the guard,
+not native Wayland compositor shortcuts or subsequent discard/cancel clicks.
+Earlier Xvfb probes crashed before UI startup with missing GLX messages;
+/tmp/native-os-close-viewer.log and target/native-close-vulkan/viewer.log
+retain those failures. They provide no close-behavior evidence.
+
 ## Approved develop-based Mara host
 
 User approved using latest Mara with local host fixes. The fetched develop head

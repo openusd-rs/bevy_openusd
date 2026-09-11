@@ -1,11 +1,6 @@
-//! Curves route (SCHEMA_INTEGRATION Phase C): `UsdGeomBasisCurves` → a Bevy
-//! `LineList` mesh. Read through the geom `BasisCurves` / `Curves` schema.
-//!
-//! Bevy has no native curve primitive, so each curve is drawn as line segments.
-//! Linear curves connect their vertices directly; **cubic** curves are
-//! tessellated (PLAN Phase 6e) — each segment is evaluated through its basis
-//! matrix (bezier / b-spline / catmull-rom) at configurable samples, so the
-//! rendered polyline follows the smooth curve rather than its control hull.
+//! BasisCurves projection as lines or opt-in width-aware tubes and ribbons.
+//! Cubic centerlines sample Bezier, B-spline, or Catmull-Rom bases.
+//! Surfaces are open-ended polygonal approximations without UVs or caps.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::PrimitiveTopology;
@@ -18,6 +13,7 @@ use openusd::sdf::Value;
 
 use super::{PrimRoute, RouteCtx};
 use crate::read::geom::{Interpolation, MeshPrimvar};
+mod surface;
 
 /// Maps `UsdGeomBasisCurves` to a line-list mesh.
 pub struct CurvesRoute;
@@ -27,19 +23,33 @@ pub struct UsdCurveError(pub String);
 
 /// Cubic samples per segment, applied when curves are projected.
 #[derive(Resource, Clone, Copy, Debug)]
-pub struct UsdCurveSettings { cubic_steps: usize }
+pub struct UsdCurveSettings { cubic_steps: usize, surface_sides: Option<usize> }
 
 impl UsdCurveSettings {
     pub fn new(cubic_steps: usize) -> Result<Self, String> {
         if !(1..=64).contains(&cubic_steps) { return Err("cubic curve steps must be 1..=64".into()); }
-        Ok(Self { cubic_steps })
+        Ok(Self { cubic_steps, surface_sides: None })
     }
 
     pub fn cubic_steps(self) -> usize { self.cubic_steps }
+
+    /// Enables width-aware surfaces with 3..=32 tube sides, or restores line mode.
+    pub fn with_surface_sides(mut self, sides: Option<usize>) -> Result<Self, String> {
+        if sides.is_some_and(|sides| !(3..=32).contains(&sides)) { return Err("curve surface sides must be 3..=32".into()); }
+        self.surface_sides = sides;
+        Ok(self)
+    }
+
+    pub fn surface_sides(self) -> Option<usize> { self.surface_sides }
 }
 
 impl Default for UsdCurveSettings {
-    fn default() -> Self { Self { cubic_steps: CUBIC_STEPS } }
+    fn default() -> Self { Self { cubic_steps: CUBIC_STEPS, surface_sides: None } }
+}
+
+pub(crate) fn current_geometry_key(world: &World) -> (usize, Option<usize>) {
+    let settings = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default();
+    (settings.cubic_steps, settings.surface_sides)
 }
 
 pub(crate) fn current_steps(world: &World) -> usize {
@@ -294,6 +304,18 @@ fn emit_polyline(cv: &[[f32; 3]], periodic: bool, out: &mut Vec<[f32; 3]>, idx: 
 /// Positions + line indices for every curve. Linear curves connect vertices
 /// directly; cubic curves are tessellated through their basis.
 fn line_geometry(ctx: &RouteCtx, steps: usize) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<[f32; 4]>>)> {
+    let geometry = centerlines(ctx, steps)?;
+    Some((geometry.points, geometry.indices, geometry.colors))
+}
+
+struct Centerlines {
+    points: Vec<[f32; 3]>,
+    indices: Vec<u32>,
+    colors: Option<Vec<[f32; 4]>>,
+    spans: Vec<(std::ops::Range<usize>, CurveSampling)>,
+}
+
+fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
     let curves = BasisCurves::get(ctx.stage, ctx.path.clone()).ok()??;
     let points = read_points(&curves, ctx.time)?;
     if points.is_empty() {
@@ -319,6 +341,7 @@ fn line_geometry(ctx: &RouteCtx, steps: usize) -> Option<(Vec<[f32; 3]>, Vec<u32
     let mut colors = (color.is_some() || opacity.is_some()).then(Vec::new);
     let mut cursor = 0usize;
     let mut varying_offset = 0usize;
+    let mut spans = Vec::new();
     for (curve, c) in counts.into_iter().enumerate() {
         let n = c.max(0) as usize;
         let end = (cursor + n).min(points.len());
@@ -344,9 +367,10 @@ fn line_geometry(ctx: &RouteCtx, steps: usize) -> Option<(Vec<[f32; 3]>, Vec<u32
             }
         }
         varying_offset += if cubic { segments + usize::from(!periodic) } else { cv.len() };
+        spans.push((first..out.len(), layout));
         cursor = end;
     }
-    Some((out, indices, colors))
+    Some(Centerlines { points: out, indices, colors, spans })
 }
 
 struct CurveSampling {
@@ -424,6 +448,17 @@ impl PrimRoute for CurvesRoute {
             return;
         }
         world.entity_mut(entity).remove::<UsdCurveError>();
+        if let Some(sides) = world.get_resource::<UsdCurveSettings>().and_then(|settings| settings.surface_sides()) {
+            match surface::project(ctx, world, entity, steps, sides) {
+                Ok(true) => return,
+                Ok(false) => {},
+                Err(error) => {
+                    super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
+                    world.entity_mut(entity).insert(UsdCurveError(error));
+                    return;
+                }
+            }
+        }
         let Some((points, indices, colors)) = line_geometry(ctx, steps) else {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             return;
@@ -893,6 +928,8 @@ def BasisCurves "Curve" {
     fn curve_quality_changes_refresh_live_and_independent_stages() {
         let source = crate::UsdSource::snapshot("quality-animation.usda", &br#"#usda 1.0
 def BasisCurves "Curve" {
+    float[] widths.timeSamples = { 0: [0.2], 10: [0.6] }
+    float[] widths ( interpolation = "constant" )
     uniform token type = "cubic"
     uniform token basis = "bezier"
     int[] curveVertexCounts = [4]
@@ -902,12 +939,21 @@ def BasisCurves "Curve" {
     }
 }
 "#[..]).unwrap();
-        let check = |world: &World, entity, steps, height| {
+        let check = |world: &World, entity, steps, height: f32| {
             assert_eq!(world.get::<Name>(entity).unwrap().as_str(), "runtime name");
             let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
-            assert_eq!(mesh.count_vertices(), steps + 1);
+            let sides = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().surface_sides();
+            let ring_size = sides.unwrap_or(1);
+            assert_eq!(mesh.count_vertices(), (steps + 1) * ring_size);
+            assert_eq!(mesh.primitive_topology(), if sides.is_some() { PrimitiveTopology::TriangleList } else { PrimitiveTopology::LineList });
             let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
-            assert_eq!(points[0][1], height);
+            let center = points[..ring_size].iter().map(|point| Vec3::from_array(*point)).sum::<Vec3>() / ring_size as f32;
+            assert!((center-Vec3::new(0.,height,0.)).length() < 1e-6);
+            if sides.is_some() {
+                for point in &points[..ring_size] {
+                    assert!((Vec3::from_array(*point).distance(center)-(0.1+height*0.1)).abs() < 1e-6);
+                }
+            }
         };
         let mut live_app = App::new();
         live_app.add_plugins((MinimalPlugins, crate::UsdPlugin, crate::live::LiveStagePlugin));
@@ -925,9 +971,9 @@ def BasisCurves "Curve" {
         app.update();
         let entities = roots.map(|root| app.world().non_send::<crate::instance::UsdInstances>().entity(root, "/Curve").unwrap());
         for entity in entities { app.world_mut().entity_mut(entity).insert(Name::new("runtime name")); }
-        for setting in [Some(2), Some(64), None] {
+        for (setting, sides) in [(Some(2), None), (Some(2), Some(12)), (Some(64), Some(3)), (None, None), (Some(8), Some(12))] {
             for world in [live_app.world_mut(), app.world_mut()] {
-                if let Some(steps) = setting { world.insert_resource(UsdCurveSettings::new(steps).unwrap()); }
+                if let Some(steps) = setting { world.insert_resource(UsdCurveSettings::new(steps).unwrap().with_surface_sides(sides).unwrap()); }
                 else { world.remove_resource::<UsdCurveSettings>(); }
             }
             live_app.update();
@@ -940,6 +986,17 @@ def BasisCurves "Curve" {
                 assert_eq!(app.world().get::<crate::UsdSceneState>(root), Some(&crate::UsdSceneState::Ready));
                 check(app.world(), entities[index], steps, index as f32 * 2.0);
             }
+        }
+        for time in [5.0, 0.0, 10.0, 0.0] {
+            live_app.world_mut().resource_mut::<crate::route::StageTime>().current = time;
+            for (index, root) in roots.iter().enumerate() {
+                app.world_mut().get_mut::<crate::instance::UsdInstanceTime>(*root).unwrap().current = if index == 0 { time } else { 10.-time };
+            }
+            live_app.update();
+            app.update();
+            check(live_app.world(), live_entity, 8, time as f32*0.2);
+            check(app.world(), entities[0], 8, time as f32*0.2);
+            check(app.world(), entities[1], 8, (10.-time) as f32*0.2);
         }
     }
 

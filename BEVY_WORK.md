@@ -5,6 +5,36 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Curve width and normal reader foundation
 
+Surface projection now supports opt-in
+`USD_CURVE_SURFACE_SIDES=3..32` in the viewer and capture example. Missing widths
+retain the line fallback. Authored normals select oriented ribbons; other curves
+use transported-frame tubes with radius equal to half the sampled width.
+The surface path validates cardinality and output budgets. These are open-ended
+polygonal approximations without caps or UVs, not native curve primitives.
+Settings tracking includes surface mode, and changing UI curve sampling preserves
+the selected surface mode. Capture metadata records the requested side count.
+
+The initial two surface tests pass: analytic straight-tube radii, outward face
+winding, ribbon width/orientation, malformed-width geometry removal and recovery,
+and route removal. `make check-all` and the ordinary workspace test suite pass
+(`/tmp/curve-surfaces-check.log`, `/tmp/curve-surfaces-all-tests.log`). A subsequent
+frame orthonormality/degeneracy test also passes in the three-test focused run
+(`/tmp/curve-surfaces-tests.log`). The live quality regression now checks line to
+surface transitions, tube-side changes, mode removal and forward/backward width
+and point sampling, including midpoint interpolation, on LiveStage and two
+independently clocked instances. Entity identity and runtime names survive
+(`/tmp/curve-surfaces-live-tests.log`).
+
+Inspected GPU captures `target/curve-widths-surfaces.png` (8 samples, 12 sides)
+and `target/curve-widths-surfaces-quality.png` (32 samples, 16 sides) show all five
+rows with visible widths: constant tube, vertex taper, varying cubic taper,
+oriented ribbon and primvar width override. The higher sampling removes the
+obvious coarse bends. Both report CAPTURE_OK with no warnings under Vulkan,
+forward rendering, authored /Camera, time zero and shadows disabled
+(`/tmp/curve-surfaces-capture.log`, `/tmp/curve-surfaces-quality-capture.log`).
+These are fixture acceptance images, not native renderer comparisons. Broader
+periodic/indexed surface acceptance, UVs/caps and native curve parity remain open.
+
 Added canonical `read::curves::{read_widths_at, read_normals_at}`. These decode
 composed object-space values at an optional finite time, prefer generic
 primvars over built-in attributes, preserve index arrays and interpolation,
@@ -14,10 +44,9 @@ absent rather than inventing a radius. Widths reject negative/nonfinite values;
 normals retain their authored length while rejecting nonfinite values. Invalid
 value types, interpolation metadata and index types/ranges report errors.
 
-These readers do not yet check curve-dependent cardinality, interpolate along
-a curve basis or emit surface geometry. Zero orientation vectors remain data
-for the future surface validator to handle. The line route remains unchanged;
-this is a prerequisite for tube/ribbon projection, not width rendering support.
+The readers retain raw interpolation data; curve-dependent cardinality, basis
+sampling and zero orientation rejection belong to the opt-in surface route.
+Default line mode remains available and does not consume widths or normals.
 
 Initial focused tests pass (`/tmp/curve-width-reader-tests.log`): all five width
 fixture rows, ribbon normals, primvar override, constant inheritance, indexed

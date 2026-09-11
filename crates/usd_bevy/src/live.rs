@@ -674,7 +674,7 @@ pub struct LiveStagePlugin;
 struct AppliedSubdivision(Option<u32>);
 
 #[derive(Resource, Default)]
-struct AppliedCurveSteps(usize);
+struct AppliedCurveSteps((usize, Option<usize>));
 
 impl Plugin for LiveStagePlugin {
     fn build(&self, app: &mut App) {
@@ -721,7 +721,7 @@ fn project_on_load_system(world: &mut World) {
     project_stage(world, &live, &mut map);
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     world.resource_mut::<AppliedSubdivision>().0 = subdivision_levels;
-    world.resource_mut::<AppliedCurveSteps>().0 = crate::route::curves::current_steps(world);
+    world.resource_mut::<AppliedCurveSteps>().0 = crate::route::curves::current_geometry_key(world);
     world.insert_resource(map);
     world.insert_non_send(live);
 }
@@ -738,7 +738,7 @@ fn apply_subdivision_settings_system(world: &mut World) {
 }
 
 fn apply_curve_settings_system(world: &mut World) {
-    let current = crate::route::curves::current_steps(world);
+    let current = crate::route::curves::current_geometry_key(world);
     if world.resource::<AppliedCurveSteps>().0 == current { return; }
     let Some(live) = world.remove_non_send::<LiveStage>() else { return };
     let map = world.remove_resource::<PrimEntities>().unwrap_or_default();

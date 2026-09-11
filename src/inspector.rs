@@ -21,7 +21,15 @@ fn path_lines(path: &str) -> Vec<String> {
     }).collect()
 }
 
+fn send_edit(bridge: &EditorBridge, snapshot: &EditorSnapshot, edit: EditorEdit) {
+    if let Some(command) = snapshot.checked_edit(edit) { super::send(bridge, command); }
+}
+
 pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts, current_time: f64) {
+    let edit_context = Arc::new(EditorSnapshot {
+        document_id: snapshot.document_id, revision: snapshot.revision,
+        edit_target: snapshot.edit_target.clone(), ..Default::default()
+    });
     let target = path_lines(&snapshot.edit_layer);
     let mut layers = vec![Pod::new("editor.target").with_custom_units(target.len() + 1, move |ui| {
         ui.label("Edit target");
@@ -79,6 +87,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             let path = path.clone();
             let drafts = drafts.clone();
             let bridge = bridge.clone();
+            let edit_context = edit_context.clone();
             pods.push(Pod::new(Id::new(&key)).with_custom_units(2, move |ui| {
                 let Ok(mut drafts) = drafts.0.lock() else { return };
                 let draft = drafts.entry(key).or_insert_with(|| (initial.clone(), initial, String::new()));
@@ -89,7 +98,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                     } else {
                         EditorEdit::Move { path, destination: draft.1.clone() }
                     };
-                    super::send(&bridge, EditorCommand::Edit(edit));
+                    send_edit(&bridge, &edit_context, edit);
                 }
             }));
         }
@@ -113,13 +122,14 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             .map(|(_, value)| value.clone()).unwrap_or_default();
         let (path, set, options) = (path.clone(), set.clone(), options.clone());
         let bridge = bridge.clone();
+        let edit_context = edit_context.clone();
         pods.push(Pod::new(Id::new(&key)).with_custom_units(options.len() + 1, move |ui| {
             ui.label(&format!("Variant: {set} = {selected}"));
             for selection in options {
                 if ui.button(&selection).clicked && selection != selected {
-                    super::send(&bridge, EditorCommand::Edit(EditorEdit::Variant {
+                    send_edit(&bridge, &edit_context, EditorEdit::Variant {
                         prim: path.clone(), set: set.clone(), selection,
-                    }));
+                    });
                 }
             }
         }));
@@ -130,6 +140,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let (path, name) = (path.clone(), name.clone());
         let drafts = drafts.clone();
         let bridge = bridge.clone();
+        let edit_context = edit_context.clone();
         pods.push(Pod::new(Id::new(&key)).with_custom_units(5, move |ui| {
             ui.label(&format!("Relationship: {name}"));
             let Ok(mut drafts) = drafts.0.lock() else { return };
@@ -140,13 +151,13 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 match draft.1.split_whitespace().map(openusd::sdf::path).collect::<Result<Vec<_>, _>>() {
                     Ok(targets) => {
                         draft.2.clear();
-                        super::send(&bridge, EditorCommand::Edit(EditorEdit::RelationshipTargets { prim: path.clone(), name: name.clone(), targets }));
+                        send_edit(&bridge, &edit_context, EditorEdit::RelationshipTargets { prim: path.clone(), name: name.clone(), targets });
                     }
                     Err(error) => draft.2 = error.to_string(),
                 }
             }
             if ui.button("Clear local target opinion").clicked {
-                super::send(&bridge, EditorCommand::Edit(EditorEdit::ClearRelationshipTargets { prim: path, name }));
+                send_edit(&bridge, &edit_context, EditorEdit::ClearRelationshipTargets { prim: path, name });
             }
             if !draft.2.is_empty() { ui.label(&draft.2); }
         }));
@@ -161,6 +172,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         let drafts = drafts.clone();
         let bridge = bridge.clone();
         let source_lines = path_lines(&attribute.source);
+        let edit_context = edit_context.clone();
         let summary_lines = path_lines(&attribute.source_summary);
         let expanded = drafts.2.lock().ok().and_then(|states| states.get(&key).copied()).unwrap_or(false);
         let sample_lines = path_lines(&sample_summary(&attribute.sample_times));
@@ -202,10 +214,10 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
             for line in sample_lines { ui.label(&line); }
             if attribute.blocked { ui.label("Value is blocked"); }
             if ui.button("Clear local values / samples").clicked {
-                super::send(&bridge, EditorCommand::Edit(EditorEdit::ClearAttributeValues { prim: path.clone(), name: attribute.name.clone() }));
+                send_edit(&bridge, &edit_context, EditorEdit::ClearAttributeValues { prim: path.clone(), name: attribute.name.clone() });
             }
             if ui.button("Block values and samples").clicked {
-                super::send(&bridge, EditorCommand::Edit(EditorEdit::BlockAttributeValues { prim: path.clone(), name: attribute.name.clone() }));
+                send_edit(&bridge, &edit_context, EditorEdit::BlockAttributeValues { prim: path.clone(), name: attribute.name.clone() });
             }
             let Ok(mut times) = drafts.1.lock() else { return };
             let time = times.entry(key.clone()).or_insert_with(|| (current_time.to_string(), String::new()));
@@ -215,9 +227,9 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 match parse_sample_time(&time.0) {
                     Ok(time_code) => {
                         time.1.clear();
-                        super::send(&bridge, EditorCommand::Edit(EditorEdit::ClearAttributeSample {
+                        send_edit(&bridge, &edit_context, EditorEdit::ClearAttributeSample {
                             prim: path.clone(), name: attribute.name.clone(), time: time_code,
-                        }));
+                        });
                     }
                     Err(error) => time.1 = error,
                 }
@@ -238,9 +250,9 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                     Ok((time_code, value)) => {
                         draft.2.clear();
                         time.1.clear();
-                        super::send(&bridge, EditorCommand::Edit(EditorEdit::AttributeSample {
+                        send_edit(&bridge, &edit_context, EditorEdit::AttributeSample {
                             prim: path.clone(), name: attribute.name.clone(), type_name: attribute.type_name.clone(), value, time: time_code,
-                        }));
+                        });
                     }
                     Err(error) => draft.2 = error,
                 }
@@ -249,9 +261,9 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
                 match parse_value(&value, &draft.1) {
                     Ok(value) => {
                         draft.2.clear();
-                        super::send(&bridge, EditorCommand::Edit(EditorEdit::Attribute {
+                        send_edit(&bridge, &edit_context, EditorEdit::Attribute {
                             prim: path, name: attribute.name, type_name: attribute.type_name, value,
-                        }));
+                        });
                     }
                     Err(error) => draft.2 = error,
                 }
@@ -359,6 +371,37 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inspector_edit_sender_preserves_context_and_rejects_stale_actions() {
+        use bevy::prelude::*;
+        use usd_bevy::editor::{EditorBridge, EditorCommand, EditorEdit, EditorPlugin, EditorSession};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, usd_bevy::live::LiveStagePlugin, EditorPlugin));
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/payload_authoring.usda").into())).unwrap();
+        app.update();
+        let snapshot = bridge.view().unwrap().document;
+        super::send_edit(&bridge, &snapshot, EditorEdit::Attribute {
+            prim: "/Root".into(), name: "value".into(), type_name: "double".into(), value: openusd::sdf::Value::Double(3.),
+        });
+        app.update();
+        let stage = app.world().non_send::<EditorSession>().stage().clone();
+        assert_eq!(stage.attribute("/Root.value").unwrap().get::<f64>().unwrap(), Some(3.));
+        super::send_edit(&bridge, &snapshot, EditorEdit::Rename { path: "/Root".into(), name: "Stale".into() });
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert!(stage.prim("/Root").unwrap().is_valid().unwrap());
+        assert!(!stage.prim("/Stale").unwrap().is_valid().unwrap());
+        let snapshot = bridge.view().unwrap().document;
+        super::send_edit(&bridge, &snapshot, EditorEdit::Rename { path: "/Root".into(), name: "Renamed".into() });
+        app.update();
+        assert!(stage.prim("/Renamed").unwrap().is_valid().unwrap());
+        assert!(app.world().resource::<usd_bevy::live::PrimEntities>().entity("/Renamed").is_some());
+        bridge.send(EditorCommand::Undo).unwrap();
+        app.update();
+        assert!(stage.prim("/Root").unwrap().is_valid().unwrap());
+    }
+
     #[test]
     fn matrix_rows_preserve_double_precision_and_reject_invalid_input() {
         use openusd::sdf::Value;

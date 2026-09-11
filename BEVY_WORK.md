@@ -5,14 +5,26 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+The context guard now also covers every EditorEdit emitted by the property
+inspector: rename/move, variant selection, relationship replace/clear, default
+and sampled attribute writes, sample removal, value clearing and blocking.
+One shared lightweight snapshot is captured per inspector frame and cloned by
+Arc into its controls; no full scene snapshot is copied per attribute. Runtime
+load toggles and edit-target selection remain separate commands. A bridge test
+accepts a current attribute write, rejects a stale rename, then accepts a fresh
+rename with live namespace reconciliation and undo. All 53 viewer tests and the
+viewer build pass (`/tmp/inspector-guard-{tests,build}.log`); check-all passes
+(`/tmp/inspector-guard-check.log`). This guards queued edits, not unsaved draft
+conflict resolution or all non-inspector command paths.
+
 Payload inspector actions now use `EditorSnapshot::checked_edit` and the new
 `EditorCommand::EditChecked`. The snapshot retains the complete canonical
 EditTarget, not only its layer identifier. Queue processing synchronizes external
 edits then checks document identity, revision and full target equality before
 normal edit dispatch. Rejected requests perform no authoring. Normal dispatch
 retains namespace remapping, texture refresh, rollback and history behavior.
-Existing unchecked Edit remains an explicit API; other inspector controls have
-not yet migrated to the guard. The form captures only context fields, not another
+Existing unchecked Edit remains an explicit API; the property inspector now uses
+the guard as described above. The form captures only context fields, not another
 copy of all scene/attribute data.
 
 The bridge regression accepts selection/seek changes but rejects stale revisions,

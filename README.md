@@ -1230,6 +1230,18 @@ with `sync::author_component_value`. The callback is ordinary Rust code, not a
 sandbox. This is USD source authoring, not Bevy's `bsn!` syntax or a replacement
 for the canonical generated schema types.
 
+The `snippet_assembly` example combines `usd!` escaping with reusable source
+references and portable USDZ save/reopen after its source directory is removed:
+
+```sh
+make run CARGO='cargo --offline' RUN_WITH= APP_TARGET='--example snippet_assembly'
+```
+
+It checks that quoted injection-like text stays a string value rather than
+creating extra prims. Unquoted interpolation accepts only sealed built-in scalar
+types; runtime identifiers/values must still parse. Snippet validation is not a
+filesystem or execution sandbox for authored dependencies or Rust callbacks.
+
 `usd_bevy::sync::author_component_value(&registry, &stage, "/Enemy", &health)`
 authors a registered `Component + Reflect` value directly, without an ECS entity
 or string type-name argument. Register `ReflectComponent` for the type. All

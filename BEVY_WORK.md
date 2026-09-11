@@ -3,6 +3,32 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reconciled typed authoring and snippet acceptance
+
+The original typed/reusable authoring API and safe snippet composition requirement
+is covered by canonical schema construction through UsdSource::build, registered
+Bevy component authoring, immutable reference/retiming batches and with_edits,
+and the existing transaction-backed EditorSession. These retain typed upstream
+schema definitions rather than introducing a second schema hierarchy or BSN
+syntax. The requirement is not full equivalence with Bevy's BSN implementation.
+
+The new snippet_assembly executable composes a snippet twice into a typed-built
+root. Quotes, braces, newlines and an injection-like prim declaration remain one
+string value; both radii and the exact two-child structure are asserted. It saves
+root-layer USDZ, removes the source directory and reopens the package to assert
+the same values and structure. Native usdcat also flattens the retained output
+target/snippet-acceptance.usdz without error; the inspected native USDA contains
+the two spheres and quoted multiline labels. The CLI refuses existing output
+paths and requires .usdz. It does not sandbox Rust or dependency access.
+
+Refreshed Make execution passes all four authoring examples (typed_authoring,
+editor_assembly, source_edits and snippet_assembly), eight snippet unit tests,
+and check-all. The previous construction gate covers all 24 source tests.
+Logs: /tmp/authoring-acceptance-{examples,snippets}.log,
+/tmp/snippet-native-{assembly,reopen}.log and /tmp/snippet-acceptance-check.log.
+README and SUPPORT document the API boundaries. GPU fidelity/performance and
+composition-editor interaction acceptance remain separate open requirements.
+
 ## Typed source construction
 
 UsdSource::build accepts a .usda identifier and a callback using the canonical
@@ -3203,7 +3229,7 @@ changed in this integration-regression step.
 - [x] Independent clocks, variants and overrides; preserve runtime-only components.
 - [ ] Composition-aware editing: selection, editable inspector, layers/edit target,
       variants/payloads, provenance, undo/redo and explicit save operations.
-- [ ] Typed/reusable authoring API and safe snippet composition.
+- [x] Typed/reusable authoring API and safe snippet composition.
 - [ ] GPU deformation and environment lighting with fidelity/performance evidence.
 - [x] Native prototype/instance projection with measured asset sharing.
 - [x] Real AssetServer, reload, multi-instance, save/reopen and image regressions.

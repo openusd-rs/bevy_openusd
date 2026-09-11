@@ -445,10 +445,12 @@ Nested USDZ reads support inner-package default layers, explicit bracket paths
 and relative inner-layer assets without extraction, through both filesystem and
 snapshot resolvers. Each entry traversal permits at most 16 package levels and
 256 MiB of cumulative decompressed entry bytes; this is not a total-stage memory
-limit. Exporting nested package dependencies remains unsupported.
+limit. Export bundles referenced nested layers/assets into ordinary unique entries
+while preserving composition; it does not reproduce the source archive layout.
 `nested_package_fixture` generates implicit/explicit nested USDA and USDC cases
 with embedded PNG materials, plus an independent constant-color reference;
 run it through `make run` with a new output directory.
+Add `--export` after the output directory to generate and reopen portable exports.
 The viewer can automatically watch requested external textures on native builds:
 
 ```sh
@@ -1852,6 +1854,7 @@ exports in USDA, USDC and USD, retaining referenced values and external textures
 The native gate also removes the source directory before checking exported
 packages. All three save modes now pass that regression, including an asset
 payload. USDZ persistence uses the stage-aware dependency packager described in
-`PACKAGING.md`. Single-level package inputs and package-relative assets can be
-re-exported; genuinely nested packages, expressions and tile/sequence patterns
-currently produce explicit errors. This does not certify arbitrary interchange.
+`PACKAGING.md`. Nested package inputs and package-relative assets can be
+re-exported into unique entries while retaining layer composition. Expressions
+and tile/sequence patterns still produce explicit errors. This does not certify
+arbitrary interchange.

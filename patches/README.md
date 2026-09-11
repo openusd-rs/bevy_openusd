@@ -5,6 +5,18 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Nested package export
+
+`openusd-nested-package-export.patch` applies after the nested-reading patch and
+the earlier packaging changes. It caches nested source containers through the
+stage resolver, accounts their bytes within the existing aggregate input budget,
+and identifies inner default layers and terminal entry extensions correctly.
+Dependencies become ordinary unique output entries while preserving layer
+composition, rather than flattening the scene. Original nested archive layout
+is not reproduced. Traversal is limited to 16 bracket levels; existing input,
+output and entry-count budgets remain. Bevy's nested fixture tests cover portable
+snapshot-only export with live edits and destination preservation on failure.
+
 ## Nested package reading
 
 `openusd-nested-package-reading.patch` applies after the earlier local patches.

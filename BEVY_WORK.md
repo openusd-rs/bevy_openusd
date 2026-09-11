@@ -1015,6 +1015,43 @@ Full workspace tests pass 533 ordinary tests with 13 ignored; check/build and
 fixture-and-acceptance step. Earlier notes that binary/nested-material rendering
 was unverified are superseded only for these four explicit cases.
 
+## Portable export from nested USDZ inputs
+
+The stage-aware packager now reads and caches nested input containers through
+its resolver, resolves inner default layers, and uses the terminal nested entry
+extension. It bundles referenced layers/assets as ordinary unique output
+entries, preserving USD composition and live edits rather than flattening the
+scene. It does not reproduce nested ZIP layout or include unused members.
+Existing 4096-entry, 256 MiB serialized-output and aggregate input-byte budgets
+remain; nested archive bytes are charged once when cached and entry bytes on
+read. Package path traversal is limited to 16 bracket levels.
+
+The new export regression first failed on the explicit unsupported-nested
+guard (`/tmp/nested-export-before.log`). It now exports all four textured
+USDA/USDC implicit/explicit variants from snapshot-only virtual inputs, retains
+a live size edit to four, and reopens with the default resolver without original
+files. It checks multiple layer identities and texture paths inside the output.
+A subsequent missing-texture edit fails export without changing the previous
+destination bytes. All three example tests pass (`/tmp/nested-export-tests.log`).
+
+The fixture accepts `--export`, generating six portable outputs and reopening
+their cube values (`target/nested-export-fixture`, `/tmp/nested-export-fixture.log`).
+Native OpenUSD 25.05.01 flattens the four textured exports without warnings,
+with cube/size values checked (`/tmp/nested-export-native.log`).
+The upstream package tests pass all three cases, including nested container
+caching and exact remaining input-budget accounting:
+`/tmp/nested-export-upstream-tests.log`. The canonical patch is recorded in
+`patches/openusd-nested-package-export.patch`; reverse-apply checking passes.
+
+Full workspace tests pass 534 ordinary tests (13 ignored), and check/build pass:
+`/tmp/nested-export-{all-tests,check,build}.log`. Inspected all four exported
+material captures in `target/nested-export-fixture`: each shows the expected
+cyan cube and matches the independent constant-color reference at RGB tolerance
+zero across 921,600 pixels. All four report CAPTURE_OK without WARN/ERROR;
+`/tmp/nested-export-captures.log` and `/tmp/nested-export-compare.log`.
+This supersedes earlier blanket nested-export exclusions, not the broader
+resolver, pattern, large-workload, archive-layout or flagship acceptance limits.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

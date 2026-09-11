@@ -14,21 +14,24 @@ includes snapshot-only bytes and unsaved live layer edits. Missing dependencies
 fail instead of silently retaining external paths. ArchiveWriter remains the
 aligned stored ZIP sink.
 
-Single-level USDZ inputs and package-relative layers/assets are supported,
+Nested USDZ inputs and package-relative layers/assets are supported,
 including snapshot-only source archives and external references to a bare USDZ.
 Source containers are cached; their bytes and extracted entry bytes both count
 toward the input budget. Entry size and bounded reads enforce the remaining
 budget before decompression output can grow beyond it. A referenced package's
 first entry must be a USD layer. Default-package and explicit-root identities
 share one output entry; input extensions are matched case-insensitively.
+Nested input containers are read in memory and their referenced layers/assets
+are assigned ordinary unique output entries. Composition arcs and live edits
+are preserved; archive nesting/layout and unused container members are not.
+Package traversal permits at most 16 bracket levels.
 
 Limits: 4096 entries including the root, 256 MiB of serialized entry payloads,
 and a separate 256 MiB aggregate bound on newly read asset bytes. Serialization
 is bounded before buffer growth. These are not process-memory limits: live data
 clones, parsed-layer expansion, allocator overhead and ZIP headers are separate.
 
-Explicitly unsupported for now: genuinely nested-package dependencies,
-asset expressions, tile/sequence patterns and clip template asset paths. Paths
+Explicitly unsupported for now: asset expressions, tile/sequence patterns and clip template asset paths. Paths
 containing backticks, `<` or `#` are rejected conservatively. Unresolved assets
 in deleted/reordered list-op buckets also fail; support for those authored but
 non-contributing entries still needs refinement.
@@ -98,8 +101,15 @@ edits, unchanged source exports and undo behavior, repeated paths, a root self
 asset cycle, colliding basenames, deterministic output, stored compression,
 64-byte alignment and root entry ordering. Missing-asset and entry-budget failures
 retain the existing destination and remove staging files. Broader cycle graphs,
-broader payload/variant combinations, resolver aliases, pattern expansion, nested packages
-and rendered texture fidelity remain to be verified or implemented.
+broader payload/variant combinations, resolver aliases, pattern expansion and
+larger nested/material workloads remain to be verified or implemented.
+
+The nested-package fixture's `--export` mode covers implicit and explicit inner
+default-layer references with USDA/USDC layers and a relative embedded PNG.
+Snapshot-only export/reopen tests preserve live size edits and multiple composed
+layers, and verify that missing nested assets leave an existing destination
+unchanged. Output containers use flat unique entry names without flattening USD
+composition; original nested archive layout and unused members are not retained.
 
 Native coverage now also repackages a snapshot-only input in every save mode,
 deletes each first-generation output before re-exporting its snapshot, and checks

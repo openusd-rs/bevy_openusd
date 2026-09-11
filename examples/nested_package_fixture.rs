@@ -67,7 +67,9 @@ fn outer_package(inner: &[u8], reference: &str) -> Result<Vec<u8>, Box<dyn std::
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 1 { return Err("usage: nested_package_fixture NEW_OUTPUT_DIRECTORY".into()); }
+    if args.is_empty() || args.len() > 2 || args.get(1).is_some_and(|arg| arg != "--export") {
+        return Err("usage: nested_package_fixture NEW_OUTPUT_DIRECTORY [--export]".into());
+    }
     let output = Path::new(&args[0]);
     std::fs::create_dir(output)?;
     std::fs::write(output.join("textured-reference.usda"), r#"#usda 1.0
@@ -108,6 +110,16 @@ def Xform "Root" {
             if stage.prim("/Root/Box")?.attribute("size").get::<f64>()? != Some(2.0) {
                 return Err("nested cube missing or incorrect".into());
             }
+            if args.len() == 2 {
+                let destination = output.join(format!("exported-{name}.usdz"));
+                usd_bevy::authoring::save_stage_as(&stage, destination.to_str().ok_or("output path must be UTF-8")?)
+                    .map_err(|error| error.to_string())?;
+                let reopened = openusd::usd::Stage::open(destination.to_str().unwrap())?;
+                if reopened.prim("/Root/Box")?.attribute("size").get::<f64>()? != Some(2.0)
+                    || !reopened.composition_errors().is_empty() {
+                    return Err("exported nested composition failed".into());
+                }
+            }
             Ok(())
         })();
         match result {
@@ -128,6 +140,37 @@ fn inner_control_resolves_relative_reference_without_files() {
     assert_eq!(stage.prim("/Model/Box").unwrap().attribute("size").get::<f64>().unwrap(), Some(2.0));
     assert!(stage.composition_errors().is_empty());
     assert!(!path.exists());
+}
+
+#[test]
+fn nested_package_export_reopens_without_original_files() {
+    use usd_bevy::editor::{EditorSession, EditorEdit};
+    let directory = tempfile::tempdir().unwrap();
+    for (extension, binary) in [("usda", false), ("usdc", true)] {
+        let inner = textured_inner(binary).unwrap();
+        for (name, reference) in [("implicit", "inner.usdz".to_owned()), ("explicit", format!("inner.usdz[scenes/model.{extension}]"))] {
+            let input = directory.path().join(format!("virtual-{extension}-{name}.usdz"));
+            let source = UsdSource::snapshot(&input, outer_package(&inner, &reference).unwrap()).unwrap();
+            let stage = source.open_stage().unwrap();
+            let mut editor = EditorSession::new(stage.clone());
+            editor.edit(EditorEdit::Attribute { prim: "/Root/Box".into(), name: "size".into(), type_name: "double".into(), value: openusd::sdf::Value::Double(4.0) }).unwrap();
+            let output = directory.path().join(format!("saved-{extension}-{name}.usdz"));
+            usd_bevy::authoring::save_stage_as(&stage, output.to_str().unwrap()).unwrap();
+            assert!(!input.exists());
+            let reopened = openusd::usd::Stage::open(output.to_str().unwrap()).unwrap();
+            assert_eq!(reopened.prim("/Root/Box").unwrap().attribute("size").get::<f64>().unwrap(), Some(4.0));
+            let asset = reopened.prim("/Root/Mat/Tex").unwrap().attribute("inputs:file").get::<openusd::sdf::AssetPath>().unwrap().unwrap();
+            assert!(asset.resolved_path().unwrap().starts_with(output.to_str().unwrap()));
+            assert!(reopened.composition_errors().is_empty());
+            assert!(reopened.layer_identifiers().len() >= 3);
+            let saved = std::fs::read(&output).unwrap();
+            editor.edit(EditorEdit::Attribute { prim: "/Root/Mat/Tex".into(), name: "inputs:file".into(), type_name: "asset".into(),
+                value: openusd::sdf::Value::AssetPath(openusd::sdf::AssetPath::new("missing.png")),
+            }).unwrap();
+            assert!(usd_bevy::authoring::save_stage_as(&stage, output.to_str().unwrap()).is_err());
+            assert_eq!(std::fs::read(&output).unwrap(), saved);
+        }
+    }
 }
 
 #[test]

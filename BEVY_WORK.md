@@ -984,6 +984,37 @@ at RGB tolerance zero; `/tmp/nested-reading-captures.log` and
 composition and relative asset byte access, not rendered nested image materials,
 all binary/default-layer variants or nested export acceptance.
 
+## Nested PNG materials and binary layers
+
+The nested-package fixture now generates four additional packages combining
+USDA/USDC inner default and sibling layers with implicit/explicit references.
+Binary layers are encoded in memory and checked for the PXR-USDC signature.
+Each cube binds a material whose relative paint.png is stored inside the inner
+package. An independent untextured constant-cyan reference avoids relying on
+the same texture decoding path for visual comparison.
+
+All six memory-backed composition probes pass in `target/nested-material-final`
+(`/tmp/nested-material-final.log`). A new editor regression opens all four
+textured variants, verifies Ready, one projected material, the decoded cyan RGBA
+pixel, Rgba8UnormSrgb format and unchanged package bytes. Both example tests pass
+(`/tmp/nested-material-tests.log`). Native OpenUSD 25.05.01 flattens all four
+textured packages without warnings; exported cube/size values are explicitly
+checked (`/tmp/nested-material-native.log` and `*.native.usda` in the output).
+
+Inspected all five rendered images in `target/nested-material-final`: the four
+nested variants and constant-color reference each show the same cyan cube.
+All report CAPTURE_OK without WARN/ERROR. Each nested capture matches the
+independent reference across 921,600 pixels at RGB tolerance zero:
+`/tmp/nested-material-captures.log`, `/tmp/nested-material-compare.log`.
+The PNG is one pixel, so this does not establish UV/filtering fidelity, large
+texture performance, arbitrary shader networks or nested export support.
+
+Full workspace tests pass 533 ordinary tests with 13 ignored; check/build and
+`git diff --check` pass (`/tmp/nested-material-all-tests.log`,
+`/tmp/nested-material-{check,build}.log`); no reader implementation changed in this
+fixture-and-acceptance step. Earlier notes that binary/nested-material rendering
+was unverified are superseded only for these four explicit cases.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

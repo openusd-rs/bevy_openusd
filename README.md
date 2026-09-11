@@ -446,6 +446,9 @@ and relative inner-layer assets without extraction, through both filesystem and
 snapshot resolvers. Each entry traversal permits at most 16 package levels and
 256 MiB of cumulative decompressed entry bytes; this is not a total-stage memory
 limit. Exporting nested package dependencies remains unsupported.
+`nested_package_fixture` generates implicit/explicit nested USDA and USDC cases
+with embedded PNG materials, plus an independent constant-color reference;
+run it through `make run` with a new output directory.
 The viewer can automatically watch requested external textures on native builds:
 
 ```sh

@@ -3,6 +3,31 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reconciled source and instance acceptance
+
+At 93f34ba, the first four original checklist requirements were checked against
+current implementation and refreshed targeted execution, rather than left
+unchecked because unrelated render-fidelity work is unfinished:
+
+| Requirement | Current implementation and acceptance evidence |
+| --- | --- |
+| Source-preserving loading without temporary files, including USDZ | source.rs opens a byte-backed resolver directly; source_anchor_resolves_siblings_without_writing_root and nested_packages_preserve_relative_layers_and_asset_bytes assert absent virtual files, composed data and unchanged archive bytes. packaged_relative_references_resolve_from_memory covers in-memory packages. |
+| Bevy-tracked dependencies, reloads and explicit failures | asset.rs uses the real AssetServer in named-source tests; texture_handles_use_color_spaces_and_dependency_changes_reload_owner, nested_package_dependency_reload_preserves_two_live_instances and missing_dependency_becomes_visible_failure cover dependency replacement and failure/recovery. The native watcher lane separately exercises actual filesystem changes. |
+| Root replacement/despawn cleanup and independent instances | asset_server_reload_preserves_two_live_instances_and_root_ownership replaces one root, retains the second and unowned children, removes a source component, then despawns the remaining root and asserts the instance registry is empty. package_load_and_root_removal_preserve_unowned_children covers package cleanup. |
+| Independent clocks, variants and overrides with runtime preservation | live_instances_have_independent_time_and_edits, instance_opinions_are_isolated_reloadable_and_removable, typed_component_overrides_survive_source_reload_and_removal and reload_preserves_matching_entities_and_runtime_components exercise separate clocks/opinions, retained entity identities and runtime-only components. |
+
+Refreshed Make tests with offline Cargo: source::tests 22 passed, asset::tests
+29 passed and instance::tests 3 passed, with zero failures or ignored tests in
+those selections. Logs: /tmp/acceptance-{source,asset,instance}-tests.log.
+The separate file_watcher-enabled native_ --ignored lane passes all 23 tests
+with native usdcat on PATH; /tmp/acceptance-native-watcher.log. It includes
+native export tests as well as filesystem-event tests, not 23 watcher tests.
+
+These are the four listed functional requirements, not universal USD compatibility,
+an OS/backend matrix or performance certification. The remaining six checklist
+items retain their original wording and remain open. Source code and runtime
+defaults were not changed by this acceptance reconciliation.
+
 ## Rejected global edge-weighted normal replacement
 
 Native Hydra's smoothNormals.cpp sums incident edge cross-products before
@@ -3002,10 +3027,10 @@ changed in this integration-regression step.
 
 ## Acceptance checklist
 
-- [ ] Source-preserving asset loading without temporary files, including USDZ.
-- [ ] Bevy-tracked layer/texture dependencies, reloads and explicit failure states.
-- [ ] Root replacement/despawn cleanup and independent live USD instances.
-- [ ] Independent clocks, variants and overrides; preserve runtime-only components.
+- [x] Source-preserving asset loading without temporary files, including USDZ.
+- [x] Bevy-tracked layer/texture dependencies, reloads and explicit failure states.
+- [x] Root replacement/despawn cleanup and independent live USD instances.
+- [x] Independent clocks, variants and overrides; preserve runtime-only components.
 - [ ] Composition-aware editing: selection, editable inspector, layers/edit target,
       variants/payloads, provenance, undo/redo and explicit save operations.
 - [ ] Typed/reusable authoring API and safe snippet composition.

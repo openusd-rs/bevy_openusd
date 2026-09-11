@@ -29,6 +29,12 @@ time samples and retained asset bytes. These are targeted regression checks,
 not independent native-render parity or a GPU performance benchmark. The UR5
 shading defect remains unresolved; fidelity/performance stays unchecked.
 
+The final make test-all CARGO='cargo --offline' run at 8be9765 passes 625 tests
+across 31 suites, with zero failures and 15 ignored native-export tests.
+TMPDIR points to target/test-tmp; log: /tmp/acceptance-final-workspace.log.
+The ignored native tests have separate execution evidence below, not execution
+in this default workspace run.
+
 ## Reconciled native prototype and sharing acceptance
 
 At 4a4f502, three existing runnable programs were inspected and rerun through

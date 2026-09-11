@@ -126,6 +126,15 @@ between explicit replacement and non-explicit operations remains API-only.
 list operations in strength order, including customData, original spec paths,
 source layer identifiers and cumulative site offsets. Relative paths remain
 anchored to those source layers; this is provenance, not a composed reference list.
+`EditorSession::set_layer_muted` changes runtime composition without authoring
+layer contents or adding undo commands. It rejects unknown layers and muting the
+root or active edit layer. A muted layer cannot become the edit target until it
+is unmuted. `EditorSnapshot::muted_layers` retains the sorted muted identifiers;
+`EditorCommand::LayerMuteChecked` guards queued toggles by document and revision.
+An effective toggle advances the editor revision; a no-op does not. Layer muting
+is session-local, not persisted USD metadata. Inspector toggle controls are not
+yet wired up.
+
 The inspector's **Payloads / references** group displays reference opinions below
 the payload controls, including source paths, list modes, separate site/arc time
 mappings and customData. A matching active edit target exposes **Clear local

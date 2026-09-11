@@ -20,6 +20,7 @@ pub enum EditorCommand {
     Edit(EditorEdit),
     EditChecked { edit: EditorEdit, document_id: u64, revision: u64, target: EditTarget },
     EditLayer(String),
+    LayerMuteChecked { identifier: String, muted: bool, document_id: u64, revision: u64 },
     Payload { prim: String, loaded: bool },
     Undo,
     Redo,
@@ -264,6 +265,16 @@ fn process_commands(world: &mut World) {
                 EditorCommand::Select(path) => editor.select(path),
                 EditorCommand::Edit(edit) => editor.edit(edit),
                 EditorCommand::EditLayer(identifier) => editor.set_edit_layer(&identifier),
+                EditorCommand::LayerMuteChecked { identifier, muted, document_id, revision } => {
+                    if editor.document_id != document_id || editor.revision != revision {
+                        Err(anyhow::anyhow!("document changed before changing layer muting; review and retry"))
+                    } else {
+                        editor.set_layer_muted(&identifier, muted).map(|_| {
+                            texture_dirty = true;
+                            if let Some(live) = world.get_non_send::<crate::live::LiveStage>() { live.enqueue_resync("/"); }
+                        })
+                    }
+                }
                 EditorCommand::Payload { prim, loaded } => editor.set_payload_loaded(&prim, loaded).map(|_| {
                     if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
                         live.enqueue_resync(&prim);
@@ -561,6 +572,7 @@ pub struct EditorSnapshot {
     pub prims: Vec<String>,
     pub visibility: std::collections::HashMap<String, bool>,
     pub layers: Vec<String>,
+    pub muted_layers: Vec<String>,
     pub edit_layer: String,
     pub edit_target: Option<EditTarget>,
     pub selected: Option<String>,
@@ -660,7 +672,23 @@ impl EditorSession {
     }
 
     pub fn set_edit_layer(&self, identifier: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.stage.is_layer_muted(identifier), "cannot edit a muted layer; unmute it first");
         self.stage.set_edit_target(EditTarget::for_layer(identifier))?;
+        Ok(())
+    }
+
+    /// Changes runtime layer participation without authoring layer contents or adding undo commands.
+    pub fn set_layer_muted(&mut self, identifier: &str, muted: bool) -> anyhow::Result<()> {
+        self.synchronize_external_edits();
+        anyhow::ensure!(self.stage.layer(identifier).is_some() || self.stage.is_layer_muted(identifier), "unknown layer");
+        if muted {
+            anyhow::ensure!(self.stage.root_layer().identifier() != identifier, "cannot mute the root layer");
+            anyhow::ensure!(self.stage.edit_target().layer_identifier() != identifier, "cannot mute the active edit layer");
+        }
+        if self.stage.is_layer_muted(identifier) == muted { return Ok(()); }
+        if muted { self.stage.mute_layer(identifier); } else { self.stage.unmute_layer(identifier); }
+        anyhow::ensure!(self.stage.is_layer_muted(identifier) == muted, "layer muting did not change");
+        self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
 
@@ -767,6 +795,7 @@ impl EditorSession {
             revision: self.revision,
             sample_time: time,
             layers: self.stage.layer_stack(),
+            muted_layers: self.stage.muted_layers(),
             edit_layer: self.stage.edit_target().layer_identifier().to_string(),
             edit_target: Some(self.stage.edit_target()),
             selected: self.selected.clone(),
@@ -1733,6 +1762,60 @@ def Xform "Model" (
         assert_eq!(bridge.view().unwrap().status, "Ready");
         let reopened = crate::UsdSource::new(&output, std::fs::read(&output).unwrap()).unwrap().open_stage().unwrap();
         assert_eq!(reopened.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Scope"));
+    }
+
+    #[test]
+    fn layer_muting_preserves_authored_history_and_rejects_stale_commands() {
+        let weak = crate::UsdSource::snapshot("weak.usda", &br#"#usda 1.0
+def Xform "Root" { def Sphere "FromWeak" {} }
+"#[..]).unwrap();
+        let source = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+(subLayers = [@weak.usda@])
+over "Root" {}
+"#[..]).unwrap().with_dependency(&weak).unwrap();
+        let independent = source.open_stage().unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        let root = editor.stage().root_layer().identifier().to_string();
+        let weak = editor.snapshot().unwrap().layers.into_iter().find(|id| id != &root).unwrap();
+        let baseline = editor.stage().root_layer().export_to_string().unwrap();
+        assert!(editor.set_layer_muted(&root, true).is_err());
+        assert!(editor.set_layer_muted("unknown.usda", true).is_err());
+        editor.set_edit_layer(&weak).unwrap();
+        assert!(editor.set_layer_muted(&weak, true).is_err());
+        editor.set_edit_layer(&root).unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: Value::Double(2.) }).unwrap();
+        let authored = editor.stage().root_layer().export_to_string().unwrap();
+        let before = editor.snapshot().unwrap();
+        editor.set_layer_muted(&weak, true).unwrap();
+        assert_eq!(editor.snapshot().unwrap().muted_layers, [weak.clone()]);
+        assert!(!editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
+        assert!(independent.prim("/Root/FromWeak").unwrap().is_valid().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+        assert!(editor.set_edit_layer(&weak).is_err());
+        assert!(!editor.synchronize_external_edits());
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), baseline);
+        assert!(editor.stage().is_layer_muted(&weak));
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+        let revision = editor.snapshot().unwrap().revision;
+        editor.set_layer_muted(&weak, true).unwrap();
+        assert_eq!(editor.snapshot().unwrap().revision, revision);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.insert_non_send(editor);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::LayerMuteChecked { identifier: weak.clone(), muted: false, document_id: before.document_id, revision: before.revision }).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.contains("document changed"));
+        assert!(app.world().get_non_send::<EditorSession>().unwrap().stage().is_layer_muted(&weak));
+        let current = app.world().get_non_send::<EditorSession>().unwrap().snapshot().unwrap();
+        bridge.send(EditorCommand::LayerMuteChecked { identifier: weak.clone(), muted: false, document_id: current.document_id, revision: current.revision }).unwrap();
+        app.update();
+        let editor = app.world().get_non_send::<EditorSession>().unwrap();
+        assert!(editor.snapshot().unwrap().muted_layers.is_empty());
+        assert!(editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
     }
 
     #[test]

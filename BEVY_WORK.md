@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Runtime layer-muting command baseline
+
+`EditorSession::set_layer_muted` now exposes upstream stage muting as a runtime
+composition operation. It rejects unknown layers, root-layer muting and active
+edit-layer muting; `set_edit_layer` rejects muted layers. Effective changes
+advance the editor revision without adding authored undo entries; no-ops retain
+the revision. Snapshots include sorted muted identifiers so excluded layers can
+still be offered for unmuting. `LayerMuteChecked` rejects stale document/revision
+requests and requests root reprojection plus source-texture refresh on success.
+
+The regression verifies a weak-layer prim disappears and returns, an independent
+stage remains unchanged, root-layer text remains exact, undo/redo stays usable
+without undoing the runtime toggle, invalid targets reject, no-ops retain their
+revision, and stale/current bridge requests reject/succeed respectively. All 49
+nonignored editor tests and check-all pass (one native test ignored):
+`/tmp/layer-muting-editor-tests.log`, `/tmp/layer-muting-final-check.log`.
+Inspector controls and native interaction acceptance remain the next step; this
+is the model/command baseline, not completed viewer-layer muting acceptance.
+
 ## Selected subset and CPU-skin fallback diagnostics
 
 Selected-entity render issues now include `UsdSubsetWarning` and

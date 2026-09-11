@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Unix asset-source root replacement
+
+The `file_source` adapter now checks the root directory's device/inode once per
+second. Losing or replacing it drops the old watcher and invalidates every
+requested path. When a directory exists again, the worker creates a new Bevy
+watcher, verifies its identity did not change during setup, and invalidates the
+paths again. Pending old-watcher events are drained before re-arming. Worker
+shutdown still closes its channel and joins the thread. Ordinary forwarding
+uses 250 ms polling in addition to the native 300 ms debounce.
+
+The root must exist at initial setup. Processed sources and non-Unix root
+replacement remain unsupported; requested paths remain source-lifetime state.
+This supersedes the root-replacement limitation in the older folder dependency
+invalidation section, not the separate editor USD-layer watching limitation.
+
+The native two-instance regression first reproduced a timeout with the old
+implementation (`/tmp/source-root-replacement-before-final.log`). It now moves
+the whole source away, requires Failed, recreates it and requires Ready, then
+checks subsequent texture reload. A second prepared directory replaces the root
+without waiting for an absent-state observation. Both instances must pick up its
+blue texture while retaining projected entities, runtime names and children.
+The identity unit test covers missing paths, ordinary files, replacement and
+symlink targets. These are native asset lifecycle checks, not GPU acceptance.
+
+Validation: 541 feature-enabled ordinary workspace tests pass (20 ignored),
+both opt-in native AssetServer watcher tests pass, and default-feature check-all
+and build pass. Logs: `/tmp/source-root-feature-tests.log`,
+`/tmp/source-root-native-tests.log`, `/tmp/source-root-{check,build}.log`.
+Default-feature test-all also passes: 535 ordinary tests, 13 ignored
+(`/tmp/source-root-default-tests.log`). `git diff --check` passes.
+
 ## Spot visual recheck after material fixes
 
 Rechecked at `f709355` using the original collection asset

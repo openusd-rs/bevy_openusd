@@ -70,6 +70,12 @@ is also exercised by `make test-all`.
 
 ## Native watching and live rendering evidence
 
+The AssetServer `file_source` adapter recovers watched source-root replacement on
+Unix using one-second device/inode checks and watcher re-arming. Requested paths
+are invalidated on loss and recovery; event forwarding adds up to 250 ms polling
+latency to the native debounce. The root must exist when watching starts.
+Processed sources and non-Unix source-root replacement are not covered.
+
 The direct viewer/editor and AssetServer are separate loading paths. Enable
 viewer texture watching with:
 

@@ -56,7 +56,59 @@ impl AssetReader for TrackingReader {
 struct RemovalWatcher {
     receiver: async_channel::Receiver<AssetSourceEvent>,
     worker: Option<JoinHandle<()>>,
-    _watcher: FileWatcher,
+}
+
+fn forward_event(output: &async_channel::Sender<AssetSourceEvent>, requested: &RequestedPaths, event: AssetSourceEvent) -> bool {
+    for path in requested.invalidations(&event) {
+        if output.try_send(AssetSourceEvent::ModifiedAsset(path)).is_err() { return false; }
+    }
+    output.try_send(event).is_ok()
+}
+
+#[cfg(unix)]
+fn directory_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    metadata.is_dir().then(|| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(unix)]
+fn rearming_events(root: PathBuf, input: async_channel::Sender<AssetSourceEvent>, events: async_channel::Receiver<AssetSourceEvent>,
+    output: async_channel::Sender<AssetSourceEvent>, requested: Arc<RequestedPaths>, watcher: FileWatcher, mut identity: Option<(u64, u64)>) {
+    let mut watcher = Some(watcher);
+    let mut next_check = std::time::Instant::now();
+    let invalidate_all = || {
+        let paths = requested.0.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        paths.into_iter().all(|path| output.try_send(AssetSourceEvent::ModifiedAsset(path)).is_ok())
+    };
+    while !events.is_closed() && !output.is_closed() {
+        let now = std::time::Instant::now();
+        if now >= next_check {
+            next_check = now + Duration::from_secs(1);
+            if watcher.is_some() && directory_identity(&root) != identity {
+                watcher.take();
+                identity = None;
+                while events.try_recv().is_ok() {}
+                if !invalidate_all() { break; }
+            }
+            if watcher.is_none() && let Some(before) = directory_identity(&root) {
+                match FileWatcher::new(root.clone(), input.clone(), Duration::from_millis(300)) {
+                    Ok(new) if directory_identity(&root) == Some(before) => {
+                        watcher = Some(new);
+                        identity = Some(before);
+                        if !invalidate_all() { break; }
+                    }
+                    Ok(_) => {}
+                    Err(error) => log::warn!("USD file watcher could not re-arm {}: {error}", root.display()),
+                }
+            }
+        }
+        match events.try_recv() {
+            Ok(event) => if !forward_event(&output, &requested, event) { break; },
+            Err(async_channel::TryRecvError::Closed) => break,
+            Err(async_channel::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(250)),
+        }
+    }
 }
 
 impl AssetWatcher for RemovalWatcher {}
@@ -82,7 +134,8 @@ fn invalidated_paths(event: &AssetSourceEvent) -> [Option<&Path>; 2] {
 /// Read-only native file source that reloads dependents on file removal or rename.
 /// Register before `AssetPlugin`; watching follows its runtime watch setting.
 /// Folder events invalidate requested descendants, retained for the source lifetime.
-/// Processed sources and replacement of the watched root itself are unsupported.
+/// Unix roots are checked once per second and re-armed after replacement.
+/// Processed sources and non-Unix root replacement are unsupported.
 pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
     let root = FileAssetReader::new(root).root_path().clone();
     let reader_root = root.clone();
@@ -93,7 +146,9 @@ pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
     }))
         .with_watcher(move |output| {
             let (input, receiver) = async_channel::unbounded();
-            let watcher = match FileWatcher::new(root.clone(), input, Duration::from_millis(300)) {
+            #[cfg(unix)]
+            let identity = directory_identity(&root);
+            let watcher = match FileWatcher::new(root.clone(), input.clone(), Duration::from_millis(300)) {
                 Ok(watcher) => watcher,
                 Err(error) => {
                     log::error!("USD file watcher could not watch {}: {error}", root.display());
@@ -102,20 +157,23 @@ pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
             };
             let events = receiver.clone();
             let requested = requested.clone();
+            #[cfg(unix)]
+            let root = root.clone();
             let worker = std::thread::Builder::new().name("usd-asset-events".into())
                 .spawn(move || {
-                    'events: while let Ok(event) = events.recv_blocking() {
-                        for path in requested.invalidations(&event) {
-                            if output.try_send(AssetSourceEvent::ModifiedAsset(path)).is_err() {
-                                break 'events;
-                            }
+                    #[cfg(unix)]
+                    rearming_events(root, input, events, output, requested, watcher, identity);
+                    #[cfg(not(unix))]
+                    {
+                        let _watcher = watcher;
+                        while let Ok(event) = events.recv_blocking() {
+                            if !forward_event(&output, &requested, event) { break; }
                         }
-                        if output.try_send(event).is_err() { break; }
                     }
                 });
             match worker {
                 Ok(worker) => Some(Box::new(RemovalWatcher {
-                    receiver, worker: Some(worker), _watcher: watcher,
+                    receiver, worker: Some(worker),
                 })),
                 Err(error) => {
                     log::error!("USD file watcher event worker failed: {error}");
@@ -128,6 +186,29 @@ pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_identity_tracks_replacement_and_symlink_targets() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        let backup = directory.path().join("backup");
+        let link = directory.path().join("link");
+        assert_eq!(directory_identity(&root), None);
+        std::fs::write(&root, b"not a directory").unwrap();
+        assert_eq!(directory_identity(&root), None);
+        std::fs::remove_file(&root).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let original = directory_identity(&root).unwrap();
+        assert_eq!(directory_identity(&link), Some(original));
+        std::fs::rename(&root, &backup).unwrap();
+        assert_eq!(directory_identity(&link), None);
+        std::fs::create_dir(&root).unwrap();
+        assert_ne!(directory_identity(&root), Some(original));
+        assert_eq!(directory_identity(&link), directory_identity(&root));
+        assert_eq!(directory_identity(&backup), Some(original));
+    }
 
     #[test]
     fn tracking_reader_records_missing_files_before_recovery() {

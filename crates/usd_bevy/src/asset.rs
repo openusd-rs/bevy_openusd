@@ -1017,6 +1017,42 @@ def Sphere "Model" (
                 == Some(&[0, 255, 0, 255])));
         assert_eq!(mesh_handles(app.world())[0], mesh_handles(app.world())[1]);
         assert_eq!(image_handles(app.world()), updated_images);
+        #[cfg(unix)]
+        if removal_adapter {
+            let backup = tempfile::tempdir().unwrap();
+            let old_root = backup.path().join("old-root");
+            std::fs::rename(directory.path(), &old_root).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+            for relative in ["root.usda", "models/textured.usda", "textures/pixel.png"] {
+                std::fs::copy(old_root.join(relative), directory.path().join(relative)).unwrap();
+            }
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+            std::fs::write(&texture, pixel_png([255, 255, 0, 255])).unwrap();
+            tick_until(&mut app, |world| image_handles(world).iter().all(|handle|
+                world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref() == Some([255, 255, 0, 255].as_slice())));
+            let next_root = backup.path().join("next-root");
+            std::fs::create_dir_all(next_root.join("models")).unwrap();
+            std::fs::create_dir_all(next_root.join("textures")).unwrap();
+            for relative in ["root.usda", "models/textured.usda"] {
+                std::fs::copy(old_root.join(relative), next_root.join(relative)).unwrap();
+            }
+            std::fs::write(next_root.join("textures/pixel.png"), pixel_png([0, 0, 255, 255])).unwrap();
+            std::fs::rename(directory.path(), backup.path().join("second-root")).unwrap();
+            std::fs::rename(&next_root, directory.path()).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+                && image_handles(world).iter().all(|handle| world.resource::<Assets<Image>>()
+                    .get(handle).unwrap().data.as_deref() == Some([0, 0, 255, 255].as_slice())));
+            for ((root, entity), child) in roots.into_iter().zip(entities).zip(children) {
+                assert_eq!(app.world().non_send::<UsdInstances>().entity(root, "/Mesh"), Some(entity));
+                assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+                assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
+            }
+        }
     }
 
     #[test]

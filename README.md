@@ -84,8 +84,11 @@ Untyped non-metadata removals also invalidate their reported path. The reader
 records requested file paths, including failed reads, so folder additions,
 removals and renames invalidate requested descendants without scanning the disk.
 Paths are retained until the source is dropped; this is not an active-handle-only
-index. It supports unprocessed native file sources; processed assets and
-replacement of the watched source root itself remain unsupported. Registration
+index. On Unix, the adapter checks the source root's device/inode once per second,
+invalidates requested paths when it disappears or changes, and re-arms watching
+when a replacement directory exists. Event forwarding polls at 250 ms intervals
+in addition to Bevy's 300 ms debounce. The root must exist at initial setup.
+Processed assets and non-Unix source-root replacement remain unsupported. Registration
 does not override the AssetPlugin runtime watch setting. Its event worker is
 closed and joined when the source is dropped.
 

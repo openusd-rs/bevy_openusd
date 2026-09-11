@@ -3,6 +3,34 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Independent host-runner control
+
+`examples/host_capture_probe.rs` accepts `USD_HOST_PROBE_RUNNER=mara|eframe`.
+Both branches use the same RGB paint function without creating a Bevy app or
+USD stage. The eframe branch uses Wgpu, AutoNoVsync, a borderless 1440x920 window
+and the same requested 60 Hz repaint interval. Mara additionally paints its
+runner-owned chrome and has different event-loop scheduling; this is a runner
+control, not an assertion of identical frame timing. The shared paint text still
+says Mara host in both branches; the selected runner is identified in stderr.
+
+Under private Vulkan Weston with a 20-second capture wait, the eframe image
+`target/host-control-eframe.png` shows upright RGB thirds and text. The subsequent
+Mara-only `target/host-control-mara.png` is black (50/1,120,000 nonblack region
+pixels, cursor only), despite the first-update handshake. Both images were
+inspected. Logs: `/tmp/host-control-{eframe,mara}.log` and the matching
+`target/host-control-*.viewer.log`/`.inspect.log`. The black failure therefore
+does not require Bevy/USD initialization. One successful eframe control is not
+proof that eframe cannot fail or that the compositor/driver is innocent.
+The host probe test and check-all pass
+(`/tmp/host-control-tests.log`, `/tmp/host-control-check.log`).
+
+Reproduce either runner with `USD_HOST_PROBE_RUNNER=eframe` (or `mara`) and
+`make run APP_TARGET='--example host_capture_probe'`. For the existing private
+capture script, pass the same APP_TARGET on the outer make command so recursive
+make selects the probe. The mandatory asset argument is ignored by this example.
+No sibling Mara files were changed. Its runner still passes an empty screenshot
+request list to the painter, so direct Mara surface readback remains unavailable.
+
 ## Document replacement confirmation
 
 The viewer's Open action now waits for an in-editor modal confirmation before

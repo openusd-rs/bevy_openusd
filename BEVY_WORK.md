@@ -5,6 +5,13 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Current workspace regression gate
 
+At `af5360c` plus the payload Reload replay registration, `TMPDIR="$PWD/target/test-tmp"
+make test-all CARGO='cargo --offline'` and `make check-all CARGO='cargo --offline'`
+completed successfully: 589 passed, zero failed and 14 ignored across 30 result
+suites (`/tmp/editor-authoring-workspace-{tests,check}.log`). This covers reference
+creation, bucket moves and payload source-conflict protection. Ignored native
+tests are not counted as passing; the earlier reload timeout remains unexplained.
+
 At `0b5ec99`, `TMPDIR="$PWD/target/test-tmp" make test-all
 CARGO='cargo --offline'` completed successfully: 586 passed, zero failed and 14
 ignored across 30 result suites (`/tmp/reference-structure-workspace-tests.log`).
@@ -45,8 +52,12 @@ and clears it. The viewport remains empty, matching the cleared source.
 Inspected `target/payload-source-keep-ui.png` restores Apply and retains the
 draft while the viewport stays empty: Keep does not author. Both capture guards
 pass (`/tmp/payload-source-{conflict,keep}-capture.log`). All 68 viewer tests and
-check-all pass (`/tmp/payload-conflict-final-{tests,check}.log`). Native Reload
-and full-workspace validation of these latest editor changes remain outstanding.
+check-all pass (`/tmp/payload-conflict-final-{tests,check}.log`).
+`payload_source_reload.replay` exercises the other conflict action: inspected
+`target/payload-source-reload-ui.png` has no draft rows, no conflict prompt and no
+local-opinion import action, with the viewport still empty. Reload did not author
+an explicit blocker. Its capture guard passes
+(`/tmp/payload-source-reload-capture.log`); current full-workspace evidence is above.
 
 Reference bucket controls now move existing local entries among Prepend, Append,
 Add, Delete and Order. Destination insertion is at the end; other entries and

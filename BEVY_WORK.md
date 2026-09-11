@@ -3,6 +3,26 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Post-sampler GPU acceptance and upstream host audit
+
+At e58f7f0, compare_deformation.sh passes the composed showcase at times 0, 30
+and 60 with the selected dome, forward shading and shadows disabled. All three
+GPU/CPU pairs have maximum RGB error one and zero pixels exceeding tolerance one.
+Results and six captures: target/post-seam-deformation/; command log:
+/tmp/post-seam-deformation.log. The time-60 GPU capture was visually inspected.
+Its metadata confirms one GPU skin and one GPU morph mesh versus zero in the
+CPU control, and both have Attached environment maps with one recorded
+generation and zero active generators. These are refreshed standalone results,
+not embedded-host acceptance or native-reference parity.
+
+Fetching Mara develop still resolves to b792f44. Static inspection of
+mara/src/window.rs shows WindowEvent::CloseRequested calls event_loop.exit()
+directly, bypassing the application's egui confirmation plugin. Screenshot
+tokens are also not forwarded and the GPU descriptor retains default limits.
+These regressions invalidate historical OS-close/direct-host/embedded-dome
+acceptance for the current dependency. The sibling checkout is untouched;
+approval was requested to carry its host fixes on a develop-based local branch.
+
 ## Latitude-longitude sampling fidelity
 
 The environment converter previously mapped normalized coordinates onto

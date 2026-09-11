@@ -13,8 +13,11 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
   rendering fix or identification of the faulty driver/compositor component.
 - Spot/UR5 fidelity and broader native-render comparisons remain incomplete.
   Do not infer full-scene parity from bounded numerical or image fixtures.
-- Per-layer content-based save state and guarded shell/OS window close are
-  implemented and tested. External disk-conflict detection remains open;
+- Per-layer content-based save state and guarded in-app close are implemented
+  and tested. Pinned Mara develop b792f44 bypasses the guard on an OS close
+  request; use the viewer's own close control, not the OS shortcut. Its host
+  also lacks our earlier direct screenshot and dome-device configuration fixes.
+  External disk-conflict detection remains open;
   Clean means matching a loaded or in-place-saved baseline, not unchanged disk.
 - General typed scene-building, broader backend coverage and interactive/GPU
   performance acceptance remain incomplete, as qualified in the matrix below.

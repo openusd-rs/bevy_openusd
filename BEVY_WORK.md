@@ -16,6 +16,25 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Reference drafts now retain a typed whole-entry baseline in addition to field
+baselines. Any source reference change while fields are dirty, including changed
+customData or a changed occupant of an indexed list slot, withholds Apply and
+offers Reload/Keep. Keep preserves only dirty fields and refreshes untouched
+fields; a matching successful write acknowledges its new baseline. These typed
+baselines clear on document/edit-target changes. This closes the case where a
+dirty time field could otherwise silently follow a changed reference target.
+
+Tests cover changed targets/customData, pristine refresh, successful-write
+acknowledgement and context reset. All 64 viewer tests and check-all pass
+(`/tmp/reference-identity-final-{tests,check}.log`). Native
+`reference_identity_conflict.replay` retargets to Ball, types offset 5, then undoes
+the retarget; inspected `target/reference-identity-conflict-ui.png` shows the
+whole-entry conflict instead of Apply. `reference_identity_keep.replay` resolves
+it; inspected `target/reference-identity-keep-ui.png` shows `/Box` refreshed and
+offset 5 retained without applying it. Both capture guards pass
+(`/tmp/reference-identity-capture.log`, `/tmp/reference-identity-keep-capture.log`).
+Native Reload and arbitrary multi-entry replacement remain unverified.
+
 Existing local reference entries can now be expanded for asset/prim retargeting
 and time-offset/scale editing. The four fields share property draft storage,
 per-field conflict reconciliation and document/edit-target resets. Old closures

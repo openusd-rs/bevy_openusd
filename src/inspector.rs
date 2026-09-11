@@ -12,6 +12,7 @@ pub struct Drafts(
     Arc<Mutex<HashMap<String, bool>>>,
     crate::payload_editor::PayloadDraft,
     Arc<Mutex<Option<(u64, Option<openusd::usd::EditTarget>)>>>,
+    Arc<Mutex<HashMap<String, openusd::sdf::Reference>>>,
 );
 
 impl Drafts {
@@ -22,6 +23,7 @@ impl Drafts {
         if let Ok(mut values) = self.0.lock() { values.clear(); }
         if let Ok(mut times) = self.1.lock() { times.clear(); }
         if let Ok(mut expanded) = self.2.lock() { expanded.clear(); }
+        if let Ok(mut references) = self.5.lock() { references.clear(); }
         *context = Some(current);
     }
 }
@@ -384,6 +386,14 @@ fn edited_reference(base: &openusd::sdf::Reference, fields: &[String; 4]) -> Res
     Ok(reference)
 }
 
+fn reference_source_conflicts(baseline: &mut openusd::sdf::Reference, current: &openusd::sdf::Reference, fields: &[String; 4], dirty: bool) -> bool {
+    if baseline == current { return false; }
+    if !dirty || edited_reference(baseline, fields).ok().as_ref() == Some(current) {
+        *baseline = current.clone();
+        false
+    } else { true }
+}
+
 fn reference_edit_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts) -> Vec<Pod> {
     let mut pods = Vec::new();
     for opinion in &snapshot.reference_opinions {
@@ -414,6 +424,24 @@ fn reference_edit_pods(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts:
                     let Ok(mut values) = drafts.0.lock() else { return };
                     ui.label(&format!("Edit reference: {bucket} {}", index+1));
                     ui.label("Other entries and customData are retained");
+                    let fields = std::array::from_fn(|field| values.get(&format!("{key}:{field}")).map_or_else(|| current[field].clone(), |draft| draft.1.clone()));
+                    let dirty_fields: [bool; 4] = std::array::from_fn(|field| values.get(&format!("{key}:{field}")).is_some_and(|draft| draft.1 != draft.0));
+                    let dirty = dirty_fields.iter().any(|dirty| *dirty);
+                    let Ok(mut identities) = drafts.5.lock() else { return };
+                    let baseline = identities.entry(key.clone()).or_insert_with(|| reference.clone());
+                    if reference_source_conflicts(baseline, &reference, &fields, dirty) {
+                        ui.label("Reference source changed; draft preserved");
+                        let reload = ui.button("Discard draft and reload reference").clicked;
+                        let keep = ui.button("Keep draft over changed reference").clicked;
+                        if !reload && !keep { return; }
+                        for field in 0..4 {
+                            values.insert(format!("{key}:{field}"), (current[field].clone(),
+                                if reload || !dirty_fields[field] { current[field].clone() } else { fields[field].clone() }, String::new()));
+                        }
+                        values.remove(&format!("{key}:error"));
+                        *baseline = reference.clone();
+                    }
+                    drop(identities);
                     let mut fields = current.clone();
                     let mut ready = true;
                     for (field, label) in ["Asset path", "Prim target (empty = defaultPrim)", "Time offset", "Time scale"].into_iter().enumerate() {
@@ -540,6 +568,31 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_source_changes_preserve_dirty_fields_and_acknowledge_writes() {
+        use openusd::sdf::{LayerOffset, Reference, Value};
+        let original = Reference { asset_path: "part.usda".into(), prim_path: openusd::sdf::path("/A").unwrap(), ..Default::default() };
+        let fields = ["part.usda".into(), "/A".into(), "5".into(), "1".into()];
+        let mut baseline = original.clone();
+        let changed = Reference { prim_path: openusd::sdf::path("/B").unwrap(), ..original.clone() };
+        assert!(super::reference_source_conflicts(&mut baseline, &changed, &fields, true));
+        assert_eq!(baseline, original);
+        let mut metadata = original.clone();
+        metadata.custom_data.insert("identity".into(), Value::Int(2));
+        assert!(super::reference_source_conflicts(&mut baseline, &metadata, &fields, true));
+        assert_eq!(baseline, original);
+        let applied = Reference { layer_offset: LayerOffset::new(5., 1.), ..original.clone() };
+        assert!(!super::reference_source_conflicts(&mut baseline, &applied, &fields, true));
+        assert_eq!(baseline, applied);
+        assert!(!super::reference_source_conflicts(&mut baseline, &metadata, &fields, false));
+        assert_eq!(baseline, metadata);
+        let drafts = super::Drafts::default();
+        drafts.synchronize_context(&usd_bevy::editor::EditorSnapshot { document_id: 1, ..Default::default() });
+        drafts.5.lock().unwrap().insert("entry".into(), original);
+        drafts.synchronize_context(&usd_bevy::editor::EditorSnapshot { document_id: 2, ..Default::default() });
+        assert!(drafts.5.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn reference_entry_edit_preserves_custom_data_and_undo() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/reference_custom_data.usda");

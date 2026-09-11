@@ -129,6 +129,10 @@ command path. Other layers' opinions cannot be cleared from their readouts.
 scale fields for matching local entries. Apply retains the operation bucket,
 other entries and customData. Per-field source conflicts require Reload or Keep;
 queued edits retain the document/revision/edit-target guard.
+If the whole reference changes while any field is dirty, including a customData
+change or another entry occupying its list position, Apply is withheld until
+Reload or Keep. Keep retains edited fields only; untouched fields refresh from
+the current reference. A successful write is acknowledged without a new conflict.
 For authored list editing, `EditorEdit::PayloadListOp { prim, operation }`
 and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containing
 prepend, append, add, delete, and order entries. They replace the local operation,

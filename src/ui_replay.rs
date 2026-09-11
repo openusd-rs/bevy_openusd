@@ -88,6 +88,8 @@ mod tests {
             (include_str!("../scripts/replays/payload_provenance.replay"), 3, 12000),
             (include_str!("../scripts/replays/payload_prepend.replay"), 18, 18000),
             (include_str!("../scripts/replays/payload_load_local.replay"), 7, 16000),
+            (include_str!("../scripts/replays/payload_load_state.replay"), 8, 21000),
+            (include_str!("../scripts/replays/variant_history.replay"), 12, 27000),
             (include_str!("../scripts/replays/reference_provenance.replay"), 3, 12000),
             (include_str!("../scripts/replays/reference_clear.replay"), 6, 16000),
             (include_str!("../scripts/replays/reference_clear_undo.replay"), 9, 22000),

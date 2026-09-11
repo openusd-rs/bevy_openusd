@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reconciled composition-editor acceptance
+
+The original feature requirement is implemented through EditorSession,
+EditorBridge and the Inspector, with the following acceptance scope:
+
+| Required feature | Evidence |
+| --- | --- |
+| Selection and editable inspector | selection_and_live_projection_use_the_same_stage; inspector_edit_sender_preserves_context_and_rejects_stale_actions; retained sample/matrix/numeric-array interaction captures below |
+| Layers and edit target | layer_target_undo_and_save_modes_preserve_composition; muting_ancestor_of_edit_layer_is_rejected_without_changes; re-inspected ancestor-controls-selected-ui.png shows the selected leaf and protected ancestors |
+| Variants and history | visible_variant_fixture_preserves_selection_and_authored_history plus fresh red/blue/undo/redo whole-host captures below |
+| Payload participation | payload_commands_reconcile_and_keep_unloaded_prim_selectable plus fresh editor-payload-unloaded.png and editor-payload-reloaded.png |
+| Provenance | payload_provenance_retains_weaker_ops_and_authored_anchors and reference_provenance_preserves_variant_sites_custom_data_and_time; re-inspected payload-provenance-ui.png and fresh payload captures display authored layer, spec, list operation, asset and target |
+| Explicit saves | distinct root/edit/flattened FileDialogs requests produce SaveChecked with document/layer context; checked_save_rejects_stale_document_and_layer_without_touching_output, layer_target_undo_and_save_modes_preserve_composition and the separately executed native export lane verify writes and reopening |
+
+The existing save-formats-edit.png was re-inspected: it proves native chooser
+presentation, not an end-to-end OS file selection/overwrite interaction. Save
+acceptance combines chooser/request tests with real editor writes and native
+reopen checks; it does not claim every native dialog/backend interaction works.
+Likewise replay input enters egui, not the OS pointer stack. These limits and
+the graphics-stack black-frame issue remain; the feature checkbox is not an
+unqualified GUI reliability certification.
+
+Fresh payload_load_state.replay clicks unload then load. Inspected direct GPU
+images target/editor-payload-{unloaded,reloaded}.png show the cube absent/present,
+matching status, /Root still selected, retained provenance and clean layers.
+The unloaded desktop pair passes; reloaded retains a black-frame failure.
+Logs: /tmp/editor-payload-{unloaded,reloaded}.log. The replay and variant_history
+are included in parser regression coverage. All 84 viewer tests pass at this
+step (/tmp/editor-replay-final-tests.log); the immediately preceding model gate
+passes 59 editor tests with one ignored. No production behavior changed here.
+
 ## Viewer variant selection and history
 
 assets/editor_variants.usda supplies a red unit cube and a blue size-two variant.
@@ -3249,7 +3280,7 @@ changed in this integration-regression step.
 - [x] Bevy-tracked layer/texture dependencies, reloads and explicit failure states.
 - [x] Root replacement/despawn cleanup and independent live USD instances.
 - [x] Independent clocks, variants and overrides; preserve runtime-only components.
-- [ ] Composition-aware editing: selection, editable inspector, layers/edit target,
+- [x] Composition-aware editing: selection, editable inspector, layers/edit target,
       variants/payloads, provenance, undo/redo and explicit save operations.
 - [x] Typed/reusable authoring API and safe snippet composition.
 - [ ] GPU deformation and environment lighting with fidelity/performance evidence.

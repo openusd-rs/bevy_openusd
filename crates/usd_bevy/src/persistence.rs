@@ -456,7 +456,7 @@ def Scope "Model" (
         use crate::editor::SaveMode;
         let source = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
-        let editor = variant_payload_fixture(source.path());
+        let mut editor = variant_payload_fixture(source.path());
         editor.set_payload_loaded("/Model/Content", false).unwrap();
         let before = editor.stage().root_layer().export_to_string().unwrap();
         let path = output.path().join("unloaded.usdz");
@@ -484,7 +484,7 @@ def Scope "Model" (
         use std::{io::Read, process::Command};
         let source = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
-        let editor = variant_payload_fixture(source.path());
+        let mut editor = variant_payload_fixture(source.path());
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
         let control = Command::new(&native).arg("--flatten").arg(source.path().join("root.usda")).output().unwrap();
         assert!(control.status.success(), "{}", String::from_utf8_lossy(&control.stderr));

@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Payload load-rule revision tracking
+
+`EditorSession::set_payload_loaded` now takes `&mut self`, synchronizes external
+edits and advances the revision when the canonical load-rule table changes.
+Identical repeated requests retain the revision. This closes a gap in checked
+command ordering: an unload followed by an authored edit from the same rendered
+snapshot now rejects that stale edit instead of accepting it against changed
+composition. Runtime loading still authors no layer contents or undo commands.
+The two persistence callers now hold mutable sessions.
+
+The regression queues unload and an old-snapshot edit together, checks rejection
+and exact layer text, then verifies unload/load no-ops and invalid-path revision
+stability. All 54 nonignored editor tests and check-all pass (one native test
+ignored): `/tmp/payload-revision-editor-tests.log` and
+`/tmp/payload-revision-check.log`. All 24 persistence tests, including the 14
+native usdcat cases, also pass with `--include-ignored`
+(`/tmp/payload-revision-export-tests.log`). No new UI layout or screenshot claim
+is made.
+
 ## Snapshot-checked inspector runtime actions
 
 Inspector edit-target selection and payload load/unload now enqueue

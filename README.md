@@ -136,6 +136,10 @@ selection and payload load toggles. Both reject a changed document or revision
 before applying the request. The unchecked `EditLayer`/`Payload` commands remain
 available for programmatic callers that intentionally operate on the current
 session.
+`EditorSession::set_payload_loaded` requires a mutable session and advances the
+revision when its load-rule table changes. An identical repeated request leaves
+the revision unchanged. Payload toggles still do not author layer contents or
+add undo commands, but queued edits from an older composition are rejected.
 An effective toggle advances the editor revision; a no-op does not. Layer muting
 is session-local, not persisted USD metadata. The inspector's **Layers / edit
 target** group includes runtime participation controls below the attribute filter.

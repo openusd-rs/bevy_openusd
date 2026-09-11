@@ -714,11 +714,14 @@ impl EditorSession {
     }
 
     /// Changes runtime load rules without authoring layer opinions.
-    pub fn set_payload_loaded(&self, path: &str, loaded: bool) -> anyhow::Result<()> {
+    pub fn set_payload_loaded(&mut self, path: &str, loaded: bool) -> anyhow::Result<()> {
+        self.synchronize_external_edits();
         let path = openusd::sdf::path(path)?;
         anyhow::ensure!(self.stage.prim(path.clone())?.is_valid()?, "payload prim does not exist");
+        let before = self.stage.load_rules();
         if loaded { self.stage.load(path, openusd::usd::LoadPolicy::WithDescendants)?; }
         else { self.stage.unload(path)?; }
+        if self.stage.load_rules() != before { self.revision = self.revision.wrapping_add(1); }
         Ok(())
     }
 
@@ -1840,6 +1843,40 @@ over "Root" {}
         assert!(editor.snapshot().unwrap().muted_layers.is_empty());
         assert!(editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
         assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+    }
+
+    #[test]
+    fn payload_load_changes_invalidate_queued_edits_but_noops_do_not() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_authoring.usda");
+        let stage = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap().open_stage().unwrap();
+        let editor = EditorSession::new(stage);
+        let snapshot = editor.snapshot().unwrap();
+        let original = editor.stage().root_layer().export_to_string().unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, EditorPlugin));
+        app.insert_non_send(editor);
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::PayloadChecked { prim: "/Root".into(), loaded: false,
+            document_id: snapshot.document_id, revision: snapshot.revision }).unwrap();
+        bridge.send(snapshot.checked_edit(EditorEdit::Attribute { prim: "/Root".into(), name: "score".into(),
+            type_name: "double".into(), value: Value::Double(4.) }).unwrap()).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.contains("changed before applying the edit"));
+        let mut editor = app.world_mut().remove_non_send::<EditorSession>().unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
+        assert!(!editor.snapshot().unwrap().can_undo);
+        let unloaded = editor.snapshot().unwrap().revision;
+        assert_eq!(unloaded, snapshot.revision + 1);
+        editor.set_payload_loaded("/Root", false).unwrap();
+        assert_eq!(editor.snapshot().unwrap().revision, unloaded);
+        editor.set_payload_loaded("/Root", true).unwrap();
+        let loaded = editor.snapshot().unwrap().revision;
+        assert_eq!(loaded, unloaded + 1);
+        editor.set_payload_loaded("/Root", true).unwrap();
+        assert_eq!(editor.snapshot().unwrap().revision, loaded);
+        assert!(editor.set_payload_loaded("/Missing", false).is_err());
+        assert_eq!(editor.snapshot().unwrap().revision, loaded);
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
     }
 
     #[test]

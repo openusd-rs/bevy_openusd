@@ -56,6 +56,44 @@ as does `git diff --check`. This adds no GPU or non-Unix runtime evidence.
 
 ## Spot visual recheck after material fixes
 
+### Isolated connectivity control
+
+Added `assets/subdivision_connectivity.usda`: two triangle cages with identical
+local face-corner positions, one split at coincident boundary vertices and one
+sharing those vertices. The unit regression checks those input positions match,
+then verifies level-one refinement moves one split vertex to (-0.125,0.875,0)
+while its coincident counterpart stays at (0,1,0). Refined point counts remain
+18 split versus 15 connected and all generated normals remain +Z. It also
+checks the source coincidence is unchanged. No production welding or smoothing
+behavior changed.
+
+Both isolated meshes match native OpenSubdiv: maximum position-component error
+1.98682e-8, no values above 1e-7, and exact normal agreement. Initial manual
+evidence: `/tmp/connectivity-{Disconnected,Connected}-native.log`.
+The reusable `scripts/check_subdivision_connectivity.sh` accepts a compiled
+compare_osd and fresh output directory, retaining isolation files and logs.
+The first Rust run failed because the fixture's single display color lacked
+explicit constant interpolation; the fixture was corrected before native
+comparison. The corrected focused test passes (`/tmp/connectivity-test-final.log`).
+
+This proves the small split-topology case agrees with native subdivision,
+not that every Spot gap or reversed normal has been attributed. The connected
+mesh is an independent control, not a proposed source rewrite.
+
+The reusable native gate passes (`/tmp/connectivity-native-final.log`,
+`target/connectivity-native-final/`), and reusing its output directory rejects
+without rerunning probes (`/tmp/connectivity-reused-output.log`). Inspected
+`target/connectivity-level-{0,1}.png`: both control cages initially look alike;
+after level one the left disconnected mesh has a visible notch while the right
+connected mesh stays continuous. Both 1280x720 forward captures at eye (0,0.5,7),
+target (0,0.5,0), time zero and shadows off report CAPTURE_OK without WARN/ERROR
+(`/tmp/connectivity-capture-{0,1}.log`). These are Bevy renderings paired with
+native numerical comparison, not native-renderer pixel matching.
+
+Validation: 536 ordinary workspace tests pass, 13 ignored; check-all, build,
+shell syntax and whitespace checks pass. Logs:
+`/tmp/connectivity-{all-tests,check,build}.log`.
+
 ### Current editor recheck at a6f070b
 
 Captured and inspected four new images: host windows

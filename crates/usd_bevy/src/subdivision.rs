@@ -496,6 +496,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn coincident_disconnected_boundaries_are_not_welded() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/subdivision_connectivity.usda");
+        let source = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let read = |name| {
+            let path = openusd::sdf::Path::new(name).unwrap();
+            let mesh = crate::read::geom::read_mesh(&stage, &path).unwrap().unwrap();
+            let rules = crate::read::subdivision::read_subdivision_at(&stage, &path, None).unwrap();
+            (mesh, rules)
+        };
+        let (split, rules) = read("/Disconnected");
+        let (joined, joined_rules) = read("/Connected");
+        let corners = |mesh: &ReadMesh| mesh.face_vertex_indices.iter()
+            .map(|index| mesh.points[*index as usize]).collect::<Vec<_>>();
+        assert_eq!(corners(&split), corners(&joined));
+        assert_eq!(split.points[2], split.points[6]);
+        let refined = refine_mesh(&split, &rules, 1).unwrap();
+        assert_eq!(refined.points[2], [-0.125, 0.875, 0.0]);
+        assert_eq!(refined.points[6], [0.0, 1.0, 0.0]);
+        let connected = refine_mesh(&joined, &joined_rules, 1).unwrap();
+        assert_eq!(refined.points.len(), 18);
+        assert_eq!(connected.points.len(), 15);
+        assert_eq!(split.points[2], split.points[6]);
+        for mesh in [&refined, &connected] {
+            assert!(mesh.normals.as_ref().unwrap().values.iter()
+                .all(|normal| normal.iter().zip([0.0, 0.0, 1.0]).all(|(a,b)| (a-b).abs() < 1e-6)));
+        }
+    }
+
+    #[test]
     fn uniform_sharpness_refines_cube_positions_and_decays() {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/subdivision_cube.usda");
         let source = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap();

@@ -918,9 +918,23 @@ positions and limit normals against the compiled native tool:
 make --eval='check-osd-assets:; @/bin/bash scripts/check_subdivision_assets.sh target/compare-osd ../usd_collection target/NEW_NATIVE_CHECK' check-osd-assets
 ```
 
-The output directory must be new. Logs and generated assets remain there on
-failure. This gate requires the collection and OpenSubdiv SDK; it is separate
-from the ordinary Rust test suite and does not perform image acceptance.
+`assets/subdivision_connectivity.usda` places disconnected and connected triangle
+cages side by side with identical local face-corner positions. Under level-one
+Catmull-Clark, the disconnected boundary opens while shared vertices stay shared.
+The ordinary regression preserves that distinction instead of welding positions.
+Compare both cages' refined positions and normals against the native tool with:
+
+```bash
+make --eval='check-connectivity:; @/bin/bash scripts/check_subdivision_connectivity.sh target/compare-osd target/NEW_CONNECTIVITY_CHECK' check-connectivity
+```
+
+This isolates topology-dependent gaps; it does not identify every seam in a
+production asset or authorize automatic welding of intentional boundaries.
+
+Both native checks require a new output directory and retain logs and generated
+assets on failure. The asset check additionally requires the collection; the
+connectivity fixture is included in this repository. These OpenSubdiv checks are
+separate from the ordinary Rust suite and do not perform image acceptance.
 
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated

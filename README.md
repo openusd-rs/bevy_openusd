@@ -777,6 +777,10 @@ UVs or native curve-renderer parity. Low sampling visibly facets curved shapes.
 `assets/curve_surface_loops.usda` exercises two periodic B-spline tubes in one
 prim with indexed uniform widths and separate colors: a thick blue loop and a
 thin orange loop. The loops close independently without connecting triangles.
+Surface materials honor `doubleSided`: single-sided ribbon backs are culled,
+while double-sided backs remain visible with flipped lighting normals.
+`assets/curve_surface_sidedness.usda` shows a front-facing ribbon above a hidden
+single-sided back and a visible double-sided back below it.
 
 Point clouds project constant/inherited and indexed vertex/varying display color
 and opacity through the same RGBA expansion as mesh vertices. The unbound

@@ -3,6 +3,26 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Curve surface sidedness correction
+
+Removed the surface route's unconditional cull-mode override. Unbound surfaces
+now retain the canonical material helper's authored doubleSided handling, like
+bound materials. A regression toggles false/true/false on the same ribbon and
+checks both backface culling and normal-flip material flags. This follows the
+[OpenUSD Gprim sidedness contract](https://openusd.org/dev/api/class_usd_geom_basis_curves.html),
+not an assumption that every ribbon is two-sided.
+
+Inspected `target/curve-surface-sidedness.png` from the new fixture: front-facing
+top ribbon visible, single-sided middle back culled, double-sided bottom back
+visible with matching front-facing illumination. Capture uses Vulkan, forward
+rendering, shadows off, 12 sides, camera (0,0,8) looking at the origin; CAPTURE_OK
+without warnings (`/tmp/curve-sidedness-capture.log`). Six focused surface tests
+and check-all pass (`/tmp/curve-sidedness-{tests,check}.log`). Explicit curve
+orientation-token behavior and general normal-mapped surfaces remain separate
+acceptance gaps.
+The complete usd_bevy library suite passes 447 tests with 13 ignored, and the
+viewer builds (`/tmp/curve-sidedness-lib-tests.log`, `/tmp/curve-sidedness-build.log`).
+
 ## Independent host-runner control
 
 `examples/host_capture_probe.rs` accepts `USD_HOST_PROBE_RUNNER=mara|eframe`.

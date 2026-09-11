@@ -139,7 +139,6 @@ pub(super) fn project(ctx: &RouteCtx, world: &mut World, entity: Entity, steps: 
     let translucent = matches!(mesh.attribute(Mesh::ATTRIBUTE_COLOR), Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) if colors.iter().any(|color| color[3] < 1.0));
     let handle = super::super::cache::intern_mesh(world, mesh);
     let mut material = super::super::material::default_material(ctx);
-    material.cull_mode = None;
     material.alpha_mode = if translucent { AlphaMode::Blend } else { AlphaMode::Opaque };
     let material = super::super::cache::intern_material(world, material);
     world.entity_mut(entity).remove::<bevy::camera::primitives::Aabb>()
@@ -155,6 +154,27 @@ mod tests {
     fn positions(mesh: &Mesh) -> &[[f32;3]] {
         let Some(VertexAttributeValues::Float32x3(values)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("positions") };
         values
+    }
+
+    #[test]
+    fn surface_material_respects_authored_sidedness() {
+        let source = crate::UsdSource::new("widths.usda", include_bytes!("../../../../../assets/curve_widths.usda").as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let path = openusd::sdf::path("/Ribbon").unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.insert_resource(UsdCurveSettings::default().with_surface_sides(Some(12)).unwrap());
+        let entity = world.spawn_empty().id();
+        for double_sided in [false, true, false] {
+            stage.create_attribute("/Ribbon.doubleSided", "bool").unwrap().set(Value::Bool(double_sided)).unwrap();
+            CurvesRoute.project(&RouteCtx::new(&stage, &path), &mut world, entity);
+            let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
+            let material = world.resource::<Assets<StandardMaterial>>().get(handle).unwrap();
+            assert_eq!(material.double_sided, double_sided);
+            assert_eq!(material.cull_mode, if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) });
+            assert!(!material.unlit);
+        }
     }
 
     #[test]

@@ -20,8 +20,10 @@ pub enum EditorCommand {
     Edit(EditorEdit),
     EditChecked { edit: EditorEdit, document_id: u64, revision: u64, target: EditTarget },
     EditLayer(String),
+    EditLayerChecked { identifier: String, document_id: u64, revision: u64 },
     LayerMuteChecked { identifier: String, muted: bool, document_id: u64, revision: u64 },
     Payload { prim: String, loaded: bool },
+    PayloadChecked { prim: String, loaded: bool, document_id: u64, revision: u64 },
     Undo,
     Redo,
     Seek(f64),
@@ -205,6 +207,23 @@ fn process_commands(world: &mut World) {
                 continue;
             }
         }
+        let command = match command {
+            EditorCommand::EditLayerChecked { identifier, document_id, revision } => {
+                if session.as_ref().is_none_or(|editor| (editor.document_id, editor.revision) != (document_id, revision)) {
+                    status = "Failed: document changed before selecting an edit layer; review and retry".into();
+                    continue;
+                }
+                EditorCommand::EditLayer(identifier)
+            }
+            EditorCommand::PayloadChecked { prim, loaded, document_id, revision } => {
+                if session.as_ref().is_none_or(|editor| (editor.document_id, editor.revision) != (document_id, revision)) {
+                    status = "Failed: document changed before changing payload loading; review and retry".into();
+                    continue;
+                }
+                EditorCommand::Payload { prim, loaded }
+            }
+            command => command,
+        };
         let movements = session.as_ref().map_or_else(Vec::new, |editor| match &command {
             EditorCommand::Edit(edit) => edit.namespace_moves(),
             EditorCommand::Undo => editor.undo.last().map(|entry| entry.edit.namespace_moves().into_iter().rev().map(|(old, new)| (new, old)).collect()).unwrap_or_default(),
@@ -296,7 +315,8 @@ fn process_commands(world: &mut World) {
                         Err(anyhow::anyhow!("document or edit layer changed while choosing a save destination; choose again"))
                     } else { editor.save(&filename, mode) }
                 }
-                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } | EditorCommand::EditChecked { .. } => unreachable!(),
+                EditorCommand::Open(_) | EditorCommand::OpenChecked { .. } | EditorCommand::EditChecked { .. }
+                    | EditorCommand::EditLayerChecked { .. } | EditorCommand::PayloadChecked { .. } => unreachable!(),
             }
         } else {
             Err(anyhow::anyhow!("no USD document is open"))
@@ -1820,6 +1840,43 @@ over "Root" {}
         assert!(editor.snapshot().unwrap().muted_layers.is_empty());
         assert!(editor.stage().prim("/Root/FromWeak").unwrap().is_valid().unwrap());
         assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), authored);
+    }
+
+    #[test]
+    fn checked_inspector_runtime_actions_reject_stale_documents_and_revisions() {
+        let filename = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_authoring.usda");
+        let source = crate::UsdSource::new(filename, std::fs::read(filename).unwrap()).unwrap();
+        for payload in [false, true] {
+            let old = EditorSession::new(source.open_stage().unwrap()).snapshot().unwrap();
+            let editor = EditorSession::new(source.open_stage().unwrap());
+            let current = editor.snapshot().unwrap();
+            let weak = current.layers.iter().find(|id| *id != &current.root_layer).unwrap().clone();
+            let original = editor.stage().root_layer().export_to_string().unwrap();
+            let command = |document_id, revision| if payload {
+                EditorCommand::PayloadChecked { prim: "/Root".into(), loaded: false, document_id, revision }
+            } else { EditorCommand::EditLayerChecked { identifier: weak.clone(), document_id, revision } };
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, EditorPlugin));
+            app.insert_non_send(editor);
+            let bridge = app.world().resource::<EditorBridge>().clone();
+            for (id, revision) in [(old.document_id, old.revision), (current.document_id, current.revision.wrapping_add(1))] {
+                bridge.send(command(id, revision)).unwrap();
+                app.update();
+                assert!(bridge.view().unwrap().status.contains("document changed"));
+                let editor = app.world().get_non_send::<EditorSession>().unwrap();
+                assert_eq!(editor.stage().edit_target().layer_identifier(), current.root_layer);
+                assert!(editor.stage().prim("/Root").unwrap().is_loaded().unwrap());
+                assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
+            }
+            bridge.send(command(current.document_id, current.revision)).unwrap();
+            app.update();
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            let editor = app.world().get_non_send::<EditorSession>().unwrap();
+            if payload { assert!(!editor.stage().prim("/Root").unwrap().is_loaded().unwrap()); }
+            else { assert_eq!(editor.stage().edit_target().layer_identifier(), weak); }
+            assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), original);
+            assert!(!editor.snapshot().unwrap().can_undo);
+        }
     }
 
     #[test]

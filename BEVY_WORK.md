@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Snapshot-checked inspector runtime actions
+
+Inspector edit-target selection and payload load/unload now enqueue
+`EditLayerChecked` and `PayloadChecked`, carrying the rendered document ID and
+revision. The command processor rejects stale contexts before target/load-rule
+changes, texture refresh or reprojection. Successful requests follow the existing
+runtime paths. Unchecked variants remain available to programmatic callers;
+controls and layout are unchanged.
+
+The regression uses two sessions with identical source paths, proving an old
+document's request cannot alter the replacement. It also checks stale revisions,
+unchanged edit targets/load states/root text on rejection, successful current
+requests and absence of authored undo entries. All 53 nonignored editor tests,
+76 viewer tests and check-all pass (one native editor test ignored):
+`/tmp/checked-inspector-actions-tests.log`,
+`/tmp/checked-inspector-actions-viewer-tests.log`,
+`/tmp/checked-inspector-actions-final-check.log`. This is command-dispatch
+regression evidence, not a new screenshot acceptance claim.
+
 ## Muted-layer export semantics
 
 Added ordinary and native export regressions for root, edit-layer (root target)

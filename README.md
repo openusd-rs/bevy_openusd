@@ -131,6 +131,11 @@ layer contents or adding undo commands. It rejects unknown layers and muting the
 root or active edit layer. A muted layer cannot become the edit target until it
 is unmuted. `EditorSnapshot::muted_layers` retains the sorted muted identifiers;
 `EditorCommand::LayerMuteChecked` guards queued toggles by document and revision.
+The inspector also uses `EditLayerChecked` and `PayloadChecked` for target
+selection and payload load toggles. Both reject a changed document or revision
+before applying the request. The unchecked `EditLayer`/`Payload` commands remain
+available for programmatic callers that intentionally operate on the current
+session.
 An effective toggle advances the editor revision; a no-op does not. Layer muting
 is session-local, not persisted USD metadata. The inspector's **Layers / edit
 target** group includes runtime participation controls below the attribute filter.

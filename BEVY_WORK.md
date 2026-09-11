@@ -3,7 +3,31 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
-## Curve width and normal reader foundation
+## Document replacement confirmation
+
+The viewer's Open action now waits for an in-editor modal confirmation before
+creating the native file picker when a document is present. Cancel/backdrop/
+Escape emit no replacement command. Initial open skips confirmation. The
+document/revision token is captured before the warning and retained through
+selection; existing OpenChecked rejection covers intervening edits. This warns
+for every current document, including saved ones: multi-layer dirty tracking
+and window-close confirmation are still open. Programmatic unchecked Open is
+unchanged. No automatic save or source writes are introduced.
+
+The first approach using rfd message dialogs was replaced before commit:
+rfd 0.15.4's XDG message backend invokes Zenity, which is absent here. The egui
+modal needs no external confirmation utility. Eight focused dialog tests,
+check-all and build pass (`/tmp/open-confirm-{tests,check,build}.log`). Tests cover
+pending confirmation, cancellation before picker creation, initial-open bypass,
+accepted revision-token forwarding and one-shot command delivery. Inspected
+`target/open-confirmation.png` shows the warning over the existing scene with
+Cancel and Choose another document buttons (`/tmp/open-confirm-capture.log`).
+The cancellation capture `target/open-confirmation-cancel.png` hit the existing
+black host failure and was rejected by region inspection
+(`/tmp/open-confirm-cancel-capture.log`); it does not establish native Cancel
+interaction acceptance. Cancellation and picker sequencing are unit-tested.
+
+## Curve surface validation
 
 Periodic surface acceptance now includes `assets/curve_surface_loops.usda`:
 two periodic B-splines in one prim, indexed uniform widths reversing the value

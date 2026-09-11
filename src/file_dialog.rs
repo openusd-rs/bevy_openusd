@@ -44,6 +44,16 @@ impl Request {
 
 type Selection = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
 
+async fn select_open<C, P, F>(has_document: bool, confirmation: C, picker: P) -> Option<PathBuf>
+where
+    C: Future<Output = bool>,
+    P: FnOnce() -> F,
+    F: Future<Output = Option<PathBuf>>,
+{
+    if has_document && !confirmation.await { return None; }
+    picker().await
+}
+
 struct Repaint(egui::Context);
 impl Wake for Repaint {
     fn wake(self: Arc<Self>) { self.0.request_repaint(); }
@@ -52,22 +62,31 @@ impl Wake for Repaint {
 
 pub struct FileDialogs {
     pending: Option<(Request, Selection)>,
+    confirmation: Option<Arc<std::sync::Mutex<Option<bool>>>>,
+    context: egui::Context,
     waker: Waker,
     status: Option<String>,
 }
 
 impl FileDialogs {
     pub fn new(ctx: &egui::Context) -> Self {
-        Self { pending: None, waker: Waker::from(Arc::new(Repaint(ctx.clone()))), status: None }
+        Self { pending: None, confirmation: None, context: ctx.clone(), waker: Waker::from(Arc::new(Repaint(ctx.clone()))), status: None }
     }
 
     pub fn start(&mut self, request: Request) {
         if self.pending.is_some() { return; }
         let dialog = rfd::AsyncFileDialog::new();
         let future: Selection = match &request {
-            Request::Open { .. } => {
-                let selection = dialog.add_filter("USD", USD_EXTENSIONS).pick_file();
-                Box::pin(async move { selection.await.map(|file| file.path().to_owned()) })
+            Request::Open { document_id, .. } => {
+                let answer = Arc::new(std::sync::Mutex::new(None));
+                if *document_id != 0 { self.confirmation = Some(answer.clone()); }
+                let confirmation = std::future::poll_fn(move |_| match answer.lock() {
+                    Ok(answer) => answer.map_or(Poll::Pending, Poll::Ready),
+                    Err(_) => Poll::Ready(false),
+                });
+                Box::pin(select_open(*document_id != 0, confirmation, move || async move {
+                    dialog.add_filter("USD", USD_EXTENSIONS).pick_file().await.map(|file| file.path().to_owned())
+                }))
             }
             Request::Save { mode, .. } => {
                 let (title, filename) = save_labels(*mode);
@@ -87,6 +106,24 @@ impl FileDialogs {
     }
 
     pub fn poll(&mut self) -> Option<EditorCommand> {
+        if let Some(answer) = self.confirmation.clone() {
+            let mut choice = None;
+            let response = egui::Modal::new(egui::Id::new("usd.open.confirmation")).show(&self.context, |ui| {
+                ui.set_max_width(420.);
+                ui.heading("Replace current USD document?");
+                ui.label("Opening another document replaces the current scene. Any changes you have not saved will be lost.");
+                ui.label("Cancel to save the layers you need first, or continue to choose another document.");
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() { choice = Some(false); }
+                    if ui.button("Choose another document").clicked() { choice = Some(true); }
+                });
+            });
+            if choice.is_none() && response.should_close() { choice = Some(false); }
+            if let Some(choice) = choice {
+                if let Ok(mut answer) = answer.lock() { *answer = Some(choice); }
+                self.confirmation = None;
+            }
+        }
         let (_, future) = self.pending.as_mut()?;
         let Poll::Ready(path) = future.as_mut().poll(&mut Context::from_waker(&self.waker)) else { return None };
         let (request, _) = self.pending.take().unwrap();
@@ -104,6 +141,35 @@ impl FileDialogs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_confirmation_precedes_picker_and_cancellation_emits_no_command() {
+        use std::{cell::Cell, rc::Rc};
+        for (document_id, accept, expected) in [(0, false, true), (42, false, false), (42, true, true)] {
+            let calls = Rc::new(Cell::new(0));
+            let called = calls.clone();
+            let future = select_open(document_id != 0, async move { accept }, move || {
+                called.set(called.get()+1);
+                async { Some(PathBuf::from("replacement.usda")) }
+            });
+            let mut dialogs = FileDialogs::new(&egui::Context::default());
+            dialogs.begin(Request::Open { document_id, revision: 9 }, Box::pin(future));
+            assert_eq!(calls.get(), 0);
+            let command = dialogs.poll();
+            assert_eq!(command.is_some(), expected);
+            assert_eq!(calls.get(), usize::from(expected));
+            if let Some(command) = command {
+                assert!(matches!(command, EditorCommand::OpenChecked { document_id: id, revision: 9, .. } if id == document_id));
+            }
+            assert!(dialogs.poll().is_none());
+            assert!(dialogs.status().is_none());
+        }
+        let mut dialogs = FileDialogs::new(&egui::Context::default());
+        dialogs.begin(Request::Open { document_id: 42, revision: 9 }, Box::pin(select_open(
+            true, std::future::pending(), || async { panic!("picker opened before confirmation") },
+        )));
+        for _ in 0..3 { assert!(dialogs.poll().is_none()); }
+    }
 
     #[test]
     fn open_selection_retains_document_revision_context() {

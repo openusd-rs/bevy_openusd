@@ -101,6 +101,13 @@ reported composition errors. Failure retains any previous projection and reports
 The viewer's Open command applies the same composition validation before replacing
 the current document. Rejected opens retain selection and edit history; long
 failure messages wrap in the outliner's Status section.
+The viewer warns before opening the file picker when a document is already open.
+Cancel keeps the current document and lets you save the required layers first.
+The warning is conservative: it appears even for a saved document, without
+claiming to track every layer's unsaved state. The original document/revision
+token remains checked after selection, so edits during the warning or picker
+invalidate the replacement. This does not add a window-close guard or change
+the explicitly unchecked programmatic `EditorCommand::Open` API.
 Flattened editor exports also validate the active composition before writing.
 Reported composition errors preserve the existing destination. Root/edit-layer
 exports retain authored unresolved references for repair rather than requiring

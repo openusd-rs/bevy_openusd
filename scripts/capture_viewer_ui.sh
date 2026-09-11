@@ -65,6 +65,7 @@ case "$renderer" in
     *) echo "USD_UI_COMPOSITOR_RENDERER must be vulkan, gl or pixman" >&2; exit 2 ;;
 esac
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root/scripts/capture_session.sh"
 mkdir -p "$(dirname "$output")"
 printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutput_height=1000\ninspection_region=110,110,1400,800\nvalidation=near-black-and-panic-log\n' \
     "$renderer" "$delay" > "${output%.png}.settings.txt"
@@ -78,8 +79,8 @@ chmod 700 "$runtime"
 compositor_pid=
 viewer_pid=
 cleanup() {
-    [[ -z "$viewer_pid" ]] || kill -TERM -- "-$viewer_pid" 2>/dev/null || true
-    [[ -z "$compositor_pid" ]] || kill -TERM -- "-$compositor_pid" 2>/dev/null || true
+    capture_session_stop "$runtime/viewer.pid" "$viewer_pid"
+    capture_session_stop "$runtime/compositor.pid" "$compositor_pid"
     wait 2>/dev/null || true
     rm -rf -- "$runtime"
 }
@@ -93,7 +94,7 @@ fi
 unset WAYLAND_SOCKET
 compositor=(weston --backend=headless --renderer="$renderer" --fake-seat --width=1600 --height=1000 --socket="$WAYLAND_DISPLAY" --no-config --debug --idle-time=0)
 if command -v nixVulkan >/dev/null; then compositor=(nixVulkan "${compositor[@]}"); fi
-setsid "${compositor[@]}" > "${output%.png}.weston.log" 2>&1 &
+capture_session_run "$runtime/compositor.pid" "${compositor[@]}" > "${output%.png}.weston.log" 2>&1 &
 compositor_pid=$!
 for ((i=0; i<100; i++)); do
     [[ ! -S "$runtime/$WAYLAND_DISPLAY" ]] || break
@@ -111,7 +112,7 @@ if [[ ${USD_UI_CAPTURE_PRIVATE_BUS:-0} == 1 ]]; then
     command -v dbus-run-session >/dev/null || { echo "missing command: dbus-run-session" >&2; exit 2; }
     viewer=(dbus-run-session -- "${viewer[@]}")
 fi
-setsid "${viewer[@]}" > "${output%.png}.viewer.log" 2>&1 &
+capture_session_run "$runtime/viewer.pid" "${viewer[@]}" > "${output%.png}.viewer.log" 2>&1 &
 viewer_pid=$!
 for ((i=0; i<300; i++)); do
     grep -qx 'USD_VIEWER_UI_UPDATED' "${output%.png}.viewer.log" && break

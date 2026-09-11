@@ -3,6 +3,34 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Capture session cleanup and playback repeat
+
+Both capture wrappers now share capture_session.sh. It forces a new session,
+records the actual session leader from inside that session, and keeps a waitable
+setsid wrapper for exit-status checks. Cleanup signals the recorded group,
+allows a bounded TERM grace period, then uses KILL for surviving owned processes.
+Failure to write the private leader record prevents command execution.
+
+check_capture_session.sh verifies distinct wrapper/leader PIDs, cleanup of a
+TERM-ignoring group, propagation of exit status 7 and failed-handshake refusal.
+It passes via Make in /tmp/capture-session-tests.log; the abnormal-exit and
+missing-path diagnostics are expected negative-test output. All four shell
+scripts pass bash -n. No Makefile or desktop configuration changed.
+
+Real release playback capture passes and its direct GPU image was inspected:
+target/clean-playback-host.png. In the same 15–30s measurement window, UI output
+is 60.241Hz and animated Morph/Face projection is 59.162Hz (887 updates over
+14.976s). /tmp/clean-playback-cadence.txt and /tmp/clean-playback-capture.log retain
+the result. Previously identified test viewers had been stopped before this
+run. This remains an observed cadence with tracing, not a controlled GPU-time
+benchmark or a universal frame-time guarantee.
+
+The native-close Cancel probe also passes with the shared helper:
+target/native-close-cleanup/dialog.png was inspected and shows the dismissed
+dialog and intact scene. /tmp/native-close-cleanup.log records survival/readback.
+After each wrapper exited, ps found no running processes in either recorded
+viewer/compositor group (1223931/1223348 and 1250910/1250731 respectively).
+
 ## Active-rate embedded playback
 
 A release viewer probe found UI output near 60Hz while animated mesh projection

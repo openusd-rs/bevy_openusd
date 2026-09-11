@@ -5,6 +5,7 @@ mode=${2:-prompt}
 case "$mode" in prompt|cancel|discard) ;; *) echo 'invalid close mode' >&2; exit 2;; esac
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+source "$root/scripts/capture_session.sh"
 output=$(realpath -m "$1")
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'output must be new' >&2; exit 2; }
 for command in weston cc pkg-config setsid; do command -v "$command" >/dev/null; done
@@ -14,8 +15,8 @@ xpid=; vpid=
 runtime=$(mktemp -d /dev/shm/usd-native-close.XXXXXX)
 chmod 700 "$runtime"
 cleanup() {
-    [[ -z "$vpid" ]] || kill -TERM -- "-$vpid" 2>/dev/null || true
-    [[ -z "$xpid" ]] || kill -TERM -- "-$xpid" 2>/dev/null || true
+    capture_session_stop "$runtime/viewer.pid" "$vpid"
+    capture_session_stop "$runtime/compositor.pid" "$xpid"
     wait 2>/dev/null || true
     rm -rf -- "$runtime"
 }
@@ -25,7 +26,7 @@ export XDG_RUNTIME_DIR="$runtime"
 unset WAYLAND_SOCKET WAYLAND_DISPLAY
 compositor=(weston --backend=headless --renderer=vulkan --fake-seat --width=1440 --height=920 --socket=usd-close --no-config --idle-time=0 --xwayland)
 if command -v nixVulkan >/dev/null; then compositor=(nixVulkan "${compositor[@]}"); fi
-setsid "${compositor[@]}" >"$output/weston.log" 2>&1 & xpid=$!
+capture_session_run "$runtime/compositor.pid" "${compositor[@]}" >"$output/weston.log" 2>&1 & xpid=$!
 for ((i=0; i<100; ++i)); do
     grep -q 'xserver listening on display' "$output/weston.log" && break
     kill -0 "$xpid"
@@ -36,7 +37,7 @@ display=$(sed -n 's/.*xserver listening on display \(:[0-9]*\).*/\1/p' "$output/
 printf '%s\n' "$display" > "$output/display"
 replay=()
 if [[ "$mode" != prompt ]]; then replay=("USD_UI_REPLAY=$root/scripts/replays/native_close_$mode.replay"); fi
-setsid env -u WAYLAND_DISPLAY -u USD_UI_REPLAY WGPU_BACKEND=vulkan USD_UI_CAPTURE_HANDSHAKE=1 \
+capture_session_run "$runtime/viewer.pid" env -u WAYLAND_DISPLAY -u USD_UI_REPLAY WGPU_BACKEND=vulkan USD_UI_CAPTURE_HANDSHAKE=1 \
     "${replay[@]}" \
     USD_HOST_SCREENSHOT="$output/dialog.png" USD_HOST_SCREENSHOT_DELAY_MS=20000 \
     make run BACKEND=x11 DISPLAY="$display" CARGO='cargo --offline' \

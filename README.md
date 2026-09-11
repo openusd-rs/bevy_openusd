@@ -1207,6 +1207,12 @@ seek to time code 30 for the bent pose.
 
 ### Typed component authoring
 
+For interactive variant/history inspection, open `assets/editor_variants.usda`,
+select `/Model` and open **Inspector**. The **blue** variant doubles the cube size;
+**Undo** restores red and a clean layer, and **Redo** restores blue and modified
+status. `scripts/replays/variant_history.replay` exercises those controls in the
+isolated 1440×920 host; its coordinates are layout-dependent.
+
 Build reusable sources directly with the canonical generated schema API:
 
 ```rust,ignore

@@ -3,6 +3,28 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Viewer variant selection and history
+
+assets/editor_variants.usda supplies a red unit cube and a blue size-two variant.
+The checked-in variant_history.replay clicks blue, Undo and Redo through actual
+egui controls. Inspected direct host captures target/editor-variants-{blue,undo,redo}.png
+show the matching color/size, Variant: look selection and modified/clean/modified
+layer status. Selection remains /Model. The camera remains fixed, so the larger
+cube extends outside the initial framing; this is not automatic reframing evidence.
+
+The model regression verifies variant size, selected path, exact authored-layer
+undo/redo and unchanged source bytes. All 59 editor tests pass with one ignored;
+make check-all passes. A first patch accidentally inserted the regression into
+an existing raw USDA fixture string, causing that existing test to fail; it was
+moved outside the string before the passing gate. No production code changed.
+Logs: /tmp/editor-variants-model-tests-fixed.log, /tmp/editor-variants-check.log.
+
+Captures use /Model in Inspector, variant_history.replay, direct delays
+16000/23000/30000ms for blue/undo/redo and desktop waits 18/24/32 plus two seconds.
+The blue and redo desktop pairs pass, while undo retains a black-frame failure;
+all three direct GPU images are usable. Logs: /tmp/editor-variants-{blue,undo,redo}.log.
+This closes variant interaction evidence, not the entire editor acceptance item.
+
 ## Reconciled typed authoring and snippet acceptance
 
 The original typed/reusable authoring API and safe snippet composition requirement

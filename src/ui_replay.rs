@@ -108,6 +108,8 @@ mod tests {
             (include_str!("../scripts/replays/payload_order_draft.replay"), 14, 26000),
             (include_str!("../scripts/replays/numeric_array_layout.replay"), 3, 14000),
             (include_str!("../scripts/replays/numeric_array_apply.replay"), 13, 23000),
+            (include_str!("../scripts/replays/numeric_array_sample.replay"), 20, 26000),
+            (include_str!("../scripts/replays/numeric_array_sample_clear.replay"), 24, 38000),
             (include_str!("../scripts/replays/payload_replace.replay"), 15, 16000),
             (include_str!("../scripts/replays/payload_clear.replay"), 18, 18000),
             (include_str!("../scripts/replays/payload_invalid.replay"), 7, 14000),

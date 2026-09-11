@@ -845,6 +845,34 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn numeric_array_samples_preserve_defaults_and_clear_undo() {
+        use usd_bevy::editor::{EditorEdit, EditorSession};
+        use openusd::{sdf::Value, usd::TimeCode};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/numeric_array.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let stage = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap().open_stage().unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        let attribute = stage.attribute("/Root.primvars:displayColor").unwrap();
+        let original = attribute.get::<Value>().unwrap();
+        let before = stage.root_layer().export_to_string().unwrap();
+        let value = super::parse_value(&super::value_template("color3f[]").unwrap(), "1 0.3 0.05").unwrap();
+        editor.edit(EditorEdit::AttributeSample { prim: "/Root".into(), name: "primvars:displayColor".into(),
+            type_name: "color3f[]".into(), value: value.clone(), time: 2. }).unwrap();
+        assert_eq!(attribute.get::<Value>().unwrap(), original);
+        assert_eq!(attribute.get_at::<Value>(Some(TimeCode::new(2.))).unwrap(), Some(value));
+        assert_eq!(attribute.time_sample_times().unwrap(), vec![2.]);
+        let sampled = stage.root_layer().export_to_string().unwrap();
+        editor.edit(EditorEdit::ClearAttributeSample { prim: "/Root".into(), name: "primvars:displayColor".into(), time: 2. }).unwrap();
+        assert!(attribute.time_sample_times().unwrap().is_empty());
+        assert_eq!(attribute.get::<Value>().unwrap(), original);
+        editor.undo().unwrap();
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), sampled);
+        editor.undo().unwrap();
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
     fn numeric_array_edits_preserve_types_and_undo() {
         use super::{editable_text, parse_value, value_template};
         use openusd::sdf::Value;

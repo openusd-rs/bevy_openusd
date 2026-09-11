@@ -156,7 +156,22 @@ text. Both capture guards pass (`/tmp/numeric-array-layout-fixed-capture.log`,
 `/tmp/numeric-array-applied-capture.log`). The original layout replay scrolled the
 viewport because x=1100 lay outside the property pane; it was corrected to x=1000.
 That initial artifact is not a rendering regression or array-edit acceptance.
-Native sampled-array editing and large-array error layouts remain unverified.
+Large-array error layouts remain unverified.
+
+The numeric-array sample regression now checks that a parsed color sample at
+scene time 2 leaves the authored blue default intact, resolves to the sample at
+time 2, and can be cleared without changing that default. Undo restores exact
+sampled layer text and then exact original layer text; fixture bytes stay
+unchanged. Native `numeric_array_sample.replay` authors that sample: inspected
+`target/numeric-array-sample-ui.png` shows Scene samples: 2 and the orange cube.
+The capture runs at time 0, where the single time sample holds its value; this is
+not an interpolation or clock-mapping acceptance test.
+The two inspected `target/numeric-array-sample-clear-ui.png` frames show sample 2
+with the orange cube, then no samples with the original blue cube after Clear.
+The orange draft remains unapplied. All capture guards pass
+(`/tmp/numeric-array-sample-capture.log`, `/tmp/numeric-array-sample-clear-capture.log`).
+All 75 viewer tests and check-all pass
+(`/tmp/numeric-array-sample-final-{tests,check}.log`).
 
 Payload drafts with at least two rows now expose separate order controls.
 Earlier/Later swap complete rows, retaining their list mode, raw field text and

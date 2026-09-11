@@ -154,7 +154,8 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     if let Some(payload) = crate::payload_editor::pod(snapshot, bridge, &drafts.3) {
         let mut payloads = vec![payload];
         payloads.extend(crate::payload_editor::opinion_pods(snapshot));
-        body.add_normal("editor.payloads", "Payload authoring", "document", payloads);
+        payloads.extend(reference_opinion_pods(snapshot));
+        body.add_normal("editor.payloads", "Payloads / references", "document", payloads);
     }
     for (set, options) in &snapshot.variant_choices {
         let key = format!("{path}:variant:{set}");
@@ -315,6 +316,37 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     body.add_normal("editor.attributes", "Composed properties", "options", pods);
 }
 
+fn reference_opinion_lines(opinion: &usd_bevy::editor::ReferenceOpinion, index: usize) -> Vec<String> {
+    let mut lines = vec![format!("Reference opinion {} (strongest first)", index+1), "Asset paths relative to source layer".into()];
+    lines.extend(path_lines(&opinion.layer));
+    lines.extend(path_lines(opinion.prim.as_str()));
+    lines.push(format!("Site time: offset {}, scale {}", opinion.offset.offset, opinion.offset.scale));
+    let op = &opinion.operation;
+    if op.explicit && op.explicit_items.is_empty() { lines.push("Explicit empty list (blocks weaker references)".into()); }
+    for (name, entries) in [("Explicit", &op.explicit_items), ("Prepend", &op.prepended_items),
+        ("Append", &op.appended_items), ("Add", &op.added_items), ("Delete", &op.deleted_items), ("Order", &op.ordered_items)] {
+        for reference in entries {
+            lines.push(name.into());
+            lines.push(format!("Asset: {}", if reference.asset_path.is_empty() { "(internal)" } else { &reference.asset_path }));
+            lines.push(format!("Prim: {}", if reference.prim_path.is_empty() { "(defaultPrim)" } else { reference.prim_path.as_str() }));
+            lines.push(format!("Arc time: offset {}, scale {}", reference.layer_offset.offset, reference.layer_offset.scale));
+            let mut keys = reference.custom_data.keys().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys { lines.push(format!("customData {key}: {:?}", reference.custom_data[key])); }
+        }
+    }
+    lines.into_iter().flat_map(|line| path_lines(&line)).collect()
+}
+
+fn reference_opinion_pods(snapshot: &EditorSnapshot) -> Vec<Pod> {
+    snapshot.reference_opinions.iter().enumerate().map(|(index, opinion)| {
+        let lines = reference_opinion_lines(opinion, index);
+        Pod::new(Id::new(("editor.reference.opinion", index))).with_custom_units(lines.len(), move |ui| {
+            for line in lines { ui.label(&line); }
+        })
+    }).collect()
+}
+
 fn parse_sample_time(input: &str) -> Result<f64, String> {
     input.trim().parse::<f64>().ok().filter(|time| time.is_finite())
         .ok_or_else(|| "Sample time must be a finite number".into())
@@ -411,6 +443,25 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_readout_keeps_source_identity_buckets_and_custom_data() {
+        use openusd::sdf::{LayerOffset, Reference, ReferenceListOp, Value};
+        let reference = Reference { asset_path: "long relative path with spaces/model.usda".into(),
+            prim_path: openusd::sdf::path("/Original").unwrap(), layer_offset: LayerOffset::new(10., 2.),
+            custom_data: [("label".into(), Value::String("retained".into()))].into_iter().collect() };
+        let mut opinion = usd_bevy::editor::ReferenceOpinion { layer: "source.usda".into(),
+            prim: openusd::sdf::path("/Source{choice=a}").unwrap(), offset: LayerOffset::new(20., 3.),
+            operation: ReferenceListOp::deleted([reference]) };
+        let lines = super::reference_opinion_lines(&opinion, 0);
+        assert!(lines.iter().all(|line| line.chars().count() <= 40));
+        let text = lines.join("");
+        for expected in ["source.usda", "/Source{choice=a}", "Delete", "long relative path with spaces/model.usda", "/Original", "offset 20, scale 3", "offset 10, scale 2", "label", "retained"] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        opinion.operation = ReferenceListOp::explicit([]);
+        assert!(super::reference_opinion_lines(&opinion, 0).join("").contains("blocks weaker references"));
+    }
+
     #[test]
     fn variant_composition_changes_conflict_with_relationship_drafts() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/draft_conflict.usda");

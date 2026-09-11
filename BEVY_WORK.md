@@ -16,6 +16,20 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Reference provenance is now visible beneath the payload controls in the renamed
+Payloads / references inspector group. Readouts retain source layer/spec, authored
+asset/prim strings, list-op buckets, explicit-empty blockers, separate cumulative
+site and authored arc offsets, and customData. Lines wrap to 40 Unicode characters;
+top-level customData keys are sorted. This adds inspection, not reference editing
+controls or a composed reference-list view.
+The formatter regression checks long paths, variant specs, delete/block modes,
+customData and both time mappings. All 61 viewer tests and check-all pass
+(`/tmp/reference-readout-{tests,check}.log`). Native
+`reference_provenance.replay` exposes the source and nested dictionary without
+clipping the last line in the tested layout; inspected
+`target/reference-provenance-ui.png`, capture guard passes
+(`/tmp/reference-readout-capture.log`). The referenced blue cube remains visible.
+
 `EditorSnapshot::reference_opinions` now exposes typed authored reference list
 operations for contributing prim specs, strongest first. Each entry retains
 the original spec path, source layer, cumulative site offset and canonical

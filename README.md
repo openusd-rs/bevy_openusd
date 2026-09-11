@@ -119,6 +119,9 @@ snapshot-only reopening of a relocated package. These reference controls are API
 list operations in strength order, including customData, original spec paths,
 source layer identifiers and cumulative site offsets. Relative paths remain
 anchored to those source layers; this is provenance, not a composed reference list.
+The inspector's **Payloads / references** group displays reference opinions below
+the payload controls, including source paths, list modes, separate site/arc time
+mappings and customData. Reference opinions are read-only in the viewer.
 For authored list editing, `EditorEdit::PayloadListOp { prim, operation }`
 and `authoring::set_payload_list_op` accept a canonical `PayloadListOp` containing
 prepend, append, add, delete, and order entries. They replace the local operation,

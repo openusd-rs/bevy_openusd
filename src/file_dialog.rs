@@ -143,6 +143,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn escape_dismisses_real_modal_and_keeps_duplicate_requests_out() {
+        let context = egui::Context::default();
+        let mut dialogs = FileDialogs::new(&context);
+        for revision in [7, 8] {
+            dialogs.start(Request::Open { document_id: 42, revision });
+            dialogs.start(Request::Open { document_id: 99, revision: 1 });
+            assert!(matches!(dialogs.pending.as_ref().unwrap().0, Request::Open { document_id: 42, revision: value } if value == revision));
+            let _ = context.run_ui(egui::RawInput::default(), |_| {
+                assert!(dialogs.poll().is_none());
+            });
+            assert!(dialogs.confirmation.is_some());
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::Key {
+                key: egui::Key::Escape, physical_key: None, pressed: true,
+                repeat: false, modifiers: egui::Modifiers::NONE,
+            });
+            let _ = context.run_ui(input, |_| { assert!(dialogs.poll().is_none()); });
+            assert!(dialogs.confirmation.is_none());
+            assert!(dialogs.pending.is_none());
+            assert!(dialogs.status().is_none());
+            let _ = context.run_ui(egui::RawInput::default(), |_| { assert!(dialogs.poll().is_none()); });
+        }
+    }
+
+    #[test]
     fn open_confirmation_precedes_picker_and_cancellation_emits_no_command() {
         use std::{cell::Cell, rc::Rc};
         for (document_id, accept, expected) in [(0, false, true), (42, false, false), (42, true, true)] {

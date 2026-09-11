@@ -26,6 +26,17 @@ The cancellation capture `target/open-confirmation-cancel.png` hit the existing
 black host failure and was rejected by region inspection
 (`/tmp/open-confirm-cancel-capture.log`); it does not establish native Cancel
 interaction acceptance. Cancellation and picker sequencing are unit-tested.
+Follow-up acceptance: inspected `target/open-confirmation-cancel-retry.png`
+shows the warning dismissed and the original curve scene still displayed after
+the Cancel click (`/tmp/open-confirm-cancel-retry.log`, UI_CAPTURE_OK). The
+original black capture remains a recorded failure. The actual egui modal test
+now runs two request/Escape cycles, verifies duplicate requests retain the first
+document token, and checks cancellation consumes pending state without emitting
+an editor command. Portable replay inputs are checked in as
+`scripts/replays/open_confirmation{,_cancel}.replay`; they use the 1440x920
+viewer with the Rendering pane active and the default private-compositor scale.
+All 49 viewer tests and check-all pass without new warnings
+(`/tmp/open-modal-final-tests.log`, `/tmp/open-modal-final-check.log`).
 
 ## Curve surface validation
 

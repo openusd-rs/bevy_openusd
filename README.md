@@ -1364,6 +1364,12 @@ hides an earlier failure. Settings record capture start/end in elapsed script
 seconds, not exact GPU frame times. This is diagnostic sampling, not a readiness
 check or automatic retry.
 
+`USD_UI_DIAGNOSTICS=1` logs egui output statistics at most once per second:
+output count, shape/text/mesh/callback counts, NaN clip rectangles and texture
+updates/frees. It is disabled by default and does not alter the output or request
+extra repaints. The samples precede backend tessellation/presentation and are not
+synchronized to screenshots; nonempty output does not prove successful rendering.
+
 Set `USD_UI_CAPTURE_VIEWPORT=1` to additionally retain the embedded Bevy readback
 as `.viewport.png`, `.viewport.rgba` and `.viewport.capture.txt`. Its dimensions
 drive a separate full-image near-black check in `.viewport.inspect.log`. The

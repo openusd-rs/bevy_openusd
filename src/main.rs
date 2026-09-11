@@ -16,6 +16,7 @@ mod capture_metadata;
 mod framing;
 mod timeline;
 mod ui_replay;
+mod ui_diagnostics;
 mod render_settings;
 mod file_dialog;
 mod payload_editor;
@@ -187,6 +188,7 @@ struct UsdApp {
 impl WindowApp for UsdApp {
     fn new(ctx: CreationContext<'_>) -> Self {
         ui_replay::install(ctx.__internal_egui_ctx()).expect("invalid USD_UI_REPLAY script");
+        ui_diagnostics::install(ctx.__internal_egui_ctx()).expect("invalid USD_UI_DIAGNOSTICS setting");
         // Initial file: `USD_FILE` env var, else argv[1], else none.
         let path = std::env::var("USD_FILE")
             .ok()

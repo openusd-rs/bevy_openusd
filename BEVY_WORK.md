@@ -5,6 +5,22 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Same-process host capture diagnostics
 
+`USD_UI_DIAGNOSTICS=1` now installs an output-only egui plugin. It counts every
+output and samples shape categories, NaN clip rectangles, pixels-per-point and
+texture changes at most once a second. It neither modifies output nor requests
+repaints and is absent by default. Tests cover nested shapes, NaN clipping,
+texture-free counts, output preservation and throttling. All 70 viewer tests and
+check-all pass (`/tmp/ui-output-diagnostics-final-{tests,check}.log`).
+
+The diagnostic replay's two inspected images
+`target/reference-output-diagnostics-ui.png` and `.second.png` show the conflict
+and resolved fields, respectively. Both capture guards pass
+(`/tmp/reference-output-diagnostics-capture.log`). Between 28.5 and 31.6 seconds,
+the log samples contain 295 clipped shapes, 117 text shapes, five meshes, no NaN
+clips and no texture updates/frees; output counts continue advancing. This run
+did not reproduce black pixels, so it does not establish output statistics during
+the failure or localize its cause. The plugin is instrumentation, not a fix.
+
 `USD_UI_CAPTURE_SECOND_WAIT=1..300` adds a second host screenshot without restarting
 the viewer; default zero retains single-capture behavior. The script captures both
 frames before region inspection and fails overall if either is missing/black.

@@ -1,0 +1,130 @@
+diff --git a/vendor/openusd/crates/openusd/src/usd/package.rs b/vendor/openusd/crates/openusd/src/usd/package.rs
+index 402c790..4142c4f 100644
+--- a/vendor/openusd/crates/openusd/src/usd/package.rs
++++ b/vendor/openusd/crates/openusd/src/usd/package.rs
+@@ -65,8 +65,8 @@ impl Seek for LimitedBytes {
+ 
+ impl Stage {
+     /// Write a dependency-containing USDZ from a layer using this stage's resolver and live layers.
+-    /// Limited to 4096 entries and 256 MiB of serialized data. Nested packages,
+-    /// asset expressions and tile/sequence patterns currently return errors.
++    /// Limited to 4096 entries and 256 MiB of serialized data.
++    /// Asset expressions and tile/sequence patterns currently return errors.
+     pub fn write_usdz_package(&self, layer: &sdf::Layer, sink: &mut dyn sdf::WriteSeek) -> io::Result<()> {
+         let graph = self.layers();
+         let mut package = Package {
+@@ -99,15 +99,15 @@ impl Stage {
+ 
+ impl Package<'_> {
+     fn archive(&mut self, path: &str) -> io::Result<zip::ZipArchive<Cursor<&[u8]>>> {
+-        if ar::is_package_relative_path(path) {
+-            return Err(invalid("nested package dependencies are not yet supported"));
+-        }
++        if path.bytes().filter(|byte| *byte == b'[').count() > 16 { return Err(invalid("package nesting exceeds 16 levels")); }
+         if !self.archives.contains_key(path) {
+-            let bytes = self
+-                .graph
+-                .layer_registry()
+-                .package_asset_bytes(path, MAX_BYTES - self.input_bytes)?;
+-            self.input_bytes += bytes.len();
++            let bytes = if ar::is_package_relative_path(path) {
++                self.read_asset(path)?
++            } else {
++                let bytes = self.graph.layer_registry().package_asset_bytes(path, MAX_BYTES - self.input_bytes)?;
++                self.input_bytes += bytes.len();
++                bytes
++            };
+             self.archives.insert(path.to_owned(), bytes);
+         }
+         let bytes = self
+@@ -129,19 +129,12 @@ impl Package<'_> {
+         if !matches!(extension.as_str(), "usda" | "usdc" | "usd") {
+             return Err(invalid("package first entry must be a USD layer"));
+         }
+-        Ok(ar::join_package_relative_path(path, name))
++        Ok(ar::nest_packaged_path(path, name))
+     }
+ 
+     fn read_asset(&mut self, identifier: &str) -> io::Result<Vec<u8>> {
+-        let bytes = if let Some((outer, inner)) = ar::split_package_relative_path_outer(identifier) {
+-            if ar::is_package_relative_path(&inner)
+-                || Path::new(&inner)
+-                    .extension()
+-                    .and_then(|extension| extension.to_str())
+-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("usdz"))
+-            {
+-                return Err(invalid("nested package dependencies are not yet supported"));
+-            }
++        if identifier.bytes().filter(|byte| *byte == b'[').count() > 16 { return Err(invalid("package nesting exceeds 16 levels")); }
++        let bytes = if let Some((outer, inner)) = ar::split_package_relative_path_inner(identifier) {
+             self.archive(&outer)?;
+             let limit = MAX_BYTES - self.input_bytes;
+             let mut archive = self.archive(&outer)?;
+@@ -226,7 +219,8 @@ impl Package<'_> {
+         if let Some(index) = self.names.get(&identifier) {
+             return Ok(self.entries[*index].0.clone());
+         }
+-        if Path::new(&identifier)
++        let asset_name = ar::split_package_relative_path_inner(&identifier).map(|(_, inner)| inner).unwrap_or_else(|| identifier.clone());
++        if Path::new(&asset_name)
+             .extension()
+             .and_then(|extension| extension.to_str())
+             .is_some_and(|extension| extension.eq_ignore_ascii_case("usdz"))
+@@ -241,18 +235,12 @@ impl Package<'_> {
+             return Err(invalid("package entry budget exceeded"));
+         }
+         let (_, inner) =
+-            ar::split_package_relative_path_outer(&identifier).unwrap_or_else(|| (String::new(), identifier.clone()));
+-        if ar::is_package_relative_path(&inner) {
+-            return Err(invalid("nested package dependencies are not yet supported"));
+-        }
++            ar::split_package_relative_path_inner(&identifier).unwrap_or_else(|| (String::new(), identifier.clone()));
+         let extension = Path::new(&inner)
+             .extension()
+             .and_then(|value| value.to_str())
+             .unwrap_or("")
+             .to_ascii_lowercase();
+-        if extension == "usdz" {
+-            return Err(invalid("nested package dependencies are not yet supported"));
+-        }
+         let is_layer = layer || matches!(extension.as_str(), "usd" | "usda" | "usdc");
+         let extension = if is_layer { "usdc" } else { &extension };
+         if !extension.chars().all(|character| character.is_ascii_alphanumeric()) {
+@@ -375,6 +363,37 @@ fn rewrite<T: Default + Clone + PartialEq>(
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn nested_containers_are_cached_and_charged_to_input_budget() {
++        let stage = Stage::builder().in_memory("budget.usda").unwrap();
++        let graph = stage.layers();
++        let mut inner = usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
++        inner.add_layer("data.bin", b"12345678").unwrap();
++        let inner = inner.finish().unwrap().into_inner();
++        let mut outer = usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
++        outer.add_layer("nested.usdz", &inner).unwrap();
++        let outer = outer.finish().unwrap().into_inner();
++        for remaining in [7, 8] {
++            let mut package = Package {
++                graph: &graph, names: HashMap::new(), entries: Vec::new(), pending: VecDeque::new(), bytes: 0,
++                input_bytes: MAX_BYTES - inner.len() - remaining,
++                archives: HashMap::from([("source.usdz".into(), outer.clone())]),
++            };
++            drop(package.archive("source.usdz[nested.usdz]").unwrap());
++            assert_eq!(package.input_bytes, MAX_BYTES - remaining);
++            drop(package.archive("source.usdz[nested.usdz]").unwrap());
++            assert_eq!(package.input_bytes, MAX_BYTES - remaining);
++            let result = package.read_asset("source.usdz[nested.usdz[data.bin]]");
++            if remaining == 8 {
++                assert_eq!(result.unwrap(), b"12345678");
++                assert_eq!(package.input_bytes, MAX_BYTES);
++            } else {
++                assert!(result.unwrap_err().to_string().contains("byte budget exceeded"));
++                assert_eq!(package.input_bytes, MAX_BYTES - remaining);
++            }
++        }
++    }
++
+     #[test]
+     fn archive_entries_are_checked_against_remaining_input_budget() {
+         let stage = Stage::builder().in_memory("budget.usda").unwrap();

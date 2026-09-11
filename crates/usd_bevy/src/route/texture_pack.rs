@@ -24,6 +24,24 @@ struct AlphaTextures {
     bytes: usize,
 }
 
+pub(super) fn configure(app: &mut App) { app.add_systems(Last, prune_caches); }
+
+fn prune_caches(packed: Option<ResMut<PackedTextures>>, alpha: Option<ResMut<AlphaTextures>>, assets: Option<Res<Assets<Image>>>) {
+    let Some(assets) = assets else { return };
+    if let Some(mut cache) = packed {
+        cache.images.retain(|_, handle| assets.contains(handle.id()) && super::cache::externally_owned(handle));
+        cache.bytes = cache.images.keys().map(|key| {
+            let planes = [key.0.as_ref(), key.1.as_ref(), key.2.as_ref()];
+            let image_bytes = planes.iter().flatten().next().map_or(0, |plane| plane.values.len() * 4);
+            image_bytes + planes.iter().flatten().map(|plane| plane.values.len()).sum::<usize>()
+        }).sum();
+    }
+    if let Some(mut cache) = alpha {
+        cache.images.retain(|_, handle| assets.contains(handle.id()) && super::cache::externally_owned(handle));
+        cache.bytes = cache.images.keys().map(|key| key.3.len() * 2).sum();
+    }
+}
+
 pub(crate) fn base_color_alpha(world: &mut World, read: &ReadPreviewMaterial) -> anyhow::Result<Option<Handle<Image>>> {
     let Some(alpha) = plane(world, &read.opacity_texture, read.opacity_channel, read.texture_srgb("opacity"), read.scalar_texture_transform("opacity"))? else { return Ok(None) };
     let transformed = super::color_texture::transformed(world, read, "diffuse")?;
@@ -150,6 +168,35 @@ fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pruning_packed_and_alpha_images_preserves_owners_and_byte_counts() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let plane = Plane { width: 1, height: 1, values: vec![128] };
+        let packed = pack(&mut world, Some(plane.clone()), Some(plane.clone()), None).unwrap().unwrap();
+        let source = world.resource_mut::<Assets<Image>>().add(Image::new(
+            Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, TextureDimension::D2,
+            vec![128; 4], TextureFormat::Rgba8Unorm, bevy::asset::RenderAssetUsages::default()));
+        let mut textures = SnapshotTextures::default();
+        textures.0.insert(("alpha.png".into(), false), source);
+        world.insert_resource(textures);
+        let read = ReadPreviewMaterial { opacity_texture: Some("alpha.png".into()), ..default() };
+        let alpha = base_color_alpha(&mut world, &read).unwrap().unwrap();
+        world.run_system_once(prune_caches).unwrap();
+        assert_eq!(world.resource::<PackedTextures>().bytes, 6);
+        assert_eq!(world.resource::<AlphaTextures>().bytes, 8);
+        assert_eq!(pack(&mut world, Some(plane.clone()), Some(plane), None).unwrap().unwrap(), packed);
+        assert_eq!(base_color_alpha(&mut world, &read).unwrap().unwrap(), alpha);
+        world.resource_mut::<Assets<Image>>().remove(packed.id());
+        world.run_system_once(prune_caches).unwrap();
+        assert_eq!(world.resource::<PackedTextures>().bytes, 0);
+        drop(alpha);
+        world.run_system_once(prune_caches).unwrap();
+        assert_eq!(world.resource::<AlphaTextures>().bytes, 0);
+        assert!(world.resource::<AlphaTextures>().images.is_empty());
+    }
 
     #[test]
     fn scalar_scale_bias_uses_linear_values_before_quantization() {

@@ -7,14 +7,21 @@ local writer and packaging changes recorded in `vendor/openusd/VENDORED.md`.
 USDZ export bundles ordinary layer and asset dependencies through the stage's
 resolver, preserving root/edit semantics and live edits. Moved-package native
 checks pass for the covered scene and asset payload, including snapshot-only
-package re-export. Nested packages, expressions and tile/sequence patterns remain unsupported; failures retain the
+package re-export and nested input packages. Expressions and tile/sequence patterns remain unsupported; failures retain the
 old destination. Limits and remaining acceptance work are in `PACKAGING.md`.
 Passing data tests do not establish rendered fidelity or production performance.
 
+Nested USDZ reading supports implicit inner default layers, explicit bracket
+paths and inner relative references/assets through filesystem and snapshot
+resolvers without extraction. Each entry traversal is bounded to 16 package
+levels and 256 MiB of decompressed entry bytes. This does not bound root archive
+storage or total stage work. Export bundles nested dependencies as ordinary unique
+entries, preserving layer composition and live edits rather than archive layout.
+
 | Area | Implemented integration | Limits / outstanding acceptance |
 | --- | --- | --- |
-| Asset loading | Source-backed USD and in-memory USDZ; relative layer and image dependencies through AssetServer | Nested packages unsupported; dependency discovery follows composed variant selections |
-| Reloads | Tracked AssetServer dependencies; last-good projection on failure; explicit editor texture refresh and opt-in native texture watching in the viewer; failed editor watcher setups retry at one-second intervals and refresh upon recovery | Native watching requires file_watcher; AssetServer removal handling uses the explicit file_source adapter. Editor watching covers installed external images, not USD layers, package-root/folder replacement or images missing during a failed initial Open |
+| Asset loading | Source-backed USD and in-memory USDZ, including bounded nested reads; relative layer and image dependencies through AssetServer | Dependency discovery follows composed variant selections; total stage memory is not bounded by entry-read limits |
+| Reloads | Tracked AssetServer dependencies; last-good projection on failure; explicit editor texture refresh and opt-in native texture watching; failed watcher setups retry at one-second intervals; initial image read/decode failures retry on texture recovery only when no document is open | Native watching requires file_watcher; AssetServer removal handling uses the explicit file_source adapter. Editor watching excludes USD layers and package members; directory replacement recovery is Unix-only. Failed replacement opens never defer replacement of an existing document |
 | Instances | Independent stages, clocks, playback, variants and attribute overrides | Direct stage edits are transient across asset reload |
 | Identity | Same-asset reconciliation preserves matching prim entities; editor namespace commands remap entities | External namespace edits do not infer identity; deletion loses runtime state |
 | Ordinary transforms | Affine residual propagation, USD reset-stack prefix/ancestor exclusion, preserved scene placement/up-axis; runtime descendants follow corrected globals; malformed matrix edits retain last-good globals and recover through the stage change sink; half scalar/vector/quaternion decoding; scalar-axis ops and adjacent inverse cancellation | Affine and Z-up reset fixtures captured against explicit geometry; quaternion conversion checked against native axis-angle cases. Scalar-axis inverse scale follows native 25.05.01 negation, not vector-scale reciprocal behavior. Singular lighting, broader animated/native coverage and propagation performance remain unverified. Non-finite orientations, overflowing axis lengths and uncancelled singular matrix/vector-scale inverses produce diagnostics. Point-prototype hierarchy limits below still apply |
@@ -62,6 +69,12 @@ is also exercised by `make test-all`.
 `BEVY_WORK.md` records the larger acceptance checklist and visual evidence limits.
 
 ## Native watching and live rendering evidence
+
+The AssetServer `file_source` adapter recovers watched source-root replacement on
+Unix using one-second device/inode checks and watcher re-arming. Requested paths
+are invalidated on loss and recovery; event forwarding adds up to 250 ms polling
+latency to the native debounce. The root must exist when watching starts.
+Processed sources and non-Unix source-root replacement are not covered.
 
 The direct viewer/editor and AssetServer are separate loading paths. Enable
 viewer texture watching with:

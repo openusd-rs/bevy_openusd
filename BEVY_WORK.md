@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Unix asset-source root replacement
+
+The `file_source` adapter now checks the root directory's device/inode once per
+second. Losing or replacing it drops the old watcher and invalidates every
+requested path. When a directory exists again, the worker creates a new Bevy
+watcher, verifies its identity did not change during setup, and invalidates the
+paths again. Pending old-watcher events are drained before re-arming. Worker
+shutdown still closes its channel and joins the thread. Ordinary forwarding
+uses 250 ms polling in addition to the native 300 ms debounce.
+
+The root must exist at initial setup. Processed sources and non-Unix root
+replacement remain unsupported; requested paths remain source-lifetime state.
+This supersedes the root-replacement limitation in the older folder dependency
+invalidation section, not the separate editor USD-layer watching limitation.
+
+The native two-instance regression first reproduced a timeout with the old
+implementation (`/tmp/source-root-replacement-before-final.log`). It now moves
+the whole source away, requires Failed, recreates it and requires Ready, then
+checks subsequent texture reload. A second prepared directory replaces the root
+without waiting for an absent-state observation. Both instances must pick up its
+blue texture while retaining projected entities, runtime names and children.
+The identity unit test covers missing paths, ordinary files, replacement and
+symlink targets. These are native asset lifecycle checks, not GPU acceptance.
+
+Validation: 541 feature-enabled ordinary workspace tests pass (20 ignored),
+both opt-in native AssetServer watcher tests pass, and default-feature check-all
+and build pass. Logs: `/tmp/source-root-feature-tests.log`,
+`/tmp/source-root-native-tests.log`, `/tmp/source-root-{check,build}.log`.
+Default-feature test-all also passes: 535 ordinary tests, 13 ignored
+(`/tmp/source-root-default-tests.log`). `git diff --check` passes.
+
 ## Spot visual recheck after material fixes
 
 Rechecked at `f709355` using the original collection asset
@@ -710,6 +741,373 @@ identity and exact clocks. Logs: `/tmp/unique-seek-tests-final.log`,
 No production projection/cache behavior changed. The full ordinary/GPU suites
 were not rerun for this benchmark-only extension. `git diff --check` passes.
 Streaming retention policy and broader performance acceptance remain open.
+
+## Release cache-only historical mesh states
+
+`UsdPlugin` now runs mesh-cache pruning in `Last`. Entries survive while another
+strong handle owns the mesh; cache-only handles and missing assets are removed.
+Entities, external consumers and rendering references therefore retain ownership
+and sharing. Bevy asset tracking performs actual asset removal after handle drop;
+the cache does not forcibly remove live Assets. Revisited unowned historical
+states may receive new handles. Existing entry/byte limits still apply, including
+in bare Worlds without the plugin's maintenance system.
+
+Each cache entry now retains its insertion-time payload size so pruning updates
+accounting without rescanning or reinterpreting mutable mesh payloads. The
+maintenance scan is proportional to the cache contents; its frame-time impact
+must be measured rather than assumed free. Material-cache policy is unchanged.
+
+The ownership regression checks entity and external handles, continued sharing,
+release after the last external handle drops, missing assets and payload counts.
+The subset benchmark's obsolete whole-mesh intermediate is now collected: three
+retained assets and eight vertices replace four assets and sixteen vertices,
+while the three mesh entities/two subsets remain. The initial expectation failure
+is retained in `/tmp/cache-prune-benchmark-tests.log`; verified payload output is
+`/tmp/cache-prune-subset-payload.log` (256 vertex bytes, 48 index bytes).
+The 1,000-distinct-clock benchmark test now covers both deformation modes on the
+morph-tangent fixture and checks at most 16 peak mesh assets / four cached meshes.
+
+Release reruns of all four benchmark configurations (three samples each) now
+report six peak/final mesh assets and two cache entries for both repeated and
+distinct clocks in CPU and GPU-prepared modes. Cache payload is 312 bytes for
+CPU and 600 bytes for GPU-prepared. This replaces 2,004/3,004 retained assets
+after distinct clocks in the baseline; it is not a frame-time speedup claim.
+Full timing/RSS results and exclusions are appended to
+`benchmarks/unique-clock-retention.md`. Logs:
+`/tmp/pruned-editor-{cpu,gpu-prepared}-{seek,seek-unique}.log`.
+All 524 ordinary tests pass (13 ignored), check-all and viewer build pass;
+all four benchmark tests also pass in release. Logs:
+`/tmp/cache-prune-{tests,check,build,release-tests}.log`.
+
+All 19 GPU live-clock cases pass in `target/live-cache-prune-regression`
+(`/tmp/live-cache-prune-regression.log`). Inspected both morph-tangent captures
+and the live crease-transition capture: geometry remains visible and the tested
+layouts agree. The morph-tangent live image is also pixel-identical to the
+pre-pruning capture across 921,600 pixels at strict RGB tolerance 0;
+`/tmp/cache-prune-before-after.log`. `git diff --check` passes.
+Material/texture retention, longer representative runs and maintenance cost on
+large unique static scenes remain outside this completed mesh-retention fix.
+
+## Release cache-only historical materials
+
+Standard and flat-normal material caches now discard missing assets and handles
+without another strong owner in `Last`. Entity and external ownership preserves
+sharing; existing 1024-entry caps remain. Asset tracking, rather than explicit
+asset removal, reclaims released materials and their texture references.
+The same ownership predicate is shared with mesh-cache maintenance.
+
+The release editor benchmark on `assets/animation_showcase.usda`, three CPU
+samples of 1,000 distinct clocks, previously peaked at 1,003 standard materials
+in every sample. It now peaks at four in every sample. Logs:
+`/tmp/material-retention-{before,after}.log`. This fixture has no images and
+does not prove texture/VRAM reclamation or a frame-time improvement.
+
+Tests cover entity/external ownership, stale assets, sharing, flat-to-standard
+restoration, and the distinct-clock bound in CPU and GPU-prepared modes.
+The ordinary suite passes 527 tests with 13 ignored:
+`/tmp/material-prune-tests-final.log`. The first compile attempt exposed a
+mutable-handle reborrow error in flat-cache maintenance; it was corrected
+before this successful run (`/tmp/material-prune-tests.log`).
+
+`make check-all`, `make build` and `git diff --check` pass; logs:
+`/tmp/material-prune-{check,build}.log`. All 19 GPU live-clock cases pass in
+`target/live-material-prune-regression` (`/tmp/live-material-prune-regression.log`).
+The scalar and morph-tangent live captures were inspected: both instances remain
+visible, with the expected distinct sampled material/deformation states.
+The scalar live image matches its pre-change capture exactly across 921,600
+pixels at RGB tolerance zero (`/tmp/material-prune-image-compare.log`).
+Broader texture-lifetime, renderer-memory and flagship acceptance remain open.
+
+## Release cache-only converted textures
+
+RGB/normal conversion, scalar packing and alpha packing now discard cache-only
+or missing image handles in `Last`. Retained key/image byte estimates are
+recounted from remaining entries; each existing 64 MiB budget is unchanged.
+Source snapshot and AssetServer ownership is unchanged. Revisited historical
+conversions can allocate new handles; conversion still computes pixels before
+looking up the content cache.
+
+The release editor benchmark used the generated
+`target/live-material-prune-regression/rgb-fixture/alpha_interface_animated.usda`,
+three CPU samples and 1,000 distinct clocks. All samples previously peaked at
+2,003 image assets and retained 16,020 image payload bytes. After maintenance,
+all peak at five images and retain 36 payload bytes; meshes/materials remain
+one/three at peak. Logs: `/tmp/texture-retention-{before,after}.log`.
+These are one-pixel fixtures and CPU asset counts, not representative VRAM or
+frame-time acceptance.
+
+A regression first failed because generated normal images exceeded eight
+retained assets (`/tmp/texture-prune-before-test.log`). It now exercises 1,000
+normal changes for both standard and flat-normal material owners, bounds image
+assets at eight, and verifies zero images/cache bytes after despawning and eight
+updates. Additional tests check sharing, external ownership, missing assets and
+retained-byte accounting for color, scalar and alpha caches. All 530 ordinary
+tests pass, 13 ignored (`/tmp/texture-prune-tests.log`). A private system-parameter
+visibility error in the first implementation was corrected by registering each
+maintenance system inside its owning module (`/tmp/texture-prune-after-test.log`).
+
+`make check-all`, `make build` and `git diff --check` pass; logs:
+`/tmp/texture-prune-{check,build}.log`. All 19 GPU live-clock cases pass in
+`target/live-texture-prune-regression` (`/tmp/live-texture-prune-regression.log`).
+The alpha/color and constant-normal live captures were inspected: both instances
+remain visible with their distinct sampled appearances. The alpha/color image
+matches its pre-change image exactly across 921,600 pixels at RGB tolerance zero
+(`/tmp/texture-prune-image-compare.log`). No claim of renderer-memory reclamation,
+arbitrary workload performance or complete flagship acceptance follows.
+
+## Recover texture failures during initial editor open
+
+With the optional native editor texture watcher, a failed image read/decode
+during initial Open now registers requested image paths and retains a pending
+open path. Watcher events and successful watcher setup request a retry; command
+processing performs it only when no editor document exists and no newer Open
+is queued. Every explicit Open cancels the previous pending request. Successful
+opens clear it. Failed replacement opens retain the old document, texture watch
+set and undo history and never become deferred replacement requests.
+
+Initial watcher setup also triggers one retry, covering image repairs between
+the failed read and watcher installation. Existing failed-directory retry and
+Unix directory-identity recovery remain in place. Root/composition failures,
+USD layers, package members and non-Unix directory replacement remain outside
+this recovery path. Earlier sections listing failed initial texture Open as
+unsupported are superseded by this implementation, not by general dependency
+recovery or completion of the acceptance checklist.
+
+All four native editor watcher tests pass:
+`/tmp/initial-texture-retry-native.log`. The new native test covers absent and
+corrupt initial PNGs, file repair, Ready status, decoded magenta pixels, and a
+failed replacement preserving the document ID, undo history and watched paths.
+A deterministic test checks explicit-Open precedence and protects an edited
+document against a stale pending retry. The first targeted command omitted
+`file_watcher` and ran zero tests; the feature-enabled run executed and passed
+the test (`/tmp/initial-texture-retry-test-final.log`).
+
+The default workspace suite passes 530 ordinary tests (13 ignored); the full
+`file_watcher` workspace/all-targets suite passes 535 (20 ignored). Logs:
+`/tmp/initial-texture-retry-tests.log` and
+`/tmp/initial-texture-retry-feature-tests.log`. Default `make check-all`,
+`make build` and `git diff --check` pass; logs:
+`/tmp/initial-texture-retry-{check,build}.log`. The four native watcher tests
+above were run explicitly, rather than counted as passing from ignored results.
+No new rendered UI acceptance is claimed by these filesystem/pixel tests.
+The viewer also builds with `file_watcher` enabled:
+`/tmp/initial-texture-retry-feature-build.log`.
+
+## Same-window initial texture recovery capture
+
+`scripts/check_initial_texture_recovery.sh NEW_OUTPUT_DIRECTORY` generates its
+own color fixture, opens the scene without its PNG in a private Vulkan Weston
+session, captures the error state, repairs the PNG, and captures the recovered
+window and embedded Bevy viewport. It checks that the same launched process
+group remains alive, waits for viewport capture completion, reads capture
+dimensions for near-black inspection, and preserves logs/images on failure.
+Output directories must be new. Shell quoting supports apostrophes in paths.
+
+At production commit `b1270f4`, inspected all three images in
+`target/initial-texture-recovery-ui`: initial outliner reports an unresolved
+white.png and contains no scene; recovered outliner is Ready with Model and
+Material prims, and the blue sphere is visible in both host and viewport.
+The same process group (1257573) remained alive across repair. The reusable
+script repeated this in `target/initial-recovery-'quoted-final`, process group
+1297504. Again all three images were inspected with the same result. The
+1440x920 viewport passes near-black inspection across 1,324,800 pixels.
+
+Logs: `/tmp/initial-texture-recovery-ui-run.log` and
+`/tmp/initial-texture-recovery-tool-final.log`, plus each output's viewer.log,
+weston.log, recovery.txt and capture metadata. These runs retain clipboard
+initialization, missing libVkLayer_MESA_device_select.so and SSAO-limit warnings;
+they are not clean-log or general black-window fixes. A successful capture also
+does not prove general native-desktop behavior outside the tested compositor.
+
+The initial disposable shell probe had a newline typo before launch. The first
+reusable-tool run captured both states but failed because capture_inspect lacked
+its required region arguments; artifacts remain in
+`target/initial-recovery-'quoted` and `/tmp/initial-texture-recovery-tool.log`.
+The corrected tool derives its region from metadata. Shell syntax and
+`git diff --check` pass. No Rust source changed in this capture-tool step.
+
+## Nested USDZ loading baseline
+
+The [USDZ specification](https://openusd.org/dev/spec_usdz.html) permits packages
+inside packages and nested bracket asset paths. `examples/nested_package_fixture.rs`
+generates two equivalent outer packages: a reference to `inner.usdz` and a
+reference to `inner.usdz[scenes/model.usda]`. The inner default layer references
+its sibling `part.usda`, which defines a cube of size two. Memory-backed probes
+use nonexistent virtual source filenames, preventing filesystem fallback from
+masking snapshot-resolver failures. Both cases are attempted, and the example
+exits unsuccessfully unless both compose `/Root/Box` with size two.
+
+Run through Make with a new output directory:
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--example nested_package_fixture' ARGS='target/nested-package-probe'
+```
+
+Current valid-fixture evidence is `target/nested-package-baseline-final` and
+`/tmp/nested-package-baseline-final.log`: implicit nested packages fail the
+vendored `UsdzFileFormat::refuse_nested_package` check; explicit nested entries
+are unresolved by SourceResolver's flat ZIP-entry lookup. Native OpenUSD
+25.05.01 usdcat --flatten loads both packages, with `/Root/Box` size two verified
+in both exported layers and no composition warnings:
+`/tmp/nested-package-native-final.log`, `*.native.usda` in the output directory.
+Nested support is still unimplemented; this is a failing compatibility probe,
+not a passing acceptance gate.
+
+The inner-package control test passes without creating its virtual source file,
+and `make check-all` passes (`/tmp/nested-package-fixture-tests.log`,
+`/tmp/nested-package-check.log`). Initial example compilation incorrectly used
+a crate-private validator and an unavailable root anyhow dependency; corrected
+to public stage traversal/errors and boxed errors. The first generated fixture
+also used one-line attribute syntax rejected by native USD; corrected to
+multiline USDA. Failed artifacts remain in `target/nested-package-baseline`,
+`/tmp/nested-package-baseline.log` and `/tmp/nested-package-native.log`.
+Native usdcat returned zero despite those composition warnings, so native exit
+status alone is not proof of a valid composed fixture.
+
+Implementation must address nested entry access in both snapshot and default
+resolvers, default-layer anchoring for inner packages, resource/depth bounds,
+relative inner-layer assets and explicit errors, without extracting files or
+silently flattening the source. Package writing remains a separate limitation.
+
+## Bounded nested USDZ reads
+
+The snapshot and default filesystem resolvers now use canonical
+`openusd::ar::read_package_entry` to walk nested ZIP entries in memory. The USDZ
+file format resolves an inner package to its default native layer using nested
+bracket syntax. Source files are not extracted, rewritten or flattened. Both
+previously failing probe cases now pass in `target/nested-package-reading`:
+`/tmp/nested-package-reading.log`.
+
+Each entry traversal permits at most 16 package levels and 256 MiB of cumulative
+decompressed entry bytes. Root archive storage, central-directory metadata,
+repeated resolver work and total stage memory remain outside this budget.
+The raw Archive::read API still decodes only native USD entries; package layers
+use resolver-backed loading. Nested dependency packaging/export remains rejected.
+The canonical dependency changes are recorded in
+`patches/openusd-nested-package-reading.patch` and `vendor/openusd/VENDORED.md`.
+
+A source regression verifies implicit/explicit nested references, a relative
+sibling layer, resolved relative asset bytes, unchanged authored asset paths,
+missing-entry errors, nonexistent virtual source files and unchanged disk
+packages. It exercises snapshot and DefaultResolver-backed stages. The upstream
+reader test checks successful 16-level access, rejection at 17, cumulative byte
+budget accounting, a missing leaf and a corrupt intermediate package.
+Logs: `/tmp/nested-package-source-tests.log` and
+`/tmp/nested-package-upstream-tests-verified.log`.
+
+Upstream tests required the existing writable Cargo cache
+`/tmp/bevy-usd-upstream-cargo`, `CARGO_WORKSPACE_DIR=$PWD/vendor/openusd` and the
+shared project target directory. Initial attempts hit read-only cache unpacking
+and a missing CARGO_WORKSPACE_DIR compile-time variable; those setup failures
+are retained in `/tmp/nested-package-upstream-tests{,-final}.log`. Only the
+named upstream reader test was run, not the omitted external fixture corpus.
+
+Full workspace validation passes 532 ordinary tests (13 ignored), check-all
+and build: `/tmp/nested-reading-{tests,check,build}.log`. The review patch passes
+reverse-apply checking and `git diff --check` passes.
+
+Inspected `target/nested-{implicit,explicit,reference}-reading.png`: each shows
+the same visible cube. The reference is the native-flattened valid fixture
+rendered in Bevy, not a native-renderer image. All three report CAPTURE_OK without
+WARN/ERROR. Both nested images match the reference exactly across 921,600 pixels
+at RGB tolerance zero; `/tmp/nested-reading-captures.log` and
+`/tmp/nested-reading-image-compare.log`. These checks cover nested USDA cube
+composition and relative asset byte access, not rendered nested image materials,
+all binary/default-layer variants or nested export acceptance.
+
+## Nested PNG materials and binary layers
+
+The nested-package fixture now generates four additional packages combining
+USDA/USDC inner default and sibling layers with implicit/explicit references.
+Binary layers are encoded in memory and checked for the PXR-USDC signature.
+Each cube binds a material whose relative paint.png is stored inside the inner
+package. An independent untextured constant-cyan reference avoids relying on
+the same texture decoding path for visual comparison.
+
+All six memory-backed composition probes pass in `target/nested-material-final`
+(`/tmp/nested-material-final.log`). A new editor regression opens all four
+textured variants, verifies Ready, one projected material, the decoded cyan RGBA
+pixel, Rgba8UnormSrgb format and unchanged package bytes. Both example tests pass
+(`/tmp/nested-material-tests.log`). Native OpenUSD 25.05.01 flattens all four
+textured packages without warnings; exported cube/size values are explicitly
+checked (`/tmp/nested-material-native.log` and `*.native.usda` in the output).
+
+Inspected all five rendered images in `target/nested-material-final`: the four
+nested variants and constant-color reference each show the same cyan cube.
+All report CAPTURE_OK without WARN/ERROR. Each nested capture matches the
+independent reference across 921,600 pixels at RGB tolerance zero:
+`/tmp/nested-material-captures.log`, `/tmp/nested-material-compare.log`.
+The PNG is one pixel, so this does not establish UV/filtering fidelity, large
+texture performance, arbitrary shader networks or nested export support.
+
+Full workspace tests pass 533 ordinary tests with 13 ignored; check/build and
+`git diff --check` pass (`/tmp/nested-material-all-tests.log`,
+`/tmp/nested-material-{check,build}.log`); no reader implementation changed in this
+fixture-and-acceptance step. Earlier notes that binary/nested-material rendering
+was unverified are superseded only for these four explicit cases.
+
+## Portable export from nested USDZ inputs
+
+The stage-aware packager now reads and caches nested input containers through
+its resolver, resolves inner default layers, and uses the terminal nested entry
+extension. It bundles referenced layers/assets as ordinary unique output
+entries, preserving USD composition and live edits rather than flattening the
+scene. It does not reproduce nested ZIP layout or include unused members.
+Existing 4096-entry, 256 MiB serialized-output and aggregate input-byte budgets
+remain; nested archive bytes are charged once when cached and entry bytes on
+read. Package path traversal is limited to 16 bracket levels.
+
+The new export regression first failed on the explicit unsupported-nested
+guard (`/tmp/nested-export-before.log`). It now exports all four textured
+USDA/USDC implicit/explicit variants from snapshot-only virtual inputs, retains
+a live size edit to four, and reopens with the default resolver without original
+files. It checks multiple layer identities and texture paths inside the output.
+A subsequent missing-texture edit fails export without changing the previous
+destination bytes. All three example tests pass (`/tmp/nested-export-tests.log`).
+
+The fixture accepts `--export`, generating six portable outputs and reopening
+their cube values (`target/nested-export-fixture`, `/tmp/nested-export-fixture.log`).
+Native OpenUSD 25.05.01 flattens the four textured exports without warnings,
+with cube/size values checked (`/tmp/nested-export-native.log`).
+The upstream package tests pass all three cases, including nested container
+caching and exact remaining input-budget accounting:
+`/tmp/nested-export-upstream-tests.log`. The canonical patch is recorded in
+`patches/openusd-nested-package-export.patch`; reverse-apply checking passes.
+
+Full workspace tests pass 534 ordinary tests (13 ignored), and check/build pass:
+`/tmp/nested-export-{all-tests,check,build}.log`. Inspected all four exported
+material captures in `target/nested-export-fixture`: each shows the expected
+cyan cube and matches the independent constant-color reference at RGB tolerance
+zero across 921,600 pixels. All four report CAPTURE_OK without WARN/ERROR;
+`/tmp/nested-export-captures.log` and `/tmp/nested-export-compare.log`.
+This supersedes earlier blanket nested-export exclusions, not the broader
+resolver, pattern, large-workload, archive-layout or flagship acceptance limits.
+
+## Nested dependency reload through AssetServer
+
+Added `asset::tests::nested_package_dependency_reload_preserves_two_live_instances`.
+A named in-memory Bevy asset source serves an unchanged root USDA whose sublayer
+is an outer USDZ, which itself sublayers an inner USDZ containing the mesh,
+material and relative PNG. Two live roots share the same UsdScene asset. Only
+the bundle dependency bytes and its Bevy ModifiedAsset event change.
+
+The regression covers a healthy red-to-yellow image update, two missing-inner-
+texture failure/repair cycles ending green and blue, explicit Failed/Ready root
+states, unchanged projected mesh entities, retained image handles during failure,
+shared current image handles after repair, a preserved runtime-only component
+and unchanged second-instance time of ten. Removing the first root's scene
+component removes its projected entity without removing the second instance.
+
+The initial targeted failure/recovery test passes:
+`/tmp/nested-assetserver-reload-test.log`. The subsequent full-suite run includes
+the added healthy-to-healthy update. This is actual AssetServer/loader/dependency
+machinery with synthetic source events, not native OS watching or new GPU-frame
+acceptance. It does not establish animated motion from the retained clock alone.
+
+Full workspace validation passes 535 ordinary tests (13 ignored), check-all,
+build and `git diff --check`. Logs:
+`/tmp/nested-assetserver-{all-tests,check,build}.log`. No production behavior
+changed in this integration-regression step.
 
 ## Acceptance checklist
 

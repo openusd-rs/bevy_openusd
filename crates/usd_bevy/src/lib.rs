@@ -49,13 +49,16 @@ pub struct UsdPlugin;
 impl Plugin for UsdPlugin {
     fn build(&self, app: &mut App) {
         route::xform::configure(app);
+        route::configure_texture_caches(app);
         app.register_type::<UsdPrimRef>();
         if !app.world().contains_resource::<SchemaRegistry>() {
             app.insert_resource(SchemaRegistry::builtin());
         }
         // Intern projected meshes so identical prims share one GPU asset (6d).
         app.init_resource::<route::cache::ProjectionCache>();
+        app.add_systems(bevy::prelude::Last, route::cache::prune_mesh_cache);
         app.init_resource::<route::cache::MaterialCache>();
+        app.add_systems(bevy::prelude::Last, route::cache::prune_material_cache);
         // Which USD `purpose` classes are displayed (Phase A). Default: show
         // proxy, hide render + guide.
         app.init_resource::<DisplayPurposes>();

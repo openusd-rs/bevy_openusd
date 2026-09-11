@@ -84,8 +84,11 @@ Untyped non-metadata removals also invalidate their reported path. The reader
 records requested file paths, including failed reads, so folder additions,
 removals and renames invalidate requested descendants without scanning the disk.
 Paths are retained until the source is dropped; this is not an active-handle-only
-index. It supports unprocessed native file sources; processed assets and
-replacement of the watched source root itself remain unsupported. Registration
+index. On Unix, the adapter checks the source root's device/inode once per second,
+invalidates requested paths when it disappears or changes, and re-arms watching
+when a replacement directory exists. Event forwarding polls at 250 ms intervals
+in addition to Bevy's 300 ms debounce. The root must exist at initial setup.
+Processed assets and non-Unix source-root replacement remain unsupported. Registration
 does not override the AssetPlugin runtime watch setting. Its event worker is
 closed and joined when the source is dropped.
 
@@ -364,6 +367,12 @@ The initial [morph-tangent seek measurements](benchmarks/morph-tangent-seek.md)
 record debug and release CPU/GPU-prepared runs with explicit limitations.
 The [distinct-clock retention baseline](benchmarks/unique-clock-retention.md)
 records cache growth that the repeated-clock workload does not expose.
+`UsdPlugin` now prunes mesh-cache entries in `Last` when the cache is their sole
+strong owner. Entity-owned and externally held meshes remain shared; revisiting
+an unused historical state can allocate a new handle. Bevy's asset tracking
+performs subsequent asset removal. Bare Worlds using the cache without the
+plugin retain the existing entry/byte-budget behavior. Cache payload accounting
+keeps insertion-time sizes; material-cache retention is unchanged.
 
 The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
 GPU deformation routing and measures its retained CPU-side mesh/morph payloads;
@@ -399,6 +408,13 @@ shared Bevy assets: clone the material into a new asset and replace the entity's
 handle before making an entity-local runtime modification. USD-authored material
 changes are reprojected into matching/new handles rather than mutating a shared
 material in place. Remove `route::cache::MaterialCache` to disable material sharing.
+Standard and flat-normal material caches release cache-only handles in `Last`;
+entity-owned and externally held materials remain eligible for sharing within
+the 1024-entry limits. Bevy asset tracking performs subsequent reclamation.
+Revisiting an unowned historical material can allocate a new handle.
+Converted RGB/normal, scalar-packed and alpha-packed texture caches likewise
+release cache-only images in `Last`, retaining their existing 64 MiB budgets.
+Source snapshot and AssetServer texture ownership is unchanged.
 
 The viewer's outliner and Properties pane operate on the rendered live document.
 Properties supports scalar, string/token/asset-path and three-vector edits, relationship
@@ -428,6 +444,16 @@ visual acceptance limits.
 
 The editor loads PNG/JPEG material images from filesystem and USDZ documents,
 refreshes them after edits, and preserves the previous document if opening fails.
+Nested USDZ reads support inner-package default layers, explicit bracket paths
+and relative inner-layer assets without extraction, through both filesystem and
+snapshot resolvers. Each entry traversal permits at most 16 package levels and
+256 MiB of cumulative decompressed entry bytes; this is not a total-stage memory
+limit. Export bundles referenced nested layers/assets into ordinary unique entries
+while preserving composition; it does not reproduce the source archive layout.
+`nested_package_fixture` generates implicit/explicit nested USDA and USDC cases
+with embedded PNG materials, plus an independent constant-color reference;
+run it through `make run` with a new output directory.
+Add `--export` after the output directory to generate and reopen portable exports.
 The viewer can automatically watch requested external textures on native builds:
 
 ```sh
@@ -449,7 +475,12 @@ USD layers are not watched; directory replacement recovery is not implemented
 on non-Unix platforms. Failed watcher setups retry once per second while
 the app updates, without restarting successful watchers. Recovery queues a texture
 refresh to catch edits made while unavailable. Document/path changes reset the
-retry state. Images missing during a failed initial Open are not watched.
+retry state. When no document is open, a texture read/decode failure registers
+the requested image paths and retries the initial Open after watcher events or
+successful watcher setup. A newer explicit Open takes precedence over a pending
+retry. Failed replacement opens never enable retries over an existing document,
+so later image repairs cannot replace its edits or undo history. Composition or
+root-file failures do not enable this texture retry path.
 An edit that requests a missing or undecodable image keeps the previous image
 handles while registering the requested paths. Unresolved relative paths are
 watched conservatively under loaded filesystem layer directories; these candidate
@@ -460,6 +491,19 @@ Successful loading replaces candidate paths with resolved image paths.
 ```sh
 make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch
 ```
+
+For a same-window recovery capture, put Weston and weston-screenshooter on PATH:
+
+```sh
+make --eval='capture-recovery:; @/bin/bash scripts/check_initial_texture_recovery.sh target/initial-recovery' capture-recovery
+```
+
+The output directory must be new. The script generates a fixture, captures the
+missing-texture state, repairs the PNG, and captures the recovered window plus
+Bevy viewport without restarting the viewer. Inspect `initial.png`,
+`recovered.png`, `recovered.viewport.png` and the logs; automated checks confirm
+capture completion and reject a near-black viewport, not visual correctness or
+warning-free operation. It uses a private Vulkan Weston compositor on Linux.
 
 Applications can send `EditorCommand::RefreshTextures` through `EditorBridge`
 to reread source-backed images without reopening the USD document. Successful
@@ -1813,6 +1857,7 @@ exports in USDA, USDC and USD, retaining referenced values and external textures
 The native gate also removes the source directory before checking exported
 packages. All three save modes now pass that regression, including an asset
 payload. USDZ persistence uses the stage-aware dependency packager described in
-`PACKAGING.md`. Single-level package inputs and package-relative assets can be
-re-exported; genuinely nested packages, expressions and tile/sequence patterns
-currently produce explicit errors. This does not certify arbitrary interchange.
+`PACKAGING.md`. Nested package inputs and package-relative assets can be
+re-exported into unique entries while retaining layer composition. Expressions
+and tile/sequence patterns still produce explicit errors. This does not certify
+arbitrary interchange.

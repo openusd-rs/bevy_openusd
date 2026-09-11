@@ -25,6 +25,29 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+Payload whole-list drafts now retain the local source opinion observed when the
+draft starts or is imported. Editing any row, its mode or the row count marks the
+draft as touched. A changed source then withholds Apply unless it matches the
+draft's successful write. Reload discards the draft only after the current opinion
+can be represented; Keep advances the baseline without authoring and explicitly
+permits whole-op replacement. A missing current opinion reloads to an untouched
+empty draft without writing an explicit blocker. Selection/full-context resets
+still discard draft state. This closes silent source replacement after an imported
+or edited payload draft outlives its source opinion.
+
+The regression checks untouched refresh, dirty conflict preservation, explicit
+Keep acknowledgement, successful-write acknowledgement, source removal with
+valid or invalid drafts, reload and rejection of unrepresentable reloads without
+data loss. Parsing failure is never treated as a matching missing source.
+Inspected `target/payload-source-conflict-ui.png` shows the preserved `/Box`
+draft, Reload/Keep controls and no Apply after the replay imports the weak opinion
+and clears it. The viewport remains empty, matching the cleared source.
+Inspected `target/payload-source-keep-ui.png` restores Apply and retains the
+draft while the viewport stays empty: Keep does not author. Both capture guards
+pass (`/tmp/payload-source-{conflict,keep}-capture.log`). All 68 viewer tests and
+check-all pass (`/tmp/payload-conflict-final-{tests,check}.log`). Native Reload
+and full-workspace validation of these latest editor changes remain outstanding.
+
 Reference bucket controls now move existing local entries among Prepend, Append,
 Add, Delete and Order. Destination insertion is at the end; other entries and
 the moved reference's customData/time mapping are retained. Exact destination

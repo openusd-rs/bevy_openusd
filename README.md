@@ -153,6 +153,11 @@ spec path, **Discard draft and load local opinion** imports it without authoring
 Relative asset strings and omitted versus explicit time offsets are preserved.
 Weaker opinions are not imported into a different layer. Operations over 64 rows
 or not representable by the form are rejected without replacing the draft.
+Once edited or imported, payload drafts retain a source-opinion baseline. A
+changed source withholds Apply until Reload discards the draft or Keep explicitly
+accepts replacing the changed opinion. Keep does not author anything. Successful
+matching writes acknowledge their new baseline; unrepresentable reloads preserve
+the draft. Payload drafts reset when the selected prim or edit context changes.
 `EditorSnapshot::payload_opinions` exposes each contributing authored list op,
 strongest first, with its source layer, spec path and cumulative site time offset.
 The Payload authoring group displays these below the replacement form, including

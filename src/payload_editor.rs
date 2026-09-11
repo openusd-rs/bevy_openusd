@@ -3,7 +3,7 @@ use mara::ui::mara_core::{pod::Pod, vocab::Id};
 use openusd::sdf::{LayerOffset, Payload, PayloadListOp};
 use usd_bevy::editor::{EditorBridge, EditorEdit, EditorSnapshot};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Row { asset: String, prim: String, offset: String, scale: String, mode: Mode, authored_offset: bool }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -87,6 +87,22 @@ fn rows_from_operation(operation: &PayloadListOp) -> Result<Vec<Row>, String> {
 struct State {
     context: Option<(u64, String, String)>, target: Option<openusd::usd::EditTarget>,
     rows: Vec<Row>, error: String,
+    baseline: Option<PayloadListOp>, touched: bool,
+}
+
+fn source_conflicts(state: &mut State, current: Option<&PayloadListOp>) -> bool {
+    if state.baseline.as_ref() == current { return false; }
+    if !state.touched || current.is_some_and(|current| parse_rows(&state.rows).is_ok_and(|draft| &draft == current)) {
+        state.baseline = current.cloned();
+        return false;
+    }
+    true
+}
+
+fn reload_source(state: &mut State, current: Option<&PayloadListOp>) -> Result<(), String> {
+    let rows = current.map(rows_from_operation).transpose()?.unwrap_or_default();
+    state.rows = rows; state.baseline = current.cloned(); state.touched = current.is_some(); state.error.clear();
+    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -119,27 +135,41 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
     let prim = snapshot.selected.as_ref()?.clone();
     if prim == "/" { return None; }
     let key = (snapshot.document_id, snapshot.edit_layer.clone(), prim.clone());
-    let count = {
+    let local = local_operation(snapshot).cloned();
+    let (count, conflict) = {
         let mut state = draft.0.lock().ok()?;
         if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target {
-            *state = State { context: Some(key.clone()), target: snapshot.edit_target.clone(), ..Default::default() };
+            *state = State { context: Some(key.clone()), target: snapshot.edit_target.clone(), baseline: local.clone(), ..Default::default() };
         }
-        state.rows.len()
+        (state.rows.len(), source_conflicts(&mut state, local.as_ref()))
     };
     let bridge = bridge.clone();
-    let local = local_operation(snapshot).cloned();
     let snapshot = EditorSnapshot {
         document_id: snapshot.document_id, revision: snapshot.revision,
         edit_target: snapshot.edit_target.clone(), ..Default::default()
     };
     let draft = draft.clone();
-    Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+count*6+usize::from(local.is_some()), move |ui| {
+    Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+3*usize::from(conflict)+count*6+usize::from(local.is_some()), move |ui| {
         let Ok(mut state) = draft.0.lock() else { return };
         if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target { return; }
         ui.label("Payload list (click row mode to change)");
         ui.label("Asset paths are relative to the edit layer");
         ui.label("Draft starts empty; does not copy composed arcs");
+        let mut ready = !source_conflicts(&mut state, local.as_ref());
+        if !ready {
+            ui.label("Payload source changed; draft preserved");
+            if ui.button("Discard draft and reload current opinion").clicked {
+                match reload_source(&mut state, local.as_ref()) {
+                    Ok(()) => ready = true,
+                    Err(error) => state.error = error,
+                }
+            }
+            if ui.button("Keep draft over changed payload opinion").clicked {
+                state.baseline = local.clone(); state.error.clear(); ready = true;
+            }
+        }
         let mut remove = None;
+        let before = state.rows.clone();
         for (index, row) in state.rows.iter_mut().enumerate() {
             if ui.button(&format!("Payload {}: {}", index+1, row.mode.label())).clicked { row.mode = row.mode.next(); }
             ui.text_input(&mut row.asset, "Asset path (empty = internal)");
@@ -150,8 +180,9 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
         }
         if let Some(index) = remove { state.rows.remove(index); }
         if ui.button("Add payload entry").clicked && state.rows.len() < 64 { state.rows.push(Row::default()); }
+        if before != state.rows { state.touched = true; }
         let label = if state.rows.is_empty() { "Block all weaker payloads" } else { "Apply draft as local payload opinion" };
-        if ui.button(label).clicked {
+        if ready && ui.button(label).clicked {
             match parse_rows(&state.rows) {
                 Ok(operation) => {
                     state.error.clear();
@@ -167,7 +198,7 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
         if let Some(operation) = &local {
             if ui.button("Discard draft and load local opinion").clicked {
                 match rows_from_operation(operation) {
-                    Ok(rows) => { state.rows = rows; state.error.clear(); }
+                    Ok(rows) => { state.rows = rows; state.baseline = Some(operation.clone()); state.touched = true; state.error.clear(); }
                     Err(error) => state.error = error,
                 }
             }
@@ -179,6 +210,37 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_source_conflicts_preserve_drafts_and_acknowledge_writes() {
+        let first = PayloadListOp::prepended([Payload { asset_path: "first.usda".into(), ..Default::default() }]);
+        let second = PayloadListOp::prepended([Payload { asset_path: "second.usda".into(), ..Default::default() }]);
+        let mut state = State { baseline: Some(first.clone()), ..Default::default() };
+        assert!(!source_conflicts(&mut state, Some(&second)));
+        assert_eq!(state.baseline, Some(second.clone()));
+        reload_source(&mut state, Some(&first)).unwrap();
+        state.rows[0].offset = "7".into();
+        assert!(source_conflicts(&mut state, Some(&second)));
+        assert_eq!(state.baseline, Some(first.clone()));
+        assert_eq!(state.rows[0].offset, "7");
+        state.baseline = Some(second.clone());
+        assert!(!source_conflicts(&mut state, Some(&second)));
+        assert_eq!(state.rows[0].asset, "first.usda");
+        let written = parse_rows(&state.rows).unwrap();
+        assert!(!source_conflicts(&mut state, Some(&written)));
+        assert_eq!(state.baseline, Some(written));
+        assert!(source_conflicts(&mut state, None));
+        state.rows[0].scale = "invalid".into();
+        assert!(source_conflicts(&mut state, None));
+        assert!(state.baseline.is_some());
+        reload_source(&mut state, Some(&second)).unwrap();
+        assert_eq!(parse_rows(&state.rows).unwrap(), second);
+        let unrepresentable = PayloadListOp::default();
+        assert!(reload_source(&mut state, Some(&unrepresentable)).is_err());
+        assert_eq!(parse_rows(&state.rows).unwrap(), second);
+        reload_source(&mut state, None).unwrap();
+        assert!(state.rows.is_empty() && !state.touched && state.baseline.is_none());
+    }
 
     #[test]
     fn local_draft_import_preserves_buckets_offsets_and_rejects_loss() {

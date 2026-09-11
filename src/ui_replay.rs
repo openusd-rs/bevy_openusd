@@ -93,6 +93,8 @@ mod tests {
             (include_str!("../scripts/replays/reference_create.replay"), 17, 25000),
             (include_str!("../scripts/replays/reference_bucket_layout.replay"), 8, 18000),
             (include_str!("../scripts/replays/reference_bucket_move.replay"), 11, 24000),
+            (include_str!("../scripts/replays/payload_source_conflict.replay"), 10, 22000),
+            (include_str!("../scripts/replays/payload_source_keep.replay"), 13, 26000),
             (include_str!("../scripts/replays/payload_replace.replay"), 15, 16000),
             (include_str!("../scripts/replays/payload_clear.replay"), 18, 18000),
             (include_str!("../scripts/replays/payload_invalid.replay"), 7, 14000),

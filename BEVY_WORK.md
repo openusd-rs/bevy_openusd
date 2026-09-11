@@ -3,6 +3,159 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Curve width and normal reader foundation
+
+Surface projection now supports opt-in
+`USD_CURVE_SURFACE_SIDES=3..32` in the viewer and capture example. Missing widths
+retain the line fallback. Authored normals select oriented ribbons; other curves
+use transported-frame tubes with radius equal to half the sampled width.
+The surface path validates cardinality and output budgets. These are open-ended
+polygonal approximations without caps or UVs, not native curve primitives.
+Settings tracking includes surface mode, and changing UI curve sampling preserves
+the selected surface mode. Capture metadata records the requested side count.
+
+The initial two surface tests pass: analytic straight-tube radii, outward face
+winding, ribbon width/orientation, malformed-width geometry removal and recovery,
+and route removal. `make check-all` and the ordinary workspace test suite pass
+(`/tmp/curve-surfaces-check.log`, `/tmp/curve-surfaces-all-tests.log`). A subsequent
+frame orthonormality/degeneracy test also passes in the three-test focused run
+(`/tmp/curve-surfaces-tests.log`). The live quality regression now checks line to
+surface transitions, tube-side changes, mode removal and forward/backward width
+and point sampling, including midpoint interpolation, on LiveStage and two
+independently clocked instances. Entity identity and runtime names survive
+(`/tmp/curve-surfaces-live-tests.log`).
+
+Inspected GPU captures `target/curve-widths-surfaces.png` (8 samples, 12 sides)
+and `target/curve-widths-surfaces-quality.png` (32 samples, 16 sides) show all five
+rows with visible widths: constant tube, vertex taper, varying cubic taper,
+oriented ribbon and primvar width override. The higher sampling removes the
+obvious coarse bends. Both report CAPTURE_OK with no warnings under Vulkan,
+forward rendering, authored /Camera, time zero and shadows disabled
+(`/tmp/curve-surfaces-capture.log`, `/tmp/curve-surfaces-quality-capture.log`).
+These are fixture acceptance images, not native renderer comparisons. Broader
+periodic/indexed surface acceptance, UVs/caps and native curve parity remain open.
+
+Added canonical `read::curves::{read_widths_at, read_normals_at}`. These decode
+composed object-space values at an optional finite time, prefer generic
+primvars over built-in attributes, preserve index arrays and interpolation,
+and use the existing constant-primvar inheritance lookup. Built-in interpolation
+defaults to vertex; generic primvars default to constant. Missing values remain
+absent rather than inventing a radius. Widths reject negative/nonfinite values;
+normals retain their authored length while rejecting nonfinite values. Invalid
+value types, interpolation metadata and index types/ranges report errors.
+
+The readers retain raw interpolation data; curve-dependent cardinality, basis
+sampling and zero orientation rejection belong to the opt-in surface route.
+Default line mode remains available and does not consume widths or normals.
+
+Initial focused tests pass (`/tmp/curve-width-reader-tests.log`): all five width
+fixture rows, ribbon normals, primvar override, constant inheritance, indexed
+values, forward/backward time sampling and source preservation. Final coverage
+also checks midpoint time interpolation, absent widths, default interpolation,
+negative/nonfinite widths, malformed overriding values and unnormalized versus
+nonfinite orientation normals. Broader inheritance/blocking and surface sampling
+semantics still need geometry-path acceptance.
+
+Validation: 546 ordinary workspace tests pass, 13 ignored; check-all, build and
+whitespace checks pass (`/tmp/curve-width-reader-{all-tests,check,build}.log`).
+No new rendered tube/ribbon or native image acceptance is claimed.
+
+## Curve-width rendering baseline
+
+Added `assets/curve_widths.usda` with a fixed /Camera and five rows: constant
+linear tube width, tapered vertex width, cubic varying width, a normal-oriented
+ribbon, and primvars:widths overriding the built-in widths attribute. The
+[OpenUSD BasisCurves contract](https://openusd.org/dev/api/class_usd_geom_basis_curves.html)
+distinguishes width-only tubes (radius width/2) from curves with normals, which
+are oriented ribbons. Width interpolation defaults to vertex; the generic
+primvar takes precedence when specified. These semantics must not be replaced
+by treating every curve as a constant-radius tube.
+
+Captured and inspected the current Bevy baseline at 416789c:
+`target/curve-widths-before.png`, `/tmp/curve-widths-before.log`. At time zero,
+1280x720, forward rendering and shadows off, all five rows remain one-pixel
+lines. The authored camera is at (0,2,10), focal length 50, apertures 36/20.25.
+CAPTURE_OK establishes this as a rendered unsupported-width baseline, not a
+completed width-aware implementation. Existing line rendering is unchanged.
+
+Native OpenUSD 25.05.01 Embree with the same authored camera reports BasisCurves
+unsupported and writes a black image (`target/curve-widths-native-000.png`,
+inspected; `/tmp/curve-widths-native-final.log`). It also warns about GPU-disabled
+color correction. This cannot serve as a curve visual reference. The first
+near-black check reports zero nonblack pixels out of 921,600 and rejects the
+image (`/tmp/curve-widths-native-inspect.log`). The first
+command was rejected because an explicit frame requires an output-number
+placeholder (`/tmp/curve-widths-native.log`); the corrected command completed.
+Next: width/normal sampling with strict interpolation and primvar precedence,
+then bounded tube/ribbon geometry and live settings/clock regression coverage.
+Do not silently change line-mode semantics or claim native image parity from
+the unsupported Embree capture.
+
+## Revision-checked asynchronous opens
+
+File-dialog Open requests now retain the published document id and authored
+revision. Their `EditorCommand::OpenChecked` result is rejected before source
+I/O if either changed while choosing the file. Snapshot revisions advance on
+successful edits, undo/redo and detected external stage edits, independently of
+undo retention; disabling history therefore does not disable the guard. Failed
+rolled-back edits, empty edits, selection and playback changes do not invalidate
+an otherwise current open request. A pending initial texture retry yields to
+both explicit Open variants.
+
+Explicit programmatic `EditorCommand::Open` remains unconditional. The guarded
+path protects changes made after the dialog request; it is not an unsaved-work
+confirmation for edits that already existed when the picker opened. Existing
+atomic preparation still retains the old document if the chosen file cannot
+be opened or validated. The revision is an opaque wrapping u64 change token,
+not a persisted document version or a command count.
+
+Coverage exercises stale edit tokens with history disabled, external edits,
+document replacement, initial no-document context, pending-open retry priority,
+selection/seek without authored changes, missing-file retention and explicit
+unconditional opens. Separate tests cover undo/redo revision changes, failed and
+empty edits, and preservation of the dialog's token through path selection.
+These use real App/command processing and synthetic dialog futures, not an OS
+file-picker interaction acceptance test.
+
+Validation: the focused App regression passes (`/tmp/checked-open-test.log`).
+The final workspace suite passes 543 ordinary tests, 13 ignored; check-all,
+build and whitespace checks pass. Logs: `/tmp/checked-open-all-tests.log`,
+`/tmp/checked-open-check-final.log`, `/tmp/checked-open-build.log`.
+
+## Bounded editor command history
+
+EditorSession now retains at most 128 total undo/redo commands by default.
+`history_limit()` exposes the limit; `set_history_limit(n)` can change it or
+disable retained history at zero. Trimming favors newest undo commands, then
+nearest redo commands, without changing current scene data. Successful edits
+and redo trim only after the entire command completes. In-flight inverse capture
+remains unlimited so a failed multi-transaction batch can still roll back every
+transaction before any old history is evicted. This bounds retained command
+count, not transaction bytes, stage size or temporary memory during a command.
+
+The additive upstream `UndoStage::discard_oldest` drains pending edits and drops
+oldest inverse transactions without replay. It is recorded in
+`patches/openusd-undo-pruning.patch`, with reverse-apply checking. The two focused
+upstream tests pass (`/tmp/history-limit-upstream-tests.log`): recent transactions
+remain undoable, discarded edits remain authored, recording continues, oversized
+and zero requests work, and pending direct edits are included. Only the own-
+generated vendor Cargo.lock was removed afterward; no sibling or fixture state
+was deleted.
+
+Editor tests cover whole multi-transaction command eviction, undo/redo after
+eviction, nearest-redo retention, external-edit baselines, zero retention and
+rollback after 32 successful subcommands followed by a failure with full/zero
+history. The initial two focused tests pass (`/tmp/history-limit-tests.log`).
+A further 512-edit regression checks the 128-command default and exact agreement
+between retained commands and inverse transaction depth, then undoes/redoes the
+entire retained window. This supersedes earlier unbounded-retention notes, not
+the broader editor or operational acceptance checklist.
+
+Validation: 540 ordinary workspace tests pass, 13 ignored; check-all, build,
+whitespace and patch reverse-apply checks pass. Logs:
+`/tmp/history-limit-{all-tests,check,build}.log`. The two upstream pruning tests
+were run separately; omitted upstream fixture suites are not counted as passing.
+
 ## Unix asset-source root replacement
 
 The `file_source` adapter now checks the root directory's device/inode once per
@@ -13,7 +166,7 @@ paths again. Pending old-watcher events are drained before re-arming. Worker
 shutdown still closes its channel and joins the thread. Ordinary forwarding
 uses 250 ms polling in addition to the native 300 ms debounce.
 
-The root must exist at initial setup. Processed sources and non-Unix root
+Processed sources and non-Unix root
 replacement remain unsupported; requested paths remain source-lifetime state.
 This supersedes the root-replacement limitation in the older folder dependency
 invalidation section, not the separate editor USD-layer watching limitation.
@@ -34,7 +187,163 @@ and build pass. Logs: `/tmp/source-root-feature-tests.log`,
 Default-feature test-all also passes: 535 ordinary tests, 13 ignored
 (`/tmp/source-root-default-tests.log`). `git diff --check` passes.
 
+### Missing source root at startup
+
+Unix workers now remain alive after initial watcher setup failure. Once the root
+is a directory, one-second retries install a watcher and invalidate previously
+requested paths, including failed reads. No directory is created by the adapter.
+Non-Unix setup failures still disable watching. Initial errors remain logged.
+
+The native regression starts AssetServer and two independent roots before their
+source directory exists, requires both Failed, creates the directory and scene,
+then requires both Ready without explicit reload. A subsequent sphere-radius
+edit must reload while preserving projected entities, runtime names and clocks.
+Before the change it timed out (`/tmp/initial-root-before.log`).
+
+Validation: all three native AssetServer watcher tests pass, including explicit
+radius-three vertex checks after the post-recovery edit
+(`/tmp/initial-root-native-final.log`). Feature-enabled workspace tests pass:
+541 ordinary tests, 21 ignored (`/tmp/initial-root-feature-tests.log`).
+Default-feature check-all and build pass (`/tmp/initial-root-{check,build}.log`),
+as does `git diff --check`. This adds no GPU or non-Unix runtime evidence.
+
 ## Spot visual recheck after material fixes
+
+### Bowtie normal reference boundary
+
+The isolated lower-leg mismatch does not establish that Bevy's fallback is
+backwards. Both incident triangle windings independently point +Y, matching the
+current fallback. Native OpenSubdiv's corner tangent cross points -Y. Its
+`assignCornerLimitTangentMasks` uses only the first two incident edges, rather
+than a per-face normal. This was checked in the installed 3.7.0 SDK and the
+[versioned upstream source](https://github.com/PixarAnimationStudios/OpenSubdiv/blob/v3_7_0/opensubdiv/sdc/catmarkScheme.h).
+Do not change the renderer merely to make this non-manifold vertex match that
+single native normal.
+
+The fixture now includes a cyclic-index reference control with unchanged face
+winding. Both variants reproduce the mismatch and the comparator explicitly
+reports `nonmanifold=1` (`target/bowtie-cyclic-native/`,
+`/tmp/bowtie-cyclic-native.log`). The comparison remains a failure; no vertices
+are silently excluded. The updated comparator passes its existing native tool
+checks (`/tmp/bowtie-native-tool-check.log`).
+
+New ordinary regression `bowtie_fallback_normals_preserve_face_winding` checks
+both source triangles' geometric normals and every refined normal for both
+variants at scales 1e-12, 1 and 1e12, with right- and left-handed orientation.
+All 12 combinations preserve the correct orientation, 13 refined points and
+the shared corner position (`/tmp/bowtie-fallback-test.log`). This protects the
+bounded fallback case, not general non-manifold surface or normal equivalence.
+No production normal algorithm or source topology was changed.
+
+Validation: 537 ordinary tests pass, 13 ignored; check-all, build and whitespace
+checks pass (`/tmp/bowtie-fallback-{all-tests,check,build}.log`). The native bowtie
+comparison still fails as described; ordinary success is not native parity.
+
+### All visible-mesh native comparison and bowtie witness
+
+The new `scripts/check_subdivision_meshes.sh` uses scene_report to enumerate
+mesh paths, optionally selects a literal prefix, isolates levels zero/one and
+compares each against the native tool without stopping at the first failure.
+It retains source hash, per-prim paths, logs, results.tsv and summary.txt.
+The triangle-only native comparator still uses Catmull-Clark edgeAndCorner;
+the script does not validate visibility, transforms or other subdivision rules.
+
+The 13 Spot `/spot/base/` meshes were checked at a4ad9f9. All positions match
+within 1.49012e-8. Nine meshes also match normals; each of the four lower legs
+has one normal mismatch of magnitude two. Full evidence remains in
+`target/spot-visible-native/` and `/tmp/spot-visible-native.log`. The gate fails
+with 13 meshes/four failures, rather than implying the prior base-only normal
+comparison covered every mesh.
+
+The comparator now prints up to eight mismatch witnesses. Lower-leg vertex 459
+has native normal (0,-1,0), Bevy (0,1,0), native tangent-cross length
+3.8370283332755939e-5: this is not a tiny numerical zero. Its two source triangles
+are (458,457,459) and (459,460,461), sharing only vertex 459. The current limit
+normal code rejects disconnected neighborhoods and retains its generated smooth
+normal fallback. Native OpenSubdiv returns a different direction for this
+non-manifold vertex; no production normal behavior was changed without resolving
+that semantic ambiguity.
+
+`assets/subdivision_bowtie.usda` preserves just those five local source points
+and two triangles, reproducing one mismatch at remapped vertex two with the same
+native cross length. Evidence: `target/bowtie-native-witness/`,
+`/tmp/bowtie-native-witness.log`, `/tmp/spot-leg-normal-mismatch.log`.
+The reusable gate passes the two connected/disconnected controls with a quoted
+output path (`target/connectivity-all-'quoted`, `/tmp/connectivity-all-native.log`).
+The updated native comparator builds through Make and passes its existing planar,
+orientation, preservation and invalid-input script
+(`/tmp/native-tool-witness-check.log`). New source fixtures and diagnostic tools
+do not change the renderer; the bowtie failure remains open for a per-fan normal
+semantics investigation. No new full Rust test run is claimed for this step.
+
+### Isolated connectivity control
+
+Added `assets/subdivision_connectivity.usda`: two triangle cages with identical
+local face-corner positions, one split at coincident boundary vertices and one
+sharing those vertices. The unit regression checks those input positions match,
+then verifies level-one refinement moves one split vertex to (-0.125,0.875,0)
+while its coincident counterpart stays at (0,1,0). Refined point counts remain
+18 split versus 15 connected and all generated normals remain +Z. It also
+checks the source coincidence is unchanged. No production welding or smoothing
+behavior changed.
+
+Both isolated meshes match native OpenSubdiv: maximum position-component error
+1.98682e-8, no values above 1e-7, and exact normal agreement. Initial manual
+evidence: `/tmp/connectivity-{Disconnected,Connected}-native.log`.
+The reusable `scripts/check_subdivision_connectivity.sh` accepts a compiled
+compare_osd and fresh output directory, retaining isolation files and logs.
+The first Rust run failed because the fixture's single display color lacked
+explicit constant interpolation; the fixture was corrected before native
+comparison. The corrected focused test passes (`/tmp/connectivity-test-final.log`).
+
+This proves the small split-topology case agrees with native subdivision,
+not that every Spot gap or reversed normal has been attributed. The connected
+mesh is an independent control, not a proposed source rewrite.
+
+The reusable native gate passes (`/tmp/connectivity-native-final.log`,
+`target/connectivity-native-final/`), and reusing its output directory rejects
+without rerunning probes (`/tmp/connectivity-reused-output.log`). Inspected
+`target/connectivity-level-{0,1}.png`: both control cages initially look alike;
+after level one the left disconnected mesh has a visible notch while the right
+connected mesh stays continuous. Both 1280x720 forward captures at eye (0,0.5,7),
+target (0,0.5,0), time zero and shadows off report CAPTURE_OK without WARN/ERROR
+(`/tmp/connectivity-capture-{0,1}.log`). These are Bevy renderings paired with
+native numerical comparison, not native-renderer pixel matching.
+
+Validation: 536 ordinary workspace tests pass, 13 ignored; check-all, build,
+shell syntax and whitespace checks pass. Logs:
+`/tmp/connectivity-{all-tests,check,build}.log`.
+
+### Current editor recheck at a6f070b
+
+Captured and inspected four new images: host windows
+`target/spot-editor-current.png` (Outliner, control cage) and
+`target/spot-editor-subdiv-current.png` (Rendering pane, level one), plus their
+`.viewport.png` companions. Both private Vulkan Weston runs passed host and
+embedded readback guards. Each viewport is 1440x920, time zero, captured after
+15 seconds of readiness; host capture waits 20 seconds. Metadata records matching
+camera position, direction and projection for the two viewports. The asset hash
+still matches the original below. No collection or sibling files changed.
+
+Both views show the robot and upright UI. The refined view exposes more obvious
+leg seams and body gaps; it is not a visual fix. Whole-viewport near-black checks
+report 1,324,800 nonblack pixels in each, not fidelity acceptance. Clipboard,
+Vulkan loader and unavailable-SSAO diagnostics remain in the viewer logs. Two
+successful launches do not resolve the intermittent black-host failure.
+Run logs: `/tmp/spot-editor{,-subdiv}-current.log`; per-capture viewer, Weston,
+inspection and camera metadata companions remain beside the images.
+
+Current `scene_report` with level one confirms the base control cage has 3,368
+indexed boundary edges versus 55 position-welded boundaries, one welded
+nonmanifold edge and exactly retained authored vertex normals. Its 1,296 source
+triangles have no reversed normal corners. Refined output has 7,776 triangles,
+14 reversed normal corners, 6,736 indexed versus 1,598 welded boundaries and two
+welded nonmanifold edges (`/tmp/spot-editor-current-topology.log`). These current
+counts supersede the older eight-corner result below. Disconnected coincident
+vertices are consistent with subdivision opening seams; this does not attribute
+every visible artifact or justify welding intended USD boundaries. Next fidelity
+work needs an isolated disconnected-topology/native comparison, not automatic
+welding or globally enabling refinement.
 
 Rechecked at `f709355` using the original collection asset
 `../usd_collection/oems/spot_boston_dynamics/spot_base_urdf/spot.usdc`.

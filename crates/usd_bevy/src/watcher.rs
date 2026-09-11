@@ -74,8 +74,7 @@ fn directory_identity(path: &Path) -> Option<(u64, u64)> {
 
 #[cfg(unix)]
 fn rearming_events(root: PathBuf, input: async_channel::Sender<AssetSourceEvent>, events: async_channel::Receiver<AssetSourceEvent>,
-    output: async_channel::Sender<AssetSourceEvent>, requested: Arc<RequestedPaths>, watcher: FileWatcher, mut identity: Option<(u64, u64)>) {
-    let mut watcher = Some(watcher);
+    output: async_channel::Sender<AssetSourceEvent>, requested: Arc<RequestedPaths>, mut watcher: Option<FileWatcher>, mut identity: Option<(u64, u64)>) {
     let mut next_check = std::time::Instant::now();
     let invalidate_all = || {
         let paths = requested.0.lock().unwrap_or_else(|error| error.into_inner()).clone();
@@ -135,6 +134,7 @@ fn invalidated_paths(event: &AssetSourceEvent) -> [Option<&Path>; 2] {
 /// Register before `AssetPlugin`; watching follows its runtime watch setting.
 /// Folder events invalidate requested descendants, retained for the source lifetime.
 /// Unix roots are checked once per second and re-armed after replacement.
+/// Failed initial watcher setup retries on Unix when the root is a directory.
 /// Processed sources and non-Unix root replacement are unsupported.
 pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
     let root = FileAssetReader::new(root).root_path().clone();
@@ -149,10 +149,13 @@ pub fn file_source(root: impl AsRef<Path>) -> AssetSourceBuilder {
             #[cfg(unix)]
             let identity = directory_identity(&root);
             let watcher = match FileWatcher::new(root.clone(), input.clone(), Duration::from_millis(300)) {
-                Ok(watcher) => watcher,
+                Ok(watcher) => Some(watcher),
                 Err(error) => {
                     log::error!("USD file watcher could not watch {}: {error}", root.display());
+                    #[cfg(not(unix))]
                     return None;
+                    #[cfg(unix)]
+                    { None }
                 }
             };
             let events = receiver.clone();

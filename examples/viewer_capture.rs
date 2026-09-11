@@ -37,6 +37,7 @@ struct Capture {
     shadow_maps: bool,
     subdivision_levels: Option<u32>,
     curve_steps: usize,
+    curve_surface_sides: Option<usize>,
     asset: PathBuf,
     output: PathBuf,
     time: f64,
@@ -91,7 +92,7 @@ impl Capture {
         }
         let output = PathBuf::from(&args[1]);
         if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
-        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, curve_steps: 8, asset: PathBuf::from(&args[0]), output, time, eye, focus,
+        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, curve_steps: 8, curve_surface_sides: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
             instance_times: vec![time], instance_spacing: 2.5, swap_clocks: false, clocks_swapped: false,
             started: Instant::now(), ready_frames: 0, requested: false, mesh_report: String::new() })
     }
@@ -182,6 +183,7 @@ fn main() -> AppExit {
     let asset_dir = capture.asset.parent().unwrap().to_string_lossy().into_owned();
     let mut app = App::new();
     capture.curve_steps = curve_settings.cubic_steps();
+    capture.curve_surface_sides = curve_settings.surface_sides();
     app.insert_resource(curve_settings);
     if capture.renderer == CaptureRenderer::Deferred {
         app.insert_resource(bevy::pbr::DefaultOpaqueRendererMethod::deferred());
@@ -432,7 +434,7 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
     let report = report + &format!("instance_times={:?}\ninstance_spacing={}\n", capture.instance_times, capture.instance_spacing)
         + &format!("clocks_reversed_after_ready_frames={}\n", if capture.clocks_swapped { 30 } else { 0 })
         + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
-        capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("curve_steps={}\n", capture.curve_steps) + &capture.mesh_report;
+        capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("curve_steps={}\ncurve_surface_sides={:?}\n", capture.curve_steps, capture.curve_surface_sides) + &capture.mesh_report;
     std::fs::write(capture.output.with_extension("capture.txt"), report).map_err(|error| format!("metadata write: {error}"))?;
     std::fs::rename(&temporary, &capture.output).map_err(|error| format!("PNG publish: {error}"))?;
     Ok(())

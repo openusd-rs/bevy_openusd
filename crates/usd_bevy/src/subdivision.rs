@@ -496,6 +496,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bowtie_fallback_normals_preserve_face_winding() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/subdivision_bowtie.usda");
+        let source = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap();
+        let stage = source.open_stage().unwrap();
+        for name in ["/Bowtie", "/Cyclic"] {
+            let path = openusd::sdf::Path::new(name).unwrap();
+            let original = crate::read::geom::read_mesh(&stage, &path).unwrap().unwrap();
+            let rules = crate::read::subdivision::read_subdivision_at(&stage, &path, None).unwrap();
+            for scale in [1e-12_f32, 1.0, 1e12] {
+                for left in [false, true] {
+                    let mut mesh = original.clone();
+                    mesh.points.iter_mut().for_each(|point| point.iter_mut().for_each(|value| *value *= scale));
+                    if left { mesh.orientation = crate::read::geom::Orientation::LeftHanded; }
+                    let expected = if left { -DVec3::Y } else { DVec3::Y };
+                    for face in mesh.face_vertex_indices.chunks_exact(3) {
+                        let p = |i: usize| DVec3::from_array(mesh.points[face[i] as usize].map(f64::from));
+                        assert!((p(1)-p(0)).cross(p(2)-p(0)).normalize().abs_diff_eq(DVec3::Y, 1e-6));
+                    }
+                    let refined = refine_mesh(&mesh, &rules, 1).unwrap();
+                    assert_eq!(refined.points.len(), 13);
+                    assert_eq!(refined.points[2], mesh.points[2]);
+                    for normal in &refined.normals.as_ref().unwrap().values {
+                        assert!(DVec3::from_array(normal.map(f64::from)).abs_diff_eq(expected, 1e-6), "{name}, scale={scale}, left={left}: {normal:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn coincident_disconnected_boundaries_are_not_welded() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/subdivision_connectivity.usda");
+        let source = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let read = |name| {
+            let path = openusd::sdf::Path::new(name).unwrap();
+            let mesh = crate::read::geom::read_mesh(&stage, &path).unwrap().unwrap();
+            let rules = crate::read::subdivision::read_subdivision_at(&stage, &path, None).unwrap();
+            (mesh, rules)
+        };
+        let (split, rules) = read("/Disconnected");
+        let (joined, joined_rules) = read("/Connected");
+        let corners = |mesh: &ReadMesh| mesh.face_vertex_indices.iter()
+            .map(|index| mesh.points[*index as usize]).collect::<Vec<_>>();
+        assert_eq!(corners(&split), corners(&joined));
+        assert_eq!(split.points[2], split.points[6]);
+        let refined = refine_mesh(&split, &rules, 1).unwrap();
+        assert_eq!(refined.points[2], [-0.125, 0.875, 0.0]);
+        assert_eq!(refined.points[6], [0.0, 1.0, 0.0]);
+        let connected = refine_mesh(&joined, &joined_rules, 1).unwrap();
+        assert_eq!(refined.points.len(), 18);
+        assert_eq!(connected.points.len(), 15);
+        assert_eq!(split.points[2], split.points[6]);
+        for mesh in [&refined, &connected] {
+            assert!(mesh.normals.as_ref().unwrap().values.iter()
+                .all(|normal| normal.iter().zip([0.0, 0.0, 1.0]).all(|(a,b)| (a-b).abs() < 1e-6)));
+        }
+    }
+
+    #[test]
     fn uniform_sharpness_refines_cube_positions_and_decays() {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/subdivision_cube.usda");
         let source = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap();

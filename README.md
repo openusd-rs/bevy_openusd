@@ -87,7 +87,8 @@ Paths are retained until the source is dropped; this is not an active-handle-onl
 index. On Unix, the adapter checks the source root's device/inode once per second,
 invalidates requested paths when it disappears or changes, and re-arms watching
 when a replacement directory exists. Event forwarding polls at 250 ms intervals
-in addition to Bevy's 300 ms debounce. The root must exist at initial setup.
+in addition to Bevy's 300 ms debounce. Failed initial setup retries on Unix once
+per second when the root is a directory, including roots created after startup.
 Processed assets and non-Unix source-root replacement remain unsupported. Registration
 does not override the AssetPlugin runtime watch setting. Its event worker is
 closed and joined when the source is dropped.
@@ -438,7 +439,13 @@ mapped through the active edit target; defaults are left intact. These operation
 participate in editor undo/redo. The lower-level authoring functions are
 `set_attribute_sample` and `clear_attribute_sample`.
 The ribbon provides undo/redo and
-separate root-layer, edit-layer and flattened export dialogs. Unsupported value
+separate root-layer, edit-layer and flattened export dialogs. Open selections
+carry the document id and authored revision from the picker request; changes
+made while choosing a file reject the delayed result and retain the document.
+This works with undo history disabled, but is not an unsaved-work confirmation
+for edits predating the request. Programmatic `EditorCommand::Open` remains
+unconditional; integrations can use `OpenChecked` with an `EditorSnapshot` token.
+Unsupported value
 types are displayed read-only; see `BEVY_WORK.md` for remaining editor work and
 visual acceptance limits.
 
@@ -530,6 +537,15 @@ editor.edit(EditorEdit::Rename {
 editor.undo()?;
 editor.redo()?;
 ```
+
+Editor sessions retain at most 128 undo/redo commands by default. Use
+`set_history_limit(n)` to change this; zero disables retained history. Lowering
+the limit keeps newest undo commands first, then nearest redo commands. Eviction
+discards complete commands and their inverse transactions only after successful
+edits, so a failed multi-transaction batch still rolls back completely. Evicted
+edits remain in the document. This is a command-count limit, not a byte budget
+or a bound on temporary capture during a command; direct stage edits establish
+a new history baseline when the editor next synchronizes them.
 
 The old `authoring::EditHistory` API has been removed. Migrate `define`,
 `set_attr`, `rename`, `reparent` and `set_variant` calls to the corresponding
@@ -793,6 +809,24 @@ USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='ass
 
 Each row should have matching shapes and endpoint heights. Tessellation defaults
 to eight samples per segment rather than adaptive or exact-limit rendering.
+
+`assets/curve_widths.usda` is a width/ribbon acceptance fixture with an authored
+camera. The current line renderer ignores these widths and normals; it is not
+yet a tube/ribbon showcase. Capture its current baseline with:
+
+```bash
+USD_CAPTURE_CAMERA=/Camera USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off make run APP_TARGET='--example viewer_capture' ARGS='assets/curve_widths.usda target/NEW_CURVE_WIDTHS.png 0'
+```
+
+The local native Embree renderer rejects BasisCurves, so its black capture is
+not a reference for this fixture.
+
+The reusable `read::curves::read_widths_at` and `read_normals_at` readers preserve
+composed interpolation, indexing and time-sampled values with primvar precedence.
+They reject malformed data but leave topology-dependent cardinality, basis
+sampling and surface construction to the projection path; this does not yet
+change line rendering.
+
 Library applications can choose 1–64 samples per cubic segment:
 
 ```rust
@@ -917,9 +951,45 @@ positions and limit normals against the compiled native tool:
 make --eval='check-osd-assets:; @/bin/bash scripts/check_subdivision_assets.sh target/compare-osd ../usd_collection target/NEW_NATIVE_CHECK' check-osd-assets
 ```
 
-The output directory must be new. Logs and generated assets remain there on
-failure. This gate requires the collection and OpenSubdiv SDK; it is separate
-from the ordinary Rust test suite and does not perform image acceptance.
+`assets/subdivision_connectivity.usda` places disconnected and connected triangle
+cages side by side with identical local face-corner positions. Under level-one
+Catmull-Clark, the disconnected boundary opens while shared vertices stay shared.
+The ordinary regression preserves that distinction instead of welding positions.
+Compare both cages' refined positions and normals against the native tool with:
+
+```bash
+make --eval='check-connectivity:; @/bin/bash scripts/check_subdivision_connectivity.sh target/compare-osd target/NEW_CONNECTIVITY_CHECK' check-connectivity
+```
+
+This isolates topology-dependent gaps; it does not identify every seam in a
+production asset or authorize automatic welding of intentional boundaries.
+
+To compare every reported mesh under a literal prim-path prefix, retaining
+failures rather than stopping at the first mismatch:
+
+```bash
+make --eval='check-meshes:; @/bin/bash scripts/check_subdivision_meshes.sh target/compare-osd ../usd_collection/oems/spot_boston_dynamics/spot_base_urdf/spot.usdc target/NEW_SPOT_CHECK /spot/base/' check-meshes
+```
+
+This compares local-space, level-one triangle cages under the native tool's
+Catmull-Clark edgeAndCorner rules, not visibility, transforms, materials or other
+subdivision rules. The prefix is a selection filter, not a visibility test.
+Results include per-prim paths, isolation logs, native logs and a summary;
+zero selected meshes or any failure returns nonzero. Native normal comparisons
+print up to eight mismatching vertex indices and normal vectors.
+`assets/subdivision_bowtie.usda` is a known-failing two-triangle normal witness
+from Spot: matching positions, but opposite fallback/native normals at the
+shared vertex whose two incident triangles share no edge. Both face windings
+point +Y, agreeing with Bevy's fallback, while the native corner tangent cross
+points -Y. The cyclic-index control reproduces the same difference. The native
+tool labels the vertex non-manifold and still reports failure; this discrepancy
+is not grounds to flip Bevy's normal. General non-manifold normal parity is not
+claimed.
+
+Both native checks require a new output directory and retain logs and generated
+assets on failure. The asset check additionally requires the collection; the
+connectivity fixture is included in this repository. These OpenSubdiv checks are
+separate from the ordinary Rust suite and do not perform image acceptance.
 
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated

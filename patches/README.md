@@ -5,6 +5,14 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Undo pruning
+
+`openusd-undo-pruning.patch` adds `UndoStage::discard_oldest`, which drains pending
+edits and drops a requested number of oldest inverse transactions without editing
+scene data. Bevy uses it after complete editor commands, preserving rollback of
+multi-transaction failures while bounding retained command history. It does not
+bound the byte size of a transaction or an in-flight command.
+
 ## Nested package export
 
 `openusd-nested-package-export.patch` applies after the nested-reading patch and

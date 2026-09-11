@@ -1,0 +1,31 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Mesh "Disconnected" {
+    point3f[] points = [(-1,0,0),(0,0,0),(0,1,0),(-1,1,0),(0,0,0),(1,0.5,0),(0,1,0)]
+    int[] faceVertexCounts = [3,3,3]
+    int[] faceVertexIndices = [0,1,2,0,2,3,4,5,6]
+    uniform token subdivisionScheme = "catmullClark"
+    uniform token interpolateBoundary = "edgeAndCorner"
+    color3f[] primvars:displayColor = [(0.1,0.6,0.9)] (
+        interpolation = "constant"
+    )
+    double3 xformOp:translate = (-1.3,0,0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Mesh "Connected" {
+    point3f[] points = [(-1,0,0),(0,0,0),(0,1,0),(-1,1,0),(1,0.5,0)]
+    int[] faceVertexCounts = [3,3,3]
+    int[] faceVertexIndices = [0,1,2,0,2,3,1,4,2]
+    uniform token subdivisionScheme = "catmullClark"
+    uniform token interpolateBoundary = "edgeAndCorner"
+    color3f[] primvars:displayColor = [(0.1,0.6,0.9)] (
+        interpolation = "constant"
+    )
+    double3 xformOp:translate = (1.3,0,0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}

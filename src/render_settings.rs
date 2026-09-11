@@ -11,6 +11,7 @@ struct State {
     requested: Option<u32>,
     requested_curve_steps: Option<usize>,
     curve_steps: usize,
+    curve_surface_sides: Option<usize>,
     level: u32,
     refined: usize,
     mesh_entities: usize,
@@ -68,7 +69,10 @@ fn apply(world: &mut World) {
         if level == 0 { world.remove_resource::<UsdSubdivisionSettings>(); }
         else if let Ok(settings) = UsdSubdivisionSettings::new(level) { world.insert_resource(settings); }
     }
-    if let Some(steps) = steps && let Ok(settings) = UsdCurveSettings::new(steps) { world.insert_resource(settings); }
+    if let Some(steps) = steps && let Ok(settings) = UsdCurveSettings::new(steps) {
+        let sides = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().surface_sides();
+        world.insert_resource(settings.with_surface_sides(sides).unwrap());
+    }
 }
 
 fn publish(world: &mut World) {
@@ -76,6 +80,7 @@ fn publish(world: &mut World) {
     let Ok(mut state) = bridge.0.lock() else { return };
     state.level = world.get_resource::<UsdSubdivisionSettings>().map_or(0, |settings| settings.levels());
     state.curve_steps = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().cubic_steps();
+    state.curve_surface_sides = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().surface_sides();
     state.refined = world.query::<&UsdSubdivisionApplied>().iter(world).count();
     let mut meshes = std::collections::HashSet::new();
     let mut materials = std::collections::HashSet::new();
@@ -125,7 +130,10 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
     let mut curve_pods = vec![
         Pod::new("rendering.curves.status").with_custom_units(2, move |ui| {
             ui.label(&format!("Samples per segment: {}", state.curve_steps));
-            ui.label("Fixed sampling; one-pixel lines");
+            ui.label(&match state.curve_surface_sides {
+                Some(sides) => format!("Width surfaces; {sides} tube sides"),
+                None => "Fixed sampling; one-pixel lines".into(),
+            });
         }),
     ];
     for steps in [1, 8, 32, 64] {
@@ -255,12 +263,13 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         let bridge = RenderSettingsBridge::default();
         configure(&mut app, bridge.clone());
-        app.insert_resource(UsdCurveSettings::new(32).unwrap());
+        app.insert_resource(UsdCurveSettings::new(32).unwrap().with_surface_sides(Some(12)).unwrap());
         app.update();
         assert_eq!(bridge.0.lock().unwrap().curve_steps, 32);
         bridge.0.lock().unwrap().requested_curve_steps = Some(1);
         app.update();
         assert_eq!(app.world().resource::<UsdCurveSettings>().cubic_steps(), 1);
+        assert_eq!(app.world().resource::<UsdCurveSettings>().surface_sides(), Some(12));
         assert_eq!(bridge.0.lock().unwrap().curve_steps, 1);
         let prim = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/Curve"), UsdCurveError("curve budget exceeded".into()))).id();
         app.update();

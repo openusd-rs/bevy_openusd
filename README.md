@@ -332,7 +332,7 @@ The subsequent [reload comparison](benchmarks/reload-animation.md) measures redu
 CPU reload cost from skipping an unused animation-index scan, with clock-isolation
 regressions. It does not establish GPU or frame-rate improvements.
 
-`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek]` measures the actual editor Open path and retained
+`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-unique]` measures the actual editor Open path and retained
 mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
 includes file reading and texture decoding, but excludes GPU work and the UI:
 
@@ -348,8 +348,22 @@ each update, then reports nearest-rank median/p95/max `App::update` duration and
 post-seek retained payloads. Command enqueue and result validation are outside the
 timer. GPU morph entity counts distinguish prepared morphs from CPU fallback.
 These are headless editor update timings, not GPU frame latency or VRAM use.
+`seek-unique` instead measures 1,000 distinct clocks from 0.01 through 10 after
+the same four warmup updates. Distinct measured clocks do not guarantee cache
+misses. Additional columns record peak mesh/material/image asset counts sampled
+after updates, final mesh-cache entries/payload, and process RSS before/after
+seeking. RSS is Linux `/proc/self/status` VmRSS in bytes or `NA` when unavailable;
+it includes the whole process and is not an allocator count, peak RSS or VRAM.
+Asset-count sampling and RSS reads are outside the update timer.
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--release --example editor_benchmark' ARGS='assets/morph_tangent_normals.usda 3 gpu-prepared seek-unique'
+```
+
 The initial [morph-tangent seek measurements](benchmarks/morph-tangent-seek.md)
 record debug and release CPU/GPU-prepared runs with explicit limitations.
+The [distinct-clock retention baseline](benchmarks/unique-clock-retention.md)
+records cache growth that the repeated-clock workload does not expose.
 
 The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
 GPU deformation routing and measures its retained CPU-side mesh/morph payloads;

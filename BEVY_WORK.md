@@ -687,6 +687,30 @@ SUBDIVISION_ASSET_CHECK_OK, with unchanged position/normal comparison errors.
 No Rust production code changed; ordinary/GPU suites were not rerun for this
 shell-only repair. `git diff --check` passes.
 
+## Distinct-clock editor retention benchmark
+
+Extended `editor_benchmark` with `seek-unique`: four existing warmup updates,
+then 1,000 distinct measured clocks in (0,10]. Added process RSS before/after
+seeking, post-update peak asset counts, and final ProjectionCache entries/payload.
+These are not allocation counts, peak RSS or GPU memory. Clock/Ready/document
+identity checks remain outside the measured App::update interval.
+
+Three-sample release runs on the morph-tangent fixture show 2,004 retained mesh
+assets in CPU mode and 3,004 in GPU-prepared mode after distinct clocks, versus
+8 and 10 for repeated clocks. The cache owns 2,003 and 3,004 entries respectively.
+Its 8,192-entry/256-MiB bounds were confirmed in current source; neither bound is
+reached here, so this is not an unbounded-leak finding. Full results, commands,
+scope and limitations are in `benchmarks/unique-clock-retention.md`.
+
+Four targeted benchmark tests pass in debug and release, including an actual
+1,000-seek editor run; all twelve measured release samples preserve document
+identity and exact clocks. Logs: `/tmp/unique-seek-tests-final.log`,
+`/tmp/unique-seek-release-tests.log`,
+`/tmp/editor-{cpu,gpu-prepared}-{seek,seek-unique}-final.log`.
+No production projection/cache behavior changed. The full ordinary/GPU suites
+were not rerun for this benchmark-only extension. `git diff --check` passes.
+Streaming retention policy and broader performance acceptance remain open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

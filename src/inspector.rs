@@ -156,6 +156,7 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
     if let Some(payload) = crate::payload_editor::pod(snapshot, bridge, &drafts.3) {
         let mut payloads = vec![payload];
         payloads.extend(crate::payload_editor::opinion_pods(snapshot));
+        payloads.extend(reference_creation_pod(snapshot, bridge, drafts));
         payloads.extend(reference_opinion_pods(snapshot, bridge, drafts));
         payloads.extend(reference_edit_pods(snapshot, bridge, drafts));
         payloads.extend(reference_structure_pods(snapshot, bridge, drafts));
@@ -387,6 +388,79 @@ fn edited_reference(base: &openusd::sdf::Reference, fields: &[String; 4]) -> Res
     if !reference.layer_offset.offset.is_finite() || !reference.layer_offset.scale.is_finite()
         || reference.layer_offset.scale <= 0. { return Err("Use a finite offset and positive finite scale".into()); }
     Ok(reference)
+}
+
+fn insert_reference(source: Option<&openusd::sdf::ReferenceListOp>, bucket: &str, fields: &[String; 4]) -> Result<openusd::sdf::ReferenceListOp, String> {
+    let reference = edited_reference(&Default::default(), fields)?;
+    if source.is_some_and(|source| source.explicit != (bucket == "Explicit")) {
+        return Err("Cannot mix explicit replacement with other list modes".into());
+    }
+    let mut operation = source.cloned().unwrap_or_else(|| openusd::sdf::ReferenceListOp {
+        explicit: bucket == "Explicit", ..Default::default()
+    });
+    let entries = match bucket {
+        "Explicit" => &mut operation.explicit_items, "Prepend" => &mut operation.prepended_items,
+        "Append" => &mut operation.appended_items, "Add" => &mut operation.added_items,
+        "Delete" => &mut operation.deleted_items, "Order" => &mut operation.ordered_items,
+        _ => return Err("Unknown reference list mode".into()),
+    };
+    if entries.contains(&reference) { return Err("This reference already exists in this bucket".into()); }
+    entries.push(reference);
+    Ok(operation)
+}
+
+fn reference_creation_pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, drafts: &Drafts) -> Option<Pod> {
+    let prim = snapshot.selected.as_ref()?.clone();
+    let target = snapshot.edit_target.as_ref()?;
+    target.map_to_spec_path(&openusd::sdf::path(&prim).ok()?)?;
+    let key = format!("reference.create:{prim}");
+    let open = drafts.2.lock().ok()?.get(&key).copied().unwrap_or(false);
+    let errors = drafts.0.lock().ok()?.get(&format!("{key}:error"))
+        .filter(|draft| !draft.2.is_empty()).map_or(0, |draft| path_lines(&draft.2).len());
+    let local = snapshot.reference_opinions.iter().find(|opinion| clear_reference_command(snapshot, opinion).is_some())
+        .map(|opinion| opinion.operation.clone());
+    let context = EditorSnapshot { document_id: snapshot.document_id, revision: snapshot.revision,
+        edit_target: snapshot.edit_target.clone(), ..Default::default() };
+    let drafts = drafts.clone();
+    let bridge = bridge.clone();
+    Some(Pod::new(Id::new(&key)).with_custom_units(if open { 13+errors } else { 1 }, move |ui| {
+        if !drafts.4.lock().is_ok_and(|current| current.as_ref() == Some(&(context.document_id, context.edit_target.clone()))) { return; }
+        if ui.button(if open { "Hide new reference fields" } else { "Create local reference entry" }).clicked {
+            if let Ok(mut expanded) = drafts.2.lock() { expanded.insert(key.clone(), !open); }
+        }
+        if !open { return; }
+        ui.label("Asset paths are relative to the edit layer");
+        let Ok(mut values) = drafts.0.lock() else { return };
+        let modes: &[&str] = match local.as_ref().map(|operation| operation.explicit) {
+            Some(true) => &["Explicit"], Some(false) => &["Prepend", "Append", "Add", "Delete", "Order"],
+            None => &["Prepend", "Append", "Add", "Delete", "Order", "Explicit"],
+        };
+        let mode = values.entry(format!("{key}:mode")).or_insert_with(|| (String::new(), modes[0].into(), String::new()));
+        if !modes.contains(&mode.1.as_str()) { mode.1 = modes[0].into(); }
+        if ui.button(&format!("New reference mode: {}", mode.1)).clicked {
+            let index = modes.iter().position(|candidate| *candidate == mode.1).unwrap_or(0);
+            mode.1 = modes[(index+1)%modes.len()].into();
+        }
+        let mode = mode.1.clone();
+        let mut fields = [String::new(), String::new(), "0".into(), "1".into()];
+        for (index, label) in ["Asset path (empty = internal)", "Prim path (empty = defaultPrim)", "Time offset", "Time scale"].into_iter().enumerate() {
+            let draft = values.entry(format!("{key}:{index}")).or_insert_with(|| (String::new(), fields[index].clone(), String::new()));
+            ui.label(label);
+            ui.text_input(&mut draft.1, label);
+            fields[index] = draft.1.clone();
+        }
+        let error = values.entry(format!("{key}:error")).or_default();
+        if ui.button("Insert reference into local opinion").clicked {
+            match insert_reference(local.as_ref(), &mode, &fields) {
+                Ok(operation) => {
+                    error.2.clear();
+                    send_edit(&bridge, &context, EditorEdit::ReferenceListOp { prim, operation });
+                }
+                Err(message) => error.2 = message,
+            }
+        }
+        if !error.2.is_empty() { for line in path_lines(&error.2) { ui.label(&line); } }
+    }))
 }
 
 fn reference_source_conflicts(baseline: &mut openusd::sdf::Reference, current: &openusd::sdf::Reference, fields: &[String; 4], dirty: bool) -> bool {
@@ -630,6 +704,50 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_creation_preserves_operations_and_undo() {
+        use super::insert_reference;
+        use openusd::sdf::{Reference, ReferenceListOp, Value};
+        let fields = ["payload_authoring_content.usda".into(), "/Ball".into(), "0".into(), "1".into()];
+        let existing = Reference { asset_path: "payload_authoring_content.usda".into(), prim_path: openusd::sdf::path("/Box").unwrap(),
+            custom_data: [("label".into(), Value::String("retained".into()))].into(), ..Default::default() };
+        for bucket in ["Explicit", "Prepend", "Append", "Add", "Delete", "Order"] {
+            let operation = insert_reference(None, bucket, &fields).unwrap();
+            assert!(insert_reference(Some(&operation), bucket, &fields).is_err());
+            let base = if bucket == "Explicit" { ReferenceListOp::explicit([existing.clone()]) }
+                else { ReferenceListOp::prepended([existing.clone()]) };
+            let changed = insert_reference(Some(&base), bucket, &fields).unwrap();
+            let inserted = match bucket {
+                "Explicit" => &changed.explicit_items, "Prepend" => &changed.prepended_items,
+                "Append" => &changed.appended_items, "Add" => &changed.added_items,
+                "Delete" => &changed.deleted_items, _ => &changed.ordered_items,
+            };
+            assert_eq!(inserted.last().unwrap().prim_path.as_str(), "/Ball");
+            assert_eq!(inserted.len(), if bucket == "Explicit" || bucket == "Prepend" { 2 } else { 1 });
+            if bucket == "Explicit" { assert_eq!(changed.explicit_items[0], existing); }
+            else { assert_eq!(changed.prepended_items[0], existing); }
+            assert_eq!(base.explicit, changed.explicit);
+        }
+        assert!(insert_reference(Some(&ReferenceListOp::explicit([])), "Prepend", &fields).is_err());
+        assert!(insert_reference(Some(&ReferenceListOp::default()), "Explicit", &fields).is_err());
+        assert!(insert_reference(None, "Unknown", &fields).is_err());
+        assert!(insert_reference(None, "Prepend", &["".into(), "".into(), "0".into(), "1".into()]).is_err());
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/reference_create.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(source.open_stage().unwrap());
+        let before = editor.stage().root_layer().export_to_string().unwrap();
+        editor.edit(usd_bevy::editor::EditorEdit::ReferenceListOp {
+            prim: "/Root".into(), operation: insert_reference(None, "Prepend", &fields).unwrap(),
+        }).unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        editor.undo().unwrap();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        editor.redo().unwrap();
+        assert_eq!(editor.stage().prim("/Root/Shape").unwrap().type_name().unwrap().as_deref(), Some("Sphere"));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
     #[test]
     fn reference_structure_edits_preserve_data_strength_and_undo() {
         use super::{change_reference_structure, ReferenceStructure};

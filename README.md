@@ -114,10 +114,12 @@ References also support complete authored list operations through
 explicit replacement preserve weaker composition according to their list rules.
 Malformed mixed operations and invalid entries reject before mutation. Reference
 customData is retained through USDA, USDC, USD and USDZ root exports, including
-snapshot-only reopening of a relocated package. The viewer can edit and remove
-local reference entries and reorder them within their existing list-op bucket.
+snapshot-only reopening of a relocated package. The viewer can create, edit and
+remove local reference entries and reorder them within their existing list-op bucket.
 Removing the last explicit entry retains an explicit-empty blocker; Clear removes
-the opinion instead. Entry creation and cross-bucket changes remain API-only.
+the opinion instead. Creation retains the current explicit/non-explicit mode and
+other entries, with asset/prim and time-mapping inputs. Cross-bucket changes to
+existing entries remain API-only.
 `EditorSnapshot::reference_opinions` retains contributing authored reference
 list operations in strength order, including customData, original spec paths,
 source layer identifiers and cumulative site offsets. Relative paths remain

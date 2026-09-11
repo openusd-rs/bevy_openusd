@@ -25,6 +25,30 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+The inspector now creates local reference entries, including on prims without
+an existing local opinion. The expandable form accepts asset/prim and time
+mapping fields; new opinions default to Prepend and allow all six list modes.
+Existing explicit opinions only allow explicit insertion, while non-explicit
+opinions retain their structure and offer the five non-explicit buckets. Insert
+preserves other entries/customData, rejects exact duplicates in the chosen bucket
+and invalid field values, and sends the checked undoable ReferenceListOp command.
+Draft storage is scoped by prim and resets on document/full-edit-target changes.
+
+Tests cover every insertion bucket, incompatible modes, duplicate/invalid input,
+retained data, creation on an empty prim, exact-text undo/redo and unchanged disk
+bytes. Native `reference_create.replay` enters a relative asset and `/Ball` on the
+empty `assets/reference_create.usda` fixture. Inspected
+`target/reference-create-closed-ui.png` is empty; inspected
+`target/reference-create-applied-ui.png` shows the orange sphere and the retained
+Prepend draft with identity mapping. Both capture guards pass
+(`/tmp/reference-create-{closed,applied}-capture.log`). Cross-bucket moves of
+existing entries, customData editing and native creation error/undo layouts
+remain open.
+
+All 66 viewer tests and check-all pass
+(`/tmp/reference-create-complete-{tests,check}.log`). The full workspace gate
+above predates this creation form and is not a full-workspace result for it.
+
 Local reference opinions now expose separate order/removal controls with asset
 and target labels. Earlier/Later move entries within their existing bucket;
 Remove retains the operation type, including explicit-empty blocking semantics.
@@ -42,7 +66,8 @@ orange sphere after `reference_order.replay`. Inspected
 `target/reference-remove-ui.png` shows only `/Ball`, its retained customData and
 the orange sphere after `reference_remove.replay` removes `/Box`. Capture logs
 are `/tmp/reference-order-capture.log` and `/tmp/reference-remove-capture.log`.
-Entry creation, cross-bucket moves and arbitrary customData editing remain open.
+Cross-bucket moves and arbitrary customData editing remain open; creation is
+covered above.
 
 Reference drafts now retain a typed whole-entry baseline in addition to field
 baselines. Any source reference change while fields are dirty, including changed
@@ -70,8 +95,8 @@ cannot operate after context replacement. Applying replaces only the selected
 entry in a cloned operation, retaining its bucket, other entries and customData,
 through the checked reference-list command. Input validation rejects invalid
 targets, missing asset-and-target pairs and non-finite/non-positive mappings.
-Entry creation and arbitrary customData editing remain open; order/removal
-controls are covered above.
+Arbitrary customData editing remains open; creation and order/removal controls
+are covered above.
 
 The regression retargets the fixture to Sphere, changes its mapping, preserves
 customData, undoes to the exact original reference and verifies unchanged disk

@@ -705,6 +705,8 @@ impl EditorSession {
         if muted {
             anyhow::ensure!(self.stage.root_layer().identifier() != identifier, "cannot mute the root layer");
             anyhow::ensure!(self.stage.edit_target().layer_identifier() != identifier, "cannot mute the active edit layer");
+            anyhow::ensure!(!self.stage.sub_layers(identifier).iter().any(|layer| layer == self.stage.edit_target().layer_identifier()),
+                "cannot mute a sublayer ancestor of the active edit layer");
         }
         if self.stage.is_layer_muted(identifier) == muted { return Ok(()); }
         if muted { self.stage.mute_layer(identifier); } else { self.stage.unmute_layer(identifier); }
@@ -1789,6 +1791,40 @@ def Xform "Model" (
         assert_eq!(bridge.view().unwrap().status, "Ready");
         let reopened = crate::UsdSource::new(&output, std::fs::read(&output).unwrap()).unwrap().open_stage().unwrap();
         assert_eq!(reopened.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Scope"));
+    }
+
+    #[test]
+    fn muting_ancestor_of_edit_layer_is_rejected_without_changes() {
+        let leaf = crate::UsdSource::snapshot("leaf.usda", &br#"#usda 1.0
+def Xform "Root" { def Cube "Shape" {} }
+"#[..]).unwrap();
+        let parent = crate::UsdSource::snapshot("parent.usda", &br#"#usda 1.0
+(subLayers = [@leaf.usda@])
+"#[..]).unwrap().with_dependency(&leaf).unwrap();
+        let source = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+(subLayers = [@parent.usda@])
+"#[..]).unwrap().with_dependency(&parent).unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        let layers = editor.stage().layer_stack();
+        assert_eq!(layers.len(), 3);
+        editor.set_edit_layer(&layers[2]).unwrap();
+        let before = editor.snapshot().unwrap();
+        let contents: Vec<_> = layers.iter().map(|id| editor.stage().layer(id).unwrap().export_to_string().unwrap()).collect();
+        assert!(editor.set_layer_muted(&layers[1], true).is_err());
+        let after = editor.snapshot().unwrap();
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.edit_target, before.edit_target);
+        assert!(after.muted_layers.is_empty());
+        assert!(!after.can_undo);
+        assert!(editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
+        for (id, text) in layers.iter().zip(contents) {
+            assert_eq!(editor.stage().layer(id).unwrap().export_to_string().unwrap(), text);
+        }
+        editor.set_edit_layer(&layers[0]).unwrap();
+        editor.set_layer_muted(&layers[1], true).unwrap();
+        assert!(!editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
+        editor.set_layer_muted(&layers[1], false).unwrap();
+        assert!(editor.stage().prim("/Root/Shape").unwrap().is_valid().unwrap());
     }
 
     #[test]

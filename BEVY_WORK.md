@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Protect active edit layers from ancestor muting
+
+The editor now rejects muting a layer whose sublayer stack contains the active
+edit target, before changing runtime participation. Direct-layer protection did
+not cover this case: the new three-layer regression failed against the previous
+implementation (`/tmp/muting-ancestor-before.log`). The guard is conservative
+when a layer occurs through multiple sublayer paths.
+
+The regression checks unchanged revision, edit target, authored layer texts,
+history and visible prim after rejection, then proves parent mute/unmute still
+works after switching the edit target to the root. All 55 ordinary editor tests
+pass (one native test ignored), and check-all passes
+(`/tmp/muting-ancestor-editor-tests.log`, `/tmp/muting-ancestor-check.log`).
+This is a model guard; no new UI layout or native screenshot is claimed.
+Ancestor exclusion during edit-target selection and retained history still
+needs separate coverage; this does not complete unsaved-state handling.
+
 ## Support documentation reconciliation
 
 The existing SUPPORT.md matrix retains its detailed rendering, packaging and

@@ -1,0 +1,13 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Mesh "Bowtie" {
+    point3f[] points = [(-0.0015,0.0182,-0.3236),(-0.0011,0.0182,-0.3296),(0.0256,0.0182,-0.3464),(-0.0015,0.0182,-0.3236),(0.0245,0.0182,-0.3402)]
+    int[] faceVertexCounts = [3,3]
+    int[] faceVertexIndices = [1,0,2,2,3,4]
+    uniform token subdivisionScheme = "catmullClark"
+    uniform token interpolateBoundary = "edgeAndCorner"
+}

@@ -56,6 +56,43 @@ as does `git diff --check`. This adds no GPU or non-Unix runtime evidence.
 
 ## Spot visual recheck after material fixes
 
+### All visible-mesh native comparison and bowtie witness
+
+The new `scripts/check_subdivision_meshes.sh` uses scene_report to enumerate
+mesh paths, optionally selects a literal prefix, isolates levels zero/one and
+compares each against the native tool without stopping at the first failure.
+It retains source hash, per-prim paths, logs, results.tsv and summary.txt.
+The triangle-only native comparator still uses Catmull-Clark edgeAndCorner;
+the script does not validate visibility, transforms or other subdivision rules.
+
+The 13 Spot `/spot/base/` meshes were checked at a4ad9f9. All positions match
+within 1.49012e-8. Nine meshes also match normals; each of the four lower legs
+has one normal mismatch of magnitude two. Full evidence remains in
+`target/spot-visible-native/` and `/tmp/spot-visible-native.log`. The gate fails
+with 13 meshes/four failures, rather than implying the prior base-only normal
+comparison covered every mesh.
+
+The comparator now prints up to eight mismatch witnesses. Lower-leg vertex 459
+has native normal (0,-1,0), Bevy (0,1,0), native tangent-cross length
+3.8370283332755939e-5: this is not a tiny numerical zero. Its two source triangles
+are (458,457,459) and (459,460,461), sharing only vertex 459. The current limit
+normal code rejects disconnected neighborhoods and retains its generated smooth
+normal fallback. Native OpenSubdiv returns a different direction for this
+non-manifold vertex; no production normal behavior was changed without resolving
+that semantic ambiguity.
+
+`assets/subdivision_bowtie.usda` preserves just those five local source points
+and two triangles, reproducing one mismatch at remapped vertex two with the same
+native cross length. Evidence: `target/bowtie-native-witness/`,
+`/tmp/bowtie-native-witness.log`, `/tmp/spot-leg-normal-mismatch.log`.
+The reusable gate passes the two connected/disconnected controls with a quoted
+output path (`target/connectivity-all-'quoted`, `/tmp/connectivity-all-native.log`).
+The updated native comparator builds through Make and passes its existing planar,
+orientation, preservation and invalid-input script
+(`/tmp/native-tool-witness-check.log`). New source fixtures and diagnostic tools
+do not change the renderer; the bowtie failure remains open for a per-fan normal
+semantics investigation. No new full Rust test run is claimed for this step.
+
 ### Isolated connectivity control
 
 Added `assets/subdivision_connectivity.usda`: two triangle cages with identical

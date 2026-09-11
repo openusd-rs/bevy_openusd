@@ -931,6 +931,24 @@ make --eval='check-connectivity:; @/bin/bash scripts/check_subdivision_connectiv
 This isolates topology-dependent gaps; it does not identify every seam in a
 production asset or authorize automatic welding of intentional boundaries.
 
+To compare every reported mesh under a literal prim-path prefix, retaining
+failures rather than stopping at the first mismatch:
+
+```bash
+make --eval='check-meshes:; @/bin/bash scripts/check_subdivision_meshes.sh target/compare-osd ../usd_collection/oems/spot_boston_dynamics/spot_base_urdf/spot.usdc target/NEW_SPOT_CHECK /spot/base/' check-meshes
+```
+
+This compares local-space, level-one triangle cages under the native tool's
+Catmull-Clark edgeAndCorner rules, not visibility, transforms, materials or other
+subdivision rules. The prefix is a selection filter, not a visibility test.
+Results include per-prim paths, isolation logs, native logs and a summary;
+zero selected meshes or any failure returns nonzero. Native normal comparisons
+print up to eight mismatching vertex indices and normal vectors.
+`assets/subdivision_bowtie.usda` is a known-failing two-triangle normal witness
+from Spot: matching positions, but opposite fallback/native normals at the
+shared vertex whose two incident triangles share no edge. This non-manifold
+normal case is unresolved, not excluded from the result.
+
 Both native checks require a new output directory and retain logs and generated
 assets on failure. The asset check additionally requires the collection; the
 connectivity fixture is included in this repository. These OpenSubdiv checks are

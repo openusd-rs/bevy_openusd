@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Whole-UR5 native subdivision audit
+
+Rebuilt scripts/compare_subdivision_reference.cpp against OpenSubdiv and ran
+check_subdivision_meshes.sh through Make on the current collection UR5. All 28
+reported mesh paths pass level-1 position comparison (1e-7 component tolerance)
+and limit-normal comparison (1e-5), including MeshLibrary, visual and collision
+meshes. Fresh probes, source hash, individual logs and results.tsv are retained
+in target/ur5-current-all-mesh-audit; summary.txt reports meshes=28 failures=0.
+The driver log is /tmp/ur5-current-all-mesh-audit.log.
+
+This extends the isolated-shoulder evidence to all reported UR5 mesh paths;
+it does not prove pixel parity, limit positions, arbitrary refinement levels,
+materials or transforms. Reinspection of the retained limit-bevy/limit-native
+shoulder images still shows rim/lower-band artifacts in both renderers.
+A known-good rendering of this asset has been requested before choosing between
+source-faithful behavior and an optional repair policy. No geometry was altered.
+
 ## Exclude retained warm-up GPU measurements
 
 The GPU timing collector now records its collection-start instant and ignores

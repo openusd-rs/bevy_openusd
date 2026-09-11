@@ -3,6 +3,34 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Curve width and normal reader foundation
+
+Added canonical `read::curves::{read_widths_at, read_normals_at}`. These decode
+composed object-space values at an optional finite time, prefer generic
+primvars over built-in attributes, preserve index arrays and interpolation,
+and use the existing constant-primvar inheritance lookup. Built-in interpolation
+defaults to vertex; generic primvars default to constant. Missing values remain
+absent rather than inventing a radius. Widths reject negative/nonfinite values;
+normals retain their authored length while rejecting nonfinite values. Invalid
+value types, interpolation metadata and index types/ranges report errors.
+
+These readers do not yet check curve-dependent cardinality, interpolate along
+a curve basis or emit surface geometry. Zero orientation vectors remain data
+for the future surface validator to handle. The line route remains unchanged;
+this is a prerequisite for tube/ribbon projection, not width rendering support.
+
+Initial focused tests pass (`/tmp/curve-width-reader-tests.log`): all five width
+fixture rows, ribbon normals, primvar override, constant inheritance, indexed
+values, forward/backward time sampling and source preservation. Final coverage
+also checks midpoint time interpolation, absent widths, default interpolation,
+negative/nonfinite widths, malformed overriding values and unnormalized versus
+nonfinite orientation normals. Broader inheritance/blocking and surface sampling
+semantics still need geometry-path acceptance.
+
+Validation: 546 ordinary workspace tests pass, 13 ignored; check-all, build and
+whitespace checks pass (`/tmp/curve-width-reader-{all-tests,check,build}.log`).
+No new rendered tube/ribbon or native image acceptance is claimed.
+
 ## Curve-width rendering baseline
 
 Added `assets/curve_widths.usda` with a fixed /Camera and five rows: constant

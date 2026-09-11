@@ -821,6 +821,12 @@ USD_CAPTURE_CAMERA=/Camera USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off 
 The local native Embree renderer rejects BasisCurves, so its black capture is
 not a reference for this fixture.
 
+The reusable `read::curves::read_widths_at` and `read_normals_at` readers preserve
+composed interpolation, indexing and time-sampled values with primvar precedence.
+They reject malformed data but leave topology-dependent cardinality, basis
+sampling and surface construction to the projection path; this does not yet
+change line rendering.
+
 Library applications can choose 1–64 samples per cubic segment:
 
 ```rust

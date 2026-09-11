@@ -517,6 +517,7 @@ pub struct EditorSnapshot {
     pub render_issues: Vec<String>,
     pub reflect_issues: Vec<crate::route::reflect::ReflectIssue>,
     pub relationships: Vec<(String, Vec<String>)>,
+    pub payload_opinions: Vec<PayloadOpinion>,
     pub material_warnings: Vec<String>,
     pub prims: Vec<String>,
     pub visibility: std::collections::HashMap<String, bool>,
@@ -530,6 +531,15 @@ pub struct EditorSnapshot {
     pub selected_loaded: Option<bool>,
     pub can_undo: bool,
     pub can_redo: bool,
+}
+
+/// Authored payload list operation at one contributing prim spec, strongest first.
+#[derive(Debug, Clone)]
+pub struct PayloadOpinion {
+    pub layer: String,
+    pub prim: openusd::sdf::Path,
+    pub offset: openusd::sdf::LayerOffset,
+    pub operation: openusd::sdf::PayloadListOp,
 }
 
 impl EditorSnapshot {
@@ -731,6 +741,17 @@ impl EditorSession {
         if let Some(path) = &self.selected {
             if !snapshot.prims.contains(path) { snapshot.selected = None; return Ok(snapshot); }
             let prim = self.stage.prim(openusd::sdf::path(path)?)?;
+            for site in prim.prim_stack()? {
+                let layer = self.stage.layer(&site.layer)
+                    .ok_or_else(|| anyhow::anyhow!("payload opinion layer is unavailable"))?;
+                if let Some(value) = layer.data().try_field(&site.path, "payload")? {
+                    if let Value::PayloadListOp(operation) = value.as_ref() {
+                        snapshot.payload_opinions.push(PayloadOpinion {
+                            layer: site.layer, prim: site.path, offset: site.offset, operation: operation.clone(),
+                        });
+                    }
+                }
+            }
             snapshot.asset_info = crate::read::geom::read_asset_info(&self.stage, prim.path())?;
             let material = if prim.type_name()?.as_deref() == Some("Material") {
                 Some(openusd::sdf::path(path)?)
@@ -801,6 +822,62 @@ fn variant_choices(stage: &Stage, path: &str) -> anyhow::Result<std::collections
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn payload_provenance_preserves_reference_and_variant_spec_mapping() {
+        use super::*;
+        let weak = crate::UsdSource::snapshot("weak.usda", &br#"#usda 1.0
+class Xform "Model" {}
+def Xform "Source" (
+    variants = { string choice = "a" }
+    prepend variantSets = "choice"
+) {
+    variantSet "choice" = {
+        "a" ( prepend payload = </Model> ) {}
+    }
+}
+"#[..]).unwrap();
+        let root = crate::UsdSource::snapshot("root.usda", &br#"#usda 1.0
+def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale = 2) ) {}
+"#[..]).unwrap().with_dependency(&weak).unwrap();
+        let mut editor = EditorSession::new(root.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let opinions = editor.snapshot().unwrap().payload_opinions;
+        assert_eq!(opinions.len(), 1);
+        assert!(opinions[0].layer.ends_with("weak.usda"));
+        assert_eq!(opinions[0].prim.as_str(), "/Source{choice=a}");
+        assert_eq!(opinions[0].offset, openusd::sdf::LayerOffset::new(10., 2.));
+        assert_eq!(opinions[0].operation.prepended_items[0].prim_path.as_str(), "/Model");
+    }
+
+    #[test]
+    fn payload_provenance_retains_weaker_ops_and_authored_anchors() {
+        use super::*;
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/payload_authoring.usda");
+        let source = crate::UsdSource::new(path, std::fs::read(path).unwrap()).unwrap();
+        let mut editor = EditorSession::new(source.open_stage().unwrap());
+        editor.select(Some("/Root".into())).unwrap();
+        let original = editor.snapshot().unwrap().payload_opinions;
+        assert_eq!(original.len(), 1);
+        assert!(original[0].layer.ends_with("payload_authoring_weak.usda"));
+        assert_eq!(original[0].prim.as_str(), "/Root");
+        assert!(!original[0].operation.explicit);
+        assert_eq!(original[0].operation.prepended_items[0].asset_path, "payload_authoring_content.usda");
+        assert_eq!(original[0].operation.prepended_items[0].prim_path.as_str(), "/Box");
+        editor.edit(EditorEdit::Payloads { prim: "/Root".into(), payloads: vec![] }).unwrap();
+        let blocked = editor.snapshot().unwrap().payload_opinions;
+        assert_eq!(blocked.len(), 2);
+        assert!(blocked[0].layer.ends_with("payload_authoring.usda"));
+        assert!(blocked[0].operation.explicit);
+        assert!(blocked[0].operation.explicit_items.is_empty());
+        assert_eq!(blocked[1].operation, original[0].operation);
+        editor.edit(EditorEdit::ClearPayloads { prim: "/Root".into() }).unwrap();
+        assert_eq!(editor.snapshot().unwrap().payload_opinions.len(), 1);
+        editor.undo().unwrap();
+        assert_eq!(editor.snapshot().unwrap().payload_opinions.len(), 2);
+        editor.select(None).unwrap();
+        assert!(editor.snapshot().unwrap().payload_opinions.is_empty());
+    }
+
     #[test]
     fn checked_open_rejects_edits_and_replacements_but_allows_current_context() {
         use super::*;

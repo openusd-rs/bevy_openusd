@@ -5,6 +5,26 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+Payload provenance is now exposed as `EditorSnapshot::payload_opinions` with
+typed canonical list ops and each contributing spec's source layer, original
+prim path, and cumulative layer offset, in prim-stack strength order. The
+inspector displays these beneath the replacement form, distinguishing explicit
+empty blockers and all list-op categories. It preserves authored asset strings;
+they remain anchored to the displayed source layer, not the active edit layer.
+These are authored opinions, including weaker opinions masked by an explicit
+replacement, not a final composed payload list or an automatic draft import.
+
+Regression coverage checks weaker relative paths, explicit-empty masking,
+clear/undo, selection removal, and a referenced variant spec with cumulative
+offset 10 / scale 2. Library tests pass 453 with 13 ignored; all 56 viewer tests
+and check-all pass (`/tmp/payload-provenance-lib-tests.log`,
+`/tmp/payload-provenance-final-{viewer-tests,check}.log`). Inspected native capture
+`target/payload-provenance-ui.png` shows the weaker layer, `/Root`, Prepend,
+relative content asset, and `/Box` with the blue cube still rendered; its guard
+passes (`/tmp/payload-provenance-capture.log`). The checked-in
+`payload_provenance.replay` supplies the readout interaction. Arbitrary list-op
+authoring controls and exhaustive multi-op native layout remain open.
+
 The `draft_apply.replay` extends conflict resolution through Keep, Set targets,
 and switching back to variant a. Inspected `target/draft-apply-ui.png` shows
 variant a with `/A/Child` and no conflict prompt; the capture guard passes

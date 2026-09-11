@@ -26,7 +26,7 @@ impl Drafts {
     }
 }
 
-fn path_lines(path: &str) -> Vec<String> {
+pub(crate) fn path_lines(path: &str) -> Vec<String> {
     path.split('\n').flat_map(|line| {
         let chars: Vec<_> = line.chars().collect();
         if chars.is_empty() { vec![String::new()] }
@@ -152,7 +152,9 @@ pub fn show(body: &mut PaneBody, snapshot: &EditorSnapshot, bridge: &EditorBridg
         }));
     }
     if let Some(payload) = crate::payload_editor::pod(snapshot, bridge, &drafts.3) {
-        body.add_normal("editor.payloads", "Payload authoring", "document", vec![payload]);
+        let mut payloads = vec![payload];
+        payloads.extend(crate::payload_editor::opinion_pods(snapshot));
+        body.add_normal("editor.payloads", "Payload authoring", "document", payloads);
     }
     for (set, options) in &snapshot.variant_choices {
         let key = format!("{path}:variant:{set}");

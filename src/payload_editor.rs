@@ -35,6 +35,29 @@ struct State {
 #[derive(Clone, Default)]
 pub struct PayloadDraft(Arc<Mutex<State>>);
 
+pub fn opinion_pods(snapshot: &EditorSnapshot) -> Vec<Pod> {
+    snapshot.payload_opinions.iter().enumerate().map(|(index, opinion)| {
+        let mut lines = vec![format!("Authored opinion {} (strongest first)", index+1)];
+        lines.extend(super::inspector::path_lines(&opinion.layer));
+        lines.extend(super::inspector::path_lines(opinion.prim.as_str()));
+        lines.push(format!("Site time: offset {}, scale {}", opinion.offset.offset, opinion.offset.scale));
+        let op = &opinion.operation;
+        if op.explicit && op.explicit_items.is_empty() { lines.push("Explicit empty list (blocks weaker payloads)".into()); }
+        for (name, entries) in [("Explicit", &op.explicit_items), ("Prepend", &op.prepended_items),
+            ("Append", &op.appended_items), ("Add", &op.added_items), ("Delete", &op.deleted_items), ("Order", &op.ordered_items)] {
+            for payload in entries {
+                lines.push(name.into());
+                lines.extend(super::inspector::path_lines(&format!("Asset: {}", if payload.asset_path.is_empty() { "(internal)" } else { &payload.asset_path })));
+                lines.extend(super::inspector::path_lines(&format!("Prim: {}", if payload.prim_path.is_empty() { "(defaultPrim)" } else { payload.prim_path.as_str() })));
+                if let Some(offset) = payload.layer_offset { lines.push(format!("Arc time: offset {}, scale {}", offset.offset, offset.scale)); }
+            }
+        }
+        Pod::new(Id::new(("editor.payload.opinion", index))).with_custom_units(lines.len(), move |ui| {
+            for line in lines { ui.label(&line); }
+        })
+    }).collect()
+}
+
 pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraft) -> Option<Pod> {
     let prim = snapshot.selected.as_ref()?.clone();
     if prim == "/" { return None; }

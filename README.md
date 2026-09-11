@@ -108,6 +108,12 @@ An empty replacement list blocks weaker payloads; clearing removes the local
 opinion and restores weaker composition. Entries allow empty defaultPrim targets
 or absolute prim paths, with finite offsets and positive finite time scales.
 The headless equivalents are `authoring::set_payloads` and `clear_payloads`.
+`EditorSnapshot::payload_opinions` exposes each contributing authored list op,
+strongest first, with its source layer, spec path and cumulative site time offset.
+The Payload authoring group displays these below the replacement form, including
+explicit-empty blockers and prepend/append/add/delete/order entries. Asset paths
+in this readout remain relative to the displayed source layer, not the edit layer;
+the readout is not the final composed payload list and does not populate the draft.
 `EditorSnapshot::checked_edit` creates a queued edit bound to the document,
 revision and complete edit-target mapping. Payload and property inspector edits use it;
 stale commands fail before authoring instead of being redirected to a new layer

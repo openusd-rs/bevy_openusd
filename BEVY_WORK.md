@@ -3,6 +3,39 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Embedded dome filtering enabled
+
+Sibling Mara commit 97f52d0 changes only Bevy-enabled native device creation:
+request up to six storage textures, bounded by adapter limits, when the adapter
+supports TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES, and enable that feature.
+Other hosts retain egui defaults. The limit regression passes, including the
+WebGL baseline; the viewer build and make check-all pass. Test execution uses
+Mara's own manifest (its lock resolves Bevy 0.19.0); the actual viewer build,
+check and GPU captures use this workspace's Bevy 0.19.1 resolution.
+
+Increasing storage limits alone exposed Bevy SSAO R16Float storage validation
+errors and left the viewport warming up. That failed image/log remains at
+target/embedded-ibl-enabled.png and embedded-ibl-desktop.viewer.log. Enabling
+supported adapter-specific formats removes those render validation errors.
+Inspected target/embedded-ibl-formats.png shows two warm-lit spheres with studio
+lights disabled and Dome maps attached in the Lighting pane. The inspected
+target/embedded-ibl-time10.png shows black sphere silhouettes at zero dome
+intensity with the same visible grid/chrome; companion viewport metadata proves
+scene_time_at_request=10. This is embedded warm-HDR on/off evidence, not general
+lighting parity or performance acceptance.
+
+The first attempted zero control, target/embedded-ibl-zero.png, is identical to
+the lit capture: USD_CAPTURE_TIME only applies when USD_SCREENSHOT is also set.
+The corrected time10 command supplies both capture outputs. No fixture changed.
+Desktop capture still intermittently returns black frames: the formats pair's
+first image fails inspection and its second passes; the corrected time10 pair
+passes. Neither the device change nor direct GPU capture fixes that stack issue.
+
+Logs: /tmp/embedded-ibl-final-test.log, /tmp/embedded-ibl-build-guarded.log,
+/tmp/embedded-ibl-check.log and /tmp/embedded-ibl-{formats,time10}-capture.log.
+The initial root-workspace test command rejected Mara as an external package;
+the successful targeted test uses --manifest-path ../mara/Cargo.toml via Make.
+
 ## Reconciled image-regression acceptance
 
 At 8ace56f, scripts/check_live_clocks.sh passed all 19 cases through Make with

@@ -1672,12 +1672,13 @@ undoing that clear (`0, 10, 25`). These are expected scene-sample keys; the defa
 value stays `5`. The replay does not save the fixture. Coordinates are layout
 dependent, so a successful capture alone does not establish the expected result.
 
-The current Mara host creates a GPU device with four storage textures per shader
-stage. Bevy's dome filtering requires at least six plus compute support, so the
-embedded viewer cannot currently filter dome maps on that device. The adapter
-reports `Unavailable` instead of waiting indefinitely. Standalone captures request
-a different device and have passed IBL checks; they do not prove embedded-host
-capability. The Mara GPU configuration hook remains a separate integration change.
+Mara's Bevy-enabled native host requests up to six storage textures per shader
+stage, bounded by adapter support, when adapter-specific texture formats are
+available. It also enables that format feature for Bevy's R16Float SSAO storage
+textures. Other hosts retain egui defaults. Dome filtering still requires six
+storage textures and compute support; unsupported devices report `Unavailable`.
+The embedded warm-HDR fixture has inspected direct-host GPU capture evidence;
+this does not establish general lighting fidelity or desktop-capture reliability.
 
 For opt-in runtime dome IBL, add
 `usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin` and attach

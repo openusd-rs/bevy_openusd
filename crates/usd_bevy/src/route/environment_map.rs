@@ -8,6 +8,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 /// The pole is +Y and longitude zero is +Z. Longitude decreases left to right.
 /// Source sRGB pixels are linearized before bilinear filtering. Tint is linear;
 /// exposure and world rotation belong on the environment-light component.
+/// Sampling uses pixel centers, periodic longitude and clamped latitude.
 /// Faces are power-of-two, at most 1024 pixels; sources are at most 16M pixels.
 /// The output is suitable for Bevy's `GeneratedEnvironmentMapLight`.
 pub fn latlong_cubemap(source: &Image, face_size: u32, tint: [f32; 3]) -> anyhow::Result<Image> {
@@ -75,13 +76,14 @@ fn face_direction(face: usize, u: f32, v: f32) -> Vec3 {
 fn sample(pixels: &[Vec3], width: u32, height: u32, direction: Vec3) -> Vec3 {
     let longitude = direction.x.atan2(direction.z);
     let latitude = direction.y.clamp(-1.0, 1.0).asin();
-    let x = (0.5 - longitude / std::f32::consts::TAU) * (width - 1) as f32;
-    let y = (0.5 - latitude / std::f32::consts::PI) * (height - 1) as f32;
+    let x = (0.5 - longitude / std::f32::consts::TAU) * width as f32 - 0.5;
+    let y = (0.5 - latitude / std::f32::consts::PI) * height as f32 - 0.5;
     let x0 = x.floor() as i64;
     let y0 = y.floor() as i64;
     let texel = |x: i64, y: i64| pixels[(y.clamp(0, height as i64 - 1) * width as i64 + x.rem_euclid(width as i64)) as usize];
-    texel(x0, y0).lerp(texel(x0 + 1, y0), x.fract())
-        .lerp(texel(x0, y0 + 1).lerp(texel(x0 + 1, y0 + 1), x.fract()), y.fract())
+    let (tx, ty) = (x - x.floor(), y - y.floor());
+    texel(x0, y0).lerp(texel(x0 + 1, y0), tx)
+        .lerp(texel(x0, y0 + 1).lerp(texel(x0 + 1, y0 + 1), tx), ty)
 }
 
 #[cfg(test)]
@@ -95,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn directional_hdr_fixture_places_blue_toward_positive_x() {
+    fn directional_hdr_fixture_places_blue_between_positive_x_and_z() {
         let source = Image::from_buffer(include_bytes!("../../../../assets/dome_directional.hdr"),
             bevy::image::ImageType::Extension("hdr"), bevy::image::CompressedImageFormats::NONE,
             false, bevy::image::ImageSampler::default(), bevy::asset::RenderAssetUsages::all()).unwrap();
@@ -103,8 +105,11 @@ mod tests {
         let cube = latlong_cubemap(&source, 1, [1.0; 3]).unwrap();
         let positive = cube.get_color_at_3d(0, 0, 0).unwrap().to_linear();
         let negative = cube.get_color_at_3d(0, 0, 1).unwrap().to_linear();
-        assert!(positive.blue > positive.red);
+        assert!((positive.blue - positive.red).abs() < 0.001);
         assert!(negative.red > negative.blue);
+        let cube = latlong_cubemap(&source, 4, [1.0; 3]).unwrap();
+        let diagonal = cube.get_color_at_3d(3, 1, 4).unwrap().to_linear();
+        assert!(diagonal.blue > diagonal.red);
     }
 
     #[test]
@@ -133,8 +138,8 @@ mod tests {
     fn usd_axes_poles_and_longitude_seam() {
         let pixels: Vec<_> = (0..4).flat_map(|y| (0..8).map(move |x| Vec3::new(x as f32, y as f32, 0.0))).collect();
         assert_eq!(sample(&pixels, 8, 4, Vec3::Z), Vec3::new(3.5, 1.5, 0.0));
-        assert_eq!(sample(&pixels, 8, 4, Vec3::X), Vec3::new(1.75, 1.5, 0.0));
-        assert_eq!(sample(&pixels, 8, 4, -Vec3::X), Vec3::new(5.25, 1.5, 0.0));
+        assert_eq!(sample(&pixels, 8, 4, Vec3::X), Vec3::new(1.5, 1.5, 0.0));
+        assert_eq!(sample(&pixels, 8, 4, -Vec3::X), Vec3::new(5.5, 1.5, 0.0));
         assert_eq!(sample(&pixels, 8, 4, Vec3::Y).y, 0.0);
         assert_eq!(sample(&pixels, 8, 4, -Vec3::Y).y, 3.0);
         for (face, axis) in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z].into_iter().enumerate() {
@@ -144,6 +149,29 @@ mod tests {
         let left = sample(&periodic, 8, 4, Vec3::new(-1e-6, 0.0, -1.0).normalize());
         let right = sample(&periodic, 8, 4, Vec3::new(1e-6, 0.0, -1.0).normalize());
         assert!((left - right).length() < 1e-5);
+    }
+
+    #[test]
+    fn longitude_seam_blends_distinct_edge_texels() {
+        let pixels: Vec<_> = (0..32).map(|i| Vec3::splat((i % 8) as f32)).collect();
+        for x in [-1e-6, 0.0, 1e-6] {
+            let value = sample(&pixels, 8, 4, Vec3::new(x, 0.0, -1.0).normalize());
+            assert!((value.x - 3.5).abs() < 1e-4, "seam value: {value:?}");
+        }
+    }
+
+    #[test]
+    fn latlong_pixel_centers_recover_source_texels() {
+        let pixels: Vec<_> = (0..32).map(|i| Vec3::new((i % 8) as f32, (i / 8) as f32, 0.0)).collect();
+        for y in 0..4 {
+            for x in 0..8 {
+                let longitude = (0.5 - (x as f32 + 0.5) / 8.0) * std::f32::consts::TAU;
+                let latitude = (0.5 - (y as f32 + 0.5) / 4.0) * std::f32::consts::PI;
+                let direction = Vec3::new(latitude.cos() * longitude.sin(), latitude.sin(), latitude.cos() * longitude.cos());
+                let value = sample(&pixels, 8, 4, direction);
+                assert!((value - pixels[y * 8 + x]).length() < 1e-5, "pixel ({x}, {y}): {value:?}");
+            }
+        }
     }
 
     #[test]

@@ -3,6 +3,31 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Latitude-longitude sampling fidelity
+
+The environment converter previously mapped normalized coordinates onto
+`width-1`/`height-1`, treating boundary pixel centers as image edges. A regression
+with distinct first/last columns failed before the fix: the seam approached
+7 on one side and 0 on the other instead of blending to 3.5. The converter now
+uses pixel-center coordinates, periodic longitude and clamped latitude, with
+nonnegative interpolation weights even in the negative half-texel interval.
+This agrees with [OpenImageIO's pixel-center sampling contract](https://github.com/AcademySoftwareFoundation/OpenImageIO/blob/main/src/include/OpenImageIO/imagebuf.h).
+
+Seven converter tests and six dome-environment tests pass, including seam
+continuity, recovery of every source texel center, poles, HDR and linear-space
+filtering. Logs: /tmp/dome-seam-{before,after,environment}.log. The 4x2 fixture's
+blue texel is centered between +X and +Z, not on +X; its directional test now
+checks that actual location and the equal red/blue blend on +X.
+
+Standalone GPU capture target/dome-seam-showcase.png at time 30 was inspected:
+the scene is lit and the metallic sphere has directional red/blue reflections.
+Metadata records Attached, one environment generation and zero active generators.
+/tmp/dome-seam-capture.log and /tmp/dome-seam-check.log record capture/check-all
+success. This validates the converter and standalone path, not the Mara device
+configuration or full native-reference fidelity.
+The full usd_bevy library gate passes 483 tests with 15 ignored native/file-watcher
+tests in /tmp/dome-seam-library.log.
+
 ## Release animation projection and route attribution
 
 editor_benchmark supports opt-in USD_PROFILE_ROUTES. It resets cumulative

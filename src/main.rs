@@ -212,7 +212,7 @@ impl WindowApp for UsdApp {
         let framing = framing::FrameRequest::default();
         let framing_bridge = framing.clone();
         let bevy_view = mara_bevy::MaraBevyViewport::with_render_state_and_content(
-            ctx.gpu(),
+            ctx.__internal_render_state(),
             move |app: &mut App| {
                 configure_usd_app(app, bridge.clone());
                 app.insert_resource(framing_bridge.clone());

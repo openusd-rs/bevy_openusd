@@ -3,6 +3,35 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reconciled native prototype and sharing acceptance
+
+At 4a4f502, three existing runnable programs were inspected and rerun through
+Make with offline Cargo. instanceable_sources verifies upstream is_instance and
+prototype identities, retimed sample extents, shared versus distinct Mesh handles,
+stable proxy entities/runtime names, and complete root cleanup. It passes.
+
+source_benchmark 128 runs three alternating one-root/four-root samples. Each
+root has 128 native USD instances. All samples report one initial Mesh and one
+initial StandardMaterial for 128 or 512 projected mesh entities. The program
+also asserts source replacement updates geometry while preserving each proxy
+entity, runtime tag and the shared updated Mesh handle across roots.
+
+projection_benchmark 128 runs three alternating uncached/cached pairs. Asset
+counts are 129 meshes/materials uncached versus one of each cached; retained
+cache payload after editing is 1824 bytes. The edit assertion verifies changed
+geometry and stable proxy entities. CPU projection measures 181.188–182.335ms
+uncached versus 186.262–190.946ms cached in this debug run, so this is allocation
+sharing evidence, not a speedup claim. The first uncached stage-open sample is
+17.294ms versus roughly 1.55ms later; it remains in the raw log.
+
+Logs: /tmp/acceptance-instanceable-example.log,
+/tmp/acceptance-source-benchmark.log and
+/tmp/acceptance-projection-benchmark.log. These headless captured-Cube measurements
+exclude GPU execution and do not certify interactive performance or arbitrary
+asset workloads. They complete the original native prototype/instance projection
+with measured asset-sharing requirement; GPU fidelity/performance remains a
+separate unchecked requirement. No production code changed in this step.
+
 ## Reconciled source and instance acceptance
 
 At 93f34ba, the first four original checklist requirements were checked against
@@ -3035,7 +3064,7 @@ changed in this integration-regression step.
       variants/payloads, provenance, undo/redo and explicit save operations.
 - [ ] Typed/reusable authoring API and safe snippet composition.
 - [ ] GPU deformation and environment lighting with fidelity/performance evidence.
-- [ ] Native prototype/instance projection with measured asset sharing.
+- [x] Native prototype/instance projection with measured asset sharing.
 - [ ] Real AssetServer, reload, multi-instance, save/reopen and image regressions.
 - [ ] Runnable showcase and documented support/approximation matrix.
 

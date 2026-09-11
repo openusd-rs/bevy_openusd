@@ -379,6 +379,338 @@ Validation: 518 ordinary tests pass, 13 ignored; check-all, viewer build and
 git diff --check pass. Logs: `/tmp/normal-fans-{all-tests,check,build}.log`.
 Full Bevy rendering acceptance remains open.
 
+## Native OpenSubdiv position and limit-tangent check
+
+Compared the existing UR5 shoulder cage and level-1 isolation files using the
+installed OpenSubdiv 3.7.0 CPU library. The retained diagnostic is
+`scripts/compare_subdivision_reference.cpp`; README has the build/run command.
+It uses Catmull-Clark, edge-and-corner boundary interpolation, one uniform level,
+double-precision primvar weights and float-rounded input positions. Child IDs
+are explicitly mapped through native vertex/face/edge child accessors rather
+than assuming OpenSubdiv shares our point ordering.
+
+All 46,817 refined positions match within an absolute per-component tolerance
+of `1e-7`. Maximum error is `3.72529e-9` at vertex 10092. The folded fan's
+vertex 17054 is also reproduced: native position
+(-0.0142817469314,-0.0560196364919,-0.0598999559879).
+Thus this fixture does not support changing our finite subdivision positions.
+This is one uncreased triangle cage, not general subdivision parity.
+
+Native limit evaluation at the same vertex yields tangent cross-product
+(-0.0000577627031206,-0.000217048956678,-0.00000837977029767), which is nonzero
+despite our finite triangle-angle normal cancelling. This distinguishes the
+limit-surface derivative from the finite polygon-fan average. It motivates a
+limit-normal rendering experiment, not an arbitrary replacement axis, and does
+not establish visual acceptance or validate derivative orientation yet.
+
+Validation: compiled the standalone diagnostic with `-Wall -Wextra` through
+Make, then ran the full position comparison and five requested limit witnesses.
+Log: `/tmp/ur5-osd-limit-compare-final.log`. No viewer/Rust production code changed;
+the prior 518-test Rust result was not rerun for this native diagnostic.
+Full Bevy rendering acceptance remains open.
+
+## Native limit-normal rendering experiment
+
+Extended the native reference diagnostic with `--normal-probe NEW_DIRECTORY`.
+It retains the level-1 probe's triangle indices and camera and writes one file
+replacing only normals, plus a second replacing both normals and positions with
+native limit evaluations. Both remain polygon geometry. All 46,817 positions
+still pass the independent comparison before output is allowed. There are 6,245
+zero native limit normals, all unused: zero referenced normals is the relevant
+result. No viewer normal-generation policy has changed.
+
+Five images were rendered and inspected:
+
+- `target/ur5-limit-normal-probe/finite-bevy.png` and `finite-native.png`:
+  current finite normals; front-cap streaks, rippled rim and lower-edge bands.
+- `target/ur5-limit-normal-probe/limit-bevy.png` and `limit-native.png`:
+  native limit normals on unchanged positions; front-cap streaks disappear,
+  but the rim and lower-edge artifacts remain in both renderers.
+- `target/ur5-limit-surface-probe/surface-bevy.png`: native limit positions
+  and normals; upper silhouette is less jagged, but the rim/bands remain.
+
+Bevy captures use forward rendering, shadows off, `/Camera`, time 0, 1280x720;
+all returned CAPTURE_OK. Native captures use Embree, GPU disabled, `/Camera`,
+image width 1280, and report unavailable GPU color correction. Lighting and
+color processing differ, so cross-renderer observations are qualitative.
+Logs: `/tmp/ur5-{finite,limit}-normal-{bevy,native}.log`,
+`/tmp/ur5-limit-surface-{probe,bevy}.log`.
+The normals-only output is byte-identical to the source after excluding the
+normal array. Repeated generation gives identical normals-only output.
+
+The new `scripts/check_subdivision_reference.sh` passes through Make against
+the compiled native tool: an analytic single-triangle cage checks +Z normal
+orientation and child positions, non-normal fields stay unchanged, and missing
+arguments/files, count mismatch, negative witnesses and existing output
+directories fail with code 2. Signed zero is ignored in the orientation check.
+The native tool compiles with `-Wall -Wextra`; `git diff --check` passes.
+Rust production code is unchanged; the Rust suite was not rerun here.
+
+Limit normals are a supported direction for fixing the cap streaks, not a full
+visual repair. Remaining rim/band artifacts require higher-resolution native
+surface comparison and a representative-asset check before integration.
+
+## Native subdivision complexity control
+
+Rendered the same isolated, unauthored-normal shoulder cage through native
+Embree subdivision, rather than sending it our pre-refined polygon mesh.
+`target/ur5-native-subdivision-control.usda` contains this complete wrapper:
+
+```usda
+#usda 1.0
+(
+    subLayers = [@ur5-normal-isolation/without_normals.usda@]
+)
+over "Probe" {
+    uniform token subdivisionScheme = "catmullClark"
+    token interpolateBoundary = "edgeAndCorner"
+}
+```
+
+For each of `low`, `medium`, `high`, `veryhigh`, the command was:
+
+```bash
+make capture-reference ARGS='--renderer Embree --disableGpu --camera /Camera --complexity LEVEL --imageWidth 1280 target/ur5-native-subdivision-control.usda target/ur5-native-subdivision-LEVEL.png'
+```
+
+All four commands completed and all four images were inspected. Low shows a
+closed front cap and smoother rim than our level-1 finite polygon controls.
+Medium, high and veryhigh instead show a large triangular hole-like region
+through the front cap, plus lower-side bands. This is not a clean high-detail
+reference and does not prove the asset invalid or isolate an Embree bug.
+No equivalence between these named complexity settings and our finite levels
+has been established. Logs: `/tmp/ur5-native-subdivision-LEVEL.log`.
+
+Thus raising native detail is not a demonstrated repair or an unconditional
+acceptance oracle. Limit-normal integration still needs analytic fixtures and
+native derivative comparisons independently of these problematic cap renders.
+The four renders and wrapper are diagnostic artifacts only; no production
+code changed, and no Rust gates were rerun for this evidence update.
+
+## Uncreased Catmull-Clark limit normals
+
+`crates/usd_bevy/src/subdivision_normals.rs` evaluates ordered one-ring limit
+tangents for smooth interior and boundary vertices after finite refinement.
+The normal is the normalized tangent cross-product, with left-handed orientation
+applied once. Regular and extraordinary valences are supported; disconnected
+fans retain finite-mesh normals, and unused points remain zero. Positions, UVs,
+subsets and authored source data are unchanged.
+
+The production route applies this to uncreased Catmull-Clark meshes without
+holes, using edge-only or edge-and-corner boundary interpolation. Authored crease
+or corner indices, holes and boundary-none keep the existing finite-normal path;
+bilinear behavior is unchanged. This does not claim complete limit-surface
+support, GPU subdivision or crease-normal parity.
+
+The native diagnostic's new `--compare-normals` mode evaluates OpenSubdiv
+derivatives on exactly the same refined float positions as Rust. Across all
+46,817 UR5 shoulder vertices, zero normals exceed component tolerance `1e-5`;
+maximum component error is `5.94309e-8`. The probe now reports zero invalid
+referenced normals. Log: `/tmp/ur5-rust-limit-compare-rounded.log`.
+An initial comparison used native double-precision refined positions instead
+and had 5,988 mismatches (maximum 0.00307778); the small position discrepancies
+are amplified by nearly cancelling derivatives. That failed comparison is
+retained in `/tmp/ur5-rust-limit-compare.log`, not hidden by loosening tolerance.
+
+Analytic tests exercise planar orientation across scales and interior/boundary
+valences, and nonplanar invariance under cyclic ring ordering. The existing
+left-handed primvar/subset refinement test now checks generated -Z vertex normals
+instead of expecting absent normals. The first full test run failed only on that
+obsolete absent-normal assertion; its log is `/tmp/limit-normals-all-tests.log`.
+The native standalone fixture check passes with derivative comparison enabled.
+
+Final validation: 520 ordinary tests pass, 13 ignored; check-all, viewer build
+and `git diff --check` pass. Logs: `/tmp/limit-normals-all-tests-final.log`,
+`/tmp/limit-normals-{check,build}.log`. Inspected
+`target/ur5-rust-limit-normals/rust-bevy.png`: front-cap streaks disappear while
+the known rim and lower-edge bands remain. Also inspected the production route
+on `target/ur5-limit-normals-full-bevy.png`: the complete robot remains visible,
+cap surfaces are smooth, and substantial cylinder/rim striping still remains.
+Both captures report CAPTURE_OK. The full-scene metadata confirms subdivision
+level 1, forward renderer, time 0, 31 visible mesh entities and the authored
+`/__ReferenceCamera`; shadows were disabled. Logs:
+`/tmp/ur5-rust-limit-bevy.log`, `/tmp/ur5-limit-normals-full-bevy.log`.
+This is a bounded production shading improvement, not full asset fidelity.
+
+## Two-asset native limit-normal regression
+
+Added `scripts/check_subdivision_assets.sh`, invoked through Make as documented
+in README. It regenerates cage and level-1 probes from the UR5 shoulder and Spot
+base, records each source SHA-256 and checks positions plus limit normals using
+the independently compiled OpenSubdiv diagnostic. A new output directory is
+required and failure artifacts remain intact. No SDK or collection download is
+performed, and the gate is separate from the ordinary Rust test suite.
+
+The completed gate at `target/subdivision-native-regression-final` reports:
+
+| Mesh | Refined vertices | Max position component error | Max normal component error | Normal mismatches |
+| --- | ---: | ---: | ---: | ---: |
+| UR5 shoulder | 46,817 | 3.72529e-9 | 5.94309e-8 | 0 |
+| Spot base | 8,292 | 1.49012e-8 | 5.89307e-8 | 0 |
+
+Log: `/tmp/subdivision-native-assets-final.log`; it ends with
+SUBDIVISION_ASSET_CHECK_OK. The initial script attempt incorrectly passed level
+0 explicitly to a tool whose optional level accepts only 1..6; the script now
+omits that argument for the cage. Original failure artifacts remain in
+`target/subdivision-native-regression` and `/tmp/subdivision-native-assets.log`.
+
+Also rendered and inspected `target/spot-limit-normals-full.png` against the
+previous `target/spot-material-subdiv1.png`. The whole robot is visible in both;
+the source-associated faceting/seams remain, without an obvious large visual
+regression at this framing. This is not pixel-equivalence or full Spot fidelity.
+New metadata confirms 13 visible meshes, subdivision level 1, time 0, eye
+(1.6,0.8,1.8), forward rendering and CAPTURE_OK. Shadows were disabled.
+Log: `/tmp/spot-limit-normals-full.log`.
+No Rust production code changed in this extension; the prior 520-pass/13-ignored
+suite was not rerun. `git diff --check` passes.
+
+## Exact regular limit-tangent weights
+
+Added a regression for a collapsed regular interior fan with edge offsets
+`[X, Z, X, Y]` and zero diagonal offsets. Its exact first limit tangent is zero,
+so it has no defined unit normal. The generic cosine formula instead produced
+`(0,-7.347880794884119e-16,2.4492935982947064e-16)`, which could be normalized
+into a spurious normal after crossing with the other tangent. The regression
+failed before the fix: `/tmp/limit-normal-collapsed-before.log`.
+
+The regular valence-four branch now uses exact integer edge/diagonal weights,
+consistent with the native reference's regular case, rather than computing
+cosines of multiples of pi/2. Extraordinary and boundary formulas are unchanged.
+No epsilon threshold or arbitrary fallback normal was added.
+
+Validation: 521 ordinary tests pass, 13 ignored; check-all, viewer build and
+`git diff --check` pass. Logs: `/tmp/limit-normal-exact-{tests,check,build}.log`.
+Regenerated both collection probes in `target/subdivision-native-exact-regression`:
+UR5 and Spot still have zero native normal mismatches, with maximum component
+errors 5.94309e-8 and 5.89307e-8 respectively. The native gate completes with
+SUBDIVISION_ASSET_CHECK_OK in `/tmp/subdivision-native-exact-assets.log`.
+No new screenshot-based improvement is claimed for this degeneracy fix.
+
+## Limit normals after authored sharpness decays
+
+Normal selection now checks whether crease/corner sharpness is fully decayed
+after the selected number of refinement levels, rather than checking whether
+crease/corner index arrays were authored at all. Explicit zero sharpness is
+equivalent to absent sharpness. Values at or below the refinement level have
+decayed to zero; permanent sharpness and values still above the level retain the
+existing finite-normal treatment. Hole and boundary-none exclusions are unchanged.
+
+The cube regression first demonstrated the old behavior: zero crease sharpness
+produced no generated normals while the identical uncreased surface had limit
+normals. Log: `/tmp/decayed-normal-before.log`. The extended regression checks
+exact zero/absent equivalence for edges and corners, fractional-sharpness unit
+outward normals, and the 1.01 transition (finite at level 1, limit at level 2).
+The existing permanent-crease face-varying and left-handed assertions remain.
+
+Validation: 521 ordinary tests pass, 13 ignored; check-all, viewer build and
+`git diff --check` pass. Logs: `/tmp/decayed-normal-{tests,check,build}.log`.
+Four level-1 forward/shadows-off captures were inspected:
+`target/decayed-normal-{smooth,zero,fractional,hard}.png`. They use eye (3,2,4)
+and target (0,0,0); the crease fixture samples times 0, 1 and 3 for zero, 0.5 and
+permanent sharpness respectively. All report CAPTURE_OK. Fractional sharpness
+retains smooth shading; permanent creases retain flat face normals. Zero
+sharpness and the uncreased cube are pixel-identical across 921,600 pixels at
+strict RGB tolerance 0. Logs: `/tmp/decayed-normal-{smooth,zero,fractional,hard}.log`
+and `/tmp/decayed-normal-image-compare.log`.
+Remaining nonzero sharpness still uses the documented finite-normal path;
+this does not implement full semi-sharp limit derivatives.
+
+## Live crease-normal layout transition gate
+
+Added `subdivision_creases` to `scripts/check_live_clocks.sh`. At subdivision
+level 1, two existing roots start at independent clocks 1 and 3, then reverse
+to 3 and 1 after 30 ready frames. This changes one mesh from decayed-sharpness
+vertex normals to permanent-crease face-varying normals, and the other in the
+opposite direction. The final image is compared with fresh roots at 3/1.
+Per-case subdivision settings are reset to avoid affecting the other cases.
+
+All 18 GPU cases pass in `target/live-subdivision-crease-regression`;
+log: `/tmp/live-subdivision-crease-regression.log`. The new case has zero changed
+pixels out of 921,600 at strict RGB tolerance 0. Metadata confirms two visible
+meshes, subdivision level 1, final clocks [3,1], live reversal after frame 30,
+and no reversal for the fresh reference. Both new PNGs were inspected: the sharp
+cube and rounded smoothly shaded shape are visible and agree. This checks final
+state after normal-layout transitions, not transient frame pacing or performance.
+
+README now describes the 18-case suite accurately: sixteen strict comparisons
+and two normal-material comparisons with tolerance 1. No Rust production code
+changed here, so the prior 521-pass/13-ignored unit suite was not rerun.
+`git diff --check` passes. Broader rendering and independent-instance acceptance
+remain open beyond this regression.
+
+## Explicit constant texture coordinates
+
+The UV graph reader now samples constant coordinate values at graph terminals,
+including direct texture inputs, sampled Material interfaces and inputs beneath
+`UsdTransform2d`. Float2/double2 values become zero-scale affine transforms, so
+all mesh UVs select the authored coordinate. Downstream transforms still compose
+in order. Wrong types, non-finite transforms and differing per-texture transforms
+remain explicit errors. Unauthored coordinate terminals retain the current
+implicit mesh-UV behavior; this is not full coordinate-graph or UV-set support.
+
+The focused regression first failed because a direct authored constant yielded
+no UV transform: `/tmp/constant-uv-before-value.log`. The initial test compile
+also exposed that Attribute::set_at requires a TimeCode, not a raw float; its
+failed log is `/tmp/constant-uv-before.log`. Tests now cover direct constants,
+sampled interfaces, transform composition, float/double values, wrong types and
+double-to-float overflow. Fixture tests check every deliberately varying mesh UV
+at endpoints, intermediate times and a return to time zero.
+
+`examples/uv_transform_fixture.rs` now generates `constant_coordinates.usda`;
+the independent reference retains explicit sampled mesh UVs instead of using
+constant shader coordinates. `uv_constant` extends the live-clock suite with
+two roots reversing 0/10 to 10/0. The behavior follows the explicit `st` input
+described by the [USD Preview Surface specification](https://openusd.org/dev/spec_usdpreviewsurface.html).
+
+Validation: 522 ordinary tests pass, 13 ignored; check-all, viewer build and
+`git diff --check` pass. Logs: `/tmp/constant-uv-{tests,check,build}.log`.
+All 19 GPU live-clock cases pass in `target/live-constant-uv-regression`, logged
+in `/tmp/live-constant-uv-regression.log`. Both new `uv_constant` images were
+inspected: the two panels each have a uniform sampled color despite varying
+mesh UVs. Live and independent-reference images match all 921,600 pixels at
+strict RGB tolerance 0 after reversing clocks. This validates the constant
+coordinate path, not arbitrary coordinate shaders or named UV-set selection.
+
+## Native gate path quoting
+
+The collection regression's nested Make invocation now uses shell-escaped argv
+and doubles dollar signs for Make expansion, matching the live-clock runner.
+Previously an apostrophe in an output path caused an unterminated shell quote
+before the first probe could run; `/tmp/native-quoted-before.log` and
+`target/native-'quoted-before/ur5-0.log` preserve that failure.
+
+Both native asset comparisons pass under an apostrophe-containing directory
+(`target/native-'quoted-final`) and a directory containing spaces, a literal
+dollar sign and double quotes (`target/native $literal "double"`). Logs:
+`/tmp/native-quoted-final.log` and `/tmp/native-dollar-final.log`. Each ends with
+SUBDIVISION_ASSET_CHECK_OK, with unchanged position/normal comparison errors.
+No Rust production code changed; ordinary/GPU suites were not rerun for this
+shell-only repair. `git diff --check` passes.
+
+## Distinct-clock editor retention benchmark
+
+Extended `editor_benchmark` with `seek-unique`: four existing warmup updates,
+then 1,000 distinct measured clocks in (0,10]. Added process RSS before/after
+seeking, post-update peak asset counts, and final ProjectionCache entries/payload.
+These are not allocation counts, peak RSS or GPU memory. Clock/Ready/document
+identity checks remain outside the measured App::update interval.
+
+Three-sample release runs on the morph-tangent fixture show 2,004 retained mesh
+assets in CPU mode and 3,004 in GPU-prepared mode after distinct clocks, versus
+8 and 10 for repeated clocks. The cache owns 2,003 and 3,004 entries respectively.
+Its 8,192-entry/256-MiB bounds were confirmed in current source; neither bound is
+reached here, so this is not an unbounded-leak finding. Full results, commands,
+scope and limitations are in `benchmarks/unique-clock-retention.md`.
+
+Four targeted benchmark tests pass in debug and release, including an actual
+1,000-seek editor run; all twelve measured release samples preserve document
+identity and exact clocks. Logs: `/tmp/unique-seek-tests-final.log`,
+`/tmp/unique-seek-release-tests.log`,
+`/tmp/editor-{cpu,gpu-prepared}-{seek,seek-unique}-final.log`.
+No production projection/cache behavior changed. The full ordinary/GPU suites
+were not rerun for this benchmark-only extension. `git diff --check` passes.
+Streaming retention policy and broader performance acceptance remain open.
+
 ## Acceptance checklist
 
 - [ ] Source-preserving asset loading without temporary files, including USDZ.

@@ -64,6 +64,12 @@ def Material "Material" {{
         std::fs::write(directory.join(if reference { "reference.usda" } else { "mapped.usda" }), text)?;
     }
     let mapped = std::fs::read_to_string(directory.join("mapped.usda"))?;
+    let constant = std::fs::read_to_string(directory.join("reference.usda"))?
+        .replace("def Material \"Material\" {", "def Material \"Material\" {\n    float2 inputs:coordinate.timeSamples = {0: (0.25,0.75), 10: (0.375,0.375)}")
+        .replace("float2 inputs:st.connect = </Material/Reader.outputs:result>", "float2 inputs:st.connect = </Material.inputs:coordinate>")
+        .replace("texCoord2f[] primvars:st = [(0.25,0.75)] (interpolation = \"constant\")\n    texCoord2f[] primvars:st.timeSamples = {0: [(0.25,0.75)], 10: [(0.375,0.375)]}",
+            "texCoord2f[] primvars:st = [(0,0),(1,0),(1,1),(0,1)] (interpolation = \"vertex\")");
+    std::fs::write(directory.join("constant_coordinates.usda"), constant)?;
     let interfaces = mapped.replace("def Material \"Material\" {", r#"def Material "Material" {
     float2 inputs:move.timeSamples = {0: (0,0.5), 10: (0.75,0.25)}
     float2 inputs:size.timeSamples = {0: (1,1), 10: (0.5,1.5)}
@@ -212,8 +218,16 @@ fn fixture_samples_match_explicit_uv_endpoints() {
     };
     let mapped = open("mapped.usda");
     let interfaces = open("interface_mapped.usda");
+    let constant = open("constant_coordinates.usda");
     let reference = open("sampled_reference.usda");
     for time in [0.0, 2.5, 5.0, 7.5, 10.0, 0.0] {
+        let read_constant = usd_bevy::read::shade::read_preview_material_at(&constant, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
+        let constant_mesh = usd_bevy::read::geom::read_mesh_at(&constant, &openusd::sdf::path("/Quad").unwrap(), Some(time)).unwrap().unwrap();
+        assert_eq!(constant_mesh.uvs.as_ref().unwrap().interpolation, usd_bevy::read::geom::Interpolation::Vertex);
+        let expected = Vec2::new(0.25+0.125*time as f32/10.0,0.75-0.375*time as f32/10.0);
+        for uv in constant_mesh.uvs.unwrap().values {
+            assert!(read_constant.uv_transform.unwrap().transform_point2(uv.into()).abs_diff_eq(expected,1e-6));
+        }
         let read = usd_bevy::read::shade::read_preview_material_at(&mapped, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
         let transform = read.uv_transform.unwrap();
         let interface = usd_bevy::read::shade::read_preview_material_at(&interfaces, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();

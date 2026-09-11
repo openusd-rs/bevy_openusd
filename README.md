@@ -332,7 +332,7 @@ The subsequent [reload comparison](benchmarks/reload-animation.md) measures redu
 CPU reload cost from skipping an unused animation-index scan, with clock-isolation
 regressions. It does not establish GPU or frame-rate improvements.
 
-`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek]` measures the actual editor Open path and retained
+`editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-unique]` measures the actual editor Open path and retained
 mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
 includes file reading and texture decoding, but excludes GPU work and the UI:
 
@@ -348,8 +348,22 @@ each update, then reports nearest-rank median/p95/max `App::update` duration and
 post-seek retained payloads. Command enqueue and result validation are outside the
 timer. GPU morph entity counts distinguish prepared morphs from CPU fallback.
 These are headless editor update timings, not GPU frame latency or VRAM use.
+`seek-unique` instead measures 1,000 distinct clocks from 0.01 through 10 after
+the same four warmup updates. Distinct measured clocks do not guarantee cache
+misses. Additional columns record peak mesh/material/image asset counts sampled
+after updates, final mesh-cache entries/payload, and process RSS before/after
+seeking. RSS is Linux `/proc/self/status` VmRSS in bytes or `NA` when unavailable;
+it includes the whole process and is not an allocator count, peak RSS or VRAM.
+Asset-count sampling and RSS reads are outside the update timer.
+
+```sh
+make run RUN_WITH= CARGO='cargo --offline' APP_TARGET='--release --example editor_benchmark' ARGS='assets/morph_tangent_normals.usda 3 gpu-prepared seek-unique'
+```
+
 The initial [morph-tangent seek measurements](benchmarks/morph-tangent-seek.md)
 record debug and release CPU/GPU-prepared runs with explicit limitations.
+The [distinct-clock retention baseline](benchmarks/unique-clock-retention.md)
+records cache growth that the repeated-clock workload does not expose.
 
 The default CPU mode evaluates deformation on the CPU. `gpu-prepared` enables
 GPU deformation routing and measures its retained CPU-side mesh/morph payloads;
@@ -812,6 +826,57 @@ nonmanifold edges and inconsistent winding, and count disconnected fans without
 position welding. Zero-normal witnesses print at most eight referenced vertices
 and twelve incident triangles each, including face directions and corner angles.
 
+For an independent one-level position check, the optional native diagnostic
+`scripts/compare_subdivision_reference.cpp` uses an installed OpenSubdiv SDK:
+
+```bash
+OSD_INCLUDE=/path/to/include OSD_LIB=/path/to/lib make \
+  --eval='compare-osd:; @$(CXX) -std=c++17 -O2 -I$${OSD_INCLUDE} scripts/compare_subdivision_reference.cpp -L$${OSD_LIB} -Wl,-rpath,$${OSD_LIB} -losdCPU -o target/compare-osd && target/compare-osd $(ARGS)' \
+  compare-osd ARGS='CAGE/with_normals.usda LEVEL1/with_normals.usda 17054'
+```
+
+Inputs must be uncreased triangle-cage and level-1 files from `normal_isolation`,
+with unchanged point indexing and edge-and-corner boundary interpolation. This
+is a reader for that tool's single-line arrays, not a general USDA parser.
+The comparison maps OpenSubdiv child vertices to our vertex/face/sorted-edge
+ordering, checks all positions with absolute component tolerance `1e-7`, and
+optionally prints native limit-tangent cross-products at requested vertex indices.
+Exit codes are 0 for matching positions, 1 for mismatch, and 2 for invalid inputs.
+It does not compare refined topology, materials, authored normals, creases or
+rendered images. Native limit tangents are diagnostic only, not installed into
+the viewer. OpenSubdiv is not a new viewer build dependency.
+
+`--compare-normals` additionally compares the probe's normals against native
+limit derivatives evaluated on the same refined float positions, at absolute
+component tolerance `1e-5`. Using native double-precision refined positions
+instead can amplify tiny position differences around nearly cancelling fans.
+
+Append `--normal-probe NEW_DIRECTORY` after any witness indices to write two
+controlled polygon probes with the input camera and triangle indices retained:
+`with_limit_normals.usda` replaces only normals with normalized native limit
+tangent cross-products; `with_limit_surface.usda` also replaces positions with
+native limit positions. The directory must not exist. Zero derivatives remain
+zero and are counted separately for referenced vertices; no fallback axis is
+invented. These files are finite triangles, not native subdivision patches.
+Check the compiled tool's planar orientation, output preservation and invalid
+inputs through Make:
+
+```bash
+make --eval='check-osd:; @/bin/bash scripts/check_subdivision_reference.sh target/compare-osd' check-osd
+```
+
+From the repository root, the optional collection regression generates fresh
+UR5 shoulder and Spot base probes, records source hashes, then compares both
+positions and limit normals against the compiled native tool:
+
+```bash
+make --eval='check-osd-assets:; @/bin/bash scripts/check_subdivision_assets.sh target/compare-osd ../usd_collection target/NEW_NATIVE_CHECK' check-osd-assets
+```
+
+The output directory must be new. Logs and generated assets remain there on
+failure. This gate requires the collection and OpenSubdiv SDK; it is separate
+from the ordinary Rust test suite and does not perform image acceptance.
+
 `assets/normal_scale.usda` places three identical world-size panels side by side
 using local coordinate scales of `1e-12`, `1`, and `1e12`. It exercises generated
 flat normals independently of authored normals. Capture without shadow maps:
@@ -972,8 +1037,14 @@ before prototype transforms and material-subset splitting, retaining shared mesh
 handles. Hierarchical prototypes remain unsupported.
 Changing or removing the settings resource automatically reprojects existing
 meshes and point instancers in live stages and asset instances, preserving each
-instance's clock and runtime-owned entities. GPU subdivision and exact
-limit normals remain unsupported; this option is not full USD fidelity.
+instance's clock and runtime-owned entities. Catmull-Clark meshes with no
+remaining sharpness or holes, using edge-only or edge-and-corner boundaries, use limit-surface
+normals evaluated on the refined float positions. Disconnected vertex fans retain
+finite-mesh normals. Zero authored sharpness and sharpness fully decayed by the
+selected refinement level use the same limit-normal path. Remaining creases,
+corners, holes and boundary-none use the existing
+finite-normal path. Bilinear surfaces remain flat shaded. GPU subdivision and
+full USD limit-surface fidelity remain unsupported.
 With subdivision enabled, unknown/malformed scheme values are errors, not silent
 polygon fallbacks. The selected prim's inspector shows subdivision, deformation
 and point-instancer diagnostics. For UI capture, `USD_VIEWER_PANE=inspector` and
@@ -1343,12 +1414,17 @@ make --eval='check-live-clocks:; @/bin/bash scripts/check_live_clocks.sh target/
 ```
 
 It generates fresh UV/texture/scalar/color/normal fixtures and compares live clock
-reversals against independent references. Thirteen comparisons use zero RGB
+reversals against independent references. Seventeen comparisons use zero RGB
 tolerance; normal-interface and constant-normal cases use RGB tolerance 1 for
 independently animated geometry normals, matching the static precision bound.
 Metadata must confirm the reversal and expected visible mesh counts. The flat
 morph case verifies shared GPU material use; the morph-tangent case verifies four
 GPU-morphed ordinary/subset meshes against CPU deformation without flat materials.
+The subdivision-crease case uses level 1 and reverses clocks 1/3 to 3/1,
+switching both roots between decayed-sharpness vertex normals and permanent-crease
+face-varying normals. Its final image must match freshly loaded roots at 3/1.
+The constant-coordinate case samples animated Material interface coordinates,
+ignoring deliberately different vertex UVs, against independent mesh-UV samples.
 Renderer warnings/errors
 fail the case. PNG/RGBA captures, metadata, comparison logs and results.tsv remain
 in the output directory, including on failure. This requires native GPU access
@@ -1609,6 +1685,14 @@ and focus `(0,1,0)`. The tested Vulkan captures match all 921,600 pixels at stri
 zero RGB tolerance. This checks simultaneous texture selection, not a live reload.
 UV transforms are read from connected texture-coordinate paths, including nodes
 outside the material's immediate children; disconnected nodes have no effect.
+Explicit constant float2/double2 coordinates at a texture-coordinate terminal
+are represented by a zero-scale affine transform. Sampled Material/NodeGraph
+interface values and constant `UsdTransform2d.inputs:in` values follow the same
+path and compose with downstream transforms. The fixture's
+`constant_coordinates.usda` deliberately has varying vertex UVs while its
+animated Material coordinates select one texture location across the mesh.
+Unauthored coordinate terminals retain the existing implicit mesh-UV behavior;
+named/per-texture UV-set selection remains unsupported.
 Different transforms across a material's texture channels, non-finite transforms
 and over-budget coordinate graphs produce explicit
 errors instead of silently choosing the first material child.

@@ -339,7 +339,7 @@ fn build_expanded(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
 
 /// Angle-weighted unit normals from visible triangles in the source point domain.
 /// Unreferenced points receive zero normals.
-fn compute_point_smooth_normals(read: &ReadMesh) -> Vec<[f32; 3]> {
+pub(crate) fn compute_point_smooth_normals(read: &ReadMesh) -> Vec<[f32; 3]> {
     use bevy::math::DVec3;
     let mut accum = vec![DVec3::ZERO; read.points.len()];
     let triangles = triangulate_mesh(read, triangulation_points(read), &read.face_vertex_indices, None);

@@ -86,7 +86,7 @@ pub enum BoundaryInterpolation { EdgeOnly, EdgeAndCorner }
 pub enum FaceVaryingInterpolation { Reject, AllLinear }
 
 /// Refines a sampled Catmull–Clark or bilinear mesh with supported rules and primvars.
-/// Authored normals are removed; downstream normals approximate the finite mesh.
+/// Surfaces without remaining sharpness or holes use limit normals; other normals approximate the finite mesh.
 pub fn refine_mesh(mesh: &ReadMesh, rules: &ReadSubdivision, levels: u32) -> Result<ReadMesh> {
     rules.validate(mesh.points.len(), mesh.face_vertex_counts.len())?;
     let linear = mesh.subdivision_scheme == SubdivScheme::Bilinear && rules.scheme == "bilinear";
@@ -135,6 +135,9 @@ pub fn refine_mesh(mesh: &ReadMesh, rules: &ReadSubdivision, levels: u32) -> Res
     let mut output = omit_faces(output, &keep);
     if !linear && (!hard_edges.is_empty() || !hard_corners.is_empty()) {
         output.normals = Some(crate::mesh::crease_corner_normals(&output, &hard_edges, &hard_corners));
+    } else if !linear && rules.crease_sharpnesses.iter().chain(&rules.corner_sharpnesses).all(|&value| value <= levels as f32)
+        && rules.holes.is_empty() && rules.boundary != "none" {
+        output.normals = Some(crate::subdivision_normals::limit_normals(&output));
     }
     Ok(output)
 }
@@ -526,7 +529,16 @@ mod tests {
         }
         rules.crease_sharpnesses.fill(0.5);
         let fractional = refine_mesh(&mesh, &rules, 1).unwrap();
-        assert!(fractional.normals.is_none());
+        let normals = fractional.normals.as_ref().unwrap();
+        assert_eq!(normals.interpolation, Interpolation::Vertex);
+        for (normal,point) in normals.values.iter().zip(&fractional.points) {
+            let n = DVec3::from_array(normal.map(f64::from));
+            assert!((n.length()-1.0).abs()<1e-6);
+            assert!(n.dot(DVec3::from_array(point.map(f64::from)))>0.0);
+        }
+        rules.crease_sharpnesses.fill(1.01);
+        assert!(refine_mesh(&mesh, &rules, 1).unwrap().normals.is_none());
+        assert_eq!(refine_mesh(&mesh, &rules, 2).unwrap().normals.unwrap().interpolation, Interpolation::Vertex);
         for i in 0..8 { for lane in 0..3 {
             assert!((fractional.points[i][lane] - (mesh.points[i][lane] + smooth.points[i][lane]) * 0.5).abs() < 1e-6);
         } }
@@ -534,11 +546,19 @@ mod tests {
         assert_eq!(&refine_mesh(&mesh, &rules, 1).unwrap().points[..8], mesh.points);
         assert_ne!(&refine_mesh(&mesh, &rules, 2).unwrap().points[..8], mesh.points);
         rules.crease_sharpnesses.fill(0.0);
-        assert_eq!(refine_mesh(&mesh, &rules, 1).unwrap().points, smooth.points);
+        let zero = refine_mesh(&mesh, &rules, 1).unwrap();
+        assert_eq!(zero.points, smooth.points);
+        assert_eq!(zero.normals.as_ref().unwrap().values, smooth.normals.as_ref().unwrap().values);
         rules.corner_indices = vec![0];
         rules.corner_sharpnesses = vec![0.5];
         let corner = refine_mesh(&mesh, &rules, 1).unwrap();
+        assert_eq!(corner.normals.as_ref().unwrap().interpolation, Interpolation::Vertex);
         for lane in 0..3 { assert!((corner.points[0][lane] - (mesh.points[0][lane] + smooth.points[0][lane]) * 0.5).abs() < 1e-6); }
+        rules.corner_sharpnesses = vec![0.0];
+        assert_eq!(refine_mesh(&mesh, &rules, 1).unwrap().normals.unwrap().values, smooth.normals.as_ref().unwrap().values);
+        rules.corner_sharpnesses = vec![1.01];
+        assert!(refine_mesh(&mesh, &rules, 1).unwrap().normals.is_none());
+        assert_eq!(refine_mesh(&mesh, &rules, 2).unwrap().normals.unwrap().interpolation, Interpolation::Vertex);
         rules.crease_indices[1] = 6;
         assert!(refine_mesh(&mesh, &rules, 1).unwrap_err().to_string().contains("mesh edge"));
         rules.crease_indices = vec![0,1,2];
@@ -869,7 +889,9 @@ def Material "Material" {}
         assert_eq!(output.points.len(), 25);
         assert_eq!(output.face_vertex_counts, [4;16]);
         assert_eq!(output.triangulation_points.as_ref().unwrap(), &output.points);
-        assert!(output.normals.is_none());
+        let normals = output.normals.as_ref().unwrap();
+        assert_eq!(normals.interpolation, Interpolation::Vertex);
+        assert_eq!(normals.values, vec![[0.0,0.0,-1.0];25]);
         assert!(input.normals.is_some());
         assert_eq!(output.orientation, input.orientation);
         assert!(output.double_sided);

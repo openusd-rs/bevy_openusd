@@ -5,6 +5,23 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Typed undoable payload-list authoring
 
+Visible interaction acceptance uses the new three-layer payload_authoring
+fixture and four checked-in replays. Inspected `target/payload-replace-ui.png`
+and its viewport: filling the asset/prim fields and clicking Replace produces an
+orange sphere. `target/payload-clear-ui.png` restores the weaker blue cube after
+Clear. `target/payload-invalid-ui.png` shows the empty-row validation error while
+the cube remains. `target/payload-scroll-retry.png` shows the second row and all
+bottom actions after scrolling; its first attempt `target/payload-scroll-ui.png`
+was black and rejected, not accepted. Logs are `/tmp/payload-{replace,clear,
+invalid,scroll}-capture.log` and `/tmp/payload-scroll-retry.log`. Runs use the
+inspector with /Root selected in the private 1440x920 Vulkan Weston viewer.
+
+The form-to-editor fixture regression independently checks cube/sphere/clear/
+undo composition and unchanged source bytes. All 52 viewer tests and check-all
+pass (`/tmp/payload-interaction-tests.log`, `/tmp/payload-interaction-check.log`).
+This establishes the sampled one/two-row interactions, not exhaustive 64-row
+keyboard/accessibility coverage or automatic composed-list editing.
+
 Inspector integration adds a dedicated Payload authoring group with up to 64
 draft rows, asset/prim/offset/scale fields, row add/remove, explicit whole-list
 replacement/blocking, and local-opinion clearing. Draft state is bounded to one

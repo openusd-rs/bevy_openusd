@@ -116,6 +116,11 @@ Drafts reset when the document, selected prim or edit layer changes. They start
 empty rather than copying composed relative paths into a different authoring
 layer. Existing list-op provenance and in-place composed-list editing are not
 displayed by this form.
+`assets/payload_authoring.usda` is a visible authoring fixture: the weaker layer
+loads a blue cube from `payload_authoring_content.usda` at `/Box`. Replacing the
+payload with that same asset at `/Ball` loads an orange sphere; clearing the
+root-layer opinion restores the cube. Matching inspector replays live in
+`scripts/replays/payload_{replace,clear,invalid,scroll}.replay`.
 The viewer warns before opening the file picker when a document is already open.
 Cancel keeps the current document and lets you save the required layers first.
 The warning is conservative: it appears even for a saved document, without

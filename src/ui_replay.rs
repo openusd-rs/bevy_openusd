@@ -75,6 +75,10 @@ mod tests {
     #[test]
     fn checked_in_control_replays_are_valid() {
         for (script, count, last) in [
+            (include_str!("../scripts/replays/payload_replace.replay"), 15, 16000),
+            (include_str!("../scripts/replays/payload_clear.replay"), 18, 18000),
+            (include_str!("../scripts/replays/payload_invalid.replay"), 7, 14000),
+            (include_str!("../scripts/replays/payload_scroll.replay"), 9, 16000),
             (include_str!("../scripts/replays/open_confirmation.replay"), 4, 14000),
             (include_str!("../scripts/replays/open_confirmation_cancel.replay"), 7, 14000),
             (include_str!("../scripts/replays/timeline_play.replay"), 4, 14000),

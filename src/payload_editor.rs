@@ -80,6 +80,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parsed_payload_draft_replaces_and_clears_the_showcase() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/payload_authoring.usda");
+        let bytes = std::fs::read(path).unwrap();
+        let source = usd_bevy::UsdSource::new(path, bytes.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let mut editor = usd_bevy::editor::EditorSession::new(stage.clone());
+        let shape = || stage.prim("/Root/Shape").unwrap().type_name().unwrap();
+        assert_eq!(shape().as_deref(), Some("Cube"));
+        let payload = Row { asset: "payload_authoring_content.usda".into(), prim: "/Ball".into(), ..Default::default() }.parse().unwrap();
+        editor.edit(EditorEdit::Payloads { prim: "/Root".into(), payloads: vec![payload] }).unwrap();
+        assert_eq!(shape().as_deref(), Some("Sphere"));
+        editor.edit(EditorEdit::ClearPayloads { prim: "/Root".into() }).unwrap();
+        assert_eq!(shape().as_deref(), Some("Cube"));
+        editor.undo().unwrap();
+        assert_eq!(shape().as_deref(), Some("Sphere"));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
     fn payload_rows_preserve_asset_paths_and_validate_targets_and_time() {
         let row = Row { asset: "part with spaces.usda".into(), ..Default::default() };
         assert_eq!(row.parse().unwrap().asset_path, row.asset);

@@ -16,6 +16,24 @@ unidentified; these results are not a production fix or full workspace pass.
 
 ## Typed undoable payload-list authoring
 
+The payload form can explicitly discard its draft and load the active target's
+local authored opinion. Selection uses the complete target's mapped spec path
+and layer identifier; it never imports a weaker opinion into a differently
+anchored layer. Import retains operation buckets, within-bucket ordering, asset
+strings and omitted versus explicit offsets, and does not issue an edit command.
+Oversized or unrepresentable operations reject without replacing the draft;
+in particular an empty non-explicit op is not silently turned into a blocker.
+Changing an imported omitted offset to non-identity authors the requested mapping.
+
+Tests cover bucket/offset round trips, 64/65-row bounds, nonrepresentable empty
+ops, and same-layer variant spec mapping. All 60 viewer tests and check-all pass
+(`/tmp/payload-load-{tests,check}.log`). The native `payload_load_local.replay`
+switches to the weak layer and loads its Prepend `/Box` opinion. Inspected
+`target/payload-load-local-ui.png` shows the correct edit target, imported relative
+asset, 0/1 mapping and unchanged blue cube; guard passes
+(`/tmp/payload-load-local-capture.log`). Arbitrary imported-op native interaction
+and long-form scrolling remain incompletely covered.
+
 The viewer now exposes all six payload row modes through a cycling row button:
 Replace, Prepend, Append, Add, Delete and Order. The complete draft replaces the
 local operation through the checked command path. Non-explicit modes can be

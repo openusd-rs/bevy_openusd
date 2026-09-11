@@ -4,7 +4,7 @@ use openusd::sdf::{LayerOffset, Payload, PayloadListOp};
 use usd_bevy::editor::{EditorBridge, EditorEdit, EditorSnapshot};
 
 #[derive(Clone)]
-struct Row { asset: String, prim: String, offset: String, scale: String, mode: Mode }
+struct Row { asset: String, prim: String, offset: String, scale: String, mode: Mode, authored_offset: bool }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Mode { #[default] Replace, Prepend, Append, Add, Delete, Order }
@@ -22,7 +22,7 @@ impl Mode {
 }
 
 impl Default for Row {
-    fn default() -> Self { Self { asset: String::new(), prim: String::new(), offset: "0".into(), scale: "1".into(), mode: Mode::default() } }
+    fn default() -> Self { Self { asset: String::new(), prim: String::new(), offset: "0".into(), scale: "1".into(), mode: Mode::default(), authored_offset: true } }
 }
 
 fn parse_rows(rows: &[Row]) -> Result<PayloadListOp, String> {
@@ -54,8 +54,33 @@ impl Row {
         let offset: f64 = self.offset.trim().parse().map_err(|_| "Invalid time offset")?;
         let scale: f64 = self.scale.trim().parse().map_err(|_| "Invalid time scale")?;
         if !offset.is_finite() || !scale.is_finite() || scale <= 0. { return Err("Use a finite offset and positive finite scale".into()); }
-        Ok(Payload { asset_path: self.asset.clone(), prim_path, layer_offset: Some(LayerOffset::new(offset, scale)) })
+        let layer_offset = (self.authored_offset || offset != 0. || scale != 1.).then_some(LayerOffset::new(offset, scale));
+        Ok(Payload { asset_path: self.asset.clone(), prim_path, layer_offset })
     }
+}
+
+fn local_operation(snapshot: &EditorSnapshot) -> Option<&PayloadListOp> {
+    let target = snapshot.edit_target.as_ref()?;
+    let path = target.map_to_spec_path(&openusd::sdf::path(snapshot.selected.as_ref()?).ok()?)?;
+    snapshot.payload_opinions.iter().find(|opinion|
+        opinion.layer == target.layer_identifier() && opinion.prim == path).map(|opinion| &opinion.operation)
+}
+
+fn rows_from_operation(operation: &PayloadListOp) -> Result<Vec<Row>, String> {
+    let mut rows = Vec::new();
+    for (mode, items) in [(Mode::Replace, &operation.explicit_items), (Mode::Prepend, &operation.prepended_items),
+        (Mode::Append, &operation.appended_items), (Mode::Add, &operation.added_items),
+        (Mode::Delete, &operation.deleted_items), (Mode::Order, &operation.ordered_items)] {
+        for payload in items {
+            if rows.len() == 64 { return Err("Local opinion exceeds the 64-row editor limit".into()); }
+            let offset = payload.layer_offset.unwrap_or_default();
+            rows.push(Row { asset: payload.asset_path.clone(), prim: payload.prim_path.to_string(),
+                offset: offset.offset.to_string(), scale: offset.scale.to_string(), mode,
+                authored_offset: payload.layer_offset.is_some() });
+        }
+    }
+    if parse_rows(&rows)? != *operation { return Err("Local opinion cannot be represented by this draft".into()); }
+    Ok(rows)
 }
 
 #[derive(Default)]
@@ -102,12 +127,13 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
         state.rows.len()
     };
     let bridge = bridge.clone();
+    let local = local_operation(snapshot).cloned();
     let snapshot = EditorSnapshot {
         document_id: snapshot.document_id, revision: snapshot.revision,
         edit_target: snapshot.edit_target.clone(), ..Default::default()
     };
     let draft = draft.clone();
-    Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+count*6, move |ui| {
+    Some(Pod::new(Id::new(("editor.payload.author", key.clone()))).with_custom_units(7+count*6+usize::from(local.is_some()), move |ui| {
         let Ok(mut state) = draft.0.lock() else { return };
         if state.context.as_ref() != Some(&key) || state.target != snapshot.edit_target { return; }
         ui.label("Payload list (click row mode to change)");
@@ -138,6 +164,14 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
             state.error.clear();
             if let Some(command) = snapshot.checked_edit(EditorEdit::ClearPayloads { prim: prim.clone() }) { super::send(&bridge, command); }
         }
+        if let Some(operation) = &local {
+            if ui.button("Discard draft and load local opinion").clicked {
+                match rows_from_operation(operation) {
+                    Ok(rows) => { state.rows = rows; state.error.clear(); }
+                    Err(error) => state.error = error,
+                }
+            }
+        }
         if !state.error.is_empty() { ui.label(&state.error); }
     }))
 }
@@ -145,6 +179,43 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_draft_import_preserves_buckets_offsets_and_rejects_loss() {
+        let payload = Payload { asset_path: "relative with spaces.usda".into(), prim_path: openusd::sdf::Path::default(), layer_offset: None };
+        for operation in [PayloadListOp::explicit([]), PayloadListOp::explicit([payload.clone()]),
+            PayloadListOp { prepended_items: vec![payload.clone()], deleted_items: vec![Payload {
+                layer_offset: Some(LayerOffset::new(12.125, 0.375)), ..payload.clone()
+            }], ordered_items: vec![Payload { layer_offset: Some(LayerOffset::default()), ..payload.clone() }], ..Default::default() }] {
+            let rows = rows_from_operation(&operation).unwrap();
+            assert_eq!(parse_rows(&rows).unwrap(), operation);
+        }
+        assert!(rows_from_operation(&PayloadListOp::default()).is_err());
+        assert!(rows_from_operation(&PayloadListOp::explicit(vec![payload.clone(); 65])).is_err());
+        assert_eq!(rows_from_operation(&PayloadListOp::explicit(vec![payload.clone(); 64])).unwrap().len(), 64);
+        let mut rows = rows_from_operation(&PayloadListOp::explicit([payload])).unwrap();
+        rows[0].offset = "2".into();
+        assert_eq!(parse_rows(&rows).unwrap().explicit_items[0].layer_offset, Some(LayerOffset::new(2., 1.)));
+    }
+
+    #[test]
+    fn local_draft_import_matches_complete_variant_spec_not_weaker_layer() {
+        let mut snapshot = EditorSnapshot {
+            selected: Some("/Root".into()),
+            edit_target: Some(openusd::usd::EditTarget::for_layer("root.usda")),
+            payload_opinions: vec![usd_bevy::editor::PayloadOpinion {
+                layer: "weak.usda".into(), prim: openusd::sdf::path("/Root{choice=a}").unwrap(),
+                offset: LayerOffset::default(), operation: PayloadListOp::explicit([]),
+            }], ..Default::default()
+        };
+        assert!(local_operation(&snapshot).is_none());
+        snapshot.edit_target = Some(openusd::usd::EditTarget::for_layer("weak.usda"));
+        assert!(local_operation(&snapshot).is_none());
+        snapshot.edit_target = Some(openusd::usd::EditTarget::for_local_direct_variant("weak.usda", "/Root{choice=b}").unwrap());
+        assert!(local_operation(&snapshot).is_none());
+        snapshot.edit_target = Some(openusd::usd::EditTarget::for_local_direct_variant("weak.usda", "/Root{choice=a}").unwrap());
+        assert!(local_operation(&snapshot).unwrap().explicit);
+    }
 
     #[test]
     fn row_modes_build_complete_ops_and_reject_mixed_replacement() {

@@ -117,6 +117,11 @@ In the viewer, click a payload row's mode button to cycle through Replace,
 Prepend, Append, Add, Delete and Order. Apply replaces the complete local
 operation with the draft; non-replacement modes can be mixed, but Replace
 cannot be mixed with them. Rows retain their order within each operation bucket.
+When the active edit target has a local opinion at the selected prim's mapped
+spec path, **Discard draft and load local opinion** imports it without authoring.
+Relative asset strings and omitted versus explicit time offsets are preserved.
+Weaker opinions are not imported into a different layer. Operations over 64 rows
+or not representable by the form are rejected without replacing the draft.
 `EditorSnapshot::payload_opinions` exposes each contributing authored list op,
 strongest first, with its source layer, spec path and cumulative site time offset.
 The Payload authoring group displays these below the replacement form, including

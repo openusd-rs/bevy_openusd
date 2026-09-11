@@ -13,8 +13,15 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
   rendering fix or identification of the faulty driver/compositor component.
 - Spot/UR5 fidelity and broader native-render comparisons remain incomplete.
   Do not infer full-scene parity from bounded numerical or image fixtures.
-- Per-layer content-based save state and guarded shell/OS window close are
-  implemented and tested. External disk-conflict detection remains open;
+- Per-layer content-based save state and guarded in-app close are implemented
+  and tested. The local Mara develop-based host at 15a2e9d restores OS close
+  routing through the guard, direct screenshots and dome-device configuration.
+  It lives in the required sibling worktree `../mara-bevy-host`, not unmodified
+  upstream develop. An isolated Xwayland WM_DELETE_WINDOW request now has
+  rendered confirmation-dialog evidence, Cancel dismissal with the viewer
+  remaining alive, and Discard exiting with status zero;
+  this is not a cross-desktop/backend acceptance matrix.
+  External disk-conflict detection remains open;
   Clean means matching a loaded or in-place-saved baseline, not unchanged disk.
 - General typed scene-building, broader backend coverage and interactive/GPU
   performance acceptance remain incomplete, as qualified in the matrix below.

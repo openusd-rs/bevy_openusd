@@ -275,6 +275,7 @@ impl WindowApp for UsdApp {
         // Panes + ribbon rail. Mara owns the pane/ribbon wiring,
         // open-state, pane-id publication, and paint ordering.
         let view = match editor.view() { Ok(view) => view, Err(error) => { error!("{error}"); return; } };
+        bevy_view.set_continuous_rendering(view.timeline.playing);
         let renderer_error = rendering.renderer_error();
         let prims: Vec<_> = view.document.prims.iter().map(|path| PrimRow {
             path: path.clone(), name: path.rsplit('/').next().unwrap_or(path).to_string(),

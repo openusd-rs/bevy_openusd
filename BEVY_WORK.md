@@ -3,6 +3,218 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Whole-UR5 native subdivision audit
+
+Rebuilt scripts/compare_subdivision_reference.cpp against OpenSubdiv and ran
+check_subdivision_meshes.sh through Make on the current collection UR5. All 28
+reported mesh paths pass level-1 position comparison (1e-7 component tolerance)
+and limit-normal comparison (1e-5), including MeshLibrary, visual and collision
+meshes. Fresh probes, source hash, individual logs and results.tsv are retained
+in target/ur5-current-all-mesh-audit; summary.txt reports meshes=28 failures=0.
+The driver log is /tmp/ur5-current-all-mesh-audit.log.
+
+This extends the isolated-shoulder evidence to all reported UR5 mesh paths;
+it does not prove pixel parity, limit positions, arbitrary refinement levels,
+materials or transforms. Reinspection of the retained limit-bevy/limit-native
+shoulder images still shows rim/lower-band artifacts in both renderers.
+A known-good rendering of this asset has been requested before choosing between
+source-faithful behavior and an optional repair policy. No geometry was altered.
+
+## Exclude retained warm-up GPU measurements
+
+The GPU timing collector now records its collection-start instant and ignores
+older measurements before creating pass entries. Previously a retained one-shot
+warm-up diagnostic could enter the sample set and prevent completion because
+that pass never ran again. Recurring passes could also include a pre-window sample.
+A deterministic regression covers stale-only and subsequently active passes.
+All 17 viewer_capture example tests pass in /tmp/gpu-timing-warmup-all-tests.log.
+
+A fresh 120-sample capture completed: target/post-warmup-timing.png was inspected,
+with one GPU skin mesh, one GPU morph mesh and Attached environment metadata.
+Opaque-pass median/p95/max are 0.028672/0.030720/0.031744ms; raw samples are in
+target/post-warmup-timing.capture.txt and log /tmp/post-warmup-timing.log.
+The user desktop viewer was left running: this is instrument validation, not an
+isolated performance comparison. The subsequent metadata-only change labels
+pre-collection measurements as excluded. UR5 fidelity remains unresolved.
+
+## Capture session cleanup and playback repeat
+
+Both capture wrappers now share capture_session.sh. It forces a new session,
+records the actual session leader from inside that session, and keeps a waitable
+setsid wrapper for exit-status checks. Cleanup signals the recorded group,
+allows a bounded TERM grace period, then uses KILL for surviving owned processes.
+Failure to write the private leader record prevents command execution.
+
+check_capture_session.sh verifies distinct wrapper/leader PIDs, cleanup of a
+TERM-ignoring group, propagation of exit status 7 and failed-handshake refusal.
+It passes via Make in /tmp/capture-session-tests.log; the abnormal-exit and
+missing-path diagnostics are expected negative-test output. All four shell
+scripts pass bash -n. No Makefile or desktop configuration changed.
+
+Real release playback capture passes and its direct GPU image was inspected:
+target/clean-playback-host.png. In the same 15–30s measurement window, UI output
+is 60.241Hz and animated Morph/Face projection is 59.162Hz (887 updates over
+14.976s). /tmp/clean-playback-cadence.txt and /tmp/clean-playback-capture.log retain
+the result. Previously identified test viewers had been stopped before this
+run. This remains an observed cadence with tracing, not a controlled GPU-time
+benchmark or a universal frame-time guarantee.
+
+The native-close Cancel probe also passes with the shared helper:
+target/native-close-cleanup/dialog.png was inspected and shows the dismissed
+dialog and intact scene. /tmp/native-close-cleanup.log records survival/readback.
+After each wrapper exited, ps found no running processes in either recorded
+viewer/compositor group (1223931/1223348 and 1250910/1250731 respectively).
+
+## Active-rate embedded playback
+
+A release viewer probe found UI output near 60Hz while animated mesh projection
+ran at 19.883Hz with no pointer activity. Mara selected its idle 24Hz interval
+even during playback; alignment with the UI tick reduced actual updates further.
+Mara branch fix/bevy-host-develop now has 15a2e9d: an explicit continuous-rendering
+flag selects the active interval, preserving idle policy for static content.
+The viewer forwards its existing timeline snapshot's playing state without an
+extra snapshot read. Native/Web active/idle selection has a regression test.
+
+The corrected timeline_play replay clicks the compact transport's actual Play
+button. capture_viewer_ui.sh accepts debug/release through USD_UI_CAPTURE_PROFILE
+and records the chosen profile. In the 15–30s window, the release probe changes
+from UI/scene rates 59.655/19.883Hz to 59.709/59.650Hz. Scene cadence counts the
+same animated Morph/Face projection trace; UI cadence uses output-hook counters.
+These are wall-clock cadences, not GPU timestamp frame durations.
+
+Both direct GPU images were inspected and show Playing with lit, animated
+geometry: target/{release,continuous}-playback-host.png. Raw logs and desktop
+images use the matching *-playback-desktop prefix. Summaries are in
+/tmp/release-playback-{before,after}-cadence.txt. Viewer tests pass 86; Mara Bevy
+tests pass 8 with 2 ignored; release build passes. Logs use
+/tmp/continuous-viewport-{tests,host-tests,build}.log.
+
+Capture cleanup was also found to leave some viewer groups running because
+the setsid wrapper PID differed from the session leader. Identified test viewers
+were terminated using their exact capture-path environment and actual process
+group. No user desktop viewer was targeted. Fixing wrapper cleanup and a clean
+repeat remain necessary before treating the timing comparison as controlled.
+
+## Native close Cancel and Discard actions
+
+check_native_close.sh now accepts prompt, cancel or discard. The latter two
+use fixed pointer replays after a real WM_DELETE_WINDOW request, rather than
+clicking the app's own close control. Cancel requires process survival and a
+GPU capture; Discard requires process termination with exit status zero.
+An inherited USD_UI_REPLAY is cleared so it cannot supply unrelated actions.
+
+Both modes pass in /tmp/native-close-actions.log. The inspected
+target/native-close-cancel/dialog.png shows the scene without the dialog or
+modal dimming after Cancel. target/native-close-discard/viewer.log records the
+pointer replay followed by normal exit; the wrapper records
+OS_CLOSE_DISCARD_EXITED_CLEANLY. These runs use the bundled, unedited showcase
+and isolated Xwayland, not every desktop backend or unsaved-content permutation.
+Both replay fixtures are checked by the parser regression; all 86 viewer tests
+pass in /tmp/native-close-action-tests.log.
+
+## Native OS-close confirmation evidence
+
+scripts/send_window_close.c sends WM_DELETE_WINDOW only to exactly one window
+with the requested title advertising that protocol. It traverses reparented
+windows, rejects missing/ambiguous targets and does not destroy the window.
+scripts/check_native_close.sh launches an isolated Weston/Xwayland instance,
+waits for viewer startup, sends the native request, checks process survival and
+retains a direct GPU image. It cleans up only its own process groups.
+
+Run through Make with Weston on PATH:
+`make --eval='verify-native-close:; @bash scripts/check_native_close.sh target/NEW_CLOSE_CAPTURE' verify-native-close`.
+The helper compiles with -Wall -Wextra -Werror and Xlib via pkg-config. Usage
+and invalid-display failures were checked. The script passes bash -n.
+
+target/native-close-confirmation/dialog.png was inspected: Close USD viewer?,
+Cancel, Discard and close, and the dimmed scene are visible. Native request
+log and HOST_CAPTURE_OK are in /tmp/native-close-confirmation.log; the viewer
+remained alive. This verifies native Xwayland event routing into the guard,
+not native Wayland compositor shortcuts or subsequent discard/cancel clicks.
+Earlier Xvfb probes crashed before UI startup with missing GLX messages;
+/tmp/native-os-close-viewer.log and target/native-close-vulkan/viewer.log
+retain those failures. They provide no close-behavior evidence.
+
+## Approved develop-based Mara host
+
+User approved using latest Mara with local host fixes. The fetched develop head
+remains b792f44. A separate worktree, ../mara-bevy-host, now contains branch
+fix/bevy-host-develop at ac47bfb52eb6e8840bdfbce6171fe7deac3d0f5a.
+Cargo.toml uses its mara package. The original ../mara branch new_graph is
+unchanged. Four unsigned commits carry OS close routing, GPU screenshot token
+forwarding, viewport repaint prediction compensation and supported dome GPU
+limits/features. The repaint cherry-pick required retaining develop's closure
+layout while inserting the delay helper; no other upstream code was replaced.
+
+Viewer tests: 86 passed. Mara host tests: 3 passed. Mara Bevy tests: 7 passed,
+2 ignored. make build and check-all pass. Logs:
+/tmp/mara-host-{restored-tests,device-tests,repaint-tests,restored-build,restored-check}.log.
+The initial dependency-test command incorrectly specified features outside the
+workspace; the successful command tests the packages with their resolved features.
+
+target/mara-develop-restored-host.png was directly captured from the GPU and
+visually inspected: Lighting reports Dome maps attached, the scene is lit and
+the sphere shows colored environment reflections. HOST_CAPTURE_OK confirms
+1440x920 readback. Both desktop frame checks also pass in
+/tmp/mara-develop-restored-capture.log. Fresh native OS-close interaction remains
+to be exercised; plugin tests and restored source routing are not that test.
+The host commits remain local and require this worktree; nothing was pushed.
+
+## Current full-workspace gate
+
+At 3d3a2df, make test-all with offline Cargo completes 33 test suites:
+638 passed, zero failed and 15 ignored. Log:
+/tmp/current-bevy-workspace-tests.log. make build also completes successfully
+in /tmp/current-bevy-viewer-build.log. This gate includes the latest sampler,
+studio fallback, playback controls and pinned Mara develop dependency. The
+ignored native/file-watcher lanes were not run by this command. Green tests
+do not restore the missing upstream host fixes or establish native-render parity.
+
+## Post-sampler GPU acceptance and upstream host audit
+
+At e58f7f0, compare_deformation.sh passes the composed showcase at times 0, 30
+and 60 with the selected dome, forward shading and shadows disabled. All three
+GPU/CPU pairs have maximum RGB error one and zero pixels exceeding tolerance one.
+Results and six captures: target/post-seam-deformation/; command log:
+/tmp/post-seam-deformation.log. The time-60 GPU capture was visually inspected.
+Its metadata confirms one GPU skin and one GPU morph mesh versus zero in the
+CPU control, and both have Attached environment maps with one recorded
+generation and zero active generators. These are refreshed standalone results,
+not embedded-host acceptance or native-reference parity.
+
+Fetching Mara develop still resolves to b792f44. Static inspection of
+mara/src/window.rs shows WindowEvent::CloseRequested calls event_loop.exit()
+directly, bypassing the application's egui confirmation plugin. Screenshot
+tokens are also not forwarded and the GPU descriptor retains default limits.
+These regressions invalidate historical OS-close/direct-host/embedded-dome
+acceptance for the current dependency. The sibling checkout is untouched;
+approval was requested to carry its host fixes on a develop-based local branch.
+
+## Latitude-longitude sampling fidelity
+
+The environment converter previously mapped normalized coordinates onto
+`width-1`/`height-1`, treating boundary pixel centers as image edges. A regression
+with distinct first/last columns failed before the fix: the seam approached
+7 on one side and 0 on the other instead of blending to 3.5. The converter now
+uses pixel-center coordinates, periodic longitude and clamped latitude, with
+nonnegative interpolation weights even in the negative half-texel interval.
+This agrees with [OpenImageIO's pixel-center sampling contract](https://github.com/AcademySoftwareFoundation/OpenImageIO/blob/main/src/include/OpenImageIO/imagebuf.h).
+
+Seven converter tests and six dome-environment tests pass, including seam
+continuity, recovery of every source texel center, poles, HDR and linear-space
+filtering. Logs: /tmp/dome-seam-{before,after,environment}.log. The 4x2 fixture's
+blue texel is centered between +X and +Z, not on +X; its directional test now
+checks that actual location and the equal red/blue blend on +X.
+
+Standalone GPU capture target/dome-seam-showcase.png at time 30 was inspected:
+the scene is lit and the metallic sphere has directional red/blue reflections.
+Metadata records Attached, one environment generation and zero active generators.
+/tmp/dome-seam-capture.log and /tmp/dome-seam-check.log record capture/check-all
+success. This validates the converter and standalone path, not the Mara device
+configuration or full native-reference fidelity.
+The full usd_bevy library gate passes 483 tests with 15 ignored native/file-watcher
+tests in /tmp/dome-seam-library.log.
+
 ## Release animation projection and route attribution
 
 editor_benchmark supports opt-in USD_PROFILE_ROUTES. It resets cumulative

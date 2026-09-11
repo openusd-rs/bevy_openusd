@@ -10,6 +10,7 @@ struct Samples {
 #[derive(Resource, Default)]
 pub struct GpuTiming {
     count: usize,
+    started: Option<Instant>,
     passes: BTreeMap<String, Samples>,
 }
 
@@ -26,11 +27,17 @@ impl GpuTiming {
     pub fn enabled(&self) -> bool { self.count != 0 }
 
     pub fn collect(&mut self, diagnostics: &DiagnosticsStore) -> bool {
+        self.collect_at(diagnostics, Instant::now())
+    }
+
+    fn collect_at(&mut self, diagnostics: &DiagnosticsStore, now: Instant) -> bool {
         if !self.enabled() { return true; }
+        let started = *self.started.get_or_insert(now);
         for diagnostic in diagnostics.iter() {
             let path = diagnostic.path().to_string();
             if !path.ends_with("/elapsed_gpu") { continue; }
             let Some(measurement) = diagnostic.measurement() else { continue };
+            if measurement.time < started { continue; }
             let samples = self.passes.entry(path).or_default();
             if samples.last == Some(measurement.time) || samples.values.len() >= self.count { continue; }
             samples.last = Some(measurement.time);
@@ -41,7 +48,7 @@ impl GpuTiming {
 
     pub fn report(&self) -> String {
         if !self.enabled() { return String::new(); }
-        let mut output = format!("gpu_timing_samples_per_pass={}\ngpu_timing_units=ms\ngpu_timing_scope=render-pass-timestamps-not-frame-time\n", self.count);
+        let mut output = format!("gpu_timing_samples_per_pass={}\ngpu_timing_units=ms\ngpu_timing_scope=render-pass-timestamps-not-frame-time\ngpu_timing_pre_collection_measurements=excluded\n", self.count);
         for (path, samples) in &self.passes {
             let mut sorted = samples.values.clone();
             sorted.sort_by(f64::total_cmp);
@@ -68,6 +75,7 @@ mod tests {
         let path = DiagnosticPath::new("render/pass/elapsed_gpu");
         store.add(Diagnostic::new(path.clone()));
         let now = Instant::now();
+        assert!(!timing.collect_at(&store, now));
         for (offset, value) in [(0, 3.0), (1, 1.0)] {
             store.get_mut(&path).unwrap().add_measurement(DiagnosticMeasurement {
                 time: now + std::time::Duration::from_millis(offset), value,
@@ -78,5 +86,28 @@ mod tests {
         let report = timing.report();
         assert!(report.contains("median:1.000000,p95:3.000000,max:3.000000"));
         assert!(report.contains("=[3.0, 1.0]"));
+    }
+
+    #[test]
+    fn warmup_only_passes_do_not_enter_the_sample_set() {
+        let mut timing = GpuTiming::parse(Some("1")).unwrap();
+        let mut store = DiagnosticsStore::default();
+        let now = Instant::now();
+        let warmup = DiagnosticPath::new("render/warmup/elapsed_gpu");
+        let active = DiagnosticPath::new("render/active/elapsed_gpu");
+        for path in [&warmup, &active] {
+            store.add(Diagnostic::new(path.clone()));
+            store.get_mut(path).unwrap().add_measurement(DiagnosticMeasurement {
+                time: now - std::time::Duration::from_secs(1), value: 100.0,
+            });
+        }
+        assert!(!timing.collect_at(&store, now));
+        assert!(timing.passes.is_empty());
+        store.get_mut(&active).unwrap().add_measurement(DiagnosticMeasurement {
+            time: now + std::time::Duration::from_millis(1), value: 2.0,
+        });
+        assert!(timing.collect_at(&store, now + std::time::Duration::from_millis(2)));
+        assert!(!timing.report().contains("warmup"));
+        assert!(timing.report().contains("median:2.000000"));
     }
 }

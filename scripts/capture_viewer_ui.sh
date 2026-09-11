@@ -19,6 +19,8 @@ for suffix in settings.txt weston.log viewer.log capture.log inspect.log scene-g
     [[ ! -e "$path" && ! -L "$path" ]] || { echo "capture companion must be new: $path" >&2; exit 2; }
 done
 delay=${USD_UI_CAPTURE_WAIT:-20}
+profile=${USD_UI_CAPTURE_PROFILE:-debug}
+case "$profile" in debug|release) ;; *) echo 'USD_UI_CAPTURE_PROFILE must be debug or release' >&2; exit 2;; esac
 [[ "$delay" =~ ^[1-9][0-9]*$ && "$delay" -le 300 ]] || {
     echo "USD_UI_CAPTURE_WAIT must be 1..300 seconds" >&2; exit 2;
 }
@@ -63,10 +65,12 @@ case "$renderer" in
     *) echo "USD_UI_COMPOSITOR_RENDERER must be vulkan, gl or pixman" >&2; exit 2 ;;
 esac
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$root/scripts/capture_session.sh"
 mkdir -p "$(dirname "$output")"
 printf 'compositor_renderer=%s\ncapture_wait_seconds=%s\noutput_width=1600\noutput_height=1000\ninspection_region=110,110,1400,800\nvalidation=near-black-and-panic-log\n' \
     "$renderer" "$delay" > "${output%.png}.settings.txt"
 printf 'scene_graph_requested=%s\n' "$scene_graph" >> "${output%.png}.settings.txt"
+printf 'viewer_profile=%s\n' "$profile" >> "${output%.png}.settings.txt"
 printf 'capture_timeout_seconds=%s\n' "$capture_timeout" >> "${output%.png}.settings.txt"
 printf 'viewport_requested=%s\n' "$paired" >> "${output%.png}.settings.txt"
 printf 'second_capture_wait_seconds=%s\n' "$second_wait" >> "${output%.png}.settings.txt"
@@ -75,8 +79,8 @@ chmod 700 "$runtime"
 compositor_pid=
 viewer_pid=
 cleanup() {
-    [[ -z "$viewer_pid" ]] || kill -TERM -- "-$viewer_pid" 2>/dev/null || true
-    [[ -z "$compositor_pid" ]] || kill -TERM -- "-$compositor_pid" 2>/dev/null || true
+    capture_session_stop "$runtime/viewer.pid" "$viewer_pid"
+    capture_session_stop "$runtime/compositor.pid" "$compositor_pid"
     wait 2>/dev/null || true
     rm -rf -- "$runtime"
 }
@@ -90,7 +94,7 @@ fi
 unset WAYLAND_SOCKET
 compositor=(weston --backend=headless --renderer="$renderer" --fake-seat --width=1600 --height=1000 --socket="$WAYLAND_DISPLAY" --no-config --debug --idle-time=0)
 if command -v nixVulkan >/dev/null; then compositor=(nixVulkan "${compositor[@]}"); fi
-setsid "${compositor[@]}" > "${output%.png}.weston.log" 2>&1 &
+capture_session_run "$runtime/compositor.pid" "${compositor[@]}" > "${output%.png}.weston.log" 2>&1 &
 compositor_pid=$!
 for ((i=0; i<100; i++)); do
     [[ ! -S "$runtime/$WAYLAND_DISPLAY" ]] || break
@@ -100,6 +104,7 @@ done
 [[ -S "$runtime/$WAYLAND_DISPLAY" ]] || { echo "compositor startup timed out" >&2; exit 1; }
 cd "$root"
 viewer=(env USD_UI_CAPTURE_HANDSHAKE=1 make run WAYLAND_DISPLAY="$WAYLAND_DISPLAY" CARGO="${CARGO:-cargo --offline}" ARGS="$(printf '%q' "$asset")")
+if [[ "$profile" == release ]]; then viewer+=("APP_TARGET=--release --bin usdview"); fi
 if [[ "$paired" == 1 ]]; then
     viewer=(env "USD_SCREENSHOT=$viewport" "${viewer[@]}")
 fi
@@ -107,7 +112,7 @@ if [[ ${USD_UI_CAPTURE_PRIVATE_BUS:-0} == 1 ]]; then
     command -v dbus-run-session >/dev/null || { echo "missing command: dbus-run-session" >&2; exit 2; }
     viewer=(dbus-run-session -- "${viewer[@]}")
 fi
-setsid "${viewer[@]}" > "${output%.png}.viewer.log" 2>&1 &
+capture_session_run "$runtime/viewer.pid" "${viewer[@]}" > "${output%.png}.viewer.log" 2>&1 &
 viewer_pid=$!
 for ((i=0; i<300; i++)); do
     grep -qx 'USD_VIEWER_UI_UPDATED' "${output%.png}.viewer.log" && break

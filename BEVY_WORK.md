@@ -3,6 +3,27 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Live transparency control
+
+The Rendering pane now exposes Enable/Disable OIT with current state and the
+memory/MSAA trade-off. Commands target only viewer chase cameras. Enabling saves
+each camera's prior MSAA value; disabling restores it. Repeated commands preserve
+the original value, unrelated cameras remain untouched, and externally owned OIT
+components are not removed. Startup environment configuration uses the same path.
+
+All 88 viewer tests and the build pass (/tmp/oit-toggle-all-tests.log and
+/tmp/oit-toggle-build.log). The new regression cycles on/off repeatedly with
+8x MSAA and checks ownership boundaries. An initial compile failed on a missing
+Mara module import, corrected before these passing gates.
+
+scripts/replays/transparency_toggle.replay enables at 10s and disables at 25s.
+Both resulting images were inspected: target/oit-toggle-on-host.png reports on,
+and target/oit-toggle-off-desktop.png reports off in the same viewer process.
+/tmp/oit-toggle-capture.log records successful capture and runtime-log checks.
+This proves injected-egui toggle routing, not OS mouse input or a Kubota
+same-process material comparison. Roof diagnosis and the matched MSAA-off
+transparency control remain open.
+
 ## Opt-in order-independent transparency
 
 USD_VIEWER_OIT=1 adds Bevy's OrderIndependentTransparencySettings to the viewer

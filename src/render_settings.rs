@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use bevy::render::{RenderApp, RenderStartup, mesh::allocator::MeshAllocatorSettings, renderer::RenderDevice};
 use bevy::render::error_handler::{RenderError, RenderErrorHandler, RenderErrorPolicy};
 use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
+use mara::ui::modules::bevy as mara_bevy;
 use usd_bevy::route::subdivision::{UsdSubdivisionApplied, UsdSubdivisionError, UsdSubdivisionSettings};
 use usd_bevy::route::curves::{UsdCurveSettings, UsdCurveError};
 
@@ -23,13 +24,26 @@ fn parse_oit(value: Option<&str>) -> Result<bool, &'static str> {
 }
 
 pub fn configure_transparency(camera: &mut EntityCommands, enabled: bool) {
-    if enabled {
-        camera.insert((bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default(), Msaa::Off));
+    camera.queue(move |mut entity: EntityWorldMut| set_transparency(&mut entity, enabled));
+}
+
+#[derive(Component)]
+struct PreviousMsaa(Msaa);
+
+fn set_transparency(camera: &mut EntityWorldMut, enabled: bool) {
+    use bevy::core_pipeline::oit::OrderIndependentTransparencySettings as Oit;
+    if enabled && !camera.contains::<Oit>() {
+        let previous = camera.get::<Msaa>().copied().unwrap_or_default();
+        camera.insert((Oit::default(), Msaa::Off, PreviousMsaa(previous)));
+    } else if !enabled && let Some(previous) = camera.take::<PreviousMsaa>() {
+        camera.remove::<Oit>().insert(previous.0);
     }
 }
 
 #[derive(Clone, Default)]
 struct State {
+    requested_oit: Option<bool>,
+    oit: bool,
     requested: Option<u32>,
     requested_curve_steps: Option<usize>,
     requested_curve_surface_sides: Option<Option<usize>>,
@@ -87,9 +101,15 @@ fn bound_mesh_slabs(settings: &mut MeshAllocatorSettings, device_limit: u64) {
 
 fn apply(world: &mut World) {
     let bridge = world.resource::<RenderSettingsBridge>().clone();
-    let Some((level, steps, sides)) = bridge.0.lock().ok().map(|mut state| (
+    let Some((level, steps, sides, oit)) = bridge.0.lock().ok().map(|mut state| (
         state.requested.take(), state.requested_curve_steps.take(), state.requested_curve_surface_sides.take(),
+        state.requested_oit.take(),
     )) else { return };
+    if let Some(enabled) = oit {
+        let cameras = world.query_filtered::<Entity, (With<Camera3d>, With<mara_bevy::ChaseCamera>)>()
+            .iter(world).collect::<Vec<_>>();
+        for camera in cameras { set_transparency(&mut world.entity_mut(camera), enabled); }
+    }
     if let Some(level) = level {
         if level == 0 { world.remove_resource::<UsdSubdivisionSettings>(); }
         else if let Ok(settings) = UsdSubdivisionSettings::new(level) { world.insert_resource(settings); }
@@ -107,6 +127,8 @@ fn apply(world: &mut World) {
 fn publish(world: &mut World) {
     let bridge = world.resource::<RenderSettingsBridge>().clone();
     let Ok(mut state) = bridge.0.lock() else { return };
+    state.oit = world.query_filtered::<Entity, (With<Camera3d>, With<mara_bevy::ChaseCamera>, With<bevy::core_pipeline::oit::OrderIndependentTransparencySettings>)>()
+        .iter(world).next().is_some();
     state.level = world.get_resource::<UsdSubdivisionSettings>().map_or(0, |settings| settings.levels());
     state.curve_steps = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().cubic_steps();
     state.curve_surface_sides = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().surface_sides();
@@ -133,6 +155,16 @@ fn publish(world: &mut World) {
 
 pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
     let Ok(state) = bridge.0.lock().map(|state| state.clone()) else { return };
+    let transparency_bridge = bridge.clone();
+    body.add_normal("rendering.transparency", "Transparency", "options", vec![
+        Pod::new("rendering.transparency.controls").with_custom_units(4, move |ui| {
+            ui.label(if state.oit { "Order-independent alpha: on" } else { "Order-independent alpha: off" });
+            ui.label("Experimental; extra GPU memory");
+            ui.label("MSAA disabled while enabled");
+            if ui.button(if state.oit { "Disable OIT" } else { "Enable OIT" }).clicked
+                && let Ok(mut state) = transparency_bridge.0.lock() { state.requested_oit = Some(!state.oit); }
+        }),
+    ]);
     if let Some(error) = &state.renderer_error {
         let lines = super::lighting::status_lines(error);
         body.add_normal("rendering.failure", "Renderer stopped", "options", vec![
@@ -204,6 +236,30 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transparency_toggle_restores_msaa_and_scopes_cameras() {
+        use bevy::core_pipeline::oit::OrderIndependentTransparencySettings as Oit;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let bridge = RenderSettingsBridge::default();
+        configure(&mut app, bridge.clone());
+        let camera = app.world_mut().spawn((Camera3d::default(), mara_bevy::ChaseCamera::default(), Msaa::Sample8)).id();
+        let unrelated = app.world_mut().spawn((Camera3d::default(), Msaa::Sample2)).id();
+        for enabled in [true, true, false, false, true, false] {
+            bridge.0.lock().unwrap().requested_oit = Some(enabled);
+            app.update();
+            assert_eq!(bridge.0.lock().unwrap().oit, enabled);
+            assert_eq!(app.world().get::<Oit>(camera).is_some(), enabled);
+            assert_eq!(*app.world().get::<Msaa>(camera).unwrap(), if enabled { Msaa::Off } else { Msaa::Sample8 });
+            assert!(app.world().get::<Oit>(unrelated).is_none());
+            assert_eq!(*app.world().get::<Msaa>(unrelated).unwrap(), Msaa::Sample2);
+        }
+        app.world_mut().entity_mut(camera).insert(Oit::default());
+        bridge.0.lock().unwrap().requested_oit = Some(false);
+        app.update();
+        assert!(app.world().get::<Oit>(camera).is_some());
+    }
+
     #[test]
     fn transparency_is_opt_in_and_disables_msaa() {
         assert!(!super::parse_oit(None).unwrap());

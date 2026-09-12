@@ -7,7 +7,9 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 ## Current release blockers
 
 The viewer supports experimental order-independent transparency with
-`USD_VIEWER_OIT=1 make run ARGS='/path/to/scene.usdz'`. It removes the observed
+the Rendering pane's Enable OIT button, or at startup with
+`USD_VIEWER_OIT=1 make run ARGS='/path/to/scene.usdz'`. Disabling it restores
+the viewer camera's previous MSAA setting. It removes the observed
 Kubota grille triangle-ordering patches, but does not fix its roof speckling.
 This is opt-in, disables MSAA and uses additional fragment-buffer memory;
 performance, overflow and cross-device acceptance remain unverified.

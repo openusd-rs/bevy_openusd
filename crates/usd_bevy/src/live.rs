@@ -539,6 +539,34 @@ fn material_consumer_scopes(stage: &Stage, map: &PrimEntities, paths: &[&str]) -
     Ok(consumers)
 }
 
+fn material_graph_changes_only(stage: &Stage, paths: &[&str]) -> bool {
+    !paths.is_empty() && paths.iter().all(|path| {
+        !property_of(path).is_some_and(|property|
+            property.starts_with("material:binding") || property.starts_with("collection:"))
+            && stage.prim(prim_of(path)).ok().and_then(|prim| prim.type_name().ok().flatten())
+                .is_some_and(|kind| matches!(kind.as_str(), "Material" | "Shader" | "NodeGraph"))
+    })
+}
+
+fn expand_instancer_consumers(stage: &Stage, map: &PrimEntities, scopes: &mut Vec<String>) -> anyhow::Result<()> {
+    loop {
+        let mut added = Vec::new();
+        for (path, _) in map.iter() {
+            if scopes.iter().any(|scope| scope == path) { continue; }
+            let prim = stage.prim(path)?;
+            if prim.type_name()?.as_deref() != Some("PointInstancer") { continue; }
+            if prim.relationship("prototypes").targets()?.iter().any(|target|
+                scopes.iter().any(|scope| target.as_str() == scope
+                    || target.as_str().strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))
+                    || scope.strip_prefix(target.as_str()).is_some_and(|rest| rest.starts_with('/')))) {
+                added.push(path.to_owned());
+            }
+        }
+        if added.is_empty() { return Ok(()); }
+        scopes.extend(added);
+    }
+}
+
 /// Drain the change queue and reproject affected entities.
 ///
 /// * Structural changes reconcile affected subtrees; shared consumers expand the scope.
@@ -554,6 +582,18 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         change.resynced.retain(|path| {
             property_of(path).is_none() || !suppressed.contains(prim_of(path))
         });
+    }
+    let graph_paths: Vec<_> = changes.iter().flat_map(StageChange::paths)
+        .filter(|path| !suppressed.contains(prim_of(path))).map(String::as_str).collect();
+    if material_graph_changes_only(&live.stage, &graph_paths)
+        && let Ok(mut scopes) = material_consumer_scopes(&live.stage, map, &graph_paths) {
+        scopes.extend(graph_paths.iter().map(|path| prim_of(path).to_owned()));
+        if expand_instancer_consumers(&live.stage, map, &mut scopes).is_ok() {
+            reconcile_scoped(world, live, map, true, Some(&scopes));
+        } else {
+            reconcile(world, live, map, true);
+        }
+        return;
     }
     if changes.iter().any(|c| !c.resynced.is_empty()) {
         let paths: Vec<_> = changes.iter().flat_map(StageChange::paths).map(String::as_str).collect();
@@ -1469,6 +1509,76 @@ def NodeGraph "Graph" {}
             Visibility::Hidden,
             "visibility=invisible reprojected to Hidden"
         );
+    }
+
+    #[test]
+    fn shared_shader_edit_patches_consumers_without_touching_other_materials() {
+        let source = crate::UsdSource::new("material-scopes.usda", br#"#usda 1.0
+def Cube "A" { rel material:binding = </Mat> }
+def Cube "B" { rel material:binding = </Mat> }
+def Cube "Other" { rel material:binding = </OtherMat> }
+def PointInstancer "Instances" {
+    rel prototypes = [</A>]
+    int[] protoIndices = [0]
+    point3f[] positions = [(3, 0, 0)]
+}
+def PointInstancer "UnrelatedInstances" {
+    rel prototypes = [</Other>]
+    int[] protoIndices = [0]
+    point3f[] positions = [(6, 0, 0)]
+}
+def Material "Mat" { token outputs:surface.connect = </Shared.outputs:surface> }
+def Shader "Shared" {
+    uniform token info:id = "UsdPreviewSurface"
+    color3f inputs:diffuseColor = (1, 0, 0)
+    token outputs:surface
+}
+def Material "OtherMat" {
+    token outputs:surface.connect = </OtherMat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0, 1, 0)
+        token outputs:surface
+    }
+}
+"#.as_slice()).unwrap();
+        let live = LiveStage::new(source.open_stage().unwrap());
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let other = map.entity("/Other").unwrap();
+        let untouched = world.get::<MeshMaterial3d<StandardMaterial>>(other).unwrap().0.clone();
+        let tick = world.entity(other).get_ref::<Transform>().unwrap().last_changed();
+        let unrelated_instances = map.entity("/UnrelatedInstances").unwrap();
+        let instances_tick = world.entity(unrelated_instances).get_ref::<Transform>().unwrap().last_changed();
+        world.increment_change_tick();
+        crate::authoring::set_attribute(&live.stage, "/Shared", "inputs:diffuseColor", "color3f", Value::Vec3f([0.0, 0.0, 1.0].into())).unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        for path in ["/A", "/B"] {
+            let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap()).unwrap().0;
+            assert_eq!(world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().base_color.to_linear(), LinearRgba::new(0.0, 0.0, 1.0, 1.0));
+        }
+        let mut pending: Vec<_> = world.get::<Children>(map.entity("/Instances").unwrap()).unwrap().iter().collect();
+        let mut rendered_parts = 0;
+        while let Some(instance) = pending.pop() {
+            if let Some(children) = world.get::<Children>(instance) { pending.extend(children.iter()); }
+            if let Some(handle) = world.get::<MeshMaterial3d<StandardMaterial>>(instance) {
+                assert_eq!(world.resource::<Assets<StandardMaterial>>().get(&handle.0).unwrap().base_color.to_linear(), LinearRgba::new(0.0, 0.0, 1.0, 1.0));
+                rendered_parts += 1;
+            }
+        }
+        assert!(rendered_parts > 0);
+        assert_eq!(world.get::<MeshMaterial3d<StandardMaterial>>(other).unwrap().0, untouched);
+        assert_eq!(world.entity(other).get_ref::<Transform>().unwrap().last_changed(), tick);
+        assert_eq!(world.entity(unrelated_instances).get_ref::<Transform>().unwrap().last_changed(), instances_tick);
+        world.increment_change_tick();
+        crate::authoring::set_attribute(&live.stage, "/Shared", "inputs:roughness", "float", Value::Float(0.25)).unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(map.entity("/A").unwrap()).unwrap().0;
+        assert_eq!(world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().perceptual_roughness, 0.25);
+        assert_eq!(world.entity(other).get_ref::<Transform>().unwrap().last_changed(), tick);
     }
 
     /// Open a real `.usda` from disk and project it — the full load path the

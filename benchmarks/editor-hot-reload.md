@@ -60,3 +60,19 @@ capture suspension, and retention-mask length validation. Evidence:
 `/tmp/reload-history-library.log`, `/tmp/reload-history-tests-final.log`, and
 `/tmp/reload-history-check-final.log`. These checks do not establish the remaining
 minimum-consumer or large-document performance requirements.
+
+## Shared material value updates
+
+Changes confined to Material, Shader, and NodeGraph prims now collect bound
+consumers through shader connections and expand dependent point instancers,
+instead of automatically reconciling the entire projection. Binding/collection
+edits, graph traversal errors, mixed structural changes, and removed graph prims
+retain the conservative path.
+
+The regression changes a shared shader outside its Material namespace and adds
+a roughness input. Both bound cubes and a point-instancer prototype update;
+the separately bound cube retains its material handle and transform change tick,
+and the unrelated instancer's transform tick remains unchanged. This verifies
+projection isolation, not new screenshot or large-scene timing evidence.
+Logs: `/tmp/material-scope-tests.log`, `/tmp/material-scope-library-final.log`,
+`/tmp/material-scope-check-final.log`.

@@ -3,6 +3,26 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Roof close-up and body/cabin overlap check
+
+Inspected target/kubota-roof-close.png from viewer_capture at eye (2,4.4,2),
+focus (0,2.8,0), time zero, forward rendering and shadows off. The bright marks
+follow modeled roof ribs and recessed borders. This no longer supports treating
+every bright roof line as random mesh corruption; highlight aliasing remains a
+quality concern. /tmp/kubota-roof-close.log records CAPTURE_OK.
+
+A read-only comparison of the exported USDA's main-body and cabin arrays found
+41952 and 20773 triangles respectively, with zero exactly shared triangles after
+sorting each triangle's three position tuples. Both meshes occupy the same
+identity-transform chassis branch in the inspected source. This narrow probe
+does not detect near-coincident faces, intersecting triangles or overlaps with
+other meshes. Result: /tmp/kubota-body-cabin-overlap.log. The initial probe failed
+its index check because a Perl regex capture was reused during iteration; the
+corrected probe stores the captured point text before parsing it.
+
+No geometry repair or normal-map removal is justified by these controls.
+Anti-aliasing while OIT disables MSAA is the next viewer-side quality target.
+
 ## Kubota orange-paint normal-map control
 
 target/kubota-orange-normal-control.usda sublayers the original USDZ and blocks

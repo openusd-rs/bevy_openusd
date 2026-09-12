@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Color transfer startup optimization
+
+RGBA8 color transforms now use exact per-channel half-float lookup tables,
+with the prior path retained for other formats or overflow. The fixed-source
+Ropa comparison reduces headless open from 70.3 to 29.8 seconds, with identical
+matched GPU pixels. All 490 library tests pass (15 ignored). The source package
+had changed externally since earlier measurements, so a hash-verified local
+copy was used for both paths; benchmarks/ropa-startup.md records the controls.
+
 ## One-minute real-viewer playback
 
 The current release viewer sustains 59.595 animated-mesh projections/s over a

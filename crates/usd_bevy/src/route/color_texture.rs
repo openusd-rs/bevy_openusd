@@ -53,6 +53,9 @@ pub(super) fn transformed(world: &mut World, read: &ReadPreviewMaterial, semanti
     anyhow::ensure!(matches!(image.sampler, bevy::image::ImageSampler::Default), "color transform requires a shared default sampler");
     let count = u64::from(size.width) * u64::from(size.height);
     anyhow::ensure!(count > 0 && count <= 16_777_216, "color image exceeds the 16M pixel transform limit");
+    if let Some(data) = rgba8_transformed(image, count as usize, scale, bias) {
+        return cached(world, (size.width, size.height, data)).map(Some);
+    }
     let mut data = Vec::with_capacity(count as usize * 8);
     for y in 0..size.height {
         for x in 0..size.width {
@@ -62,6 +65,31 @@ pub(super) fn transformed(world: &mut World, read: &ReadPreviewMaterial, semanti
         }
     }
     cached(world, (size.width, size.height, data)).map(Some)
+}
+
+fn rgba8_transformed(image: &Image, count: usize, scale: [f32; 3], bias: [f32; 3]) -> Option<Vec<u8>> {
+    let srgb = match image.texture_descriptor.format {
+        TextureFormat::Rgba8UnormSrgb => true,
+        TextureFormat::Rgba8Unorm => false,
+        _ => return None,
+    };
+    let pixels = image.data.as_ref()?.get(..count.checked_mul(4)?)?;
+    let mut table = [[[0; 2]; 256]; 4];
+    for byte in 0..256 {
+        let value = byte as f32 / 255.0;
+        let linear = if srgb { Color::srgb(value, value, value).to_linear().red } else { value };
+        for channel in 0..4 {
+            let value = if channel == 3 { value } else { linear * scale[channel] + bias[channel] };
+            let value = half::f16::from_f32(value);
+            if !value.is_finite() { return None; }
+            table[channel][byte] = value.to_le_bytes();
+        }
+    }
+    let mut data = Vec::with_capacity(count.checked_mul(8)?);
+    for pixel in pixels.chunks_exact(4) {
+        for channel in 0..4 { data.extend_from_slice(&table[channel][pixel[channel] as usize]); }
+    }
+    Some(data)
 }
 
 fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<Image>> {
@@ -82,6 +110,31 @@ fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgba8_transfer_tables_match_float_conversion_and_source_edits() {
+        for format in [TextureFormat::Rgba8Unorm, TextureFormat::Rgba8UnormSrgb] {
+            let data = (0..=255_u8).flat_map(|v| [v, 255-v, v.rotate_left(2), v.rotate_right(3)]).collect();
+            let mut image = Image::new(Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+                TextureDimension::D2, data, format, bevy::asset::RenderAssetUsages::default());
+            for edited in [false, true] {
+                if edited { image.data.as_mut().unwrap().reverse(); }
+                for [scale, bias] in [[[2.0,3.0,4.0], [0.1,-0.8,2.0]], [[0.5;3], [0.5;3]], [[-2.0;3], [1.0;3]]] {
+                    let mut expected = Vec::new();
+                    for i in 0..256 {
+                        let c = image.get_color_at(i % 16, i / 16).unwrap().to_linear();
+                        append_rgba(&mut expected, [c.red*scale[0]+bias[0], c.green*scale[1]+bias[1],
+                            c.blue*scale[2]+bias[2], c.alpha]).unwrap();
+                    }
+                    assert_eq!(rgba8_transformed(&image, 256, scale, bias).unwrap(), expected);
+                }
+            }
+            assert!(rgba8_transformed(&image, 257, [1.0;3], [0.0;3]).is_none());
+            assert!(rgba8_transformed(&image, 256, [1e10;3], [0.0;3]).is_none());
+            image.data = None;
+            assert!(rgba8_transformed(&image, 256, [1.0;3], [0.0;3]).is_none());
+        }
+    }
 
     #[test]
     fn pruning_preserves_shared_images_and_recounts_payload() {

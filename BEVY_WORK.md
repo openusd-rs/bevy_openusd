@@ -3,6 +3,28 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Oxbo native reference and its material limitation
+
+Native usdrecord/Embree completes at /ReferenceCamera, 1280px width, frame zero:
+target/oxbo-native-reference.png and /tmp/oxbo-native-reference.log. The authored
+Z-up camera corresponds to Bevy eye (12,10,16), focus (0,2,0). A Bevy OIT capture
+using that same camera also completes and was inspected alongside the native
+image: target/oxbo-reference-bevy.png, /tmp/oxbo-reference-bevy-local.log.
+
+Native geometry/framing broadly agree, but Embree explicitly warns that it does
+not support Material prims and disables GPU color correction. Its gray, opaque
+glass appearance is not a PBR material or transparency reference. The comparison
+therefore cannot certify full visual parity or attribute all shading differences
+to faulty Bevy geometry.
+
+The first AssetServer capture correctly rejected an absolute sublayer escaping
+its source root (/tmp/oxbo-reference-bevy.log). The successful probe uses a
+byte-identical local package copy and a relative sublayer in
+target/oxbo-native-reference.usda. Original/copy SHA256 both equal
+816409b1c2d5adeb17039963045edb7326cd8096a7f257af244bceced5e09d84.
+No resolver sandbox or source asset was modified. These are render probes, not
+a new production code change or test-suite gate.
+
 ## Oxbo shadow control and source geometry inspection
 
 Matched release viewer_capture runs at eye (12,10,16), focus (0,2,0), time zero

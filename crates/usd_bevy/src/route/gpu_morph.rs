@@ -33,7 +33,7 @@ pub(crate) fn set_weights(world: &mut World, entity: Entity, weights: Vec<f32>) 
 
 pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyhow::Result<()> {
     let read = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)?.ok_or_else(|| anyhow::anyhow!("missing morph mesh"))?;
-    let mut mesh = crate::mesh::mesh_from_usd(&read);
+    let mut mesh = crate::mesh::assemble_mesh(&read, None, false);
     let weights = prepare(ctx, &read, &mut mesh, true)?;
     let handle = super::cache::intern_mesh(world, mesh);
     set_weights(world, entity, weights);
@@ -83,6 +83,29 @@ pub(crate) fn prepare(ctx: &RouteCtx, read: &crate::read::geom::ReadMesh, mesh: 
 mod tests {
     use super::*;
     use bevy::camera::visibility::NoFrustumCulling;
+
+    #[test]
+    fn morph_preparation_replaces_rest_tangents() {
+        for name in ["morph_tangent_normals", "skel_morph_tangent_normals"] {
+            let file = format!("{}/../../assets/{name}.usda", env!("CARGO_MANIFEST_DIR"));
+            let stage = crate::UsdSource::new(&file, std::fs::read(&file).unwrap()).unwrap().open_stage().unwrap();
+            let path = openusd::sdf::path("/Test/Face").unwrap();
+            for time in [0.0, 2.5, 5.0, 10.0, 0.0] {
+                let ctx = RouteCtx::at(&stage, &path, Some(time));
+                let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+                let mut old = crate::mesh::mesh_from_usd(&read);
+                let mut new = crate::mesh::assemble_mesh(&read, None, false);
+                assert!(old.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
+                assert!(new.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
+                assert_eq!(prepare(&ctx, &read, &mut old, true).unwrap(), prepare(&ctx, &read, &mut new, true).unwrap());
+                for (id, values) in old.attributes() {
+                    assert_eq!(values.get_bytes(), new.attribute(*id).unwrap().get_bytes());
+                }
+                assert_eq!(old.get_index_buffer_bytes(), new.get_index_buffer_bytes());
+                assert_eq!(old.get_morph_targets(), new.get_morph_targets());
+            }
+        }
+    }
 
     #[test]
     fn combined_normal_fixture_keeps_skin_morph_uvs_and_materials() {

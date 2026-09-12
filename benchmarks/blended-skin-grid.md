@@ -1,5 +1,40 @@
 # Blended-skin preparation cost
 
+## Skip superseded morph rest tangents
+
+GPU morph attachment now assembles the initial mesh without rest-pose tangents;
+morph preparation supplies the deformed tangents. Combined skin/morph attachment
+also omits that initial pass. Skin-only tangent behavior is unchanged.
+The regression compares every vertex attribute, index buffer and morph target
+with the previous preparation sequence at 0, 2.5, 5, 10 and backward 0 for both
+morph-only and combined fixtures.
+
+For a morph-only control of the 100-cell animated grid, a strongest wrapper
+sublayers `grid.usda` and authors empty `primvars:skel:jointWeights` and
+`primvars:skel:jointIndices` arrays on `/Test/Face`. The local wrapper is
+`target/skin-grid-animated-100/morph-only.usda`. With release editor_benchmark,
+one open, 100 measured repeated seeks and route profiling enabled:
+
+| Version | Preparation median | p95 | Maximum |
+|---|---:|---:|---:|
+| Before | 36.097 ms | 36.941 ms | 41.111 ms |
+| After | 19.042 ms | 19.526 ms | 20.713 ms |
+
+Runs were sequential with no concurrent build/test jobs during measurement.
+SkinRoute's 100-seek total drops from 3469.139 to 1758.098 ms. Retained meshes,
+vertices, indices and morph payload are unchanged. This is approximately 47%
+less preparation time in this morph-only control, not presented frame timing
+or an improvement claim for the nonuniform-scale skinned grid above.
+Logs: `/tmp/morph-tangent-{before,after}.log`.
+
+Both `target/morph-tangent-{before,after}.png` were inspected at time 5 with
+/ReferenceCamera, forward rendering, MSAA off and shadows off. They are
+pixel-exact across the complete 1280x720 image
+(`/tmp/morph-tangent-frame-compare.log`); both captures report CAPTURE_OK.
+The library passes 534 tests (19 ignored), workspace check and release example
+builds pass (`/tmp/morph-tangent-{library,check,after-build}.log`). The full
+workspace suite was not rerun for this increment.
+
 ## Fixed-pose GPU render timestamps
 
 At time 5 of the animated-joint grid, collect 120 fresh timestamp samples per

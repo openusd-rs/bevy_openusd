@@ -3,6 +3,38 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Seven-machine geometry audit and Kubota transparency lead
+
+All seven USDZ files now pass Make-driven scene_report at time zero. Logs and
+exit statuses are retained in target/machine-corpus-reports. These counts cover
+all traversed meshes, including collision/hidden geometry, without deformation:
+
+| Asset | Meshes | Triangles | Degenerate triangles |
+| --- | ---: | ---: | ---: |
+| Claas | 53 | 109465 | 4 |
+| Fendt | 258 | 413643 | 0 |
+| Knoche | 85 | 150616 | 0 |
+| Krampe | 81 | 113477 | 0 |
+| Kubota | 199 | 404261 | 7 |
+| Oxbo | 1760 | 935066 | 1 |
+| Ropa | 592 | 305920 | 14 |
+
+Every report has zero invalid indices and invalid referenced normals. This is
+geometry validation, not rendered acceptance for all seven assets.
+
+Inspected target/kubota-machine-host.png: the orange tractor renders, but grille
+surfaces show triangular patching and roof edges show thin speckled lines.
+The direct GPU capture confirms these are not compositor-only artifacts.
+The isolated capture exits successfully; /tmp/kubota-machine-capture.log and
+target/kubota-machine-desktop.* retain the run.
+
+Exported inspection layer target/kubota-inspection.usda shows both grille
+materials use texture alpha connected to Preview Surface opacity, with no
+opacityThreshold authored. They also have signed normal texture scale/bias.
+Transparent triangle ordering is a testable lead, not an established cause.
+Bevy 0.19.1's local order_independent_transparency example demonstrates the
+camera OIT component and Msaa::Off requirement; no OIT change is applied yet.
+
 ## Machine USDZ collection: initial acceptance
 
 The user supplied /home/bresilla/machines/usd as an additional asset corpus:

@@ -38,8 +38,9 @@ Current limitations, still being implemented:
 - Renaming a package's default layer entry is not qualified; existing entry
   identity is required. Nested-package and large machinery refresh timing still
   need dedicated coverage.
-- External layer updates reset undo history; current unsaved opinions in other
-  layers remain, but a changed dirty layer blocks publication.
+- External layer updates retain unrelated undo/redo commands. Commands touching
+  a reloaded layer are discarded, including redo commands whose replay would
+  overwrite the new source. A changed dirty layer still blocks publication.
 - Candidate validation traverses a document copy even though publication applies
   only changed layer fields. Large-document timing is not qualified.
 - Structural projection is scoped, but removals and some shared material/skeleton/prototype
@@ -48,3 +49,14 @@ Current limitations, still being implemented:
 - Metadata polling cannot detect a writer that preserves both mtime and size.
 - A Blender-driven export itself has not been tested; tests write the same disk
   files directly, including atomic rename saves.
+
+## History isolation
+
+The follow-up history gate passes 527 library tests (19 ignored) and workspace
+check. Nine focused editor reload tests pass, including unrelated undo/redo
+survival, selective removal of conflicting commands from mixed-layer history,
+rejection of redo that would overwrite a reloaded source, nested/panic-safe
+capture suspension, and retention-mask length validation. Evidence:
+`/tmp/reload-history-library.log`, `/tmp/reload-history-tests-final.log`, and
+`/tmp/reload-history-check-final.log`. These checks do not establish the remaining
+minimum-consumer or large-document performance requirements.

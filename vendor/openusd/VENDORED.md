@@ -48,6 +48,13 @@ transitions. Asset-valued clip resolution is unchanged. It does not add clip
 baking or establish complete clip parity.
 
 The root Cargo patch table redirects all three Git dependency packages here.
+The capture wrapper also exposes scoped recording suspension, recent transaction
+layer identifiers, and an oldest-first transaction retention mask. The editor
+uses these APIs to publish external layer refreshes without recording them as
+user edits, retain unrelated undo/redo commands, and discard commands touching
+reloaded layers. Suspension restores its previous state across nested calls and
+unwinding; a retention-mask length mismatch leaves history unchanged.
+
 The usd_bevy and usd_macro manifests also use direct relative paths to this
 copy, so external path consumers do not depend on inheriting a root patch table.
 Keep the Git revision declarations: they record the baseline for removing this

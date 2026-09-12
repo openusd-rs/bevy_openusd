@@ -577,6 +577,7 @@ struct HistoryEntry {
     target: EditTarget,
     local_target: bool,
     transactions: usize,
+    layers: std::collections::BTreeSet<String>,
     selection_before: Option<String>,
     selection_after: Option<String>,
 }
@@ -785,7 +786,8 @@ impl EditorSession {
             self.revision = self.revision.wrapping_add(1);
             let selection_before = self.selected.clone();
             self.selected = edit.selection_after(self.selected.as_deref());
-            self.undo.push(HistoryEntry { edit, target, local_target, transactions, selection_before, selection_after: self.selected.clone() });
+            let layers = self.stage.recent_layer_identifiers(transactions);
+            self.undo.push(HistoryEntry { edit, target, local_target, transactions, layers, selection_before, selection_after: self.selected.clone() });
             self.redo.clear();
             self.trim_history();
         }
@@ -825,6 +827,7 @@ impl EditorSession {
         result?;
         let mut entry = self.redo.pop().unwrap();
         entry.transactions = self.stage.undo_depth() - before;
+        entry.layers = self.stage.recent_layer_identifiers(entry.transactions);
         if entry.selection_before != entry.selection_after { self.selected = entry.selection_after.clone(); }
         self.undo.push(entry);
         self.revision = self.revision.wrapping_add(1);

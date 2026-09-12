@@ -89,6 +89,7 @@ impl EditorSession {
     }
 
     pub(super) fn reload_paths(&mut self, paths: Option<&[PathBuf]>) -> anyhow::Result<Option<TexturePublication>> {
+        self.synchronize_external_edits();
         let disk = self.save_state.borrow().disk.clone()
             .ok_or_else(|| anyhow::anyhow!("document has no disk provenance"))?;
         let baselines = disk.lock().expect("disk baselines").clone();
@@ -155,12 +156,22 @@ impl EditorSession {
         let previous = disk.replacements.lock().expect("editor source replacements").clone();
         disk.replacements.lock().expect("editor source replacements")
             .extend(source_bytes.iter().map(|(path, bytes)| (path.clone(), Arc::from(bytes.clone()))));
-        if let Err(error) = plan.as_ref().map_or(Ok(()), |plan| plan.apply(self.stage())) {
+        if let Err(error) = self.stage.without_recording(|stage|
+            plan.as_ref().map_or(Ok(()), |plan| plan.apply(stage))) {
             *disk.replacements.lock().expect("editor source replacements") = previous;
             return Err(error);
         }
         self.source = Some(source);
-        self.synchronize_external_edits();
+        if !replacements.is_empty() {
+            let conflicts = |entry: &HistoryEntry|
+                replacements.iter().any(|(id, _)| entry.layers.contains(id));
+            let keep: Vec<_> = self.undo.iter().flat_map(|entry|
+                std::iter::repeat_n(!conflicts(entry), entry.transactions)).collect();
+            assert!(self.stage.retain_transactions(&keep), "editor transaction history is inconsistent");
+            self.undo.retain(|entry| !conflicts(entry));
+            self.redo.retain(|entry| !conflicts(entry));
+            self.revision = self.revision.wrapping_add(1);
+        }
         for (id, _) in &replacements {
             self.save_state.borrow_mut().reloaded_layer(self.stage(), id);
         }
@@ -221,6 +232,100 @@ impl TexturePublication {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unrelated_layer_reload_preserves_undo_and_redo() {
+        let directory = tempfile::tempdir().unwrap();
+        let child = directory.path().join("child.usda");
+        let write_child = |size| std::fs::write(&child,
+            format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n")).unwrap();
+        write_child(1);
+        let root = directory.path().join("root.usda");
+        let text = b"#usda 1.0\ndef Xform \"External\" (prepend references = @child.usda@</Model>) {}\ndef Cube \"Local\" { double size = 1 }\n";
+        std::fs::write(&root, text).unwrap();
+        let mut editor = EditorSession::from_source(crate::UsdSource::new(&root, text.as_slice()).unwrap()).unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Local".into(), name: "size".into(), type_name: "double".into(), value: Value::Double(2.0) }).unwrap();
+        write_child(3);
+        editor.reload_sources().unwrap();
+        assert_eq!(editor.undo.len(), 1);
+        assert_eq!(editor.stage.undo_depth(), 1);
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().prim("/Local").unwrap().attribute("size").get::<f64>().unwrap(), Some(1.0));
+        write_child(5);
+        editor.reload_sources().unwrap();
+        assert_eq!(editor.redo.len(), 1);
+        assert!(editor.redo().unwrap());
+        assert_eq!(editor.stage().prim("/Local").unwrap().attribute("size").get::<f64>().unwrap(), Some(2.0));
+        assert_eq!(editor.stage().prim("/External").unwrap().attribute("size").get::<f64>().unwrap(), Some(5.0));
+    }
+
+    #[test]
+    fn reload_invalidates_redo_that_would_overwrite_the_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root.usda");
+        let text = b"#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n";
+        std::fs::write(&root, text).unwrap();
+        let mut editor = EditorSession::from_source(crate::UsdSource::new(&root, text.as_slice()).unwrap()).unwrap();
+        editor.edit(EditorEdit::Attribute { prim: "/Model".into(), name: "size".into(), type_name: "double".into(), value: Value::Double(2.0) }).unwrap();
+        editor.undo().unwrap();
+        std::fs::write(&root, "#usda 1.0\ndef Cube \"Model\" { double size = 3 }\n").unwrap();
+        editor.reload_sources().unwrap();
+        assert!(!editor.redo().unwrap());
+        assert_eq!(editor.stage().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap(), Some(3.0));
+    }
+
+    #[test]
+    fn reload_prunes_conflicting_commands_without_dropping_unrelated_undo() {
+        let directory = tempfile::tempdir().unwrap();
+        let child = directory.path().join("child.usda");
+        std::fs::write(&child, "#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n").unwrap();
+        let root = directory.path().join("root.usda");
+        let text = b"#usda 1.0\n(subLayers = [@child.usda@])\ndef Cube \"Local\" { double size = 1 }\n";
+        std::fs::write(&root, text).unwrap();
+        let mut editor = EditorSession::from_source(crate::UsdSource::new(&root, text.as_slice()).unwrap()).unwrap();
+        let edit = |prim: &str, value| EditorEdit::Attribute {
+            prim: prim.into(), name: "size".into(), type_name: "double".into(), value: Value::Double(value),
+        };
+        editor.set_edit_layer(child.to_str().unwrap()).unwrap();
+        editor.edit(edit("/Model", 2.0)).unwrap();
+        editor.edit(edit("/Model", 1.0)).unwrap();
+        editor.set_edit_layer(root.to_str().unwrap()).unwrap();
+        editor.edit(edit("/Local", 2.0)).unwrap();
+        assert_eq!(editor.undo.len(), 3);
+        std::fs::write(&child, "#usda 1.0\ndef Cube \"Model\" { double size = 3 }\n").unwrap();
+        editor.reload_sources().unwrap();
+        assert_eq!(editor.undo.len(), 1);
+        assert_eq!(editor.stage.undo_depth(), 1);
+        assert!(editor.undo().unwrap());
+        assert_eq!(editor.stage().prim("/Local").unwrap().attribute("size").get::<f64>().unwrap(), Some(1.0));
+        assert_eq!(editor.stage().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap(), Some(3.0));
+        assert!(!editor.undo().unwrap());
+    }
+
+    #[test]
+    fn capture_suspension_is_nested_and_panic_safe() {
+        let stage = UndoStage::from(Stage::builder().in_memory("capture.usda").unwrap());
+        stage.define_prim("/Before").unwrap();
+        stage.without_recording(|_| {
+            stage.without_recording(|stage| { stage.define_prim("/Nested").unwrap(); });
+            stage.define_prim("/Outer").unwrap();
+        });
+        assert_eq!(stage.undo_depth(), 1);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            stage.without_recording(|stage| {
+                stage.define_prim("/BeforePanic").unwrap();
+                panic!("test unwind");
+            });
+        }));
+        assert!(result.is_err());
+        stage.define_prim("/After").unwrap();
+        assert_eq!(stage.undo_depth(), 2);
+        assert!(!stage.retain_transactions(&[false]));
+        assert_eq!(stage.undo_depth(), 2);
+        stage.undo().unwrap();
+        assert!(!stage.prim("/After").unwrap().is_valid().unwrap());
+        assert!(stage.prim("/BeforePanic").unwrap().is_valid().unwrap());
+    }
 
     fn tick_until(app: &mut App, predicate: impl Fn(&World) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(8);

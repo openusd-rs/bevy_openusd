@@ -713,7 +713,16 @@ def Xform "Model" (
     }
 
     #[test]
-    fn bevy_reload_characterization_stale_failure_overwrites_loaded_state() {
+    fn bevy_reload_serializes_source_reads_without_blocking_other_sources() {
+        exercise_serialized_reload(true);
+    }
+
+    #[test]
+    fn bevy_reload_serializes_older_successful_source_reads() {
+        exercise_serialized_reload(false);
+    }
+
+    fn exercise_serialized_reload(fail_older: bool) {
         use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 
         #[derive(Asset, TypePath)]
@@ -721,6 +730,7 @@ def Xform "Model" (
 
         #[derive(Default)]
         struct Gate {
+            fail_older: bool,
             calls: AtomicUsize,
             release: [AtomicBool; 2],
             waker: [Mutex<Option<std::task::Waker>>; 2],
@@ -734,9 +744,12 @@ def Xform "Model" (
             type Settings = ();
             type Error = std::io::Error;
 
-            async fn load(&self, _: &mut dyn Reader, _: &(), _: &mut LoadContext<'_>)
+            async fn load(&self, _: &mut dyn Reader, _: &(), context: &mut LoadContext<'_>)
                 -> Result<Probe, std::io::Error>
             {
+                if context.path().path() == Path::new("other.reload_probe") {
+                    return Ok(Probe(42));
+                }
                 let call = self.0.calls.fetch_add(1, Ordering::SeqCst);
                 if call == 1 || call == 3 {
                     let slot = usize::from(call == 3);
@@ -749,7 +762,7 @@ def Xform "Model" (
                             std::task::Poll::Pending
                         }
                     }).await;
-                    if call == 1 {
+                    if call == 1 && self.0.fail_older {
                         return Err(std::io::Error::other("older load failed"));
                     }
                 }
@@ -760,7 +773,7 @@ def Xform "Model" (
         }
 
         let (mut app, directory) = memory_app();
-        let gate = Arc::new(Gate::default());
+        let gate = Arc::new(Gate { fail_older, ..default() });
         app.init_asset::<Probe>().register_asset_loader(ProbeLoader(gate.clone()));
         directory.insert_asset_text(Path::new("root.reload_probe"), "probe");
         let server = app.world().resource::<AssetServer>().clone();
@@ -770,20 +783,19 @@ def Xform "Model" (
         server.reload("fixture://root.reload_probe");
         tick_until(&mut app, |_| gate.calls.load(Ordering::SeqCst) >= 2);
         server.reload("fixture://root.reload_probe");
-        tick_until(&mut app, |world| {
-            world.resource::<Assets<Probe>>().get(&handle).is_some_and(|probe| probe.0 == 2)
-                && matches!(server.get_load_state(handle.id()), Some(LoadState::Loaded))
-        });
+        directory.insert_asset_text(Path::new("other.reload_probe"), "other");
+        let other: Handle<Probe> = server.load("fixture://other.reload_probe");
+        tick_until(&mut app, |world| world.resource::<Assets<Probe>>().get(&other).is_some());
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 2);
 
+        gate.release[1].store(true, Ordering::SeqCst);
         gate.release[0].store(true, Ordering::SeqCst);
         if let Some(waker) = gate.waker[0].lock().unwrap().take() { waker.wake(); }
-        tick_until(&mut app, |_| matches!(server.get_load_state(handle.id()), Some(LoadState::Failed(_))));
-        assert_eq!(app.world().resource::<Assets<Probe>>().get(&handle).unwrap().0, 2);
-        let Some(LoadState::Failed(error)) = server.get_load_state(handle.id()) else { unreachable!() };
-        assert!(error.to_string().contains("older load failed"));
-        gate.release[1].store(true, Ordering::SeqCst);
-        if let Some(waker) = gate.waker[1].lock().unwrap().take() { waker.wake(); }
-        tick_until(&mut app, |_| matches!(server.get_load_state(handle.id()), Some(LoadState::Loaded)));
+        let final_call = if fail_older { 3 } else { 2 };
+        tick_until(&mut app, |world| {
+            world.resource::<Assets<Probe>>().get(&handle).is_some_and(|probe| probe.0 == final_call)
+                && matches!(server.get_load_state(handle.id()), Some(LoadState::Loaded))
+        });
     }
 
     fn watched_memory_app() -> (App, bevy::asset::io::memory::Dir, impl Fn(&str)) {

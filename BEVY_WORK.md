@@ -3,6 +3,17 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Serialize same-source asset loads
+
+A local, documented Bevy asset 0.19.1 patch orders reader acquisition and
+completion publication per source, including labels, while unrelated sources
+remain concurrent. Gated regressions cover both older failures and successes.
+The full workspace gate passes, and the original nested-package repair test
+passes 100 consecutive workspace-binary runs (800 repair cycles). No blanket
+error suppression or retry timer is introduced. A slow loader now delays later
+loads of the same source. Evidence and remaining work:
+`benchmarks/acceptance-checkpoint.md`, `vendor/bevy_asset/PATCHES.md`.
+
 ## Validate animated blended joint palettes
 
 Added sampled joint translations/rotations/scales and an optional animated mode

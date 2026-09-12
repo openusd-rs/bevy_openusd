@@ -106,3 +106,22 @@ and workspace check passes (`/tmp/reload-preflight-library.log`,
 `/tmp/reload-preflight-check.log`). The broader workspace run started before this
 preflight edit passed 695 tests across 33 suites, with 19 ignored
 (`/tmp/hot-reload-workspace.log`); it is not a full-target gate for this follow-up.
+
+## Retired texture dependencies
+
+The watcher and reload reader now derive texture dependencies from current
+requests rather than every historical disk hash. Switching a material to a new
+texture and deleting the old image no longer poisons later refreshes. Missing
+old textures are checked against the candidate document before rejection; a
+missing texture still requested by that candidate continues to fail safely.
+Newly requested images read fresh disk bytes, including when reintroducing a
+previously cached filename. Historical save hashes remain available separately.
+Snapshot-only sources do not start filesystem refreshes.
+
+The native regression switches filenames while removing the old PNG, verifies
+the retired path leaves the watcher, changes the replacement image, and then
+reintroduces the missing original filename. It retains the good state until a
+new original PNG appears and loads its new pixels, not cached pixels. Eleven
+focused editor reload tests pass (`/tmp/texture-retirement-focused.log`);
+library and check evidence are in `/tmp/texture-retirement-library-final.log`
+and `/tmp/texture-retirement-check.log`.

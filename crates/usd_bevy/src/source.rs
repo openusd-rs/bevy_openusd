@@ -78,6 +78,8 @@ impl UsdSource {
         &self.identifier
     }
 
+    pub(crate) fn filesystem_backed(&self) -> bool { self.filesystem }
+
     pub fn dependencies(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
     }

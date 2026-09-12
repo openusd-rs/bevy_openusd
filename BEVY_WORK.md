@@ -3,6 +3,27 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Kubota orange-paint normal-map control
+
+target/kubota-orange-normal-control.usda sublayers the original USDZ and blocks
+only the orange paint Preview Surface normal connection, replacing it with
+(0,0,1). The USDZ is untouched. Both paths retain OIT and the same framing.
+The inspected target/kubota-orange-normal-control-host.png still shows the thin
+bright roof lines. Thus this single normal-map override is not a demonstrated
+repair; no normal-map policy was changed in production.
+
+The source normal texture was extracted and inspected as
+target/kubota-orange-normal-source.png. It contains dense authored panel/edge
+detail. The current decoder creates ordinary images without generating mipmaps,
+but that alone does not establish the cause of these particular roof marks.
+Close-up geometry/material isolation remains necessary to distinguish unwanted
+overlap from aliased highlights on authored roof details.
+
+The capture wrapper completed successfully, with direct host readback and desktop
+companions retained under target/kubota-orange-normal-control-* and log
+/tmp/kubota-orange-normal-control.log. This was a diagnostic-layer/render step,
+not a production source change or a new Rust test gate.
+
 ## Live transparency control
 
 The Rendering pane now exposes Enable/Disable OIT with current state and the

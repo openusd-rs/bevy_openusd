@@ -6,6 +6,28 @@ use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
 use usd_bevy::route::subdivision::{UsdSubdivisionApplied, UsdSubdivisionError, UsdSubdivisionSettings};
 use usd_bevy::route::curves::{UsdCurveSettings, UsdCurveError};
 
+pub fn oit_from_env() -> Result<bool, Box<dyn std::error::Error>> {
+    match std::env::var("USD_VIEWER_OIT") {
+        Ok(value) => parse_oit(Some(&value)).map_err(Into::into),
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn parse_oit(value: Option<&str>) -> Result<bool, &'static str> {
+    match value {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        _ => Err("USD_VIEWER_OIT must be 0 or 1"),
+    }
+}
+
+pub fn configure_transparency(camera: &mut EntityCommands, enabled: bool) {
+    if enabled {
+        camera.insert((bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default(), Msaa::Off));
+    }
+}
+
 #[derive(Clone, Default)]
 struct State {
     requested: Option<u32>,
@@ -182,6 +204,25 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transparency_is_opt_in_and_disables_msaa() {
+        assert!(!super::parse_oit(None).unwrap());
+        assert!(!super::parse_oit(Some("0")).unwrap());
+        assert!(super::parse_oit(Some("1")).unwrap());
+        for value in ["", "true", "2", "-1"] {
+            assert!(super::parse_oit(Some(value)).is_err());
+        }
+        for enabled in [false, true] {
+            let mut world = World::new();
+            let entity = world.spawn((Camera3d::default(), Msaa::Sample4)).id();
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, &world);
+            super::configure_transparency(&mut commands.entity(entity), enabled);
+            queue.apply(&mut world);
+            assert_eq!(world.get::<bevy::core_pipeline::oit::OrderIndependentTransparencySettings>(entity).is_some(), enabled);
+            assert_eq!(*world.get::<Msaa>(entity).unwrap(), if enabled { Msaa::Off } else { Msaa::Sample4 });
+        }
+    }
     use super::*;
 
     #[test]

@@ -3,6 +3,27 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Opt-in order-independent transparency
+
+USD_VIEWER_OIT=1 adds Bevy's OrderIndependentTransparencySettings to the viewer
+camera and sets Msaa::Off; absent/0 preserves the existing rendering policy.
+Other values fail before window creation. A regression checks parsing and both
+camera-component policies. All 87 viewer tests and the viewer build pass:
+/tmp/oit-viewer-tests.log and /tmp/oit-build.log.
+
+The inspected target/kubota-oit-desktop.png removes the large triangular grille
+patches seen in target/kubota-machine-desktop.png. Roof speckling remains, and
+OIT's MSAA-off edges are visibly rougher. This supports transparent ordering as
+the grille defect mechanism, not complete material or scene fidelity. Neither
+the USDZ nor its material values were changed. The earlier direct host capture
+again caught an incomplete scene; only the later desktop image supports this
+comparison. /tmp/kubota-oit-capture.log records successful wrapper completion.
+
+OIT remains opt-in: upstream defaults use eight sorted fragments and a four-
+fragment-per-pixel average allocation. Overflow, memory/performance and other
+GPU/backend behavior have not been accepted. A user-facing toggle, matched
+MSAA-off control and independent roof-artifact diagnosis remain follow-ups.
+
 ## Seven-machine geometry audit and Kubota transparency lead
 
 All seven USDZ files now pass Make-driven scene_report at time zero. Logs and

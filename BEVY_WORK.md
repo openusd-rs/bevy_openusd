@@ -3,6 +3,19 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Cache unchanged rest tangent generation
+
+MeshRoute now uses a bounded CPU tangent cache with exact input comparison,
+private buffers and no retained GPU asset handles. Route order and material
+diagnostics are preserved. The grid retains 729648 cache payload bytes; measured
+preparation drops from 38.012 ms to 21.060 ms, with a 20.910 ms repeat. Inspected
+CPU/GPU and before/after captures are RGB-exact. This is not presented frame time
+or 60 Hz acceptance. Evidence: `benchmarks/blended-skin-grid.md`.
+
+Full rerun passes 663 tests (18 ignored), check-all and viewer build. The first
+full run had a nested-package repair timeout; isolated and full rechecks pass
+without changes. That failure remains documented, not claimed fixed.
+
 ## Reuse sampled joint normal inverses
 
 CPU normals and GPU corrections now reuse joint inverse-transposes within one

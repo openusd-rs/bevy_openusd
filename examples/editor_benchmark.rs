@@ -60,6 +60,7 @@ struct Measurement {
     rss_after_seeks: Option<usize>,
     cached_meshes: usize,
     cached_mesh_payload_bytes: usize,
+    cached_tangent_payload_bytes: usize,
 }
 
 fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measurement, Box<dyn std::error::Error>> {
@@ -121,6 +122,9 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
         result.cached_meshes = cache.len();
         result.cached_mesh_payload_bytes = cache.retained_payload_bytes();
     }
+    if let Some(cache) = app.world().get_resource::<usd_bevy::route::cache::MeshTangentCache>() {
+        result.cached_tangent_payload_bytes = cache.retained_payload_bytes();
+    }
     result.gpu_morph_entities = app.world_mut().query::<&usd_bevy::route::gpu_morph::UsdGpuMorph>().iter(app.world()).count();
     result.mesh_entities = app.world_mut().query::<&Mesh3d>().iter(app.world()).count();
     result.subset_entities = app.world_mut().query::<&usd_bevy::route::subset::UsdSubset>().iter(app.world()).count();
@@ -175,16 +179,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         else if seek == SeekMode::Unique { "1000-distinct-times-in-(0,10]" } else { "0,5,10,5" },
         if seek == SeekMode::Idle { 0 } else { 4 }, seek.samples(), if seek != SeekMode::Idle { "after-seeks" } else { "after-idle" });
     println!("rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks peak_assets=sampled-after-updates-not-allocation-counts");
-    println!("sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes");
+    println!("sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes");
     for sample in 0..samples {
         let m = measure(&path, gpu_prepared, seek)?;
-        println!("{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{}", m.open.as_secs_f64()*1000.0,
+        println!("{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{}", m.open.as_secs_f64()*1000.0,
             m.idle.as_secs_f64()*1_000_000.0, m.mesh_entities, m.subset_entities, m.mesh_assets,
             m.vertices, m.unreferenced_vertices, m.vertex_bytes, m.index_bytes, m.morph_bytes, m.image_bytes,
             m.seek_median.as_secs_f64()*1_000_000.0, m.seek_p95.as_secs_f64()*1_000_000.0, m.seek_max.as_secs_f64()*1_000_000.0, m.gpu_morph_entities,
             m.peak_asset_counts[0], m.peak_asset_counts[1], m.peak_asset_counts[2],
             m.rss_before_seeks.map_or("NA".into(), |v| v.to_string()), m.rss_after_seeks.map_or("NA".into(), |v| v.to_string()),
-            m.cached_meshes,m.cached_mesh_payload_bytes);
+            m.cached_meshes,m.cached_mesh_payload_bytes,m.cached_tangent_payload_bytes);
     }
     Ok(())
 }

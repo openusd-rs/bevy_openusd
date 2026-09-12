@@ -111,7 +111,8 @@ impl MeshRoute {
             ctx.prim_str(),
             read.points.len()
         );
-        let mesh = crate::mesh::mesh_from_usd(&read);
+        let mut mesh = crate::mesh::assemble_mesh(&read, None, false);
+        if read.uvs.is_some() { super::cache::generate_cached_tangents(world, &mut mesh); }
         let mesh_handle = super::cache::intern_mesh(world, mesh);
         let material = super::cache::intern_material(world, super::material::default_material(ctx));
         if let Ok(mut e) = world.get_entity_mut(entity) {

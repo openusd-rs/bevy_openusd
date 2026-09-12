@@ -1,5 +1,52 @@
 # Blended-skin preparation cost
 
+## Cache unchanged rest-mesh tangent generation
+
+MeshRoute assembles geometry without tangents and uses MeshTangentCache to reuse
+generated tangents for byte-identical inputs. Hash candidates undergo full mesh
+comparison, so hash collisions cannot substitute geometry. Cached CPU input and
+tangent buffers are private copies, independent of mutable mesh assets. Failed
+generation is not cached. Route order, custom registries and material tangent
+diagnostics remain unchanged; public mesh conversion is unchanged.
+
+Retention is FIFO, at most 32 entries and 16 MiB of mesh/tangent payload by
+default, with no retained asset handles. Applications may insert
+MeshTangentCache::with_byte_budget before projection, including zero to disable
+retention. Payload accounting excludes allocator/container overhead and is not
+GPU memory. The editor benchmark now reports cached_tangent_payload_bytes.
+
+Same 100-seek profiled grid, GPU-prepared mode, sequential runs without concurrent
+builds/tests during measurement:
+
+| Mode | Median | p95 | Maximum |
+|---|---:|---:|---:|
+| Before (81306ed) | 38.012 ms | 39.043 ms | 41.823 ms |
+| Cached tangents | 21.060 ms | 22.393 ms | 26.133 ms |
+| Repeat, metrics added | 20.910 ms | 22.809 ms | 28.143 ms |
+
+MeshRoute's 100-seek total falls from 1723.119 ms to 29.983 ms; SkinRoute stays
+near 1969 ms. The cache retains 729648 CPU payload bytes for this fixture.
+This is editor preparation, not presented frame time or proof of 60 Hz playback.
+Logs: `/tmp/joint-normal-after-benchmark.log`,
+`/tmp/rest-tangent-cache-{benchmark,repeat}.log`.
+
+Inspected `target/rest-tangent-cache-{gpu,cpu}.png` at time 5, forward MSAA Off,
+shadows off, /ReferenceCamera: CPU/GPU and before/after GPU are RGB-exact across
+921600 pixels. Logs `/tmp/rest-tangent-cache-{compare,before-after}.log`.
+498 library tests pass (18 ignored), including exact reuse, forced hash collision,
+UV changes, external output mutation, zero budget, eviction and failed generation.
+Logs: `/tmp/rest-tangent-cache-tests.log` and release build logs
+`/tmp/rest-tangent-cache-{build,metrics-build}.log`.
+
+The first full workspace run failed the nested-package reload test during its
+repair wait (497 passed, one failed); log `/tmp/rest-tangent-cache-all-tests.log`.
+The isolated unchanged test passes, followed by an unchanged full rerun with
+663 passed, 18 ignored, 33 suites. check-all and viewer build also pass.
+Logs: `/tmp/rest-tangent-cache-reload-recheck.log`,
+`/tmp/rest-tangent-cache-all-tests-repeat.log`,
+`/tmp/rest-tangent-cache-{check,viewer-build}.log`. The reload failure's cause
+has not been isolated; a successful rerun is not a claim that it was fixed.
+
 ## Reuse joint normal inverses within a sample
 
 CPU normal skinning and GPU normal-correction preparation lazily cache each

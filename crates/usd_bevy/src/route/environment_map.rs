@@ -97,6 +97,31 @@ mod tests {
     }
 
     #[test]
+    fn exr_dome_preserves_linear_hdr_pixels_and_cubemap() {
+        let decode = |bytes: &[u8], extension| Image::from_buffer(bytes,
+            bevy::image::ImageType::Extension(extension), bevy::image::CompressedImageFormats::NONE,
+            false, bevy::image::ImageSampler::default(), bevy::asset::RenderAssetUsages::all());
+        let hdr = decode(include_bytes!("../../../../assets/dome_warm.hdr"), "hdr").unwrap();
+        let exr = decode(include_bytes!("../../../../assets/dome_warm.exr"), "exr").unwrap();
+        assert_eq!(exr.texture_descriptor.size, hdr.texture_descriptor.size);
+        for y in 0..hdr.height() {
+            for x in 0..hdr.width() {
+                let expected = hdr.get_color_at(x, y).unwrap().to_linear();
+                let actual = exr.get_color_at(x, y).unwrap().to_linear();
+                assert_eq!(actual, expected);
+            }
+        }
+        let high = decode(include_bytes!("../../../../assets/dome_high.exr"), "exr").unwrap();
+        let pixel = high.get_color_at(0, 0).unwrap().to_linear();
+        assert_eq!([pixel.red, pixel.green, pixel.blue], [8.0, 2.0, 0.5]);
+        let cube = latlong_cubemap(&high, 1, [1.0; 3]).unwrap();
+        assert_eq!(cube.get_color_at_3d(0, 0, 0).unwrap().to_linear(), pixel);
+        assert_eq!(latlong_cubemap(&exr, 16, [1.0; 3]).unwrap().data,
+            latlong_cubemap(&hdr, 16, [1.0; 3]).unwrap().data);
+        assert!(decode(&include_bytes!("../../../../assets/dome_warm.exr")[..32], "exr").is_err());
+    }
+
+    #[test]
     fn directional_hdr_fixture_places_blue_between_positive_x_and_z() {
         let source = Image::from_buffer(include_bytes!("../../../../assets/dome_directional.hdr"),
             bevy::image::ImageType::Extension("hdr"), bevy::image::CompressedImageFormats::NONE,

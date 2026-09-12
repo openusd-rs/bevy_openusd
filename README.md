@@ -1806,8 +1806,11 @@ ambient; authored USD lights remain unchanged. A missing selected dome is report
 and detached, rather than silently replaced by another dome.
 For startup selection, use `USD_VIEWER_DOME=/Env`; `USD_VIEWER_PANE=lighting`
 opens that pane initially. Without a selection, studio lighting remains the default.
-EXR and non-HDR dome color-space
-metadata remain unsupported; automatic layout currently accepts only 2:1 latlong.
+EXR decoding is enabled; `assets/dome_environment_exr.usda` is the equivalent
+half-float EXR version of the warm HDR fixture. Single-part RGB half-float
+decoding, values above one and matched GPU output are tested. Deep/multipart
+EXR and non-HDR dome color-space metadata are not validated; automatic layout
+currently accepts only 2:1 latlong.
 `assets/dome_directional.usda` uses a red/blue HDR and rotates the dome 180 degrees
 between times 0 and 10. Use the same camera arguments above for both captures;
 the blue contribution moves from right to left on the spheres. Capture metadata

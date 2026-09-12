@@ -3,6 +3,31 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## EXR dome decoding
+
+Enabled Bevy's exr image feature in usd_bevy; Cargo.lock records exr 1.74.2
+and its codec dependencies. No alternative texture-loading or filtering path
+was added. The warm EXR fixture is generated from dome_warm.hdr with OpenImageIO
+2.5.19.1 (`oiiotool assets/dome_warm.hdr -d half -o NEW.exr`). The high-radiance
+fixture uses `--pattern constant:color=8,2,0.5 2x1 3 -d half -o NEW.exr`.
+
+Decoder tests compare every warm-fixture pixel and cubemap bytes against HDR,
+verify explicit radiance (8,2,0.5), and reject truncated EXR input. All eight
+environment-map tests pass in /tmp/exr-dome-tests-fixed.log; check passes in
+/tmp/exr-check.log. The initial test incorrectly expected the existing warm HDR
+to exceed one; it contains 0.119141/0.0625/0.03125. That failed test is retained
+in /tmp/exr-dome-tests.log; the added high fixture tests HDR preservation directly.
+The full library gate passes 487 tests with 15 ignored:
+/tmp/exr-library-tests.log.
+
+Release GPU captures select /Env at time zero, forward rendering and shadows
+off. target/dome-codec-{hdr,exr}.png are RGB-identical across all 921600 pixels
+at tolerance zero; the EXR image was visually inspected. Metadata records one
+environment generation, maps attached and no remaining generator. Logs:
+/tmp/dome-codec-{hdr,exr}.log and /tmp/dome-codec-compare-fixed.log.
+This covers single-part half-float RGB EXR, not deep/multipart files or general
+color management. The full integration goal remains active.
+
 ## Knoche light-bar geometry attribution
 
 The two bright shapes in the Knoche capture are now traced to

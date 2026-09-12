@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Post-OIT workspace and deformation gate
+
+At d17f61b, Make test-all passes 645 tests across 33 suites, with 15 ignored;
+check-all passes. Logs: /tmp/post-oit-workspace-{tests,check}.log. The gate
+includes the anti-alias feature and viewer transparency/buffer-limit changes,
+not just the new isolated UI tests. No ignored test is counted as passed.
+
+The fresh GPU/CPU showcase comparison at times 0,30,60 also passes RGB tolerance
+one, with dome lighting selected and shadows off. Each has max RGB error one.
+target/post-oit-deformation/results.tsv and /tmp/post-oit-deformation.log retain
+the result; the time-60 GPU image was inspected. This is deformation regression
+coverage with the changed dependency features, not native renderer parity or
+a performance benchmark (the workspace gate ran concurrently).
+
+README now documents the standalone timeout, OIT/timestamp modes, viewer toggle
+and two native/GPU gates. It also corrects the stale statement that signed
+normal-map scale/bias was unimplemented. This validation does not close the
+remaining full-scene fidelity and backend qualifications in SUPPORT.md.
+
 ## Real 4K resize guard acceptance
 
 scripts/check_oit_resize.sh starts an isolated Xwayland viewer with OIT enabled,

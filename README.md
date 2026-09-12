@@ -803,6 +803,20 @@ the callback.
 The standalone `viewer_capture` example below has explicit readiness checks and
 process exit status. Use `scripts/capture_viewer_ui.sh` to capture UI composition.
 
+For larger scenes, `USD_CAPTURE_TIMEOUT_SECS=180` increases the standalone
+capture deadline; accepted values are 1–600 seconds, with a default of 60.
+`USD_CAPTURE_GPU_SAMPLES=120` records fresh per-pass GPU timestamps after warm-up.
+These are not full-frame timings. `USD_CAPTURE_RENDERER=oit` enables
+order-independent transparency with prepasses and MSAA off, without FXAA.
+
+In the interactive viewer, **Rendering → Enable OIT** enables OIT with FXAA.
+`USD_VIEWER_OIT=1` enables it at startup. Disabling restores prior AA settings;
+oversized OIT buffers trigger a device-limit fallback with an explanation.
+See [support limits](SUPPORT.md) for memory, overflow and backend qualifications.
+The order-invariance and real-window resize gates are
+`scripts/check_transparency_order.sh` and `scripts/check_oit_resize.sh`;
+each accepts a new output directory and can be run through a Make `--eval` target.
+
 Scalar UsdUVTexture inputs now apply the selected channel's `scale` and `bias`
 when packing roughness, metallic, occlusion and opacity. Values are transformed
 after color-space decoding, then clamped/quantized into the existing 8-bit packed
@@ -821,8 +835,8 @@ coefficients and float16 overflow return material warnings. Alpha is preserved,
 and subsequent opacity packing retains transformed HDR RGB. Identity RGB
 transforms reuse original images. Transformed content uses a 64 MiB accounted
 cache and a 16M-pixel input limit; those are not total process/VRAM limits.
-Float16 rounding remains an approximation, and normal-map scale/bias is not
-implemented by this path.
+Float16 rounding remains an approximation. Signed normal-map scale/bias is
+encoded into Bevy's texture-normal representation by the color-transform path.
 Material graph evaluation has a 256-input traversal budget and a separate
 32-level recursion limit for arithmetic/constant nodes; exceeding either reports
 an error rather than continuing unbounded recursion.

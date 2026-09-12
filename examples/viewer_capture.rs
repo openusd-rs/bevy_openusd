@@ -50,6 +50,7 @@ struct Capture {
     eye: Vec3,
     focus: Vec3,
     started: Instant,
+    timeout: Duration,
     ready_frames: u32,
     requested: bool,
     mesh_report: String,
@@ -98,7 +99,7 @@ impl Capture {
         if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
         Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, curve_steps: 8, curve_surface_sides: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
             instance_times: vec![time], instance_spacing: 2.5, swap_clocks: false, clocks_swapped: false,
-            started: Instant::now(), ready_frames: 0, requested: false, mesh_report: String::new() })
+            started: Instant::now(), timeout: Duration::from_secs(60), ready_frames: 0, requested: false, mesh_report: String::new() })
     }
 
     fn set_instance_times(&mut self, value: &str) -> Result<(), String> {
@@ -109,6 +110,13 @@ impl Capture {
             return Err("USD_CAPTURE_INSTANCE_TIMES requires 1 to 16 finite time codes".into());
         }
         self.instance_times = times;
+        Ok(())
+    }
+
+    fn set_timeout(&mut self, value: &str) -> Result<(), String> {
+        let seconds = value.parse::<u64>().ok().filter(|seconds| (1..=600).contains(seconds))
+            .ok_or("USD_CAPTURE_TIMEOUT_SECS must be 1..600")?;
+        self.timeout = Duration::from_secs(seconds);
         Ok(())
     }
 
@@ -164,6 +172,13 @@ fn main() -> AppExit {
         Ok(renderer) => renderer,
         Err(error) => { eprintln!("{error}"); return AppExit::error(); }
     };
+    match std::env::var("USD_CAPTURE_TIMEOUT_SECS") {
+        Ok(value) => if let Err(error) = capture.set_timeout(&value) {
+            eprintln!("{error}"); return AppExit::error();
+        },
+        Err(std::env::VarError::NotPresent) => {},
+        Err(error) => { eprintln!("{error}"); return AppExit::error(); },
+    }
     capture.asset = match capture.asset.canonicalize() {
         Ok(path) => path,
         Err(error) => { eprintln!("asset: {error}"); return AppExit::error(); }
@@ -339,7 +354,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     geometry_errors: Query<(&usd_bevy::UsdPrimRef, Option<&usd_bevy::route::shapes::UsdShapeError>, Option<&usd_bevy::route::curves::UsdCurveError>, Option<&usd_bevy::route::xform::UsdTransformError>)>,
     mut exit: MessageWriter<AppExit>) {
     let (diagnostics, mut timing, progress) = timing;
-    if capture.started.elapsed() > Duration::from_secs(60) {
+    if capture.started.elapsed() > capture.timeout {
         eprintln!("capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}", capture.camera_path, capture.camera_ready, progress.0.lock().unwrap());
         exit.write(AppExit::error());
         return;
@@ -454,7 +469,8 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
     let report = format!("asset={asset}\ntime={time}\nrequested_eye={eye:?}\nrequested_target={target:?}\nwidth=1280\nheight=720\nformat=rgba8-srgb\nrow_bytes=5120\nbytes={bytes}\nready_frames={frames}\ncpu_skinning={cpu}\n",
         asset = capture.asset.display(), time = capture.time, eye = capture.eye, target = capture.focus,
         bytes = rgba.len(), frames = capture.ready_frames, cpu = std::env::var_os("USD_CPU_SKINNING").is_some());
-    let report = report + &format!("instance_times={:?}\ninstance_spacing={}\n", capture.instance_times, capture.instance_spacing)
+    let report = report + &format!("capture_timeout_secs={}\n", capture.timeout.as_secs())
+        + &format!("instance_times={:?}\ninstance_spacing={}\n", capture.instance_times, capture.instance_spacing)
         + &format!("clocks_reversed_after_ready_frames={}\n", if capture.clocks_swapped { 30 } else { 0 })
         + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
         capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("curve_steps={}\ncurve_surface_sides={:?}\n", capture.curve_steps, capture.curve_surface_sides) + &capture.mesh_report;
@@ -565,6 +581,22 @@ mod tests {
         assert_eq!(CaptureRenderer::parse("deferred").unwrap(), CaptureRenderer::Deferred);
         assert_eq!(CaptureRenderer::parse("oit").unwrap(), CaptureRenderer::Oit);
         assert!(CaptureRenderer::parse("typo").is_err());
+    }
+
+    #[test]
+    fn capture_timeout_is_bounded_and_defaults_to_sixty_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut capture = Capture::parse(&["assets/transparency_order.usda".into(),
+            dir.path().join("new.png").display().to_string(), "0".into()]).unwrap();
+        assert_eq!(capture.timeout, Duration::from_secs(60));
+        for value in ["", "0", "601", "-1", "NaN", "18446744073709551616"] {
+            assert!(capture.set_timeout(value).is_err());
+            assert_eq!(capture.timeout, Duration::from_secs(60));
+        }
+        for seconds in [1, 180, 600] {
+            capture.set_timeout(&seconds.to_string()).unwrap();
+            assert_eq!(capture.timeout.as_secs(), seconds);
+        }
     }
     #[test]
     fn readback_records_subdivision_and_tight_rgba() {

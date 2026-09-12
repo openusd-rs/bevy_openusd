@@ -3,6 +3,35 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## OIT pass timings and configurable capture deadline
+
+The small transparency fixture completed 120 fresh GPU samples per pass in both
+prepass and OIT modes. Transparent-pass medians were 0.071680/0.064512ms, with
+an additional OIT resolve median 0.022528ms. Logs/artifacts: /tmp/order-timed-*
+and target/order-timed-*. These are not whole-frame durations or speedup evidence.
+
+The first Kubota measurement failed the fixed 60-second deadline despite a ready
+camera and no pending pipelines (/tmp/kubota-timed-prepass.log). viewer_capture
+now accepts USD_CAPTURE_TIMEOUT_SECS=1..600, preserving default 60 and recording
+the selected deadline in metadata. Invalid input fails before window creation;
+the regression checks bounds, overflow and unchanged configuration on failure.
+All 18 capture-example tests pass in /tmp/capture-timeout-tests.log.
+
+With a 180-second deadline both Kubota runs completed 120 fresh samples/pass:
+
+| GPU pass | Median ms | p95 ms | Maximum ms |
+| --- | ---: | ---: | ---: |
+| Ordinary transparent | 0.162816 | 0.173056 | 0.176128 |
+| OIT transparent | 0.199680 | 0.209920 | 0.214016 |
+| OIT resolve | 0.207872 | 0.215040 | 0.223232 |
+
+The OIT image was inspected and shows the whole tractor and corrected grille.
+Raw measurements/metadata are in target/kubota-timing-180-*.capture.txt; PNGs
+use matching prefixes and logs /tmp/kubota-timing-180-*.log. Both use 1280x720,
+fixed eye (6,4,8), focus (0,1,0), shadows off, MSAA off and no FXAA. This single
+ordered pair is not a clock-controlled benchmark, a summed frame-time estimate,
+an embedded-viewer measurement or evidence for universal performance bounds.
+
 ## Controlled transparent triangle-order regression
 
 assets/transparency_order{,_reversed}.usda contain the same two overlapping

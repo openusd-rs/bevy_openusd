@@ -3,6 +3,37 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Compare machinery with a shared camera and dome
+
+Added a reusable Kubota reference setup and inspected native Storm/Bevy captures
+with the same authored camera, warm dome and source package. Framing aligns,
+but a 16x16 opaque hood ROI differs by up to 35/255 in encoded RGB; the strict
+comparison fails. Glass/decals also differ visually, with background and native
+ambient caveats. This is evidence of unfinished material fidelity, not a pass.
+Details and reproduction: `benchmarks/kubota-native-materials.md`.
+
+## Avoid rebuilding unchanged packed textures
+
+A bounded input-plane fingerprint index validates live packed pixels and image
+layout before reuse, avoiding another large allocation and output hash. Kubota's
+profiled headless open drops from 12.596 to 7.221 seconds (repeat 7.127), retaining
+the same 557 MB image payload. The inspected host frame is pixel-exact to the
+prior sharing fix. The library passes 513 tests with 19 ignored; check-all and
+release builds pass. No full workspace rerun for this increment. Evidence:
+`benchmarks/machine-texture-memory.md`.
+
+## Share generated images beyond pixel-cache budgets
+
+A bounded asset-ID index reuses generated scalar, alpha and color images only
+after exact pixel and descriptor/sampler checks. It retains no pixel copies or
+strong handles. Kubota image payload falls from 12.43 GB to 557 MB and the
+rebuilt viewer now renders it with Ready status. Ropa host captures are pixel-
+exact before/after. Texture resolution and formats are unchanged. The single
+headless opening sample got slower (9.074 to 13.494 seconds); no loading-speed
+claim is made. All 677 workspace tests pass (19 ignored, 33 suites), check-all
+and release builds pass. Evidence: `benchmarks/machine-texture-memory.md`;
+logs: `/tmp/generated-image-workspace.log`, `/tmp/generated-image-check.log`.
+
 ## Capture loaded-document save baselines
 
 The viewer's open path and `EditorSession::from_source` record hashes of the

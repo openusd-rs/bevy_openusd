@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 mod layer_changes;
+pub mod reload;
 pub mod save_state;
 
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
@@ -18,6 +19,8 @@ pub enum EditorCommand {
     OpenChecked { filename: String, document_id: u64, revision: u64 },
     /// Reload source-backed images without replacing the document or edit history.
     RefreshTextures,
+    /// Refreshes changed disk layers in the current document.
+    ReloadSources(Vec<std::path::PathBuf>),
     Select(Option<String>),
     Visibility { prim: String, visible: bool },
     Edit(EditorEdit),
@@ -83,6 +86,11 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::route::StageTime>()
             .add_systems(PreUpdate, (process_commands, advance_editor_time).chain())
             .add_systems(Last, publish_projection_issues);
+        #[cfg(not(target_arch = "wasm32"))]
+        app.init_resource::<reload::EditorReloadStatus>()
+            .init_resource::<reload::EditorReloadSettings>()
+            .init_resource::<reload::WatchState>()
+            .add_systems(PreUpdate, reload::watch.before(process_commands));
     }
 }
 
@@ -275,6 +283,16 @@ fn process_commands(world: &mut World) {
                 })
         } else if let Some(editor) = &mut session {
             match command {
+                EditorCommand::ReloadSources(paths) => {
+                    let result = editor.reload_paths(Some(&paths)).and_then(|publication| {
+                        if let Some(publication) = publication { publication.install(world, editor.stage())?; }
+                        Ok(())
+                    });
+                    if let Some(mut status) = world.get_resource_mut::<reload::EditorReloadStatus>() {
+                        status.error = result.as_ref().err().map(|error| format!("{error:#}"));
+                    }
+                    result
+                }
                 EditorCommand::Visibility { prim, visible } => {
                     let time = world.resource::<crate::route::StageTime>().current;
                     visibility_edit(editor.stage(), prim, visible, time).and_then(|edit| editor.edit(edit))
@@ -559,6 +577,7 @@ struct HistoryEntry {
     target: EditTarget,
     local_target: bool,
     transactions: usize,
+    layers: std::collections::BTreeSet<String>,
     selection_before: Option<String>,
     selection_after: Option<String>,
 }
@@ -767,7 +786,8 @@ impl EditorSession {
             self.revision = self.revision.wrapping_add(1);
             let selection_before = self.selected.clone();
             self.selected = edit.selection_after(self.selected.as_deref());
-            self.undo.push(HistoryEntry { edit, target, local_target, transactions, selection_before, selection_after: self.selected.clone() });
+            let layers = self.stage.recent_layer_identifiers(transactions);
+            self.undo.push(HistoryEntry { edit, target, local_target, transactions, layers, selection_before, selection_after: self.selected.clone() });
             self.redo.clear();
             self.trim_history();
         }
@@ -807,6 +827,7 @@ impl EditorSession {
         result?;
         let mut entry = self.redo.pop().unwrap();
         entry.transactions = self.stage.undo_depth() - before;
+        entry.layers = self.stage.recent_layer_identifiers(entry.transactions);
         if entry.selection_before != entry.selection_after { self.selected = entry.selection_after.clone(); }
         self.undo.push(entry);
         self.revision = self.revision.wrapping_add(1);

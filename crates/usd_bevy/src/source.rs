@@ -11,7 +11,19 @@ use openusd::usd::Stage;
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) type DiskBaselines = Arc<Mutex<BTreeMap<PathBuf, blake3::Hash>>>;
+pub(crate) type DiskBaselines = Arc<EditorDisk>;
+
+#[derive(Default)]
+pub(crate) struct EditorDisk {
+    hashes: Mutex<BTreeMap<PathBuf, blake3::Hash>>,
+    pub replacements: Mutex<BTreeMap<String, Arc<[u8]>>>,
+    pub snapshots: Mutex<BTreeMap<String, Arc<[u8]>>>,
+}
+
+impl std::ops::Deref for EditorDisk {
+    type Target = Mutex<BTreeMap<PathBuf, blake3::Hash>>;
+    fn deref(&self) -> &Self::Target { &self.hashes }
+}
 
 /// An immutable root-layer snapshot anchored at its source filename.
 #[derive(Clone, Debug)]
@@ -292,6 +304,15 @@ impl UsdSource {
         self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn replace_file_bytes(&mut self, identifier: String, bytes: Vec<u8>) {
+        if identifier == self.identifier {
+            self.bytes = bytes.into();
+            self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.insert_dependency(identifier, bytes);
+        }
+    }
+
     pub(crate) fn probe(&self) -> (Result<(), String>, BTreeSet<String>) {
         let requests = Arc::new(Mutex::new(BTreeSet::new()));
         let result = (|| -> anyhow::Result<()> {
@@ -401,11 +422,15 @@ impl Asset for SharedAsset {
 }
 
 impl SourceResolver {
-    fn bytes(&self, identifier: &str) -> Option<&Arc<[u8]>> {
+    fn bytes(&self, identifier: &str) -> Option<Arc<[u8]>> {
+        if let Some(bytes) = self.disk_baselines.as_ref().and_then(|disk|
+            disk.replacements.lock().expect("editor source replacements").get(identifier).cloned()) {
+            return Some(bytes);
+        }
         if identifier == self.source.identifier {
-            Some(&self.source.bytes)
+            Some(self.source.bytes.clone())
         } else {
-            self.source.files.get(identifier)
+            self.source.files.get(identifier).cloned()
         }
     }
 
@@ -431,7 +456,7 @@ impl SourceResolver {
         let Some(bytes) = self.bytes(&package) else {
             return Ok(None);
         };
-        openusd::ar::read_package_entry(Box::new(SharedAsset(Cursor::new(Arc::clone(bytes)))), &inner).map(Some)
+        openusd::ar::read_package_entry(Box::new(SharedAsset(Cursor::new(bytes))), &inner).map(Some)
     }
 }
 
@@ -498,6 +523,7 @@ impl Resolver for SourceResolver {
             };
             let key = crate::persistence::destination_identity(Path::new(outer))?;
             baselines.lock().expect("disk baselines").entry(key).or_insert_with(|| blake3::hash(&bytes));
+            baselines.snapshots.lock().expect("editor read snapshots").entry(outer.to_owned()).or_insert_with(|| bytes.clone());
             return if let Some((_, inner)) = packaged {
                 openusd::ar::read_package_entry(Box::new(SharedAsset(Cursor::new(bytes))), &inner)
                     .map(|bytes| Box::new(Cursor::new(bytes)) as Box<dyn Asset>)
@@ -506,7 +532,7 @@ impl Resolver for SourceResolver {
             };
         }
         if let Some(bytes) = self.bytes(&path.to_string_lossy()) {
-            Ok(Box::new(SharedAsset(Cursor::new(Arc::clone(bytes)))))
+            Ok(Box::new(SharedAsset(Cursor::new(bytes))))
         } else if let Some(bytes) = self.packaged_bytes(&path.to_string_lossy())? {
             Ok(Box::new(Cursor::new(bytes)))
         } else if self.source.filesystem {

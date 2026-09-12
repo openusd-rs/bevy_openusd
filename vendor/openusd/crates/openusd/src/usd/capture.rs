@@ -152,6 +152,40 @@ impl UndoStage {
         count
     }
 
+    /// Layer identifiers touched by the newest `count` recorded transactions.
+    pub fn recent_layer_identifiers(&self, count: usize) -> std::collections::BTreeSet<String> {
+        self.capture.process_pending();
+        self.capture.log().borrow().stack.iter().rev().take(count)
+            .flat_map(|transaction| transaction.layers.iter().map(|(layer, _)| layer.clone())).collect()
+    }
+
+    /// Retains transactions selected oldest-first by `keep`, without replaying them.
+    /// A length mismatch leaves the stack unchanged and returns `false`.
+    pub fn retain_transactions(&self, keep: &[bool]) -> bool {
+        self.capture.process_pending();
+        let mut journal = self.capture.log().borrow_mut();
+        if keep.len() != journal.stack.len() { return false; }
+        let mut index = 0;
+        journal.stack.retain(|_| { let retain = keep[index]; index += 1; retain });
+        true
+    }
+
+    /// Executes a synchronous operation without recording its transactions.
+    /// Pending edits are recorded first; nested calls and unwinding restore capture state.
+    pub fn without_recording<T>(&self, operation: impl FnOnce(&Stage) -> T) -> T {
+        self.capture.process_pending();
+        struct Restore<'a>(&'a RefCell<Journal>, bool);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) { self.0.borrow_mut().suspended = self.1; }
+        }
+        let log = self.capture.log();
+        let previous = std::mem::replace(&mut log.borrow_mut().suspended, true);
+        let _restore = Restore(log, previous);
+        let result = operation(&self.capture);
+        self.capture.process_pending();
+        result
+    }
+
     /// Stop recording and return the wrapped [`Stage`], removing the capture
     /// sink.
     pub fn into_inner(self) -> Stage {

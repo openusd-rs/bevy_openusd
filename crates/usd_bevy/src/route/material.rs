@@ -96,6 +96,10 @@ fn to_standard_material(
     if let Some(r) = read.roughness {
         m.perceptual_roughness = r;
     }
+    if let Some(coat) = read.clearcoat { m.clearcoat = coat; }
+    if read.clearcoat.is_some() || read.clearcoat_roughness.is_some() {
+        m.clearcoat_perceptual_roughness = read.clearcoat_roughness.unwrap_or(0.01);
+    }
     if let Some(mtl) = read.metallic {
         m.metallic = mtl;
     }
@@ -481,6 +485,33 @@ def Material "Mat" {
                 assert!(actual.abs_diff_eq(expected, 1e-6), "{actual:?} != {expected:?}");
             }
         }
+    }
+
+    #[test]
+    fn preview_clearcoat_samples_map_to_bevy_and_keep_usd_roughness_default() {
+        let source = crate::UsdSource::snapshot("coat.usda", br#"#usda 1.0
+def Material "Mat" {
+    float inputs:coat.timeSamples = { 0: 0.2, 10: 0.8 }
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        float inputs:clearcoat.connect = </Mat.inputs:coat>
+        float inputs:clearcoatRoughness = 0.15
+        token outputs:surface
+    }
+}
+"#.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        for (time, expected) in [(0., 0.2), (5., 0.5), (10., 0.8)] {
+            let read = crate::read::shade::read_preview_material_at(&stage,
+                &openusd::sdf::path("/Mat").unwrap(), Some(time)).unwrap().unwrap();
+            let material = to_standard_material(&read, None, None);
+            assert!((material.clearcoat - expected).abs() < 1e-6);
+            assert_eq!(material.clearcoat_perceptual_roughness, 0.15);
+        }
+        let material = to_standard_material(&ReadPreviewMaterial { clearcoat: Some(0.5), ..default() }, None, None);
+        assert_eq!(material.clearcoat_perceptual_roughness, 0.01);
+        assert_eq!(to_standard_material(&ReadPreviewMaterial::default(), None, None).clearcoat, 0.0);
     }
 
     #[test]

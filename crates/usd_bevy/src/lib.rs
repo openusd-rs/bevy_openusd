@@ -20,6 +20,7 @@ pub mod subdivision;
 mod subdivision_normals;
 pub mod prim_ref;
 pub mod read;
+pub mod reload;
 pub mod route;
 pub mod snippet;
 pub mod source;

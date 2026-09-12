@@ -20,6 +20,13 @@ pub(super) struct SaveState {
 }
 
 impl SaveState {
+    pub fn reloaded_layer(&mut self, stage: &Stage, id: &str) {
+        if let Some(layer) = stage.layer(id) && let Ok(text) = layer.export_to_string() {
+            self.baselines.insert(id.to_string(), blake3::hash(text.as_bytes()));
+            self.cache.remove(id);
+        }
+    }
+
     pub fn opened(&mut self, stage: &Stage, revisions: &BTreeMap<String, u64>) {
         self.loaded_document = true;
         let _ = self.states(stage, revisions, 0);

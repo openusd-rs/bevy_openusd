@@ -12,7 +12,9 @@
 PXR_NAMESPACE_USING_DIRECTIVE
 
 int main(int argc, char **argv) try {
-    if (argc != 4) throw std::runtime_error("usage: sample_native_deformation ASSET /MESH TIME");
+    if (argc != 4 && argc != 5) throw std::runtime_error("usage: sample_native_deformation ASSET /MESH TIME [--normals]");
+    const bool sampleNormals = argc == 5;
+    if (sampleNormals && std::string(argv[4]) != "--normals") throw std::runtime_error("unknown option");
     size_t consumed = 0;
     double time = std::stod(argv[3], &consumed);
     if (consumed != std::string(argv[3]).size() || !std::isfinite(time))
@@ -39,13 +41,20 @@ int main(int argc, char **argv) try {
         throw std::runtime_error("native skinning bake failed");
     UsdGeomMesh mesh(stage->GetPrimAtPath(SdfPath(argv[2])));
     VtVec3fArray points;
-    if (!mesh || !mesh.GetPointsAttr().Get(&points, UsdTimeCode(time)) || points.empty())
-        throw std::runtime_error("requested mesh has no points");
+    if (!mesh || !(sampleNormals ? mesh.GetNormalsAttr() : mesh.GetPointsAttr()).Get(&points, UsdTimeCode(time)) || points.empty())
+        throw std::runtime_error("requested mesh has no sampled values");
     UsdGeomXformCache after{UsdTimeCode(time)};
     const auto toOriginal = after.GetLocalToWorldTransform(mesh.GetPrim()) * originalWorld.GetInverse();
-    std::cout << std::setprecision(9) << "time=" << time << " points=" << points.size() << '\n';
+    if (sampleNormals && std::abs(toOriginal.GetDeterminant()) < 1e-12)
+        throw std::runtime_error("baked normal transform is singular");
+    const auto normalTransform = sampleNormals ? toOriginal.GetInverse().GetTranspose() : GfMatrix4d(1);
+    std::cout << std::setprecision(9) << "time=" << time << (sampleNormals ? " normals=" : " points=") << points.size() << '\n';
     for (size_t i = 0; i < points.size(); ++i) {
-        const auto point = toOriginal.Transform(GfVec3d(points[i]));
+        auto point = sampleNormals ? normalTransform.TransformDir(GfVec3d(points[i])) : toOriginal.Transform(GfVec3d(points[i]));
+        if (sampleNormals) {
+            if (point.GetLength() < 1e-12) throw std::runtime_error("zero baked normal");
+            point.Normalize();
+        }
         for (int axis = 0; axis < 3; ++axis)
             if (!std::isfinite(point[axis])) throw std::runtime_error("nonfinite baked point");
         std::cout << i << ' ' << point[0] << ' ' << point[1] << ' ' << point[2] << '\n';

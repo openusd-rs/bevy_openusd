@@ -554,6 +554,60 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
 #[cfg(test)]
 mod tests {
     #[test]
+    fn native_normal_fixture_matches_indexed_deformation() {
+        let stages = ["skel_morph_reference.usda", "skel_morph_native_normals.usda"].map(|name| {
+            let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets").join(name);
+            crate::UsdSource::new(file.to_str().unwrap(), std::fs::read(&file).unwrap()).unwrap().open_stage().unwrap()
+        });
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+            let normals = stages.each_ref().map(|stage| {
+                let read = super::super::geom::read_mesh_at(stage, &path, Some(time)).unwrap().unwrap();
+                let sample = super::morph_sample(stage, &path, Some(time)).unwrap();
+                let (mut normals, points) = super::morph_normals(&read, &sample).unwrap();
+                super::skin_normals(stage, &path, Some(time), &mut normals, &points, read.points.len()).unwrap();
+                normals.values
+            });
+            assert_eq!(normals[0], normals[1]);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires USD_NATIVE_DEFORMATION_TOOL built against native OpenUSD"]
+    fn native_baked_normals_match_combined_skin_and_morph() {
+        let tool = std::env::var("USD_NATIVE_DEFORMATION_TOOL").expect("native deformation executable");
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_native_normals.usda");
+        let original = std::fs::read(file).unwrap();
+        let stage = crate::UsdSource::new(file, original.clone()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+            let read = super::super::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+            let morph = super::morph_sample(&stage, &path, Some(time)).unwrap();
+            let (mut normals, points) = super::morph_normals(&read, &morph).unwrap();
+            super::skin_normals(&stage, &path, Some(time), &mut normals, &points, read.points.len()).unwrap();
+            let output = std::process::Command::new(&tool).args([file, path.as_str(), &time.to_string(), "--normals"])
+                .output().expect("run native normal tool");
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let text = String::from_utf8(output.stdout).unwrap();
+            let mut lines = text.lines();
+            assert!(lines.next().unwrap().ends_with(" normals=4"));
+            let samples = lines.collect::<Vec<_>>();
+            assert_eq!(samples.len(), normals.values.len());
+            for (index, (line, expected)) in samples.iter().zip(normals.values).enumerate() {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                assert_eq!(fields.len(), 4);
+                assert_eq!(fields[0].parse::<usize>().unwrap(), index);
+                for axis in 0..3 {
+                    let actual = fields[axis + 1].parse::<f64>().unwrap();
+                    assert!(actual.is_finite() && (actual - f64::from(expected[axis])).abs() < 1e-5,
+                        "time {time}, normal {index}, axis {axis}: native {actual}, Bevy {}", expected[axis]);
+                }
+            }
+        }
+        assert_eq!(std::fs::read(file).unwrap(), original);
+    }
+
+    #[test]
     #[ignore = "requires USD_NATIVE_DEFORMATION_TOOL built against native OpenUSD"]
     fn native_baked_positions_match_combined_skin_and_morph() {
         let tool = std::env::var("USD_NATIVE_DEFORMATION_TOOL").expect("native deformation executable");

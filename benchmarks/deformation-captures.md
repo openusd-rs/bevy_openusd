@@ -1,5 +1,37 @@
 # CPU/GPU deformation capture sweep
 
+## Native baked normal oracle
+
+The native sampler accepts `--normals`, reads baked built-in mesh normals,
+transforms them by the inverse transpose into the original mesh's local frame,
+and normalizes them. Singular transforms and zero/nonfinite normals fail.
+`assets/skel_morph_native_normals.usda` keeps the combined fixture's geometry,
+animation and material but replaces indexed normal primvars with equivalent
+built-in vertex normals. The original indexed fixture remains unchanged.
+
+The native point and normal integration tests both pass at 0,2.5,5,7.5,10 with
+absolute component tolerance 1e-5. Use the `native_baked_` test filter to execute
+both ignored tests with USD_NATIVE_DEFORMATION_TOOL set. Log:
+/tmp/native-normal-rust-tests-final.log. At ten, native normal zero is
+(0.769800313,0.272165537,0.577350326); the other three are
+(0.707106722,0,0.707106841). This covers one nonuniformly scaled joint plus
+sparse morph normal offsets, not arbitrary multi-joint normal blending.
+
+An ordinary regression verifies identical CPU normal results between the two
+fixture encodings at all five times. The Bevy time-ten built-in-normal image
+was inspected and is RGB-exact with the indexed image (0/921600 changed),
+using the same release capture executable and authored camera:
+target/combined-bevy-builtin-normal-10.png versus
+target/combined-bevy-canonical-10.png; /tmp/combined-builtin-normal-compare.log.
+Native target/combined-storm-builtin-normal10/frame.png was also inspected:
+its triangle shading difference persists, so the encoding substitution does
+not establish rendered shading parity. Lighting and surface-normal handling
+still need isolated comparison.
+
+Ordinary library tests pass 492 with 17 ignored; make check-all passes.
+Logs: /tmp/native-normal-{library-tests,check}.log. Native compiler validation:
+/tmp/native-normal-build-final.log. No production Rust behavior changed.
+
 ## Native CPU-baked point oracle
 
 `scripts/sample_native_deformation.cpp` uses native UsdSkelBakeSkinning on an

@@ -3,6 +3,21 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native normal deformation oracle
+
+Extended the native sampler with --normals and added an equivalent built-in
+vertex-normal fixture without replacing indexed-normal coverage. Native baked
+point and normal comparisons pass at five times with tolerance 1e-5 for the
+combined single-joint/nonuniform-scale/morph fixture. The ordinary encoding
+equivalence test passes, and Bevy time-ten captures are RGB-exact across the
+two normal encodings. Native rendered shading still differs; this is not a
+full shading or multi-joint-normal acceptance claim.
+
+492 ordinary library tests pass with 17 ignored; the two ignored native oracle
+tests were separately executed and passed. make check-all passes. Evidence and
+limitations: benchmarks/deformation-captures.md and
+/tmp/native-normal-{rust-tests-final,library-tests,check}.log.
+
 ## Native CPU deformation point oracle
 
 Added scripts/sample_native_deformation.cpp using installed native OpenUSD

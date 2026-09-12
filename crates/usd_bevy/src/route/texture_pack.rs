@@ -65,7 +65,7 @@ pub(crate) fn base_color_alpha(world: &mut World, read: &ReadPreviewMaterial) ->
     }
     let image = Image::new(Extent3d { width: alpha.width, height: alpha.height, depth_or_array_layers: 1 },
         TextureDimension::D2, key.3.clone(), if float { TextureFormat::Rgba16Float } else { TextureFormat::Rgba8UnormSrgb }, bevy::asset::RenderAssetUsages::default());
-    let handle = world.resource_mut::<Assets<Image>>().add(image);
+    let handle = super::generated_image::intern(world, image);
     world.init_resource::<AlphaTextures>();
     let mut cache = world.resource_mut::<AlphaTextures>();
     let bytes = key.3.len() * 2;
@@ -196,7 +196,7 @@ fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion
     }
     let image = Image::new(Extent3d { width, height, depth_or_array_layers: 1 }, TextureDimension::D2,
         data, TextureFormat::Rgba8Unorm, bevy::asset::RenderAssetUsages::default());
-    let handle = world.resource_mut::<Assets<Image>>().add(image);
+    let handle = super::generated_image::intern(world, image);
     world.init_resource::<PackedTextures>();
     let mut cache = world.resource_mut::<PackedTextures>();
     let bytes = count * 4 + key.0.as_ref().map_or(0, |p| p.values.len()) + key.1.as_ref().map_or(0, |p| p.values.len()) + key.2.as_ref().map_or(0, |p| p.values.len());
@@ -214,6 +214,18 @@ fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_packed_images_share_beyond_the_pixel_cache_budget() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let plane = Plane { width: 4096, height: 4096, values: vec![255; 4096 * 4096] };
+        let a = pack(&mut world, Some(plane.clone()), None, None).unwrap().unwrap();
+        let b = pack(&mut world, Some(plane), None, None).unwrap().unwrap();
+        assert_eq!(a.id(), b.id());
+        assert_eq!(world.resource::<Assets<Image>>().len(), 1);
+        assert_eq!(world.resource::<PackedTextures>().bytes, 0);
+    }
 
     #[test]
     fn rgba8_alpha_lookup_matches_pixel_conversion_and_live_edits() {

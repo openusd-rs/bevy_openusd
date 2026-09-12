@@ -98,7 +98,7 @@ fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<
     }
     let image = Image::new(Extent3d { width: key.0, height: key.1, depth_or_array_layers: 1 },
         TextureDimension::D2, key.2.clone(), TextureFormat::Rgba16Float, bevy::asset::RenderAssetUsages::default());
-    let handle = world.resource_mut::<Assets<Image>>().add(image);
+    let handle = super::generated_image::intern(world, image);
     world.init_resource::<ColorTextures>();
     let mut cache = world.resource_mut::<ColorTextures>();
     let bytes = key.2.len() * 2;

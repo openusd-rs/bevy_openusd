@@ -1,5 +1,38 @@
 # Machinery rendering and texture memory
 
+## Generated-image sharing fix
+
+Generated scalar, alpha, and color textures now share through a bounded index of
+4096 content hashes and asset IDs. The index owns neither pixel buffers nor
+strong image handles. Reuse checks exact pixels, full texture/view descriptors,
+sampler, data order, usage and resize policy. Small conversion caches remain;
+large images no longer depend on fitting their full pixel keys into those caches.
+Textures are not resized, quantized or assigned different formats.
+
+Kubota's retained image payload falls from 12,434,542,336 to 556,797,440 bytes
+(302 images to 90). Its 73 diagnostic payload groups and their combined
+465,307,904 bytes are unchanged. Material assets fall from 291 to 78 as image
+identity reuse also allows existing material deduplication. The measured single
+headless open is slower: 13,494 ms versus the prior 9,074 ms. These are individual
+CPU samples, not a frame-rate claim or a controlled loading-time benchmark.
+
+The rebuilt viewer visibly renders Kubota with Ready status in the inspected
+`target/kubota-shared-host.png` and `target/kubota-shared-desktop.second.png`.
+Ropa's inspected `target/ropa-shared-host.png` is pixel-exact to the pre-fix host
+capture: OpenImageIO reports mean, RMS and maximum error all zero.
+Original machine archive hashes still match. Native parity remains unqualified
+because those camera and lighting setups differ.
+
+Six added regressions cover live sharing, forced hash collisions, pixel mutation,
+descriptor/sampler differences, removed assets, index bounds, owner-driven asset
+cleanup, and 4096x4096 packing beyond the old pixel-cache budget. The library
+passes 512 tests with 19 ignored. Logs: `/tmp/generated-image-library.log`,
+`/tmp/generated-image-release.log`, `/tmp/kubota-shared-memory.log`,
+`/tmp/kubota-shared-ui.log`, `/tmp/ropa-shared-ui.log`,
+`/tmp/ropa-shared-pixel-diff.log`.
+
+## Pre-fix evidence
+
 Current release viewer rebuilt at 5a07516. Both machinery archives pass ZIP
 integrity checks and contain every explicitly listed `inputs:file` member.
 Original files were not modified; SHA256 checks pass after all captures.
@@ -45,9 +78,9 @@ properties are not part of this diagnostic grouping; sharing still requires thei
 compatibility. Ordinary benchmark output and scene behavior are unchanged.
 
 The current texture conversion caches store full pixel/plane keys under a 64 MiB
-budget. Large generated images can bypass these caches. The next step is to
-measure and fix reuse without retaining full duplicate cache keys or weakening
-texture semantics, then rerun Kubota and inspect the resulting frame.
+budget. Large generated images can bypass these caches. The generated-image
+index above addresses this bypass without retaining full duplicate keys or
+changing texture semantics.
 
 ## Capture validation fix
 

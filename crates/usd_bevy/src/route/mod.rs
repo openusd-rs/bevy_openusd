@@ -36,9 +36,11 @@ pub mod points;
 pub mod material;
 mod texture_pack;
 mod color_texture;
+mod generated_image;
 
 pub(crate) fn configure_texture_caches(app: &mut bevy::prelude::App) {
     color_texture::configure(app);
+    generated_image::configure(app);
     texture_pack::configure(app);
 }
 pub mod payload;

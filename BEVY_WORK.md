@@ -3,6 +3,18 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Share generated images beyond pixel-cache budgets
+
+A bounded asset-ID index reuses generated scalar, alpha and color images only
+after exact pixel and descriptor/sampler checks. It retains no pixel copies or
+strong handles. Kubota image payload falls from 12.43 GB to 557 MB and the
+rebuilt viewer now renders it with Ready status. Ropa host captures are pixel-
+exact before/after. Texture resolution and formats are unchanged. The single
+headless opening sample got slower (9.074 to 13.494 seconds); no loading-speed
+claim is made. All 677 workspace tests pass (19 ignored, 33 suites), check-all
+and release builds pass. Evidence: `benchmarks/machine-texture-memory.md`;
+logs: `/tmp/generated-image-workspace.log`, `/tmp/generated-image-check.log`.
+
 ## Capture loaded-document save baselines
 
 The viewer's open path and `EditorSession::from_source` record hashes of the

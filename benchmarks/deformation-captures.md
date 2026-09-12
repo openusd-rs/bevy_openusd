@@ -1,5 +1,42 @@
 # CPU/GPU deformation capture sweep
 
+## Native CPU-baked point oracle
+
+`scripts/sample_native_deformation.cpp` uses native UsdSkelBakeSkinning on an
+anonymous flattened stage, never saving source layers. It prints sampled points
+in the original mesh's local coordinate space. Native baking can move rigid
+skinning into the mesh transform rather than its points, so the tool includes
+the baked transform and removes the original world transform. Nonfinite times,
+invalid mesh paths and singular original transforms are rejected.
+
+The tool materializes existing animated attributes at the requested time before
+baking that single instant. Without this step, the native bake at intermediate
+time 5 used the default blend weight instead of the interpolated value. Native
+output at 0/5/10 now gives first-point positions (0,0,0),
+(0.176776677,0,0.176776707), (0.353553355,0,0.353553414), respectively.
+This is a CPU point oracle, not a normal/tangent or GPU timing check.
+
+Build against an installed OpenUSD SDK, its Python development library and
+compatible TBB headers/library. Set CPPFLAGS, LDFLAGS and LDLIBS for those SDKs:
+
+```sh
+make --eval='native-sample-build:; @$(CXX) -std=c++17 $(CPPFLAGS) scripts/sample_native_deformation.cpp $(LDFLAGS) $(LDLIBS) -o target/sample-native-deformation' native-sample-build
+USD_NATIVE_DEFORMATION_TOOL="$PWD/target/sample-native-deformation" make test CARGO='cargo --offline' APP_TARGET='-p usd_bevy --lib native_baked_positions_match_combined_skin_and_morph -- --ignored --nocapture'
+```
+
+The ignored integration test directly runs native baking at 0,2.5,5,7.5,10 and
+compares all four source-order points against the Bevy CPU deformation result
+with absolute tolerance 1e-5. It is separate from the native-export test lane.
+It was executed and passed (/tmp/native-deformation-rust-test.log). Ordinary
+library tests pass 491 with 16 ignored, and make check-all passes. NaN time and
+missing mesh probes reject with status 2. These checks do not validate arbitrary
+assets, normals, tangents or native GPU rendering.
+The SDK used here is OpenUSD 25.05.01, Python 3.13.12, TBB 2022.2 headers and
+the SDK's oneTBB 2022.3 runtime. Initial missing-header/linker failures remain
+in /tmp/native-deformation-build*.log; the successful sampled build is
+/tmp/native-deformation-build-sampled.log, with outputs in
+/tmp/native-deformation-sampled-{0,5,10}.log.
+
 ## Native Storm deformation reference
 
 The base blendshape skeleton now applies SkelBindingAPI, and the normal-map

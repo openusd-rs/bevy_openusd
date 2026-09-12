@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native CPU deformation point oracle
+
+Added scripts/sample_native_deformation.cpp using installed native OpenUSD
+UsdSkelBakeSkinning on an anonymous flattened stage. It materializes the
+requested animated sample and maps baked points/transforms back to the original
+mesh's local space. It never saves source layers. The new explicitly ignored
+native integration test compares all combined-fixture points at 0,2.5,5,7.5,10
+against Bevy CPU deformation at absolute tolerance 1e-5.
+
+The native integration test was executed and passed:
+/tmp/native-deformation-rust-test.log. Invalid NaN time and missing mesh
+probes reject with status 2. Ordinary library tests pass 491 with 16 ignored,
+and make check-all passes: /tmp/native-deformation-{library-tests,check}.log.
+Build requirements, native sample values and pitfalls are documented in
+benchmarks/deformation-captures.md. This verifies sampled point deformation,
+not normal/tangent fidelity, GPU execution or full renderer acceptance.
+
 ## Native deformation fixture schema repair
 
 Native Storm exposed missing applied APIs in the deformation fixture:

@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Quantify uniform environment response
+
+Added a uniform EXR dome with intensities 1 and 2. Four inspected captures use
+matched intensity, unit Bevy exposure and disabled tone mapping. Interior
+32x32 diffuse/metal patches differ from native Storm by at most 2 RGB bytes
+at intensity 1 and 2/3 bytes at intensity 2. Strict comparisons fail; this is
+close local response, not whole-image or arbitrary-material parity. No runtime
+lighting adjustment was made. Evidence: `benchmarks/dome-native-reference.md`.
+
 ## Isolate capture camera response
 
 Standalone captures now expose bounded EV100 and optional disabled tone mapping,

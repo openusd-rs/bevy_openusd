@@ -143,6 +143,48 @@ Logs: `/tmp/capture-response-{tests-final,check,build}.log` and
 `/tmp/dome-response-{default,unit}.log`. Full workspace tests were not rerun for
 this example-only change; their last complete run is recorded above.
 
+## Uniform dome quantitative comparison
+
+`assets/dome_reference_uniform.usda` uses the constant warm EXR and sampled
+intensities 1 at time 0 and 2 at time 10. Capture settings are the unit-exposure,
+no-tone-map controls above; native camera light is off. All four images were
+inspected:
+
+- `target/dome-uniform-native/frame.png`
+- `target/dome-uniform-bevy.png`
+- `target/dome-uniform-native-double/frame.png`
+- `target/dome-uniform-bevy-double.png`
+
+Compare interior 32x32 patches: diffuse at (476,344), metal at (772,344).
+These avoid silhouettes, the grid and background. Native alpha is removed;
+statistics use encoded sRGB RGB values, not linear-radiance error.
+
+| Intensity | Patch | Mean absolute RGB error (0..1) | Maximum RGB byte difference |
+|---|---|---:|---:|
+| 1 | Diffuse | 0.00371477 | 2 |
+| 1 | Metal | 0.00425475 | 2 |
+| 2 | Diffuse | 0.00576874 | 2 |
+| 2 | Metal | 0.00596151 | 3 |
+
+All strict comparisons fail; no tolerance was enlarged to label them passes.
+Both renderers brighten with doubled intensity, but these encoded comparisons
+do not prove exact linear scaling. This establishes close interior response for
+these two materials/intensities, not arbitrary HDR/PBR fidelity. Native low
+tessellation and Bevy's edge shading visibly differ outside the measured patches.
+Native EXR missing-mip warnings remain; Bevy capture logs have no WARN/ERROR.
+
+Example comparison (substitute 772 for the metal patch):
+
+```sh
+make --eval='uniform-stats:; @oiiotool target/dome-uniform-native/frame.png --ch R,G,B --crop 32x32+476+344 --printstats target/dome-uniform-bevy.png --crop 32x32+476+344 --printstats --diff' uniform-stats
+```
+
+Logs: `/tmp/dome-uniform-{diffuse,metal}-comparison.log`,
+`/tmp/dome-uniform-double-{diffuse,metal}-comparison.log` and
+`/tmp/dome-uniform-{native,bevy}{,-double}.log`. The time-0 capture preceded
+adding the time-10 intensity override; its time-0 authored values are unchanged.
+No Rust changes or full test rerun in this fixture/evidence step.
+
 Validation: wrapper syntax passes through Make; invalid camera-light selection
 returns 2 without creating target/dome-invalid-light-probe; runtime settings
 confirm both on and off paths. Native flatten accepts the unit fixture. No Rust

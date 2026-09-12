@@ -3,6 +3,24 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Oxbo shadow control and source geometry inspection
+
+Matched release viewer_capture runs at eye (12,10,16), focus (0,2,0), time zero
+and OIT compare scene shadows against forced off. Both images were inspected:
+target/oxbo-shadows-{scene,off}.png. Panel patches remain without shadows, while
+cast-shadow regions change. Both captures complete (/tmp/oxbo-shadows-*.log).
+The initial attempt used unsupported value on and correctly failed; the
+accepted setting is scene, not on. No rendering policy changed.
+
+The fresh release source report/export is /tmp/oxbo-inspection.log and
+target/oxbo-inspection.usda. Of 33 authored Preview Surface opacity values,
+29 are opaque and four translucent. Geometry diagnostics identify five exact
+duplicate triangles in Threshing_side_access_right_04 and 448 in combineRolls.
+These are coincident position tuples within each mesh, not proven causes of the
+observed upper-panel marks. The source assets remain untouched. This rules out
+shadows as a complete repair and provides bounded candidates for isolation;
+it is not a blanket declaration that the package is invalid.
+
 ## Release Oxbo harvester inspection
 
 The current release viewer builds successfully (/tmp/machine-release-build.log)

@@ -13,6 +13,9 @@ the viewer camera's previous MSAA and FXAA settings. It removes the observed
 Kubota grille triangle-ordering patches, but does not fix its roof speckling.
 This is opt-in, replaces MSAA with FXAA and uses additional fragment-buffer memory;
 performance, overflow and cross-device acceptance remain unverified.
+If the shared OIT buffers exceed the device's buffer/binding-size limit, the
+viewer disables its OIT and restores prior AA settings with a Rendering-panel
+explanation. This does not measure free VRAM or prevent fragment-capacity overflow.
 
 - Intermittent black frames remain a native-capture acceptance blocker. The
   standalone Khronos Vulkan cube reproduced the same visible-to-black failure

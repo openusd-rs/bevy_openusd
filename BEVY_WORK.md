@@ -3,6 +3,29 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## OIT device-buffer limit guard
+
+The viewer now checks OIT's shared target dimensions and fragment-node/head
+buffer requirements against the smaller of max_buffer_size and
+max_storage_buffer_binding_size. It runs in Last before state publication and
+render extraction. Oversized configurations disable only viewer-owned OIT,
+restore prior AA settings and publish a wrapped explanation in Rendering.
+Inactive cameras do not inflate the calculation; active OIT cameras contribute
+componentwise maximum target dimensions, matching Bevy's shared-buffer policy.
+
+The default four fragments/pixel require a 398131200-byte node buffer at 4K,
+which exceeds a 128MiB binding limit. Arithmetic checks cover zero dimensions,
+large targets, nonfinite inputs and u32 indexing overflow. A world-level
+regression simulates a 1280x720-to-3840x2160 resize with that limit and verifies
+OIT removal, MSAA restoration, FXAA cleanup and the explanation. This is not an
+actual 4K GPU-resize or available-VRAM test.
+
+All 91 viewer tests and the build pass in /tmp/oit-budget-{tests,build}.log.
+Normal-size live capture also completes: target/oit-budget-normal-host.png was
+inspected with OIT still on and overlapping triangles visible. Wrapper log:
+/tmp/oit-budget-capture.log. Fragment overflow within valid allocated buffers,
+total VRAM pressure and externally owned oversized OIT remain outside this guard.
+
 ## Oxbo native reference and its material limitation
 
 Native usdrecord/Embree completes at /ReferenceCamera, 1280px width, frame zero:

@@ -54,6 +54,7 @@ fn set_transparency(camera: &mut EntityWorldMut, enabled: bool) {
 struct State {
     requested_oit: Option<bool>,
     oit: bool,
+    transparency_error: Option<String>,
     requested: Option<u32>,
     requested_curve_steps: Option<usize>,
     requested_curve_surface_sides: Option<Option<usize>>,
@@ -79,7 +80,7 @@ impl RenderSettingsBridge {
 
 pub fn configure(app: &mut App, bridge: RenderSettingsBridge) {
     app.insert_resource(bridge).insert_resource(RenderErrorHandler(stop_rendering))
-        .add_systems(PreUpdate, apply).add_systems(Last, publish);
+        .add_systems(PreUpdate, apply).add_systems(Last, (guard_transparency_buffers, publish).chain());
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app.add_systems(RenderStartup, limit_mesh_slabs);
     }
@@ -116,6 +117,7 @@ fn apply(world: &mut World) {
         state.requested_oit.take(),
     )) else { return };
     if let Some(enabled) = oit {
+        if let Ok(mut state) = bridge.0.lock() { state.transparency_error = None; }
         let cameras = world.query_filtered::<Entity, (With<Camera3d>, With<mara_bevy::ChaseCamera>)>()
             .iter(world).collect::<Vec<_>>();
         for camera in cameras { set_transparency(&mut world.entity_mut(camera), enabled); }
@@ -132,6 +134,43 @@ fn apply(world: &mut World) {
         let current = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default();
         if let Ok(settings) = current.with_surface_sides(sides) { world.insert_resource(settings); }
     }
+}
+
+fn oit_buffer_requirement(size: UVec2, average: f32) -> Option<u64> {
+    let pixels = u64::from(size.x) * u64::from(size.y);
+    if pixels > u64::from(u32::MAX) || !average.is_finite() || average < 0.0 { return None; }
+    let nodes = ((pixels as f32 * average) as f64).ceil();
+    if nodes > f64::from(u32::MAX) { return None; }
+    Some((nodes as u64 * std::mem::size_of::<bevy::core_pipeline::oit::OitFragmentNode>() as u64)
+        .max(pixels * 4))
+}
+
+fn guard_transparency_buffers(world: &mut World) {
+    let Some(device) = world.get_resource::<RenderDevice>() else { return };
+    let limits = device.limits();
+    let limit = limits.max_buffer_size.min(u64::from(limits.max_storage_buffer_binding_size));
+    enforce_transparency_budget(world, limit);
+}
+
+fn enforce_transparency_budget(world: &mut World, limit: u64) {
+    use bevy::core_pipeline::oit::OrderIndependentTransparencySettings as Oit;
+    let mut size = UVec2::ZERO;
+    let mut average = 0.0f32;
+    for (camera, settings) in world.query::<(&Camera, &Oit)>().iter(world) {
+        if !camera.is_active { continue; }
+        if let Some(target) = camera.physical_target_size() {
+            size = size.max(target);
+            average = average.max(settings.fragments_per_pixel_average);
+        }
+    }
+    if oit_buffer_requirement(size, average).is_some_and(|bytes| bytes <= limit) { return; }
+    let owned = world.query_filtered::<Entity, (With<Camera>, With<PreviousMsaa>, With<Oit>)>()
+        .iter(world).collect::<Vec<_>>();
+    if owned.is_empty() { return; }
+    for entity in owned { set_transparency(&mut world.entity_mut(entity), false); }
+    let error = format!("OIT disabled: {}x{} target exceeds the {} MiB buffer limit", size.x, size.y, limit / (1024 * 1024));
+    warn!("{error}");
+    if let Ok(mut state) = world.resource::<RenderSettingsBridge>().0.lock() { state.transparency_error = Some(error); }
 }
 
 fn publish(world: &mut World) {
@@ -166,13 +205,16 @@ fn publish(world: &mut World) {
 pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
     let Ok(state) = bridge.0.lock().map(|state| state.clone()) else { return };
     let transparency_bridge = bridge.clone();
+    let transparency_error_lines = state.transparency_error.as_deref()
+        .map(super::lighting::status_lines).unwrap_or_default();
     body.add_normal("rendering.transparency", "Transparency", "options", vec![
-        Pod::new("rendering.transparency.controls").with_custom_units(4, move |ui| {
+        Pod::new("rendering.transparency.controls").with_custom_units(4 + transparency_error_lines.len(), move |ui| {
             ui.label(if state.oit { "Order-independent alpha: on" } else { "Order-independent alpha: off" });
             ui.label("Experimental; extra GPU memory");
             ui.label("FXAA replaces MSAA while enabled");
             if ui.button(if state.oit { "Disable OIT" } else { "Enable OIT" }).clicked
                 && let Ok(mut state) = transparency_bridge.0.lock() { state.requested_oit = Some(!state.oit); }
+            for line in &transparency_error_lines { ui.label(line); }
         }),
     ]);
     if let Some(error) = &state.renderer_error {
@@ -246,6 +288,41 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn oversized_oit_target_restores_aa_before_rendering() {
+        use bevy::core_pipeline::oit::OrderIndependentTransparencySettings as Oit;
+        let mut world = World::new();
+        let bridge = RenderSettingsBridge::default();
+        world.insert_resource(bridge.clone());
+        let mut camera = Camera::default();
+        camera.computed.target_info = Some(bevy::camera::RenderTargetInfo {
+            physical_size: UVec2::new(1280,720), ..default()
+        });
+        let id = world.spawn((camera, Msaa::Sample8)).id();
+        super::set_transparency(&mut world.entity_mut(id), true);
+        super::enforce_transparency_budget(&mut world, 128 * 1024 * 1024);
+        assert!(world.get::<Oit>(id).is_some());
+        world.get_mut::<Camera>(id).unwrap().computed.target_info.as_mut().unwrap().physical_size = UVec2::new(3840,2160);
+        super::enforce_transparency_budget(&mut world, 128 * 1024 * 1024);
+        assert!(world.get::<Oit>(id).is_none());
+        assert_eq!(*world.get::<Msaa>(id).unwrap(), Msaa::Sample8);
+        assert!(world.get::<bevy::anti_alias::fxaa::Fxaa>(id).is_none());
+        assert!(bridge.0.lock().unwrap().transparency_error.as_ref().unwrap().contains("3840x2160"));
+    }
+
+    #[test]
+    fn oit_buffer_budget_covers_large_targets_and_overflow() {
+        assert_eq!(super::oit_buffer_requirement(UVec2::new(1280,720), 4.0), Some(44_236_800));
+        assert_eq!(super::oit_buffer_requirement(UVec2::new(3840,2160), 4.0), Some(398_131_200));
+        assert!(super::oit_buffer_requirement(UVec2::new(3840,2160), 4.0).unwrap() > 128 * 1024 * 1024);
+        assert_eq!(super::oit_buffer_requirement(UVec2::new(1280,720), 0.0), Some(3_686_400));
+        assert_eq!(super::oit_buffer_requirement(UVec2::ZERO, 4.0), Some(0));
+        for average in [f32::NAN, f32::INFINITY, -1.0, f32::MAX] {
+            assert!(super::oit_buffer_requirement(UVec2::new(1280,720), average).is_none());
+        }
+        assert!(super::oit_buffer_requirement(UVec2::splat(u32::MAX), 4.0).is_none());
+    }
+
     #[test]
     fn transparency_restores_existing_or_absent_fxaa() {
         use bevy::anti_alias::fxaa::{Fxaa, Sensitivity};

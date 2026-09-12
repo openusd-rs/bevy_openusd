@@ -3,6 +3,28 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Knoche light-bar geometry attribution
+
+The two bright shapes in the Knoche capture are now traced to
+/robot/chassis/visual_033_lightBar_new/lightBar_new_001. Native usdcat shows
+this authored mesh bound to crossmax600_reflectorWhite_mat___PBR, whose preview
+diffuse color is (0.752,0.752,0.752). A stronger-layer visibility override hiding
+only its parent removes the shapes from the otherwise matching Bevy view:
+target/knoche-lightbar-z-control.png, /tmp/knoche-lightbar-z-control.log.
+
+A native OpenUSD Embree capture from the matching camera also shows the same
+two elevated shapes: target/knoche-native-reference.png and
+/tmp/knoche-native-reference.log. Both images were visually inspected. Embree
+warns that Material prims and GPU color correction are unsupported; this is
+geometry-placement evidence, not PBR appearance equivalence. No renderer or
+original asset change was needed for these shapes.
+
+Controls use target/knoche-control-source.usdz, a byte-identical local copy of
+the user's source (SHA256 335dae1853f96b35b48ce4d87e4b9bde67019857283a9af9a41ae2f0e1c567f9).
+The initial visibility wrapper omitted root upAxis metadata and consequently
+rotated the scene; target/knoche-lightbar-control.png is not a matched control.
+The corrected wrapper explicitly preserves Z-up and metersPerUnit=1.
+
 ## Remaining machine-corpus GPU views
 
 The full workspace gate at 03c9b69 passes 649 tests with 15 ignored across

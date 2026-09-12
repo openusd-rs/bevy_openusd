@@ -90,3 +90,19 @@ membership. A second test verifies that a deleted Material still requests
 dependency reconciliation. The library gate passes 530 tests with 19 ignored,
 and workspace check passes. Logs: `/tmp/removal-scope-tests.log`,
 `/tmp/removal-scope-library.log`, `/tmp/removal-scope-check.log`.
+
+## Publication preflight
+
+Texture asset availability and current texture-consumer resolution are checked
+against the candidate stage before changing the live stage, resolver snapshots,
+save baselines, or undo history. After that preflight, texture installation only
+publishes prepared images and queues the recorded consumers. Removed prims in
+the old projection map are skipped during candidate consumer discovery.
+
+The missing-image-assets regression verifies unchanged layer contents, document
+revision, and disk baseline on rejection, then successful retry after image
+assets are installed. Current validation: 531 library tests pass (19 ignored)
+and workspace check passes (`/tmp/reload-preflight-library.log`,
+`/tmp/reload-preflight-check.log`). The broader workspace run started before this
+preflight edit passed 695 tests across 33 suites, with 19 ignored
+(`/tmp/hot-reload-workspace.log`); it is not a full-target gate for this follow-up.

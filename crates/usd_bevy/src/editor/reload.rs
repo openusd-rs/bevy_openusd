@@ -85,10 +85,12 @@ pub(super) fn watch(
 impl EditorSession {
     /// Reloads externally changed layers without replacing the stage or entities.
     pub fn reload_sources(&mut self) -> anyhow::Result<()> {
-        self.reload_paths(None).map(|_| ())
+        self.reload_paths(None, |_, _| Ok(())).map(|_| ())
     }
 
-    pub(super) fn reload_paths(&mut self, paths: Option<&[PathBuf]>) -> anyhow::Result<Option<TexturePublication>> {
+    pub(super) fn reload_paths(&mut self, paths: Option<&[PathBuf]>,
+        preflight: impl FnOnce(&mut TexturePublication, &Stage) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<TexturePublication>> {
         self.synchronize_external_edits();
         let disk = self.save_state.borrow().disk.clone()
             .ok_or_else(|| anyhow::anyhow!("document has no disk provenance"))?;
@@ -142,6 +144,8 @@ impl EditorSession {
             }
         }
         let prepared = decode_textures(&source, changed_requests)?;
+        let mut publication = TexturePublication { requests, prepared, consumers: Vec::new() };
+        preflight(&mut publication, candidate)?;
         for (path, (_, hash)) in &changed {
             anyhow::ensure!(blake3::hash(&std::fs::read(path)?) == *hash, "source changed during reload: {}", path.display());
         }
@@ -177,17 +181,18 @@ impl EditorSession {
         }
         disk.lock().expect("disk baselines").extend(changed.into_iter()
             .filter(|(path, _)| accepted.contains(path)).map(|(path, (_, hash))| (path, hash)));
-        Ok(Some(TexturePublication { requests, prepared }))
+        Ok(Some(publication))
     }
 }
 
 pub(super) struct TexturePublication {
     pub requests: BTreeSet<(String, bool)>,
     pub prepared: PreparedTextures,
+    consumers: Vec<String>,
 }
 
 impl TexturePublication {
-    pub fn install(self, world: &mut World, stage: &Stage) -> anyhow::Result<()> {
+    pub fn preflight(&mut self, world: &World, stage: &Stage) -> anyhow::Result<()> {
         anyhow::ensure!(self.prepared.is_empty() || world.contains_resource::<Assets<Image>>(), "image assets are unavailable");
         let changed: BTreeSet<_> = self.prepared.iter().map(|((path, _), _)| path.as_str()).collect();
         let time = world.resource::<crate::route::StageTime>().current;
@@ -196,6 +201,7 @@ impl TexturePublication {
             for (path, _) in map.iter() {
                 if path == "/" { continue; }
                 let prim = stage.prim(path)?;
+                if !prim.is_valid()? { continue; }
                 if matches!(prim.type_name()?.as_deref(), Some("DomeLight" | "DomeLight_1")) {
                     let texture = crate::route::dome::asset_string(prim.attribute("inputs:texture:file").get_at::<Value>(Some(openusd::usd::TimeCode::new(time)))?);
                     if changed.contains(texture.as_str()) { consumers.push(path.to_string()); }
@@ -212,6 +218,11 @@ impl TexturePublication {
                 }
             }
         }
+        self.consumers = consumers;
+        Ok(())
+    }
+
+    pub fn install(self, world: &mut World) {
         let mut textures = world.remove_resource::<crate::asset::SnapshotTextures>().unwrap_or_default();
         textures.0.retain(|key, _| self.requests.contains(key));
         for (key, image) in self.prepared {
@@ -223,15 +234,68 @@ impl TexturePublication {
         set_texture_requests(world, self.requests.into_iter().map(|(path, _)| path).collect());
         world.insert_resource(textures);
         if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
-            for path in consumers { live.enqueue_resync(&path); }
+            for path in self.consumers { live.enqueue_resync(&path); }
         }
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_image_assets_reject_reload_before_stage_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root.usda");
+        let original = b"#usda 1.0\ndef Cube \"Model\" {}\n";
+        std::fs::write(&root, original).unwrap();
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header().unwrap().write_image_data(&[255, 0, 0, 255]).unwrap();
+        }
+        std::fs::write(directory.path().join("pixel.png"), png).unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(root.to_string_lossy().into_owned())).unwrap();
+        app.update();
+        let before = app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap();
+        let revision = bridge.view().unwrap().document.revision;
+        let replacement = r#"#usda 1.0
+def Cube "Model" { rel material:binding = </Mat> }
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Texture.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Texture" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @pixel.png@
+        float3 outputs:rgb
+    }
+}
+"#;
+        std::fs::write(&root, replacement).unwrap();
+        bridge.send(EditorCommand::ReloadSources(vec![root.clone()])).unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.contains("image assets are unavailable"));
+        let editor = app.world().non_send::<EditorSession>();
+        assert_eq!(editor.stage().root_layer().export_to_string().unwrap(), before);
+        assert_eq!(bridge.view().unwrap().document.revision, revision);
+        assert_eq!(editor.save_state.borrow().disk.as_ref().unwrap().lock().unwrap()[&root], blake3::hash(original));
+        app.init_resource::<Assets<Image>>();
+        bridge.send(EditorCommand::ReloadSources(vec![root])).unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert!(app.world().non_send::<EditorSession>().stage().prim("/Mat").unwrap().is_valid().unwrap());
+        assert_eq!(app.world().resource::<crate::asset::SnapshotTextures>().0.len(), 1);
+    }
 
     #[test]
     fn unrelated_layer_reload_preserves_undo_and_redo() {

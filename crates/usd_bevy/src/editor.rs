@@ -284,9 +284,8 @@ fn process_commands(world: &mut World) {
         } else if let Some(editor) = &mut session {
             match command {
                 EditorCommand::ReloadSources(paths) => {
-                    let result = editor.reload_paths(Some(&paths)).and_then(|publication| {
-                        if let Some(publication) = publication { publication.install(world, editor.stage())?; }
-                        Ok(())
+                    let result = editor.reload_paths(Some(&paths), |publication, stage| publication.preflight(world, stage)).map(|publication| {
+                        if let Some(publication) = publication { publication.install(world); }
                     });
                     if let Some(mut status) = world.get_resource_mut::<reload::EditorReloadStatus>() {
                         status.error = result.as_ref().err().map(|error| format!("{error:#}"));

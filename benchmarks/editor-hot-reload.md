@@ -133,3 +133,13 @@ mode before composition validation. The regression keeps a missing payload
 unloaded while applying a local cube edit, preserving held interpolation.
 Validation: 533 library tests pass (19 ignored), and workspace check passes
 (`/tmp/reload-final-library.log`, `/tmp/reload-final-check.log`).
+
+The release viewer rebuilt at `3fd0e49` was captured twice in one process.
+Only the referenced `target/hot-reload-demo/model.usda` changed: the large
+orange cube became a smaller blue cube, while the root document stayed open.
+Both `target/hot-reload-final.png` and
+`target/hot-reload-final.second.png` were visually inspected and show Ready.
+The unchanged green cube's 160x190 region at (1000,480) has zero mean, RMS,
+and maximum pixel difference (`/tmp/reload-final-roi.log`). This is a controlled
+filesystem-edit demonstration, not a Blender export or large-machinery timing
+qualification. Build evidence: `/tmp/reload-final-release.log`.

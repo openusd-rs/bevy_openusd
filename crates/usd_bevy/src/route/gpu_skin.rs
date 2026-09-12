@@ -163,7 +163,15 @@ mod tests {
 
     #[test]
     fn blended_gpu_normal_inputs_reproduce_native_cpu_normals() {
-        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_normals.usda");
+        check_blended_gpu_inputs(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_normals.usda"));
+    }
+
+    #[test]
+    fn animated_blended_gpu_inputs_reproduce_cpu_normals_and_tangents() {
+        check_blended_gpu_inputs(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_animated.usda"));
+    }
+
+    fn check_blended_gpu_inputs(file: &str) {
         let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
         let path = openusd::sdf::path("/Test/Face").unwrap();
         for (joint_weights, time) in [[0.5; 8], [1.0,0.0,0.75,0.25,0.25,0.75,0.0,1.0]].into_iter()

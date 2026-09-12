@@ -3,6 +3,16 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Validate animated blended joint palettes
+
+Added sampled joint translations/rotations/scales and an optional animated mode
+to the large-grid generator. Across 1000 distinct times, GPU-prepared median is
+21.580 ms versus CPU 20.243 ms, with stable 729648-byte tangent retention.
+Four inspected endpoint captures show changing geometry; CPU/GPU are exact at
+0 and differ at only two pixels by max RGB 1 at 10 (strict comparison fails).
+499 library tests, four explicit native oracles and check-all pass. No frame-rate
+or arbitrary-rig parity claim. Evidence: `benchmarks/blended-skin-grid.md`.
+
 ## Stress nested-package repair
 
 The prior nested-package repair timeout did not recur in 20 isolated executions

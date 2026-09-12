@@ -1,5 +1,44 @@
 # Blended-skin preparation cost
 
+## Animated joint palette
+
+`assets/skel_morph_blended_animated.usda` samples both joints' translations,
+rotations and nonuniform scales at 0 and 10. The generator's optional third
+argument `animated` selects it; omitted/`static` preserves the existing fixture.
+All layers are copied into a new directory, without editing existing assets.
+
+```sh
+make --eval='animated-grid:; @/bin/bash scripts/make_skin_grid.sh target/NEW_ANIMATED_GRID 100 animated' animated-grid
+```
+
+On `target/skin-grid-animated-100/grid.usda`, 1000 distinct sampled times give:
+
+| Mode | Median | p95 | Maximum | Tangent cache payload |
+|---|---:|---:|---:|---:|
+| GPU-prepared | 21.580 ms | 25.914 ms | 34.755 ms | 729648 bytes |
+| CPU | 20.243 ms | 25.868 ms | 33.950 ms | 729648 bytes |
+
+GPU first, CPU second, profiling enabled in both, no concurrent builds/tests.
+Both retain six mesh assets, zero unreferenced vertices and no peak growth above
+six meshes. This remains editor preparation, not GPU/presentation timing, and
+GPU-prepared remains slightly slower. Logs `/tmp/animated-grid-{gpu,cpu}-benchmark.log`.
+
+Four endpoint images `target/animated-grid-{0,10}-{gpu,cpu}.png` were inspected.
+The mesh changes from a folded upright strip to a broad slanted panel. CPU/GPU
+are RGB-exact at time 0; at time 10 two of 921600 pixels differ, max RGB error 1.
+The strict time-10 comparison fails; no threshold was relaxed. The stretched
+corner is present in both CPU and GPU output. Captures use /ReferenceCamera,
+forward MSAA Off and shadows off. Logs `/tmp/animated-grid-{0,10}-compare.log`.
+
+The shader-simulation regression checks animated normals/tangents at five times
+and two weight patterns. A new explicit native oracle compares the small source
+fixture's normals to native baked normals at those five times (1e-5 component
+tolerance); all four native deformation tests pass. Native sampling also accepts
+the generated 10201-point grid at time 10. 499 library tests pass, 19 ignored;
+check-all passes. Logs `/tmp/animated-grid-{tests,native-tests,native-points,check}.log`.
+Generator syntax and invalid-mode rejection pass without creating output.
+No runtime Rust code changed; full workspace tests were not rerun in this step.
+
 ## Distinct-time cache retention
 
 At ba49bba runtime code, 1000 distinct seeks from 0.01 through 10 on the same

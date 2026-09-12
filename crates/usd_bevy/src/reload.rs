@@ -5,38 +5,66 @@ use openusd::{sdf::{AbstractData, Data, Layer}, usd::Stage};
 /// Prepared layer changes validated against the current composed document.
 pub struct LayerReload {
     layers: Vec<(String, Data)>,
+    candidate: Stage,
+    expected: Vec<blake3::Hash>,
+    pub(crate) disk: crate::source::DiskBaselines,
 }
 
 impl LayerReload {
     /// Parses replacement bytes and validates composition without modifying `stage`.
     pub fn prepare(stage: &Stage, replacements: &[(String, Vec<u8>)]) -> anyhow::Result<Self> {
         let mut layers = Vec::new();
+        let mut expected = Vec::new();
         for (id, bytes) in replacements {
             anyhow::ensure!(stage.layer(id).is_some(), "reload layer is not in the stage: {id}");
             anyhow::ensure!(!layers.iter().any(|(existing, _)| existing == id), "duplicate reload layer: {id}");
             let layer = Layer::from_bytes(id, bytes.clone())?;
             layers.push((id.clone(), Data::from_abstract(layer.data())?));
+            expected.push(blake3::hash(stage.layer(id).unwrap().export_to_string()?.as_bytes()));
         }
         let root = stage.root_layer();
         let root_id = root.identifier().to_owned();
-        let mut source = crate::UsdSource::new(&root_id, root.export_to_string()?.into_bytes())?;
+        let mut bytes = root.export_to_string()?.into_bytes();
+        if root_id.ends_with(".usdz") {
+            use std::io::{Read, Write};
+            let resolved = root.resolved_path().ok_or_else(|| anyhow::anyhow!("package root has no resolved path"))?;
+            let (_, inner) = openusd::ar::split_package_relative_path_outer(resolved)
+                .ok_or_else(|| anyhow::anyhow!("package root is not package-relative"))?;
+            let mut original = zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&root_id)?))?;
+            let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for index in 0..original.len() {
+                let mut file = original.by_index(index)?;
+                archive.start_file(file.name(), zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored))?;
+                if file.name() == inner { archive.write_all(&bytes)?; }
+                else { let mut contents = Vec::new(); file.read_to_end(&mut contents)?; archive.write_all(&contents)?; }
+            }
+            bytes = archive.finish()?.into_inner();
+        }
+        let mut source = crate::UsdSource::new(&root_id, bytes)?;
         drop(root);
         for id in stage.layer_identifiers() {
             if id != root_id {
                 source.insert_dependency(id.clone(), stage.layer(&id).unwrap().export_to_string()?.into_bytes());
             }
         }
-        let candidate = source.open_stage()?;
+        let (candidate, disk) = source.open_stage_for_editor()?;
         for id in stage.muted_layers() { candidate.mute_layer(id); }
         crate::UsdSource::validate_composition(&candidate)?;
-        let plan = Self { layers };
-        plan.apply(&candidate)?;
-        crate::UsdSource::validate_composition(&candidate)?;
+        let plan = Self { layers, candidate, expected, disk };
+        plan.apply(&plan.candidate)?;
+        crate::UsdSource::validate_composition(&plan.candidate)?;
         Ok(plan)
     }
 
+    pub fn candidate(&self) -> &Stage { &self.candidate }
+
     /// Publishes changed fields in one transaction; unchanged fields are untouched.
     pub fn apply(&self, stage: &Stage) -> anyhow::Result<()> {
+        for ((id, _), expected) in self.layers.iter().zip(&self.expected) {
+            let layer = stage.layer(id).ok_or_else(|| anyhow::anyhow!("reload layer disappeared: {id}"))?;
+            anyhow::ensure!(blake3::hash(layer.export_to_string()?.as_bytes()) == *expected,
+                "reload conflict: layer changed after preparation: {id}");
+        }
         let ids: Vec<_> = self.layers.iter().map(|(id, _)| id.as_str()).collect();
         stage.batch_edit(&ids, |edits| {
             for (edit, (_, replacement)) in edits.iter_mut().zip(&self.layers) {
@@ -101,5 +129,16 @@ mod tests {
         let before = stage.root_layer().export_to_string().unwrap();
         assert!(LayerReload::prepare(&stage, &[(source.identifier().into(), b"broken".to_vec())]).is_err());
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
+
+    #[test]
+    fn stale_prepared_reload_rejects_new_authoring() {
+        let source = crate::UsdSource::new("stale.usda", b"#usda 1.0\ndef Cube \"Model\" {}\n".as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let plan = LayerReload::prepare(&stage, &[(source.identifier().into(), b"#usda 1.0\ndef Sphere \"Model\" {}\n".to_vec())]).unwrap();
+        stage.define_prim("/NewEdit").unwrap();
+        assert!(plan.apply(&stage).unwrap_err().to_string().contains("changed after preparation"));
+        assert!(stage.prim("/NewEdit").unwrap().is_valid().unwrap());
+        assert_eq!(stage.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
     }
 }

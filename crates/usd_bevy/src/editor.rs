@@ -88,6 +88,7 @@ impl Plugin for EditorPlugin {
             .add_systems(Last, publish_projection_issues);
         #[cfg(not(target_arch = "wasm32"))]
         app.init_resource::<reload::EditorReloadStatus>()
+            .init_resource::<reload::EditorReloadSettings>()
             .init_resource::<reload::WatchState>()
             .add_systems(PreUpdate, reload::watch.before(process_commands));
     }
@@ -283,7 +284,10 @@ fn process_commands(world: &mut World) {
         } else if let Some(editor) = &mut session {
             match command {
                 EditorCommand::ReloadSources(paths) => {
-                    let result = editor.reload_paths(Some(&paths));
+                    let result = editor.reload_paths(Some(&paths)).and_then(|publication| {
+                        if let Some(publication) = publication { publication.install(world, editor.stage())?; }
+                        Ok(())
+                    });
                     if let Some(mut status) = world.get_resource_mut::<reload::EditorReloadStatus>() {
                         status.error = result.as_ref().err().map(|error| format!("{error:#}"));
                     }

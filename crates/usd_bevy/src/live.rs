@@ -486,6 +486,15 @@ fn affects_projection_consumers(stage: &Stage, map: &PrimEntities, paths: &[&str
     }
     for (path, _) in map.iter() {
         let Ok(prim) = stage.prim(path) else { continue };
+        let in_changed_subtree = paths.iter().any(|changed| {
+            let changed = prim_of(changed);
+            changed == "/" || path == changed || path.strip_prefix(changed).is_some_and(|rest| rest.starts_with('/'))
+        });
+        if in_changed_subtree && (!prim.is_valid().unwrap_or(false)
+            || prim.type_name().ok().flatten().is_some_and(|name|
+                matches!(name.as_str(), "Material" | "Shader" | "NodeGraph" | "GeomSubset" | "Skeleton" | "SkelAnimation" | "BlendShape"))) {
+            return true;
+        }
         if prim.type_name().ok().flatten().as_deref() != Some("PointInstancer") {
             continue;
         }
@@ -502,12 +511,37 @@ fn affects_projection_consumers(stage: &Stage, map: &PrimEntities, paths: &[&str
     false
 }
 
+fn material_consumer_scopes(stage: &Stage, map: &PrimEntities, paths: &[&str]) -> anyhow::Result<Vec<String>> {
+    let mut graphs: HashMap<String, Vec<String>> = HashMap::new();
+    let mut consumers = Vec::new();
+    for (path, _) in map.iter().filter(|(path, _)| *path != "/") {
+        let Some(material) = crate::read::shade::read_material_binding(stage, &openusd::sdf::path(path)?)? else { continue; };
+        let graph = if let Some(graph) = graphs.get(material.as_str()) { graph } else {
+            let mut pending = vec![material.clone()];
+            let mut seen = std::collections::HashSet::new();
+            while let Some(node) = pending.pop() {
+                if !seen.insert(node.to_string()) { continue; }
+                anyhow::ensure!(seen.len() <= 4096, "material dependency traversal budget exceeded");
+                for attribute in stage.prim(node)?.attributes()? {
+                    pending.extend(attribute.connections()?.into_iter().map(|connection| connection.prim_path()));
+                }
+            }
+            graphs.entry(material.to_string()).or_insert_with(|| seen.into_iter().collect())
+        };
+        if graph.iter().any(|node| paths.iter().any(|changed| {
+            let changed = prim_of(changed);
+            changed == "/" || node == changed || node.strip_prefix(changed).is_some_and(|rest| rest.starts_with('/'))
+        })) {
+            consumers.push(path.to_string());
+            if stage.prim(path)?.type_name()?.as_deref() == Some("GeomSubset") { consumers.push(parent_path(path).into()); }
+        }
+    }
+    Ok(consumers)
+}
+
 /// Drain the change queue and reproject affected entities.
 ///
-/// * Any `resynced` change → reconcile the entity set against the stage
-///   (spawn entities for new prims, despawn entities for removed prims,
-///   patch the rest). v1 reconciles the whole stage; a later version scopes
-///   to the resynced subtree.
+/// * Structural changes reconcile affected subtrees; shared consumers expand the scope.
 /// * Material graph, binding, collection or prototype changes → reconcile consumers.
 /// * Other `changed_info` changes → patch the touched prims in place.
 pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
@@ -522,7 +556,15 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         });
     }
     if changes.iter().any(|c| !c.resynced.is_empty()) {
-        reconcile(world, live, map, true);
+        let paths: Vec<_> = changes.iter().flat_map(StageChange::paths).map(String::as_str).collect();
+        let consumers = material_consumer_scopes(&live.stage, map, &paths);
+        if consumers.is_err() || affects_projection_consumers(&live.stage, map, &paths) {
+            reconcile(world, live, map, true);
+        } else {
+            let mut scopes: Vec<_> = paths.iter().map(|path| prim_of(path).to_owned()).collect();
+            scopes.extend(consumers.unwrap_or_default());
+            reconcile_scoped(world, live, map, true, Some(&scopes));
+        }
         return;
     }
     let changed_paths: Vec<_> = changes.iter().flat_map(|change| change.changed_info.iter())
@@ -590,6 +632,12 @@ pub(crate) fn remap_namespace(world: &mut World, old: &str, new: &str) {
 
 /// Reconciles paths, hierarchy and routed components, optionally rebuilding the live animation index.
 pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool) {
+    reconcile_scoped(world, live, map, collect_animation, None);
+}
+
+fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool, scopes: Option<&[String]>) {
+    let affected = |path: &str| scopes.is_none_or(|scopes| scopes.iter().any(|scope|
+        scope == "/" || path == scope || path.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))));
     let stage = &live.stage;
     let registry = registry_of(world);
     let mut current: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -607,7 +655,7 @@ pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntit
     // Despawn entities for prims no longer present (never the `/` stage root).
     let stale: Vec<(String, Entity)> = map
         .iter()
-        .filter(|(p, _)| *p != "/" && !current.contains(*p))
+        .filter(|(p, _)| *p != "/" && affected(p) && !current.contains(*p))
         .map(|(p, e)| (p.to_string(), e))
         .collect();
     for (path, entity) in stale {
@@ -620,9 +668,10 @@ pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntit
     // get a full `project_prim`; existing prims get a full re-patch (empty
     // `changed` = "reapply everything", the conservative choice on a resync).
     let root = map.entity("/");
-    let mut ordered: Vec<&String> = current.iter().collect();
+    let mut ordered: Vec<&String> = current.iter().filter(|path| affected(path)).collect();
     ordered.sort_by_key(|p| p.matches('/').count());
-    let mut animated: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut animated: std::collections::HashSet<String> = world.get_resource::<AnimatedPrims>()
+        .map(|animated| animated.0.iter().filter(|path| !affected(path)).cloned().collect()).unwrap_or_default();
     for path in ordered {
         let Ok(p) = openusd::sdf::path(path) else {
             continue;
@@ -1887,7 +1936,7 @@ def NodeGraph "Graph" {}
         apply_changes(&mut world, &live, &mut map);
         assert_eq!(world.get::<Tagged>(a).map(|t| t.0), Some(2), "patch ran");
 
-        // A resync (new sibling prim) → reconcile re-patches existing /A.
+        // A sibling resync leaves /A untouched.
         live.stage
             .define_prim("/B")
             .unwrap()
@@ -1896,8 +1945,8 @@ def NodeGraph "Graph" {}
         apply_changes(&mut world, &live, &mut map);
         assert_eq!(
             world.get::<Tagged>(a).map(|t| t.0),
-            Some(3),
-            "reconcile re-patched existing prim"
+            Some(2),
+            "scoped reconcile preserved the unrelated prim"
         );
         assert_eq!(
             world.get::<Tagged>(map.entity("/B").unwrap()).map(|t| t.0),

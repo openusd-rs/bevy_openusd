@@ -9,12 +9,24 @@ pub struct EditorReloadStatus {
     pub files: usize,
 }
 
+#[derive(Resource, Debug)]
+pub struct EditorReloadSettings {
+    pub enabled: bool,
+    pub interval: Duration,
+}
+
+impl Default for EditorReloadSettings {
+    fn default() -> Self { Self { enabled: true, interval: Duration::from_millis(250) } }
+}
+
 #[derive(Resource, Default)]
 pub(super) struct WatchState {
     document: Option<u64>,
     next: Option<Instant>,
     observed: BTreeMap<PathBuf, Option<(SystemTime, u64)>>,
     pending: BTreeSet<PathBuf>,
+    retry: Option<Instant>,
+    revision: u64,
 }
 
 fn outer_path(id: &str) -> PathBuf {
@@ -24,22 +36,38 @@ fn outer_path(id: &str) -> PathBuf {
 
 pub(super) fn watch(
     session: Option<NonSend<EditorSession>>,
+    textures: Option<Res<EditorTextureRequests>>,
+    settings: Res<EditorReloadSettings>,
     bridge: Res<EditorBridge>,
     mut state: ResMut<WatchState>,
     mut status: ResMut<EditorReloadStatus>,
 ) {
+    if !settings.enabled { return; }
     let now = Instant::now();
     if state.next.is_some_and(|next| now < next) { return; }
-    state.next = Some(now + Duration::from_millis(250));
+    state.next = Some(now + settings.interval.max(Duration::from_millis(10)));
     let Some(editor) = session else { return; };
+    if status.error.is_some() && (state.revision != editor.revision
+        || (status.error.as_ref().is_some_and(|error| !error.contains("unsaved edits"))
+            && state.retry.is_none_or(|retry| now >= retry))) {
+        let paths = state.observed.keys().cloned().collect::<Vec<_>>();
+        state.pending.extend(paths);
+        state.retry = Some(now + Duration::from_secs(1));
+    }
+    state.revision = editor.revision;
     let Some(disk) = editor.save_state.borrow().disk.clone() else { return; };
-    let paths = disk.lock().expect("disk baselines").keys().cloned().collect::<Vec<_>>();
+    let mut paths = disk.lock().expect("disk baselines").keys().cloned().collect::<BTreeSet<_>>();
+    if let Some(textures) = textures {
+        paths.extend(textures.0.iter().map(|path| outer_path(path)).filter(|path| path.is_absolute()));
+    }
     let observed: BTreeMap<_, _> = paths.into_iter().map(|path| {
         let stamp = std::fs::metadata(&path).ok().and_then(|meta| Some((meta.modified().ok()?, meta.len())));
         (path, stamp)
     }).collect();
-    status.files = observed.len();
+    if status.files != observed.len() { status.files = observed.len(); }
     if state.document != Some(editor.document_id) {
+        status.error = None;
+        state.retry = None;
         state.document = Some(editor.document_id);
         state.pending = observed.keys().cloned().collect();
         state.observed = observed;
@@ -57,24 +85,28 @@ pub(super) fn watch(
 impl EditorSession {
     /// Reloads externally changed layers without replacing the stage or entities.
     pub fn reload_sources(&mut self) -> anyhow::Result<()> {
-        self.reload_paths(None)
+        self.reload_paths(None).map(|_| ())
     }
 
-    pub(super) fn reload_paths(&mut self, paths: Option<&[PathBuf]>) -> anyhow::Result<()> {
+    pub(super) fn reload_paths(&mut self, paths: Option<&[PathBuf]>) -> anyhow::Result<Option<TexturePublication>> {
         let disk = self.save_state.borrow().disk.clone()
             .ok_or_else(|| anyhow::anyhow!("document has no disk provenance"))?;
         let baselines = disk.lock().expect("disk baselines").clone();
+        let old_requests = crate::UsdSource::stage_texture_requests(self.stage()).map_err(anyhow::Error::msg)?;
+        let mut watched: BTreeSet<_> = baselines.keys().cloned().collect();
+        watched.extend(old_requests.iter().map(|(path, _)| outer_path(path)));
         let mut changed = BTreeMap::new();
-        for (path, baseline) in baselines {
+        for path in watched {
             if paths.is_some_and(|paths| !paths.contains(&path)) { continue; }
             let bytes = std::fs::read(&path)?;
             let hash = blake3::hash(&bytes);
-            if hash != baseline { changed.insert(path, (bytes, hash)); }
+            if baselines.get(&path) != Some(&hash) { changed.insert(path, (bytes, hash)); }
         }
-        if changed.is_empty() { return Ok(()); }
+        if changed.is_empty() { return Ok(None); }
         let states = self.save_state.borrow_mut().states(self.stage(), &self.layer_changes.revisions(), self.layer_changes.structural_revision());
         let mut replacements = Vec::new();
         let mut accepted = BTreeSet::new();
+        let mut source_bytes = BTreeMap::new();
         for id in self.stage.layer_identifiers() {
             let Some(layer) = self.stage.layer(&id) else { continue; };
             let Some(path) = layer.resolved_path() else { continue; };
@@ -82,19 +114,106 @@ impl EditorSession {
             let Some((bytes, _)) = changed.get(&key) else { continue; };
             anyhow::ensure!(states.get(&id) == Some(&save_state::LayerSaveState::Clean),
                 "reload conflict: {id} has unsaved edits; save elsewhere or undo them before reloading");
-            anyhow::ensure!(!openusd::ar::is_package_relative_path(path), "package layer reload is not yet available: {path}");
-            replacements.push((id, bytes.clone()));
+            let replacement = if let Some((outer, inner)) = openusd::ar::split_package_relative_path_outer(path) {
+                source_bytes.insert(outer, bytes.clone());
+                openusd::ar::read_package_entry(Box::new(std::io::Cursor::new(bytes.clone())), &inner)?
+            } else {
+                source_bytes.insert(path.to_owned(), bytes.clone());
+                bytes.clone()
+            };
+            replacements.push((id, replacement));
             accepted.insert(key);
         }
-        if replacements.is_empty() { return Ok(()); }
-        let plan = crate::reload::LayerReload::prepare(self.stage(), &replacements)?;
-        plan.apply(self.stage())?;
+        let plan = if replacements.is_empty() { None } else {
+            Some(crate::reload::LayerReload::prepare(self.stage(), &replacements)?)
+        };
+        let candidate = plan.as_ref().map_or(self.stage(), |plan| plan.candidate());
+        let requests = crate::UsdSource::stage_texture_requests(candidate).map_err(anyhow::Error::msg)?;
+        let mut source = self.source.clone().ok_or_else(|| anyhow::anyhow!("document has no source snapshot"))?;
+        for (path, bytes) in &source_bytes { source.replace_file_bytes(path.clone(), bytes.clone()); }
+        let changed_requests: BTreeSet<_> = requests.iter().filter(|request|
+            !old_requests.contains(*request) || changed.contains_key(&outer_path(&request.0))).cloned().collect();
+        for (path, _) in &changed_requests {
+            let outer = outer_path(path);
+            if let Some((bytes, _)) = changed.get(&outer) {
+                source.replace_file_bytes(outer.to_string_lossy().into_owned(), bytes.clone());
+                accepted.insert(outer);
+            }
+        }
+        let prepared = decode_textures(&source, changed_requests)?;
+        for (path, (_, hash)) in &changed {
+            anyhow::ensure!(blake3::hash(&std::fs::read(path)?) == *hash, "source changed during reload: {}", path.display());
+        }
+        if let Some(plan) = &plan {
+            for (path, bytes) in plan.disk.snapshots.lock().expect("prepared source snapshots").iter() {
+                let key = crate::persistence::destination_identity(&outer_path(path))?;
+                if !baselines.contains_key(&key) {
+                    source_bytes.insert(path.clone(), bytes.to_vec());
+                }
+            }
+        }
+        let previous = disk.replacements.lock().expect("editor source replacements").clone();
+        disk.replacements.lock().expect("editor source replacements")
+            .extend(source_bytes.iter().map(|(path, bytes)| (path.clone(), Arc::from(bytes.clone()))));
+        if let Err(error) = plan.as_ref().map_or(Ok(()), |plan| plan.apply(self.stage())) {
+            *disk.replacements.lock().expect("editor source replacements") = previous;
+            return Err(error);
+        }
+        self.source = Some(source);
         self.synchronize_external_edits();
         for (id, _) in &replacements {
-            self.save_state.borrow_mut().saved_to_source(self.stage(), id, id);
+            self.save_state.borrow_mut().reloaded_layer(self.stage(), id);
         }
         disk.lock().expect("disk baselines").extend(changed.into_iter()
             .filter(|(path, _)| accepted.contains(path)).map(|(path, (_, hash))| (path, hash)));
+        Ok(Some(TexturePublication { requests, prepared }))
+    }
+}
+
+pub(super) struct TexturePublication {
+    pub requests: BTreeSet<(String, bool)>,
+    pub prepared: PreparedTextures,
+}
+
+impl TexturePublication {
+    pub fn install(self, world: &mut World, stage: &Stage) -> anyhow::Result<()> {
+        anyhow::ensure!(self.prepared.is_empty() || world.contains_resource::<Assets<Image>>(), "image assets are unavailable");
+        let changed: BTreeSet<_> = self.prepared.iter().map(|((path, _), _)| path.as_str()).collect();
+        let time = world.resource::<crate::route::StageTime>().current;
+        let mut consumers = Vec::new();
+        if !changed.is_empty() && let Some(map) = world.get_resource::<crate::live::PrimEntities>() {
+            for (path, _) in map.iter() {
+                if path == "/" { continue; }
+                let prim = stage.prim(path)?;
+                if matches!(prim.type_name()?.as_deref(), Some("DomeLight" | "DomeLight_1")) {
+                    let texture = crate::route::dome::asset_string(prim.attribute("inputs:texture:file").get_at::<Value>(Some(openusd::usd::TimeCode::new(time)))?);
+                    if changed.contains(texture.as_str()) { consumers.push(path.to_string()); }
+                }
+                let Some(material) = crate::read::shade::read_material_binding(stage, &openusd::sdf::path(path)?)? else { continue; };
+                let Some(read) = crate::read::shade::read_preview_material_at(stage, &material, Some(time))? else { continue; };
+                if [&read.diffuse_texture, &read.emissive_texture, &read.normal_texture, &read.metallic_texture,
+                    &read.roughness_texture, &read.occlusion_texture, &read.opacity_texture].into_iter()
+                    .flatten().any(|path| changed.contains(path.as_str())) {
+                    let path = if prim.type_name()?.as_deref() == Some("GeomSubset") {
+                        path.rsplit_once('/').map_or(path, |(parent, _)| parent)
+                    } else { path };
+                    consumers.push(path.to_string());
+                }
+            }
+        }
+        let mut textures = world.remove_resource::<crate::asset::SnapshotTextures>().unwrap_or_default();
+        textures.0.retain(|key, _| self.requests.contains(key));
+        for (key, image) in self.prepared {
+            let mut assets = world.resource_mut::<Assets<Image>>();
+            if textures.0.get(&key).and_then(|handle| assets.get(handle)).is_some_and(|old|
+                old.data == image.data && old.texture_descriptor == image.texture_descriptor) { continue; }
+            textures.0.insert(key, assets.add(image));
+        }
+        set_texture_requests(world, self.requests.into_iter().map(|(path, _)| path).collect());
+        world.insert_resource(textures);
+        if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
+            for path in consumers { live.enqueue_resync(&path); }
+        }
         Ok(())
     }
 }
@@ -132,6 +251,7 @@ mod tests {
         let map = app.world().resource::<crate::live::PrimEntities>();
         let entities = ["/A", "/B", "/Other"].map(|path| map.entity(path).unwrap());
         let mesh = app.world().get::<Mesh3d>(entities[2]).unwrap().0.clone();
+        let transform_tick = app.world().entity(entities[2]).get_ref::<Transform>().unwrap().last_changed();
         app.world_mut().entity_mut(entities[2]).insert(Runtime(42));
         let document = bridge.view().unwrap().document.document_id;
         std::fs::write(&child, model(3)).unwrap();
@@ -142,6 +262,7 @@ mod tests {
         }
         assert_eq!(app.world().get::<Mesh3d>(entities[2]).unwrap().0, mesh);
         assert_eq!(app.world().get::<Runtime>(entities[2]), Some(&Runtime(42)));
+        assert_eq!(app.world().entity(entities[2]).get_ref::<Transform>().unwrap().last_changed(), transform_tick);
         std::fs::write(&child, "broken").unwrap();
         tick_until(&mut app, |_| bridge.view().unwrap().status.starts_with("Failed"));
         assert_eq!(app.world().non_send::<EditorSession>().stage().prim("/A").unwrap().attribute("size").get::<f64>().unwrap(), Some(3.0));
@@ -162,5 +283,109 @@ mod tests {
         std::fs::write(&root, "#usda 1.0\ndef Cube \"Model\" { double size = 3 }\n").unwrap();
         assert!(editor.reload_sources().unwrap_err().to_string().contains("unsaved edits"));
         assert_eq!(editor.stage().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap(), Some(2.0));
+    }
+
+    #[test]
+    fn package_layer_save_updates_in_place_repeatedly() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("model.usdz");
+        let package = |size| {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zip.start_file("root.usda", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+            write!(zip, "#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n").unwrap();
+            zip.finish().unwrap().into_inner()
+        };
+        let bytes = package(1);
+        std::fs::write(&file, &bytes).unwrap();
+        let mut editor = EditorSession::from_source(crate::UsdSource::new(&file, bytes).unwrap()).unwrap();
+        let document = editor.document_id();
+        for size in [3, 5] {
+            std::fs::write(&file, package(size)).unwrap();
+            editor.reload_sources().unwrap();
+            assert_eq!(editor.document_id(), document);
+            assert_eq!(editor.stage().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap(), Some(size as f64));
+        }
+    }
+
+    #[test]
+    fn missing_new_reference_recovers_when_dependency_appears() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root.usda");
+        std::fs::write(&root, "#usda 1.0\ndef Xform \"A\" {}\n").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        app.init_resource::<Assets<Image>>().init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(root.to_string_lossy().into_owned())).unwrap();
+        app.update();
+        let entity = app.world().resource::<crate::live::PrimEntities>().entity("/A").unwrap();
+        std::fs::write(&root, "#usda 1.0\ndef Xform \"A\" (prepend references = @new.usda@</Model>) {}\n").unwrap();
+        tick_until(&mut app, |_| bridge.view().unwrap().status.starts_with("Failed"));
+        assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/A"), Some(entity));
+        std::fs::write(directory.path().join("new.usda"), "#usda 1.0\ndef Xform \"Model\" { def Cube \"Child\" {} }\n").unwrap();
+        tick_until(&mut app, |world| world.resource::<crate::live::PrimEntities>().entity("/A/Child").is_some());
+        assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/A"), Some(entity));
+        std::fs::write(directory.path().join("new.usda"), "#usda 1.0\ndef Xform \"Model\" { def Sphere \"Next\" {} }\n").unwrap();
+        tick_until(&mut app, |world| world.resource::<crate::live::PrimEntities>().entity("/A/Next").is_some());
+        assert!(app.world().resource::<crate::live::PrimEntities>().entity("/A/Child").is_none());
+    }
+
+    #[test]
+    fn native_texture_save_updates_only_its_consumer_and_recovers() {
+        let png = |pixel: [u8; 4]| {
+            let mut bytes = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder.write_header().unwrap().write_image_data(&pixel).unwrap();
+            }
+            bytes
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let texture = directory.path().join("pixel.png");
+        std::fs::write(&texture, png([255, 0, 0, 255])).unwrap();
+        let root = directory.path().join("root.usda");
+        std::fs::write(&root, r#"#usda 1.0
+def Cube "A" { rel material:binding = </Mat> }
+def Cube "Other" {}
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Texture.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Texture" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @pixel.png@
+        float3 outputs:rgb
+    }
+}
+"#).unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        app.init_resource::<Assets<Image>>().init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(root.to_string_lossy().into_owned())).unwrap();
+        app.update();
+        let other = app.world().resource::<crate::live::PrimEntities>().entity("/Other").unwrap();
+        let tick = app.world().entity(other).get_ref::<Transform>().unwrap().last_changed();
+        let handle = app.world().get::<MeshMaterial3d<StandardMaterial>>(other).unwrap().0.clone();
+        let key = (texture.to_string_lossy().into_owned(), true);
+        let pixels = |world: &World| {
+            let handle = &world.resource::<crate::asset::SnapshotTextures>().0[&key];
+            world.resource::<Assets<Image>>().get(handle).unwrap().data.clone().unwrap()
+        };
+        std::fs::write(&texture, png([0, 255, 0, 255])).unwrap();
+        tick_until(&mut app, |world| pixels(world) == [0, 255, 0, 255]);
+        assert_eq!(app.world().entity(other).get_ref::<Transform>().unwrap().last_changed(), tick);
+        assert_eq!(app.world().get::<MeshMaterial3d<StandardMaterial>>(other).unwrap().0, handle);
+        std::fs::write(&texture, b"broken").unwrap();
+        tick_until(&mut app, |_| bridge.view().unwrap().status.starts_with("Failed"));
+        assert_eq!(pixels(app.world()), [0, 255, 0, 255]);
+        std::fs::write(&texture, png([0, 0, 255, 255])).unwrap();
+        tick_until(&mut app, |world| pixels(world) == [0, 0, 255, 255]);
     }
 }

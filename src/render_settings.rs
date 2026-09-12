@@ -30,13 +30,23 @@ pub fn configure_transparency(camera: &mut EntityCommands, enabled: bool) {
 #[derive(Component)]
 struct PreviousMsaa(Msaa);
 
+#[derive(Component)]
+struct PreviousFxaa(Option<bevy::anti_alias::fxaa::Fxaa>);
+
 fn set_transparency(camera: &mut EntityWorldMut, enabled: bool) {
     use bevy::core_pipeline::oit::OrderIndependentTransparencySettings as Oit;
     if enabled && !camera.contains::<Oit>() {
         let previous = camera.get::<Msaa>().copied().unwrap_or_default();
-        camera.insert((Oit::default(), Msaa::Off, PreviousMsaa(previous)));
+        let previous_fxaa = camera.get::<bevy::anti_alias::fxaa::Fxaa>().cloned();
+        let mut fxaa = previous_fxaa.clone().unwrap_or_default();
+        fxaa.enabled = true;
+        camera.insert((Oit::default(), Msaa::Off, PreviousMsaa(previous), fxaa, PreviousFxaa(previous_fxaa)));
     } else if !enabled && let Some(previous) = camera.take::<PreviousMsaa>() {
         camera.remove::<Oit>().insert(previous.0);
+        if let Some(previous) = camera.take::<PreviousFxaa>() {
+            if let Some(fxaa) = previous.0 { camera.insert(fxaa); }
+            else { camera.remove::<bevy::anti_alias::fxaa::Fxaa>(); }
+        }
     }
 }
 
@@ -160,7 +170,7 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
         Pod::new("rendering.transparency.controls").with_custom_units(4, move |ui| {
             ui.label(if state.oit { "Order-independent alpha: on" } else { "Order-independent alpha: off" });
             ui.label("Experimental; extra GPU memory");
-            ui.label("MSAA disabled while enabled");
+            ui.label("FXAA replaces MSAA while enabled");
             if ui.button(if state.oit { "Disable OIT" } else { "Enable OIT" }).clicked
                 && let Ok(mut state) = transparency_bridge.0.lock() { state.requested_oit = Some(!state.oit); }
         }),
@@ -236,6 +246,30 @@ pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transparency_restores_existing_or_absent_fxaa() {
+        use bevy::anti_alias::fxaa::{Fxaa, Sensitivity};
+        for existing in [None, Some(Fxaa { enabled: false, edge_threshold: Sensitivity::Extreme,
+            edge_threshold_min: Sensitivity::Low })] {
+            let mut world = World::new();
+            let mut camera = world.spawn(Camera3d::default());
+            if let Some(fxaa) = &existing { camera.insert(fxaa.clone()); }
+            for _ in 0..2 {
+                super::set_transparency(&mut camera, true);
+                super::set_transparency(&mut camera, true);
+                assert!(camera.get::<Fxaa>().unwrap().enabled);
+                super::set_transparency(&mut camera, false);
+                assert_eq!(camera.get::<Fxaa>().is_some(), existing.is_some());
+                if let Some(expected) = &existing {
+                    let actual = camera.get::<Fxaa>().unwrap();
+                    assert_eq!(actual.enabled, expected.enabled);
+                    assert_eq!(actual.edge_threshold, expected.edge_threshold);
+                    assert_eq!(actual.edge_threshold_min, expected.edge_threshold_min);
+                }
+            }
+        }
+    }
+
     #[test]
     fn transparency_toggle_restores_msaa_and_scopes_cameras() {
         use bevy::core_pipeline::oit::OrderIndependentTransparencySettings as Oit;

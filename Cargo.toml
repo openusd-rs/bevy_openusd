@@ -43,6 +43,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Bevy 0.19 (needs Rust 1.95+) — the embedded viewport renders the USD scene
 # offscreen into a mara-provided render target.
 bevy = { version = "0.19.1", default-features = false, features = [
+    "bevy_anti_alias",
     "std",
     "bevy_asset",
     "bevy_log",

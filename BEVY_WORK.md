@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## FXAA with viewer-owned OIT
+
+Enabling viewer OIT now enables FXAA while MSAA is off. Disabling restores the
+previous FXAA component (including disabled state and sensitivity values), or
+removes it if originally absent, alongside restoring MSAA. Repeated enable
+commands do not overwrite saved state. The Rendering pane states the AA policy.
+Cargo enables Bevy's bevy_anti_alias feature; DefaultPlugins supplies its plugin.
+
+All 89 viewer tests, build and check-all pass in /tmp/oit-fxaa-{tests,build,check}.log.
+The new test covers repeated cycles with absent and preconfigured disabled FXAA.
+Initial compilation exposed the missing feature; it was enabled before the gates.
+
+Inspected target/kubota-oit-fxaa-host.png: the complete tractor renders with the
+OIT grille improvement retained and no new missing surfaces apparent. Fine roof
+highlights remain; this is not a claim that FXAA removes specular aliasing or
+matches a reference renderer. The capture wrapper exits successfully in
+/tmp/kubota-oit-fxaa.log, retaining desktop and direct GPU evidence. GPU overhead
+and a controlled pixel-level AA comparison have not been measured at this step.
+
 ## Roof close-up and body/cabin overlap check
 
 Inspected target/kubota-roof-close.png from viewer_capture at eye (2,4.4,2),

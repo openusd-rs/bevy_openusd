@@ -3,6 +3,17 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Combined normal-map deformation acceptance
+
+The new skel_morph_tangent_normals fixture and composition regression cover
+normal-map material binding together with indexed morph normals, nonuniform
+skinning, tangents, double-sided geometry and subsets. Forward/deferred sweeps
+at 0,5,10 and a back-face control are recorded in
+benchmarks/deformation-captures.md. Deferred and no-MSAA controls pass RGB
+tolerance one; the forward time-10 view exceeds it at one pixel (difference two).
+The failed gate is retained rather than relabeled as passing. No production
+renderer behavior changed in this coverage step.
+
 ## EXR dome decoding
 
 Enabled Bevy's exr image feature in usd_bevy; Cargo.lock records exr 1.74.2

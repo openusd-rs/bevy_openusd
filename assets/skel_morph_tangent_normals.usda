@@ -1,0 +1,12 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    subLayers = [@morph_tangent_normals.usda@, @skel_morph_normals.usda@]
+)
+over "Test"
+{
+    over "Face"
+    {
+        uniform bool doubleSided = 1
+    }
+}

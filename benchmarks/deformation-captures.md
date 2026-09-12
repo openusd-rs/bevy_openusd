@@ -1,5 +1,48 @@
 # CPU/GPU deformation capture sweep
 
+## Combined normal-map, skin and morph fixture
+
+`assets/skel_morph_tangent_normals.usda` combines indexed morph normals,
+nonuniform skinning (2,1,0.5), UV tangents, a material subset and double-sided
+geometry. Both surfaces use the existing constant-normal material, which is
+encoded as a normal-map image. It does not test a detailed spatial normal map.
+The fixture regression checks composed weights, normal targets, UV/tangent
+attributes, skin matrix scales and normal-map materials at times 0,5,10.
+
+```sh
+USD_CAPTURE_TIMEOUT_SECS=180 USD_CAPTURE_RENDERER=deferred USD_CAPTURE_SHADOWS=off \
+make --eval='gate:; @/bin/bash scripts/compare_deformation.sh assets/skel_morph_tangent_normals.usda target/NEW 1 0 5 10' gate
+```
+
+Measured after 31e5180 with the new fixture, RTX 4080/Vulkan driver 595.84,
+1280x720, fixed eye (6,4,8), target (0,1,0), shadows off:
+
+| Renderer | Time | Pixels exceeding tolerance 1 | Max RGB difference |
+|---|---:|---:|---:|
+| Forward, MSAA4 | 0 | 0 | 0 |
+| Forward, MSAA4 | 5 | 0 | 1 |
+| Forward, MSAA4 | 10 | 1 | 2 |
+| Deferred, MSAA off | 0 | 0 | 0 |
+| Deferred, MSAA off | 5 | 0 | 1 |
+| Deferred, MSAA off | 10 | 0 | 1 |
+
+The forward gate fails at time 10; its tolerance was not increased. The
+prepass/no-MSAA control at time 10 passes with max difference one. This is
+consistent with a rasterization/AA-sensitive difference, not proof of its cause.
+A deferred back-face view from (-6,4,-8) at time 10 also passes with max one.
+GPU capture metadata reports two skinned and two morphed meshes, no flat-material
+overrides; the gate checks that the CPU controls have no GPU deformation.
+
+Artifacts: `target/combined-normal-{forward,deferred}/`,
+`target/combined-normal-{prepass,deferred}-{gpu,cpu}-control.*` and their diff
+images. Logs use matching `/tmp/combined-normal-*` names. Front views at all
+three times, the failing pair/diff, no-MSAA GPU control and both back-face views
+were inspected. The fixture test passes in `/tmp/combined-normal-fixture-test.log`.
+These checks establish bounded combined-feature agreement, not performance,
+arbitrary normal-map fidelity or exact forward pixel parity.
+
+## Earlier deformation sweeps
+
 Measured at `19fab40` using `scripts/compare_deformation.sh`: Bevy 0.19.1,
 NVIDIA RTX 4080/Vulkan, driver 595.84, fixed 1280x720 camera `(6,4,8)` looking at
 `(0,1,0)`, forward rendering and scene shadows. This measures image agreement,

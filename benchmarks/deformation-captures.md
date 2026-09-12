@@ -1,5 +1,33 @@
 # CPU/GPU deformation capture sweep
 
+## Native Storm deformation reference
+
+The base blendshape skeleton now applies SkelBindingAPI, and the normal-map
+mesh/subset apply MaterialBindingAPI. Native Storm previously displayed the
+unskinned square at time zero and warned about the missing material APIs.
+An overlay adding the schemas produced the rotated/nonuniformly scaled shape
+at zero and the morphed shape at ten. The canonical fixture declarations now
+include those APIs, and the composed fixture regression checks their presence.
+
+`assets/skel_morph_reference.usda` adds /ReferenceCamera, matching Bevy fixed
+eye (1,0.5,5), target (1,0.5,0). Native captures use:
+
+```sh
+make --eval='native-storm:; @/bin/bash scripts/capture_native_storm.sh assets/skel_morph_reference.usda target/NEW_NATIVE /ReferenceCamera 10' native-storm
+```
+
+Inspected native `target/combined-storm-api-time-{0,10}/frame.png`, canonical
+`target/combined-storm-fixture-time-{0,10}/frame.png`, and
+`target/combined-storm-repeat10/frame.png`, alongside Bevy
+`target/combined-bevy-native-camera-{0,10}.png`.
+The visible native endpoint silhouettes agree qualitatively with Bevy. Native
+time-ten recording is not yet reliable: the canonical first run was black,
+but an unchanged repeat rendered the expected shape, both with exit zero and
+no renderer warning. Therefore these are qualified shape observations, not a
+repeatable native acceptance gate. Native shading differs (visible triangle
+gradient versus Bevy's nearly uniform surface), with different lighting setups;
+normal/material parity remains unproven. No reference image was overwritten.
+
 ## Forward-only MSAA isolation
 
 The independent `USD_CAPTURE_MSAA` control changes sampling without adding

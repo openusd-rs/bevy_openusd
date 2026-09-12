@@ -88,6 +88,10 @@ mod tests {
     fn combined_normal_fixture_keeps_skin_morph_uvs_and_materials() {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_tangent_normals.usda");
         let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        for (path, schema) in [("/Test/Skel", "SkelBindingAPI"),
+            ("/Test/Face", "MaterialBindingAPI"), ("/Test/Face/Part", "MaterialBindingAPI")] {
+            assert!(stage.prim(openusd::sdf::path(path).unwrap()).unwrap().has_api_schema(schema).unwrap());
+        }
         let path = openusd::sdf::path("/Test/Face").unwrap();
         let mut world = World::new();
         world.init_resource::<Assets<Image>>();

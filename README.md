@@ -1104,6 +1104,12 @@ and diagnostics: successful recording is not lighting or pixel parity with
 Bevy. This isolated Xwayland path rendered Knoche materials successfully where
 the earlier offscreen Storm probe crashed.
 
+`assets/skel_morph_reference.usda` provides `/ReferenceCamera` for the combined
+skin/morph/normal fixture at times 0–10. Use the same asset with
+`USD_CAPTURE_CAMERA=/ReferenceCamera` for Bevy capture. The native animated
+reference has produced intermittent black frames despite exit zero; inspect
+every output. See `benchmarks/deformation-captures.md` for evidence and limits.
+
 For a local-space triangle/normal isolation probe:
 
 ```bash

@@ -3,6 +3,28 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native deformation fixture schema repair
+
+Native Storm exposed missing applied APIs in the deformation fixture:
+blendshape_test.usda now declares SkelBindingAPI on its skeleton, and
+morph_tangent_normals.usda declares MaterialBindingAPI on the mesh and subset.
+The composed GPU regression checks those schemas. A reusable
+assets/skel_morph_reference.usda supplies the matched /ReferenceCamera.
+
+Visible native endpoint shapes agree qualitatively with Bevy after the API
+repair, but unchanged native time-ten runs sometimes produce a black frame.
+The successful native image also shades differently under native lighting.
+Neither full normal/material parity nor repeatable native animated capture is
+established. Detailed artifacts and limitations are recorded in
+benchmarks/deformation-captures.md.
+
+make test-all passes 655 tests, 15 ignored, across 33 suites; make check-all
+passes. Logs: /tmp/deformation-native-api-{tests,check}.log.
+Both target/combined-bevy-canonical-{0,10}.png were inspected, using the
+existing release capture binary with the repaired assets and authored camera.
+No production Rust behavior changed: this repairs test assets and reference
+coverage. The remaining rendering acceptance item stays open.
+
 ## Native Storm material reference capture
 
 ### Independent forward MSAA control

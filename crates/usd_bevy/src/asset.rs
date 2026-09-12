@@ -14,7 +14,7 @@ use bevy::asset::io::Reader;
 use bevy::asset::{Asset, AssetId, AssetLoader, AssetPath, LoadContext, LoadState};
 use bevy::prelude::*;
 
-use crate::live::project_stage_under;
+use crate::live::ProjectionJob;
 use crate::instance::{InstanceRuntime, UsdInstanceOverrides, UsdInstanceTime, UsdInstances, UsdPlayback};
 use crate::live::{AnimatedPrims, LiveStage, reconcile, stage_up_axis};
 use crate::route::StageTime;
@@ -175,12 +175,26 @@ impl AssetLoader for UsdAssetLoader {
 /// installs one too if it's missing, so it also works standalone.
 pub struct UsdAssetPlugin;
 
+/// Main-thread time one frame may spend projecting scene roots. A stage
+/// larger than that is spread over frames and its root stays
+/// [`UsdSceneState::Loading`] until the last prim is in. `Duration::MAX`
+/// projects everything at once.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct UsdProjectionBudget(pub std::time::Duration);
+
+impl Default for UsdProjectionBudget {
+    fn default() -> Self {
+        Self(std::time::Duration::from_millis(10))
+    }
+}
+
 impl Plugin for UsdAssetPlugin {
     fn build(&self, app: &mut App) {
         if !app.world().contains_resource::<Assets<Image>>() {
             app.init_asset::<Image>();
         }
         app.init_asset::<UsdScene>()
+            .init_resource::<UsdProjectionBudget>()
             .init_resource::<crate::route::cache::ProjectionCache>()
             .register_asset_loader(UsdAssetLoader)
             .add_systems(Update, spawn_usd_scenes);
@@ -194,6 +208,9 @@ impl Plugin for UsdAssetPlugin {
 /// spawned yet. Exclusive (`&mut World`) because projection spawns a hierarchy
 /// and runs the routes, which need `&mut World`.
 fn spawn_usd_scenes(world: &mut World) {
+    let budget = world
+        .get_resource::<UsdProjectionBudget>()
+        .map_or(std::time::Duration::MAX, |b| b.0);
     let mut instances = world.remove_non_send::<UsdInstances>().unwrap_or_default();
     instances.roots.retain(|root, _| world.get::<UsdSceneRoot>(*root).is_some());
     let orphaned: Vec<_> = world
@@ -271,6 +288,7 @@ fn spawn_usd_scenes(world: &mut World) {
                 world.insert_resource(StageTime { current });
                 world.insert_resource(SnapshotTextures(textures.clone()));
                 let live = LiveStage::new(stage);
+                let mut job = None;
                 let map = timed(profiled, &mut timing.projection, || {
                     if let Some(mut runtime) = retained {
                         reconcile(world, &live, &mut runtime.map, false);
@@ -279,9 +297,14 @@ fn spawn_usd_scenes(world: &mut World) {
                         }
                         runtime.map
                     } else {
-                        project_stage_under(world, &live.stage, entity)
+                        let (mut started, mut map) = ProjectionJob::begin(world, &live.stage, entity);
+                        if !started.step(world, &live.stage, &mut map, budget) {
+                            job = Some(started);
+                        }
+                        map
                     }
                 });
+                let state = if job.is_none() { UsdSceneState::Ready } else { UsdSceneState::Loading };
                 world.remove_resource::<SnapshotTextures>();
                 world.remove_resource::<StageTime>();
                 world.remove_resource::<AnimatedPrims>();
@@ -297,12 +320,13 @@ fn spawn_usd_scenes(world: &mut World) {
                         subtree: map.entity("/"),
                         overrides,
                     },
-                    UsdSceneState::Ready,
+                    state,
                 ));
                 instances.roots.insert(entity, InstanceRuntime {
                     asset: handle.id(), live, map, textures: SnapshotTextures(textures), sampled: current,
                     subdivision_levels: crate::route::subdivision::current_levels(world),
                     curve_steps: crate::route::curves::current_geometry_key(world),
+                    job,
                 });
             }
             Err(error) => {
@@ -326,8 +350,40 @@ fn spawn_usd_scenes(world: &mut World) {
             total.projection += timing.projection;
         }
     }
+    continue_projections(world, &mut instances, budget);
     crate::instance::tick(world, &mut instances);
     world.insert_non_send(instances);
+}
+
+/// Spend this frame's budget on the roots whose projection is still running;
+/// a root whose last prim lands becomes `Ready`.
+fn continue_projections(world: &mut World, instances: &mut UsdInstances, budget: std::time::Duration) {
+    for (&root, runtime) in &mut instances.roots {
+        let Some(job) = runtime.job.as_mut() else {
+            continue;
+        };
+        let current = world.get::<UsdInstanceTime>(root).map_or(0.0, |time| time.current);
+        let previous_time = world.remove_resource::<StageTime>();
+        let previous_animated = world.remove_resource::<AnimatedPrims>();
+        let previous_textures = world.remove_resource::<SnapshotTextures>();
+        world.insert_resource(StageTime { current });
+        world.insert_resource(runtime.textures.clone());
+        let done = job.step(world, &runtime.live.stage, &mut runtime.map, budget);
+        world.remove_resource::<SnapshotTextures>();
+        world.remove_resource::<StageTime>();
+        world.remove_resource::<AnimatedPrims>();
+        if let Some(previous) = previous_time { world.insert_resource(previous); }
+        if let Some(previous) = previous_animated { world.insert_resource(previous); }
+        if let Some(previous) = previous_textures { world.insert_resource(previous); }
+        if done {
+            runtime.job = None;
+            // Projecting authored the initial read; the first sync starts clean.
+            let _ = runtime.live.drain_changes();
+            if let Ok(mut e) = world.get_entity_mut(root) {
+                e.insert(UsdSceneState::Ready);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

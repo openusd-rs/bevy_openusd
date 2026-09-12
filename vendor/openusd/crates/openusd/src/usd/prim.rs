@@ -1208,6 +1208,63 @@ impl VariantSets {
     pub fn get_all_variant_selections(&self) -> Result<Vec<(String, String)>> {
         Ok(self.stage.with_cache(|g, c| c.variant_selections(g, &self.prim))?)
     }
+
+    /// The names of every variant set authored on any spec contributing to
+    /// the prim, strongest site first, without duplicates. Mirrors C++
+    /// `UsdVariantSets::GetNames`.
+    pub fn names(&self) -> Result<Vec<String>> {
+        let mut names: Vec<String> = Vec::new();
+        for site in self.stage.prim(self.prim.clone())?.prim_stack()? {
+            let Some(layer) = self.stage.layer(&site.layer) else {
+                continue;
+            };
+            let Ok(Some(spec)) = layer.prim(site.path.clone()) else {
+                continue;
+            };
+            if let Ok(Some(sdf::Value::TokenVec(sets))) =
+                spec.field(sdf::ChildrenKey::VariantSetChildren.as_str())
+            {
+                for set in sets {
+                    let set = String::from(set);
+                    if !names.contains(&set) {
+                        names.push(set);
+                    }
+                }
+            }
+        }
+        Ok(names)
+    }
+
+    /// The variants authored for `set` on any spec contributing to the
+    /// prim, strongest site first, without duplicates. Mirrors C++
+    /// `UsdVariantSet::GetVariantNames`.
+    pub fn variant_names(&self, set: &str) -> Result<Vec<String>> {
+        let mut names: Vec<String> = Vec::new();
+        for site in self.stage.prim(self.prim.clone())?.prim_stack()? {
+            let Some(layer) = self.stage.layer(&site.layer) else {
+                continue;
+            };
+            let Ok(set_path) = site.path.append_variant_selection(set, "") else {
+                continue;
+            };
+            // A variant set spec is not a prim spec; read its field raw.
+            let Ok(Some(field)) = layer
+                .data()
+                .try_field(&set_path, sdf::ChildrenKey::VariantChildren.as_str())
+            else {
+                continue;
+            };
+            if let sdf::Value::TokenVec(variants) = field.into_owned() {
+                for variant in variants {
+                    let variant = String::from(variant);
+                    if !names.contains(&variant) {
+                        names.push(variant);
+                    }
+                }
+            }
+        }
+        Ok(names)
+    }
 }
 
 #[cfg(test)]

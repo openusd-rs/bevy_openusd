@@ -119,6 +119,25 @@ impl UsdInstances {
         self.roots.get(&root)?.map.entity(path)
     }
 
+    /// The prim path of an entity projected under `root`.
+    pub fn path(&self, root: Entity, entity: Entity) -> Option<&str> {
+        self.roots.get(&root)?.map.path(entity)
+    }
+
+    /// Every `(prim path, entity)` projected under `root`, the stage root
+    /// `/` included.
+    pub fn prims(&self, root: Entity) -> impl Iterator<Item = (&str, Entity)> {
+        self.roots
+            .get(&root)
+            .into_iter()
+            .flat_map(|runtime| runtime.map.iter())
+    }
+
+    /// The scene roots with a projected stage.
+    pub fn roots(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.roots.keys().copied()
+    }
+
     pub fn len(&self) -> usize {
         self.roots.len()
     }
@@ -134,6 +153,8 @@ pub(crate) struct InstanceRuntime {
     pub map: PrimEntities,
     pub textures: SnapshotTextures,
     pub sampled: f64,
+    /// The projection still running for this root, spread over frames.
+    pub job: Option<crate::live::ProjectionJob>,
     pub subdivision_levels: Option<u32>,
     pub curve_steps: (usize, Option<usize>),
 }
@@ -275,6 +296,10 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     let curve_steps = crate::route::curves::current_geometry_key(world);
     for (&root, runtime) in &mut instances.roots {
+        // A stage still projecting is not synced or animated yet.
+        if runtime.job.is_some() {
+            continue;
+        }
         let mut current = world.get::<UsdInstanceTime>(root).map_or(0.0, |time| time.current);
         if let Some(mut playback) = world.get_mut::<UsdPlayback>(root) {
             current = playback.advance(current, delta, &runtime.live.stage);

@@ -34,6 +34,7 @@ pub mod native;
 pub mod light;
 pub mod points;
 pub mod material;
+pub mod meta;
 mod texture_pack;
 mod color_texture;
 mod generated_image;
@@ -239,6 +240,8 @@ impl SchemaRegistry {
         r.register(instancer::PointInstancerRoute);
         // Physics schemas → marker components for an app's physics backend.
         r.register(physics::PhysicsRoute);
+        // Prim metadata (kind, displayName) → labels for tree views.
+        r.register(meta::MetaRoute);
         // Media/volume schemas → data markers for an app's audio/volume backend.
         r.register(audio::SpatialAudioRoute);
         r.register(audio::VolumeRoute);

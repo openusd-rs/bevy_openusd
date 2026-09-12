@@ -28,7 +28,7 @@ pub mod sync;
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
 pub mod watcher;
 
-pub use asset::{UsdAssetLoader, UsdAssetPlugin, UsdScene, UsdSceneRoot, UsdSceneState};
+pub use asset::{UsdAssetLoader, UsdAssetPlugin, UsdProjectionBudget, UsdScene, UsdSceneRoot, UsdSceneState};
 pub use source::UsdSource;
 pub use prim_ref::UsdPrimRef;
 pub use route::{DisplayPurposes, PrimRoute, RouteCtx, SchemaRegistry};

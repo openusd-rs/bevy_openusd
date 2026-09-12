@@ -442,37 +442,80 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
 /// and every prim is projected beneath it through the same [`SchemaRegistry`]
 /// the live path uses. Returns the local prim→entity map for the caller.
 pub fn project_stage_under(world: &mut World, stage: &Stage, parent: Entity) -> PrimEntities {
-    let registry = registry_of(world);
-    let mut map = PrimEntities::default();
-    // The stage-root carries the up-axis rotation; the caller's `parent` keeps
-    // its own transform (placement of this instance).
-    let root = world
-        .spawn((
-            UsdPrimRef {
-                path: "/".to_string(),
-            },
-            Transform::from_rotation(stage_up_axis(stage)),
-            Visibility::default(),
-            ChildOf(parent),
-        ))
-        .id();
-    map.insert("/", root);
+    let (mut job, mut map) = ProjectionJob::begin(world, stage, parent);
+    while !job.step(world, stage, &mut map, std::time::Duration::MAX) {}
+    map
+}
 
-    let _ = stage.traverse(traverse_predicate(), |path: &openusd::sdf::Path| {
-        let parent = map.entity(parent_path(path.as_str())).unwrap_or(root);
-        let entity = world
+/// A projection under way: the prims of one instance still to spawn, in
+/// pre-order so every parent exists before its children. `begin` spawns the
+/// stage-root child and lists the prims; `step` projects as many as fit in a
+/// time budget, so a large stage is spread over frames instead of stalling
+/// the app.
+pub struct ProjectionJob {
+    root: Entity,
+    pending: std::collections::VecDeque<openusd::sdf::Path>,
+    total: usize,
+}
+
+impl ProjectionJob {
+    pub fn begin(world: &mut World, stage: &Stage, parent: Entity) -> (Self, PrimEntities) {
+        let mut map = PrimEntities::default();
+        // The stage-root carries the up-axis rotation; the caller's `parent`
+        // keeps its own transform (placement of this instance).
+        let root = world
             .spawn((
                 UsdPrimRef {
-                    path: path.as_str().to_string(),
+                    path: "/".to_string(),
                 },
+                Transform::from_rotation(stage_up_axis(stage)),
+                Visibility::default(),
                 ChildOf(parent),
             ))
             .id();
-        map.insert(path.as_str().to_string(), entity);
-        registry.project_prim(stage, path, world, entity);
-        map.remember_type(stage, path.as_str());
-    });
-    map
+        map.insert("/", root);
+        let mut pending = std::collections::VecDeque::new();
+        let _ = stage.traverse(traverse_predicate(), |path: &openusd::sdf::Path| {
+            pending.push_back(path.clone());
+        });
+        let total = pending.len();
+        (Self { root, pending, total }, map)
+    }
+
+    /// Project prims until `budget` is spent; `true` once nothing is left.
+    pub fn step(
+        &mut self,
+        world: &mut World,
+        stage: &Stage,
+        map: &mut PrimEntities,
+        budget: std::time::Duration,
+    ) -> bool {
+        let registry = registry_of(world);
+        let started = std::time::Instant::now();
+        while let Some(path) = self.pending.pop_front() {
+            let parent = map.entity(parent_path(path.as_str())).unwrap_or(self.root);
+            let entity = world
+                .spawn((
+                    UsdPrimRef {
+                        path: path.as_str().to_string(),
+                    },
+                    ChildOf(parent),
+                ))
+                .id();
+            map.insert(path.as_str().to_string(), entity);
+            registry.project_prim(stage, &path, world, entity);
+            map.remember_type(stage, path.as_str());
+            if started.elapsed() >= budget {
+                break;
+            }
+        }
+        self.pending.is_empty()
+    }
+
+    /// Prims projected so far and the total to project.
+    pub fn progress(&self) -> (usize, usize) {
+        (self.total - self.pending.len(), self.total)
+    }
 }
 
 fn affects_projection_consumers(stage: &Stage, map: &PrimEntities, paths: &[&str]) -> bool {

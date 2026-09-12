@@ -1,0 +1,8 @@
+#usda 1.0
+(
+    subLayers = [@dome_reference_unit.usda@]
+)
+over "Env"
+{
+    asset inputs:texture:file = @dome_directional.exr@
+}

@@ -45,6 +45,38 @@ orientation or intensity correction follows from these results. Exposure,
 prefiltering, tessellation, tone mapping and native capture reliability still
 need isolation before a cross-renderer comparison can prove parity.
 
+## EXR isolation follow-up
+
+The equivalent half-float EXR yields visible colored spheres at both rotations:
+`target/dome-storm-exr-{0,10}/frame.png`, both inspected. OIIO --diff against
+the HDR passes. A mipmapped EXR repeat also renders colored spheres at both
+times (`target/dome-storm-mipped-{0,10}/frame.png`). Switching back to HDR
+after these four EXR captures reproduces white silhouettes at time 0:
+`target/dome-storm-hdr-after-exr/frame.png`. This isolates a format-dependent
+native path in this fixture; it does not establish the native decoder's cause.
+
+Both EXR variants emit a missing-mip warning (level 1 for scanline, level 3
+for mipmapped). Those warnings are retained rather than reported as clean runs.
+The native reflection placement differs from Bevy, but this is not yet proof
+that Bevy's coordinate mapping violates USD. Installed domeLight.h describes
+longitude zero toward +Z and positive longitude toward +X; the installed Storm
+domeLight.glslfx uses atan(z,x) in its texture sampling helper. The complete
+native transform/sampling chain still needs tracing before changing mapping.
+
+Durable control: `assets/dome_reference_exr.usda` uses unit intensity and
+`assets/dome_directional.exr`, generated without color conversion:
+
+```sh
+make --eval='dome-exr:; @oiiotool assets/dome_directional.hdr -d half -o assets/dome_directional.exr' dome-exr
+```
+
+Use the native command above with dome_reference_exr.usda. No EXR conversion is
+inserted into the runtime loader. Native brightness and pixel parity remain
+unverified; the Bevy comparison above uses intensity 10000, not unit intensity.
+The committed fixture was captured independently at both times in
+`target/dome-storm-exr-canonical-{0,10}/frame.png`; both show colored spheres and
+were inspected. Make-driven OIIO comparison against the original HDR passes.
+
 Validation: wrapper syntax passes through Make; invalid camera-light selection
 returns 2 without creating target/dome-invalid-light-probe; runtime settings
 confirm both on and off paths. Native flatten accepts the unit fixture. No Rust

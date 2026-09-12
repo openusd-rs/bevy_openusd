@@ -13,6 +13,13 @@ An exposure-only explanation is not established; no production lighting change
 was made. Native environment parity remains open. Reproduction and validation:
 `benchmarks/dome-native-reference.md`.
 
+Follow-up EXR and mipmapped-EXR controls render colored spheres at both dome
+rotations; a subsequent HDR control reproduces white silhouettes. Added the
+equivalent directional EXR fixture as a native comparison path. Native missing-
+mip warnings and reflection-placement differences remain documented; no
+production orientation correction is justified until the native sampling and
+transform conventions are traced.
+
 ## Skip discarded rest-pose skin tangents
 
 GPU skin preparation omits rest-pose tangent generation when the fully skinned

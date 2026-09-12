@@ -1,5 +1,32 @@
 # Machinery rendering and texture memory
 
+## Reuse packed outputs before allocation
+
+A second bounded asset-ID index fingerprints scalar input planes. On a hit it
+checks the live output's complete image layout and each expected RGBA byte before
+reusing the handle. This avoids rebuilding and hashing another large output
+buffer. Neither this index nor the generated-image index owns pixel data or strong
+handles. Changed inputs, mutated output pixels and changed samplers are covered
+by a new regression; source planes with inconsistent lengths are rejected.
+
+The profiled Kubota headless open falls from 12,595.777 ms at bf31365 to
+7,220.848 ms, with a 7,127.158 ms repeat. SubsetRoute application falls from
+5,238.452 to 2,343.032 ms, and MaterialRoute from 4,559.023 to 2,068.234 ms.
+Image payload remains 556,797,440 bytes with 90 images and 78 material assets.
+These are bounded loading samples, not interactive frame-rate measurements.
+
+The inspected `target/kubota-inputs-host.png` shows Ready and is pixel-exact to
+`target/kubota-shared-host.png`: OpenImageIO mean/RMS/max errors are all zero.
+The desktop and rendering-log guards pass; original machine hashes still match.
+The library passes 513 tests (19 ignored), check-all and release builds pass.
+The full workspace suite was not rerun for this increment; its preceding result
+is the 677-test checkpoint recorded in BEVY_WORK.md.
+
+Logs: `/tmp/kubota-route-profile.log`, `/tmp/kubota-inputs-profile.log`,
+`/tmp/kubota-inputs-repeat.log`, `/tmp/packed-input-library.log`,
+`/tmp/packed-input-check.log`, `/tmp/packed-input-release.log`,
+`/tmp/kubota-inputs-ui.log`, `/tmp/kubota-input-pixels.log`.
+
 ## Generated-image sharing fix
 
 Generated scalar, alpha, and color textures now share through a bounded index of

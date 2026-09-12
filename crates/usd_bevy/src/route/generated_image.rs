@@ -16,12 +16,22 @@ fn prune(cache: Option<ResMut<GeneratedImages>>, images: Option<Res<Assets<Image
     }
 }
 
-fn equivalent(a: &Image, b: &Image) -> bool {
+fn same_layout(a: &Image, b: &Image) -> bool {
     a.texture_descriptor == b.texture_descriptor
         && a.texture_view_descriptor == b.texture_view_descriptor
         && a.sampler == b.sampler && a.data_order == b.data_order
         && a.asset_usage == b.asset_usage && a.copy_on_resize == b.copy_on_resize
-        && a.data == b.data
+}
+
+fn equivalent(a: &Image, b: &Image) -> bool { same_layout(a, b) && a.data == b.data }
+
+pub(super) fn reuse_if(world: &mut World, id: AssetId<Image>, template: &Image,
+    pixels_match: impl FnOnce(&[u8]) -> bool) -> Option<Handle<Image>>
+{
+    let matches = world.resource::<Assets<Image>>().get(id).is_some_and(|image|
+        same_layout(image, template) && image.data.as_deref().is_some_and(pixels_match));
+    if !matches { return None; }
+    world.resource_mut::<Assets<Image>>().get_strong_handle(id)
 }
 
 pub(super) fn intern(world: &mut World, image: Image) -> Handle<Image> {

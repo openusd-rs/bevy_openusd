@@ -8,9 +8,10 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 
 - Kubota's reproduced GPU-memory failure is resolved by generated-image sharing:
   retained image payload drops from 12.43 GB to 557 MB and the viewer renders it.
-  Ropa's before/after host captures are pixel-exact. General loading performance
-  and native material parity remain unqualified; the sampled headless open got
-  slower. Evidence: `benchmarks/machine-texture-memory.md`.
+  Ropa's before/after host captures are pixel-exact. Packed-output reuse reduces
+  the sampled Kubota headless open from 12.60 to 7.22 seconds, preserving its host
+  pixels. General performance and native material parity remain unqualified.
+  Evidence: `benchmarks/machine-texture-memory.md`.
 
 The viewer supports experimental order-independent transparency with
 the Rendering pane's Enable OIT button, or at startup with

@@ -24,10 +24,15 @@ struct AlphaTextures {
     bytes: usize,
 }
 
+#[derive(Resource, Default)]
+struct PackedInputs(std::collections::VecDeque<(blake3::Hash, bevy::asset::AssetId<Image>)>);
+
 pub(super) fn configure(app: &mut App) { app.add_systems(Last, prune_caches); }
 
-fn prune_caches(packed: Option<ResMut<PackedTextures>>, alpha: Option<ResMut<AlphaTextures>>, assets: Option<Res<Assets<Image>>>) {
+fn prune_caches(packed: Option<ResMut<PackedTextures>>, alpha: Option<ResMut<AlphaTextures>>,
+    inputs: Option<ResMut<PackedInputs>>, assets: Option<Res<Assets<Image>>>) {
     let Some(assets) = assets else { return };
+    if let Some(mut inputs) = inputs { inputs.0.retain(|(_, id)| assets.contains(*id)); }
     if let Some(mut cache) = packed {
         cache.images.retain(|_, handle| assets.contains(handle.id()) && super::cache::externally_owned(handle));
         cache.bytes = cache.images.keys().map(|key| {
@@ -186,8 +191,32 @@ fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion
         anyhow::ensure!((a.width, a.height) == (b.width, b.height), "scalar textures have different resolutions");
     }
     let key = (rough, metal, occlusion);
+    let mut fingerprint = blake3::Hasher::new();
+    fingerprint.update(&width.to_le_bytes()).update(&height.to_le_bytes());
+    for plane in [&key.0, &key.1, &key.2] {
+        if let Some(plane) = plane {
+            anyhow::ensure!((plane.width, plane.height) == (width, height), "scalar textures have different resolutions");
+            anyhow::ensure!(plane.values.len() == width as usize * height as usize, "scalar plane payload has the wrong length");
+            fingerprint.update(&[1]).update(&plane.values);
+        } else { fingerprint.update(&[0]); }
+    }
+    let fingerprint = fingerprint.finalize();
+    let template = Image::new_uninit(Extent3d { width, height, depth_or_array_layers: 1 },
+        TextureDimension::D2, TextureFormat::Rgba8Unorm, bevy::asset::RenderAssetUsages::default());
+    let candidate = world.get_resource::<PackedInputs>().and_then(|cache|
+        cache.0.iter().find_map(|(hash, id)| (*hash == fingerprint).then_some(*id)));
+    if let Some(id) = candidate {
+        if let Some(handle) = super::generated_image::reuse_if(world, id, &template,
+            |data| packed_pixels_match(data, width as usize * height as usize, &key)) {
+            return Ok(Some(handle));
+        }
+    }
     if let Some(handle) = world.get_resource::<PackedTextures>().and_then(|cache| cache.images.get(&key)) {
-        if world.resource::<Assets<Image>>().contains(handle) { return Ok(Some(handle.clone())); }
+        let id = handle.id();
+        if let Some(handle) = super::generated_image::reuse_if(world, id, &template,
+            |data| packed_pixels_match(data, width as usize * height as usize, &key)) {
+            return Ok(Some(handle));
+        }
     }
     let count = width as usize * height as usize;
     let mut data = Vec::with_capacity(count * 4);
@@ -197,6 +226,11 @@ fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion
     let image = Image::new(Extent3d { width, height, depth_or_array_layers: 1 }, TextureDimension::D2,
         data, TextureFormat::Rgba8Unorm, bevy::asset::RenderAssetUsages::default());
     let handle = super::generated_image::intern(world, image);
+    world.init_resource::<PackedInputs>();
+    let mut inputs = world.resource_mut::<PackedInputs>();
+    inputs.0.retain(|(hash, _)| *hash != fingerprint);
+    if inputs.0.len() == 4096 { inputs.0.pop_front(); }
+    inputs.0.push_back((fingerprint, handle.id()));
     world.init_resource::<PackedTextures>();
     let mut cache = world.resource_mut::<PackedTextures>();
     let bytes = count * 4 + key.0.as_ref().map_or(0, |p| p.values.len()) + key.1.as_ref().map_or(0, |p| p.values.len()) + key.2.as_ref().map_or(0, |p| p.values.len());
@@ -211,9 +245,36 @@ fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion
     Ok(Some(handle))
 }
 
+fn packed_pixels_match(data: &[u8], count: usize, planes: &(Option<Plane>, Option<Plane>, Option<Plane>)) -> bool {
+    data.len() == count * 4 && data.chunks_exact(4).enumerate().all(|(i, pixel)| {
+        pixel == [planes.2.as_ref().map_or(255, |p| p.values[i]),
+            planes.0.as_ref().map_or(255, |p| p.values[i]),
+            planes.1.as_ref().map_or(255, |p| p.values[i]), 255]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_input_reuse_checks_live_output_and_source_changes() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let mut plane = Plane { width: 1, height: 1, values: vec![60] };
+        let a = pack(&mut world, Some(plane.clone()), None, None).unwrap().unwrap();
+        world.resource_mut::<Assets<Image>>().get_mut(&a).unwrap().data = Some(vec![0; 4]);
+        let b = pack(&mut world, Some(plane.clone()), None, None).unwrap().unwrap();
+        assert_ne!(a.id(), b.id());
+        assert_eq!(pack(&mut world, Some(plane.clone()), None, None).unwrap().unwrap().id(), b.id());
+        world.resource_mut::<Assets<Image>>().get_mut(&b).unwrap().sampler = bevy::image::ImageSampler::nearest();
+        let c = pack(&mut world, Some(plane.clone()), None, None).unwrap().unwrap();
+        assert_ne!(b.id(), c.id());
+        plane.values[0] = 61;
+        let d = pack(&mut world, Some(plane), None, None).unwrap().unwrap();
+        assert_ne!(c.id(), d.id());
+        assert_eq!(world.resource::<Assets<Image>>().get(&d).unwrap().data.as_deref(), Some([255, 61, 255, 255].as_slice()));
+    }
 
     #[test]
     fn large_packed_images_share_beyond_the_pixel_cache_budget() {

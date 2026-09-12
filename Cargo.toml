@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/usd_bevy", "crates/usd_macro"]
-exclude = ["xtra", "vendor/openusd", "vendor/bevy_asset"]
+exclude = ["xtra", "vendor/openusd", "vendor/bevy_asset", "vendor/bevy_pbr"]
 
 [patch.crates-io]
 bevy_asset = { path = "vendor/bevy_asset" }
+bevy_pbr = { path = "vendor/bevy_pbr" }
 
 [patch."https://github.com/mxpv/openusd"]
 openusd = { path = "vendor/openusd/crates/openusd" }

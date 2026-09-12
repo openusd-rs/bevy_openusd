@@ -39,6 +39,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "exr",
     "reflect_auto_register",
 ] }
+bevy_pbr = { version = "0.19.1", default-features = false, features = ["pbr_multi_layer_material_textures"] }
 
 [dev-dependencies]
 png = "0.18"

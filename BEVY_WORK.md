@@ -3,6 +3,24 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Skip discarded rest-pose skin tangents
+
+GPU skin preparation omits rest-pose tangent generation when the fully skinned
+tangent correction will replace it. Public mesh conversion remains unchanged.
+The shader-simulation regression starts without tangents and now covers varying
+joint weights. CPU/GPU and before/after GPU grid captures are RGB-exact.
+
+First measured GPU-prepared median was 40.163 ms versus the previous 56.289 ms;
+a reverse-order repeat was noisy at 63.207 ms, with CPU also rising to 47.463 ms.
+No stable playback-rate or robust percentage improvement is claimed. A more
+complex sampled-buffer tangent candidate showed negligible timing change and
+was removed. Evidence: benchmarks/blended-skin-grid.md.
+
+494 library tests, three native checks, check-all and release example build
+pass; logs /tmp/skip-rest-tangents-{tests-final,native,check,build}.log.
+Broader rendering/environment acceptance and stable large-mesh playback remain
+open; this step removes redundant work without changing rendered output.
+
 ## Skip redundant morph tangent preparation
 
 GPU skinning now tells morph preparation when a subsequent fully skinned

@@ -57,8 +57,8 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     let read = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
     let sample = crate::read::skel::gpu_skin_sample(ctx.stage, ctx.path, ctx.time)?;
-    let mut mesh = crate::mesh::mesh_from_usd(&read);
     let skinned_tangents = read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY);
+    let mut mesh = crate::mesh::assemble_mesh(&read, None, !skinned_tangents);
     let morph_weights = if crate::read::skel::has_blend_shapes(ctx.stage, ctx.path) {
         Some(super::gpu_morph::prepare(ctx, &read, &mut mesh, !skinned_tangents)?)
     } else { None };
@@ -166,12 +166,16 @@ mod tests {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_normals.usda");
         let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
         let path = openusd::sdf::path("/Test/Face").unwrap();
-        for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+        for (joint_weights, time) in [[0.5; 8], [1.0,0.0,0.75,0.25,0.25,0.75,0.0,1.0]].into_iter()
+            .flat_map(|weights| [0.0,2.5,5.0,7.5,10.0].into_iter().map(move |time| (weights, time))) {
+            stage.attribute("/Test/Face.primvars:skel:jointWeights").unwrap()
+                .set(openusd::sdf::Value::FloatVec(joint_weights.to_vec())).unwrap();
             let ctx = RouteCtx::at(&stage, &path, Some(time));
             let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
             let skin = crate::read::skel::gpu_skin_sample(&stage, &path, Some(time)).unwrap();
             let mapping = crate::mesh::vertex_point_indices(&read);
-            let mut gpu = crate::mesh::mesh_from_usd(&read);
+            let mut gpu = crate::mesh::assemble_mesh(&read, None, false);
+            assert!(gpu.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
             let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu, false).unwrap();
             correct_normals(&mut gpu, &mapping, &skin.normal_corrections, &weights).unwrap();
             correct_tangents(&ctx, &mut gpu, &mapping, &skin).unwrap();

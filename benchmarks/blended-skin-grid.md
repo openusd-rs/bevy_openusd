@@ -1,5 +1,46 @@
 # Blended-skin preparation cost
 
+## Skip discarded rest tangents
+
+Mesh assembly now has an internal tangent-generation flag. Public conversion
+keeps its existing behavior; GPU skin preparation disables rest-pose tangents
+only when it will replace them with fully deformed tangents. The correction's
+CPU-reference geometry and final tangent calculation remain unchanged. The
+shader-simulation test now starts without tangents and covers both uniform and
+varying joint weights at five times.
+
+Profiled 100-seek measurements on the same grid:
+
+| Order | Mode | Median seek | p95 seek | Maximum seek |
+| --- | --- | ---: | ---: | ---: |
+| 1 | CPU | 38.308 ms | 49.283 ms | 56.853 ms |
+| 2 | GPU-prepared | 40.163 ms | 52.822 ms | 75.085 ms |
+| 3 | GPU-prepared | 63.207 ms | 82.159 ms | 144.883 ms |
+| 4 | CPU | 47.463 ms | 68.261 ms | 112.838 ms |
+
+The first GPU median is below the preceding 56.289 ms result, but the reversed
+pair is substantially noisier. Other CPU-heavy work was observed on the shared
+host afterward; that observation does not isolate the cause of each sample.
+Do not treat this as a robust percentage speedup or a stable playback rate.
+The implementation deterministically removes one discarded tangent-generation
+call for the affected bindings.
+Logs: /tmp/skip-rest-tangents-{cpu,gpu-prepared}-benchmark.log and
+/tmp/skip-rest-tangents-repeat-{cpu,gpu-prepared}-benchmark.log.
+
+At time five, forward MSAA Off, shadows off and /ReferenceCamera, CPU/GPU and
+before/after GPU images are RGB-exact (0/921600 changed). Both new images were
+inspected: target/skin-grid-skip-rest-{gpu,cpu}.png;
+/tmp/skin-grid-skip-rest-{compare,before-after}.log.
+494 library tests, three native checks, check-all and release example build
+pass: /tmp/skip-rest-tangents-{tests-final,native,check,build}.log.
+
+A separate candidate reused sampled GPU buffers to build final tangents. It
+measured 55.637 ms versus 56.289 ms beforehand and introduced maximum RGB-1
+rounding differences. That candidate was removed rather than retain extra
+complexity for a change within observed timing variation. Its diagnostic logs
+remain under /tmp/reuse-tangent-input-* and /tmp/skin-grid-reuse-tangents-*;
+the final code retains the original CPU-reference tangent calculation.
+
 ## Skip discarded morph tangents
 
 When blended skinning will regenerate fully deformed tangents, GPU morph

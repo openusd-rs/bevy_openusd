@@ -3,6 +3,28 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Controlled transparent triangle-order regression
+
+assets/transparency_order{,_reversed}.usda contain the same two overlapping
+half-opacity triangles in one mesh; only face index order changes. The capture
+example now accepts USD_CAPTURE_RENDERER=oit, using OIT plus the same prepasses
+and Msaa::Off as the ordinary prepass control. Neither has FXAA.
+
+The original four captures all complete. OIT images match at strict RGB-zero
+tolerance across 921600 pixels; ordinary blending changes 60552 pixels with
+maximum RGB error 44. Both representative images were inspected, showing the
+overlapping red/blue triangles rather than empty renders. Artifacts are
+target/order-{oit,prepass}*, logs /tmp/order-*.log.
+
+The reusable Make-driven gate also passes:
+`make --eval='test-transparency-order:; @/bin/bash scripts/check_transparency_order.sh target/NEW_DIRECTORY' test-transparency-order`.
+It requires all four captures, exact OIT equality, and a numerical nonzero
+ordinary-blending difference, not merely an arbitrary failed comparison.
+Evidence: target/transparency-order-regression/ and
+/tmp/transparency-order-regression.log. All 17 capture-example tests pass in
+/tmp/oit-order-tests.log. This establishes bounded order invariance independently
+of MSAA; it does not certify transparency overflow, ties or every material path.
+
 ## FXAA with viewer-owned OIT
 
 Enabling viewer OIT now enables FXAA while MSAA is off. Disabling restores the

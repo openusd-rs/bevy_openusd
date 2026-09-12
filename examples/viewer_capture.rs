@@ -61,6 +61,7 @@ enum CaptureRenderer {
     Forward,
     Prepass,
     Deferred,
+    Oit,
 }
 
 impl CaptureRenderer {
@@ -69,7 +70,8 @@ impl CaptureRenderer {
             "forward" => Ok(Self::Forward),
             "prepass" => Ok(Self::Prepass),
             "deferred" => Ok(Self::Deferred),
-            _ => Err("USD_CAPTURE_RENDERER must be forward, prepass or deferred".into()),
+            "oit" => Ok(Self::Oit),
+            _ => Err("USD_CAPTURE_RENDERER must be forward, prepass, deferred or oit".into()),
         }
     }
 }
@@ -268,6 +270,9 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
     }
     if capture.renderer == CaptureRenderer::Deferred {
         camera.insert(bevy::core_pipeline::prepass::DeferredPrepass);
+    }
+    if capture.renderer == CaptureRenderer::Oit {
+        camera.insert(bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default());
     }
     let scene: Handle<UsdScene> = server.load(capture.asset.file_name().unwrap().to_string_lossy().into_owned());
     for (index, current) in capture.instance_times.iter().copied().enumerate() {
@@ -558,6 +563,7 @@ mod tests {
         assert_eq!(CaptureRenderer::parse("forward").unwrap(), CaptureRenderer::Forward);
         assert_eq!(CaptureRenderer::parse("prepass").unwrap(), CaptureRenderer::Prepass);
         assert_eq!(CaptureRenderer::parse("deferred").unwrap(), CaptureRenderer::Deferred);
+        assert_eq!(CaptureRenderer::parse("oit").unwrap(), CaptureRenderer::Oit);
         assert!(CaptureRenderer::parse("typo").is_err());
     }
     #[test]

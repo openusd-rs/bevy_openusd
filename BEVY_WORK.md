@@ -5,6 +5,24 @@ The dependency upgrade is a baseline, not completion of this goal.
 
 ## Native Storm material reference capture
 
+### Independent forward MSAA control
+
+`USD_CAPTURE_MSAA=off|1|2|4|8` now selects forward sampling without enabling
+prepasses. Non-forward capture modes reject multisampling; metadata records
+the selected value. Nineteen viewer_capture tests pass, including defaults,
+valid overrides and incompatible-mode rejection. Release capture and
+make check-all pass; logs `/tmp/capture-msaa-{tests,check}.log`.
+
+Inspected Oxbo forward MSAA4, forward Off, prepass Off and OIT Off captures at
+the same authored /ReferenceCamera and time zero, with shadows disabled:
+`target/oxbo-storm-{forward,forward-noaa,prepass,oit}-control.png`.
+Fine stippling remains without OIT and is visually reduced with MSAA4.
+Prepass/OIT differ in 2914 pixels (max RGB 38); forward Off/prepass Off differ
+in 7410 pixels (max RGB 3), out of 921600. Logs:
+`/tmp/oxbo-storm-{prepass-oit,noaa-prepass}-compare.log`.
+This rules out OIT as a necessary cause of the fine stippling; it does not
+prove its underlying geometry/material cause or native material parity.
+
 `scripts/capture_native_storm.sh` runs native usdrecord in private headless
 Weston Vulkan/Xwayland with Qt XCB, bounded recording time and owned process-group
 cleanup. It refuses existing output directories, retains diagnostics, renders a

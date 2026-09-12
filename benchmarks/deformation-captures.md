@@ -1,5 +1,26 @@
 # CPU/GPU deformation capture sweep
 
+## Forward-only MSAA isolation
+
+The independent `USD_CAPTURE_MSAA` control changes sampling without adding
+prepasses. Same-release forward GPU/CPU captures of
+`assets/skel_morph_tangent_normals.usda`, time 10, default eye/target and
+shadows off give:
+
+| Sampling | Max RGB error | Pixels exceeding tolerance 1 |
+| --- | ---: | ---: |
+| Off | 1 | 0 |
+| 4 | 2 | 1 at (711,442) |
+
+All four images were inspected. GPU metadata reports two skinned and two
+morphed entities, CPU reports zero, and metadata confirms the requested MSAA.
+Artifacts: `target/combined-normal-forward-{noaa,aa4}-{gpu,cpu}.png` with raw
+RGBA/settings sidecars; logs `/tmp/combined-normal-forward-{noaa,aa4}-compare.log`.
+The four-sample failure reproduces with the same release build used for Off;
+sampling is sufficient to change this fixture's tolerance outcome. This does
+not prove the underlying floating-point/rasterization cause, establish native
+normal parity or waive the original tolerance failure.
+
 ## Combined normal-map, skin and morph fixture
 
 `assets/skel_morph_tangent_normals.usda` combines indexed morph normals,

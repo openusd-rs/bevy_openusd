@@ -1937,9 +1937,12 @@ USD_CAPTURE_INSTANCE_TIMES=0,10 USD_CAPTURE_SHADOWS=off make run APP_TARGET='--e
 Set `USD_CAPTURE_SHADOWS=off` to disable directional, point and spot shadow maps
 for an isolated rendering comparison. The default `scene` preserves each light's
 shadow setting. This diagnostic is recorded in metadata and does not edit USD.
-Set `USD_CAPTURE_RENDERER=forward|prepass|deferred` to select the render path
-(default `forward`). The latter two enable depth, normal and motion-vector
+Set `USD_CAPTURE_RENDERER=forward|prepass|deferred|oit` to select the render path
+(default `forward`). Non-forward modes enable depth, normal and motion-vector
 prepasses and disable MSAA; deferred also selects Bevy's deferred opaque renderer.
+`USD_CAPTURE_MSAA=off|1|2|4|8` controls forward sampling independently of
+prepasses (default 4). Non-forward modes reject multisampling overrides.
+The selected MSAA value is recorded in capture metadata.
 The selected renderer and subdivision level (`0` means disabled) are recorded in
 capture metadata. Set `USD_SUBDIVISION_LEVELS=1..6` to refine the scene. Match renderer settings
 as well as camera/time when comparing CPU and GPU captures.

@@ -241,7 +241,8 @@ impl TexturePublication {
                 let Some(material) = crate::read::shade::read_material_binding(stage, &openusd::sdf::path(path)?)? else { continue; };
                 let Some(read) = crate::read::shade::read_preview_material_at(stage, &material, Some(time))? else { continue; };
                 if [&read.diffuse_texture, &read.emissive_texture, &read.normal_texture, &read.metallic_texture,
-                    &read.roughness_texture, &read.occlusion_texture, &read.opacity_texture].into_iter()
+                    &read.roughness_texture, &read.occlusion_texture, &read.opacity_texture,
+                    &read.clearcoat_texture, &read.clearcoat_roughness_texture].into_iter()
                     .flatten().any(|path| changed.contains(path.as_str())) {
                     let path = if prim.type_name()?.as_deref() == Some("GeomSubset") {
                         path.rsplit_once('/').map_or(path, |(parent, _)| parent)

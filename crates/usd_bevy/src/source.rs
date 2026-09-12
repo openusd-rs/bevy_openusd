@@ -150,6 +150,8 @@ impl UsdSource {
                     (&material.normal_texture, material.texture_srgb("normal")),
                     (&material.metallic_texture, material.texture_srgb("metallic")),
                     (&material.roughness_texture, material.texture_srgb("roughness")),
+                    (&material.clearcoat_texture, material.texture_srgb("clearcoat")),
+                    (&material.clearcoat_roughness_texture, material.texture_srgb("clearcoat_roughness")),
                     (&material.occlusion_texture, material.texture_srgb("occlusion")),
                     (&material.opacity_texture, material.texture_srgb("opacity")),
                 ] {

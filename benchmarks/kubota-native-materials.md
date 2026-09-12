@@ -1,5 +1,34 @@
 # Kubota matched-camera material comparison
 
+## Textured clearcoat support
+
+Preview clearcoat and clearcoat roughness now resolve texture connections,
+selected scalar channels, raw/sRGB declarations and sampled scale/bias. The
+scalar packing path supplies linear red-channel coat strength and green-channel
+coat roughness textures to Bevy. Both textures join source dependency discovery
+and editor reload consumer matching. Geometry warnings include missing coat UVs.
+This does not change the renderer's coat BRDF or establish native shader parity.
+
+`assets/clearcoat_texture.usda` uses blue-channel strength and green-channel
+roughness from `clearcoat_channels.png`; at time 10 its sampled blue scale is
+zero. Camera and dome remain fixed. `clearcoat_scalar_reference.usda` replaces
+the connections with scalar strength 1 and roughness 0.2.
+
+All three final captures were visually inspected:
+`target/clearcoat-texture-on.png`, `target/clearcoat-texture-reference.png`, and
+`target/clearcoat-texture-off-fixed.png`. Texture and scalar frames are
+pixel-exact at 1280x720 (`/tmp/clearcoat-texture-compare.log`). The zero-coat
+control differs at 43182 pixels and visibly removes the left sphere's coating
+(`/tmp/clearcoat-texture-change.log`, expected equality failure). The initial
+`off.png` capture is superseded by `off-fixed.png`, which fixes dome rotation.
+These separate-time captures are not a new live texture-file reload qualification.
+
+Workspace check and release viewer/capture builds pass:
+`/tmp/clearcoat-texture-{check,build}.log`. Capture logs contain CAPTURE_OK.
+No full test-suite rerun was performed for this increment.
+Bevy's texture feature requires the manifest-only dependency adjustment described
+in `vendor/bevy_pbr/VENDORED.md`; upstream rendering source is unchanged.
+
 ## Scalar clearcoat input fix
 
 The hood authors clearcoat 0.5 and clearcoat roughness 0.15. The Bevy reader and

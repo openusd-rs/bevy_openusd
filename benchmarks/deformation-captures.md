@@ -1,5 +1,18 @@
 # CPU/GPU deformation capture sweep
 
+## Additional blended render paths
+
+At da06181, the two-joint fixture at ten was captured in forward MSAA4,
+prepass MSAA Off and deferred MSAA Off, with shadows off and the authored
+/ReferenceCamera. All six CPU/GPU images were inspected. Forward and deferred
+are RGB-exact; prepass maximum RGB error is 1 and passes tolerance 1.
+Artifacts: target/blended-{forward,prepass,deferred}-10-{gpu,cpu}.png;
+logs /tmp/blended-{forward,prepass,deferred}-10-compare.log.
+This extends the small-fixture path checks, not all animation/normal-map cases.
+
+The larger varying-weight fixture and measured preparation bottleneck are
+documented in benchmarks/blended-skin-grid.md.
+
 ## Blended-joint normal and tangent repair
 
 `assets/skel_morph_blended_normals.usda` adds two independent joints with

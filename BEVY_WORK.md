@@ -3,6 +3,23 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Blended-skin integration and scaling baseline
+
+At da06181, make test-all passes 658 tests with 18 ignored across 33 suites;
+make check-all and make build pass. Logs:
+/tmp/blended-integration-{tests,check,build}.log.
+The two-joint time-ten fixture also passes CPU/GPU comparisons in forward
+MSAA4, prepass and deferred; all six images were inspected.
+
+Added scripts/make_skin_grid.sh for self-contained variable-weight grids.
+The corrected 100-by-100 fixture is accepted natively and its Bevy CPU/GPU
+time-five images are RGB-exact. Its measured preparation cost is not acceptable
+as evidence of fast playback: median repeated seek is 37.402 ms for CPU versus
+73.172 ms for GPU-prepared in one profiled ordered pair. This measures editor
+preparation, not GPU execution. Details, reproducible commands and artifact
+paths are in benchmarks/blended-skin-grid.md. Removing redundant sampled
+geometry/tangent work is the next concrete performance task.
+
 ## Blended-joint normal and tangent correctness
 
 The new two-joint native fixture exposed a CPU normal mismatch that the

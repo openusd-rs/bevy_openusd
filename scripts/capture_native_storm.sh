@@ -9,6 +9,13 @@ seconds=${USD_NATIVE_CAPTURE_TIMEOUT:-120}
 [[ "$seconds" =~ ^[1-9][0-9]{0,2}$ && "$seconds" -le 300 ]] || { echo 'USD_NATIVE_CAPTURE_TIMEOUT must be 1..300 seconds' >&2; exit 2; }
 time=${4:-0}
 [[ "$time" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || { echo 'TIME must be a finite decimal time code' >&2; exit 2; }
+camera_light=${USD_NATIVE_CAMERA_LIGHT:-on}
+lighting=()
+case "$camera_light" in
+    on) ;;
+    off) lighting=(--disableCameraLight) ;;
+    *) echo 'USD_NATIVE_CAMERA_LIGHT must be on or off' >&2; exit 2 ;;
+esac
 for command in weston usdrecord timeout setsid realpath grep sed; do command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 2; }; done
 root=$(cd "$(dirname "$0")/.." && pwd)
 source "$root/scripts/capture_session.sh"
@@ -39,10 +46,11 @@ done
 display=$(sed -n 's/.*xserver listening on display \(:[0-9]*\).*/\1/p' "$output/weston.log" | tail -1)
 [[ "$display" =~ ^:[0-9]+$ ]] || { echo 'Xwayland startup timed out' >&2; exit 1; }
 printf 'display=%s\nasset=%s\ntime=%s\ntimeout_seconds=%s\n' "$display" "$asset" "$time" "$seconds" > "$output/settings.txt"
+printf 'camera_light=%s\n' "$camera_light" >> "$output/settings.txt"
 camera=()
 if [[ $# -ge 3 ]]; then camera=(--camera "$3"); fi
 capture_session_run "$runtime/record.pid" env DISPLAY="$display" QT_QPA_PLATFORM=xcb \
-    timeout --kill-after=5 "$seconds" "${gpu[@]}" usdrecord --renderer Storm "${camera[@]}" --frames "$time" --imageWidth 1280 \
+    timeout --kill-after=5 "$seconds" "${gpu[@]}" usdrecord --renderer Storm "${camera[@]}" "${lighting[@]}" --frames "$time" --imageWidth 1280 \
     "$asset" "$output/frame.###.#########.png" > "$output/record.log" 2>&1 &
 rpid=$!
 set +e

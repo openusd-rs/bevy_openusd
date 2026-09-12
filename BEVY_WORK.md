@@ -3,6 +3,16 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native dome reference isolation
+
+Added fixed-camera directional dome references and an optional native camera
+light switch. Both Bevy rotation captures show changing reflections, but native
+unit-intensity controls still produce white silhouettes or black frames with
+successful exit status. The camera-light-on control also rendered black.
+An exposure-only explanation is not established; no production lighting change
+was made. Native environment parity remains open. Reproduction and validation:
+`benchmarks/dome-native-reference.md`.
+
 ## Skip discarded rest-pose skin tangents
 
 GPU skin preparation omits rest-pose tangent generation when the fully skinned

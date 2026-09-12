@@ -280,7 +280,7 @@ def Xform "Leaf" {
             let output = tempfile::tempdir().unwrap();
             let relocated = tempfile::tempdir().unwrap();
             let original = output.path().join("nested.usdz");
-            crate::persistence::export_layer(&stage, &flat, original.to_str().unwrap()).unwrap();
+            crate::persistence::export_layer(&stage, &flat, original.to_str().unwrap(), None).unwrap();
             let moved = relocated.path().join("nested.usdz");
             std::fs::rename(original, &moved).unwrap();
             let executable = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());

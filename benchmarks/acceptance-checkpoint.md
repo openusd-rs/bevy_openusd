@@ -91,10 +91,12 @@ broken reloads; the fix instead orders reads and publication in AssetServer.
 
 ## Other confirmed open work
 
-SUPPORT.md lists external disk-conflict detection as missing. Inspection confirms
-SaveState compares in-memory authored content, and persistence::atomic_write
-stages/syncs/replaces files without a loaded-source or pre-publication content
-conflict check. Atomic publication alone does not prevent lost external edits.
-This needs a separate save-safety implementation after the reproducible reload
-failure. GPU preparation, broader render parity and intermittent native black
-frames retain the qualifications in the existing support matrix.
+Save safety now includes source-resolver byte baselines on viewer opens and
+`EditorSession::from_source`, a pre-publication content recheck, and no-clobber
+publication for new files. Successful publication advances the baseline using
+the staged output hash. Arbitrary `EditorSession::new` stages still lack loaded
+disk-byte provenance. Existing-file writers can race the final check and rename;
+atomic publication alone is not an atomic content compare-and-swap. Hard-link
+identity and ownership/ACL preservation remain outside the current contract.
+GPU preparation, broader render parity and intermittent native black frames
+retain the qualifications in the existing support matrix.

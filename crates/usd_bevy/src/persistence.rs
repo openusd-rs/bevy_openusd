@@ -5,8 +5,8 @@ use std::{fs, path::Path};
 
 pub(crate) mod flatten;
 
-pub(crate) fn export_layer(stage: &openusd::usd::Stage, layer: &openusd::sdf::Layer, filename: &str) -> Result<()> {
-    write_atomic(filename, |temporary| {
+pub(crate) fn export_layer(stage: &openusd::usd::Stage, layer: &openusd::sdf::Layer, filename: &str, expected: Option<blake3::Hash>) -> Result<blake3::Hash> {
+    write_atomic(filename, expected, |temporary| {
         if Path::new(filename).extension().and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("usdz")) {
             let mut output = fs::File::create(temporary)?;
@@ -30,7 +30,15 @@ fn directory_identity(path: &Path) -> std::path::PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn destination_hash(path: &Path) -> Result<Option<blake3::Hash>> {
+pub(crate) fn destination_identity(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    Ok(match (absolute.parent(), absolute.file_name()) {
+        (Some(parent), Some(name)) => fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf()).join(name),
+        _ => absolute,
+    })
+}
+
+pub(crate) fn destination_hash(path: &Path) -> Result<Option<blake3::Hash>> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             ensure!(metadata.file_type().is_file(), "save destination changed to a non-regular file");
@@ -44,7 +52,7 @@ fn destination_hash(path: &Path) -> Result<Option<blake3::Hash>> {
     }
 }
 
-fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Result<()> {
+fn write_atomic(filename: &str, expected: Option<blake3::Hash>, write: impl FnOnce(&str) -> Result<()>) -> Result<blake3::Hash> {
     let target = Path::new(filename);
     let extension = target.extension().and_then(|value| value.to_str())
         .filter(|value| !value.is_empty()).context("save destination requires a file extension")?;
@@ -58,6 +66,8 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
         Err(error) => return Err(error).context("inspect save destination"),
     };
     let baseline = destination_hash(target)?;
+    ensure!(expected.is_none() || baseline == expected,
+        "save conflict: destination differs from the loaded document; reload or save to a different path");
     ensure!(permissions.is_some() == baseline.is_some(), "save conflict: destination changed during inspection");
     let parent = target.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
     #[cfg(unix)]
@@ -65,6 +75,7 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
     let temporary = tempfile::Builder::new().prefix(".usd-save-").suffix(&format!(".{extension}"))
         .tempfile_in(parent).context("create staged save")?;
     write(temporary.path().to_str().context("save path is not UTF-8")?).context("export staged save")?;
+    let published = destination_hash(temporary.path())?.context("staged save disappeared")?;
     if let Some(permissions) = permissions { temporary.as_file().set_permissions(permissions)?; }
     temporary.as_file().sync_all().context("sync staged save")?;
     ensure!(destination_hash(target)? == baseline,
@@ -76,7 +87,7 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
     }
     #[cfg(unix)]
     directory.sync_all().context("save published, but syncing its directory failed")?;
-    Ok(())
+    Ok(published)
 }
 
 #[cfg(test)]
@@ -89,7 +100,7 @@ mod tests {
         let foreign = directory.path().join("foreign.usda");
         std::fs::write(&path, "original").unwrap();
         std::fs::write(&foreign, "foreign").unwrap();
-        let error = super::write_atomic(path.to_str().unwrap(), |staged| {
+        let error = super::write_atomic(path.to_str().unwrap(), None, |staged| {
             std::fs::write(staged, "editor output")?;
             std::fs::remove_file(&path)?;
             std::os::unix::fs::symlink(&foreign, &path)?;
@@ -107,7 +118,7 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("scene.usda");
             if let Some(original) = original { std::fs::write(&path, original).unwrap(); }
-            let error = super::write_atomic(path.to_str().unwrap(), |staged| {
+            let error = super::write_atomic(path.to_str().unwrap(), None, |staged| {
                 std::fs::write(staged, "editor output")?;
                 if let Some(external) = external { std::fs::write(&path, external)?; }
                 else { std::fs::remove_file(&path)?; }
@@ -897,14 +908,14 @@ def Scope "Model" (
         let target = directory.path().join("scene.usda");
         fs::write(&target, "old").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
-        write_atomic(target.to_str().unwrap(), |temporary| Ok(fs::write(temporary, "new")?)).unwrap();
+        write_atomic(target.to_str().unwrap(), None, |temporary| Ok(fs::write(temporary, "new")?)).unwrap();
         assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
         let link = directory.path().join("link.usda");
         symlink(&target, &link).unwrap();
-        assert!(write_atomic(link.to_str().unwrap(), |_| panic!("must not write through symlink")).is_err());
+        assert!(write_atomic(link.to_str().unwrap(), None, |_| panic!("must not write through symlink")).is_err());
         assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
         fs::set_permissions(&target, fs::Permissions::from_mode(0o440)).unwrap();
-        assert!(write_atomic(target.to_str().unwrap(), |_| panic!("must not overwrite read-only file")).is_err());
+        assert!(write_atomic(target.to_str().unwrap(), None, |_| panic!("must not overwrite read-only file")).is_err());
         assert_eq!(fs::read_to_string(target).unwrap(), "new");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
     }
@@ -914,14 +925,14 @@ def Scope "Model" (
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("scene.usda");
         fs::write(&destination, "original").unwrap();
-        let error = write_atomic(destination.to_str().unwrap(), |temporary| {
+        let error = write_atomic(destination.to_str().unwrap(), None, |temporary| {
             fs::write(temporary, "partial export")?;
             anyhow::bail!("simulated writer failure")
         }).unwrap_err();
         assert!(format!("{error:#}").contains("simulated writer failure"));
         assert_eq!(fs::read_to_string(&destination).unwrap(), "original");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
-        write_atomic(destination.to_str().unwrap(), |temporary| Ok(fs::write(temporary, "replacement")?)).unwrap();
+        write_atomic(destination.to_str().unwrap(), None, |temporary| Ok(fs::write(temporary, "replacement")?)).unwrap();
         assert_eq!(fs::read_to_string(destination).unwrap(), "replacement");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
@@ -930,7 +941,7 @@ def Scope "Model" (
     fn conflicting_directory_cleans_up_and_preserves_external_entry() {
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("scene.usda");
-        let error = write_atomic(destination.to_str().unwrap(), |temporary| {
+        let error = write_atomic(destination.to_str().unwrap(), None, |temporary| {
             fs::write(temporary, "complete export")?;
             fs::create_dir(&destination)?;
             Ok(())

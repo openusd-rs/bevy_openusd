@@ -3,6 +3,26 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Capture loaded-document save baselines
+
+The viewer's open path and `EditorSession::from_source` record hashes of the
+bytes delivered by the source resolver, including outer USDZ archives. In-place
+exports compare the destination against that loaded baseline before staging.
+Successful saves update the baseline using the staged output hash, not a later
+reread of the published destination. Save As outputs are tracked after their
+first successful publication. Arbitrary stages passed to `EditorSession::new`
+have no original disk-byte provenance; use `from_source` for that protection.
+
+Root changes between byte capture and stage opening, sublayer edits, deleted
+roots, package replacements, and repeated own saves have regression coverage.
+The library passes 506 tests with 19 ignored. The full workspace passes 671 tests
+across 33 suites, with 19 ignored, and check-all passes. Logs:
+`/tmp/loaded-save-workspace.log`, `/tmp/loaded-save-check.log`.
+This is still optimistic conflict
+detection: the existing-file final-check-to-rename race and inode/ACL identity
+limitations remain. Ordinary path aliases use canonical parent directories;
+hard-link aliases are not unified.
+
 ## Guard destination changes during export
 
 Staged saves now compare the destination's content before export and immediately
@@ -11,7 +31,7 @@ replacement. New destinations use no-clobber publication. Conflict exits clean
 up staged files and preserve external content. This is an optimistic guard, not
 an atomic compare-and-swap for existing files: an uncooperative writer can still
 change an existing destination after the final check. Loaded-document baselines
-and external edits made before save starts remain to be implemented.
+are supplied by the source-aware editor path described above.
 
 ## Serialize same-source asset loads
 

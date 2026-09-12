@@ -241,7 +241,7 @@ fn process_commands(world: &mut World) {
             if session.is_none() { set_texture_requests(world, Default::default()); }
             std::fs::read(path).map_err(anyhow::Error::from)
                 .and_then(|bytes| crate::UsdSource::new(path, bytes).map_err(anyhow::Error::from)).and_then(|source| {
-                    let stage = source.open_stage()?;
+                    let (stage, disk_baselines) = source.open_stage_for_editor()?;
                     crate::UsdSource::validate_composition(&stage)?;
                     let textures = match prepare_textures(&stage, &source) {
                         Ok(textures) => textures,
@@ -264,6 +264,7 @@ fn process_commands(world: &mut World) {
                     world.insert_resource(crate::live::PrimEntities::default());
                     world.insert_non_send(crate::live::LiveStage::new(stage.clone()));
                     let mut editor = EditorSession::new(stage);
+                    editor.save_state.borrow_mut().disk = Some(disk_baselines);
                     editor.save_state.borrow_mut().opened(editor.stage(), &editor.layer_changes.revisions());
                     editor.source = Some(source);
                     install_textures(world, textures)?;
@@ -676,6 +677,17 @@ impl EditorSession {
 
     pub fn stage(&self) -> &Stage { &self.stage }
 
+    /// Opens a source with resolver-byte baselines for guarded in-place saves.
+    pub fn from_source(source: crate::UsdSource) -> anyhow::Result<Self> {
+        let (stage, disk) = source.open_stage_for_editor()?;
+        crate::UsdSource::validate_composition(&stage)?;
+        let mut editor = Self::new(stage);
+        editor.save_state.borrow_mut().disk = Some(disk);
+        editor.save_state.borrow_mut().opened(editor.stage(), &editor.layer_changes.revisions());
+        editor.source = Some(source);
+        Ok(editor)
+    }
+
     pub fn document_id(&self) -> u64 { self.document_id }
 
     /// Maximum retained undo and redo commands; defaults to 128.
@@ -814,19 +826,25 @@ impl EditorSession {
     }
 
     pub fn save(&self, filename: &str, mode: SaveMode) -> anyhow::Result<()> {
-        match mode {
-            SaveMode::RootLayer => crate::persistence::export_layer(&self.stage, &self.stage.root_layer(), filename)?,
+        let key = crate::persistence::destination_identity(std::path::Path::new(filename))?;
+        let disk = self.save_state.borrow().disk.clone();
+        let expected = disk.as_ref().and_then(|disk| disk.lock().expect("disk baselines").get(&key).copied());
+        let published = match mode {
+            SaveMode::RootLayer => crate::persistence::export_layer(&self.stage, &self.stage.root_layer(), filename, expected)?,
             SaveMode::EditLayer => {
                 let target = self.stage.edit_target();
                 let layer = self.stage.layer(target.layer_identifier())
                     .ok_or_else(|| anyhow::anyhow!("edit layer is unavailable"))?;
-                crate::persistence::export_layer(&self.stage, &layer, filename)?;
+                crate::persistence::export_layer(&self.stage, &layer, filename, expected)?
             }
             SaveMode::Flattened => {
                 crate::UsdSource::validate_composition(&self.stage)?;
-                crate::persistence::export_layer(&self.stage, &crate::persistence::flatten::preserving_instances(&self.stage)?, filename)?;
+                crate::persistence::export_layer(&self.stage, &crate::persistence::flatten::preserving_instances(&self.stage)?, filename, expected)?
             }
-        }
+        };
+        let disk = disk.unwrap_or_default();
+        disk.lock().expect("disk baselines").insert(key, published);
+        self.save_state.borrow_mut().disk = Some(disk);
         let saved_layer = match mode {
             SaveMode::RootLayer => Some(self.stage.root_layer().identifier().to_string()),
             SaveMode::EditLayer => Some(self.stage.edit_target().layer_identifier().to_string()),
@@ -1822,6 +1840,65 @@ def Xform "Model" (
         assert_eq!(bridge.view().unwrap().status, "Ready");
         let reopened = crate::UsdSource::new(&output, std::fs::read(&output).unwrap()).unwrap().open_stage().unwrap();
         assert_eq!(reopened.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Scope"));
+    }
+
+    #[test]
+    fn source_save_baselines_reject_external_edits_and_follow_own_saves() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root.usda");
+        let weak = directory.path().join("weak.usda");
+        let initial = "#usda 1.0\n(subLayers = [@weak.usda@])\n";
+        std::fs::write(&root, initial).unwrap();
+        std::fs::write(&weak, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        let editor = EditorSession::from_source(crate::UsdSource::new(&root, initial.as_bytes()).unwrap()).unwrap();
+        let weak_id = editor.stage().layer_identifiers().into_iter().find(|id| id.ends_with("weak.usda")).unwrap();
+        editor.set_edit_layer(&weak_id).unwrap();
+        std::fs::write(&weak, "#usda 1.0\ndef Xform \"External\" {}\n").unwrap();
+        let error = editor.save(weak.to_str().unwrap(), SaveMode::EditLayer).unwrap_err();
+        assert!(error.to_string().contains("loaded document"), "{error:#}");
+        assert!(std::fs::read_to_string(&weak).unwrap().contains("External"));
+        editor.save(root.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        editor.save(root.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        let copy = directory.path().join("copy.usda");
+        editor.save(copy.to_str().unwrap(), SaveMode::EditLayer).unwrap();
+        editor.save(copy.to_str().unwrap(), SaveMode::EditLayer).unwrap();
+        std::fs::write(&copy, "external copy").unwrap();
+        assert!(editor.save(copy.to_str().unwrap(), SaveMode::EditLayer).is_err());
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "external copy");
+        std::fs::remove_file(&root).unwrap();
+        assert!(editor.save(root.to_str().unwrap(), SaveMode::RootLayer).is_err());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn source_save_baseline_tracks_outer_package_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root.usdz");
+        let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+        archive.add_layer("root.usda", b"#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        let bytes = archive.finish().unwrap().into_inner();
+        std::fs::write(&root, &bytes).unwrap();
+        let editor = EditorSession::from_source(crate::UsdSource::new(&root, bytes).unwrap()).unwrap();
+        editor.save(root.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        editor.save(root.to_str().unwrap(), SaveMode::RootLayer).unwrap();
+        let external = b"external package replacement";
+        std::fs::write(&root, external).unwrap();
+        let error = editor.save(root.to_str().unwrap(), SaveMode::RootLayer).unwrap_err();
+        assert!(error.to_string().contains("loaded document"), "{error:#}");
+        assert_eq!(std::fs::read(&root).unwrap(), external);
+    }
+
+    #[test]
+    fn source_save_baseline_uses_supplied_root_bytes_not_later_disk_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root.usda");
+        let source = crate::UsdSource::new(&root, b"#usda 1.0\ndef Xform \"Original\" {}\n".as_slice()).unwrap();
+        std::fs::write(&root, "#usda 1.0\ndef Xform \"External\" {}\n").unwrap();
+        let editor = EditorSession::from_source(source).unwrap();
+        for mode in [SaveMode::RootLayer, SaveMode::EditLayer, SaveMode::Flattened] {
+            assert!(editor.save(root.to_str().unwrap(), mode).is_err());
+        }
+        assert!(std::fs::read_to_string(&root).unwrap().contains("External"));
     }
 
     #[test]

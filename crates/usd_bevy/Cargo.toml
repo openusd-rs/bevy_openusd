@@ -3,51 +3,43 @@ name = "usd_bevy"
 version = "0.0.1"
 edition = "2024"
 license = "MIT"
-description = "Bevy plugin: USD asset loader, scene projection, and Rapier physics adapter wrapping `usd_rapier`."
+description = "Live OpenUSD editor for Bevy: stage projection, change-driven sync, authoring, persistence."
 repository = "https://github.com/bresilla/bevy_openusd"
 
+[features]
+file_watcher = ["bevy/file_watcher", "dep:async-channel"]
+
 [dependencies]
-openusd = { git = "https://github.com/mxpv/openusd", rev = "fe92b73224c611831be244afac9cf7654b5ef51e", features = ["physics"] }
-usd_schema = { path = "../usd_schema" }
-usd_rapier = { path = "../usd_rapier" }
-rapier3d-f64 = "0.32"
+async-channel = { version = "2", optional = true }
+usd_macro = { path = "../usd_macro" }
+openusd = { path = "../../vendor/openusd/crates/openusd" }
+openusd-schemas = { path = "../../vendor/openusd/crates/openusd-schemas", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
 glam = "0.30"
 anyhow = "1"
-thiserror = "2"
+blake3 = "1"
+half = "2"
 log = "0.4"
-serde = { version = "1", features = ["derive"] }
-zip = { version = "8", default-features = false, features = ["deflate"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-bevy = { version = "0.18", default-features = false, features = [
+tempfile = "3"
+zip = { version = "8.2.0", default-features = false, features = ["deflate"] }
+bevy = { version = "0.19.1", default-features = false, features = [
     "std",
-    "async_executor",
-    "multi_threaded",
     "bevy_asset",
     "bevy_log",
-    "bevy_window",
     "bevy_render",
     "bevy_core_pipeline",
     "bevy_pbr",
     "bevy_light",
     "bevy_mesh",
+    "morph",
     "bevy_camera",
     "bevy_image",
-    "bevy_scene",
-    "bevy_gizmos",
-    "bevy_gizmos_render",
-    "bevy_post_process",
-    "morph",
     "png",
     "jpeg",
-    "bmp",
-    "tga",
     "hdr",
-    "webp",
-    "tiff",
-    "ktx2",
-    "zstd_rust",
+    "exr",
     "reflect_auto_register",
 ] }
+bevy_pbr = { version = "0.19.1", default-features = false, features = ["pbr_multi_layer_material_textures"] }
 
 [dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }
+png = "0.18"

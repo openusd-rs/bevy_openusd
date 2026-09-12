@@ -1,0 +1,24 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def BasisCurves "Periodic" {
+    uniform token type = "cubic"
+    uniform token basis = "bezier"
+    uniform token wrap = "periodic"
+    int[] curveVertexCounts = [3]
+    point3f[] points = [(0,-1,0), (-2,1,0), (2,1,0)]
+    double3 xformOp:translate = (-1.5,0,0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def BasisCurves "Explicit" {
+    uniform token type = "cubic"
+    uniform token basis = "bezier"
+    uniform token wrap = "nonperiodic"
+    int[] curveVertexCounts = [4]
+    point3f[] points = [(0,-1,0), (-2,1,0), (2,1,0), (0,-1,0)]
+    double3 xformOp:translate = (1.5,0,0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}

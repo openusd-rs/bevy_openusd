@@ -1,0 +1,21 @@
+#usda 1.0
+(
+    subLayers = [@blendshape_test.usda@]
+)
+over "Test"
+{
+    over "Face"
+    {
+        uniform token subdivisionScheme = "none"
+    }
+    over "Skel"
+    {
+        over "Anim"
+        {
+            float[] blendShapeWeights.timeSamples = {
+                0: [0],
+                10: [1]
+            }
+        }
+    }
+}

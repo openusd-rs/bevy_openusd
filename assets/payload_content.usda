@@ -1,0 +1,11 @@
+#usda 1.0
+(
+    defaultPrim = "Content"
+)
+def Xform "Content"
+{
+    def Xform "Child"
+    {
+        custom double bevy:Health:max = 42
+    }
+}

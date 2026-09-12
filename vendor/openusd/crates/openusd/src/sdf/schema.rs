@@ -1,0 +1,234 @@
+/// The following fields are pre-registered by Sdf.
+///
+/// See <https://github.com/PixarAnimationStudios/OpenUSD/blob/release/pxr/usd/sdf/schema.h#L597>
+#[derive(Debug, Clone, Copy)]
+pub enum FieldKey {
+    Active,
+    AllowedTokens,
+    ApiSchemas,
+    AssetInfo,
+    Clips,
+    ClipSets,
+    ColorConfiguration,
+    ColorManagementSystem,
+    ColorSpace,
+    Comment,
+    ConnectionPaths,
+    Custom,
+    CustomData,
+    CustomLayerData,
+    Default,
+    DefaultPrim,
+    DisplayGroup,
+    DisplayGroupOrder,
+    DisplayName,
+    DisplayUnit,
+    Documentation,
+    EndTimeCode,
+    ExpressionVariables,
+    FallbackPrimTypes,
+    FramePrecision,
+    FramesPerSecond,
+    Hidden,
+    HasOwnedSubLayers,
+    InheritPaths,
+    Instanceable,
+    Kind,
+    LayerRelocates,
+    PrimOrder,
+    NoLoadHint,
+    Owner,
+    Payload,
+    Permission,
+    Prefix,
+    PrefixSubstitutions,
+    PropertyOrder,
+    References,
+    Relocates,
+    SessionOwner,
+    Specializes,
+    Specifier,
+    StartTimeCode,
+    SubLayers,
+    SubLayerOffsets,
+    Suffix,
+    SuffixSubstitutions,
+    SymmetricPeer,
+    SymmetryArgs,
+    SymmetryArguments,
+    SymmetryFunction,
+    TargetPaths,
+    TimeSamples,
+    TimeCodesPerSecond,
+    TypeName,
+    VariantSelection,
+    Variability,
+    VariantSetNames,
+    EndFrame,
+    StartFrame,
+}
+
+impl From<FieldKey> for &'static str {
+    fn from(key: FieldKey) -> Self {
+        key.as_str()
+    }
+}
+
+impl AsRef<str> for FieldKey {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl FieldKey {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            FieldKey::Active => "active",
+            FieldKey::AllowedTokens => "allowedTokens",
+            FieldKey::ApiSchemas => "apiSchemas",
+            FieldKey::AssetInfo => "assetInfo",
+            FieldKey::Clips => "clips",
+            FieldKey::ClipSets => "clipSets",
+            FieldKey::ColorConfiguration => "colorConfiguration",
+            FieldKey::ColorManagementSystem => "colorManagementSystem",
+            FieldKey::ColorSpace => "colorSpace",
+            FieldKey::Comment => "comment",
+            FieldKey::ConnectionPaths => "connectionPaths",
+            FieldKey::Custom => "custom",
+            FieldKey::CustomData => "customData",
+            FieldKey::CustomLayerData => "customLayerData",
+            FieldKey::Default => "default",
+            FieldKey::DefaultPrim => "defaultPrim",
+            FieldKey::DisplayGroup => "displayGroup",
+            FieldKey::DisplayGroupOrder => "displayGroupOrder",
+            FieldKey::DisplayName => "displayName",
+            FieldKey::DisplayUnit => "displayUnit",
+            FieldKey::Documentation => "documentation",
+            FieldKey::EndTimeCode => "endTimeCode",
+            FieldKey::ExpressionVariables => "expressionVariables",
+            FieldKey::FallbackPrimTypes => "fallbackPrimTypes",
+            FieldKey::FramePrecision => "framePrecision",
+            FieldKey::FramesPerSecond => "framesPerSecond",
+            FieldKey::Hidden => "hidden",
+            FieldKey::HasOwnedSubLayers => "hasOwnedSubLayers",
+            FieldKey::InheritPaths => "inheritPaths",
+            FieldKey::Instanceable => "instanceable",
+            FieldKey::Kind => "kind",
+            FieldKey::LayerRelocates => "layerRelocates",
+            FieldKey::PrimOrder => "primOrder",
+            FieldKey::NoLoadHint => "noLoadHint",
+            FieldKey::Owner => "owner",
+            FieldKey::Payload => "payload",
+            FieldKey::Permission => "permission",
+            FieldKey::Prefix => "prefix",
+            FieldKey::PrefixSubstitutions => "prefixSubstitutions",
+            FieldKey::PropertyOrder => "propertyOrder",
+            FieldKey::References => "references",
+            FieldKey::Relocates => "relocates",
+            FieldKey::SessionOwner => "sessionOwner",
+            FieldKey::Specializes => "specializes",
+            FieldKey::Specifier => "specifier",
+            FieldKey::StartTimeCode => "startTimeCode",
+            FieldKey::SubLayers => "subLayers",
+            FieldKey::SubLayerOffsets => "subLayerOffsets",
+            FieldKey::Suffix => "suffix",
+            FieldKey::SuffixSubstitutions => "suffixSubstitutions",
+            FieldKey::SymmetricPeer => "symmetricPeer",
+            FieldKey::SymmetryArgs => "symmetryArgs",
+            FieldKey::SymmetryArguments => "symmetryArguments",
+            FieldKey::SymmetryFunction => "symmetryFunction",
+            FieldKey::TargetPaths => "targetPaths",
+            FieldKey::TimeSamples => "timeSamples",
+            FieldKey::TimeCodesPerSecond => "timeCodesPerSecond",
+            FieldKey::TypeName => "typeName",
+            FieldKey::VariantSelection => "variantSelection",
+            FieldKey::Variability => "variability",
+            FieldKey::VariantSetNames => "variantSetNames",
+            FieldKey::EndFrame => "endFrame",
+            FieldKey::StartFrame => "startFrame",
+        }
+    }
+}
+
+/// See <https://github.com/PixarAnimationStudios/OpenUSD/blob/2864f3d04f396432f22ec5d6928fc37d34bb4c90/pxr/usd/sdf/schema.h#L652>
+#[derive(Clone, Copy)]
+pub enum ChildrenKey {
+    ConnectionChildren,
+    ExpressionChildren,
+    MapperArgChildren,
+    MapperChildren,
+    PrimChildren,
+    PropertyChildren,
+    RelationshipTargetChildren,
+    VariantChildren,
+    VariantSetChildren,
+}
+
+impl From<ChildrenKey> for &'static str {
+    fn from(key: ChildrenKey) -> Self {
+        key.as_str()
+    }
+}
+
+impl AsRef<str> for ChildrenKey {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl ChildrenKey {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            ChildrenKey::ConnectionChildren => "connectionChildren",
+            ChildrenKey::ExpressionChildren => "expressionChildren",
+            ChildrenKey::MapperArgChildren => "mapperArgChildren",
+            ChildrenKey::MapperChildren => "mapperChildren",
+            ChildrenKey::PrimChildren => "primChildren",
+            // The internal/text token is "propertyChildren". The crate (binary)
+            // format stores this field under the name "properties"; the usdc
+            // reader and writer translate at that boundary (see `usdc`).
+            ChildrenKey::PropertyChildren => "propertyChildren",
+            ChildrenKey::RelationshipTargetChildren => "targetChildren",
+            ChildrenKey::VariantChildren => "variantChildren",
+            ChildrenKey::VariantSetChildren => "variantSetChildren",
+        }
+    }
+}
+
+/// Whether generic field resolution folds list-op opinions authored for
+/// `field` (spec 12.2.6).
+///
+/// Composition arcs, relationship targets and attribute connections, clip-set
+/// ordering, and the value-resolution fields compose through dedicated
+/// machinery — arcs during prim indexing, targets with per-node namespace
+/// translation, `clipSets` with encoding coercion, values by
+/// strongest-opinion resolution — so generic resolution leaves their opinions
+/// untouched (C++ `UsdStage::_IsPrivateFieldKey` shields the same fields from
+/// its generic metadata path).
+pub fn folds_list_ops(field: &str) -> bool {
+    const DEDICATED: [FieldKey; 10] = [
+        FieldKey::References,
+        FieldKey::Payload,
+        FieldKey::InheritPaths,
+        FieldKey::Specializes,
+        FieldKey::VariantSetNames,
+        FieldKey::ConnectionPaths,
+        FieldKey::TargetPaths,
+        FieldKey::ClipSets,
+        FieldKey::Default,
+        FieldKey::TimeSamples,
+    ];
+    !DEDICATED.iter().any(|key| key.as_str() == field)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_key_str() {
+        assert_eq!(ChildrenKey::ConnectionChildren.as_str(), "connectionChildren");
+        assert_eq!(ChildrenKey::PrimChildren.as_str(), "primChildren");
+        assert_eq!(ChildrenKey::VariantSetChildren.as_str(), "variantSetChildren");
+    }
+}

@@ -1,0 +1,530 @@
+# Changelog
+
+## [0.1.0] - 2026-09-12
+
+### <!-- 0 -->⛰️  Features
+
+- Render clearcoat textures
+- Refresh packages and texture users
+- Watch editor layers in core
+- Control camera response
+- Isolate forward MSAA sampling
+- Add isolated native Storm tool
+- Support EXR dome textures
+- Allow bounded long scene captures
+- Use FXAA with OIT transparency
+- Toggle transparency with MSAA restore
+- Add opt-in order independent alpha
+- Record GPU pass timing samples
+- Build reusable typed USD snapshots
+- Compose animation and dome demo
+- Capture complete host GPU output
+- Track content-based layer save state
+- Confirm close commands before exit
+- Track authored changes per layer
+- Add immutable typed edit batches
+- Add safe layer muting controls
+- Add checked runtime layer muting
+- Show generated material warnings
+- Filter inspector attributes
+- Edit typed numeric arrays
+- Trace egui output diagnostics
+- Sample two host frames per run
+- Reorder payload draft rows
+- Move reference list buckets
+- Create local reference entries
+- Manage reference entry order
+- Edit local reference entries
+- Clear local reference opinions
+- Inspect reference opinions
+- Expose reference provenance
+- Author reference list operations
+- Load local payload drafts
+- Edit payload list operation modes
+- Author payload list operations
+- Show authored payload provenance
+- Add payload authoring controls
+- Author undoable payload lists
+- Confirm document replacement
+- Add curve surface controls
+- Render width-aware surfaces
+- Read composed widths and normals
+- Bound undo history by commands
+- Bundle nested package dependencies
+- Read bounded nested packages
+- Sample constant texture coordinates
+- Trace zero-normal triangle fans
+- Measure normal filter effects
+- Isolate mesh normal rendering
+- Frame visible scene on demand
+- Delay readback after interaction
+- Apply signed normal transforms
+- Apply RGB texture scale bias
+- Resolve color space interfaces
+- Resolve texture file interfaces
+- Resolve scalar texture interfaces
+- Apply scalar texture scale bias
+- Pair viewport and host readbacks
+- Bake value clips on flattened saves
+- Preserve flattened instances
+- Show scene asset counts
+- Compose instanceable references
+- Record compositor surface state
+- Compose retimed reference batches
+- Record compositor backend metadata
+- Add live curve quality controls
+- Refresh live tessellation settings
+- Add curve quality and frame refresh
+- Configure cubic tessellation quality
+- Sample texture color spaces
+- Compose reference batches atomically
+- Support default-prim references
+- Compose immutable typed references
+- Measure GPU-prepared morph payloads
+- Enable opt-in texture watching
+- Watch external texture files
+- Add texture refresh ribbon action
+- Refresh textures without reopening
+- Render independent scene clocks
+- Enable native filesystem watching
+- [**breaking**] Compose affine UV chains
+- Demonstrate grouped USD assemblies
+- Group edits into undoable batches
+- Load sampled matrix drafts
+- Edit double precision matrices
+- Add undoable affine matrix edits
+- Compose immutable USD snapshots
+- Expose USD save formats
+- Repackage USDZ inputs
+- Bundle USDZ layer dependencies
+- Interpolate vertex and varying colors
+- Project constant and uniform colors
+- Expand USD integration and viewer
+- Implement USD live editing and Bevy integration
+- USD_FILE env + tracing subscriber + projection stats + load-status UI
+- Open USD… file picker + live viewport/pane reload
+- Use mara 0.3.2 RibbonRail builder (drops hand-rolled ribbon/pane boilerplate)
+- Mara ribbons + outliner/properties panes over the viewport
+- Rebuild viewer as mara UI host embedding the Bevy USD viewport
+- Project mesh geometry into the live scene
+- Port to Bevy 0.19 + minimal mara-less live-editor app
+- Route visibility through project + reproject
+- Generalized undo/redo over authoring ops
+- Authoring ops (namespace/attr) + stage persistence
+- LiveStagePlugin — project + reproject systems
+- Transform-edit undo/redo history
+- Author entity transform back to stage (gizmo write path)
+- Reconcile entity set on resync (spawn/despawn)
+- Project + sink-driven reproject loop (transforms) + e2e test
+- Live stage + sink-driven change queue + prim↔entity bimap
+- Read per-DOF joint limits + drives (multi-apply)
+- Refactor `usd_bevy` to use Bevy asset system
+- Geometry-change guard for variant live-swap
+- Background-warm variant options for instant switching
+- Incremental prim-keyed variant switching (live material swap)
+- Live material-variant switching (preload + swap, no rebuild)
+- Preload per-option material-variant handles
+- Physics stage reader on openusd typed views
+- Pin openusd fork, read untyped metadata via Stage::metadata
+- Material/texture/ui rendering tuning
+- Support SkelAnimation direct referencing and variant switching
+- Improve physics resume behavior
+- AnimPlugin — stage time + xformOp + skel playback
+- Refactor physics into dedicated usd_rapier crate
+- Migrate `usd_schemas::physics` to `openusd::physics`
+- Update tractor USD asset and debug settings
+- Migrate to direct rapier3d-f64 integration
+- Add Rapier physics integration for Bevy USD
+- Add Agilebot image to README and update bevy_glacial dependency
+- Support root-level PhysicsScene with defaultPrim
+- Implement comprehensive physics projection and overlays
+- Isolate variants via path label
+- Upgrade USD asset loading to M1 status
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Preserve payload load rules
+- Retire unused texture watches
+- Preflight texture publication
+- Preserve unrelated undo history
+- Map scalar preview clearcoat
+- Share large generated images
+- Reject renderer failure logs
+- Guard loaded source content
+- Reject changes during staged export
+- Serialize same-source asset loads
+- Match Bevy cubemap handedness
+- Match native blended normal shading
+- Declare native deformation APIs
+- Avoid duplicate initial projection
+- Delay after initial UI update
+- Guard OIT device buffer limits
+- Exclude stale GPU timing samples
+- Clean up recorded session groups
+- Use active render rate during playback
+- Sample latlong maps at pixel centers
+- Light scenes when dome filtering fails
+- Compact playback controls for Mara
+- Give toolbar actions distinct icons
+- Guard ancestor-excluded history
+- Show ancestor muting protection
+- Protect edit layer from ancestor mute
+- Preserve existing companion logs
+- Track payload load revisions
+- Guard inspector runtime actions
+- Guard history for muted layers
+- Reject viewer runtime panics
+- Expose projection fallback reasons
+- Report missing texture UVs
+- Compensate periodic repaint delay
+- Schedule replay event deadlines
+- Guard changed payload drafts
+- Guard reference draft identity
+- Match identity payload offsets
+- Preserve conflicting value drafts
+- Isolate inspector draft context
+- Guard property inspector edits
+- Guard queued payload edits
+- Honor surface sidedness
+- Guard delayed open selections
+- Retry missing initial roots
+- Recover replaced source roots
+- Retry failed initial texture opens
+- Quote native subdivision probe paths
+- Use limit normals after crease decay
+- Preserve zero regular limit tangents
+- Use uncreased subdivision limit normals
+- Separate unused mesh normals
+- Resolve UV transform interfaces
+- Record embedded camera state
+- Record effective camera matrices
+- Toggle animated visibility samples
+- Publish projected material warnings
+- Refresh sampled playback snapshots
+- Refresh sampled morph tangents
+- Warn on missing normal tangents
+- Render constant surface normals
+- Restore texture-only emission
+- Set explicit wgpu present mode
+- Validate options before launch
+- Require an open editor document
+- Interpolate clip activation samples
+- Capture numeric value clip layers
+- Rearm replaced texture directories
+- Watch failed texture requests
+- Reject invalid sublayer offsets
+- Reject invalid payload offsets
+- Reject invalid reference offsets
+- Reject unsupported time reversal
+- Reject lossy clip flattening
+- Bound screenshot subprocess time
+- Warn about pixman incompatibility
+- Invalidate folder dependencies
+- Invalidate renamed dependencies
+- Reject near-black viewer screenshots
+- Retry failed texture watcher setup
+- Refresh flat material culling
+- Reject unresolved asset byte reads
+- Identify failing texture files
+- Load time-sampled texture assets
+- Invalidate removed USD dependencies
+- Follow connected UV transforms
+- Convert USD UV transform basis
+- Reject lossy public TRS reads
+- Invert extreme vector scales safely
+- Compose local transforms in f64
+- Support scalar axes and inverse pairs
+- Match USD quaternion conversion
+- Decode half precision transform ops
+- Surface transform render errors
+- Reject unsafe ops and test recovery
+- Guard affine decomposition
+- Preserve affine and reset transforms
+- Bake affine prototype matrices
+- Distinguish directory and archive anchors
+- Anchor relocated layer dependencies
+- Frame evaluated mesh deformation
+- Skip empty subset GPU uploads
+- Surface stopped renderer errors
+- Bound mesh slabs to device limits
+- Refresh sparse animation membership
+- Isolate mutated culling state
+- Reject incomplete flattened scenes
+- Retain documents on invalid opens
+- Validate deferred subroot targets
+- Reject incomplete composed sources
+- Report missing reference targets
+- Preserve binary sublayer metadata
+- Integrate native OpenUSD writer fixes
+- Prepare native binary metadata patch
+- Prepare upstream list-op patch
+- Guard interpolated color overflow
+- Bound tessellated output allocation
+- Validate display primvar arrays
+- Validate cubic segment layouts
+- Reject malformed geometry with errors
+- Derive blending from sampled opacity
+- Tessellate short periodic cubics
+- Correct point opacity metadata
+- Crash logging + diagnose Kitchen (usdz refs unresolved)
+- Non-empty readout label (mara asserts; was crashing first frame)
+- Align Properties button to its Middle-anchored pane (pane_in)
+- Apply mara theme + real tree-widget outliner (filter/expand/eye)
+- Publish pane ids + use bundled icon names for mara
+- Scale gravity by metersPerUnit to SI
+- Hide proxy-purpose prims by default
+- Live variant build uses full material path (name-guess etc.)
+- Drop bogus geometry guard that forced full reload
+- Load variant-copy by absolute path (subdir sources)
+- Load USD in-place instead of relaunching the process
+- Disable eager variant preload (load was O(options))
+- Only live-swap variants with stable geometry
+- Physics path refs (CollisionApprox/DriveType/api_schemas)
+- Shade/physics one-offs, drop builder on_error
+
+### <!-- 2 -->🚜 Refactor
+
+- [**breaking**] Remove lossy transform history
+- Strip to minimal live-editor (drop legacy projection, physics, tests)
+- Rewrite viewer panels as pure mara Pods
+- Migrate viewer UI from bevy_frost to mara
+- Keep UsdPlugin from registering bevy-core assets
+- Migrate test suite to openusd-rs (no usd_schema)
+- Migrate probes to openusd-rs (no usd_schema)
+- Remove superseded eager variant-preload code
+- Material builder via TextureSource trait
+- Traverse/prim_children/spec_type on new API
+- TypeName/kind/default reads via Prim API
+- Usd_rapier physics_data + openusd path fixes
+- Wire usd_bevy + viewer to openusd readers
+- UsdGeom readers (mesh/curves/points/...)
+- UsdShade material reader
+- Time-sampled xformOp reader (anim)
+- Skel + skel-animation readers
+- Camera/render/proc/ui/media readers
+- Openusd read plumbing + lux reader
+- Drop usd_schema crate (openusd-only)
+- Bump openusd pin, drop usd_schema readers
+- Update bevy_frost to use 'develop' branch
+
+### <!-- 3 -->📚 Documentation
+
+- Record current delivery gate
+- Document default core watching
+- Record final workspace validation
+- Record rebuilt viewer evidence
+- Record reproducible acceptance failures
+- Record full and native integration gates
+- Verify sustained viewer playback cadence
+- Measure showcase GPU deformation cost
+- Verify Knoche light bar source geometry
+- Record machine corpus and full gates
+- Record post-OIT integration gates
+- Record Oxbo native reference limitations
+- Record Oxbo shadow and duplicate controls
+- Record release Oxbo rendering inspection
+- Record roof detail and overlap controls
+- Record Kubota normal-map isolation result
+- Record machine corpus and grille artifacts
+- Record machine USDZ viewer inspection
+- Record whole UR5 subdivision comparison
+- Record current full workspace gate
+- Record current GPU and host acceptance
+- Verify embedded dome lighting controls
+- Record final workspace test gate
+- Verify GPU image regression acceptance
+- Verify native instance sharing acceptance
+- Verify source and instance acceptance
+- Record current robot GPU capture evidence
+- Record host pacing and native export gates
+- Record current workspace regression gate
+- Reconcile Bevy support and release blockers
+- Record reference workspace regression gate
+- Record current Spot render gaps
+- Record native refinement limits
+- Record UR5 native controls
+- Record Spot visual recheck
+- Record release seek baseline
+- Record host-only black surfaces
+- Reconcile current Bevy support claims
+- Record release lifecycle baseline
+- Record point color GPU acceptance
+- OPENUSD_ISSUE — .usd layer extension rejected in USDZ
+- MARA_ISSUE for RibbonRail pane cluster/anchor mismatch
+- Add animated hummingbird example
+- Update README with Kitchen_set image and details
+
+### <!-- 4 -->⚡ Performance
+
+- Skip superseded rest tangents
+- Isolate geometry removals
+- Scope shared material updates
+- Reuse validated packed outputs
+- Cache unchanged tangent generation
+- Reuse sampled joint normal inverses
+- Skip discarded rest tangent pass
+- Skip discarded morph tangent pass
+- Accelerate color texture transforms
+- Speed up alpha texture packing
+- Speed up scalar texture packing
+- Attribute release projection costs
+- Measure authored timeline updates
+- Release unowned converted textures
+- Release unowned materials
+- Release unowned projected meshes
+- Measure distinct-clock retention
+- Measure seek latency and payloads
+- Measure typed assembly lifecycle
+- Pace background repaint requests
+- Measure reference batch assembly
+- Ignore disconnected animation nodes
+- Share flat-normal conversions
+- Scope texture times to each graph
+- Share captured asset read buffers
+- Borrow source for subset compaction
+- Compact material subset vertices
+- Measure real editor asset payload
+- Build subset indices directly
+- Skip discarded animation index
+- Reuse sampled display opacity
+- Profile source publication phases
+- Measure source-root lifecycle
+- Load fs textures via AssetServer (cache across reloads)
+
+### <!-- 6 -->🧪 Testing
+
+- Align native machinery reference
+- Profile machinery texture copies
+- Isolate stale reload completion
+- Verify current Fendt desktop render
+- Record GPU render pass timings
+- Validate animated blended palettes
+- Measure distinct-time cache retention
+- Stress nested package repair cycles
+- Measure uniform light response
+- Add native EXR lighting control
+- Isolate native lighting reference
+- Measure blended grid preparation
+- Verify native baked normal samples
+- Compare native baked deformation
+- Verify EXR reload and recovery
+- Cover combined normal deformation
+- Verify OIT fallback on 4K resize
+- Verify transparent order invariance
+- Verify native close action lifecycle
+- Verify native OS close confirmation
+- Verify payload interaction acceptance
+- Verify visible variant history
+- Verify safe snippet composition
+- Verify embedded directional IBL
+- Compare area-weighted fallback
+- Reproduce black frames with vkcube
+- Capture Mara host GPU output
+- Verify native OS close confirmation
+- Verify confirmed native shutdown
+- Verify customized snapshot package
+- Record current workspace and native gates
+- Verify live typed snapshot updates
+- Record ancestor control captures
+- Verify muted layer semantics
+- Record native watcher and export gates
+- Verify spatial loop closure
+- Verify numeric array samples
+- Record current workspace and native gates
+- Verify draft-only payload order
+- Verify payload draft reload
+- Verify reference export formats
+- Diagnose reload wait timeouts
+- Verify resolved draft authoring
+- Verify draft conflict controls
+- Verify payload UI interactions
+- Verify live payload authoring
+- Add independent host control
+- Verify replacement cancellation
+- Verify closed indexed surfaces
+- Capture missing width rendering
+- Verify bowtie winding fallback
+- Isolate Spot normal mismatch
+- Verify disconnected seams
+- Verify nested dependency recovery
+- Verify nested binary PNG materials
+- Reproduce nested loading gaps
+- Capture initial texture recovery
+- Verify live crease normal transitions
+- Check native normals across assets
+- Capture native limit normal controls
+- Compare native subdivision positions
+- Verify UV interface midpoints
+- Verify live morph tangent clocks
+- Verify live normal interfaces
+- Verify live RGB interfaces
+- Verify live emissive clocks
+- Add eframe GPU readback control
+- Control bridge update cadence
+- Compare bridge transfer paths
+- Isolate Bevy bridge presentation
+- Verify live scalar texture clocks
+- Isolate native host rendering
+- Verify baked clip exports
+- Verify clip reload recovery
+- Verify independent clip clocks
+- Verify live retimed assemblies
+- Compare retimed instance frames
+- Verify retimed instance isolation
+- Verify native instance contracts
+- Verify native retimed exports
+- Verify texture folder recovery
+- Verify native batch package export
+- Verify watcher recovery refresh
+- Verify assembly export contracts
+- Verify Timeline playback controls
+- Verify Timeline seek interactions
+- Verify live graph edit animation
+- Automate live clock fidelity checks
+- Capture live instance clock reversal
+- Verify shared morph material fidelity
+- Verify watcher document switching
+- Verify sampled texture file fidelity
+- Verify affine UV shear fidelity
+- Verify property path owner resolution
+- Verify independent UV chain clocks
+- Verify normal map tangent orientation
+- Replay matrix editing and undo
+- Verify mapped matrix persistence
+- Verify independent affine clocks
+- Verify affine and reset rendering
+- Add deformation capture sweeps
+- Exercise composed scene lifecycle
+- Cover variant payload portability
+- Verify all native save pickers
+- Expose non-portable USDZ exports
+- Check native editor save formats
+- Audit native USD rendering and export
+- Kitchen_set.usdz packaged meshes resolve
+- Kitchen_set.usdz resolves packaged meshes
+- Patch openusd + load Kitchen_set.usdz
+- Project a real .usda file from disk
+- Headless smoke harness for openusd readers
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Cleanup
+- Mara 0.3.3 — .pane() derives cluster from anchor (drop pane_in)
+- Drop dead assets/docs/config cruft + refresh README
+- Bump to upstream 06d619d + reconcile readers
+- Point UI dep at mara (wip frost->mara migration)
+- Drop unused imports/mut after migration
+- Add MIT License
+- Initial commit
+
+### <!-- 9 -->◀️ Revert
+
+- Restore the assets/ directory (deleted during cleanup)
+
+### Build
+
+- Enable layered material textures
+- Use patched latest Mara develop host
+- Pin latest Mara develop revision
+- Pin openusd to fe92b73 across crates
+

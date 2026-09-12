@@ -1,0 +1,103 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ $# != 1 ]]; then
+    echo "usage: check_live_clocks.sh NEW_OUTPUT_DIRECTORY" >&2
+    exit 2
+fi
+output=$(realpath -m "$1")
+[[ ! -e "$output" ]] || { echo "output directory must be new" >&2; exit 2; }
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+mkdir -p "$(dirname "$output")"
+mkdir "$output"
+unset USD_CPU_SKINNING USD_CAPTURE_CAMERA USD_CAPTURE_DOME USD_SUBDIVISION_LEVELS USD_CURVE_STEPS USD_CAPTURE_INSTANCE_SPACING
+export USD_CAPTURE_RENDERER=forward USD_CAPTURE_SHADOWS=off
+
+run_example() {
+    local example=$1 args
+    shift
+    printf -v args '%q ' "$@"
+    args=${args//\$/\$\$}
+    make run CARGO='cargo --offline' APP_TARGET="--example $example" ARGS="$args" "${run_options[@]}"
+}
+
+run_options=(RUN_WITH=)
+run_example uv_transform_fixture "$output/fixture" > "$output/fixture.log" 2>&1
+run_example scalar_texture_fixture "$output/scalar-fixture" > "$output/scalar-fixture.log" 2>&1
+run_example emissive_texture_fixture "$output/emissive-fixture" > "$output/emissive-fixture.log" 2>&1
+run_example color_texture_fixture "$output/rgb-fixture" > "$output/rgb-fixture.log" 2>&1
+run_example normal_fixture "$output/normal-fixture" > "$output/normal-fixture.log" 2>&1
+printf 'case\tstatus\n' > "$output/results.tsv"
+
+run_case() {
+    local name=$1 live=$2 reference=$3 cpu=$4 tolerance=0 meshes=2
+    local initial_times=0,10 final_times=10,0
+    if [[ "$name" == uv_interface_mid ]]; then initial_times=5,10; final_times=10,5; fi
+    unset USD_SUBDIVISION_LEVELS
+    if [[ "$name" == subdivision_creases ]]; then
+        initial_times=1,3; final_times=3,1
+        export USD_SUBDIVISION_LEVELS=1
+    fi
+    if [[ "$name" == normal_interface || "$name" == normal_constant ]]; then tolerance=1; fi
+    if [[ "$name" == morph_tangents ]]; then meshes=4; fi
+    run_options=()
+    unset USD_CPU_SKINNING
+    export USD_CAPTURE_INSTANCE_TIMES=$initial_times USD_CAPTURE_SWAP_CLOCKS=1
+    run_example viewer_capture "$live" "$output/$name-live.png" 0 0 1 8 0 1 0 > "$output/$name-live.log" 2>&1 || return 1
+    export USD_CAPTURE_INSTANCE_TIMES=$final_times USD_CAPTURE_SWAP_CLOCKS=0
+    if [[ "$cpu" != 0 ]]; then export USD_CPU_SKINNING=1; fi
+    run_example viewer_capture "$reference" "$output/$name-reference.png" 0 0 1 8 0 1 0 > "$output/$name-reference.log" 2>&1 || return 1
+    grep -qx 'clocks_reversed_after_ready_frames=30' "$output/$name-live.capture.txt" || return 1
+    grep -qx 'clocks_reversed_after_ready_frames=0' "$output/$name-reference.capture.txt" || return 1
+    for mode in live reference; do
+        local expected_times='instance_times=[10.0, 0.0]'
+        if [[ "$name" == uv_interface_mid ]]; then expected_times='instance_times=[10.0, 5.0]'; fi
+        if [[ "$name" == subdivision_creases ]]; then
+            expected_times='instance_times=[3.0, 1.0]'
+            grep -qx 'subdivision_levels=1' "$output/$name-$mode.capture.txt" || return 1
+        fi
+        grep -Fxq "$expected_times" "$output/$name-$mode.capture.txt" || return 1
+        grep -qx "hierarchy_visible_meshes=$meshes" "$output/$name-$mode.capture.txt" || return 1
+        if grep -Eq '(^|[[:space:]])(ERROR|WARN)([[:space:]]|$)' "$output/$name-$mode.log"; then return 1; fi
+    done
+    if [[ "$cpu" == 1 ]]; then
+        grep -qx 'hierarchy_visible_gpu_morph_meshes=2' "$output/$name-live.capture.txt" || return 1
+        grep -qx 'hierarchy_visible_flat_material_entities=2' "$output/$name-live.capture.txt" || return 1
+        grep -qx 'hierarchy_visible_unique_flat_materials=1' "$output/$name-live.capture.txt" || return 1
+        grep -qx 'hierarchy_visible_gpu_morph_meshes=0' "$output/$name-reference.capture.txt" || return 1
+    fi
+    if [[ "$cpu" == 2 ]]; then
+        grep -qx "hierarchy_visible_gpu_morph_meshes=$meshes" "$output/$name-live.capture.txt" || return 1
+        grep -qx 'hierarchy_visible_gpu_morph_meshes=0' "$output/$name-reference.capture.txt" || return 1
+        grep -qx 'hierarchy_visible_flat_material_entities=0' "$output/$name-live.capture.txt" || return 1
+    fi
+    run_options=(RUN_WITH=)
+    run_example capture_compare "$output/$name-live.rgba" "$output/$name-reference.rgba" "$tolerance" 1280 "$output/$name-diff.png" > "$output/$name-compare.log" 2>&1 || return 1
+}
+
+status=0
+for name in uv uv_interface uv_interface_mid uv_constant texture colorspace morph scalar scalar_interface file_interface colorspace_interface emissive rgb_emissive rgb_diffuse rgb_alpha normal_interface normal_constant morph_tangents subdivision_creases; do
+    case "$name" in
+        uv) live="$output/fixture/mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
+        uv_interface) live="$output/fixture/interface_mapped.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
+        uv_interface_mid) live="$output/fixture/interface_mapped.usda"; reference="$output/fixture/sampled_reference.usda"; cpu=0 ;;
+        uv_constant) live="$output/fixture/constant_coordinates.usda"; reference="$output/fixture/reference.usda"; cpu=0 ;;
+        texture) live="$output/fixture/file_samples.usda"; reference="$output/fixture/file_reference.usda"; cpu=0 ;;
+        colorspace) live="$output/fixture/color_space_samples.usda"; reference=$live; cpu=0 ;;
+        morph) live="$root/assets/morph_animation.usda"; reference=$live; cpu=1 ;;
+        scalar) live="$output/scalar-fixture/animated.usda"; reference="$output/scalar-fixture/animated_reference.usda"; cpu=0 ;;
+        scalar_interface) live="$output/scalar-fixture/interface_animated.usda"; reference="$output/scalar-fixture/animated_reference.usda"; cpu=0 ;;
+        file_interface) live="$output/scalar-fixture/file_interface_animated.usda"; reference="$output/scalar-fixture/animated_reference.usda"; cpu=0 ;;
+        colorspace_interface) live="$output/scalar-fixture/colorspace_interface_animated.usda"; reference="$output/scalar-fixture/colorspace_reference.usda"; cpu=0 ;;
+        emissive) live="$output/emissive-fixture/animated.usda"; reference="$output/emissive-fixture/animated_reference.usda"; cpu=0 ;;
+        rgb_emissive|rgb_diffuse|rgb_alpha) semantic=${name#rgb_}; live="$output/rgb-fixture/${semantic}_interface_animated.usda"; reference="$output/rgb-fixture/${semantic}_animated_reference.usda"; cpu=0 ;;
+        normal_interface) live="$output/normal-fixture/interface_animated.usda"; reference="$output/normal-fixture/animated_reference.usda"; cpu=0 ;;
+        normal_constant) live="$output/normal-fixture/constant_animated.usda"; reference="$output/normal-fixture/animated_reference.usda"; cpu=0 ;;
+        morph_tangents) live="$root/assets/morph_tangent_normals.usda"; reference=$live; cpu=2 ;;
+        subdivision_creases) live="$root/assets/subdivision_creases.usda"; reference=$live; cpu=0 ;;
+    esac
+    if run_case "$name" "$live" "$reference" "$cpu"; then result=ok; else result=failed; status=1; fi
+    printf '%s\t%s\n' "$name" "$result" | tee -a "$output/results.tsv"
+done
+exit "$status"

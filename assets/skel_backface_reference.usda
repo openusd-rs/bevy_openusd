@@ -1,0 +1,13 @@
+#usda 1.0
+(
+    subLayers = [@skel_double_sided.usda@]
+)
+
+over "Test"
+{
+    over "Bar"
+    {
+        bool doubleSided = false
+        int[] faceVertexIndices = [3, 2, 1, 0]
+    }
+}

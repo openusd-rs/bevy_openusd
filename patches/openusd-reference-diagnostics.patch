@@ -1,0 +1,134 @@
+diff --git a/crates/openusd/src/pcp/prim_index.rs b/crates/openusd/src/pcp/prim_index.rs
+index 62b00a5..09c7d86 100644
+--- a/crates/openusd/src/pcp/prim_index.rs
++++ b/crates/openusd/src/pcp/prim_index.rs
+@@ -2300,6 +2300,40 @@ def "Root" (
+         Ok(())
+     }
+
++    #[test]
++    fn absent_external_targets_report_reference_and_payload_errors() -> Result<()> {
++        for (field, arc, target) in [
++            ("references", ArcType::Reference, "/Absent"),
++            ("payload", ArcType::Payload, "/Absent"),
++            ("references", ArcType::Reference, "/Present/Absent"),
++            ("payload", ArcType::Payload, "/Present/Absent"),
++        ] {
++            let root = parse_usda(&format!(
++                "#usda 1.0\ndef Scope \"Mounted\" ({field} = @model.usda@<{target}>) {{}}\n"
++            ));
++            let model = parse_usda("#usda 1.0\ndef Scope \"Present\" {}\n");
++            let stack = LayerGraph::from_layers(
++                vec![sdf::Layer::new("root.usda", root), sdf::Layer::new("model.usda", model)],
++                0,
++                sdf::LayerRegistry::default(),
++            );
++            let (_, errors, _, _) = PrimIndex::build_with_cache(
++                &Path::new("/Mounted").unwrap(),
++                &stack,
++                &CompositionContext::default(),
++                &sdf::PathTable::new(),
++                true,
++            )?;
++            assert!(
++                errors.iter().any(|error| matches!(error,
++                CompositionDiagnostic::UnresolvedPrimPath { arc: actual, prim_path, .. }
++                    if *actual == arc && prim_path.as_str() == target)),
++                "{errors:?}"
++            );
++        }
++        Ok(())
++    }
++
+     /// A cyclic sub-root reference whose target composes *nothing* is reported
+     /// as `UnresolvedPrimPath` on top of the `ArcCycle` (C++
+     /// `PcpErrorUnresolvedPrimPath`). `/Outer` references back into `a.usd`, so
+diff --git a/crates/openusd/src/pcp/prim_indexer.rs b/crates/openusd/src/pcp/prim_indexer.rs
+index 2b0a10e..82de014 100644
+--- a/crates/openusd/src/pcp/prim_indexer.rs
++++ b/crates/openusd/src/pcp/prim_indexer.rs
+@@ -372,12 +372,7 @@ enum TaskKind {
+     EvalNodeRelocations,
+ }
+
+-/// What grafting an ancestral sub-index produced: the grafted node, and
+-/// whether *that* sub-build hit an arc cycle.
+-///
+-/// The flag answers for *this* sub-build alone, which is what a sub-root
+-/// reference needs: it is unresolved only when composing its own target hit a
+-/// cycle that left nothing behind.
++/// Grafted ancestral node and the sub-build's arc-cycle flag.
+ struct GraftOutcome {
+     node: Option<NodeId>,
+     hit_cycle: bool,
+@@ -511,6 +506,8 @@ pub(crate) struct Indexer<'a, 'f> {
+     /// relocation target) reports no error, so only entries whose node survives
+     /// (is not culled) are kept — matching C++'s per-contributing-arc reporting.
+     pending_relocation_diagnostics: Vec<(NodeId, CompositionDiagnostic)>,
++    /// External sub-root targets checked after all composition tasks finish.
++    pending_target_diagnostics: Vec<(Option<NodeId>, CompositionDiagnostic)>,
+ }
+
+ impl<'a, 'f> Indexer<'a, 'f> {
+@@ -543,6 +540,7 @@ impl<'a, 'f> Indexer<'a, 'f> {
+             pending_loads: Vec::new(),
+             expr_var_deps: ExprVarDeps::default(),
+             pending_relocation_diagnostics: Vec::new(),
++            pending_target_diagnostics: Vec::new(),
+         }
+     }
+
+@@ -667,6 +665,12 @@ impl<'a, 'f> Indexer<'a, 'f> {
+             }
+         }
+
++        for (node, error) in mem::take(&mut self.pending_target_diagnostics) {
++            if !node.is_some_and(|node| self.subtree_has_specs(node)) {
++                self.errors.report(error);
++            }
++        }
++
+         // Keep only the relocation-source-opinion errors whose relocate node
+         // survived composition; one composed under a culled branch (an empty
+         // ancestral reference at the relocation target) reports nothing.
+@@ -2891,29 +2895,28 @@ impl<'a, 'f> Indexer<'a, 'f> {
+         if !source.is_root_prim() {
+             let grafted =
+                 self.compose_and_graft(&source, target_stack, self.frame_skip(), parent, arc, map, parent, 0)?;
+-            // The target is unresolved only when composing it hit a cycle (its own
+-            // ancestral chain loops back) that left nothing — not when it is merely
+-            // empty so far (e.g. a variant supplies its opinions later).
+             let unresolved = grafted.hit_cycle && !grafted.node.is_some_and(|g| self.subtree_has_specs(g));
+-            if unresolved {
+-                self.errors.report(CompositionDiagnostic::UnresolvedPrimPath {
++            if unresolved || !is_internal {
++                let diagnostic = CompositionDiagnostic::UnresolvedPrimPath {
+                     arc,
+                     target_layer: self.inputs.stack.layer(rep).identifier.clone(),
+                     prim_path: source.clone(),
+                     introduced_by: self.introducing_layer(parent),
+                     site_path: parent_path.clone(),
+-                });
++                };
++                if is_internal {
++                    self.errors.report(diagnostic);
++                } else {
++                    self.pending_target_diagnostics.push((grafted.node, diagnostic));
++                }
+             }
+             return Ok(());
+         }
+
+-        // An arc target authoring no spec is kept as a culled node (C++
+-        // culling): visible to change tracking and dependency registration, but
+-        // contributing no opinions to value resolution. A resolved-layer payload
+-        // to such a prim is additionally an unresolved-prim-path error (C++
+-        // `PcpErrorUnresolvedPrimPath`); the node is still culled.
++        // Empty external targets report unresolved prim paths and remain culled
++        // nodes for change tracking and dependency registration.
+         let empty = !self.stack_has_spec(target_stack, &source);
+-        if empty && !is_internal && arc == ArcType::Payload {
++        if empty && !is_internal && matches!(arc, ArcType::Reference | ArcType::Payload) {
+             self.errors.report(CompositionDiagnostic::UnresolvedPrimPath {
+                 arc,
+                 target_layer: self.inputs.stack.layer(rep).identifier.clone(),

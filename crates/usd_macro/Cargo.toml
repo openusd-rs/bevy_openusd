@@ -1,0 +1,17 @@
+[package]
+name = "usd_macro"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "The `usd!` inline-USD macro: compile-time-validated usda snippets for usd_bevy."
+repository = "https://github.com/bresilla/bevy_openusd"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+# Compile-time USDA validation.
+openusd = { path = "../../vendor/openusd/crates/openusd" }

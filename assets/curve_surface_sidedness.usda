@@ -1,0 +1,29 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def BasisCurves "Front" {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(-2,1,0),(2,1,0)]
+    float[] widths = [0.4] ( interpolation = "constant" )
+    normal3f[] normals = [(0,0,1)] ( interpolation = "constant" )
+}
+
+def BasisCurves "BackSingle" {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(-2,0,0),(2,0,0)]
+    float[] widths = [0.4] ( interpolation = "constant" )
+    normal3f[] normals = [(0,0,-1)] ( interpolation = "constant" )
+}
+
+def BasisCurves "BackDouble" {
+    uniform token type = "linear"
+    uniform bool doubleSided = true
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(-2,-1,0),(2,-1,0)]
+    float[] widths = [0.4] ( interpolation = "constant" )
+    normal3f[] normals = [(0,0,-1)] ( interpolation = "constant" )
+}

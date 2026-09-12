@@ -1,0 +1,38 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    subLayers = [@skel_morph_native_normals.usda@]
+)
+over "Test"
+{
+    over "Skel"
+    {
+        uniform token[] joints = ["Root", "Tip"]
+        uniform matrix4d[] bindTransforms = [
+            ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)),
+            ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))
+        ]
+        uniform matrix4d[] restTransforms = [
+            ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)),
+            ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))
+        ]
+        over "Anim"
+        {
+            uniform token[] joints = ["Root", "Tip"]
+            float3[] translations = [(0,0,0),(0,0,0)]
+            quatf[] rotations = [(0.9238795,0,0.3826834,0),(0.9659258,0,-0.258819,0)]
+            half3[] scales = [(2,1,0.5),(0.5,2,1)]
+        }
+    }
+    over "Face"
+    {
+        int[] primvars:skel:jointIndices = [0,1,0,1,0,1,0,1] (
+            elementSize = 2
+            interpolation = "vertex"
+        )
+        float[] primvars:skel:jointWeights = [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5] (
+            elementSize = 2
+            interpolation = "vertex"
+        )
+    }
+}

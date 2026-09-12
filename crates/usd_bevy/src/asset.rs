@@ -1,1454 +1,1907 @@
-//! `UsdAsset` + `UsdLoader`.
+//! USD as a first-class Bevy asset (PLAN: "USD as a strong asset contender").
 //!
-//! The loader parses the stage, walks it once via [`build::stage_to_scene`],
-//! and publishes the projected scene as a labeled sub-asset named `"Scene"`.
-//! `UsdAsset` holds a strong [`Handle<Scene>`] that users spawn via
-//! `SceneRoot(asset.scene.clone())`.
+//! This is the glTF-equivalent entry point: `asset_server.load("scene.usdz")`
+//! yields a [`Handle<UsdScene>`], and spawning an entity with
+//! [`UsdSceneRoot`]`(handle)` projects the composed stage as a child subtree —
+//! the same way `SceneRoot(gltf_scene)` works, but USD-native and with **zero
+//! `bevy_scene` dependency** (USD composition is the scene system).
 //!
-//! openusd only accepts a filesystem path, so bytes from Bevy's `Reader` are
-//! spilled to a tempfile before opening. For `.usdz` the loader additionally
-//! cracks open the archive (it's a zero-compression ZIP) to surface every
-//! non-layer entry (textures, aux files) to the stage walker as an
-//! in-memory map keyed by its archive-relative path.
+//! Layers and external asset bytes are read through Bevy and retained in a snapshot.
 
-use std::collections::HashMap;
-use std::io;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bevy::asset::io::Reader;
-use bevy::asset::{Asset, AssetLoader, Handle, LoadContext};
-use bevy::reflect::TypePath;
-use bevy::scene::Scene;
-use serde::{Deserialize, Serialize};
+use bevy::asset::{Asset, AssetId, AssetLoader, AssetPath, LoadContext, LoadState};
+use bevy::prelude::*;
 
-use crate::build;
+use crate::live::project_stage_under;
+use crate::instance::{InstanceRuntime, UsdInstanceOverrides, UsdInstanceTime, UsdInstances, UsdPlayback};
+use crate::live::{AnimatedPrims, LiveStage, reconcile, stage_up_axis};
+use crate::route::StageTime;
+use crate::{SchemaRegistry, UsdSource};
 
-/// ZIP local-file header magic. USDZ is a zero-compression ZIP, so the first
-/// four bytes are always `PK\x03\x04`.
-const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
-
-/// A composed USD stage loaded as a Bevy asset.
+/// A composed source snapshot ready for main-thread projection.
 #[derive(Asset, TypePath, Debug, Clone)]
-pub struct UsdAsset {
-    /// Projected scene: one entity per prim, with `Name`, `Transform`, and
-    /// `UsdPrimRef`. Basis / unit correction lives on the scene root.
-    pub scene: Handle<Scene>,
-    /// `defaultPrim` metadata on the root layer, if authored.
-    pub default_prim: Option<String>,
-    /// Number of layers composed into this stage.
-    pub layer_count: usize,
-    /// Every prim that authors a `variantSet` + the current selection for
-    /// each set. Keyed by prim path. M6 exposes this for UI surfacing;
-    /// variant switching (re-opening with a session layer) lands in M6.1.
-    pub variants: HashMap<String, Vec<VariantSet>>,
-    /// How many UsdLux lights got translated, broken down by Bevy light
-    /// type. Populated during `UsdLoader::load`.
-    pub light_tally: LightTally,
-    /// Every `UsdGeom.Camera` prim in the stage. Prim-path → decoded
-    /// camera params. The viewer surfaces this as a dropdown; picking
-    /// one mounts its transform + intrinsics onto the active `Camera3d`.
-    pub cameras: Vec<StageCamera>,
-    /// Raw `UsdGeom.BasisCurves` / `UsdGeom.Points` data keyed by prim
-    /// path. The initial mesh handles are baked into the Scene at load
-    /// time, but tuning sliders rebuild the mesh bytes in-place (no
-    /// asset reload) using this source-of-truth copy.
-    pub curves: HashMap<String, usd_schema::geom::ReadCurves>,
-    pub points_clouds: HashMap<String, usd_schema::geom::ReadPoints>,
-    /// How many prims author `instanceable = true`. Surfaced on the
-    /// Info panel as a sanity check — and used by the prototype cache
-    /// to know when dedup opportunities exist.
-    pub instance_prim_count: usize,
-    /// How many instance sites the loader dedupped against a previously
-    /// built prototype (`0` when no instance site was seen more than
-    /// once). `instance_prim_count - instance_prototype_reuses` gives
-    /// the number of unique prototypes materialized.
-    pub instance_prototype_reuses: usize,
-    /// Prim path → animated xform ops. Populated at load time from any
-    /// `xformOp:*.timeSamples` on the stage; the viewer's animation
-    /// clock reads this + the current time each frame and writes the
-    /// resulting `Transform`.
-    pub animated_prims: HashMap<String, usd_schema::anim::AnimatedPrim>,
-    /// Stage-level `startTimeCode` / `endTimeCode` (defaults 0..1 when
-    /// absent) and `timeCodesPerSecond`/`framesPerSecond` (defaults 24).
-    /// The viewer plays `seconds * timeCodesPerSecond` through this
-    /// range.
-    pub start_time_code: f64,
-    pub end_time_code: f64,
-    pub time_codes_per_second: f64,
-    /// UsdSkel `Skeleton` prims discovered on the stage (M16 read side).
-    pub skeletons: Vec<usd_schema::skel::ReadSkeleton>,
-    /// UsdSkel `SkelRoot` container prims with their skeleton /
-    /// animationSource relationships.
-    pub skel_roots: Vec<usd_schema::skel::ReadSkelRoot>,
-    /// Per-mesh `SkelBindingAPI` bindings (joint indices + weights).
-    pub skel_bindings: Vec<usd_schema::skel::ReadSkelBinding>,
-    /// Sidecar-parsed `UsdSkelAnimation` prims keyed by their authored
-    /// prim name (e.g. `"SkelAnim"`). Populated at load time when
-    /// `UsdLoaderSettings::skel_animation_files` is non-empty (or the
-    /// `BEVY_OPENUSD_SKEL_ANIM_FILE` env var is set). Lets us play
-    /// SkelAnimation prims authored in `.usda` files that
-    /// `openusd-rs` can't parse today (tuple-valued timeSamples).
-    pub skel_animations: HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText>,
-    /// `UsdRender.RenderSettings` prims (M19 read side).
-    pub render_settings: Vec<usd_schema::render::ReadRenderSettings>,
-    pub render_products: Vec<usd_schema::render::ReadRenderProduct>,
-    pub render_vars: Vec<usd_schema::render::ReadRenderVar>,
-    /// `UsdPhysics` prim paths that author a `PhysicsRigidBodyAPI`
-    /// (M_LAST read side). Paired reader side of the existing authoring
-    /// helpers — the plugin doesn't simulate, just surfaces.
-    pub rigid_body_prims: Vec<String>,
-    /// `PhysicsScene` prim paths.
-    pub physics_scene_prims: Vec<String>,
-    /// Decoded `Physics*Joint` prims. Authored frames + limits already
-    /// resolved — downstream physics backends can consume directly.
-    pub joints: Vec<openusd::physics::ReadJoint>,
-    /// `PhysicsArticulationRootAPI` prim paths (Phase 3).
-    pub articulation_root_prims: Vec<String>,
-    /// Prim paths bearing `PhysicsMaterialAPI` (typically `Material` prims).
-    pub physics_material_prims: Vec<String>,
-    /// `PhysicsCollisionGroup` prim paths.
-    pub collision_group_prims: Vec<String>,
-    /// Prim paths bearing `PhysicsFilteredPairsAPI`.
-    pub filtered_pairs_prims: Vec<String>,
-    /// Prim paths bearing `PhysicsCollisionAPI`.
-    pub collider_prims: Vec<String>,
-    /// Authored `custom` attributes + `customData` + `assetInfo` per
-    /// prim (M24). Keyed by prim path; prims with NO user-authored
-    /// metadata stay out of the map entirely.
-    pub custom_attrs: HashMap<String, crate::prim_ref::UsdCustomAttrs>,
-    /// Layer-level `customLayerData` dictionary. Omniverse stashes
-    /// camera bookmarks, authoring-layer state, render settings
-    /// defaults, etc. here. Empty when the root layer didn't author
-    /// one.
-    pub custom_layer_data: usd_schema::geom::CustomDict,
-    /// Prim paths whose `UsdGeomMesh.subdivisionScheme` is anything
-    /// other than `none` (M25). Surfaces the author's intent so
-    /// downstream tools know which meshes are *meant* to be
-    /// tessellated — the plugin renders them flat as-authored.
-    pub subdivision_prims: Vec<(String, usd_schema::geom::SubdivScheme)>,
-    /// UsdLux lights that authored any of `light:link`, `shadow:link`,
-    /// or `light:filters` relationships (M26). Bevy's render pipeline
-    /// doesn't yet honour the linking — this list just surfaces what
-    /// was authored so downstream tools / our future render hook can
-    /// act on it.
-    pub light_linking_prims: Vec<String>,
-    /// `UsdClipsAPI` metadata per prim (M27). Each entry captures the
-    /// decoded clip sets authored on that prim. openusd doesn't
-    /// compose clip layers yet; this surfaces the authoring so
-    /// downstream tools can honour it manually.
-    pub clip_sets: std::collections::HashMap<String, Vec<usd_schema::clips::ReadClipSet>>,
+pub struct UsdScene {
+    pub source: UsdSource,
+    #[dependency]
+    pub textures: bevy::platform::collections::HashMap<(String, bool), Handle<Image>>,
 }
 
-/// One authored `UsdGeom.Camera` with its prim path + decoded params.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StageCamera {
-    pub path: String,
-    pub data: usd_schema::camera::ReadCamera,
+#[derive(Resource, Clone, Default)]
+pub(crate) struct SnapshotTextures(
+    pub bevy::platform::collections::HashMap<(String, bool), Handle<Image>>,
+);
+
+/// Spawn a loaded [`UsdScene`] as a child subtree of this entity — the USD-native
+/// analog of `SceneRoot`. The entity keeps its own `Transform` (placement); the
+/// USD content, up-axis-corrected, hangs beneath it.
+#[derive(Component, Debug, Clone)]
+#[require(Transform, Visibility, UsdInstanceTime, UsdInstanceOverrides, UsdPlayback)]
+pub struct UsdSceneRoot(pub Handle<UsdScene>);
+
+/// Marks a [`UsdSceneRoot`] that has already been projected, so the spawn system
+/// doesn't re-project it every frame.
+#[derive(Component, Debug, Clone)]
+pub struct UsdSceneInstance {
+    asset: AssetId<UsdScene>,
+    revision: u64,
+    subtree: Option<Entity>,
+    overrides: UsdInstanceOverrides,
 }
 
-/// Counts of UsdLux lights translated into Bevy lights during load.
-/// Surfaced on the viewer's Info panel.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LightTally {
-    pub directional: usize,
-    pub point: usize,
-    pub spot: usize,
-    pub dome: usize,
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub enum UsdSceneState {
+    Loading,
+    Ready,
+    Failed(String),
 }
 
-impl From<crate::light::Tally> for LightTally {
-    fn from(t: crate::light::Tally) -> Self {
-        Self {
-            directional: t.directional,
-            point: t.point,
-            spot: t.spot,
-            dome: t.dome,
-        }
-    }
+/// Optional cumulative timings for source/override publication attempts.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct UsdSceneTimings {
+    pub attempts: usize,
+    pub failures: usize,
+    pub open: std::time::Duration,
+    pub overrides: std::time::Duration,
+    pub validation: std::time::Duration,
+    pub projection: std::time::Duration,
 }
 
-/// One variant set authored on a prim. `selection` is the currently-active
-/// opinion (or `None` if only the `variantSetNames` metadata was declared
-/// without a default selection). `options` enumerates every variant name
-/// declared inside the set so the UI can surface a dropdown.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VariantSet {
-    pub name: String,
-    pub selection: Option<String>,
-    pub options: Vec<String>,
+fn timed<T>(enabled: bool, elapsed: &mut std::time::Duration, operation: impl FnOnce() -> T) -> T {
+    if !enabled { return operation(); }
+    let start = std::time::Instant::now();
+    let result = operation();
+    *elapsed += start.elapsed();
+    result
 }
 
-/// Per-asset loader settings. Populated via
-/// `asset_server.load_with_settings::<UsdAsset, _>(path, |s| {...})`.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct UsdLoaderSettings {
-    /// Filesystem directories openusd searches when resolving relative
-    /// asset paths inside the stage (references, payloads, sublayers,
-    /// texture `inputs:file`, …).
-    ///
-    /// The loader always adds the tempfile's own parent directory first,
-    /// but that's usually `/tmp`. For any stage with sibling references
-    /// (`./materials/foo.usd`, `./greenhouse/front.usdc`, …) callers
-    /// should pass the original asset's filesystem parent here.
-    pub search_paths: Vec<PathBuf>,
-
-    /// When `false`, payload arcs that fail to resolve are dropped silently
-    /// (the prim keeps any local opinions but nothing gets pulled in).
-    /// When `true`, unresolved payloads surface as a warning. Has no effect
-    /// on payloads that *do* resolve — those always load.
-    ///
-    /// Use this to open huge staged scenes without their heavy lazy
-    /// subtrees. `true` by default so out-of-the-box behaviour matches
-    /// Pixar's USD.
-    pub load_payloads: bool,
-
-    /// When `true`, subtrees under prims tagged `kind = "component"` or
-    /// `"subcomponent"` collapse their intermediate Xforms: every geom
-    /// descendant becomes a direct child of the Kind-tagged prim, carrying
-    /// the pre-composed world transform. Entity count drops by the tree
-    /// depth without touching the mesh / material handles.
-    ///
-    /// `false` by default. Turning it on pays off on 10k+ prim Omniverse
-    /// scenes where most of the depth is organizational rather than
-    /// meaningful (`Robot/Chassis/Visual/MeshLink` → just `Robot/<mesh>`).
-    pub kind_collapse: bool,
-
-    /// Multiplier applied on top of the UsdLux intensity conversion.
-    /// Authored `inputs:intensity` × `2^exposure` × `light_intensity_scale`
-    /// feeds into the Bevy light's `intensity`. 1.0 is the identity; drop
-    /// to 0.1 or raise to 10 if the scene's authored lights look wildly
-    /// off (unit conventions vary wildly between DCCs).
-    pub light_intensity_scale: f32,
-
-    /// Radius (metres) used for `UsdGeom.BasisCurves` when the prim
-    /// doesn't author `widths`. Ignored when `widths` is set. Smaller
-    /// is crisper; larger reads better at distance.
-    pub curve_default_radius: f32,
-
-    /// How many tube-ring samples per spine vertex. 3 = triangular
-    /// prism (cheapest, facetted), 6 = decent, 12 = smooth. Trivially
-    /// scales mesh size: `vertices_per_curve = spine_len × ring_segments`.
-    pub curve_ring_segments: u32,
-
-    /// Multiplier applied to every `UsdGeom.Points` cube's half-extent.
-    /// 1.0 = use authored `widths` as-is; 0.25 = quarter size; etc. Lets
-    /// you dial a too-chunky point cloud down without touching USD.
-    pub point_scale: f32,
-
-    /// Per-prim variant overrides. Authored into a temporary session
-    /// layer prepended to the stack before composition, so selections
-    /// dominate any opinions the asset itself carries. Empty vec =
-    /// no override = honour the stage's authored selections.
-    pub variant_selections: Vec<VariantSelection>,
-
-    /// Sidecar text-mode parser inputs: extra `.usda` files we scan
-    /// for `UsdSkelAnimation` prims. Each scanned animation gets
-    /// stashed on `UsdAsset.skel_animations` keyed by prim name.
-    /// Workaround for `openusd-rs`'s USDA parser failing on
-    /// tuple-valued timeSamples (`Unsupported property metadata
-    /// value token: Punctuation('(')`) — Pixar's
-    /// `HumanFemale.walk.usd` is the canonical case. Empty vec =
-    /// only the env-var override `BEVY_OPENUSD_SKEL_ANIM_FILE` (if
-    /// set) takes effect. Files are read but never composed into the
-    /// stage.
-    pub skel_animation_files: Vec<PathBuf>,
-}
-
-/// One authored override: set `prim_path`'s `set_name` variant to
-/// `option`. Collections of these come from the Variants panel.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VariantSelection {
-    pub prim_path: String,
-    pub set_name: String,
-    pub option: String,
-}
-
-impl Default for UsdLoaderSettings {
-    fn default() -> Self {
-        Self {
-            search_paths: Vec::new(),
-            load_payloads: true,
-            kind_collapse: false,
-            light_intensity_scale: 1.0,
-            curve_default_radius: 0.02,
-            curve_ring_segments: 6,
-            point_scale: 1.0,
-            variant_selections: Vec::new(),
-            skel_animation_files: Vec::new(),
-        }
-    }
-}
-
-/// Errors produced by [`UsdLoader`].
-#[derive(thiserror::Error, Debug)]
-pub enum UsdLoaderError {
-    #[error("io error: {0}")]
-    Io(#[from] io::Error),
-    #[error("failed to open USD stage: {0}")]
-    Stage(String),
-    #[error("failed to read USDZ archive: {0}")]
-    Usdz(String),
-}
-
-/// Bevy `AssetLoader` for `.usda` / `.usdc` / `.usd` / `.usdz` files.
+/// Reads a source snapshot and its discovered dependencies through Bevy.
 #[derive(Default, TypePath)]
-pub struct UsdLoader;
+pub struct UsdAssetLoader;
 
-impl AssetLoader for UsdLoader {
-    type Asset = UsdAsset;
-    type Settings = UsdLoaderSettings;
-    type Error = UsdLoaderError;
+impl AssetLoader for UsdAssetLoader {
+    type Asset = UsdScene;
+    type Settings = ();
+    type Error = std::io::Error;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
-        settings: &UsdLoaderSettings,
+        _settings: &(),
         load_context: &mut LoadContext<'_>,
-    ) -> Result<UsdAsset, UsdLoaderError> {
-        bevy::log::info!(
-            "UsdLoader::load fired for {:?} (curve_radius={:.4}, curve_rings={}, point_scale={:.2})",
-            load_context.path(),
-            settings.curve_default_radius,
-            settings.curve_ring_segments,
-            settings.point_scale,
-        );
+    ) -> Result<UsdScene, std::io::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-
-        let asset_path = load_context.path();
-        let fs_path: &Path = asset_path.path();
-        let ext_hint = fs_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("usd");
-
-        let is_usdz = bytes.starts_with(ZIP_MAGIC) || ext_hint.eq_ignore_ascii_case("usdz");
-        let is_usda = !is_usdz
-            && (ext_hint.eq_ignore_ascii_case("usda")
-                || (ext_hint.eq_ignore_ascii_case("usd") && is_text_usd(&bytes)));
-
-        // For non-USDZ inputs, write the tempfile INTO the first search
-        // path (the user's asset root) rather than `/tmp`. openusd's
-        // `DefaultResolver::create_identifier` anchors relative references
-        // against the parent layer's *directory*; if we land the root
-        // layer in `/tmp`, every `./foo.usdc` sibling reference resolves
-        // into `/tmp/foo.usdc` regardless of `search_paths`. Writing the
-        // tempfile into the actual source dir keeps sibling lookups sane.
-        let tmp_dir = if !is_usdz && let Some(first) = settings.search_paths.first() {
-            first.clone()
-        } else {
-            std::env::temp_dir()
-        };
-
-        let (tmp, embedded) = if is_usdz {
-            extract_usdz(&bytes, fs_path)?
-        } else {
-            let tmp = tempfile_in(&tmp_dir, fs_path, ext_hint);
-            let final_bytes = if is_usda {
-                usd_schema::third_party::strip_metadata::strip_unsupported_prim_metadata(&bytes)
-            } else {
-                bytes.clone()
-            };
-            std::fs::write(&tmp, &final_bytes)?;
-            (tmp, HashMap::new())
-        };
-
-        let tmp_str = tmp
-            .to_str()
-            .ok_or_else(|| UsdLoaderError::Stage("non-UTF-8 tempfile path".into()))?;
-        // Build a resolver that searches the user-supplied dirs first, then
-        // the tempfile's parent (so intra-USDZ layers stay resolvable). The
-        // DefaultResolver also falls back to `std::env::current_dir()`, but
-        // relying on that would make loads CWD-sensitive and flaky.
-        let mut search: Vec<PathBuf> = settings.search_paths.clone();
-        if let Some(parent) = tmp.parent().map(|p| p.to_path_buf()) {
-            search.push(parent);
+        let root = std::env::current_dir()?.join("__bevy_usd_assets__");
+        let path = load_context.path().path().to_path_buf();
+        if path.is_absolute() {
+            return Err(std::io::Error::other(
+                "USD asset paths must be source-relative",
+            ));
         }
-
-        // The `settings.variant_selections` list drives composition.
-        // Bevy strips the label from `load_context.path()` before
-        // invoking the loader (the base path is what the loader
-        // sees), so we can't read the label here — but the consumer
-        // is expected to put the same selections into the path label
-        // *and* `settings.variant_selections` (see [`variant_label`]).
-        // The label only matters at the asset-cache layer (so two
-        // variant requests produce two distinct cached handles); the
-        // loader uses settings as the source of truth.
-        let effective_variants = settings.variant_selections.clone();
-
-        // Session layer: if the caller authored variant overrides, write
-        // them out as a tiny USDA file with `over` specs carrying
-        // `variants = { ... }` metadata, then hand the path to the
-        // StageBuilder. Composition puts session opinions ahead of
-        // everything else, so the override wins over whatever the stage
-        // authored itself.
-        let session_layer_path = if !effective_variants.is_empty() {
-            let text = author_variant_session_layer(&effective_variants);
-            let session_tmp = tempfile_session(&tmp_dir, fs_path, &effective_variants, &text);
-            std::fs::write(&session_tmp, &text)?;
-            bevy::log::info!(
-                "usd: wrote {} variant selection(s) to session layer {}",
-                effective_variants.len(),
-                session_tmp.display(),
-            );
-            Some(session_tmp)
-        } else {
-            None
-        };
-
-        let skip_payloads = !settings.load_payloads;
-        let mut builder = openusd::Stage::builder()
-            .resolver(
-                usd_schema::third_party::resolver::StripMetadataResolver::with_search_paths(
-                    search.clone(),
-                ),
-            )
-            .on_error(move |err| {
-                // Demote "unresolved payload" to a silent skip when the
-                // caller opted out of payload loading. Everything else
-                // keeps the default warn-and-continue behaviour so genuine
-                // composition issues stay visible.
-                if skip_payloads
-                    && let openusd::CompositionError::Layer(
-                        openusd::layer::Error::UnresolvedAsset { kind, .. },
-                    ) = &err
-                    && matches!(kind, openusd::DependencyKind::Payload)
+        let source_id = load_context.path().source().clone_owned();
+        let mut source = UsdSource::snapshot(&root.join(path), bytes)?;
+        if !Path::new(source.identifier()).starts_with(&root) {
+            return Err(std::io::Error::other("USD root escapes asset source"));
+        }
+        for _ in 0..128 {
+            let (result, missing) = source.probe();
+            if missing.is_empty() {
+                result.map_err(std::io::Error::other)?;
+                let mut textures = bevy::platform::collections::HashMap::default();
+                for (index, (path, srgb)) in source
+                    .texture_requests()
+                    .map_err(std::io::Error::other)?
+                    .into_iter()
+                    .enumerate()
                 {
-                    return Ok(());
+                    let bytes = source.read_asset(&path)?;
+                    let inner = openusd::ar::split_package_relative_path_inner(&path)
+                        .map(|(_, inner)| inner)
+                        .unwrap_or_else(|| path.clone());
+                    let extension = Path::new(&inner)
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .ok_or_else(|| {
+                            std::io::Error::other(format!("texture has no extension: {path}"))
+                        })?;
+                    let image = Image::from_buffer(
+                        &bytes,
+                        bevy::image::ImageType::Extension(extension),
+                        bevy::image::CompressedImageFormats::NONE,
+                        srgb,
+                        bevy::image::ImageSampler::default(),
+                        bevy::asset::RenderAssetUsages::default(),
+                    )
+                    .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
+                    let handle = load_context.add_labeled_asset(format!("texture_{index}"), image);
+                    textures.insert((path, srgb), handle);
                 }
-                bevy::log::warn!("usd composition: {err}");
-                Ok(())
-            });
-        if let Some(ref p) = session_layer_path {
-            let s = p
-                .to_str()
-                .ok_or_else(|| UsdLoaderError::Stage("non-UTF-8 session-layer path".into()))?;
-            builder = builder.session_layer(s.to_string());
-        }
-        let stage = builder.open(tmp_str).map_err(|e| {
-            // Walk the anyhow chain so the real parser error (which
-            // layer-open wraps twice) surfaces to the user.
-            let mut msg = e.to_string();
-            let mut src: Option<&dyn std::error::Error> = e.source();
-            while let Some(s) = src {
-                msg.push_str(&format!(" :: {s}"));
-                src = s.source();
+                return Ok(UsdScene { source, textures });
             }
-            UsdLoaderError::Stage(msg)
-        })?;
-
-        let default_prim = stage.default_prim();
-        let layer_count = stage.layer_count();
-        let mut variants = collect_variants(&stage);
-        let cameras = collect_cameras(&stage);
-        let (curves, points_clouds) = collect_curves_and_points(&stage);
-        let animated_prims = collect_animated_prims(&stage);
-        let (mut start_time_code, mut end_time_code, time_codes_per_second) =
-            read_stage_timeline(&stage);
-        let (skeletons, skel_roots, skel_bindings) = collect_skel(&stage);
-        let (render_settings, render_products, render_vars) = collect_render(&stage);
-        let physics_summary = collect_physics(&stage);
-        let custom_attrs = collect_custom_attrs(&stage);
-        let custom_layer_data = usd_schema::geom::read_custom_layer_data(&stage)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let subdivision_prims = collect_subdivision_prims(&stage);
-        let light_linking_prims = collect_light_linking_prims(&stage);
-        let clip_sets = collect_clip_sets(&stage);
-
-        // Sidecar: scan extra .usda files for UsdSkelAnimation prims.
-        // Workaround for openusd-rs USDA parser failing on
-        // tuple-valued timeSamples (e.g. Pixar's HumanFemale.walk.usd).
-        // Files come from `UsdLoaderSettings::skel_animation_files`
-        // and the `BEVY_OPENUSD_SKEL_ANIM_FILE` env var (one path or
-        // colon-separated list).
-        let mut skel_animations: HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText> =
-            HashMap::new();
-        let mut anim_paths: Vec<PathBuf> = settings.skel_animation_files.clone();
-        if let Ok(envv) = std::env::var("BEVY_OPENUSD_SKEL_ANIM_FILE") {
-            for piece in envv.split(':') {
-                if !piece.is_empty() {
-                    anim_paths.push(PathBuf::from(piece));
+            for identifier in missing {
+                if openusd::ar::is_package_relative_path(&identifier) {
+                    return Err(std::io::Error::other(format!(
+                        "missing USD package entry: {identifier}"
+                    )));
                 }
+                let dependency = Path::new(&identifier).strip_prefix(&root).map_err(|_| {
+                    std::io::Error::other(format!(
+                        "USD dependency escapes asset source: {identifier}"
+                    ))
+                })?;
+                let asset_path =
+                    AssetPath::from(dependency.to_path_buf()).with_source(source_id.clone());
+                let bytes = load_context
+                    .read_asset_bytes(asset_path)
+                    .await
+                    .map_err(std::io::Error::other)?;
+                source.insert_dependency(identifier, bytes);
             }
         }
-        // For USDZ stages, auto-scan every extracted USDA/USD layer
-        // for SkelAnimation prims. Pixar's HumanFemale.walk.usd is the
-        // canonical case: openusd-rs's parser rejects its tuple-valued
-        // timeSamples, so the file CAN'T contribute via the regular
-        // composition path — but our sidecar text scanner handles it
-        // fine. Without this, animation gets dropped silently when
-        // packing into a USDZ (the loose-file viewer relied on the
-        // user setting BEVY_OPENUSD_SKEL_ANIM_FILE manually).
-        if is_usdz {
-            if let Some(parent) = tmp.parent() {
-                collect_text_layers_recursive(parent, &mut anim_paths);
-            }
-        }
-        let stage_authored_timeline = has_authored_timeline(&stage);
-        let mut anim_min_time: Option<f64> = None;
-        let mut anim_max_time: Option<f64> = None;
-        let record_time = |t: f64, mn: &mut Option<f64>, mx: &mut Option<f64>| {
-            *mn = Some(mn.map(|m| m.min(t)).unwrap_or(t));
-            *mx = Some(mx.map(|m| m.max(t)).unwrap_or(t));
-        };
-        for p in anim_paths {
-            // Resolve relative paths against the search paths.
-            let candidates: Vec<PathBuf> = if p.is_absolute() {
-                vec![p.clone()]
-            } else {
-                let mut v = vec![p.clone()];
-                for sp in &search {
-                    v.push(sp.join(&p));
-                }
-                v
-            };
-            let resolved = candidates.into_iter().find(|c| c.exists());
-            let Some(path) = resolved else {
-                bevy::log::warn!("skel anim sidecar: file not found: {}", p.display());
-                continue;
-            };
-            match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    let anims = usd_schema::skel_anim_text::scan_skel_animations(&text);
-                    bevy::log::info!(
-                        "skel anim sidecar: parsed {} animation(s) from {}",
-                        anims.len(),
-                        path.display()
-                    );
-                    for a in anims {
-                        for k in a.translations.keys() {
-                            record_time(k.0, &mut anim_min_time, &mut anim_max_time);
-                        }
-                        for k in a.rotations.keys() {
-                            record_time(k.0, &mut anim_min_time, &mut anim_max_time);
-                        }
-                        for k in a.scales.keys() {
-                            record_time(k.0, &mut anim_min_time, &mut anim_max_time);
-                        }
-                        for k in a.blend_shape_weights.keys() {
-                            record_time(k.0, &mut anim_min_time, &mut anim_max_time);
-                        }
-                        skel_animations.insert(a.prim_name.clone(), a);
-                    }
-                }
-                Err(e) => {
-                    bevy::log::warn!("skel anim sidecar: failed to read {}: {e}", path.display());
-                }
-            }
-        }
-        for a in collect_stage_skel_animations(&stage) {
-            for k in a.translations.keys() {
-                record_time(k.0, &mut anim_min_time, &mut anim_max_time);
-            }
-            for k in a.rotations.keys() {
-                record_time(k.0, &mut anim_min_time, &mut anim_max_time);
-            }
-            for k in a.scales.keys() {
-                record_time(k.0, &mut anim_min_time, &mut anim_max_time);
-            }
-            for k in a.blend_shape_weights.keys() {
-                record_time(k.0, &mut anim_min_time, &mut anim_max_time);
-            }
-            skel_animations.insert(a.prim_name.clone(), a);
-        }
-        synthesize_anim_variant_set(
-            &mut variants,
-            default_prim.as_deref(),
-            &skel_animations,
-            &effective_variants,
-        );
-        // When the stage authored no timeline, derive playback range
-        // from the authored keyframes. This covers both sidecar USDA
-        // animations and composed stage SkelAnimation prims referenced
-        // by wrapper assets such as Cow_F.usd, whose root layer authors
-        // an `anim` variant set but no start/end time codes.
-        if !stage_authored_timeline {
-            if let (Some(mn), Some(mx)) = (anim_min_time, anim_max_time) {
-                start_time_code = mn;
-                end_time_code = mx;
-            }
-        }
-
-        let (scene, light_tally, instance_stats) = build::stage_to_scene(
-            &stage,
-            load_context,
-            &embedded,
-            &search,
-            settings.kind_collapse,
-            settings.light_intensity_scale,
-            settings.curve_default_radius,
-            settings.curve_ring_segments,
-            settings.point_scale,
-            &skel_animations,
-        );
-        bevy::log::info!(
-            "usd: translated {} directional + {} point + {} spot lights (+ {} dome deferred)",
-            light_tally.directional,
-            light_tally.point,
-            light_tally.spot,
-            light_tally.dome,
-        );
-        // The Scene's labeled-asset key has to be unique per variant
-        // selection or different variant loads will clobber each
-        // other's scenes (Bevy stores labeled sub-assets at the same
-        // `path#label` AssetIndex, so two loads emitting `Scene` for
-        // the same path overwrite — every consumer holding a stale
-        // `Handle<Scene>` then sees the latest variant's content).
-        // Default variant keeps the unsuffixed `"Scene"` for
-        // backwards compatibility with consumers that load
-        // `path.usda#Scene` directly.
-        let scene_label = if effective_variants.is_empty() {
-            "Scene".to_string()
-        } else {
-            format!("Scene:{}", variant_label(&effective_variants))
-        };
-        let scene_handle = load_context.add_labeled_asset(scene_label, scene);
-
-        let _ = std::fs::remove_file(&tmp);
-
-        let usd_asset = UsdAsset {
-            scene: scene_handle,
-            default_prim,
-            layer_count,
-            variants,
-            light_tally: light_tally.into(),
-            cameras,
-            curves,
-            points_clouds,
-            instance_prim_count: instance_stats.instance_prim_count,
-            instance_prototype_reuses: instance_stats.prototype_reuses,
-            animated_prims,
-            start_time_code,
-            end_time_code,
-            time_codes_per_second,
-            skeletons,
-            skel_roots,
-            skel_bindings,
-            skel_animations,
-            render_settings,
-            render_products,
-            render_vars,
-            rigid_body_prims: physics_summary.rigid_body_prims,
-            physics_scene_prims: physics_summary.physics_scene_prims,
-            joints: physics_summary.joints,
-            articulation_root_prims: physics_summary.articulation_root_prims,
-            physics_material_prims: physics_summary.physics_material_prims,
-            collision_group_prims: physics_summary.collision_group_prims,
-            filtered_pairs_prims: physics_summary.filtered_pairs_prims,
-            collider_prims: physics_summary.collider_prims,
-            custom_attrs,
-            custom_layer_data,
-            subdivision_prims,
-            light_linking_prims,
-            clip_sets,
-        };
-
-        // If the caller supplied any `variant_selections`, Bevy's
-        // path-only handle cache would otherwise collapse multiple
-        // variant requests onto a single handle (the last load
-        // wins, every consumer flips to the new content). To dodge
-        // that, the consumer should call `load_with_settings` with
-        // an asset path whose *label* equals
-        // [`variant_label`]`(&settings.variant_selections)`. Bevy
-        // will then look up that exact label in our output below;
-        // emitting a labeled sub-asset under the same key gives
-        // each variant request its own cached `Handle<UsdAsset>`
-        // pointing at the right composed content.
-        if !effective_variants.is_empty() {
-            let label = variant_label(&effective_variants);
-            load_context.add_labeled_asset(label, usd_asset.clone());
-        }
-
-        Ok(usd_asset)
+        Err(std::io::Error::other(
+            "USD dependency discovery exceeded 128 rounds",
+        ))
     }
 
     fn extensions(&self) -> &[&str] {
-        &["usda", "usdc", "usd", "usdz"]
+        &["usd", "usda", "usdc", "usdz"]
     }
 }
 
-/// Decompose a USDZ archive. Writes the first USD layer to a tempfile (so
-/// `openusd::Stage::open` can parse it the normal way) and returns a map of
-/// `archive-relative path -> raw bytes` for every *non-layer* entry —
-/// typically PNG / JPEG / KTX textures.
-///
-/// `openusd` already has its own `usdz::Archive` reader for walking layers,
-/// but it doesn't surface the media payload. We go direct through the `zip`
-/// crate so textures land under our control.
-fn extract_usdz(
-    bytes: &[u8],
-    asset_path: &Path,
-) -> Result<(PathBuf, HashMap<String, Vec<u8>>), UsdLoaderError> {
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
-        .map_err(|e| UsdLoaderError::Usdz(e.to_string()))?;
+/// Registers the USD asset loader + the spawn system. Add alongside
+/// [`crate::UsdPlugin`] (which provides the [`SchemaRegistry`]); this plugin
+/// installs one too if it's missing, so it also works standalone.
+pub struct UsdAssetPlugin;
 
-    // Spill every archive entry to a per-USDZ tempdir so openusd-rs can
-    // resolve internal `references = @./other_layer.usd@` arcs the way
-    // it would for an unzipped scene. Without this, multi-layer USDZs
-    // (Kitchen_set, HumanFemale) compose only the root and the user
-    // sees an almost-empty stage.
-    //
-    // The first `.usda`/`.usdc`/`.usd` entry is the package's root
-    // layer per the USDZ spec — we return its tempfile path as the
-    // stage opener's input.
-    let mut layer_name: Option<String> = None;
-    for i in 0..archive.len() {
-        let f = archive
-            .by_index(i)
-            .map_err(|e| UsdLoaderError::Usdz(e.to_string()))?;
-        let name = f.name().to_string();
-        let lower = name.to_ascii_lowercase();
-        if lower.ends_with(".usda") || lower.ends_with(".usdc") || lower.ends_with(".usd") {
-            layer_name = Some(name);
-            break;
+impl Plugin for UsdAssetPlugin {
+    fn build(&self, app: &mut App) {
+        if !app.world().contains_resource::<Assets<Image>>() {
+            app.init_asset::<Image>();
+        }
+        app.init_asset::<UsdScene>()
+            .init_resource::<crate::route::cache::ProjectionCache>()
+            .register_asset_loader(UsdAssetLoader)
+            .add_systems(Update, spawn_usd_scenes);
+        if !app.world().contains_resource::<SchemaRegistry>() {
+            app.insert_resource(SchemaRegistry::builtin());
         }
     }
-    let layer_name = layer_name
-        .ok_or_else(|| UsdLoaderError::Usdz("USDZ archive contains no USD layer".to_string()))?;
+}
 
-    // Stable tempdir keyed off the source path so reloads overwrite
-    // predictably (matches what `tempfile_for` does for plain .usd files).
-    let extract_dir = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        asset_path.hash(&mut h);
-        std::env::temp_dir().join(format!(".bevy_openusd_usdz_{:016x}", h.finish()))
-    };
-    let _ = std::fs::remove_dir_all(&extract_dir);
-    std::fs::create_dir_all(&extract_dir)?;
-
-    let mut embedded = HashMap::new();
-    for i in 0..archive.len() {
-        let mut f = archive
-            .by_index(i)
-            .map_err(|e| UsdLoaderError::Usdz(e.to_string()))?;
-        if f.is_dir() {
+/// Project any `UsdSceneRoot` whose asset has finished loading and hasn't been
+/// spawned yet. Exclusive (`&mut World`) because projection spawns a hierarchy
+/// and runs the routes, which need `&mut World`.
+fn spawn_usd_scenes(world: &mut World) {
+    let mut instances = world.remove_non_send::<UsdInstances>().unwrap_or_default();
+    instances.roots.retain(|root, _| world.get::<UsdSceneRoot>(*root).is_some());
+    let orphaned: Vec<_> = world
+        .query_filtered::<(Entity, &UsdSceneInstance), Without<UsdSceneRoot>>()
+        .iter(world)
+        .map(|(entity, instance)| (entity, instance.subtree))
+        .collect();
+    for (entity, subtree) in orphaned {
+        if let Some(subtree) = subtree {
+            world.despawn(subtree);
+        }
+        world
+            .entity_mut(entity)
+            .remove::<(UsdSceneInstance, UsdSceneState)>();
+    }
+    let mut query = world.query::<(Entity, &UsdSceneRoot, Option<&UsdSceneInstance>)>();
+    let pending: Vec<_> = query
+        .iter(world)
+        .map(|(e, r, instance)| (e, r.0.clone(), instance.cloned()))
+        .collect();
+    for (entity, handle, previous) in pending {
+        let overrides = world.get::<UsdInstanceOverrides>(entity).cloned().unwrap_or_default();
+        if let Some(LoadState::Failed(error)) = world
+            .get_resource::<AssetServer>()
+            .and_then(|server| server.get_load_state(handle.id()))
+        {
+            world
+                .entity_mut(entity)
+                .insert(UsdSceneState::Failed(error.to_string()));
             continue;
         }
-        let name = f.name().to_string();
-        let mut buf = Vec::with_capacity(f.size() as usize);
-        f.read_to_end(&mut buf)?;
-
-        // Drop any path traversal ahead of joining onto our extract_dir.
-        let safe_rel = sanitize_archive_name(&name);
-        let dest = extract_dir.join(&safe_rel);
-        if let Some(parent) = dest.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(err) = std::fs::write(&dest, &buf) {
-            bevy::log::warn!(
-                "usdz: failed to spill {name:?} to {}: {err}",
-                dest.display()
-            );
-        }
-
-        // Keep the raw bytes for non-layer entries so the texture
-        // loader's USDZ-embedded fast-path still works (textures get
-        // decoded once + cached as a labeled sub-asset).
-        let lower = name.to_ascii_lowercase();
-        let is_layer =
-            lower.ends_with(".usda") || lower.ends_with(".usdc") || lower.ends_with(".usd");
-        if !is_layer {
-            embedded.insert(name, buf);
-        }
-    }
-
-    let safe_root = sanitize_archive_name(&layer_name);
-    let root_path = extract_dir.join(safe_root);
-    if !root_path.is_file() {
-        return Err(UsdLoaderError::Usdz(format!(
-            "root layer {} missing after extract",
-            layer_name
-        )));
-    }
-    Ok((root_path, embedded))
-}
-
-/// Walk `dir` and append every plain-text USD layer (`.usda`, plus
-/// `.usd` files whose first bytes are `#usda`) onto `out`. Used to
-/// auto-feed extracted USDZ layers into the SkelAnimation sidecar
-/// scan — text layers may carry tuple-valued timeSamples openusd-rs
-/// rejects, but our sidecar text parser handles them.
-fn collect_text_layers_recursive(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
+        // Skip until the asset has actually loaded.
+        let Some((source, textures)) = world
+            .resource::<Assets<UsdScene>>()
+            .get(&handle)
+            .map(|s| (s.source.clone(), s.textures.clone()))
+        else {
+            let state = match world
+                .get_resource::<AssetServer>()
+                .and_then(|server| server.get_load_state(handle.id()))
+            {
+                Some(LoadState::Failed(error)) => UsdSceneState::Failed(error.to_string()),
+                _ => UsdSceneState::Loading,
+            };
+            world.entity_mut(entity).insert(state);
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(ft) = entry.file_type() else { continue };
-            if ft.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !ft.is_file() {
-                continue;
-            }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase())
-                .unwrap_or_default();
-            if ext == "usda" {
-                out.push(path);
-                continue;
-            }
-            if ext == "usd" {
-                // Sniff first bytes — `.usd` can be either USDA (text)
-                // or USDC (binary). The sidecar text parser is text-only.
-                if let Ok(mut f) = std::fs::File::open(&path) {
-                    let mut head = [0u8; 8];
-                    use std::io::Read;
-                    let n = f.read(&mut head).unwrap_or(0);
-                    if head[..n].starts_with(b"#usda") {
-                        out.push(path);
+
+        if previous.as_ref().is_some_and(|old| old.asset == handle.id()
+            && old.revision == source.revision() && old.overrides == overrides)
+        {
+            continue;
+        }
+        let profiled = world.contains_resource::<UsdSceneTimings>();
+        let mut timing = UsdSceneTimings { attempts: 1, ..default() };
+        let opened = timed(profiled, &mut timing.open, || source.open_stage()).map_err(anyhow::Error::from).and_then(|stage| {
+            timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
+            timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
+            Ok(stage)
+        });
+        timing.failures = usize::from(opened.is_err());
+        match opened {
+            Ok(stage) => {
+                let retained = instances.roots.remove(&entity)
+                    .filter(|runtime| runtime.asset == handle.id());
+                if retained.is_none() {
+                    if let Some(subtree) = previous.as_ref().and_then(|old| old.subtree) {
+                        world.despawn(subtree);
                     }
                 }
+                let current = world.get::<UsdInstanceTime>(entity).map_or(0.0, |time| time.current);
+                let previous_time = world.remove_resource::<StageTime>();
+                let previous_animated = world.remove_resource::<AnimatedPrims>();
+                let previous_textures = world.remove_resource::<SnapshotTextures>();
+                world.insert_resource(StageTime { current });
+                world.insert_resource(SnapshotTextures(textures.clone()));
+                let live = LiveStage::new(stage);
+                let map = timed(profiled, &mut timing.projection, || {
+                    if let Some(mut runtime) = retained {
+                        reconcile(world, &live, &mut runtime.map, false);
+                        if let Some(root) = runtime.map.entity("/") {
+                            world.entity_mut(root).insert(Transform::from_rotation(stage_up_axis(&live.stage)));
+                        }
+                        runtime.map
+                    } else {
+                        project_stage_under(world, &live.stage, entity)
+                    }
+                });
+                world.remove_resource::<SnapshotTextures>();
+                world.remove_resource::<StageTime>();
+                world.remove_resource::<AnimatedPrims>();
+                if let Some(previous) = previous_time { world.insert_resource(previous); }
+                if let Some(previous) = previous_animated { world.insert_resource(previous); }
+                if let Some(previous) = previous_textures {
+                    world.insert_resource(previous);
+                }
+                world.entity_mut(entity).insert((
+                    UsdSceneInstance {
+                        asset: handle.id(),
+                        revision: source.revision(),
+                        subtree: map.entity("/"),
+                        overrides,
+                    },
+                    UsdSceneState::Ready,
+                ));
+                instances.roots.insert(entity, InstanceRuntime {
+                    asset: handle.id(), live, map, textures: SnapshotTextures(textures), sampled: current,
+                    subdivision_levels: crate::route::subdivision::current_levels(world),
+                    curve_steps: crate::route::curves::current_geometry_key(world),
+                });
             }
+            Err(error) => {
+                world.entity_mut(entity).insert((
+                    UsdSceneInstance {
+                        asset: handle.id(),
+                        revision: source.revision(),
+                        subtree: previous.and_then(|old| old.subtree),
+                        overrides,
+                    },
+                    UsdSceneState::Failed(error.to_string()),
+                ));
+            }
+        }
+        if profiled && let Some(mut total) = world.get_resource_mut::<UsdSceneTimings>() {
+            total.attempts += timing.attempts;
+            total.failures += timing.failures;
+            total.open += timing.open;
+            total.overrides += timing.overrides;
+            total.validation += timing.validation;
+            total.projection += timing.projection;
         }
     }
+    crate::instance::tick(world, &mut instances);
+    world.insert_non_send(instances);
 }
 
-/// Strip any leading `/` and reject `..` segments before joining the
-/// archive entry name onto the on-disk extraction directory. Prevents
-/// a malicious USDZ from writing outside the tempdir, and normalises
-/// Windows-style separators to `/` (`zip` enforces forward slashes
-/// for new entries but tolerates legacy archives with backslashes).
-fn sanitize_archive_name(name: &str) -> PathBuf {
-    let cleaned = name.replace('\\', "/");
-    let mut out = PathBuf::new();
-    for seg in cleaned.split('/') {
-        match seg {
-            "" | "." => continue,
-            ".." => continue,
-            other => out.push(other),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::UsdPrimRef;
+
+    const ANIMATED: &str = r#"#usda 1.0
+def Xform "Mover" {
+    double3 xformOp:translate.timeSamples = { 0: (0, 0, 0), 10: (10, 0, 0) }
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+def Xform "Old" {}
+"#;
+
+    fn instance_world() -> (World, Handle<UsdScene>) {
+        let mut world = World::new();
+        world.insert_resource(SchemaRegistry::builtin());
+        world.insert_resource(Assets::<Mesh>::default());
+        world.insert_resource(Assets::<StandardMaterial>::default());
+        let mut scenes = Assets::<UsdScene>::default();
+        let handle = scenes.add(UsdScene {
+            source: UsdSource::new("instances.usda", ANIMATED.as_bytes()).unwrap(),
+            textures: default(),
+        });
+        world.insert_resource(scenes);
+        (world, handle)
+    }
+
+    fn instance_entity(world: &World, root: Entity, path: &str) -> Entity {
+        world.non_send::<UsdInstances>().entity(root, path).unwrap()
+    }
+
+    #[test]
+    fn incomplete_composed_source_fails_before_replacing_live_entities() {
+        let (mut world, handle) = instance_world();
+        world.init_resource::<UsdSceneTimings>();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let old = instance_entity(&world, root, "/Old");
+        let good = world.resource::<Assets<UsdScene>>().get(&handle).unwrap().source.clone();
+        let directory = tempfile::tempdir().unwrap();
+        let broken = UsdSource::snapshot(directory.path().join("root.usda"),
+            &b"#usda 1.0\ndef Xform \"Broken\" (prepend references = @missing.usda@</Model>) {}\n"[..]).unwrap();
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = broken;
+        spawn_usd_scenes(&mut world);
+        let Some(UsdSceneState::Failed(error)) = world.get::<UsdSceneState>(root) else { panic!("missing composition must fail") };
+        assert!(error.contains("missing.usda"), "{error}");
+        assert_eq!(instance_entity(&world, root, "/Old"), old);
+        assert!(world.non_send::<UsdInstances>().entity(root, "/Broken").is_none());
+        assert_eq!(world.resource::<UsdSceneTimings>().attempts, 2);
+        assert_eq!(world.resource::<UsdSceneTimings>().failures, 1);
+        let fresh = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        assert!(matches!(world.get::<UsdSceneState>(fresh), Some(UsdSceneState::Failed(_))));
+        assert!(world.non_send::<UsdInstances>().stage(fresh).is_none());
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = good;
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        assert_eq!(instance_entity(&world, root, "/Old"), old);
+        assert_eq!(world.get::<UsdSceneState>(fresh), Some(&UsdSceneState::Ready));
+        assert_ne!(instance_entity(&world, fresh, "/Old"), old);
+    }
+
+    #[test]
+    fn typed_component_overrides_survive_source_reload_and_removal() {
+        #[derive(Component, Reflect, Default, Debug, PartialEq)]
+        #[reflect(Component, Default)]
+        struct Score { value: f64 }
+        #[derive(Component)]
+        struct RuntimeMarker;
+        let (mut world, handle) = instance_world();
+        let registry = AppTypeRegistry::default();
+        registry.write().register::<Score>();
+        world.insert_resource(registry.clone());
+        let source = |value| UsdSource::new("instances.usda", format!("#usda 1.0\ndef Xform \"Model\" {{ custom double bevy:Score:value = {value}\n}}\n").into_bytes()).unwrap();
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = source(10);
+        let mut overrides = UsdInstanceOverrides::default();
+        overrides.set_component(&registry.read(), "/Model", &Score { value: 7.0 }).unwrap();
+        overrides.set_component(&registry.read(), "/Model", &Score { value: 8.0 }).unwrap();
+        assert_eq!(overrides.attributes.len(), 1);
+        let a = world.spawn((UsdSceneRoot(handle.clone()), overrides)).id();
+        let b = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let ea = instance_entity(&world, a, "/Model");
+        let eb = instance_entity(&world, b, "/Model");
+        world.entity_mut(ea).insert(RuntimeMarker);
+        assert_eq!(world.get::<Score>(ea), Some(&Score { value: 8.0 }));
+        assert_eq!(world.get::<Score>(eb), Some(&Score { value: 10.0 }));
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = source(20);
+        spawn_usd_scenes(&mut world);
+        assert_eq!(instance_entity(&world, a, "/Model"), ea);
+        assert_eq!(instance_entity(&world, b, "/Model"), eb);
+        assert_eq!(world.get::<Score>(ea), Some(&Score { value: 8.0 }));
+        assert_eq!(world.get::<Score>(eb), Some(&Score { value: 20.0 }));
+        world.entity_mut(a).insert(UsdInstanceOverrides::default());
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<Score>(ea), Some(&Score { value: 20.0 }));
+        assert!(world.get::<RuntimeMarker>(ea).is_some());
+    }
+
+    #[test]
+    fn source_reload_and_scrub_detect_new_animation_without_a_shared_index() {
+        let (mut world, handle) = instance_world();
+        let static_source = UsdSource::snapshot("instances.usda", &b"#usda 1.0\ndef Xform \"Mover\" {}\n"[..]).unwrap();
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = static_source.clone();
+        let sentinel = std::collections::HashSet::from(["/OtherSession".to_string()]);
+        world.insert_resource(AnimatedPrims(sentinel.clone()));
+        world.insert_resource(StageTime { current: 999.0 });
+        let a = world.spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 2.0 })).id();
+        let b = world.spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 8.0 })).id();
+        spawn_usd_scenes(&mut world);
+        let ea = instance_entity(&world, a, "/Mover");
+        let eb = instance_entity(&world, b, "/Mover");
+        for animated in [true, false, true] {
+            world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = if animated {
+                UsdSource::snapshot("instances.usda", ANIMATED.as_bytes()).unwrap()
+            } else { static_source.clone() };
+            world.get_mut::<UsdInstanceTime>(a).unwrap().current = 2.0;
+            world.get_mut::<UsdInstanceTime>(b).unwrap().current = 8.0;
+            spawn_usd_scenes(&mut world);
+            assert_eq!(world.get::<Transform>(ea).unwrap().translation.x, if animated { 2.0 } else { 0.0 });
+            assert_eq!(world.get::<Transform>(eb).unwrap().translation.x, if animated { 8.0 } else { 0.0 });
+            world.get_mut::<UsdInstanceTime>(a).unwrap().current = 5.0;
+            spawn_usd_scenes(&mut world);
+            assert_eq!(world.get::<Transform>(ea).unwrap().translation.x, if animated { 5.0 } else { 0.0 });
+            assert_eq!(world.get::<Transform>(eb).unwrap().translation.x, if animated { 8.0 } else { 0.0 });
+            assert_eq!(instance_entity(&world, a, "/Mover"), ea);
+            assert_eq!(instance_entity(&world, b, "/Mover"), eb);
+            assert_eq!(world.resource::<StageTime>().current, 999.0);
+            assert_eq!(world.resource::<AnimatedPrims>().0, sentinel);
+            assert_eq!(world.get::<UsdSceneState>(a), Some(&UsdSceneState::Ready));
+            assert_eq!(world.get::<UsdSceneState>(b), Some(&UsdSceneState::Ready));
         }
     }
-    out
-}
 
-/// `true` if `bytes` look like a text USDA file (starts with `#usda`,
-/// ignoring leading BOM / whitespace). Used to decide whether to run the
-/// metadata stripper on a `.usd` file with ambiguous extension.
-fn is_text_usd(bytes: &[u8]) -> bool {
-    let start = bytes
-        .iter()
-        .position(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 0xEF | 0xBB | 0xBF))
-        .unwrap_or(bytes.len());
-    bytes[start..].starts_with(b"#usda")
-}
+    #[test]
+    fn live_instances_have_independent_time_and_edits() {
+        let (mut world, handle) = instance_world();
+        world.insert_resource(StageTime { current: 999.0 });
+        let a = world.spawn(UsdSceneRoot(handle.clone())).id();
+        let b = world.spawn((UsdSceneRoot(handle), UsdInstanceTime { current: 10.0 })).id();
+        spawn_usd_scenes(&mut world);
+        let mover_a = instance_entity(&world, a, "/Mover");
+        let mover_b = instance_entity(&world, b, "/Mover");
+        assert_ne!(mover_a, mover_b);
+        assert_eq!(world.get::<Transform>(mover_a).unwrap().translation.x, 0.0);
+        assert_eq!(world.get::<Transform>(mover_b).unwrap().translation.x, 10.0);
+        world.get_mut::<UsdInstanceTime>(a).unwrap().current = 5.0;
+        crate::authoring::define_prim(world.non_send::<UsdInstances>().stage(a).unwrap(), "/OnlyA", "Xform").unwrap();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<Transform>(mover_a).unwrap().translation.x, 5.0);
+        assert_eq!(world.get::<Transform>(mover_b).unwrap().translation.x, 10.0);
+        assert!(world.non_send::<UsdInstances>().entity(a, "/OnlyA").is_some());
+        assert!(world.non_send::<UsdInstances>().entity(b, "/OnlyA").is_none());
+        assert_eq!(world.resource::<StageTime>().current, 999.0);
+        assert!(!world.contains_resource::<AnimatedPrims>());
+        assert!(!world.contains_resource::<SnapshotTextures>());
+    }
 
-/// Collect every `BasisCurves` + `Points` prim with its decoded data.
-/// Used by the viewer's live-tuning system so sliding the radius /
-/// ring-segments / point-scale rebuilds meshes in place — no reload.
-fn collect_curves_and_points(
-    stage: &openusd::Stage,
-) -> (
-    HashMap<String, usd_schema::geom::ReadCurves>,
-    HashMap<String, usd_schema::geom::ReadPoints>,
+    #[test]
+    fn reload_preserves_matching_entities_and_runtime_components() {
+        #[derive(Component, PartialEq, Debug)]
+        struct Runtime(u32);
+        let (mut world, handle) = instance_world();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let mover = instance_entity(&world, root, "/Mover");
+        let old = instance_entity(&world, root, "/Old");
+        world.entity_mut(mover).insert(Runtime(42));
+        let replacement = ANIMATED.replace("Old", "New");
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", replacement.as_bytes()).unwrap();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(instance_entity(&world, root, "/Mover"), mover);
+        assert_eq!(world.get::<Runtime>(mover), Some(&Runtime(42)));
+        assert!(world.get_entity(old).is_err());
+        assert!(world.non_send::<UsdInstances>().entity(root, "/New").is_some());
+        world.despawn(root);
+        spawn_usd_scenes(&mut world);
+        assert!(world.non_send::<UsdInstances>().is_empty());
+    }
+
+    #[test]
+    fn invalid_arc_offsets_fail_without_installing_identity_fallback() {
+        let (mut world, handle) = instance_world();
+        let original = world.resource::<Assets<UsdScene>>().get(&handle).unwrap().source.clone();
+        let roots = [world.spawn(UsdSceneRoot(handle.clone())).id(), world.spawn(UsdSceneRoot(handle.clone())).id()];
+        spawn_usd_scenes(&mut world);
+        let entities = roots.map(|root| instance_entity(&world, root, "/Mover"));
+        for entity in entities { world.entity_mut(entity).insert(Name::new("runtime name")); }
+        for (arc, scale) in [("references", -1), ("references", 0), ("payload", -1), ("payload", 0),
+            ("sublayers", -1), ("sublayers", 0)] {
+            let text = format!("{ANIMATED}\nclass Xform \"Template\" {{ double score.timeSamples = {{0: 1, 10: 3}} }}\ndef Xform \"Invalid\" (prepend {arc} = </Template> (offset = 10; scale = {scale})) {{}}\n");
+            let source = if arc == "sublayers" {
+                let layer = UsdSource::snapshot("offset-layer.usda", ANIMATED.as_bytes()).unwrap();
+                UsdSource::snapshot("instances.usda", format!(
+                    "#usda 1.0\n(subLayers = [@offset-layer.usda@ (offset = 10; scale = {scale})])\n"
+                ).into_bytes()).unwrap().with_dependency(&layer).unwrap()
+            } else { UsdSource::snapshot("instances.usda", text.into_bytes()).unwrap() };
+            world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+                source;
+            let fresh = world.spawn(UsdSceneRoot(handle.clone())).id();
+            spawn_usd_scenes(&mut world);
+            for root in roots.into_iter().chain([fresh]) {
+                let Some(UsdSceneState::Failed(error)) = world.get::<UsdSceneState>(root) else { panic!("invalid {arc} offset {scale} accepted"); };
+                assert!(error.to_lowercase().contains("offset"), "{error}");
+                assert!(world.non_send::<UsdInstances>().entity(root, "/Invalid").is_none());
+            }
+            assert!(world.non_send::<UsdInstances>().entity(fresh, "/Mover").is_none());
+            world.despawn(fresh);
+            for (root, entity) in roots.into_iter().zip(entities) {
+                assert_eq!(instance_entity(&world, root, "/Mover"), entity);
+                assert_eq!(world.get::<Name>(entity).unwrap().as_str(), "runtime name");
+            }
+        }
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = original;
+        spawn_usd_scenes(&mut world);
+        for (root, entity) in roots.into_iter().zip(entities) {
+            assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+            assert_eq!(instance_entity(&world, root, "/Mover"), entity);
+            assert_eq!(world.get::<Name>(entity).unwrap().as_str(), "runtime name");
+        }
+    }
+
+    #[test]
+    fn failed_reload_keeps_last_good_live_stage() {
+        let (mut world, handle) = instance_world();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let mover = instance_entity(&world, root, "/Mover");
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", &b"not USD"[..]).unwrap();
+        spawn_usd_scenes(&mut world);
+        assert!(matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_))));
+        assert_eq!(instance_entity(&world, root, "/Mover"), mover);
+        world.get_mut::<UsdInstanceTime>(root).unwrap().current = 10.0;
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<Transform>(mover).unwrap().translation.x, 10.0);
+    }
+
+    #[test]
+    fn instance_opinions_are_isolated_reloadable_and_removable() {
+        use crate::instance::UsdAttributeOverride;
+        let (mut world, handle) = instance_world();
+        let source = r#"#usda 1.0
+def Xform "Model" (
+    variants = { string shape = "a" }
+    prepend variantSets = "shape"
 ) {
-    use openusd::sdf::Path;
-    let mut curves = HashMap::new();
-    let mut points = HashMap::new();
-    let _ = stage.traverse(|path: &Path| {
-        let type_name: Option<String> = stage
-            .field::<String>(path.clone(), "typeName")
-            .ok()
-            .flatten();
-        match type_name.as_deref() {
-            Some("BasisCurves") => {
-                if let Ok(Some(read)) = usd_schema::geom::read_curves(stage, path) {
-                    curves.insert(path.as_str().to_string(), read);
-                }
-            }
-            Some("Points") => {
-                if let Ok(Some(read)) = usd_schema::geom::read_points(stage, path) {
-                    points.insert(path.as_str().to_string(), read);
-                }
-            }
-            _ => {}
-        }
-    });
-    (curves, points)
+    variantSet "shape" = {
+        "a" { def Xform "A" {} }
+        "b" { def Xform "B" {} }
+    }
 }
+"#;
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", source.as_bytes()).unwrap();
+        let a = world.spawn(UsdSceneRoot(handle.clone())).id();
+        let b = world.spawn((UsdSceneRoot(handle.clone()), UsdInstanceOverrides {
+            variants: vec![("/Model".into(), "shape".into(), "b".into())],
+            attributes: vec![UsdAttributeOverride {
+                prim: "/Model".into(), name: "visibility".into(), type_name: "token".into(),
+                value: openusd::sdf::Value::Token("invisible".into()),
+            }],
+        })).id();
+        spawn_usd_scenes(&mut world);
+        assert!(world.non_send::<UsdInstances>().entity(a, "/Model/A").is_some());
+        assert!(world.non_send::<UsdInstances>().entity(a, "/Model/B").is_none());
+        let variant_b = instance_entity(&world, b, "/Model/B");
+        let model_b = instance_entity(&world, b, "/Model");
+        assert_eq!(world.get::<Visibility>(model_b), Some(&Visibility::Hidden));
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", source.as_bytes()).unwrap();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(instance_entity(&world, b, "/Model/B"), variant_b);
+        assert_eq!(world.get::<Visibility>(model_b), Some(&Visibility::Hidden));
+        world.entity_mut(b).insert(UsdInstanceOverrides::default());
+        spawn_usd_scenes(&mut world);
+        assert_eq!(instance_entity(&world, b, "/Model"), model_b);
+        assert!(world.get_entity(variant_b).is_err());
+        assert!(world.non_send::<UsdInstances>().entity(b, "/Model/A").is_some());
+        assert_ne!(world.get::<Visibility>(model_b), Some(&Visibility::Hidden));
+    }
 
-/// Scan every prim for `xformOp:*.timeSamples` and preconvert the
-/// samples. Static prims (no authored time samples) stay out of the
-/// map — the runtime cost is proportional to animated-prim count, not
-/// total stage size.
-fn collect_animated_prims(
-    stage: &openusd::Stage,
-) -> HashMap<String, usd_schema::anim::AnimatedPrim> {
-    use openusd::sdf::Path;
-    let mut out = HashMap::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(record)) = usd_schema::anim::read_animated_prim(stage, path) {
-            out.insert(path.as_str().to_string(), record);
-        }
-    });
-    out
-}
+    #[test]
+    fn playback_uses_stage_rate_and_independent_controls() {
+        let (mut world, handle) = instance_world();
+        let a = world.spawn((UsdSceneRoot(handle.clone()), UsdPlayback {
+            playing: true, range: Some((0.0, 10.0)), ..default()
+        })).id();
+        let b = world.spawn((UsdSceneRoot(handle), UsdInstanceTime { current: 8.0 },
+            UsdPlayback { playing: true, speed: -2.0, looping: false,
+                range: Some((0.0, 10.0)) })).id();
+        spawn_usd_scenes(&mut world);
+        let a_entity = instance_entity(&world, a, "/Mover");
+        let b_entity = instance_entity(&world, b, "/Mover");
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_millis(250));
+        world.insert_resource(time);
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<Transform>(a_entity).unwrap().translation.x, 6.0);
+        assert_eq!(world.get::<Transform>(b_entity).unwrap().translation.x, 0.0);
+        assert!(!world.get::<UsdPlayback>(b).unwrap().playing);
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<Transform>(a_entity).unwrap().translation.x, 2.0);
+        world.get_mut::<UsdPlayback>(a).unwrap().playing = false;
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<Transform>(a_entity).unwrap().translation.x, 2.0);
+    }
 
-/// Walk the stage and collect every `Skeleton`, `SkelRoot`, and
-/// mesh-with-`SkelBindingAPI` prim into three parallel vectors. The
-/// readers return `None` for mismatched types so we rely on dispatch
-/// order: try each reader on each prim, record what sticks.
-fn collect_skel(
-    stage: &openusd::Stage,
-) -> (
-    Vec<usd_schema::skel::ReadSkeleton>,
-    Vec<usd_schema::skel::ReadSkelRoot>,
-    Vec<usd_schema::skel::ReadSkelBinding>,
-) {
-    use openusd::sdf::Path;
-    let mut skeletons = Vec::new();
-    let mut skel_roots = Vec::new();
-    let mut skel_bindings = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(s)) = usd_schema::skel::read_skeleton(stage, path) {
-            skeletons.push(s);
-            return;
-        }
-        if let Ok(Some(r)) = usd_schema::skel::read_skel_root(stage, path) {
-            skel_roots.push(r);
-            // `SkelRoot` subtrees can contain Meshes that also author
-            // `SkelBindingAPI` — don't early-return, let the next
-            // traversal step recurse through children.
-        }
-        if let Ok(Some(b)) = usd_schema::skel::read_skel_binding(stage, path) {
-            skel_bindings.push(b);
-        }
-    });
-    (skeletons, skel_roots, skel_bindings)
-}
+    #[test]
+    fn failed_handle_replacement_does_not_transfer_runtime_components() {
+        #[derive(Component)]
+        struct Runtime;
+        let (mut world, first) = instance_world();
+        let second = world.resource_mut::<Assets<UsdScene>>().add(UsdScene {
+            source: UsdSource::new("replacement.usda", &b"invalid"[..]).unwrap(),
+            textures: default(),
+        });
+        let root = world.spawn(UsdSceneRoot(first)).id();
+        spawn_usd_scenes(&mut world);
+        let old = instance_entity(&world, root, "/Mover");
+        world.entity_mut(old).insert(Runtime);
+        world.entity_mut(root).insert(UsdSceneRoot(second.clone()));
+        spawn_usd_scenes(&mut world);
+        assert!(matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_))));
+        assert_eq!(instance_entity(&world, root, "/Mover"), old);
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&second).unwrap().source =
+            UsdSource::new("replacement.usda", ANIMATED.as_bytes()).unwrap();
+        spawn_usd_scenes(&mut world);
+        let new = instance_entity(&world, root, "/Mover");
+        assert_ne!(old, new);
+        assert!(world.get_entity(old).is_err());
+        assert!(world.get::<Runtime>(new).is_none());
+    }
 
-/// Collect `UsdClipsAPI` sets authored on any prim. Empty entries
-/// are filtered out so only prims that actually author clip
-/// metadata show up in the map.
-fn collect_clip_sets(
-    stage: &openusd::Stage,
-) -> std::collections::HashMap<String, Vec<usd_schema::clips::ReadClipSet>> {
-    use openusd::sdf::Path;
-    let mut out = std::collections::HashMap::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(sets) = usd_schema::clips::read_clips(stage, path) {
-            if !sets.is_empty() {
-                out.insert(path.as_str().to_string(), sets);
-            }
-        }
-    });
-    out
-}
+    #[test]
+    fn asset_server_reload_preserves_two_live_instances_and_root_ownership() {
+        #[derive(Component)]
+        struct Runtime;
+        let (mut app, directory, notify) = watched_memory_app();
+        directory.insert_asset(Path::new("live.usda"), ANIMATED.as_bytes());
+        directory.insert_asset(Path::new("replacement.usda"),
+            b"#usda 1.0\ndef Xform \"Replacement\" {}\n".as_slice());
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://live.usda");
+        let a = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+        let b = app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 10.0 })).id();
+        let unrelated = app.world_mut().spawn(ChildOf(a)).id();
+        tick_until(&mut app, |world| [a,b].iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let mover_a = instance_entity(app.world(), a, "/Mover");
+        let mover_b = instance_entity(app.world(), b, "/Mover");
+        app.world_mut().entity_mut(mover_a).insert(Runtime);
+        let revision = app.world().get::<UsdSceneInstance>(a).unwrap().revision;
+        directory.insert_asset(Path::new("live.usda"), ANIMATED.replace("Old", "New").into_bytes());
+        notify("live.usda");
+        tick_until(&mut app, |world| [a,b].iter().all(|root|
+            world.get::<UsdSceneInstance>(*root).is_some_and(|state| state.revision != revision)));
+        assert_eq!(instance_entity(app.world(), a, "/Mover"), mover_a);
+        assert_eq!(instance_entity(app.world(), b, "/Mover"), mover_b);
+        assert!(app.world().get::<Runtime>(mover_a).is_some());
+        assert_eq!(app.world().get::<Transform>(mover_b).unwrap().translation.x, 10.0);
+        assert!(app.world().non_send::<UsdInstances>().entity(a, "/New").is_some());
+        let replacement = app.world().resource::<AssetServer>().load("fixture://replacement.usda");
+        app.world_mut().entity_mut(a).insert(UsdSceneRoot(replacement));
+        tick_until(&mut app, |world| world.non_send::<UsdInstances>().entity(a, "/Replacement").is_some());
+        assert!(app.world().get_entity(mover_a).is_err());
+        assert!(app.world().get_entity(mover_b).is_ok());
+        assert!(app.world().get_entity(unrelated).is_ok());
+        app.world_mut().entity_mut(a).remove::<UsdSceneRoot>();
+        app.update();
+        assert!(app.world().non_send::<UsdInstances>().stage(a).is_none());
+        assert!(app.world().get_entity(unrelated).is_ok());
+        app.world_mut().despawn(b);
+        app.update();
+        assert!(app.world().non_send::<UsdInstances>().is_empty());
+    }
 
-/// Collect every UsdLux light prim that authored at least one of the
-/// linking relationships (`light:link`, `shadow:link`, or
-/// `light:filters`). Surfaces the authoring intent so consumers can
-/// decide how to honour it.
-fn collect_light_linking_prims(stage: &openusd::Stage) -> Vec<String> {
-    use openusd::sdf::Path;
-    let mut out = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(read)) = usd_schema::lux::read_light(stage, path) {
-            let common = match &read {
-                usd_schema::lux::ReadLight::Distant(d) => &d.common,
-                usd_schema::lux::ReadLight::Sphere(s) => &s.common,
-                usd_schema::lux::ReadLight::Rect(r) => &r.common,
-                usd_schema::lux::ReadLight::Disk(d) => &d.common,
-                usd_schema::lux::ReadLight::Cylinder(c) => &c.common,
-                usd_schema::lux::ReadLight::Dome(d) => &d.common,
-            };
-            if !common.light_link_targets.is_empty()
-                || !common.shadow_link_targets.is_empty()
-                || !common.light_filters.is_empty()
+    fn memory_app() -> (App, bevy::asset::io::memory::Dir) {
+        let (app, directory, _) = watched_memory_app();
+        (app, directory)
+    }
+
+    #[test]
+    fn bevy_reload_serializes_source_reads_without_blocking_other_sources() {
+        exercise_serialized_reload(true);
+    }
+
+    #[test]
+    fn bevy_reload_serializes_older_successful_source_reads() {
+        exercise_serialized_reload(false);
+    }
+
+    fn exercise_serialized_reload(fail_older: bool) {
+        use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
+
+        #[derive(Asset, TypePath)]
+        struct Probe(usize);
+
+        #[derive(Default)]
+        struct Gate {
+            fail_older: bool,
+            calls: AtomicUsize,
+            release: [AtomicBool; 2],
+            waker: [Mutex<Option<std::task::Waker>>; 2],
+        }
+
+        #[derive(TypePath)]
+        struct ProbeLoader(Arc<Gate>);
+
+        impl AssetLoader for ProbeLoader {
+            type Asset = Probe;
+            type Settings = ();
+            type Error = std::io::Error;
+
+            async fn load(&self, _: &mut dyn Reader, _: &(), context: &mut LoadContext<'_>)
+                -> Result<Probe, std::io::Error>
             {
-                out.push(path.as_str().to_string());
-            }
-        }
-    });
-    out
-}
-
-/// Collect every `UsdGeomMesh` whose `subdivisionScheme` is not
-/// `"none"`. Downstream consumers that run their own subdivision pass
-/// (Bevy CPU tessellator, offline exporter) can query this list to
-/// know which meshes to tesselate.
-fn collect_subdivision_prims(
-    stage: &openusd::Stage,
-) -> Vec<(String, usd_schema::geom::SubdivScheme)> {
-    use openusd::sdf::Path;
-    let mut out = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        let type_name: Option<String> = stage
-            .field::<String>(path.clone(), "typeName")
-            .ok()
-            .flatten();
-        if type_name.as_deref() != Some("Mesh") {
-            return;
-        }
-        if let Ok(Some(read)) = usd_schema::geom::read_mesh(stage, path) {
-            if read.subdivision_scheme.is_subdivision() {
-                out.push((path.as_str().to_string(), read.subdivision_scheme));
-            }
-        }
-    });
-    out
-}
-
-/// Scan every prim for user-authored metadata:
-///   - `custom` attributes (including `userProperties:*` namespaces).
-///   - `customData = { ... }` dictionary on the prim.
-///   - `assetInfo = { ... }` dictionary on the prim.
-/// A prim ends up in the output map only when at least ONE of those
-/// three channels has content.
-fn collect_custom_attrs(
-    stage: &openusd::Stage,
-) -> HashMap<String, crate::prim_ref::UsdCustomAttrs> {
-    use openusd::sdf::Path;
-    let mut out = HashMap::new();
-    let _ = stage.traverse(|path: &Path| {
-        let entries = usd_schema::geom::read_custom_attrs(stage, path).unwrap_or_default();
-        let custom_data = usd_schema::geom::read_custom_data(stage, path)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let asset_info = usd_schema::geom::read_asset_info(stage, path)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let record = crate::prim_ref::UsdCustomAttrs {
-            entries,
-            custom_data,
-            asset_info,
-        };
-        if !record.is_empty() {
-            out.insert(path.as_str().to_string(), record);
-        }
-    });
-    out
-}
-
-/// Walk the stage for UsdPhysics content. Collect every prim that
-/// applies `PhysicsRigidBodyAPI`, every `PhysicsScene`, and every
-/// recognised `Physics*Joint`. The plugin doesn't simulate — these
-/// surfaces let downstream physics backends consume authored data
-/// without rewalking the stage themselves.
-struct PhysicsSummary {
-    rigid_body_prims: Vec<String>,
-    physics_scene_prims: Vec<String>,
-    joints: Vec<openusd::physics::ReadJoint>,
-    articulation_root_prims: Vec<String>,
-    physics_material_prims: Vec<String>,
-    collision_group_prims: Vec<String>,
-    filtered_pairs_prims: Vec<String>,
-    collider_prims: Vec<String>,
-}
-
-/// Single top-of-stage sweep that classifies every physics-bearing
-/// prim and decodes joint specs. Used by the loader to populate
-/// `UsdAsset` summary lists for the viewer info panel; the actual ECS
-/// projection happens in `physics_attach::attach_physics_to_prim`.
-fn collect_physics(stage: &openusd::Stage) -> PhysicsSummary {
-    use openusd::physics as ph;
-    let prims = ph::find_physics_prims(stage).unwrap_or_default();
-
-    let mut joints = Vec::with_capacity(prims.joints.len());
-    for path_str in &prims.joints {
-        let Ok(p) = openusd::sdf::path(path_str) else {
-            continue;
-        };
-        if let Ok(Some(j)) = ph::read_joint(stage, &p) {
-            joints.push(j);
-        }
-    }
-
-    PhysicsSummary {
-        rigid_body_prims: prims.rigid_bodies,
-        physics_scene_prims: prims.scenes,
-        joints,
-        articulation_root_prims: prims.articulation_roots,
-        physics_material_prims: prims.materials,
-        collision_group_prims: prims.collision_groups,
-        filtered_pairs_prims: prims.filtered_pairs,
-        collider_prims: prims.colliders,
-    }
-}
-
-/// Walk the stage and collect every `UsdRender.*` prim into three
-/// parallel vectors. Readers return `None` on type mismatch so we try
-/// each reader on each prim.
-fn collect_render(
-    stage: &openusd::Stage,
-) -> (
-    Vec<usd_schema::render::ReadRenderSettings>,
-    Vec<usd_schema::render::ReadRenderProduct>,
-    Vec<usd_schema::render::ReadRenderVar>,
-) {
-    use openusd::sdf::Path;
-    let mut settings = Vec::new();
-    let mut products = Vec::new();
-    let mut vars = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(s)) = usd_schema::render::read_render_settings(stage, path) {
-            settings.push(s);
-            return;
-        }
-        if let Ok(Some(p)) = usd_schema::render::read_render_product(stage, path) {
-            products.push(p);
-            return;
-        }
-        if let Ok(Some(v)) = usd_schema::render::read_render_var(stage, path) {
-            vars.push(v);
-        }
-    });
-    (settings, products, vars)
-}
-
-/// Stage-level timeline metadata. `startTimeCode` / `endTimeCode` default
-/// to `0..1` (a single frame) when not authored, matching Pixar's USD.
-/// `timeCodesPerSecond` defaults to 24 fps (or falls back to
-/// `framesPerSecond` which some authoring tools use instead).
-fn read_stage_timeline(stage: &openusd::Stage) -> (f64, f64, f64) {
-    use openusd::sdf::{Path, Value};
-    let read_f64 = |key: &str| -> Option<f64> {
-        match stage.field::<Value>(Path::abs_root(), key).ok().flatten() {
-            Some(Value::Double(d)) => Some(d),
-            Some(Value::Float(f)) => Some(f as f64),
-            Some(Value::Int(i)) => Some(i as f64),
-            Some(Value::TimeCode(d)) => Some(d),
-            _ => None,
-        }
-    };
-    let start = read_f64("startTimeCode").unwrap_or(0.0);
-    let end = read_f64("endTimeCode").unwrap_or(start.max(1.0));
-    let tcps = read_f64("timeCodesPerSecond")
-        .or_else(|| read_f64("framesPerSecond"))
-        .unwrap_or(24.0)
-        .max(1e-3);
-    (start, end, tcps)
-}
-
-fn has_authored_timeline(stage: &openusd::Stage) -> bool {
-    use openusd::sdf::{Path, Value};
-    let has_numeric = |key: &str| -> bool {
-        matches!(
-            stage.field::<Value>(Path::abs_root(), key).ok().flatten(),
-            Some(Value::Double(_) | Value::Float(_) | Value::Int(_) | Value::TimeCode(_))
-        )
-    };
-    has_numeric("startTimeCode") || has_numeric("endTimeCode")
-}
-
-fn collect_stage_skel_animations(
-    stage: &openusd::Stage,
-) -> Vec<usd_schema::skel_anim_text::ReadSkelAnimText> {
-    use openusd::sdf::Path;
-    let mut out = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(anim)) = usd_schema::skel::read_skel_animation_stage(stage, path) {
-            let has_samples = !anim.translations.is_empty()
-                || !anim.rotations.is_empty()
-                || !anim.scales.is_empty()
-                || !anim.blend_shape_weights.is_empty();
-            if has_samples {
-                out.push(anim);
-            }
-        }
-    });
-    out
-}
-
-fn synthesize_anim_variant_set(
-    variants: &mut HashMap<String, Vec<VariantSet>>,
-    default_prim: Option<&str>,
-    skel_animations: &HashMap<String, usd_schema::skel_anim_text::ReadSkelAnimText>,
-    effective_variants: &[VariantSelection],
-) {
-    if skel_animations.is_empty() {
-        return;
-    }
-    let Some(default_prim) = default_prim else {
-        return;
-    };
-    let prim_path = format!("/{default_prim}");
-    let mut options: Vec<String> = skel_animations.keys().cloned().collect();
-    options.sort();
-
-    let selected = effective_variants
-        .iter()
-        .find(|v| v.prim_path == prim_path && v.set_name == "anim")
-        .map(|v| v.option.clone())
-        .or_else(|| {
-            if options.iter().any(|o| o == "Stand_00") {
-                Some("Stand_00".to_string())
-            } else {
-                options.first().cloned()
-            }
-        });
-
-    let sets = variants.entry(prim_path).or_default();
-    if let Some(existing) = sets.iter_mut().find(|set| set.name == "anim") {
-        if existing.options.is_empty() {
-            existing.options = options;
-        }
-        if existing.selection.is_none() {
-            existing.selection = selected;
-        }
-    } else {
-        sets.push(VariantSet {
-            name: "anim".to_string(),
-            selection: selected,
-            options,
-        });
-    }
-}
-
-/// Walk the composed stage and collect every `UsdGeom.Camera` prim. The
-/// viewer surfaces these as a mount-able dropdown.
-fn collect_cameras(stage: &openusd::Stage) -> Vec<StageCamera> {
-    use openusd::sdf::Path;
-    let mut out = Vec::new();
-    let _ = stage.traverse(|path: &Path| {
-        if let Ok(Some(read)) = usd_schema::camera::read_camera(stage, path) {
-            out.push(StageCamera {
-                path: path.as_str().to_string(),
-                data: read,
-            });
-        }
-    });
-    out
-}
-
-/// Walk the composed stage looking for prims that author `variantSetNames`
-/// and collect the current selection per set. Exposed on `UsdAsset` for UI
-/// surfacing; switching lands in M6.1 via a session layer.
-fn collect_variants(stage: &openusd::Stage) -> HashMap<String, Vec<VariantSet>> {
-    use openusd::sdf::{Path, Value};
-
-    let mut out: HashMap<String, Vec<VariantSet>> = HashMap::new();
-
-    let _ = stage.traverse(|path: &Path| {
-        // `variantSetNames` (TokenListOp) holds the set names authored here.
-        let names: Vec<String> = match stage
-            .field::<Value>(path.clone(), "variantSetNames")
-            .ok()
-            .flatten()
-        {
-            Some(Value::TokenListOp(op)) => op.flatten(),
-            Some(Value::TokenVec(v)) => v,
-            _ => return,
-        };
-        if names.is_empty() {
-            return;
-        }
-
-        // `variantSelection` is a HashMap<set_name, selection_value>.
-        let selections = match stage
-            .field::<Value>(path.clone(), "variantSelection")
-            .ok()
-            .flatten()
-        {
-            Some(Value::VariantSelectionMap(m)) => m,
-            _ => Default::default(),
-        };
-
-        let sets: Vec<VariantSet> = names
-            .into_iter()
-            .map(|name| {
-                let selection = selections.get(&name).cloned();
-                // Enumerate this set's variant options. They're stored as
-                // `variantChildren` (TokenVec) on the variant-set path
-                // `/Prim{setName=}` (empty selection = the container).
-                let set_path = path.append_variant_selection(&name, "");
-                let options: Vec<String> = match stage
-                    .field::<Value>(set_path, "variantChildren")
-                    .ok()
-                    .flatten()
-                {
-                    Some(Value::TokenVec(v)) => v,
-                    _ => Vec::new(),
-                };
-                VariantSet {
-                    name,
-                    selection,
-                    options,
+                if context.path().path() == Path::new("other.reload_probe") {
+                    return Ok(Probe(42));
                 }
-            })
-            .collect();
+                let call = self.0.calls.fetch_add(1, Ordering::SeqCst);
+                if call == 1 || call == 3 {
+                    let slot = usize::from(call == 3);
+                    std::future::poll_fn(|cx| {
+                        let mut waker = self.0.waker[slot].lock().unwrap();
+                        if self.0.release[slot].load(Ordering::SeqCst) {
+                            std::task::Poll::Ready(())
+                        } else {
+                            *waker = Some(cx.waker().clone());
+                            std::task::Poll::Pending
+                        }
+                    }).await;
+                    if call == 1 && self.0.fail_older {
+                        return Err(std::io::Error::other("older load failed"));
+                    }
+                }
+                Ok(Probe(call))
+            }
 
-        if !sets.is_empty() {
-            out.insert(path.as_str().to_string(), sets);
+            fn extensions(&self) -> &[&str] { &["reload_probe"] }
         }
-    });
 
-    out
-}
+        let (mut app, directory) = memory_app();
+        let gate = Arc::new(Gate { fail_older, ..default() });
+        app.init_asset::<Probe>().register_asset_loader(ProbeLoader(gate.clone()));
+        directory.insert_asset_text(Path::new("root.reload_probe"), "probe");
+        let server = app.world().resource::<AssetServer>().clone();
+        let handle: Handle<Probe> = server.load("fixture://root.reload_probe");
+        tick_until(&mut app, |world| world.resource::<Assets<Probe>>().get(&handle).is_some());
 
-/// Build a unique tempfile path for an asset. The filename embeds a hash of
-/// the asset path so concurrent loads don't collide and so hot-reload reuses
-/// the same slot.
-fn tempfile_for(asset_path: &Path, ext: &str) -> PathBuf {
-    tempfile_in(&std::env::temp_dir(), asset_path, ext)
-}
+        server.reload("fixture://root.reload_probe");
+        tick_until(&mut app, |_| gate.calls.load(Ordering::SeqCst) >= 2);
+        server.reload("fixture://root.reload_probe");
+        directory.insert_asset_text(Path::new("other.reload_probe"), "other");
+        let other: Handle<Probe> = server.load("fixture://other.reload_probe");
+        tick_until(&mut app, |world| world.resource::<Assets<Probe>>().get(&other).is_some());
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 2);
 
-/// Tempfile slot for the per-load session layer. Hash covers the asset
-/// path, every authored selection, and the emitted USDA text so two
-/// concurrent loads with different variant choices get different
-/// filenames and never clobber each other's session layer mid-compose.
-fn tempfile_session(
-    dir: &Path,
-    asset_path: &Path,
-    selections: &[VariantSelection],
-    text: &str,
-) -> PathBuf {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    asset_path.hash(&mut h);
-    for sel in selections {
-        sel.prim_path.hash(&mut h);
-        sel.set_name.hash(&mut h);
-        sel.option.hash(&mut h);
-    }
-    text.hash(&mut h);
-    let mut out = dir.to_path_buf();
-    out.push(format!(".bevy_openusd_session_{:016x}.usda", h.finish()));
-    out
-}
-
-/// Trie node used by the session-layer emitter. Leafs carry variant
-/// selections; inner nodes just nest into deeper `over` blocks.
-#[derive(Default)]
-struct OverNode<'a> {
-    children: std::collections::BTreeMap<String, OverNode<'a>>,
-    selections: Vec<&'a VariantSelection>,
-}
-
-/// Emit a minimal USDA session layer that authors `variants = { ... }`
-/// metadata under one `over` spec per prim that received a selection.
-/// Prim paths are broken into segments and emitted as nested `over`
-/// blocks so the file is syntactically valid.
-pub fn author_variant_session_layer(selections: &[VariantSelection]) -> String {
-    use std::collections::BTreeMap;
-
-    // Group selections by full prim path so multiple sets on the same
-    // prim fold into one `variants = { … }` map.
-    let mut by_prim: BTreeMap<&str, Vec<&VariantSelection>> = BTreeMap::new();
-    for sel in selections {
-        by_prim.entry(sel.prim_path.as_str()).or_default().push(sel);
-    }
-
-    let mut root: OverNode = OverNode::default();
-    for (path, sels) in by_prim {
-        let trimmed = path.trim_start_matches('/');
-        if trimmed.is_empty() {
-            continue;
-        }
-        let mut cur = &mut root;
-        for segment in trimmed.split('/') {
-            cur = cur.children.entry(segment.to_string()).or_default();
-        }
-        cur.selections = sels;
-    }
-
-    let mut out = String::new();
-    out.push_str("#usda 1.0\n\n");
-    for (name, child) in &root.children {
-        emit_over(&mut out, name, child, 0);
-    }
-    out
-}
-
-fn emit_over(buf: &mut String, name: &str, node: &OverNode<'_>, depth: usize) {
-    use std::fmt::Write;
-    let pad = "    ".repeat(depth);
-    if node.selections.is_empty() {
-        let _ = writeln!(buf, "{pad}over \"{name}\"");
-    } else {
-        let _ = writeln!(buf, "{pad}over \"{name}\" (");
-        let _ = writeln!(buf, "{pad}    variants = {{");
-        for sel in &node.selections {
-            let _ = writeln!(
-                buf,
-                "{pad}        string {} = \"{}\"",
-                sel.set_name, sel.option
-            );
-        }
-        let _ = writeln!(buf, "{pad}    }}");
-        let _ = writeln!(buf, "{pad})");
-    }
-    let _ = writeln!(buf, "{pad}{{");
-    for (child_name, child) in &node.children {
-        emit_over(buf, child_name, child, depth + 1);
-    }
-    let _ = writeln!(buf, "{pad}}}");
-}
-
-/// Same as [`tempfile_for`] but the caller chooses the directory. Used to
-/// drop non-USDZ tempfiles into the user's asset root so openusd's
-/// reference anchoring finds sibling layers.
-fn tempfile_in(dir: &Path, asset_path: &Path, ext: &str) -> PathBuf {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    asset_path.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    let mut out = dir.to_path_buf();
-    out.push(format!(".bevy_openusd_tmp_{hash:016x}.{ext}"));
-    out
-}
-
-/// Build a deterministic asset-path label encoding a list of variant
-/// selections. Combine with a USD path to produce a unique
-/// `Handle<UsdAsset>` per variant set:
-///
-/// ```ignore
-/// let path = format!("{}#{}", "machines/bale.usda", variant_label(&variants));
-/// let handle: Handle<UsdAsset> = asset_server.load_with_settings(path,
-///     move |s: &mut UsdLoaderSettings| { s.variant_selections = variants.clone(); }
-/// );
-/// ```
-///
-/// The label syntax is `variants:prim_path@set_name=option`, joined
-/// with `,` for multiple selections. The loader parses the same
-/// format on the way in (see [`parse_variant_label`]), so passing the
-/// label alone (without `settings.variant_selections`) is enough —
-/// the path-encoded selection survives Bevy's caching.
-pub fn variant_label(variants: &[VariantSelection]) -> String {
-    if variants.is_empty() {
-        return String::new();
-    }
-    let mut parts = Vec::with_capacity(variants.len());
-    for v in variants {
-        parts.push(format!("{}@{}={}", v.prim_path, v.set_name, v.option));
-    }
-    format!("variants:{}", parts.join(","))
-}
-
-/// Inverse of [`variant_label`]. Returns `None` if the label doesn't
-/// have the `variants:` prefix or any individual entry is malformed
-/// (in that case no variants are applied at all — the loader falls
-/// back to whatever's in `settings.variant_selections`).
-pub fn parse_variant_label(label: &str) -> Option<Vec<VariantSelection>> {
-    let body = label.strip_prefix("variants:")?;
-    if body.is_empty() {
-        return Some(Vec::new());
-    }
-    let mut out = Vec::new();
-    for part in body.split(',') {
-        let (prim_path, rest) = part.split_once('@')?;
-        let (set_name, option) = rest.split_once('=')?;
-        out.push(VariantSelection {
-            prim_path: prim_path.to_string(),
-            set_name: set_name.to_string(),
-            option: option.to_string(),
+        gate.release[1].store(true, Ordering::SeqCst);
+        gate.release[0].store(true, Ordering::SeqCst);
+        if let Some(waker) = gate.waker[0].lock().unwrap().take() { waker.wake(); }
+        let final_call = if fail_older { 3 } else { 2 };
+        tick_until(&mut app, |world| {
+            world.resource::<Assets<Probe>>().get(&handle).is_some_and(|probe| probe.0 == final_call)
+                && matches!(server.get_load_state(handle.id()), Some(LoadState::Loaded))
         });
     }
-    Some(out)
+
+    fn watched_memory_app() -> (App, bevy::asset::io::memory::Dir, impl Fn(&str)) {
+        use bevy::asset::io::{
+            AssetSourceBuilder,
+            memory::{Dir, MemoryAssetReader},
+        };
+        let directory = Dir::default();
+        let reader = directory.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        struct Watcher;
+        impl bevy::asset::io::AssetWatcher for Watcher {}
+        let mut app = App::new();
+        app.register_asset_source(
+            "fixture",
+            AssetSourceBuilder::new(move || {
+                Box::new(MemoryAssetReader {
+                    root: reader.clone(),
+                })
+            })
+            .with_watcher(move |events| {
+                send.send(events).unwrap();
+                Some(Box::new(Watcher))
+            }),
+        );
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin {
+                watch_for_changes_override: Some(true),
+                ..default()
+            },
+            UsdAssetPlugin,
+        ));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>();
+        app.finish();
+        app.cleanup();
+        let events = receive.recv().unwrap();
+        (app, directory, move |path| {
+            events
+                .try_send(bevy::asset::io::AssetSourceEvent::ModifiedAsset(
+                    path.into(),
+                ))
+                .unwrap();
+        })
+    }
+
+    #[track_caller]
+    fn tick_until(app: &mut App, condition: impl Fn(&World) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.update();
+            if condition(app.world()) {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                let world = app.world_mut();
+                let mut query = world.query::<(Entity, &UsdSceneRoot, Option<&UsdSceneState>, Option<&UsdSceneInstance>)>();
+                let states = query.iter(world).map(|(entity, root, state, instance)| {
+                    (entity, state.cloned(), instance.map(|instance| instance.revision),
+                        world.resource::<AssetServer>().get_load_state(root.0.id()))
+                }).collect::<Vec<_>>();
+                panic!("asset operation timed out: {states:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn numeric_clip_dependency_reloads_preserve_independent_roots() {
+        let (app, directory, changed) = watched_memory_app();
+        exercise_clip_reload(app, "fixture://root.usda", |path, text|
+            directory.insert_asset_text(Path::new(path), text), changed);
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_numeric_clip_dependency_reloads() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.register_asset_source(bevy::asset::io::AssetSourceId::Default,
+            crate::watcher::file_source(directory.path()));
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: directory.path().to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true), ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>();
+        app.finish();
+        app.cleanup();
+        exercise_clip_reload(app, "root.usda", |path, text|
+            std::fs::write(directory.path().join(path), text).unwrap(), |_| {});
+    }
+
+    fn exercise_clip_reload(mut app: App, source: &str, write: impl Fn(&str, &str), changed: impl Fn(&str)) {
+        write("root.usda", r#"#usda 1.0
+def Sphere "Model" (
+    clips = {
+        dictionary default = {
+            asset[] assetPaths = [@clip.usda@]
+            double2[] active = [(0, 0)]
+            double2[] times = [(0, 0), (20, 10)]
+            string primPath = "/Model"
+        }
+    }
+) { double radius }
+"#);
+        let clip = |end| format!("#usda 1.0\ndef Sphere \"Model\" {{ double radius.timeSamples = {{0: 1, 10: {end}}} }}\n");
+        write("clip.usda", &clip(3));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load(source.to_owned());
+        let roots = [10.0, 20.0].map(|current|
+            app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+            && world.resource::<AssetServer>().is_loaded_with_dependencies(handle.id()));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Model"));
+        for entity in entities { app.world_mut().entity_mut(entity).insert(Name::new("runtime name")); }
+        let radii = |world: &World| entities.map(|entity| {
+            let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
+            positions.iter().map(|position| Vec3::from_array(*position).length()).fold(0.0_f32, f32::max)
+        });
+        let matches = |actual: [f32; 2], expected: [f32; 2]| actual.into_iter().zip(expected).all(|(a, b)| (a - b).abs() < 0.0001);
+        assert!(matches(radii(app.world()), [2.0, 3.0]));
+        write("clip.usda", &clip(5));
+        changed("clip.usda");
+        tick_until(&mut app, |world| matches(radii(world), [3.0, 5.0]));
+        let retained = entities.map(|entity| app.world().get::<Mesh3d>(entity).unwrap().0.clone());
+        write("clip.usda", "#usda 1.0\ndef Sphere \"Model\" {");
+        changed("clip.usda");
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+        assert_eq!(entities.map(|entity| app.world().get::<Mesh3d>(entity).unwrap().0.clone()), retained);
+        assert!(matches(radii(app.world()), [3.0, 5.0]));
+        write("clip.usda", &clip(3));
+        changed("clip.usda");
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)) && matches(radii(world), [2.0, 3.0]));
+        for (root, entity) in roots.into_iter().zip(entities) {
+            assert_eq!(instance_entity(app.world(), root, "/Model"), entity);
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+        }
+        for (root, current) in roots.into_iter().zip([20.0, 10.0]) {
+            app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = current;
+        }
+        tick_until(&mut app, |world| matches(radii(world), [3.0, 2.0]));
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_reloads_layers_textures_and_recovers() {
+        exercise_native_file_watcher(false);
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_invalidates_removed_dependencies() {
+        exercise_native_file_watcher(true);
+    }
+
+    #[cfg(all(feature = "file_watcher", unix))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_recovers_missing_initial_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("missing/root");
+        let mut app = App::new();
+        app.register_asset_source(bevy::asset::io::AssetSourceId::Default,
+            crate::watcher::file_source(&source));
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: source.to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true), ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>();
+        app.finish();
+        app.cleanup();
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("root.usda");
+        let roots = [0.0, 10.0].map(|current| app.world_mut()
+            .spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+        std::fs::create_dir_all(&source).unwrap();
+        let layer = source.join("root.usda");
+        std::fs::write(&layer, "#usda 1.0\ndef Sphere \"Model\" { double radius = 1 }\n").unwrap();
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Model"));
+        let meshes = entities.map(|entity| app.world().get::<Mesh3d>(entity).unwrap().0.clone());
+        for entity in entities { app.world_mut().entity_mut(entity).insert(Name::new("runtime name")); }
+        std::fs::write(&layer, "#usda 1.0\ndef Sphere \"Model\" { double radius = 3 }\n").unwrap();
+        tick_until(&mut app, |world| entities.into_iter().zip(&meshes).all(|(entity, old)|
+            world.get::<Mesh3d>(entity).is_some_and(|mesh| mesh.0 != *old)));
+        for (index, (root, entity)) in roots.into_iter().zip(entities).enumerate() {
+            assert_eq!(instance_entity(app.world(), root, "/Model"), entity);
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+            assert_eq!(app.world().get::<UsdInstanceTime>(root).unwrap().current, index as f64 * 10.0);
+            let mesh = app.world().resource::<Assets<Mesh>>()
+                .get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                else { panic!("sphere positions missing") };
+            assert!(points.iter().all(|point| (Vec3::from_array(*point).length() - 3.0).abs() < 0.0001));
+        }
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    fn exercise_native_file_watcher(removal_adapter: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let layer = directory.path().join("models/textured.usda");
+        let texture = directory.path().join("textures/pixel.png");
+        std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+        std::fs::write(directory.path().join("root.usda"),
+            "#usda 1.0\n( subLayers = [@models/textured.usda@] )\n").unwrap();
+        std::fs::write(&layer, TEXTURED).unwrap();
+        std::fs::write(&texture, pixel_png([255, 0, 0, 255])).unwrap();
+        let mut app = App::new();
+        if removal_adapter {
+            app.register_asset_source(bevy::asset::io::AssetSourceId::Default,
+                crate::watcher::file_source(directory.path()));
+        }
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: directory.path().to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true),
+            ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>();
+        app.finish();
+        app.cleanup();
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("root.usda");
+        let roots = [
+            app.world_mut().spawn(UsdSceneRoot(handle.clone())).id(),
+            app.world_mut().spawn(UsdSceneRoot(handle.clone())).id(),
+        ];
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+            && world.resource::<AssetServer>().is_loaded_with_dependencies(handle.id()));
+        let entities = roots.map(|root| app.world().non_send::<UsdInstances>()
+            .entity(root, "/Mesh").unwrap());
+        let children = entities.map(|entity| {
+            app.world_mut().entity_mut(entity).insert(Name::new("runtime name"));
+            app.world_mut().spawn((Name::new("runtime child"), ChildOf(entity))).id()
+        });
+        let mesh_handles = |world: &World| entities.map(|entity|
+            world.get::<Mesh3d>(entity).unwrap().0.clone());
+        let image_handles = |world: &World| entities.map(|entity| {
+            let material = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
+            world.resource::<Assets<StandardMaterial>>().get(material).unwrap()
+                .base_color_texture.clone().unwrap()
+        });
+        let initial_meshes = mesh_handles(app.world());
+        let initial_images = image_handles(app.world());
+        assert_eq!(initial_meshes[0], initial_meshes[1]);
+        assert_eq!(initial_images[0], initial_images[1]);
+        let edited = TEXTURED.replace("(1, 0, 0)", "(2, 0, 0)");
+        std::fs::write(&layer, &edited).unwrap();
+        tick_until(&mut app, |world| mesh_handles(world).iter().all(|handle| {
+            let mesh = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return false; };
+            positions.iter().any(|position| position[0] == 2.0)
+        }));
+        let updated_meshes = mesh_handles(app.world());
+        assert_ne!(initial_meshes[0], updated_meshes[0]);
+        assert_eq!(updated_meshes[0], updated_meshes[1]);
+        std::fs::write(&texture, pixel_png([0, 0, 255, 255])).unwrap();
+        tick_until(&mut app, |world| image_handles(world).iter().all(|handle|
+            world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                == Some(&[0, 0, 255, 255])));
+        let updated_images = image_handles(app.world());
+        assert_eq!(initial_images[0], updated_images[0]);
+        assert_eq!(updated_images[0], updated_images[1]);
+        std::fs::write(&layer, "#usda 1.0\ndef Mesh \"Mesh\" {").unwrap();
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+        assert_eq!(mesh_handles(app.world()), updated_meshes);
+        assert_eq!(image_handles(app.world()), updated_images);
+        std::fs::write(&layer, &edited).unwrap();
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let replacement = layer.with_extension("usda.tmp");
+        std::fs::write(&replacement, TEXTURED.replace("(1, 0, 0)", "(3, 0, 0)")).unwrap();
+        std::fs::rename(&replacement, &layer).unwrap();
+        tick_until(&mut app, |world| mesh_handles(world).iter().all(|handle| {
+            let mesh = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return false; };
+            positions.iter().any(|position| position[0] == 3.0)
+        }));
+        let replacement = texture.with_extension("png.tmp");
+        std::fs::write(&replacement, pixel_png([0, 255, 0, 255])).unwrap();
+        std::fs::rename(&replacement, &texture).unwrap();
+        tick_until(&mut app, |world| image_handles(world).iter().all(|handle|
+            world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                == Some(&[0, 255, 0, 255])));
+        if removal_adapter {
+            let textures = texture.parent().unwrap();
+            let moved_textures = directory.path().join("moved-textures");
+            let retained_images = image_handles(app.world());
+            std::fs::rename(textures, &moved_textures).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            assert_eq!(image_handles(app.world()), retained_images);
+            assert!(retained_images.iter().all(|handle|
+                app.world().resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                    == Some(&[0, 255, 0, 255])));
+            std::fs::write(moved_textures.join("pixel.png"), pixel_png([255, 255, 0, 255])).unwrap();
+            std::fs::rename(&moved_textures, textures).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+                && image_handles(world).iter().all(|handle|
+                    world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                        == Some(&[255, 255, 0, 255])));
+            std::fs::write(&texture, pixel_png([0, 255, 0, 255])).unwrap();
+            tick_until(&mut app, |world| image_handles(world).iter().all(|handle|
+                world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                    == Some(&[0, 255, 0, 255])));
+            let models = layer.parent().unwrap();
+            let moved = directory.path().join("moved-models");
+            let retained_meshes = mesh_handles(app.world());
+            std::fs::rename(models, &moved).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            assert_eq!(mesh_handles(app.world()), retained_meshes);
+            std::fs::rename(&moved, models).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+            let retained_meshes = mesh_handles(app.world());
+            let renamed = layer.with_extension("renamed.usda");
+            std::fs::rename(&layer, &renamed).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            assert_eq!(mesh_handles(app.world()), retained_meshes);
+            std::fs::rename(&renamed, &layer).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+            let retained_meshes = mesh_handles(app.world());
+            std::fs::remove_file(&layer).unwrap();
+            std::fs::remove_dir(models).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            assert_eq!(mesh_handles(app.world()), retained_meshes);
+            std::fs::create_dir(models).unwrap();
+            std::fs::write(&layer, TEXTURED.replace("(1, 0, 0)", "(3, 0, 0)")).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        }
+        for ((root, entity), child) in roots.into_iter().zip(entities).zip(children) {
+            assert_eq!(app.world().non_send::<UsdInstances>().entity(root, "/Mesh"), Some(entity));
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+            assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
+        }
+        assert!(image_handles(app.world()).iter().all(|handle|
+            app.world().resource::<Assets<Image>>().get(handle).unwrap().data.as_deref()
+                == Some(&[0, 255, 0, 255])));
+        assert_eq!(mesh_handles(app.world())[0], mesh_handles(app.world())[1]);
+        assert_eq!(image_handles(app.world()), updated_images);
+        #[cfg(unix)]
+        if removal_adapter {
+            let backup = tempfile::tempdir().unwrap();
+            let old_root = backup.path().join("old-root");
+            std::fs::rename(directory.path(), &old_root).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+            for relative in ["root.usda", "models/textured.usda", "textures/pixel.png"] {
+                std::fs::copy(old_root.join(relative), directory.path().join(relative)).unwrap();
+            }
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+            std::fs::write(&texture, pixel_png([255, 255, 0, 255])).unwrap();
+            tick_until(&mut app, |world| image_handles(world).iter().all(|handle|
+                world.resource::<Assets<Image>>().get(handle).unwrap().data.as_deref() == Some([255, 255, 0, 255].as_slice())));
+            let next_root = backup.path().join("next-root");
+            std::fs::create_dir_all(next_root.join("models")).unwrap();
+            std::fs::create_dir_all(next_root.join("textures")).unwrap();
+            for relative in ["root.usda", "models/textured.usda"] {
+                std::fs::copy(old_root.join(relative), next_root.join(relative)).unwrap();
+            }
+            std::fs::write(next_root.join("textures/pixel.png"), pixel_png([0, 0, 255, 255])).unwrap();
+            std::fs::rename(directory.path(), backup.path().join("second-root")).unwrap();
+            std::fs::rename(&next_root, directory.path()).unwrap();
+            tick_until(&mut app, |world| roots.iter().all(|root|
+                world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+                && image_handles(world).iter().all(|handle| world.resource::<Assets<Image>>()
+                    .get(handle).unwrap().data.as_deref() == Some([0, 0, 255, 255].as_slice())));
+            for ((root, entity), child) in roots.into_iter().zip(entities).zip(children) {
+                assert_eq!(app.world().non_send::<UsdInstances>().entity(root, "/Mesh"), Some(entity));
+                assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime name");
+                assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
+            }
+        }
+    }
+
+    #[test]
+    fn asset_server_captures_time_sampled_material_textures() {
+        let (mut app, directory, changed) = watched_memory_app();
+        let scene = TEXTURED.replace("asset inputs:file = @../textures/pixel.png@",
+            "asset inputs:file.timeSamples = {0: @../textures/pixel.png@, 10: @../textures/blue.png@}");
+        directory.insert_asset_text(Path::new("models/textured.usda"), &scene);
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([255, 0, 0, 255]));
+        directory.insert_asset(Path::new("textures/blue.png"), pixel_png([0, 0, 255, 255]));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://models/textured.usda");
+        let roots = [0.0, 10.0].map(|current| app.world_mut().spawn((UsdSceneRoot(handle.clone()),
+            UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        assert_eq!(app.world().resource::<Assets<UsdScene>>().get(&handle).unwrap().textures.len(), 4);
+        let pixels = |world: &World, root| {
+            let entity = world.non_send::<UsdInstances>().entity(root, "/Mesh").unwrap();
+            let material = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
+            let material = world.resource::<Assets<StandardMaterial>>().get(material).unwrap();
+            world.resource::<Assets<Image>>().get(material.base_color_texture.as_ref().unwrap()).unwrap()
+                .data.clone().unwrap()
+        };
+        assert_eq!(pixels(app.world(), roots[0]), [255, 0, 0, 255]);
+        assert_eq!(pixels(app.world(), roots[1]), [0, 0, 255, 255]);
+        app.world_mut().get_mut::<UsdInstanceTime>(roots[0]).unwrap().current = 10.0;
+        app.world_mut().get_mut::<UsdInstanceTime>(roots[1]).unwrap().current = 0.0;
+        app.update();
+        assert_eq!(pixels(app.world(), roots[0]), [0, 0, 255, 255]);
+        assert_eq!(pixels(app.world(), roots[1]), [255, 0, 0, 255]);
+        for (time, expected) in [(-1.0, [255, 0, 0, 255]), (5.0, [255, 0, 0, 255]), (11.0, [0, 0, 255, 255])] {
+            app.world_mut().get_mut::<UsdInstanceTime>(roots[0]).unwrap().current = time;
+            app.update();
+            assert_eq!(pixels(app.world(), roots[0]), expected);
+            assert_eq!(pixels(app.world(), roots[1]), [255, 0, 0, 255]);
+        }
+        directory.insert_asset(Path::new("textures/blue.png"), pixel_png([0, 255, 0, 255]));
+        changed("textures/blue.png");
+        tick_until(&mut app, |world| pixels(world, roots[0]) == [0, 255, 0, 255]);
+        assert_eq!(pixels(app.world(), roots[1]), [255, 0, 0, 255]);
+    }
+
+    fn pixel_png(rgba: [u8; 4]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&rgba)
+                .unwrap();
+        }
+        bytes
+    }
+
+    fn dome_hdr(red: u8) -> Vec<u8> {
+        let mut bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 2\n".to_vec();
+        bytes.extend_from_slice(&[red, 64, 32, 132, red, 64, 32, 132]);
+        bytes
+    }
+
+    const DOME_TEXTURES: &str = r#"#usda 1.0
+def DomeLight "Env" {
+    token inputs:texture:format = "latlong"
+    asset inputs:texture:file.timeSamples = {
+        0: @../textures/first.hdr@,
+        10: @../textures/second.hdr@
+    }
+}
+"#;
+
+    #[test]
+    fn exr_dome_samples_reload_fail_and_recover_in_sources_and_packages() {
+        use crate::route::dome::UsdDomeTexture;
+        let high = include_bytes!("../../../assets/dome_high.exr");
+        let warm = include_bytes!("../../../assets/dome_warm.exr");
+        let text = DOME_TEXTURES.replace(".hdr", ".exr");
+        let package = |second: &[u8]| {
+            let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+            archive.add_layer("models/dome.usda", text.as_bytes()).unwrap();
+            archive.add_layer("textures/first.exr", high).unwrap();
+            archive.add_layer("textures/second.exr", second).unwrap();
+            archive.finish().unwrap().into_inner()
+        };
+        for packaged in [false, true] {
+            let (mut app, directory, changed) = watched_memory_app();
+            directory.insert_asset_text(Path::new("models/dome.usda"), &text);
+            directory.insert_asset(Path::new("textures/first.exr"), high.to_vec());
+            directory.insert_asset(Path::new("textures/second.exr"), warm.to_vec());
+            directory.insert_asset(Path::new("dome.usdz"), package(warm));
+            let path = if packaged { "fixture://dome.usdz" } else { "fixture://models/dome.usda" };
+            let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load(path);
+            let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+            tick_until(&mut app, |world| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+                && world.resource::<AssetServer>().is_loaded_with_dependencies(handle.id()));
+            let entity = app.world_mut().query_filtered::<Entity, With<UsdDomeTexture>>().single(app.world()).unwrap();
+            let radiance = |world: &World| {
+                let texture = &world.get::<UsdDomeTexture>(entity).unwrap().0;
+                world.resource::<Assets<Image>>().get(texture).unwrap().get_color_at(0, 0).unwrap().to_linear().red
+            };
+            assert_eq!(radiance(app.world()), 8.0);
+            app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = 10.0;
+            tick_until(&mut app, |world| radiance(world) == 0.119140625);
+            for (bytes, expected) in [(high.as_slice(), Some(8.0)), (b"corrupt".as_slice(), None), (warm.as_slice(), Some(0.119140625))] {
+                let path = if packaged { "dome.usdz" } else { "textures/second.exr" };
+                directory.insert_asset(Path::new(path), if packaged { package(bytes) } else { bytes.to_vec() });
+                changed(path);
+                if let Some(expected) = expected {
+                    tick_until(&mut app, |world| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+                        && radiance(world) == expected);
+                } else {
+                    tick_until(&mut app, |world| matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_))));
+                    assert_eq!(radiance(app.world()), 8.0);
+                }
+                assert_eq!(app.world().get::<UsdInstanceTime>(root).unwrap().current, 10.0);
+                assert!(app.world().get::<UsdDomeTexture>(entity).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn dome_hdr_samples_load_project_and_reload_from_named_source() {
+        use crate::route::dome::UsdDomeTexture;
+        let (mut app, directory, changed) = watched_memory_app();
+        directory.insert_asset_text(Path::new("models/dome.usda"), DOME_TEXTURES);
+        directory.insert_asset(Path::new("textures/first.hdr"), dome_hdr(128));
+        directory.insert_asset(Path::new("textures/second.hdr"), dome_hdr(64));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://models/dome.usda");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+        tick_until(&mut app, |world| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+            && world.resource::<AssetServer>().is_loaded_with_dependencies(handle.id()));
+        let scene = app.world().resource::<Assets<UsdScene>>().get(&handle).unwrap();
+        assert_eq!(scene.textures.len(), 2);
+        let revision = scene.source.revision();
+        let entity = app.world_mut().query_filtered::<Entity, With<UsdDomeTexture>>().single(app.world()).unwrap();
+        let radiance = |world: &World| {
+            let texture = &world.get::<UsdDomeTexture>(entity).unwrap().0;
+            world.resource::<Assets<Image>>().get(texture).unwrap().get_color_at(0, 0).unwrap().to_linear().red
+        };
+        assert_eq!(radiance(app.world()), 8.0);
+        app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = 10.0;
+        tick_until(&mut app, |world| radiance(world) == 4.0);
+        directory.insert_asset(Path::new("textures/second.hdr"), dome_hdr(192));
+        changed("textures/second.hdr");
+        tick_until(&mut app, |world| world.resource::<Assets<UsdScene>>().get(&handle)
+            .is_some_and(|scene| scene.source.revision() != revision) && radiance(world) == 12.0);
+    }
+
+    #[test]
+    fn packaged_dome_hdr_samples_are_loaded_without_filesystem_paths() {
+        let (mut app, directory) = memory_app();
+        let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+        archive.add_layer("models/dome.usda", DOME_TEXTURES.as_bytes()).unwrap();
+        archive.add_layer("textures/first.hdr", &dome_hdr(128)).unwrap();
+        archive.add_layer("textures/second.hdr", &dome_hdr(64)).unwrap();
+        directory.insert_asset(Path::new("dome.usdz"), archive.finish().unwrap().into_inner());
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://dome.usdz");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+        tick_until(&mut app, |world| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+            && world.resource::<AssetServer>().is_loaded_with_dependencies(handle.id()));
+        let scene = app.world().resource::<Assets<UsdScene>>().get(&handle).unwrap();
+        assert_eq!(scene.textures.len(), 2);
+        for ((path, srgb), image) in &scene.textures {
+            assert!(openusd::ar::is_package_relative_path(path));
+            assert!(!srgb);
+            let image = app.world().resource::<Assets<Image>>().get(image).unwrap();
+            assert!(image.get_color_at(0, 0).unwrap().to_linear().red > 1.0);
+            assert!(crate::route::environment_map::latlong_cubemap(image, 1, [1.0; 3]).is_ok());
+        }
+    }
+
+    const TEXTURED: &str = r#"#usda 1.0
+def Mesh "Mesh" {
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    rel material:binding = </Mat>
+}
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        normal3f inputs:normal.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @../textures/pixel.png@
+        float3 outputs:rgb
+    }
+}
+"#;
+
+    #[test]
+    fn sampled_texture_color_spaces_follow_independent_clocks() {
+        let (mut app, directory) = memory_app();
+        let text = TEXTURED.replace("normal3f inputs:normal.connect = </Mat/Tex.outputs:rgb>",
+            "float inputs:roughness.connect = </Mat/Tex.outputs:r>")
+            .replace("float3 outputs:rgb", "float3 outputs:rgb\n        float outputs:r\n        token inputs:sourceColorSpace = \"raw\"\n        token inputs:sourceColorSpace.timeSamples = { 0: \"raw\", 10: \"sRGB\" }");
+        directory.insert_asset_text(Path::new("models/color-time.usda"), &text);
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([128, 128, 128, 255]));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://models/color-time.usda");
+        let a = app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 })).id();
+        let b = app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 10.0 })).id();
+        tick_until(&mut app, |world| [a, b].into_iter().all(|root| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)));
+        let entities = [instance_entity(app.world(), a, "/Mesh"), instance_entity(app.world(), b, "/Mesh")];
+        let check = |world: &World, entity, srgb, expected| {
+            let material = world.resource::<Assets<StandardMaterial>>().get(&world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+            let images = world.resource::<Assets<Image>>();
+            assert_eq!(images.get(material.base_color_texture.as_ref().unwrap()).unwrap().texture_descriptor.format.is_srgb(), srgb);
+            assert_eq!(images.get(material.metallic_roughness_texture.as_ref().unwrap()).unwrap().data.as_deref(), Some([255, expected, 255, 255].as_slice()));
+        };
+        assert_eq!(app.world().resource::<Assets<UsdScene>>().get(&handle).unwrap().textures.len(), 2);
+        check(app.world(), entities[0], false, 128);
+        check(app.world(), entities[1], true, 55);
+        app.world_mut().get_mut::<UsdInstanceTime>(a).unwrap().current = 10.0;
+        app.world_mut().get_mut::<UsdInstanceTime>(b).unwrap().current = 5.0;
+        app.update();
+        assert_eq!(instance_entity(app.world(), a, "/Mesh"), entities[0]);
+        assert_eq!(instance_entity(app.world(), b, "/Mesh"), entities[1]);
+        check(app.world(), entities[0], true, 55);
+        check(app.world(), entities[1], false, 128);
+    }
+
+    #[test]
+    fn explicit_texture_color_spaces_override_usage_defaults() {
+        for (space, srgb, expected) in [("raw", false, 128), ("sRGB", true, 55)] {
+            let (mut app, directory) = memory_app();
+            let text = TEXTURED.replace("normal3f inputs:normal.connect = </Mat/Tex.outputs:rgb>",
+                "float inputs:roughness.connect = </Mat/Tex.outputs:r>")
+                .replace("float3 outputs:rgb", &format!("float3 outputs:rgb\n        float outputs:r\n        token inputs:sourceColorSpace = \"{space}\""));
+            directory.insert_asset_text(Path::new("models/color.usda"), &text);
+            directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([128, 128, 128, 255]));
+            let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://models/color.usda");
+            let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
+            tick_until(&mut app, |world| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready));
+            let entity = instance_entity(app.world(), root, "/Mesh");
+            let material = app.world().resource::<Assets<StandardMaterial>>().get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+            let images = app.world().resource::<Assets<Image>>();
+            let diffuse = images.get(material.base_color_texture.as_ref().unwrap()).unwrap();
+            assert_eq!(diffuse.texture_descriptor.format.is_srgb(), srgb);
+            let packed = images.get(material.metallic_roughness_texture.as_ref().unwrap()).unwrap();
+            assert_eq!(packed.data.as_deref(), Some([255, expected, 255, 255].as_slice()));
+            assert!(app.world().get::<crate::route::material::UsdMaterialWarning>(entity).is_none());
+        }
+    }
+
+    #[test]
+    fn scalar_output_channels_are_packed_and_reloaded() {
+        let (mut app, directory, notify) = watched_memory_app();
+        let text = TEXTURED.replace("normal3f inputs:normal.connect = </Mat/Tex.outputs:rgb>",
+            "float inputs:roughness.connect = </Mat/Tex.outputs:g>\n        float inputs:metallic.connect = </Mat/Tex.outputs:b>\n        float inputs:occlusion.connect = </Mat/Tex.outputs:g>\n        float inputs:opacity.connect = </Mat/Tex.outputs:a>")
+            .replace("float3 outputs:rgb", "float3 outputs:rgb\n        float outputs:g\n        float outputs:b\n        float outputs:a");
+        directory.insert_asset_text(Path::new("models/packed.usda"), &text);
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([12, 64, 192, 31]));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://models/packed.usda");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+        tick_until(&mut app, |world| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready));
+        let entity = instance_entity(app.world(), root, "/Mesh");
+        let packed = |world: &World| {
+            let material = world.resource::<Assets<StandardMaterial>>().get(&world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+            assert_eq!(material.metallic, 1.0);
+            assert_eq!(material.perceptual_roughness, 1.0);
+            material.metallic_roughness_texture.clone().unwrap()
+        };
+        let first = packed(app.world());
+        let base = |world: &World| {
+            let material = world.resource::<Assets<StandardMaterial>>().get(&world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+            assert_eq!(material.alpha_mode, AlphaMode::Blend);
+            material.base_color_texture.clone().unwrap()
+        };
+        let first_base = base(app.world());
+        let occlusion = |world: &World| {
+            world.resource::<Assets<StandardMaterial>>().get(&world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap().occlusion_texture.clone().unwrap()
+        };
+        let first_occlusion = occlusion(app.world());
+        let images = app.world().resource::<Assets<Image>>();
+        assert_eq!(images.get(&first_base).unwrap().data.as_deref(), Some([12, 64, 192, 31].as_slice()));
+        assert_eq!(images.get(&first_occlusion).unwrap().data.as_deref(), Some([64, 255, 255, 255].as_slice()));
+        assert_eq!(images.get(&first).unwrap().data.as_deref(), Some([255, 64, 192, 255].as_slice()));
+        assert_eq!(images.get(&first).unwrap().texture_descriptor.format, bevy::render::render_resource::TextureFormat::Rgba8Unorm);
+        assert!(app.world().get::<crate::route::material::UsdMaterialWarning>(entity).is_none());
+        let revision = app.world().get::<UsdSceneInstance>(root).unwrap().revision;
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([12, 128, 32, 200]));
+        notify("textures/pixel.png");
+        tick_until(&mut app, |world| world.get::<UsdSceneInstance>(root).is_some_and(|instance| instance.revision != revision));
+        let second = packed(app.world());
+        let second_base = base(app.world());
+        assert_ne!(first_base, second_base);
+        assert_eq!(app.world().resource::<Assets<Image>>().get(&second_base).unwrap().data.as_deref(), Some([12, 128, 32, 200].as_slice()));
+        let second_occlusion = occlusion(app.world());
+        assert_ne!(first_occlusion, second_occlusion);
+        assert_eq!(app.world().resource::<Assets<Image>>().get(&second_occlusion).unwrap().data.as_deref(), Some([128, 255, 255, 255].as_slice()));
+        assert_ne!(first, second);
+        assert_eq!(app.world().resource::<Assets<Image>>().get(&second).unwrap().data.as_deref(), Some([255, 128, 32, 255].as_slice()));
+    }
+
+    #[test]
+    fn nested_package_dependency_reload_preserves_two_live_instances() {
+        #[derive(Component)]
+        struct Runtime;
+        fn package(pixel: Option<[u8; 4]>) -> Vec<u8> {
+            let mut inner = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+            let text = TEXTURED.replace("normal3f inputs:normal.connect = </Mat/Tex.outputs:rgb>", "");
+            inner.add_layer("models/textured.usda", text.as_bytes()).unwrap();
+            if let Some(pixel) = pixel { inner.add_layer("textures/pixel.png", &pixel_png(pixel)).unwrap(); }
+            let mut outer = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+            outer.add_layer("root.usda", b"#usda 1.0\n(subLayers = [@inner.usdz@])\n").unwrap();
+            outer.add_layer("inner.usdz", &inner.finish().unwrap().into_inner()).unwrap();
+            outer.finish().unwrap().into_inner()
+        }
+        let (mut app, directory, changed) = watched_memory_app();
+        directory.insert_asset_text(Path::new("root.usda"), "#usda 1.0\n(subLayers = [@bundle.usdz@])\n");
+        directory.insert_asset(Path::new("bundle.usdz"), package(Some([255, 0, 0, 255])));
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("fixture://root.usda");
+        let roots = [app.world_mut().spawn(UsdSceneRoot(handle.clone())).id(),
+            app.world_mut().spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 10.0 })).id()];
+        tick_until(&mut app, |world| roots.iter().all(|root| world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Mesh"));
+        app.world_mut().entity_mut(entities[0]).insert(Runtime);
+        let image_handle = |world: &World, entity| {
+            let material = world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap();
+            world.resource::<Assets<StandardMaterial>>().get(&material.0).unwrap().base_color_texture.clone().unwrap()
+        };
+        assert_eq!(image_handle(app.world(), entities[0]), image_handle(app.world(), entities[1]));
+        directory.insert_asset(Path::new("bundle.usdz"), package(Some([255, 255, 0, 255])));
+        changed("bundle.usdz");
+        tick_until(&mut app, |world| entities.iter().all(|entity|
+            world.resource::<Assets<Image>>().get(&image_handle(world, *entity)).unwrap().data.as_deref() == Some([255, 255, 0, 255].as_slice())));
+        for pixel in [[0, 255, 0, 255], [0, 0, 255, 255], [255, 0, 255, 255],
+            [0, 255, 255, 255], [255, 0, 0, 255], [255, 255, 0, 255],
+            [255, 255, 255, 255], [0, 0, 0, 255]] {
+            let retained = entities.map(|entity| image_handle(app.world(), entity));
+            directory.insert_asset(Path::new("bundle.usdz"), package(None));
+            changed("bundle.usdz");
+            tick_until(&mut app, |world| roots.iter().all(|root| matches!(world.get::<UsdSceneState>(*root), Some(UsdSceneState::Failed(_)))));
+            for (entity, image) in entities.into_iter().zip(&retained) {
+                assert_eq!(image_handle(app.world(), entity), *image);
+                assert!(app.world().resource::<Assets<Image>>().contains(image));
+            }
+            directory.insert_asset(Path::new("bundle.usdz"), package(Some(pixel)));
+            changed("bundle.usdz");
+            tick_until(&mut app, |world| roots.iter().all(|root| world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready))
+                && entities.iter().all(|entity| world.resource::<Assets<Image>>().get(&image_handle(world, *entity)).unwrap().data.as_deref() == Some(pixel.as_slice())));
+            assert_eq!(roots.map(|root| instance_entity(app.world(), root, "/Mesh")), entities);
+            assert!(app.world().get::<Runtime>(entities[0]).is_some());
+            assert_eq!(app.world().get::<UsdInstanceTime>(roots[1]).unwrap().current, 10.0);
+            assert_eq!(image_handle(app.world(), entities[0]), image_handle(app.world(), entities[1]));
+        }
+        app.world_mut().entity_mut(roots[0]).remove::<UsdSceneRoot>();
+        app.update();
+        assert!(app.world().get_entity(entities[0]).is_err());
+        assert!(app.world().get_entity(entities[1]).is_ok());
+    }
+
+    #[test]
+    fn packaged_material_images_are_labeled_assets() {
+        let (mut app, directory) = memory_app();
+        let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+        archive
+            .add_layer("models/textured.usda", TEXTURED.as_bytes())
+            .unwrap();
+        archive
+            .add_layer("textures/pixel.png", &pixel_png([32, 64, 128, 255]))
+            .unwrap();
+        directory.insert_asset(
+            Path::new("textured.usdz"),
+            archive.finish().unwrap().into_inner(),
+        );
+        let handle: Handle<UsdScene> = app
+            .world()
+            .resource::<AssetServer>()
+            .load("fixture://textured.usdz");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+        tick_until(&mut app, |world| {
+            world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+                && world
+                    .resource::<AssetServer>()
+                    .is_loaded_with_dependencies(handle.id())
+        });
+        let scene = app
+            .world()
+            .resource::<Assets<UsdScene>>()
+            .get(&handle)
+            .unwrap();
+        assert_eq!(scene.textures.len(), 2);
+        for handle in scene.textures.values() {
+            let image = app.world().resource::<Assets<Image>>().get(handle).unwrap();
+            assert_eq!(image.data.as_deref().unwrap(), &[32, 64, 128, 255]);
+        }
+    }
+
+    #[test]
+    fn texture_handles_use_color_spaces_and_dependency_changes_reload_owner() {
+        let (mut app, directory, changed) = watched_memory_app();
+        directory.insert_asset_text(Path::new("models/textured.usda"), TEXTURED);
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([255, 0, 0, 255]));
+        let handle: Handle<UsdScene> = app
+            .world()
+            .resource::<AssetServer>()
+            .load("fixture://models/textured.usda");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+        tick_until(&mut app, |world| {
+            world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+                && world
+                    .resource::<AssetServer>()
+                    .is_loaded_with_dependencies(handle.id())
+        });
+        let scene = app
+            .world()
+            .resource::<Assets<UsdScene>>()
+            .get(&handle)
+            .unwrap();
+        let revision = scene.source.revision();
+        assert_eq!(scene.textures.len(), 2);
+        for ((_, srgb), handle) in &scene.textures {
+            let image = app.world().resource::<Assets<Image>>().get(handle).unwrap();
+            assert_eq!(image.texture_descriptor.format.is_srgb(), *srgb);
+            assert_eq!(image.data.as_deref().unwrap(), &[255, 0, 0, 255]);
+        }
+        let mesh_material = app
+            .world_mut()
+            .query::<(&UsdPrimRef, &MeshMaterial3d<StandardMaterial>)>()
+            .iter(app.world())
+            .find(|(prim, _)| prim.path == "/Mesh")
+            .unwrap()
+            .1
+            .0
+            .clone();
+        let material = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&mesh_material)
+            .unwrap();
+        assert!(material.base_color_texture.is_some());
+        assert!(material.normal_map_texture.is_some());
+        assert_ne!(material.base_color_texture, material.normal_map_texture);
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([0, 255, 0, 255]));
+        changed("textures/pixel.png");
+        tick_until(&mut app, |world| {
+            world
+                .resource::<Assets<UsdScene>>()
+                .get(&handle)
+                .is_some_and(|scene| {
+                    scene.source.revision() != revision
+                        && scene.textures.values().all(|handle| {
+                            world
+                                .resource::<Assets<Image>>()
+                                .get(handle)
+                                .is_some_and(|image| {
+                                    image.data.as_deref() == Some(&[0, 255, 0, 255])
+                                })
+                        })
+                })
+                && world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+        });
+    }
+
+    #[test]
+    fn asset_server_reads_references_and_external_assets_from_named_source() {
+        let (mut app, directory, changed) = watched_memory_app();
+        directory.insert_asset_text(
+            Path::new("models/scene.usda"),
+            "#usda 1.0\ndef Xform \"Model\" (references = @../parts/model.usda@</Part>) {}\n",
+        );
+        directory.insert_asset_text(Path::new("parts/model.usda"),
+            "#usda 1.0\ndef Xform \"Part\" { custom asset preview = @../textures/color.png@\n def Cube \"Box\" {} }\n");
+        directory.insert_asset(
+            Path::new("textures/color.png"),
+            b"dependency bytes".to_vec(),
+        );
+        let handle: Handle<UsdScene> = app
+            .world()
+            .resource::<AssetServer>()
+            .load("fixture://models/scene.usda");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+        tick_until(&mut app, |world| {
+            world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+        });
+        let scene = app
+            .world()
+            .resource::<Assets<UsdScene>>()
+            .get(&handle)
+            .unwrap();
+        assert_eq!(scene.source.dependencies().count(), 2);
+        assert!(
+            scene
+                .source
+                .open_stage()
+                .unwrap()
+                .prim("/Model/Box")
+                .unwrap()
+                .is_valid()
+                .unwrap()
+        );
+        let first_revision = scene.source.revision();
+        directory.insert_asset_text(
+            Path::new("parts/model.usda"),
+            "#usda 1.0\ndef Xform \"Part\" { def Sphere \"Updated\" {} }\n",
+        );
+        changed("parts/model.usda");
+        tick_until(&mut app, |world| {
+            world
+                .resource::<Assets<UsdScene>>()
+                .get(&handle)
+                .is_some_and(|scene| scene.source.revision() != first_revision)
+                && world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+        });
+        let stage = app
+            .world()
+            .resource::<Assets<UsdScene>>()
+            .get(&handle)
+            .unwrap()
+            .source
+            .open_stage()
+            .unwrap();
+        assert!(stage.prim("/Model/Updated").unwrap().is_valid().unwrap());
+        assert!(!stage.prim("/Model/Box").unwrap().is_valid().unwrap());
+    }
+
+    #[test]
+    fn missing_dependency_becomes_visible_failure() {
+        let (mut app, directory) = memory_app();
+        directory.insert_asset_text(
+            Path::new("broken.usda"),
+            "#usda 1.0\ndef Xform \"Model\" (references = @missing.usda@</Part>) {}\n",
+        );
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load("fixture://broken.usda");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
+        tick_until(&mut app, |world| {
+            matches!(
+                world.get::<UsdSceneState>(root),
+                Some(UsdSceneState::Failed(_))
+            )
+        });
+        assert!(app.world().get::<UsdSceneInstance>(root).is_none());
+    }
+
+    #[test]
+    fn existing_layer_with_missing_reference_target_fails_asset_loading() {
+        for target in ["/Absent", "/Present/Absent"] {
+            let (mut app, directory) = memory_app();
+            directory.insert_asset_text(Path::new("model.usda"), "#usda 1.0\ndef Scope \"Present\" {}\n");
+            directory.insert_asset_text(Path::new("broken-target.usda"), &format!(
+                "#usda 1.0\ndef Scope \"Mounted\" (prepend references = @model.usda@<{target}>) {{}}\n"));
+            let handle = app.world().resource::<AssetServer>().load("fixture://broken-target.usda");
+            let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
+            tick_until(&mut app, |world| matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_) | UsdSceneState::Ready)));
+            let Some(UsdSceneState::Failed(error)) = app.world().get::<UsdSceneState>(root) else {
+                panic!("missing prim target state: {:?}", app.world().get::<UsdSceneState>(root));
+            };
+            assert!(error.contains("Absent"), "{error}");
+            assert!(app.world().get::<UsdSceneInstance>(root).is_none());
+        }
+    }
+
+    #[test]
+    fn variant_supplied_subroot_target_loads_without_false_diagnostics() {
+        let (mut app, directory) = memory_app();
+        directory.insert_asset_text(Path::new("variant-model.usda"), r#"#usda 1.0
+def Scope "Model" (
+    prepend variantSets = ["choice"]
+    variants = { string choice = "show" }
+) {
+    variantSet "choice" = {
+        "show" {
+            def Scope "Child" {
+                double score = 17
+            }
+        }
+        "hide" {}
+    }
+}
+"#);
+        directory.insert_asset_text(Path::new("subroot.usda"),
+            "#usda 1.0\ndef Scope \"Mounted\" (prepend references = @variant-model.usda@</Model/Child>) {}\n");
+        let handle = app.world().resource::<AssetServer>().load("fixture://subroot.usda");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
+        tick_until(&mut app, |world| matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_) | UsdSceneState::Ready)));
+        assert_eq!(app.world().get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        let stage = app.world().non_send::<UsdInstances>().stage(root).unwrap();
+        assert_eq!(stage.prim("/Mounted").unwrap().attribute("score").get::<f64>().unwrap(), Some(17.0));
+        assert!(stage.composition_errors().is_empty());
+    }
+
+    #[test]
+    fn package_load_and_root_removal_preserve_unowned_children() {
+        use std::io::Cursor;
+        let (mut app, directory) = memory_app();
+        let mut archive = openusd::usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
+        archive
+            .add_layer(
+                "scenes/root.usda",
+                b"#usda 1.0\ndef Xform \"Model\" (references = @part.usda@</Part>) {}\n",
+            )
+            .unwrap();
+        archive
+            .add_layer(
+                "scenes/part.usda",
+                b"#usda 1.0\ndef Xform \"Part\" { def Cube \"Box\" {} }\n",
+            )
+            .unwrap();
+        directory.insert_asset(
+            Path::new("model.usdz"),
+            archive.finish().unwrap().into_inner(),
+        );
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load("fixture://model.usdz");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
+        let child = app.world_mut().spawn(ChildOf(root)).id();
+        tick_until(&mut app, |world| {
+            world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+        });
+        let subtree = app
+            .world()
+            .get::<UsdSceneInstance>(root)
+            .unwrap()
+            .subtree
+            .unwrap();
+        assert!(
+            app.world_mut()
+                .query::<&UsdPrimRef>()
+                .iter(app.world())
+                .any(|prim| prim.path == "/Model/Box")
+        );
+        app.world_mut().entity_mut(root).remove::<UsdSceneRoot>();
+        app.update();
+        assert!(app.world().get_entity(subtree).is_err());
+        assert!(app.world().get_entity(child).is_ok());
+        assert!(app.world().get::<UsdSceneInstance>(root).is_none());
+    }
+
+    #[test]
+    fn missing_package_member_fails_loading() {
+        use std::io::Cursor;
+        let (mut app, directory) = memory_app();
+        let mut archive = openusd::usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
+        archive
+            .add_layer(
+                "root.usda",
+                b"#usda 1.0\ndef Xform \"Model\" (references = @missing.usda@</Part>) {}\n",
+            )
+            .unwrap();
+        directory.insert_asset(
+            Path::new("broken.usdz"),
+            archive.finish().unwrap().into_inner(),
+        );
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load("fixture://broken.usdz");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle)).id();
+        tick_until(&mut app, |world| {
+            matches!(
+                world.get::<UsdSceneState>(root),
+                Some(UsdSceneState::Failed(_))
+            )
+        });
+    }
+
+    #[test]
+    fn loader_advertises_usd_extensions() {
+        let exts = UsdAssetLoader.extensions();
+        for e in ["usd", "usda", "usdc", "usdz"] {
+            assert!(exts.contains(&e), "loader handles .{e}");
+        }
+    }
+
+    /// End-to-end (minus the AssetServer): a `UsdScene` in `Assets` + a
+    /// `UsdSceneRoot` on an entity → the spawn system opens and
+    /// projects the stage as a child subtree.
+    #[test]
+    fn spawn_system_projects_scene_under_root() {
+        let usda = b"#usda 1.0\ndef Xform \"Root\"\n{\n    def Cube \"Box\" {}\n}\n";
+
+        let mut world = World::new();
+        world.insert_resource(SchemaRegistry::builtin());
+        world.insert_resource(Assets::<Mesh>::default());
+        world.insert_resource(Assets::<StandardMaterial>::default());
+        let mut scenes = Assets::<UsdScene>::default();
+        let handle = scenes.add(UsdScene {
+            source: UsdSource::new("test.usda", &usda[..]).unwrap(),
+            textures: default(),
+        });
+        world.insert_resource(scenes);
+
+        let root = world.spawn(UsdSceneRoot(handle)).id();
+        // The system is a plain `fn(&mut World)`, so call it directly.
+        spawn_usd_scenes(&mut world);
+
+        // Root is marked spawned so it isn't reprojected.
+        assert!(
+            world.get::<UsdSceneInstance>(root).is_some(),
+            "root marked as spawned"
+        );
+        // The stage projected: a Cube prim exists and has a mesh attached.
+        let mut q = world.query::<(&UsdPrimRef, Option<&Mesh3d>)>();
+        let paths: Vec<&str> = q.iter(&world).map(|(r, _)| r.path.as_str()).collect();
+        assert!(
+            paths.contains(&"/Root/Box"),
+            "cube prim projected, got {paths:?}"
+        );
+        let cube_has_mesh = q
+            .iter(&world)
+            .any(|(r, mesh)| r.path == "/Root/Box" && mesh.is_some());
+        assert!(cube_has_mesh, "cube prim got a Mesh3d");
+    }
 }

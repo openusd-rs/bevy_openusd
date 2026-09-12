@@ -1,0 +1,27 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    startTimeCode = 0
+    endTimeCode = 10
+)
+def Xform "Root" {
+    color3f[] primvars:displayColor = [(1,0,0), (0,1,0)] (interpolation = "constant")
+    int[] primvars:displayColor:indices.timeSamples = {0: [0], 10: [1]}
+    float[] primvars:displayOpacity (interpolation = "constant")
+    float[] primvars:displayOpacity.timeSamples = {0: [0.25], 10: [1]}
+    def BasisCurves "Inherited" {
+        uniform token type = "linear"
+        int[] curveVertexCounts = [2,2]
+        point3f[] points = [(-2,-1,0), (-2,1,0), (-1,-1,0), (-1,1,0)]
+    }
+    def BasisCurves "Uniform" {
+        uniform token type = "cubic"
+        uniform token basis = "bezier"
+        int[] curveVertexCounts = [4,4]
+        point3f[] points = [(1,-1,0), (0.5,-0.5,0), (0.5,0.5,0), (1,1,0),
+                           (2,-1,0), (2.5,-0.5,0), (2.5,0.5,0), (2,1,0)]
+        color3f[] primvars:displayColor = [(0,0,1), (1,1,0)] (interpolation = "uniform")
+        int[] primvars:displayColor:indices.timeSamples = {0: [1,0], 10: [0,1]}
+        float[] primvars:displayOpacity = [0.5,1] (interpolation = "uniform")
+    }
+}

@@ -1,0 +1,42 @@
+#usda 1.0
+(
+    defaultPrim = "PI"
+    upAxis = "Y"
+    startTimeCode = 0
+    endTimeCode = 10
+)
+def Scope "Library" {
+    token visibility = "invisible"
+    def Xform "Assembly" {
+        double3 xformOp:translate = (0,1,0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Mesh "A" {
+            point3f[] points = [(-1,0,0),(0,0,0),(0,1,0),(-1,1,0)]
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0,1,2,3]
+            uniform token subdivisionScheme = "none"
+            color3f[] primvars:displayColor = [(0.8,0.2,0.1)] (interpolation = "constant")
+        }
+        def Xform "Nested" {
+            double3 xformOp:translate.timeSamples = { 0: (0.2,0,0), 10: (0.2,1,0) }
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            def Mesh "B" {
+                point3f[] points = [(0,0,0),(1,0,0),(1,1,0),(0,1,0)]
+                int[] faceVertexCounts = [4]
+                int[] faceVertexIndices = [0,1,2,3]
+                uniform token subdivisionScheme = "none"
+                color3f[] primvars:displayColor = [(0.1,0.6,0.8)] (interpolation = "constant")
+                def GeomSubset "Part" {
+                    uniform token familyName = "materialBind"
+                    uniform token elementType = "face"
+                    int[] indices = [0]
+                }
+            }
+        }
+    }
+}
+def PointInstancer "PI" {
+    point3f[] positions = [(-1.5,0,0),(1.5,0,0)]
+    int[] protoIndices = [0,0]
+    rel prototypes = [</Library/Assembly>]
+}

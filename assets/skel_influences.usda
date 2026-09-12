@@ -1,0 +1,51 @@
+#usda 1.0
+(
+    defaultPrim = "Test"
+    upAxis = "Y"
+    startTimeCode = 0
+    endTimeCode = 10
+)
+
+def SkelRoot "Test"
+{
+    def Skeleton "Skel"
+    {
+        uniform token[] joints = ["Root", "Root/Tip"]
+        uniform matrix4d[] bindTransforms = [
+            ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)),
+            ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))
+        ]
+        uniform matrix4d[] restTransforms = [
+            ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)),
+            ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))
+        ]
+        rel skel:animationSource = </Test/Anim>
+    }
+    def SkelAnimation "Anim"
+    {
+        uniform token[] joints = ["Root", "Root/Tip"]
+        float3[] translations = [(0,0,0), (2,0,0)]
+        quatf[] rotations = [(1,0,0,0), (1,0,0,0)]
+        half3[] scales = [(1,1,1), (1,1,1)]
+    }
+    def Mesh "Bar" (prepend apiSchemas = ["SkelBindingAPI"])
+    {
+        rel skel:skeleton = </Test/Skel>
+        int[] primvars:skel:jointIndices = [0,1, 0,1, 0,1, 0,1] (
+            elementSize = 2
+            interpolation = "vertex"
+        )
+        float[] primvars:skel:jointWeights (
+            elementSize = 2
+            interpolation = "vertex"
+        )
+        float[] primvars:skel:jointWeights.timeSamples = {
+            0: [1,0, 1,0, 1,0, 1,0],
+            10: [0,1, 0,1, 0,1, 0,1]
+        }
+        point3f[] points = [(-1,0,0), (1,0,0), (1,2,0), (-1,2,0)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0,1,2,3]
+        uniform token subdivisionScheme = "none"
+    }
+}

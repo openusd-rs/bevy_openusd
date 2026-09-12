@@ -146,6 +146,30 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     }
     result.image_bytes = app.world().resource::<Assets<Image>>().iter()
         .map(|(_, image)| image.data.as_ref().map_or(0, Vec::len)).sum();
+    if std::env::var_os("USD_PROFILE_IMAGES").is_some() {
+        use std::hash::{Hash, Hasher};
+        let mut groups = std::collections::HashMap::new();
+        for (_, image) in app.world().resource::<Assets<Image>>().iter() {
+            let Some(data) = &image.data else { continue };
+            let size = image.texture_descriptor.size;
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            data.hash(&mut hash);
+            let key = (image.texture_descriptor.format, size.width, size.height,
+                size.depth_or_array_layers, data.len(), hash.finish());
+            let group = groups.entry(key).or_insert((0_usize, data));
+            if group.1 != data { return Err("image profiling hash collision".into()); }
+            group.0 += 1;
+        }
+        let unique: usize = groups.keys().map(|key| key.4).sum();
+        eprintln!("image_payload_groups={} hashed_unique_bytes={unique} retained_bytes={}", groups.len(), result.image_bytes);
+        let mut repeated: Vec<_> = groups.into_iter().filter(|(_, (count, _))| *count > 1)
+            .map(|(key, (count, _))| (key, count)).collect();
+        repeated.sort_by_key(|(key, count)| std::cmp::Reverse(key.4 * (count - 1)));
+        for (key, count) in repeated {
+            eprintln!("image_payload_repeat format={:?} size={}x{}x{} bytes={} copies={count} hash={}",
+                key.0, key.1, key.2, key.3, key.4, key.5);
+        }
+    }
     if bridge.view()?.document.document_id != view.document.document_id {
         return Err("idle updates replaced the editor document".into());
     }

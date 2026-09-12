@@ -6,6 +6,11 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 
 ## Current release blockers
 
+- The user's Kubota package currently exhausts GPU memory in the viewer, although
+  native Storm renders it. The headless editor retains 12.43 GB of image payloads,
+  with extensive repetition. Ropa renders successfully. Investigation and capture
+  evidence: `benchmarks/machine-texture-memory.md`.
+
 The viewer supports experimental order-independent transparency with
 the Rendering pane's Enable OIT button, or at startup with
 `USD_VIEWER_OIT=1 make run ARGS='/path/to/scene.usdz'`. Disabling it restores

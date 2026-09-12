@@ -3,6 +3,18 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Stress nested-package repair
+
+The prior nested-package repair timeout did not recur in 20 isolated executions
+or 10 complete library runs (498 tests each). The regression now exercises eight
+distinct failure/repair color cycles instead of two, retaining the same two live
+roots, entity/texture ownership checks and independent clock assertions. Both
+the extended isolated test and library run pass. No production reload behavior
+changed; the original intermittent failure is unresolved, not declared fixed.
+Logs: `/tmp/nested-repair-stress-{1..20}.log`,
+`/tmp/nested-repair-library-stress-{1..10}.log`,
+`/tmp/nested-repair-eight-{cycles,library}.log`.
+
 ## Cache unchanged rest tangent generation
 
 MeshRoute now uses a bounded CPU tangent cache with exact input comparison,

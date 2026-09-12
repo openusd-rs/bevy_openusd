@@ -1435,7 +1435,9 @@ def Material "Mat" {
         changed("bundle.usdz");
         tick_until(&mut app, |world| entities.iter().all(|entity|
             world.resource::<Assets<Image>>().get(&image_handle(world, *entity)).unwrap().data.as_deref() == Some([255, 255, 0, 255].as_slice())));
-        for pixel in [[0, 255, 0, 255], [0, 0, 255, 255]] {
+        for pixel in [[0, 255, 0, 255], [0, 0, 255, 255], [255, 0, 255, 255],
+            [0, 255, 255, 255], [255, 0, 0, 255], [255, 255, 0, 255],
+            [255, 255, 255, 255], [0, 0, 0, 255]] {
             let retained = entities.map(|entity| image_handle(app.world(), entity));
             directory.insert_asset(Path::new("bundle.usdz"), package(None));
             changed("bundle.usdz");

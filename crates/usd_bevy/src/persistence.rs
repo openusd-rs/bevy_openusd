@@ -30,6 +30,20 @@ fn directory_identity(path: &Path) -> std::path::PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+fn destination_hash(path: &Path) -> Result<Option<blake3::Hash>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            ensure!(metadata.file_type().is_file(), "save destination changed to a non-regular file");
+            ensure!(!metadata.permissions().readonly(), "save destination is read-only");
+            let mut hash = blake3::Hasher::new();
+            hash.update_reader(fs::File::open(path).context("read save destination")?)?;
+            Ok(Some(hash.finalize()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("inspect save destination content"),
+    }
+}
+
 fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Result<()> {
     let target = Path::new(filename);
     let extension = target.extension().and_then(|value| value.to_str())
@@ -43,6 +57,8 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).context("inspect save destination"),
     };
+    let baseline = destination_hash(target)?;
+    ensure!(permissions.is_some() == baseline.is_some(), "save conflict: destination changed during inspection");
     let parent = target.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
     #[cfg(unix)]
     let directory = fs::File::open(parent).context("open save directory")?;
@@ -51,7 +67,13 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
     write(temporary.path().to_str().context("save path is not UTF-8")?).context("export staged save")?;
     if let Some(permissions) = permissions { temporary.as_file().set_permissions(permissions)?; }
     temporary.as_file().sync_all().context("sync staged save")?;
-    temporary.persist(target).map_err(|error| error.error).context("publish staged save")?;
+    ensure!(destination_hash(target)? == baseline,
+        "save conflict: destination changed during export; external content was not replaced");
+    if baseline.is_some() {
+        temporary.persist(target).map_err(|error| error.error).context("publish staged save")?;
+    } else {
+        temporary.persist_noclobber(target).map_err(|error| error.error).context("publish new staged save without replacing another file")?;
+    }
     #[cfg(unix)]
     directory.sync_all().context("save published, but syncing its directory failed")?;
     Ok(())
@@ -59,6 +81,45 @@ fn write_atomic(filename: &str, write: impl FnOnce(&str) -> Result<()>) -> Resul
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn atomic_save_rejects_symlink_replacement_during_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("scene.usda");
+        let foreign = directory.path().join("foreign.usda");
+        std::fs::write(&path, "original").unwrap();
+        std::fs::write(&foreign, "foreign").unwrap();
+        let error = super::write_atomic(path.to_str().unwrap(), |staged| {
+            std::fs::write(staged, "editor output")?;
+            std::fs::remove_file(&path)?;
+            std::os::unix::fs::symlink(&foreign, &path)?;
+            Ok(())
+        }).unwrap_err();
+        assert!(error.to_string().contains("non-regular"), "{error:#}");
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&foreign).unwrap(), "foreign");
+    }
+
+    #[test]
+    fn atomic_save_rejects_destination_changes_during_export() {
+        for (original, external) in [(Some("original"), Some("external")),
+            (Some("original"), None), (None, Some("external"))] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("scene.usda");
+            if let Some(original) = original { std::fs::write(&path, original).unwrap(); }
+            let error = super::write_atomic(path.to_str().unwrap(), |staged| {
+                std::fs::write(staged, "editor output")?;
+                if let Some(external) = external { std::fs::write(&path, external)?; }
+                else { std::fs::remove_file(&path)?; }
+                Ok(())
+            }).unwrap_err();
+            assert!(error.to_string().contains("save conflict"), "{error:#}");
+            assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), external);
+            assert!(!std::fs::read_dir(directory.path()).unwrap().any(|entry|
+                entry.unwrap().file_name().to_string_lossy().starts_with(".usd-save-")));
+        }
+    }
+
     fn check_muted_layer_exports(native: bool) {
         use crate::editor::{EditorSession, SaveMode};
         let directory = tempfile::tempdir().unwrap();
@@ -866,7 +927,7 @@ def Scope "Model" (
     }
 
     #[test]
-    fn failed_publication_cleans_up_and_preserves_existing_directory() {
+    fn conflicting_directory_cleans_up_and_preserves_external_entry() {
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("scene.usda");
         let error = write_atomic(destination.to_str().unwrap(), |temporary| {
@@ -874,7 +935,7 @@ def Scope "Model" (
             fs::create_dir(&destination)?;
             Ok(())
         }).unwrap_err();
-        assert!(format!("{error:#}").contains("publish staged save"));
+        assert!(format!("{error:#}").contains("non-regular file"));
         assert!(destination.is_dir());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }

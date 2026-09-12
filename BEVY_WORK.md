@@ -3,6 +3,16 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Guard destination changes during export
+
+Staged saves now compare the destination's content before export and immediately
+before publication, rejecting edits, deletion, creation, and non-regular-file
+replacement. New destinations use no-clobber publication. Conflict exits clean
+up staged files and preserve external content. This is an optimistic guard, not
+an atomic compare-and-swap for existing files: an uncooperative writer can still
+change an existing destination after the final check. Loaded-document baselines
+and external edits made before save starts remain to be implemented.
+
 ## Serialize same-source asset loads
 
 A local, documented Bevy asset 0.19.1 patch orders reader acquisition and

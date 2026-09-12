@@ -1,5 +1,33 @@
 # Blended-skin preparation cost
 
+## Distinct-time cache retention
+
+At ba49bba runtime code, 1000 distinct seeks from 0.01 through 10 on the same
+grid give the following profiled editor preparation results (GPU first, CPU
+second; no concurrent builds/tests):
+
+| Mode | Median | p95 | Maximum | Retained tangent payload |
+|---|---:|---:|---:|---:|
+| GPU-prepared | 20.967 ms | 21.725 ms | 32.105 ms | 729648 bytes |
+| CPU | 19.381 ms | 19.908 ms | 28.469 ms | 729648 bytes |
+
+Both retain six mesh assets and zero unreferenced vertices, with no peak mesh
+count increase beyond six. GPU morph payload remains 1469232 bytes, CPU zero.
+Whole-process RSS increases about 5 MB in each run; this is not GPU memory or
+a bound for arbitrary assets. Logs `/tmp/tangent-cache-unique-{gpu,cpu}.log`.
+
+This fixture has a fixed two-joint palette with varying spatial weights and
+sparse animated morph data. Distinct time samples are not evidence of a fully
+animated large joint palette. GPU preparation remains slightly slower than CPU;
+no 60 Hz playback or GPU frame-rate claim follows.
+
+At time 2.37, both `target/unique-grid-237-{gpu,cpu}.png` were inspected and are
+RGB-exact across 921600 pixels. Compared to the prior time-5 GPU frame, 20 pixels
+differ (max RGB 186), confirming a changed rendered sample rather than a reused
+screenshot. Logs `/tmp/unique-grid-237-compare.log` and
+`/tmp/unique-grid-time-change.log`; the latter intentionally fails strict equality.
+No source implementation changed in this measurement step.
+
 ## Cache unchanged rest-mesh tangent generation
 
 MeshRoute assembles geometry without tangents and uses MeshTangentCache to reuse

@@ -3,6 +3,22 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## EXR source and package lifecycle
+
+The asset-system regression exr_dome_samples_reload_fail_and_recover_in_sources_and_packages
+passes for both watcher-enabled named memory sources and USDZ archives. It loads
+two sampled EXRs, seeks to time ten, replaces the selected sample, injects corrupt
+EXR bytes and repairs them. Failure publishes UsdSceneState::Failed while retaining
+the last valid radiance; repair publishes Ready with the new radiance on the same
+dome entity, without resetting the root clock. Log: /tmp/exr-lifecycle-test.log.
+The events use real AssetServer loading with synthetic source-change notifications,
+not native filesystem notifications or a new GPU reload capture.
+
+The full workspace gate including EXR and combined-normal fixture coverage
+passes 652 tests with 15 ignored across 33 suites; check-all and viewer build
+also pass. Logs: /tmp/post-exr-workspace-{tests,check}.log and
+/tmp/post-exr-viewer-build.log. No ignored test is counted as passing.
+
 ## Combined normal-map deformation acceptance
 
 The new skel_morph_tangent_normals fixture and composition regression cover

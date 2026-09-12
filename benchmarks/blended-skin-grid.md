@@ -1,5 +1,35 @@
 # Blended-skin preparation cost
 
+## Reuse joint normal inverses within a sample
+
+CPU normal skinning and GPU normal-correction preparation lazily cache each
+referenced joint inverse-transpose for the duration of one call. Unused singular
+joints are not evaluated; referenced singular joints still fail. Rigid bindings
+retain inversion of the blended matrix. CPU nonrigid normals also omit the
+unused blended position-matrix calculation. No state survives a time sample.
+
+One profiled 100-seek GPU-prepared pair on the same grid measured:
+
+| Revision | Median | p95 | Maximum |
+|---|---:|---:|---:|
+| Before | 38.232 ms | 40.082 ms | 40.696 ms |
+| After | 38.012 ms | 39.043 ms | 41.823 ms |
+
+This is effectively unchanged overall preparation cost, not a meaningful
+speedup claim. CPU tangent rebuilding remains. Logs:
+`/tmp/joint-normal-{before,after}-benchmark.log`.
+
+Both `target/joint-normal-grid-{gpu,cpu}.png` were inspected. CPU/GPU and
+before/after GPU comparisons are RGB-exact across 921600 pixels at tolerance 0;
+logs `/tmp/joint-normal-{grid-compare,before-after}.log`. Capture settings:
+time 5, /ReferenceCamera, forward MSAA Off, shadows off, unchanged grid source.
+
+496 library tests pass (18 ignored), all three native baked-deformation tests
+explicitly pass, check-all and release benchmark/capture builds pass. Logs:
+`/tmp/joint-normal-{tests,native,check,build}.log`. The cache regression covers
+lazy population, reuse, singular failure and a fresh cache for the next sample.
+Full workspace tests were not rerun for this bounded library change.
+
 ## Skip discarded rest tangents
 
 Mesh assembly now has an internal tangent-generation flag. Public conversion

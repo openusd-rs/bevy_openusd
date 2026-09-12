@@ -210,14 +210,17 @@ pub(crate) fn skin_normals(stage: &Stage, path: &Path, time: Option<f64>, normal
     anyhow::ensure!(count.checked_mul(stride) == Some(indices.len()) && indices.len() == weights.len(), "invalid normal influence count");
     anyhow::ensure!(indices.iter().all(|index| *index >= 0 && (*index as usize) < transforms.len())
         && weights.iter().all(|weight| weight.is_finite() && *weight >= 0.0), "invalid normal influences");
+    let mut normal_palette = vec![None; transforms.len()];
     for (&point, normal) in source_points.iter().zip(&mut normals.values) {
         let start = if skin.is_rigidly_deformed() { 0 } else { point * stride };
-        let matrix = (start..start+stride).fold(Mat4::ZERO, |matrix, slot|
-            matrix + transforms[indices[slot] as usize] * weights[slot]);
-        let normal_matrix = if skin.is_rigidly_deformed() { normal_skin_matrix(matrix)? } else {
+        let normal_matrix = if skin.is_rigidly_deformed() {
+            let matrix = (start..start+stride).fold(Mat4::ZERO, |matrix, slot|
+                matrix + transforms[indices[slot] as usize] * weights[slot]);
+            normal_skin_matrix(matrix)?
+        } else {
             let mut result = bevy::math::Mat3::ZERO;
             for slot in start..start+stride {
-                if weights[slot] != 0.0 { result += normal_skin_matrix(transforms[indices[slot] as usize])? * weights[slot]; }
+                if weights[slot] != 0.0 { result += cached_normal_skin_matrix(&transforms, &mut normal_palette, indices[slot] as usize)? * weights[slot]; }
             }
             result
         };
@@ -235,6 +238,13 @@ fn normal_skin_matrix(matrix: bevy::math::Mat4) -> anyhow::Result<bevy::math::Ma
     let normal = linear.inverse().transpose();
     anyhow::ensure!(normal.is_finite(), "nonfinite normal skin matrix");
     Ok(normal)
+}
+
+fn cached_normal_skin_matrix(matrices: &[bevy::math::Mat4], cache: &mut [Option<bevy::math::Mat3>], index: usize) -> anyhow::Result<bevy::math::Mat3> {
+    if let Some(matrix) = cache[index] { return Ok(matrix); }
+    let matrix = normal_skin_matrix(matrices[index])?;
+    cache[index] = Some(matrix);
+    Ok(matrix)
 }
 
 /// Apply the mesh's bound blend shapes to `rest` at `time`, per the canonical
@@ -540,6 +550,7 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
     let mut packed_indices = Vec::with_capacity(mesh.points.len());
     let mut packed_weights = Vec::with_capacity(mesh.points.len());
     let mut normal_corrections = Vec::with_capacity(mesh.points.len());
+    let mut normal_palette = vec![None; matrices.len()];
     for (indices, weights) in indices.chunks_exact(stride).zip(weights.chunks_exact(stride)) {
         anyhow::ensure!((weights.iter().sum::<f32>() - 1.0).abs() <= 1e-5, "GPU skinning requires normalized weights");
         let mut correction = bevy::math::Mat3::IDENTITY;
@@ -550,7 +561,7 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
             if !skin.is_rigidly_deformed() {
                 let mut native_normal = bevy::math::Mat3::ZERO;
                 for (&index, &weight) in indices.iter().zip(weights) {
-                    if weight != 0.0 { native_normal += normal_skin_matrix(matrices[index as usize])? * weight; }
+                    if weight != 0.0 { native_normal += cached_normal_skin_matrix(&matrices, &mut normal_palette, index as usize)? * weight; }
                 }
                 correction = bevy::math::Mat3::from_mat4(blended).transpose() * native_normal;
                 anyhow::ensure!(correction.is_finite(), "nonfinite normal correction");
@@ -573,6 +584,21 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn normal_palette_is_lazy_and_sample_local() {
+        use bevy::math::{Mat3, Mat4, Vec3};
+        let matrices = [Mat4::from_scale(Vec3::new(2.0, 1.0, 0.5)), Mat4::ZERO];
+        let mut cache = vec![None; matrices.len()];
+        let expected = super::normal_skin_matrix(matrices[0]).unwrap();
+        assert_eq!(super::cached_normal_skin_matrix(&matrices, &mut cache, 0).unwrap(), expected);
+        assert_eq!(cache, vec![Some(expected), None]);
+        assert_eq!(super::cached_normal_skin_matrix(&matrices, &mut cache, 0).unwrap(), expected);
+        assert!(super::cached_normal_skin_matrix(&matrices, &mut cache, 1).is_err());
+        assert!(cache[1].is_none());
+        let mut next_sample = vec![None; 2];
+        assert_eq!(super::cached_normal_skin_matrix(&[Mat4::IDENTITY; 2], &mut next_sample, 0).unwrap(), Mat3::IDENTITY);
+    }
+
     #[test]
     fn native_normal_fixture_matches_indexed_deformation() {
         let stages = ["skel_morph_reference.usda", "skel_morph_native_normals.usda"].map(|name| {

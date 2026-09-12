@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reuse sampled joint normal inverses
+
+CPU normals and GPU corrections now reuse joint inverse-transposes within one
+sample, preserving lazy singular-joint validation and rigid-binding behavior.
+Library tests (496), three native checks, check-all and release examples pass.
+Inspected CPU/GPU and before/after images are RGB-exact. Grid preparation stays
+near 38 ms; no meaningful overall speedup is claimed. Expensive CPU tangent work
+remains. Evidence: `benchmarks/blended-skin-grid.md`.
+
 ## Quantify uniform environment response
 
 Added a uniform EXR dome with intensities 1 and 2. Four inspected captures use

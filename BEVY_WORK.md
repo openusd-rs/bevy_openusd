@@ -3,6 +3,29 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Real 4K resize guard acceptance
+
+scripts/check_oit_resize.sh starts an isolated Xwayland viewer with OIT enabled,
+resizes its client to 3840x2160, checks actual X window dimensions and the guard
+warning, then restores 1440x920 and requires survival plus direct GPU readback.
+scripts/resize_window.c sends the low-level request to the exact X window ID;
+the harness selects exactly one Mara window on its private display. The helper
+compiles with -Wall -Wextra -Werror; invalid dimensions/display and shell syntax
+were checked through Make (/tmp/resize-cli-tests.log).
+
+The live gate passes in /tmp/oit-real-resize-restored.log. Inspected
+target/oit-real-resize-restored/restored.png shows OIT off, intact triangles and
+a readable wrapped explanation. The guard fired at intermediate target 2530x1423
+against the real 128MiB limit, before reaching 4K. large-window.txt independently
+confirms the client reached 3840x2160. Resize requests and viewer/compositor logs
+are retained in the same directory; owned sessions were cleaned up.
+
+The first harness attempt incorrectly required 3840x2160 in the warning and
+failed, although the guard had fired earlier. That failure remains in
+/tmp/oit-real-resize.log and target/oit-real-resize/. The corrected assertion
+accepts intermediate dimensions while still requiring actual 4K window geometry.
+This is native Xwayland resize acceptance, not every window-system backend.
+
 ## OIT device-buffer limit guard
 
 The viewer now checks OIT's shared target dimensions and fragment-node/head

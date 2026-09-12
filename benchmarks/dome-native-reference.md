@@ -77,6 +77,37 @@ The committed fixture was captured independently at both times in
 `target/dome-storm-exr-canonical-{0,10}/frame.png`; both show colored spheres and
 were inspected. Make-driven OIIO comparison against the original HDR passes.
 
+## Bevy cubemap handedness correction
+
+Bevy 0.19.1 environment_map.wgsl negates the sampling ray's Z after applying
+the inverse environment rotation. Its environment filter uses the conventional
+cube-face directions without that reflection. Our converter used those same
+face directions as USD world directions, leaving the final shader reflection
+uncompensated. Conversion now negates Z before sampling the USD latlong image;
+the USD longitude convention and authored rotation remain unchanged.
+
+`cubemap_texels_follow_bevy_shader_handedness` checks all 384 texels of an 8x8
+six-face cubemap against the USD sampler using the shader-reflected direction.
+It fails on the old implementation at face 0, x 0, y 0; after correction all nine
+environment-map tests pass. Logs: `/tmp/dome-handedness-before.log` and
+`/tmp/dome-handedness-tests.log`. The directional fixture's blue-sector assertion
+now addresses the negative-Z cube face used for a positive-Z world ray.
+
+The rebuilt release capture produced `target/dome-bevy-handedness-{0,10}.png`.
+Both were inspected: the blue metal reflection occupies the front-right region
+at 0 and left rim at 10, consistent with the native EXR captures. The old Bevy
+captures showed the opposite front/rim placement. This is directional fidelity
+evidence, not equal brightness or pixel parity: the native sphere tessellation,
+intensity, filtering and output response still differ. Production intensity and
+exposure were not changed. Capture logs: `/tmp/dome-bevy-handedness-{0,10}.log`.
+
+Full validation passes: make test-all (659 passed, 18 ignored, 33 suites),
+make check-all and make build, using offline Cargo. Logs:
+`/tmp/dome-handedness-{all-tests,check,viewer-build}.log`. Release capture build
+also passes (`/tmp/dome-handedness-build.log`). Both capture logs contain
+CAPTURE_OK with no WARN/ERROR. git diff --check passes. Ignored native tests
+were not explicitly rerun for this environment-only change.
+
 Validation: wrapper syntax passes through Make; invalid camera-light selection
 returns 2 without creating target/dome-invalid-light-probe; runtime settings
 confirm both on and off paths. Native flatten accepts the unit fixture. No Rust

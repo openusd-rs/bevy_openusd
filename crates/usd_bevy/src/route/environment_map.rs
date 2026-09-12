@@ -9,6 +9,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 /// Source sRGB pixels are linearized before bilinear filtering. Tint is linear;
 /// exposure and world rotation belong on the environment-light component.
 /// Sampling uses pixel centers, periodic longitude and clamped latitude.
+/// Cubemap Z is reflected to match Bevy's environment-light shader sampling.
 /// Faces are power-of-two, at most 1024 pixels; sources are at most 16M pixels.
 /// The output is suitable for Bevy's `GeneratedEnvironmentMapLight`.
 pub fn latlong_cubemap(source: &Image, face_size: u32, tint: [f32; 3]) -> anyhow::Result<Image> {
@@ -48,6 +49,7 @@ pub fn latlong_cubemap(source: &Image, face_size: u32, tint: [f32; 3]) -> anyhow
                 let u = 2.0 * (x as f32 + 0.5) / face_size as f32 - 1.0;
                 let v = 2.0 * (y as f32 + 0.5) / face_size as f32 - 1.0;
                 let direction = face_direction(face, u, v).normalize();
+                let direction = Vec3::new(direction.x, direction.y, -direction.z);
                 let rgb = sample(&pixels, size.width, size.height, direction) * Vec3::from_array(tint);
                 for value in [rgb.x, rgb.y, rgb.z, 1.0] {
                     anyhow::ensure!(value.is_finite() && value <= 65504.0, "environment radiance exceeds finite RGBA16Float range");
@@ -133,8 +135,31 @@ mod tests {
         assert!((positive.blue - positive.red).abs() < 0.001);
         assert!(negative.red > negative.blue);
         let cube = latlong_cubemap(&source, 4, [1.0; 3]).unwrap();
-        let diagonal = cube.get_color_at_3d(3, 1, 4).unwrap().to_linear();
+        let diagonal = cube.get_color_at_3d(0, 1, 5).unwrap().to_linear();
         assert!(diagonal.blue > diagonal.red);
+    }
+
+    #[test]
+    fn cubemap_texels_follow_bevy_shader_handedness() {
+        let source = Image::from_buffer(include_bytes!("../../../../assets/dome_directional.hdr"),
+            bevy::image::ImageType::Extension("hdr"), bevy::image::CompressedImageFormats::NONE,
+            false, bevy::image::ImageSampler::default(), bevy::asset::RenderAssetUsages::all()).unwrap();
+        let pixels: Vec<Vec3> = (0..2).flat_map(|y| (0..4).map(move |x| (x, y)))
+            .map(|(x, y)| { let c = source.get_color_at(x, y).unwrap().to_linear(); Vec3::new(c.red, c.green, c.blue) }).collect();
+        let cube = latlong_cubemap(&source, 8, [1.0; 3]).unwrap();
+        for face in 0..6 {
+            for y in 0..8 {
+                for x in 0..8 {
+                    let cube_ray = face_direction(face, 2.0 * (x as f32 + 0.5) / 8.0 - 1.0,
+                        2.0 * (y as f32 + 0.5) / 8.0 - 1.0).normalize();
+                    let world_ray = Vec3::new(cube_ray.x, cube_ray.y, -cube_ray.z);
+                    let expected = sample(&pixels, 4, 2, world_ray);
+                    let c = cube.get_color_at_3d(x, y, face as u32).unwrap().to_linear();
+                    assert!(Vec3::new(c.red, c.green, c.blue).abs_diff_eq(expected, 0.0002),
+                        "face={face} x={x} y={y}");
+                }
+            }
+        }
     }
 
     #[test]

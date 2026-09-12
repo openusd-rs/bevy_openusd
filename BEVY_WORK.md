@@ -3,6 +3,19 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Correct environment cubemap handedness
+
+The USD latlong converter now compensates for Bevy's environment shader Z
+reflection. A 384-texel regression fails before and passes after correction;
+all nine environment-map tests pass. Inspected release captures at dome
+rotations 0 and 180 now place the colored reflection in the same front/rim
+regions as native Storm's EXR reference. This does not establish brightness or
+pixel parity. Evidence and remaining qualifications:
+`benchmarks/dome-native-reference.md`.
+
+Full workspace gates pass: 659 tests, 18 ignored, 33 suites; check-all and
+viewer build pass. Logs: `/tmp/dome-handedness-{all-tests,check,viewer-build}.log`.
+
 ## Native dome reference isolation
 
 Added fixed-camera directional dome references and an optional native camera

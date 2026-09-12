@@ -143,3 +143,8 @@ The unchanged green cube's 160x190 region at (1000,480) has zero mean, RMS,
 and maximum pixel difference (`/tmp/reload-final-roi.log`). This is a controlled
 filesystem-edit demonstration, not a Blender export or large-machinery timing
 qualification. Build evidence: `/tmp/reload-final-release.log`.
+
+The final full workspace gate passes 698 tests across 33 suites, with 19
+ignored and zero failures (`/tmp/reload-final-workspace.log`). The paired UI
+capture finishes successfully with both region inspections and the runtime-log
+check passing (`/tmp/reload-final-ui.log`).

@@ -17,6 +17,26 @@ USD_PROFILE_ROUTES=1 make run RUN_WITH=env CARGO='cargo --offline' \
 | Subset route application | 74651.461 | 38340.342 |
 | Mesh route application | 1179.445 | 1185.241 |
 
+After adding RGBA8 base-color/alpha lookup, the same command measured
+66870.708ms open, 31607.697ms material application and 30730.591ms subset
+application. This is a further 23.8% reduction from the scalar-only measurement,
+not a repeated-sample benchmark. Mesh counts and geometry payloads are unchanged;
+material/image retention counts again differ. Log:
+`/tmp/ropa-alpha-lookup-profile.log`.
+
+The alpha fast path preserves sRGB bytes directly and uses a 256-entry transfer
+table for linear bytes. HDR and other formats retain the existing path. Tests
+cover every byte value, color-space conversion, alpha replacement, in-place
+source edits, missing/truncated bytes and unsupported formats. All 179 route
+tests pass in `/tmp/alpha-lookup-route-tests.log`.
+
+A matched OIT/shadows-off GPU capture at time zero is RGB-identical to the
+scalar-only capture: zero changed pixels out of 921600, tolerance zero.
+`target/ropa-alpha-lookup-gpu.png` was visually inspected; raw capture and diff
+artifacts share its prefix. Logs: `/tmp/ropa-alpha-lookup-{gpu,compare}.log`.
+This checks the alpha optimization on this view, not native renderer fidelity
+or the original scalar optimization against a pre-optimization GPU baseline.
+
 This single ordered pair shows a 47.4% lower headless open time. It includes
 texture decoding and projection, not GPU upload, shader compilation, UI startup
 or frame rate. No concurrent build/test was intentionally run during either

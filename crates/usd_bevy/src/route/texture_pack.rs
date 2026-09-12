@@ -58,22 +58,7 @@ pub(crate) fn base_color_alpha(world: &mut World, read: &ReadPreviewMaterial) ->
         Some(image)
     } else { None };
     let float = transformed.is_some();
-    let mut data = Vec::with_capacity(alpha.values.len() * if float { 8 } else { 4 });
-    for y in 0..alpha.height {
-        for x in 0..alpha.width {
-            if float {
-                let color = color.unwrap().get_color_at(x, y)?.to_linear();
-                super::color_texture::append_rgba(&mut data, [color.red, color.green, color.blue,
-                    alpha.values[(y * alpha.width + x) as usize] as f32 / 255.0])?;
-                continue;
-            }
-            let rgb = if let Some(image) = color {
-                let color = image.get_color_at(x, y)?.to_srgba();
-                [color.red, color.green, color.blue].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
-            } else { [255; 3] };
-            data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], alpha.values[(y * alpha.width + x) as usize]]);
-        }
-    }
+    let data = alpha_pixels(color, float, &alpha)?;
     let key = (alpha.width, alpha.height, float, data);
     if let Some(handle) = world.get_resource::<AlphaTextures>().and_then(|cache| cache.images.get(&key)) {
         if world.resource::<Assets<Image>>().contains(handle) { return Ok(Some(handle.clone())); }
@@ -93,6 +78,46 @@ pub(crate) fn base_color_alpha(world: &mut World, read: &ReadPreviewMaterial) ->
         cache.bytes += bytes;
     }
     Ok(Some(handle))
+}
+
+fn alpha_pixels(color: Option<&Image>, float: bool, alpha: &Plane) -> anyhow::Result<Vec<u8>> {
+    if !float && let Some(data) = rgba8_alpha(color, &alpha.values) { return Ok(data); }
+    let mut data = Vec::with_capacity(alpha.values.len() * if float { 8 } else { 4 });
+    for y in 0..alpha.height {
+        for x in 0..alpha.width {
+            if float {
+                let color = color.unwrap().get_color_at(x, y)?.to_linear();
+                super::color_texture::append_rgba(&mut data, [color.red, color.green, color.blue,
+                    alpha.values[(y * alpha.width + x) as usize] as f32 / 255.0])?;
+                continue;
+            }
+            let rgb = if let Some(image) = color {
+                let color = image.get_color_at(x, y)?.to_srgba();
+                [color.red, color.green, color.blue].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+            } else { [255; 3] };
+            data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], alpha.values[(y * alpha.width + x) as usize]]);
+        }
+    }
+    Ok(data)
+}
+
+fn rgba8_alpha(color: Option<&Image>, alpha: &[u8]) -> Option<Vec<u8>> {
+    let Some(image) = color else {
+        return Some(alpha.iter().flat_map(|&value| [255, 255, 255, value]).collect());
+    };
+    let srgb = match image.texture_descriptor.format {
+        TextureFormat::Rgba8UnormSrgb => true,
+        TextureFormat::Rgba8Unorm => false,
+        _ => return None,
+    };
+    let pixels = image.data.as_ref()?.get(..alpha.len().checked_mul(4)?)?;
+    let table: [u8; 256] = std::array::from_fn(|byte| {
+        if srgb { return byte as u8; }
+        let value = byte as f32 / 255.0;
+        (Color::linear_rgb(value, value, value).to_srgba().red.clamp(0.0, 1.0) * 255.0).round() as u8
+    });
+    Some(pixels.chunks_exact(4).zip(alpha).flat_map(|(pixel, &alpha)|
+        [table[pixel[0] as usize], table[pixel[1] as usize], table[pixel[2] as usize], alpha]).collect())
 }
 
 fn plane(world: &World, path: &Option<String>, channel: usize, srgb: bool, [scale, bias]: [f32; 2]) -> anyhow::Result<Option<Plane>> {
@@ -189,6 +214,34 @@ fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgba8_alpha_lookup_matches_pixel_conversion_and_live_edits() {
+        let alpha: Vec<_> = (0..=255_u8).rev().collect();
+        for format in [TextureFormat::Rgba8Unorm, TextureFormat::Rgba8UnormSrgb] {
+            let data = (0..=255_u8).flat_map(|value| [value, value.rotate_left(2), 255-value, 17]).collect();
+            let mut image = Image::new(Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+                TextureDimension::D2, data, format, bevy::asset::RenderAssetUsages::default());
+            for edited in [false, true] {
+                if edited { image.data.as_mut().unwrap().reverse(); }
+                let actual = rgba8_alpha(Some(&image), &alpha).unwrap();
+                let expected: Vec<_> = (0..256).flat_map(|i| {
+                    let color = image.get_color_at(i % 16, i / 16).unwrap().to_srgba();
+                    let [r, g, b] = [color.red, color.green, color.blue].map(|value|
+                        (value.clamp(0.0, 1.0) * 255.0).round() as u8);
+                    [r, g, b, alpha[i as usize]]
+                }).collect();
+                assert_eq!(actual, expected, "{format:?} edited={edited}");
+            }
+            assert!(rgba8_alpha(Some(&image), &[0; 257]).is_none());
+            image.data = None;
+            assert!(rgba8_alpha(Some(&image), &alpha).is_none());
+        }
+        assert_eq!(rgba8_alpha(None, &[0, 127, 255]).unwrap(), [255,255,255,0,255,255,255,127,255,255,255,255]);
+        let image = Image::new(Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            TextureDimension::D2, vec![0; 8], TextureFormat::Rgba16Float, bevy::asset::RenderAssetUsages::default());
+        assert!(rgba8_alpha(Some(&image), &[255]).is_none());
+    }
 
     #[test]
     fn rgba8_scalar_lookup_matches_pixel_conversion() {

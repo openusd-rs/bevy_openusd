@@ -11,6 +11,11 @@ the measured headless open from 167 to 88 seconds in one ordered pair, with
 exhaustive byte-domain conversion checks. GPU/UI readiness and full-scene
 fidelity remain separate acceptance requirements.
 
+The subsequent base-color/alpha lookup reduces the same headless open to
+67 seconds. Its matched Ropa GPU capture is RGB-identical to the scalar-only
+capture (921600 pixels, tolerance zero); all 179 route tests pass. Details and
+limitations are in the same benchmark report.
+
 ## Post-OIT workspace and deformation gate
 
 At d17f61b, Make test-all passes 645 tests across 33 suites, with 15 ignored;

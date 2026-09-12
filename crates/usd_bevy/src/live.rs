@@ -155,11 +155,13 @@ impl Drop for LiveStage {
 pub struct PrimEntities {
     by_path: HashMap<String, Entity>,
     by_entity: HashMap<Entity, String>,
+    projected_types: HashMap<String, Option<String>>,
 }
 
 impl PrimEntities {
     pub fn insert(&mut self, path: impl Into<String>, entity: Entity) {
         let path = path.into();
+        self.projected_types.remove(&path);
         self.by_entity.insert(entity, path.clone());
         self.by_path.insert(path, entity);
     }
@@ -175,6 +177,7 @@ impl PrimEntities {
     /// Remove a path's mapping, returning the entity it pointed at.
     pub fn remove_path(&mut self, path: &str) -> Option<Entity> {
         let e = self.by_path.remove(path)?;
+        self.projected_types.remove(path);
         self.by_entity.remove(&e);
         Some(e)
     }
@@ -182,6 +185,7 @@ impl PrimEntities {
     /// Remove an entity's mapping (e.g. on despawn).
     pub fn remove_entity(&mut self, entity: Entity) -> Option<String> {
         let p = self.by_entity.remove(&entity)?;
+        self.projected_types.remove(&p);
         self.by_path.remove(&p);
         Some(p)
     }
@@ -197,6 +201,12 @@ impl PrimEntities {
 
     pub fn is_empty(&self) -> bool {
         self.by_path.is_empty()
+    }
+
+    fn remember_type(&mut self, stage: &Stage, path: &str) {
+        if let Ok(prim) = stage.prim(path) && let Ok(kind) = prim.type_name() {
+            self.projected_types.insert(path.to_owned(), kind.map(|kind| kind.to_string()));
+        }
     }
 
     /// Every `(path, entity)` whose path is `prefix` or a descendant of it —
@@ -409,6 +419,7 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
             }
             // Every prim→component mapping goes through the registry.
             registry.project_prim(stage, path, world, entity);
+            map.remember_type(stage, path.as_str());
         },
     );
     bevy::log::info!(
@@ -459,6 +470,7 @@ pub fn project_stage_under(world: &mut World, stage: &Stage, parent: Entity) -> 
             .id();
         map.insert(path.as_str().to_string(), entity);
         registry.project_prim(stage, path, world, entity);
+        map.remember_type(stage, path.as_str());
     });
     map
 }
@@ -490,7 +502,10 @@ fn affects_projection_consumers(stage: &Stage, map: &PrimEntities, paths: &[&str
             let changed = prim_of(changed);
             changed == "/" || path == changed || path.strip_prefix(changed).is_some_and(|rest| rest.starts_with('/'))
         });
-        if in_changed_subtree && (!prim.is_valid().unwrap_or(false)
+        let prior = map.projected_types.get(path);
+        let shared_prior = prior.and_then(|kind| kind.as_deref()).is_some_and(|kind|
+            matches!(kind, "Material" | "Shader" | "NodeGraph" | "GeomSubset" | "Skeleton" | "SkelAnimation" | "BlendShape"));
+        if in_changed_subtree && (shared_prior || (!prim.is_valid().unwrap_or(false) && prior.is_none())
             || prim.type_name().ok().flatten().is_some_and(|name|
                 matches!(name.as_str(), "Material" | "Shader" | "NodeGraph" | "GeomSubset" | "Skeleton" | "SkelAnimation" | "BlendShape"))) {
             return true;
@@ -639,6 +654,7 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         };
         let prop_refs: Vec<&str> = props.iter().map(String::as_str).collect();
         registry.patch_prim(&live.stage, &p, world, entity, &prop_refs);
+        map.remember_type(&live.stage, &prim);
         if world.contains_resource::<AnimatedPrims>() {
             let animated = prim_is_animated(&live.stage, &p);
             if let Some(mut index) = world.get_resource_mut::<AnimatedPrims>() {
@@ -739,6 +755,7 @@ fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities,
             map.insert(path.clone(), entity);
             registry.project_prim(stage, &p, world, entity);
         }
+        map.remember_type(stage, path);
     }
     // Refresh the animated set for the reconciled prim set.
     if collect_animation { world.insert_resource(AnimatedPrims(animated)); }
@@ -1579,6 +1596,50 @@ def Material "OtherMat" {
         let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(map.entity("/A").unwrap()).unwrap().0;
         assert_eq!(world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().perceptual_roughness, 0.25);
         assert_eq!(world.entity(other).get_ref::<Transform>().unwrap().last_changed(), tick);
+    }
+
+    #[test]
+    fn removed_geometry_subtree_does_not_repatch_unrelated_animation() {
+        let source = crate::UsdSource::new("removed-geometry.usda", br#"#usda 1.0
+def Xform "Removed" { def Cube "Child" {} }
+def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
+"#.as_slice()).unwrap();
+        let live = LiveStage::new(source.open_stage().unwrap());
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let removed = [map.entity("/Removed").unwrap(), map.entity("/Removed/Child").unwrap()];
+        let other = map.entity("/Other").unwrap();
+        let tick = world.entity(other).get_ref::<Transform>().unwrap().last_changed();
+        let mesh = world.get::<Mesh3d>(other).unwrap().0.clone();
+        assert!(world.resource::<AnimatedPrims>().0.contains("/Other"));
+        world.increment_change_tick();
+        live.stage.remove_prim("/Removed").unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        for entity in removed { assert!(world.get_entity(entity).is_err()); }
+        assert!(map.entity("/Removed").is_none());
+        assert!(map.entity("/Removed/Child").is_none());
+        assert!(!map.projected_types.contains_key("/Removed"));
+        assert!(!map.projected_types.contains_key("/Removed/Child"));
+        assert_eq!(map.entity("/Other"), Some(other));
+        assert_eq!(world.entity(other).get_ref::<Transform>().unwrap().last_changed(), tick);
+        assert_eq!(world.get::<Mesh3d>(other).unwrap().0, mesh);
+        assert!(world.resource::<AnimatedPrims>().0.contains("/Other"));
+    }
+
+    #[test]
+    fn removed_shared_schema_retains_dependency_detection() {
+        let source = crate::UsdSource::new("removed-material.usda", b"#usda 1.0\ndef Material \"Shared\" {}\n".as_slice()).unwrap();
+        let live = LiveStage::new(source.open_stage().unwrap());
+        let mut world = World::new();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        live.stage.remove_prim("/Shared").unwrap();
+        assert!(affects_projection_consumers(&live.stage, &map, &["/Shared"]));
+        apply_changes(&mut world, &live, &mut map);
+        assert!(!map.projected_types.contains_key("/Shared"));
     }
 
     /// Open a real `.usda` from disk and project it — the full load path the

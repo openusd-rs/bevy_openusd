@@ -43,7 +43,7 @@ Current limitations, still being implemented:
   overwrite the new source. A changed dirty layer still blocks publication.
 - Candidate validation traverses a document copy even though publication applies
   only changed layer fields. Large-document timing is not qualified.
-- Structural projection is scoped, but removals and some shared material/skeleton/prototype
+- Structural projection is scoped, but shared-schema removals and some material/skeleton/prototype
   changes still use conservative full reconciliation. Entity identity is retained;
   strict minimum-consumer processing is not yet universal.
 - Metadata polling cannot detect a writer that preserves both mtime and size.
@@ -76,3 +76,17 @@ and the unrelated instancer's transform tick remains unchanged. This verifies
 projection isolation, not new screenshot or large-scene timing evidence.
 Logs: `/tmp/material-scope-tests.log`, `/tmp/material-scope-library-final.log`,
 `/tmp/material-scope-check-final.log`.
+
+## Geometry removal isolation
+
+The prim/entity map retains the last projected schema type and removes that
+metadata with its mappings. Removed ordinary geometry subtrees can therefore be
+reconciled locally; deleted shared schemas and unknown prior types still trigger
+dependency-safe conservative handling.
+
+The regression removes an Xform and its Cube child while retaining a separate
+animated cube's entity, mesh handle, transform change tick, and animation-index
+membership. A second test verifies that a deleted Material still requests
+dependency reconciliation. The library gate passes 530 tests with 19 ignored,
+and workspace check passes. Logs: `/tmp/removal-scope-tests.log`,
+`/tmp/removal-scope-library.log`, `/tmp/removal-scope-check.log`.

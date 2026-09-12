@@ -1089,6 +1089,21 @@ make capture-reference ARGS='--renderer Embree --disableGpu assets/subdivision_c
 Renderer availability depends on that native installation. Inspect the result;
 successful image writing does not prove that the native stage contained meshes.
 
+For native Storm material references on a headless Linux host with Weston
+Vulkan, Xwayland and Qt XCB installed, use an isolated display:
+
+```bash
+make --eval='native-storm:; @/bin/bash scripts/capture_native_storm.sh ASSET.usdz target/NEW_REFERENCE /Camera 0' native-storm
+```
+
+The output directory must be new. The tool writes `frame.png`, renderer and
+compositor logs, settings and exit status, then stops only its own processes.
+`USD_NATIVE_CAPTURE_TIMEOUT` bounds recording to 1–300 seconds (default 120).
+Camera and numeric time are optional; omitted time is zero. Inspect the image
+and diagnostics: successful recording is not lighting or pixel parity with
+Bevy. This isolated Xwayland path rendered Knoche materials successfully where
+the earlier offscreen Storm probe crashed.
+
 For a local-space triangle/normal isolation probe:
 
 ```bash

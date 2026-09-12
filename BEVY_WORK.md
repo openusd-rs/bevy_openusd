@@ -3,6 +3,36 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native Storm material reference capture
+
+`scripts/capture_native_storm.sh` runs native usdrecord in private headless
+Weston Vulkan/Xwayland with Qt XCB, bounded recording time and owned process-group
+cleanup. It refuses existing output directories, retains diagnostics, renders a
+numbered single frame and normalizes its name to frame.png. Explicit usdrecord
+--frames requires a numbered output template even for time zero.
+
+The Knoche capture at `target/storm-native-tool-fixed/frame.png` was inspected:
+red frame, black discs, yellow decals and the elevated white light bars are
+present. The native log identifies HdStormRendererPlugin with exit zero and no
+unsupported-Material warning. This supersedes the earlier offscreen Storm
+failure as a reference-rendering blocker; lighting is not matched and pixel
+parity is not claimed. The earlier failed tool run remains in
+`target/storm-native-tool/` with its output-template diagnostic.
+
+Validation includes a real Knoche render, shell syntax, existing-directory
+rejection and git diff --check. These are capture-tool checks, not a new full
+Rust gate. The deformation/environment acceptance checklist remains open.
+
+The final script also captured Oxbo successfully at
+`target/oxbo-storm-reference-fixed/frame.png`; its log identifies Storm without
+material warnings. Both that image and `target/oxbo-reference-bevy.png` were
+inspected. Framing and major geometry agree, but Bevy is brighter and has more
+visible fine stippling along panels and wheels. Lighting/background differ,
+so this does not isolate the cause or establish material parity. A prior Oxbo
+attempt rendered its numbered image but failed during postprocessing because
+PATH's bash resolves to Oslo with nullglob disabled. The script no longer
+requires nullglob and the documented invocation explicitly uses /bin/bash.
+
 ## Post-startup-fix full and native gates
 
 At 7e67bc4, make test-all passes 654 tests with 15 ignored across 33 suites.

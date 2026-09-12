@@ -1,0 +1,17 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+def Xform "Root" (
+    variants = { string choice = "a" }
+    prepend variantSets = "choice"
+) {
+    variantSet "choice" = {
+        "a" { rel links = </A> }
+        "b" { rel links = </B> }
+    }
+}
+def Cube "A" {
+    double size = 1
+}
+def Scope "B" {}

@@ -1,0 +1,62 @@
+#usda 1.0
+(
+    defaultPrim = "Showcase"
+    upAxis = "Y"
+    metersPerUnit = 1
+    startTimeCode = 0
+    endTimeCode = 60
+    timeCodesPerSecond = 24
+)
+
+def Xform "Showcase" (
+    prepend references = @animation_showcase.usda@</Showcase> (scale = 6)
+) {
+    over "ChangingCube" {
+        double3 xformOp:translate.timeSamples = { 0: (-3,0.5,-1.5), 60: (-3,1,-1.5) }
+    }
+    over "GrowingPrototypes" {
+        point3f[] positions = [(-0.5,0,-1.5), (1.5,0,-1.5), (3.5,0,-1.5)]
+    }
+    def SkelRoot "Skeleton" (
+        prepend references = @skel_test_simple.usda@</Test>
+    ) {
+        double3 xformOp:translate = (-3,0,1.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        over "Bar" {
+            rel material:binding = </Showcase/Materials/Animated>
+        }
+    }
+    def SkelRoot "Morph" (
+        prepend references = @morph_animation.usda@</Test> (scale = 6)
+    ) {
+        double3 xformOp:translate = (-0.5,0,1.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        over "Face" {
+            bool doubleSided = true
+            rel material:binding = </Showcase/Materials/Animated>
+        }
+    }
+    def Sphere "Metal" {
+        double radius = 0.8
+        double3 xformOp:translate = (3,0.8,1.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </Showcase/Materials/Metallic>
+    }
+    over "Materials" {
+        def Material "Metallic" {
+            token outputs:surface.connect = </Showcase/Materials/Metallic/Surface.outputs:surface>
+            def Shader "Surface" {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5,0.5,0.5)
+                float inputs:metallic = 1
+                float inputs:roughness = 0.2
+                token outputs:surface
+            }
+        }
+    }
+    def DomeLight "Environment" {
+        asset inputs:texture:file = @dome_directional.hdr@
+        token inputs:texture:format = "latlong"
+        float inputs:intensity = 10000
+    }
+}

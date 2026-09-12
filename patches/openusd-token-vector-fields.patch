@@ -1,0 +1,165 @@
+--- a/crates/openusd/src/usdc/writer.rs
++++ b/crates/openusd/src/usdc/writer.rs
+@@ -127,8 +127,26 @@
+                     } else {
+                         name
+                     };
++                    let rep = match (&*token, &value) {
++                        ("subLayers", Value::StringVec(items)) => self.write_string_vec(Type::StringVector, items)?,
++                        ("variantSetNames", Value::TokenListOp(op)) => {
++                            self.write_listop(Type::StringListOp, op, |writer, items| {
++                                writer.write_count(items.len() as u64)?;
++                                for item in items {
++                                    let index = writer.intern_string(item.as_str());
++                                    writer.write_pod(&index)?;
++                                }
++                                Ok(())
++                            })?
++                        }
++                        (
++                            "primChildren" | "properties" | "variantChildren" | "variantSetChildren"
++                            | "expressionChildren" | "mapperArgChildren" | "primOrder" | "propertyOrder",
++                            Value::TokenVec(items),
++                        ) => self.write_token_vec(Type::TokenVector, items)?,
++                        _ => self.write_value(&value)?,
++                    };
+                     let token_idx = self.tokens.intern(token);
+-                    let rep = self.write_value(&value)?;
+                     let field_idx = self.fields.intern((token_idx, rep.0));
+                     self.fieldsets.push(Some(field_idx));
+                 }
+@@ -814,15 +832,12 @@
+
+     fn write_token_vec(&mut self, ty: Type, v: &[tf::Token]) -> Result<ValueRep, FormatError> {
+         let off = self.pos()?;
+-        // Token arrays: just write the indices (no inner count for the
+-        // Type::Token array path — reader does `unpack_array_len` then
+-        // `read_vec::<u32>(count)`).
+         self.write_count(v.len() as u64)?;
+         for t in v {
+             let idx = self.tokens.intern(t.to_string());
+             self.write_pod(&idx)?;
+         }
+-        Ok(rep_heap(ty, off, true))
++        Ok(rep_heap(ty, off, ty != Type::TokenVector))
+     }
+
+     fn write_string_vec<S: AsRef<str>>(&mut self, ty: Type, v: &[S]) -> Result<ValueRep, FormatError> {
+@@ -832,7 +847,7 @@
+             let sidx = self.intern_string(s.as_ref());
+             self.write_pod(&sidx)?;
+         }
+-        Ok(rep_heap(ty, off, true))
++        Ok(rep_heap(ty, off, ty != Type::StringVector))
+     }
+
+     fn write_dictionary(&mut self, d: &HashMap<String, Value>) -> Result<ValueRep, FormatError> {
+@@ -1158,3 +1173,108 @@
+     out.extend_from_slice(&lz4_flex::compress(input));
+     out
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::sdf::{Data, SpecType};
++    use std::io::Cursor;
++
++    #[test]
++    fn sublayer_paths_use_string_vectors_not_arrays() {
++        for count in [0, 1, 3] {
++            let mut data = Data::new();
++            let root = Path::abs_root();
++            data.create_spec(root.clone(), SpecType::PseudoRoot);
++            let paths: Vec<String> = (0..count).map(|i| format!("layer{i}.usda")).collect();
++            data.set_field(&root, "subLayers", Value::StringVec(paths.clone()));
++            data.set_field(&root, "customStrings", Value::StringVec(paths.clone()));
++            let mut output = Cursor::new(Vec::new());
++            CrateWriter::write(&data, &mut output).unwrap();
++            let bytes = output.into_inner();
++            let file = super::super::CrateFile::open(Cursor::new(&bytes)).unwrap();
++            for field in &file.fields {
++                let array = file.tokens[field.token_index] == "customStrings";
++                assert_eq!(
++                    field.value_rep.ty().unwrap(),
++                    if array { Type::String } else { Type::StringVector }
++                );
++                assert_eq!(field.value_rep.is_array(), array);
++            }
++            let reopened = super::super::CrateData::open(Cursor::new(bytes), true).unwrap();
++            assert_eq!(
++                reopened.get_field(&root, "subLayers").unwrap().into_owned(),
++                Value::StringVec(paths)
++            );
++        }
++    }
++
++    #[test]
++    fn variant_set_names_use_string_listops() {
++        for operation in ["", "prepend ", "append ", "delete ", "add ", "reorder "] {
++            let source = format!("#usda 1.0\ndef Xform \"Root\" (\n{operation}variantSets = [\"look\"]\n) {{}}\n");
++            let data = crate::usda::parse(&source).unwrap();
++            let path = Path::new("/Root").unwrap();
++            let input = data.get_field(&path, "variantSetNames").unwrap().into_owned();
++            let Value::TokenListOp(input) = input else {
++                panic!("expected parser token list-op")
++            };
++            let expected = Value::StringListOp(input.map(|token| token.to_string()));
++            let mut output = Cursor::new(Vec::new());
++            CrateWriter::write(&data, &mut output).unwrap();
++            let bytes = output.into_inner();
++            let file = super::super::CrateFile::open(Cursor::new(&bytes)).unwrap();
++            let field = file
++                .fields
++                .iter()
++                .find(|field| file.tokens[field.token_index] == "variantSetNames")
++                .unwrap();
++            assert_eq!(field.value_rep.ty().unwrap(), Type::StringListOp);
++            let reopened = super::super::CrateData::open(Cursor::new(bytes), true).unwrap();
++            assert_eq!(
++                reopened.get_field(&path, "variantSetNames").unwrap().into_owned(),
++                expected
++            );
++        }
++    }
++
++    #[test]
++    fn structural_token_vectors_keep_their_wire_type() {
++        let names = [
++            "primChildren",
++            "propertyChildren",
++            "variantChildren",
++            "variantSetChildren",
++            "expressionChildren",
++            "mapperArgChildren",
++            "primOrder",
++            "propertyOrder",
++        ];
++        for count in [0, 1, 3] {
++            let mut data = Data::new();
++            let root = Path::abs_root();
++            data.create_spec(root.clone(), SpecType::PseudoRoot);
++            let items: Vec<tf::Token> = (0..count).map(|i| format!("item{i}").into()).collect();
++            for name in names {
++                data.set_field(&root, name, Value::TokenVec(items.clone()));
++            }
++            data.set_field(&root, "customTokens", Value::TokenVec(items));
++            let mut output = Cursor::new(Vec::new());
++            CrateWriter::write(&data, &mut output).unwrap();
++            output.set_position(0);
++            let file = super::super::CrateFile::open(output).unwrap();
++            assert_eq!(file.fields.len(), names.len() + 1);
++            for field in &file.fields {
++                let name = &file.tokens[field.token_index];
++                let array = name == "customTokens";
++                assert_eq!(
++                    field.value_rep.ty().unwrap(),
++                    if array { Type::Token } else { Type::TokenVector },
++                    "{name}"
++                );
++                assert_eq!(field.value_rep.is_array(), array, "{name}");
++                assert!(!field.value_rep.is_inlined(), "{name}");
++            }
++        }
++    }
++}

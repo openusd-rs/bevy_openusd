@@ -1,0 +1,10 @@
+#usda 1.0
+(
+    subLayers = [@skel_morph_normals.usda@]
+)
+over "Test" {
+    over "Face" {
+        normal3f[] primvars:normals = [(0,0,1), (0.6,0,0.8)] (interpolation = "faceVarying")
+        int[] primvars:normals:indices = [0,0,0,1,1,1]
+    }
+}

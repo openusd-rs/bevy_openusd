@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    subLayers = [@material_subsets.usda@]
+)
+over "Panels" {
+    half xformOp:translateX = 1
+    float xformOp:translateY = 0.5
+    double xformOp:translateZ = -2
+    double xformOp:rotateY = 30
+    half xformOp:scaleX = 1.5
+    float xformOp:scaleY = 0.5
+    double xformOp:scaleZ = 2
+    uniform token[] xformOpOrder = ["xformOp:translateX", "xformOp:translateY", "xformOp:translateZ", "xformOp:rotateY", "xformOp:scaleX", "xformOp:scaleY", "xformOp:scaleZ"]
+}

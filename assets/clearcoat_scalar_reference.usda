@@ -1,0 +1,13 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    subLayers = [@clearcoat_texture.usda@]
+)
+over "Matte" {
+    over "Shader" {
+        float inputs:clearcoat.connect = None
+        float inputs:clearcoat = 1
+        float inputs:clearcoatRoughness.connect = None
+        float inputs:clearcoatRoughness = 0.2
+    }
+}

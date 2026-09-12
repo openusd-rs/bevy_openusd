@@ -1,0 +1,12 @@
+#usda 1.0
+(
+    subLayers = [@transparency_order.usda@]
+    defaultPrim = "OrderTest"
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+over "OrderTest" {
+    over "Triangles" {
+        int[] faceVertexIndices = [3,4,5,0,1,2]
+    }
+}

@@ -1,0 +1,23 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    startTimeCode = 0
+    endTimeCode = 10
+)
+
+def Xform "Root" {
+    color3f[] primvars:displayColor = [(1,0,0), (0,1,0)] (interpolation = "constant")
+    int[] primvars:displayColor:indices.timeSamples = {0: [0], 10: [1]}
+    float[] primvars:displayOpacity (interpolation = "constant")
+    float[] primvars:displayOpacity.timeSamples = {0: [0.25], 10: [1]}
+    def Points "Inherited" {
+        point3f[] points = [(-2,0,0), (-1,0,0)]
+    }
+    def Points "Local" {
+        point3f[] points = [(1,0,0), (2,0,0)]
+        color3f[] primvars:displayColor = [(0,0,1), (1,1,0)] (interpolation = "vertex")
+        int[] primvars:displayColor:indices.timeSamples = {0: [1,0], 10: [0,1]}
+        float[] primvars:displayOpacity = [1,0.5] (interpolation = "varying")
+        int[] primvars:displayOpacity:indices = [1,0]
+    }
+}

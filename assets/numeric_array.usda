@@ -1,0 +1,7 @@
+#usda 1.0
+(
+    upAxis = "Y"
+)
+def Cube "Root" {
+    color3f[] primvars:displayColor = [(0.1, 0.6, 1)]
+}

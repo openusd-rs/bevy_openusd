@@ -7,7 +7,7 @@
     endTimeCode = 60
     timeCodesPerSecond = 24
     framesPerSecond = 24
-    doc = "Minimal skinning + blendshape test. Two-joint chain (root + tip), one mesh (a tall box) skinned to the chain, an animation that rotates the tip joint 90 degrees over a second. If our pipeline renders this correctly the cube should bend visibly. Used to bisect issues observed with Pixar's HumanFemale."
+    doc = "Closed segmented box skinned to a two-joint chain. The tip rotates 90 degrees at time code 30 and returns at time code 60."
 )
 
 def SkelRoot "Test"
@@ -70,20 +70,23 @@ def SkelRoot "Test"
             (-0.25, 2, -0.25), (0.25, 2, -0.25), (0.25, 2, 0.25), (-0.25, 2, 0.25),
             (-0.25, 3, -0.25), (0.25, 3, -0.25), (0.25, 3, 0.25), (-0.25, 3, 0.25)
         ]
-        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]
+        uniform token subdivisionScheme = "none"
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]
         int[] faceVertexIndices = [
             0, 1, 2, 3,
-            4, 5, 6, 7,
-            8, 9, 10, 11,
-            12, 13, 14, 15,
-            0, 1, 5, 4,
-            1, 2, 6, 5,
-            2, 3, 7, 6,
-            3, 0, 4, 7,
-            4, 5, 9, 8,
-            5, 6, 10, 9,
-            8, 9, 13, 12,
-            12, 13, 14, 15
+            12, 15, 14, 13,
+            0, 4, 5, 1,
+            1, 5, 6, 2,
+            2, 6, 7, 3,
+            3, 7, 4, 0,
+            4, 8, 9, 5,
+            5, 9, 10, 6,
+            6, 10, 11, 7,
+            7, 11, 8, 4,
+            8, 12, 13, 9,
+            9, 13, 14, 10,
+            10, 14, 15, 11,
+            11, 15, 12, 8
         ]
     }
 }

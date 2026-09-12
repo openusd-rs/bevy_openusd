@@ -1,0 +1,17 @@
+#usda 1.0
+(
+    subLayers = [@subdivision_cube.usda@]
+    defaultPrim = "RoundedCube"
+    startTimeCode = 0
+    endTimeCode = 3
+)
+over "RoundedCube" {
+    int[] creaseIndices = [0,1, 0,3, 0,4, 1,2, 1,5, 2,3, 2,6, 3,7, 4,5, 4,7, 5,6, 6,7]
+    int[] creaseLengths = [2,2,2,2,2,2,2,2,2,2,2,2]
+    float[] creaseSharpnesses.timeSamples = {
+        0: [0,0,0,0,0,0,0,0,0,0,0,0],
+        1: [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5],
+        2: [2,2,2,2,2,2,2,2,2,2,2,2],
+        3: [10,10,10,10,10,10,10,10,10,10,10,10]
+    }
+}

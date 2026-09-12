@@ -1,77 +1,67 @@
-//! `usd_bevy` — load OpenUSD into Bevy + drive a Rapier f64 world.
+//! `usd_bevy` — OpenUSD → Bevy as a **live editor**.
 //!
-//! Single Bevy crate that subsumes:
-//! - the asset loader (`UsdAsset` / `UsdLoader`) and scene projection,
-//! - the marker components (`markers::*` — internal module),
-//! - the Rapier physics adapter (`physics::*` — wraps `usd_rapier`).
+//! The composed USD stage is the source of truth: [`live`] projects it into
+//! Bevy entities and keeps them in sync off openusd's `StageSink`, [`authoring`]
+//! applies edits + persistence, and [`read`] decodes the stage. Entities carry
+//! [`UsdPrimRef`] linking them back to their prim path.
 
-pub mod anim;
-mod asset;
-mod build;
-pub mod curves;
-mod light;
-pub mod markers;
-mod material;
+// Let the `usd!` macro's generated `::usd_bevy::…` paths resolve inside this
+// crate's own tests/examples too.
+extern crate self as usd_bevy;
+
+pub mod asset;
+pub mod authoring;
+pub mod editor;
+pub mod instance;
+pub mod live;
 pub mod mesh;
-pub mod nurbs_patch;
-pub mod physics;
-pub(crate) mod physics_attach;
+mod persistence;
+pub mod subdivision;
+mod subdivision_normals;
 pub mod prim_ref;
-pub mod skel_anim;
-pub mod tetmesh;
-mod texture;
+pub mod read;
+pub mod reload;
+pub mod route;
+pub mod snippet;
+pub mod source;
+pub mod sync;
+#[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+pub mod watcher;
 
-pub use asset::{
-    LightTally, StageCamera, UsdAsset, UsdLoader, UsdLoaderError, UsdLoaderSettings,
-    VariantSelection, VariantSet, author_variant_session_layer, parse_variant_label, variant_label,
-};
-pub use mesh::{mesh_from_usd, mesh_from_usd_subset};
-// Marker components are part of this crate's public API. Living in
-// `markers` keeps the source organised; `pub use` here flattens the
-// import path for downstream callers (intra-crate API surface, not a
-// shim around an upstream crate).
-pub use markers::*;
-pub use prim_ref::{
-    UsdCustomAttrs, UsdDisplayName, UsdKind, UsdLocalExtent, UsdPrimRef, UsdProcedural, UsdPurpose,
-    UsdSpatialAudio,
-};
+pub use asset::{UsdAssetLoader, UsdAssetPlugin, UsdScene, UsdSceneRoot, UsdSceneState};
+pub use source::UsdSource;
+pub use prim_ref::UsdPrimRef;
+pub use route::{DisplayPurposes, PrimRoute, RouteCtx, SchemaRegistry};
+/// The inline-USD macro (see [`snippet::UsdSnippet`]).
+pub use usd_macro::usd;
 
 use bevy::app::{App, Plugin};
-use bevy::asset::AssetApp;
-use bevy::scene::Scene;
 
-/// Registers the [`UsdAsset`] type, the [`UsdLoader`], the
-/// `UsdPrimRef` reflect registration, and every marker component
-/// from [`markers`] so projected scenes clone through `SceneRoot`.
+/// Registers the [`UsdPrimRef`] reflect type and installs the built-in
+/// [`SchemaRegistry`] (transform / visibility / mesh / reflect routes). Pair
+/// with [`live::LiveStagePlugin`] (which runs the project + reproject loop).
+///
+/// Apps that want their own components authorable from USD add routes after
+/// this plugin: `app.world_mut().resource_mut::<SchemaRegistry>().register(..)`
+/// — or, for the reflect route, just `app.register_type::<MyComponent>()`.
 #[derive(Default)]
 pub struct UsdPlugin;
 
 impl Plugin for UsdPlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<Scene>()
-            .init_asset::<UsdAsset>()
-            .init_asset_loader::<UsdLoader>()
-            .register_type::<UsdPrimRef>()
-            .register_type::<UsdLocalExtent>()
-            .register_type::<UsdKind>()
-            .register_type::<UsdPurpose>()
-            .register_type::<prim_ref::UsdSkelAnimDriver>()
-            .register_type::<prim_ref::UsdBlendShapeBinding>()
-            .register_type::<markers::UsdPhysicsScene>()
-            .register_type::<markers::UsdRigidBody>()
-            .register_type::<markers::UsdMass>()
-            .register_type::<markers::UsdCollider>()
-            .register_type::<markers::UsdColliderShape>()
-            .register_type::<markers::UsdCollisionApprox>()
-            .register_type::<markers::UsdPhysicsMaterial>()
-            .register_type::<markers::UsdArticulationRoot>()
-            .register_type::<markers::UsdPhysicsJoint>()
-            .register_type::<markers::UsdJointKind>()
-            .register_type::<markers::UsdJointLimit>()
-            .register_type::<markers::UsdJointDrive>()
-            .register_type::<markers::UsdDof>()
-            .register_type::<markers::UsdDriveType>()
-            .register_type::<markers::UsdCollisionGroup>()
-            .register_type::<markers::UsdCollisionFilter>();
+        route::xform::configure(app);
+        route::configure_texture_caches(app);
+        app.register_type::<UsdPrimRef>();
+        if !app.world().contains_resource::<SchemaRegistry>() {
+            app.insert_resource(SchemaRegistry::builtin());
+        }
+        // Intern projected meshes so identical prims share one GPU asset (6d).
+        app.init_resource::<route::cache::ProjectionCache>();
+        app.add_systems(bevy::prelude::Last, route::cache::prune_mesh_cache);
+        app.init_resource::<route::cache::MaterialCache>();
+        app.add_systems(bevy::prelude::Last, route::cache::prune_material_cache);
+        // Which USD `purpose` classes are displayed (Phase A). Default: show
+        // proxy, hide render + guide.
+        app.init_resource::<DisplayPurposes>();
     }
 }

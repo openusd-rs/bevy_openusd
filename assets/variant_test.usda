@@ -1,0 +1,18 @@
+#usda 1.0
+
+def Xform "Prop" (
+    prepend variantSets = "look"
+    variants = {
+        string look = "red"
+    }
+)
+{
+    variantSet "look" = {
+        "red" {
+            custom double bevy:Health:max = 100
+        }
+        "blue" {
+            custom double bevy:Health:max = 250
+        }
+    }
+}

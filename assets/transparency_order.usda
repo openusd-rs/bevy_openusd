@@ -1,0 +1,21 @@
+#usda 1.0
+(
+    defaultPrim = "OrderTest"
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+def Xform "OrderTest" {
+    def Mesh "Triangles" {
+        uniform token subdivisionScheme = "none"
+        uniform bool doubleSided = true
+        point3f[] points = [(-1,0,0.2), (1,0,0.2), (0,2,0.2), (-1,0,0), (1,0,0), (0,2,0)]
+        int[] faceVertexCounts = [3,3]
+        int[] faceVertexIndices = [0,1,2,3,4,5]
+        color3f[] primvars:displayColor = [(1,0,0),(1,0,0),(1,0,0),(0,0,1),(0,0,1),(0,0,1)] (
+            interpolation = "vertex"
+        )
+        float[] primvars:displayOpacity = [0.5] (
+            interpolation = "constant"
+        )
+    }
+}

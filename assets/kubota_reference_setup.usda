@@ -1,0 +1,20 @@
+#usda 1.0
+(
+    upAxis = "Z"
+    metersPerUnit = 1
+)
+def Camera "ReferenceCamera"
+{
+    float focalLength = 50
+    float verticalAperture = 41.421356
+    float horizontalAperture = 73.637966
+    double2 clippingRange = (0.1, 10000)
+    matrix4d xformOp:transform = ((0.832050294338,0.554700196225,0.000000000000,0),(-0.170769807152,0.256154710728,0.951431782703,0),(0.527759396560,-0.791639094840,0.307859647993,0),(4.2,-6.3,3.95,1))
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}
+def DomeLight "ReferenceDome"
+{
+    asset inputs:texture:file = @dome_warm.exr@
+    token inputs:texture:format = "latlong"
+    float inputs:intensity = 10
+}

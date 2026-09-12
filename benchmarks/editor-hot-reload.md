@@ -125,3 +125,11 @@ new original PNG appears and loads its new pixels, not cached pixels. Eleven
 focused editor reload tests pass (`/tmp/texture-retirement-focused.log`);
 library and check evidence are in `/tmp/texture-retirement-library-final.log`
 and `/tmp/texture-retirement-check.log`.
+
+## Payload-state preservation
+
+Reload candidates inherit the live stage's payload load rules and interpolation
+mode before composition validation. The regression keeps a missing payload
+unloaded while applying a local cube edit, preserving held interpolation.
+Validation: 533 library tests pass (19 ignored), and workspace check passes
+(`/tmp/reload-final-library.log`, `/tmp/reload-final-check.log`).

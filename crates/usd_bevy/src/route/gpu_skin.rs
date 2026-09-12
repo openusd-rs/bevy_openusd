@@ -58,8 +58,9 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
     let sample = crate::read::skel::gpu_skin_sample(ctx.stage, ctx.path, ctx.time)?;
     let skinned_tangents = read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY);
-    let mut mesh = crate::mesh::assemble_mesh(&read, None, !skinned_tangents);
-    let morph_weights = if crate::read::skel::has_blend_shapes(ctx.stage, ctx.path) {
+    let has_morphs = crate::read::skel::has_blend_shapes(ctx.stage, ctx.path);
+    let mut mesh = crate::mesh::assemble_mesh(&read, None, !skinned_tangents && !has_morphs);
+    let morph_weights = if has_morphs {
         Some(super::gpu_morph::prepare(ctx, &read, &mut mesh, !skinned_tangents)?)
     } else { None };
     let source_points = crate::mesh::vertex_point_indices(&read);

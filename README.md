@@ -627,56 +627,56 @@ while preserving composition; it does not reproduce the source archive layout.
 with embedded PNG materials, plus an independent constant-color reference;
 run it through `make run` with a new output directory.
 Add `--export` after the output directory to generate and reopen portable exports.
-The viewer can automatically watch requested external textures on native builds:
+## Automatic editor hot reload
+
+Native viewer builds watch loaded filesystem USD layers, outer USDZ packages and
+requested textures by default. No `file_watcher` Cargo feature is required:
 
 ```sh
-USD_WATCH_TEXTURES=1 make run APP_TARGET='--bin usdview --features file_watcher' ARGS='path/to/scene.usda'
+make run APP_TARGET='--release --bin usdview' ARGS='path/to/scene.usda'
 ```
 
-Watching is off by default (`USD_WATCH_TEXTURES=0` also disables it). Requesting
-it without the build feature, or providing a value other than 0/1, fails before
-opening the viewer. The viewer logs active file counts and watcher setup errors.
-Library applications can opt in by enabling `usd_bevy/file_watcher` and adding
-`usd_bevy::editor::texture_watch::EditorTextureWatchPlugin` alongside
-`EditorPlugin`. It watches requested external images and sends RefreshTextures
-on native file events. `EditorTextureWatchStatus` reports active file count and
-setup errors. Watched paths update with the document/image set; idle frames do
-not reread images or rescan USD materials. On Unix, directory device/inode
-identities are checked at most once per second; removed or replaced directories
-re-arm only their own watchers and queue a texture refresh. Package entries and
-USD layers are not watched; directory replacement recovery is not implemented
-on non-Unix platforms. Failed watcher setups retry once per second while
-the app updates, without restarting successful watchers. Recovery queues a texture
-refresh to catch edits made while unavailable. Document/path changes reset the
-retry state. When no document is open, a texture read/decode failure registers
-the requested image paths and retries the initial Open after watcher events or
-successful watcher setup. A newer explicit Open takes precedence over a pending
-retry. Failed replacement opens never enable retries over an existing document,
-so later image repairs cannot replace its edits or undo history. Composition or
-root-file failures do not enable this texture retry path.
-An edit that requests a missing or undecodable image keeps the previous image
-handles while registering the requested paths. Unresolved relative paths are
-watched conservatively under loaded filesystem layer directories; these candidate
-paths can trigger extra refreshes and are not custom-resolver/search-path support.
-Creating a missing parent directory is handled by the watcher setup retry.
-Successful loading replaces candidate paths with resolved image paths.
+For Blender round trips, open the exported USD once, then export subsequent
+changes to the same file. For an assembly, overwrite the referenced asset rather
+than exporting the entire assembly over its root. The editor refreshes the changed
+layer in its existing stage and reconciles affected prims and material consumers;
+it does not issue another Open. Matching entities, selection and unrelated undo
+history survive. Some shared-schema changes still require broader reconciliation.
+
+Polling checks file metadata every 250 ms and waits for a stable observation
+before reading changed bytes. That is debounce, not a guaranteed refresh deadline.
+Texture-only changes keep USD layers intact. Replaced package bytes refresh loaded
+entries and requested images; arbitrary nested package layouts and default-entry
+renames are not fully qualified.
+
+Reload rejects malformed composition, undecodable images and changes to layers
+with unsaved editor opinions, retaining the last good scene. Repairing an external
+file is retried; a dirty-layer conflict waits for an editor revision change.
+Do not expect Blender and Bevy to merge concurrent edits to the same layer.
+A failed initial Open must be retried explicitly; this watcher refreshes an
+already loaded document.
+
+Disable automatic reload explicitly with:
 
 ```sh
-make --eval='test-editor-watch:; @$(CARGO) test -p usd_bevy --features file_watcher native_editor_texture_watch -- --ignored --nocapture' test-editor-watch
+USD_HOT_RELOAD=0 make run APP_TARGET='--release --bin usdview' ARGS='path/to/scene.usda'
 ```
 
-For a same-window recovery capture, put Weston and weston-screenshooter on PATH:
+`USD_HOT_RELOAD` accepts only 0 or 1. The obsolete `USD_WATCH_TEXTURES` variable
+does not configure this viewer. Active file counts and reload errors are logged.
 
-```sh
-make --eval='capture-recovery:; @/bin/bash scripts/check_initial_texture_recovery.sh target/initial-recovery' capture-recovery
-```
+Library applications using `EditorPlugin` receive the same native polling system.
+Configure `usd_bevy::editor::reload::EditorReloadSettings` to disable it or change
+the interval; inspect `EditorReloadStatus` for file counts and errors. Load through
+the source-backed editor Open path or `EditorSession::from_source` so disk
+provenance is available. Snapshot-only sources and browser builds do not watch disk.
+AssetServer scene loading is a separate path and still needs its optional native
+watcher, described in the asset-loading section.
 
-The output directory must be new. The script generates a fixture, captures the
-missing-texture state, repairs the PNG, and captures the recovered window plus
-Bevy viewport without restarting the viewer. Inspect `initial.png`,
-`recovered.png`, `recovered.viewport.png` and the logs; automated checks confirm
-capture completion and reject a near-black viewport, not visual correctness or
-warning-free operation. It uses a private Vulkan Weston compositor on Linux.
+Metadata-preserving writes with identical size and modification time can be
+missed. An actual Blender export session and large-machine reload latency remain
+unqualified; the recorded end-to-end evidence uses direct filesystem edits and
+atomic replacements. See [hot-reload behavior and evidence](benchmarks/editor-hot-reload.md).
 
 Applications can send `EditorCommand::RefreshTextures` through `EditorBridge`
 to reread source-backed images without reopening the USD document. Successful

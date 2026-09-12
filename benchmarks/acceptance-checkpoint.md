@@ -3,6 +3,37 @@
 The integration goal is not complete. This checkpoint does not narrow the
 acceptance checklist in BEVY_WORK.md or the release blockers in SUPPORT.md.
 
+## Delivery gate at db65120
+
+The existing full workspace suite passes 699 tests across 33 suites, with 19
+ignored and zero failures (`/tmp/bevy-delivery-workspace.log`). This includes
+the current clearcoat texture implementation and layered-PBR dependency feature.
+Workspace check and release viewer/capture builds pass
+(`/tmp/clearcoat-texture-{check,build}.log`). No new tests were added for this
+delivery gate.
+
+Delivered since the earlier checkpoint:
+
+- Default native core editor reload for filesystem USD layers, packages and
+  textures, with dirty-layer protection, last-good state and unrelated undo
+  preservation. The rebuilt same-window referenced-asset demonstration preserves
+  the neighboring object's pixels: `benchmarks/editor-hot-reload.md`.
+- GPU morph preparation omits superseded rest tangents. The measured morph-only
+  control falls from 36.1 to 19.0 ms with pixel-exact before/after captures:
+  `benchmarks/blended-skin-grid.md`. This is not a presented-frame or 60 Hz claim.
+- Sampled scalar and textured clearcoat/roughness map into Bevy. The constant
+  texture reference matches equivalent scalar shading pixel-for-pixel:
+  `benchmarks/kubota-native-materials.md`.
+- README and SUPPORT describe the default reload workflow, configuration and
+  limits instead of the obsolete opt-in texture-only viewer behavior.
+
+The open acceptance item is not missing GPU skin/morph or dome-light code:
+those paths have rendered and measured evidence. The release remains unsigned
+for native material fidelity: Kubota's coat BRDF, glass and decals still differ
+from native USD rendering. Full-scene renderer parity and general playback
+performance are not established by the narrower passing captures. This gate
+does not remove those blockers or check off the remaining acceptance item.
+
 ## Source reload serialization
 
 The workspace now patches Bevy asset 0.19.1 from `vendor/bevy_asset`. Loads of

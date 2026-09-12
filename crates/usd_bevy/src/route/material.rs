@@ -29,6 +29,8 @@ pub(crate) fn warn_geometry_inputs(mesh: &Mesh, material: &StandardMaterial, war
             ("metallic/roughness", material.metallic_roughness_texture.is_some(), &material.metallic_roughness_channel),
             ("normal", material.normal_map_texture.is_some(), &material.normal_map_channel),
             ("occlusion", material.occlusion_texture.is_some(), &material.occlusion_channel),
+            ("clearcoat", material.clearcoat_texture.is_some(), &material.clearcoat_channel),
+            ("clearcoat roughness", material.clearcoat_roughness_texture.is_some(), &material.clearcoat_roughness_channel),
         ].into_iter().filter_map(|(name, present, requested)| (present && requested == &channel).then_some(name)).collect::<Vec<_>>();
         if !textures.is_empty() { warnings.push(format!("mesh has no {label} coordinates requested by {} textures", textures.join(", "))); }
     }
@@ -97,7 +99,7 @@ fn to_standard_material(
         m.perceptual_roughness = r;
     }
     if let Some(coat) = read.clearcoat { m.clearcoat = coat; }
-    if read.clearcoat.is_some() || read.clearcoat_roughness.is_some() {
+    if read.clearcoat.is_some() || read.clearcoat_roughness.is_some() || read.clearcoat_texture.is_some() || read.clearcoat_roughness_texture.is_some() {
         m.clearcoat_perceptual_roughness = read.clearcoat_roughness.unwrap_or(0.01);
     }
     if let Some(mtl) = read.metallic {
@@ -174,6 +176,20 @@ pub(crate) fn resolve_material(
     match super::texture_pack::occlusion(world, &read) {
         Ok(packed) => material.occlusion_texture = packed,
         Err(error) => warnings.push(error.to_string()),
+    }
+    for roughness in [false, true] {
+        match super::texture_pack::clearcoat(world, &read, roughness) {
+            Ok(Some(texture)) if roughness => {
+                material.clearcoat_roughness_texture = Some(texture);
+                material.clearcoat_perceptual_roughness = read.clearcoat_roughness.unwrap_or(1.0);
+            }
+            Ok(Some(texture)) => {
+                material.clearcoat_texture = Some(texture);
+                material.clearcoat = read.clearcoat.unwrap_or(1.0);
+            }
+            Ok(None) => {}
+            Err(error) => warnings.push(error.to_string()),
+        }
     }
     let handle = super::cache::intern_material(world, material);
     Ok(Some((handle, warnings)))

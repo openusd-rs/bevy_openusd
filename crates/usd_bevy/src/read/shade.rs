@@ -20,6 +20,10 @@ pub struct ReadPreviewMaterial {
     pub roughness: Option<f32>,
     pub clearcoat: Option<f32>,
     pub clearcoat_roughness: Option<f32>,
+    pub clearcoat_texture: Option<String>,
+    pub clearcoat_channel: usize,
+    pub clearcoat_roughness_texture: Option<String>,
+    pub clearcoat_roughness_channel: usize,
     pub metallic: Option<f32>,
     pub emissive_color: Option<[f32; 3]>,
     pub ior: Option<f32>,
@@ -527,10 +531,20 @@ fn set_opacity_threshold_tex(_: &mut ReadPreviewMaterial, _: TextureInput) {}
 fn set_rough_c(_: &mut ReadPreviewMaterial, _: [f32; 3]) {}
 fn set_coat_c(o: &mut ReadPreviewMaterial, _: [f32; 3]) { o.warnings.push("clearcoat requires a scalar".into()); }
 fn set_coat_s(o: &mut ReadPreviewMaterial, s: f32) { o.clearcoat = Some(s); }
-fn set_coat_tex(o: &mut ReadPreviewMaterial, _: TextureInput) { o.warnings.push("clearcoat textures are unsupported".into()); }
+fn set_coat_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("clearcoat".into(), s.4);
+    set_color_space(o, "clearcoat", s.2);
+    o.clearcoat_texture = Some(s.0);
+    o.clearcoat_channel = s.1;
+}
 fn set_coat_rough_c(o: &mut ReadPreviewMaterial, _: [f32; 3]) { o.warnings.push("clearcoat roughness requires a scalar".into()); }
 fn set_coat_rough_s(o: &mut ReadPreviewMaterial, s: f32) { o.clearcoat_roughness = Some(s); }
-fn set_coat_rough_tex(o: &mut ReadPreviewMaterial, _: TextureInput) { o.warnings.push("clearcoat roughness textures are unsupported".into()); }
+fn set_coat_rough_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.scalar_texture_transforms.insert("clearcoat_roughness".into(), s.4);
+    set_color_space(o, "clearcoat_roughness", s.2);
+    o.clearcoat_roughness_texture = Some(s.0);
+    o.clearcoat_roughness_channel = s.1;
+}
 fn set_rough_s(o: &mut ReadPreviewMaterial, s: f32) {
     o.roughness = Some(s);
 }
@@ -1022,7 +1036,7 @@ fn value_to_preview(v: Value) -> Option<ResolvedValue> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn preview_clearcoat_textures_report_unsupported_inputs() {
+    fn preview_clearcoat_textures_resolve_scalar_channels() {
         let source = crate::UsdSource::snapshot("coat-texture.usda", br#"#usda 1.0
 def Material "Mat" {
     token outputs:surface.connect = </Mat/Surface.outputs:surface>
@@ -1042,8 +1056,10 @@ def Material "Mat" {
 "#.as_slice()).unwrap();
         let stage = source.open_stage().unwrap();
         let read = super::read_preview_material(&stage, &openusd::sdf::path("/Mat").unwrap()).unwrap().unwrap();
-        assert!(read.warnings.iter().any(|warning| warning == "clearcoat textures are unsupported"));
-        assert!(read.warnings.iter().any(|warning| warning == "clearcoat roughness textures are unsupported"));
+        assert!(read.warnings.is_empty());
+        assert_eq!(read.clearcoat_texture.as_deref(), Some("coat.png"));
+        assert_eq!(read.clearcoat_roughness_texture.as_deref(), Some("coat.png"));
+        assert_eq!((read.clearcoat_channel, read.clearcoat_roughness_channel), (0, 1));
     }
 
     #[test]

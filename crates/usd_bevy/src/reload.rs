@@ -48,6 +48,8 @@ impl LayerReload {
             }
         }
         let (candidate, disk) = source.open_stage_for_editor()?;
+        candidate.set_load_rules(stage.load_rules());
+        candidate.set_interpolation_type(stage.interpolation_type());
         for id in stage.muted_layers() { candidate.mute_layer(id); }
         crate::UsdSource::validate_composition(&candidate)?;
         let plan = Self { layers, candidate, expected, disk };
@@ -99,6 +101,23 @@ fn patch(target: &mut dyn AbstractData, source: &Data) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_preserves_unloaded_payloads_and_interpolation() {
+        let text = b"#usda 1.0\ndef Xform \"Deferred\" (prepend payload = @missing.usda@</Model>) {}\ndef Cube \"Local\" { double size = 1 }\n";
+        let source = crate::UsdSource::new("deferred-reload.usda", text.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        stage.set_load_rules(openusd::pcp::LoadRules::none());
+        stage.set_interpolation_type(openusd::usd::InterpolationType::Held);
+        crate::UsdSource::validate_composition(&stage).unwrap();
+        let replacement = String::from_utf8(text.to_vec()).unwrap().replace("size = 1", "size = 2");
+        let plan = LayerReload::prepare(&stage, &[(source.identifier().into(), replacement.into_bytes())]).unwrap();
+        assert_eq!(plan.candidate().load_rules(), stage.load_rules());
+        assert_eq!(plan.candidate().interpolation_type(), openusd::usd::InterpolationType::Held);
+        plan.apply(&stage).unwrap();
+        assert_eq!(stage.load_rules(), openusd::pcp::LoadRules::none());
+        assert_eq!(stage.prim("/Local").unwrap().attribute("size").get::<f64>().unwrap(), Some(2.0));
+    }
 
     #[test]
     fn referenced_layer_reload_updates_both_instances_not_unrelated_prims() {

@@ -184,6 +184,15 @@ pub(crate) fn occlusion(world: &mut World, read: &ReadPreviewMaterial) -> anyhow
     pack(world, None, None, occlusion)
 }
 
+pub(crate) fn clearcoat(world: &mut World, read: &ReadPreviewMaterial, roughness: bool) -> anyhow::Result<Option<Handle<Image>>> {
+    let (path, channel, semantic) = if roughness {
+        (&read.clearcoat_roughness_texture, read.clearcoat_roughness_channel, "clearcoat_roughness")
+    } else { (&read.clearcoat_texture, read.clearcoat_channel, "clearcoat") };
+    let value = plane(world, path, channel, read.texture_srgb(semantic), read.scalar_texture_transform(semantic))?;
+    if value.is_none() { return Ok(None); }
+    if roughness { pack(world, value, None, None) } else { pack(world, None, None, value) }
+}
+
 fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion: Option<Plane>) -> anyhow::Result<Option<Handle<Image>>> {
     let first = rough.as_ref().or(metal.as_ref()).or(occlusion.as_ref()).unwrap();
     let (width, height) = (first.width, first.height);

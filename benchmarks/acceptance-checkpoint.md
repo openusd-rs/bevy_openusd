@@ -32,9 +32,42 @@ Reproduction after building the workspace tests (binary hash is checkout-specifi
 make --eval='workspace-repair:; @target/debug/deps/usd_bevy-02fe53806703c793 --exact asset::tests::nested_package_dependency_reload_preserves_two_live_instances --nocapture' workspace-repair
 ```
 
-Priority is to isolate repair-event/load-completion ordering in this configuration,
-not increase the timeout or count the narrower passing runs as a fix. No root
-cause or production fix is established yet.
+## Isolated load-completion ordering defect
+
+The instrumented workspace stress run failed on iteration 48:
+`/tmp/workspace-repair-trace-48.log`. The last repair sequence was:
+
+```text
+READ revision=12: broken package
+NOTIFY: repaired package
+READ revision=14: repaired package
+LOADED revision=15
+TEXTURE_FAILED revision=13: specified file not found in archive
+```
+
+Both roots subsequently timed out with AssetServer Failed and the previous
+projected revision 9. An older snapshot completed with failure after the newer
+snapshot completed successfully. Temporary trace instrumentation was removed
+after capturing this evidence.
+
+The ordinary unit test
+`bevy_reload_characterization_stale_failure_overwrites_loaded_state` now isolates
+this ordering using a tiny non-USD asset loader. Waker gates hold an older failed
+reload until a newer successful reload reaches Assets and LoadState::Loaded.
+Releasing the older load changes LoadState to Failed while the newer asset remains
+in Assets. The automatic fallback is held separately, then released and drained.
+There are no timing sleeps in the loader or USD decoding dependencies.
+
+This is a characterization of a Bevy 0.19.1 defect, not a passing repair acceptance
+test. It deliberately asserts the broken state to make the upstream behavior
+reproducible; a fix must replace that expectation with stale-completion rejection.
+The initial targeted run passes in 0.01 seconds:
+`/tmp/bevy-stale-reload-characterization.log`.
+
+No production fix is implemented. Ignoring every failure while an asset remains
+in Assets would hide genuine broken reloads. The next fix must distinguish stale
+completions from current failures, including older successful completions, and
+preserve Bevy's public load state as well as the USD instance state.
 
 ## Other confirmed open work
 

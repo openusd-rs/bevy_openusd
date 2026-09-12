@@ -234,7 +234,7 @@ pub fn export_stage_string(stage: &Stage) -> Result<String> {
 
 /// Atomically replace `filename` with the stage's root layer in its selected format.
 pub fn save_stage_as(stage: &Stage, filename: &str) -> Result<()> {
-    crate::persistence::export_layer(stage, &stage.root_layer(), filename)
+    crate::persistence::export_layer(stage, &stage.root_layer(), filename, None).map(|_| ())
 }
 
 /// Whether a prim with an authored type currently resolves on the stage.

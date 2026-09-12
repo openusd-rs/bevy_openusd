@@ -630,6 +630,12 @@ mod tests {
         compare_native_normals(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_normals.usda"));
     }
 
+    #[test]
+    #[ignore = "requires USD_NATIVE_DEFORMATION_TOOL built against native OpenUSD"]
+    fn native_baked_normals_match_animated_blended_joints() {
+        compare_native_normals(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_animated.usda"));
+    }
+
     fn compare_native_normals(file: &str) {
         let tool = std::env::var("USD_NATIVE_DEFORMATION_TOOL").expect("native deformation executable");
         let original = std::fs::read(file).unwrap();

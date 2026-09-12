@@ -12,6 +12,7 @@ pub enum LayerSaveState {
 
 #[derive(Default)]
 pub(super) struct SaveState {
+    pub disk: Option<crate::source::DiskBaselines>,
     loaded_document: bool,
     baselines: BTreeMap<String, blake3::Hash>,
     cache: BTreeMap<String, (u64, Option<blake3::Hash>)>,

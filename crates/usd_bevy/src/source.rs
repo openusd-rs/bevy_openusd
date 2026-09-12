@@ -11,6 +11,8 @@ use openusd::usd::Stage;
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) type DiskBaselines = Arc<Mutex<BTreeMap<PathBuf, blake3::Hash>>>;
+
 /// An immutable root-layer snapshot anchored at its source filename.
 #[derive(Clone, Debug)]
 pub struct UsdSource {
@@ -81,6 +83,7 @@ impl UsdSource {
             source: self.clone(),
             fallback: DefaultResolver::new(),
             requests: Arc::default(),
+            disk_baselines: None,
         }
         .open_asset(&ResolvedPath::new(identifier))?
         .read_all()
@@ -305,6 +308,18 @@ impl UsdSource {
         self.open_tracked(Arc::default())
     }
 
+    pub(crate) fn open_stage_for_editor(&self) -> openusd::Result<(Stage, DiskBaselines)> {
+        let baselines = DiskBaselines::default();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .resolver(SourceResolver {
+                source: self.clone(), fallback: DefaultResolver::new(),
+                requests: Arc::default(), disk_baselines: self.filesystem.then_some(baselines.clone()),
+            })
+            .open(&self.identifier)?;
+        Ok((stage, baselines))
+    }
+
     pub(crate) fn validate_composition(stage: &Stage) -> anyhow::Result<()> {
         let mut paths = Vec::new();
         stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| paths.push(path.clone()))?;
@@ -358,6 +373,7 @@ impl UsdSource {
                 source: self.clone(),
                 fallback: DefaultResolver::new(),
                 requests,
+                disk_baselines: None,
             })
             .open(&self.identifier)
     }
@@ -367,6 +383,7 @@ struct SourceResolver {
     source: UsdSource,
     fallback: DefaultResolver,
     requests: Arc<Mutex<BTreeSet<String>>>,
+    disk_baselines: Option<DiskBaselines>,
 }
 
 struct SharedAsset(Cursor<Arc<[u8]>>);
@@ -468,6 +485,26 @@ impl Resolver for SourceResolver {
     }
 
     fn open_asset(&self, path: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
+        if let Some(baselines) = &self.disk_baselines {
+            let identifier = path.to_string_lossy();
+            let packaged = openusd::ar::split_package_relative_path_outer(&identifier);
+            let outer = packaged.as_ref().map_or(identifier.as_ref(), |(outer, _)| outer.as_str());
+            let bytes: Arc<[u8]> = if let Some(bytes) = self.bytes(outer) {
+                bytes.clone()
+            } else if self.source.filesystem {
+                self.fallback.open_asset(&ResolvedPath::new(outer))?.read_all()?.into()
+            } else {
+                return Err(io::Error::new(io::ErrorKind::NotFound, outer.to_owned()));
+            };
+            let key = crate::persistence::destination_identity(Path::new(outer))?;
+            baselines.lock().expect("disk baselines").entry(key).or_insert_with(|| blake3::hash(&bytes));
+            return if let Some((_, inner)) = packaged {
+                openusd::ar::read_package_entry(Box::new(SharedAsset(Cursor::new(bytes))), &inner)
+                    .map(|bytes| Box::new(Cursor::new(bytes)) as Box<dyn Asset>)
+            } else {
+                Ok(Box::new(SharedAsset(Cursor::new(bytes))))
+            };
+        }
         if let Some(bytes) = self.bytes(&path.to_string_lossy()) {
             Ok(Box::new(SharedAsset(Cursor::new(Arc::clone(bytes)))))
         } else if let Some(bytes) = self.packaged_bytes(&path.to_string_lossy())? {
@@ -920,7 +957,7 @@ def Sphere "Model" { double radius.timeSamples = {0: 1, 10: 3} }
         let dependency: Arc<[u8]> = Arc::from(b"dependency contents".as_slice());
         let source = UsdSource::snapshot("shared/root.usda", root.clone()).unwrap()
             .with_dependency(&UsdSource::snapshot("shared/data.bin", dependency.clone()).unwrap()).unwrap();
-        let resolver = SourceResolver { source, fallback: DefaultResolver::new(), requests: Arc::default() };
+        let resolver = SourceResolver { source, fallback: DefaultResolver::new(), requests: Arc::default(), disk_baselines: None };
         for (identifier, bytes) in [(resolver.source.identifier(), &root), (resolver.source.dependencies().next().unwrap(), &dependency)] {
             let before = Arc::strong_count(bytes);
             let mut first = resolver.open_asset(&ResolvedPath::new(identifier)).unwrap();

@@ -158,6 +158,53 @@ pub fn intern_mesh(world: &mut World, mesh: Mesh) -> Handle<Mesh> {
     handle
 }
 
+/// Bounded CPU input/tangent cache; it retains no mesh asset handles.
+#[derive(Resource)]
+pub struct MeshTangentCache {
+    entries: std::collections::VecDeque<(u64, Mesh, bevy::mesh::VertexAttributeValues, usize)>,
+    payload_bytes: usize,
+    byte_budget: usize,
+}
+
+impl Default for MeshTangentCache {
+    fn default() -> Self { Self::with_byte_budget(16 * 1024 * 1024) }
+}
+
+impl MeshTangentCache {
+    pub fn with_byte_budget(byte_budget: usize) -> Self {
+        Self { entries: default(), payload_bytes: 0, byte_budget }
+    }
+
+    pub fn retained_payload_bytes(&self) -> usize { self.payload_bytes }
+}
+
+pub(crate) fn generate_cached_tangents(world: &mut World, mesh: &mut Mesh) {
+    world.init_resource::<MeshTangentCache>();
+    let signature = mesh_signature(mesh);
+    if let Some((_, _, tangents, _)) = world.resource::<MeshTangentCache>().entries.iter()
+        .find(|(key, input, _, _)| *key == signature && meshes_equal(input, mesh)) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.clone());
+        return;
+    }
+    if let Err(error) = mesh.generate_tangents() {
+        bevy::log::debug!("mesh: generate_tangents failed: {error}");
+        return;
+    }
+    let Some(tangents) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT) else { return; };
+    let bytes = mesh_payload_bytes(mesh);
+    let mut cache = world.resource_mut::<MeshTangentCache>();
+    if bytes > cache.byte_budget { return; }
+    while cache.entries.len() >= 32 || bytes > cache.byte_budget.saturating_sub(cache.payload_bytes) {
+        let Some((_, _, _, removed)) = cache.entries.pop_front() else { break; };
+        cache.payload_bytes -= removed;
+    }
+    let tangents = tangents.clone();
+    let mut input = mesh.clone();
+    input.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
+    cache.entries.push_back((signature, input, tangents, bytes));
+    cache.payload_bytes += bytes;
+}
+
 fn mesh_payload_bytes(mesh: &Mesh) -> usize {
     let attributes = mesh.attributes().fold(0usize, |total, (_, values)| total.saturating_add(values.get_bytes().len()));
     let indices = mesh.get_index_buffer_bytes().map_or(0, |bytes| bytes.len());
@@ -219,6 +266,55 @@ fn meshes_equal(a: &Mesh, b: &Mesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tangent_cache_reuses_exact_inputs_and_isolates_output_mutation() {
+        let mut world = World::new();
+        let input = Mesh::from(Rectangle::default());
+        let mut first = input.clone();
+        generate_cached_tangents(&mut world, &mut first);
+        let expected = first.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().get_bytes().to_vec();
+        first.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[0.0; 4]; first.count_vertices()]);
+        let mut second = input.clone();
+        generate_cached_tangents(&mut world, &mut second);
+        assert_eq!(second.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().get_bytes(), expected);
+        assert_eq!(world.resource::<MeshTangentCache>().entries.len(), 1);
+        let mut changed = input;
+        if let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) = changed.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
+            for uv in uvs { uv[0] = 1.0 - uv[0]; }
+        }
+        let mut reference = changed.clone();
+        reference.generate_tangents().unwrap();
+        world.resource_mut::<MeshTangentCache>().entries[0].0 = mesh_signature(&changed);
+        generate_cached_tangents(&mut world, &mut changed);
+        assert!(meshes_equal(&changed, &reference));
+        assert_ne!(changed.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().get_bytes(), expected);
+        assert_eq!(world.resource::<MeshTangentCache>().entries.len(), 2);
+    }
+
+    #[test]
+    fn tangent_cache_budget_and_failure_do_not_change_mesh_results() {
+        let mut world = World::new();
+        world.insert_resource(MeshTangentCache::with_byte_budget(0));
+        let mut mesh = Mesh::from(Rectangle::default());
+        generate_cached_tangents(&mut world, &mut mesh);
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
+        assert!(world.resource::<MeshTangentCache>().entries.is_empty());
+        let budget = mesh_payload_bytes(&mesh);
+        world.insert_resource(MeshTangentCache::with_byte_budget(budget));
+        for width in [1.0, 2.0, 3.0] {
+            let mut mesh = Mesh::from(Rectangle::new(width, 1.0));
+            generate_cached_tangents(&mut world, &mut mesh);
+            let cache = world.resource::<MeshTangentCache>();
+            assert_eq!(cache.entries.len(), 1);
+            assert_eq!(cache.retained_payload_bytes(), budget);
+        }
+        let mut invalid = Mesh::from(Rectangle::default());
+        invalid.remove_attribute(Mesh::ATTRIBUTE_UV_0);
+        generate_cached_tangents(&mut world, &mut invalid);
+        assert!(invalid.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
+        assert_eq!(world.resource::<MeshTangentCache>().entries.len(), 1);
+    }
 
     #[test]
     fn pruning_materials_preserves_sharing_and_external_ownership() {

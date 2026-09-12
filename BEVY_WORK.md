@@ -3,6 +3,82 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Capture loaded-document save baselines
+
+The viewer's open path and `EditorSession::from_source` record hashes of the
+bytes delivered by the source resolver, including outer USDZ archives. In-place
+exports compare the destination against that loaded baseline before staging.
+Successful saves update the baseline using the staged output hash, not a later
+reread of the published destination. Save As outputs are tracked after their
+first successful publication. Arbitrary stages passed to `EditorSession::new`
+have no original disk-byte provenance; use `from_source` for that protection.
+
+Root changes between byte capture and stage opening, sublayer edits, deleted
+roots, package replacements, and repeated own saves have regression coverage.
+The library passes 506 tests with 19 ignored. The full workspace passes 671 tests
+across 33 suites, with 19 ignored, and check-all passes. Logs:
+`/tmp/loaded-save-workspace.log`, `/tmp/loaded-save-check.log`.
+This is still optimistic conflict
+detection: the existing-file final-check-to-rename race and inode/ACL identity
+limitations remain. Ordinary path aliases use canonical parent directories;
+hard-link aliases are not unified.
+
+## Guard destination changes during export
+
+Staged saves now compare the destination's content before export and immediately
+before publication, rejecting edits, deletion, creation, and non-regular-file
+replacement. New destinations use no-clobber publication. Conflict exits clean
+up staged files and preserve external content. This is an optimistic guard, not
+an atomic compare-and-swap for existing files: an uncooperative writer can still
+change an existing destination after the final check. Loaded-document baselines
+are supplied by the source-aware editor path described above.
+
+## Serialize same-source asset loads
+
+A local, documented Bevy asset 0.19.1 patch orders reader acquisition and
+completion publication per source, including labels, while unrelated sources
+remain concurrent. Gated regressions cover both older failures and successes.
+The full workspace gate passes, and the original nested-package repair test
+passes 100 consecutive workspace-binary runs (800 repair cycles). No blanket
+error suppression or retry timer is introduced. A slow loader now delays later
+loads of the same source. Evidence and remaining work:
+`benchmarks/acceptance-checkpoint.md`, `vendor/bevy_asset/PATCHES.md`.
+
+## Validate animated blended joint palettes
+
+Added sampled joint translations/rotations/scales and an optional animated mode
+to the large-grid generator. Across 1000 distinct times, GPU-prepared median is
+21.580 ms versus CPU 20.243 ms, with stable 729648-byte tangent retention.
+Four inspected endpoint captures show changing geometry; CPU/GPU are exact at
+0 and differ at only two pixels by max RGB 1 at 10 (strict comparison fails).
+499 library tests, four explicit native oracles and check-all pass. No frame-rate
+or arbitrary-rig parity claim. Evidence: `benchmarks/blended-skin-grid.md`.
+
+## Stress nested-package repair
+
+The prior nested-package repair timeout did not recur in 20 isolated executions
+or 10 complete library runs (498 tests each). The regression now exercises eight
+distinct failure/repair color cycles instead of two, retaining the same two live
+roots, entity/texture ownership checks and independent clock assertions. Both
+the extended isolated test and library run pass. No production reload behavior
+changed; the original intermittent failure is unresolved, not declared fixed.
+Logs: `/tmp/nested-repair-stress-{1..20}.log`,
+`/tmp/nested-repair-library-stress-{1..10}.log`,
+`/tmp/nested-repair-eight-{cycles,library}.log`.
+
+## Cache unchanged rest tangent generation
+
+MeshRoute now uses a bounded CPU tangent cache with exact input comparison,
+private buffers and no retained GPU asset handles. Route order and material
+diagnostics are preserved. The grid retains 729648 cache payload bytes; measured
+preparation drops from 38.012 ms to 21.060 ms, with a 20.910 ms repeat. Inspected
+CPU/GPU and before/after captures are RGB-exact. This is not presented frame time
+or 60 Hz acceptance. Evidence: `benchmarks/blended-skin-grid.md`.
+
+Full rerun passes 663 tests (18 ignored), check-all and viewer build. The first
+full run had a nested-package repair timeout; isolated and full rechecks pass
+without changes. That failure remains documented, not claimed fixed.
+
 ## Reuse sampled joint normal inverses
 
 CPU normals and GPU corrections now reuse joint inverse-transposes within one

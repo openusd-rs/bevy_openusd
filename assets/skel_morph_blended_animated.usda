@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    startTimeCode = 0
+    endTimeCode = 10
+    subLayers = [@skel_morph_blended_normals.usda@]
+)
+over "Test"
+{
+    over "Skel"
+    {
+        over "Anim"
+        {
+            float3[] translations.timeSamples = {
+                0: [(0,0,0),(0,0,0)],
+                10: [(0,0.2,0),(0.4,-0.2,0.3)]
+            }
+            quatf[] rotations.timeSamples = {
+                0: [(0.9238795,0,0.3826834,0),(0.9659258,0,-0.258819,0)],
+                10: [(0.9659258,0,-0.258819,0),(0.9238795,0,0.3826834,0)]
+            }
+            half3[] scales.timeSamples = {
+                0: [(2,1,0.5),(0.5,2,1)],
+                10: [(1,0.75,1.5),(1.5,1,0.75)]
+            }
+        }
+    }
+}

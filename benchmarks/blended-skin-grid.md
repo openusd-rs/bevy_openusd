@@ -1,5 +1,149 @@
 # Blended-skin preparation cost
 
+## Fixed-pose GPU render timestamps
+
+At time 5 of the animated-joint grid, collect 120 fresh timestamp samples per
+pass after capture readiness. RTX 4080, NVIDIA 595.84, Vulkan, 1280x720,
+forward MSAA Off, shadows off, /ReferenceCamera, no selected dome. GPU first,
+CPU second; pose is held fixed during collection. No concurrent build/test job.
+
+| Pass | GPU deformation median / p95 (ms) | CPU-deformed median / p95 (ms) |
+|---|---:|---:|
+| Bin unpacking | 0.009216 / 0.010240 | 0.009216 / 0.010240 |
+| Clustering | 0.057344 / 0.060416 | 0.057344 / 0.060416 |
+| Early mesh preprocessing | 0.010240 / 0.011264 | 0.010240 / 0.011264 |
+| Main opaque | 0.015360 / 0.016384 | 0.013312 / 0.015360 |
+| Main transparent | 0.015360 / 0.016384 | 0.016384 / 0.016384 |
+| Upscaling | 0.006144 / 0.007168 | 0.006144 / 0.007168 |
+
+Do not sum pass percentiles into frame times or treat these as animated upload,
+presentation or wall-clock playback performance. This evidence points to the
+measured ~21 ms CPU preparation as a much larger cost than these fixed-pose
+passes, not to a GPU speedup or a universal bottleneck conclusion.
+
+Both `target/animated-grid-timing-{gpu,cpu}.png` were inspected. Their strict RGB
+comparison differs at one pixel by max RGB 1 (failure at tolerance zero).
+Metadata confirms two GPU skin/morph entities versus zero for CPU, and preserves
+all raw timestamp samples in the adjacent capture.txt files. Logs:
+`/tmp/animated-grid-timing-{gpu,cpu,compare}.log`. No source code changed.
+
+Reproduce with the ordinary capture command plus USD_CAPTURE_GPU_SAMPLES=120;
+set USD_CPU_SKINNING=1 only for the CPU run. Use distinct output paths.
+
+## Animated joint palette
+
+`assets/skel_morph_blended_animated.usda` samples both joints' translations,
+rotations and nonuniform scales at 0 and 10. The generator's optional third
+argument `animated` selects it; omitted/`static` preserves the existing fixture.
+All layers are copied into a new directory, without editing existing assets.
+
+```sh
+make --eval='animated-grid:; @/bin/bash scripts/make_skin_grid.sh target/NEW_ANIMATED_GRID 100 animated' animated-grid
+```
+
+On `target/skin-grid-animated-100/grid.usda`, 1000 distinct sampled times give:
+
+| Mode | Median | p95 | Maximum | Tangent cache payload |
+|---|---:|---:|---:|---:|
+| GPU-prepared | 21.580 ms | 25.914 ms | 34.755 ms | 729648 bytes |
+| CPU | 20.243 ms | 25.868 ms | 33.950 ms | 729648 bytes |
+
+GPU first, CPU second, profiling enabled in both, no concurrent builds/tests.
+Both retain six mesh assets, zero unreferenced vertices and no peak growth above
+six meshes. This remains editor preparation, not GPU/presentation timing, and
+GPU-prepared remains slightly slower. Logs `/tmp/animated-grid-{gpu,cpu}-benchmark.log`.
+
+Four endpoint images `target/animated-grid-{0,10}-{gpu,cpu}.png` were inspected.
+The mesh changes from a folded upright strip to a broad slanted panel. CPU/GPU
+are RGB-exact at time 0; at time 10 two of 921600 pixels differ, max RGB error 1.
+The strict time-10 comparison fails; no threshold was relaxed. The stretched
+corner is present in both CPU and GPU output. Captures use /ReferenceCamera,
+forward MSAA Off and shadows off. Logs `/tmp/animated-grid-{0,10}-compare.log`.
+
+The shader-simulation regression checks animated normals/tangents at five times
+and two weight patterns. A new explicit native oracle compares the small source
+fixture's normals to native baked normals at those five times (1e-5 component
+tolerance); all four native deformation tests pass. Native sampling also accepts
+the generated 10201-point grid at time 10. 499 library tests pass, 19 ignored;
+check-all passes. Logs `/tmp/animated-grid-{tests,native-tests,native-points,check}.log`.
+Generator syntax and invalid-mode rejection pass without creating output.
+No runtime Rust code changed; full workspace tests were not rerun in this step.
+
+## Distinct-time cache retention
+
+At ba49bba runtime code, 1000 distinct seeks from 0.01 through 10 on the same
+grid give the following profiled editor preparation results (GPU first, CPU
+second; no concurrent builds/tests):
+
+| Mode | Median | p95 | Maximum | Retained tangent payload |
+|---|---:|---:|---:|---:|
+| GPU-prepared | 20.967 ms | 21.725 ms | 32.105 ms | 729648 bytes |
+| CPU | 19.381 ms | 19.908 ms | 28.469 ms | 729648 bytes |
+
+Both retain six mesh assets and zero unreferenced vertices, with no peak mesh
+count increase beyond six. GPU morph payload remains 1469232 bytes, CPU zero.
+Whole-process RSS increases about 5 MB in each run; this is not GPU memory or
+a bound for arbitrary assets. Logs `/tmp/tangent-cache-unique-{gpu,cpu}.log`.
+
+This fixture has a fixed two-joint palette with varying spatial weights and
+sparse animated morph data. Distinct time samples are not evidence of a fully
+animated large joint palette. GPU preparation remains slightly slower than CPU;
+no 60 Hz playback or GPU frame-rate claim follows.
+
+At time 2.37, both `target/unique-grid-237-{gpu,cpu}.png` were inspected and are
+RGB-exact across 921600 pixels. Compared to the prior time-5 GPU frame, 20 pixels
+differ (max RGB 186), confirming a changed rendered sample rather than a reused
+screenshot. Logs `/tmp/unique-grid-237-compare.log` and
+`/tmp/unique-grid-time-change.log`; the latter intentionally fails strict equality.
+No source implementation changed in this measurement step.
+
+## Cache unchanged rest-mesh tangent generation
+
+MeshRoute assembles geometry without tangents and uses MeshTangentCache to reuse
+generated tangents for byte-identical inputs. Hash candidates undergo full mesh
+comparison, so hash collisions cannot substitute geometry. Cached CPU input and
+tangent buffers are private copies, independent of mutable mesh assets. Failed
+generation is not cached. Route order, custom registries and material tangent
+diagnostics remain unchanged; public mesh conversion is unchanged.
+
+Retention is FIFO, at most 32 entries and 16 MiB of mesh/tangent payload by
+default, with no retained asset handles. Applications may insert
+MeshTangentCache::with_byte_budget before projection, including zero to disable
+retention. Payload accounting excludes allocator/container overhead and is not
+GPU memory. The editor benchmark now reports cached_tangent_payload_bytes.
+
+Same 100-seek profiled grid, GPU-prepared mode, sequential runs without concurrent
+builds/tests during measurement:
+
+| Mode | Median | p95 | Maximum |
+|---|---:|---:|---:|
+| Before (81306ed) | 38.012 ms | 39.043 ms | 41.823 ms |
+| Cached tangents | 21.060 ms | 22.393 ms | 26.133 ms |
+| Repeat, metrics added | 20.910 ms | 22.809 ms | 28.143 ms |
+
+MeshRoute's 100-seek total falls from 1723.119 ms to 29.983 ms; SkinRoute stays
+near 1969 ms. The cache retains 729648 CPU payload bytes for this fixture.
+This is editor preparation, not presented frame time or proof of 60 Hz playback.
+Logs: `/tmp/joint-normal-after-benchmark.log`,
+`/tmp/rest-tangent-cache-{benchmark,repeat}.log`.
+
+Inspected `target/rest-tangent-cache-{gpu,cpu}.png` at time 5, forward MSAA Off,
+shadows off, /ReferenceCamera: CPU/GPU and before/after GPU are RGB-exact across
+921600 pixels. Logs `/tmp/rest-tangent-cache-{compare,before-after}.log`.
+498 library tests pass (18 ignored), including exact reuse, forced hash collision,
+UV changes, external output mutation, zero budget, eviction and failed generation.
+Logs: `/tmp/rest-tangent-cache-tests.log` and release build logs
+`/tmp/rest-tangent-cache-{build,metrics-build}.log`.
+
+The first full workspace run failed the nested-package reload test during its
+repair wait (497 passed, one failed); log `/tmp/rest-tangent-cache-all-tests.log`.
+The isolated unchanged test passes, followed by an unchanged full rerun with
+663 passed, 18 ignored, 33 suites. check-all and viewer build also pass.
+Logs: `/tmp/rest-tangent-cache-reload-recheck.log`,
+`/tmp/rest-tangent-cache-all-tests-repeat.log`,
+`/tmp/rest-tangent-cache-{check,viewer-build}.log`. The reload failure's cause
+has not been isolated; a successful rerun is not a claim that it was fixed.
+
 ## Reuse joint normal inverses within a sample
 
 CPU normal skinning and GPU normal-correction preparation lazily cache each

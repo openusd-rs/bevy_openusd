@@ -712,6 +712,92 @@ def Xform "Model" (
         (app, directory)
     }
 
+    #[test]
+    fn bevy_reload_serializes_source_reads_without_blocking_other_sources() {
+        exercise_serialized_reload(true);
+    }
+
+    #[test]
+    fn bevy_reload_serializes_older_successful_source_reads() {
+        exercise_serialized_reload(false);
+    }
+
+    fn exercise_serialized_reload(fail_older: bool) {
+        use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
+
+        #[derive(Asset, TypePath)]
+        struct Probe(usize);
+
+        #[derive(Default)]
+        struct Gate {
+            fail_older: bool,
+            calls: AtomicUsize,
+            release: [AtomicBool; 2],
+            waker: [Mutex<Option<std::task::Waker>>; 2],
+        }
+
+        #[derive(TypePath)]
+        struct ProbeLoader(Arc<Gate>);
+
+        impl AssetLoader for ProbeLoader {
+            type Asset = Probe;
+            type Settings = ();
+            type Error = std::io::Error;
+
+            async fn load(&self, _: &mut dyn Reader, _: &(), context: &mut LoadContext<'_>)
+                -> Result<Probe, std::io::Error>
+            {
+                if context.path().path() == Path::new("other.reload_probe") {
+                    return Ok(Probe(42));
+                }
+                let call = self.0.calls.fetch_add(1, Ordering::SeqCst);
+                if call == 1 || call == 3 {
+                    let slot = usize::from(call == 3);
+                    std::future::poll_fn(|cx| {
+                        let mut waker = self.0.waker[slot].lock().unwrap();
+                        if self.0.release[slot].load(Ordering::SeqCst) {
+                            std::task::Poll::Ready(())
+                        } else {
+                            *waker = Some(cx.waker().clone());
+                            std::task::Poll::Pending
+                        }
+                    }).await;
+                    if call == 1 && self.0.fail_older {
+                        return Err(std::io::Error::other("older load failed"));
+                    }
+                }
+                Ok(Probe(call))
+            }
+
+            fn extensions(&self) -> &[&str] { &["reload_probe"] }
+        }
+
+        let (mut app, directory) = memory_app();
+        let gate = Arc::new(Gate { fail_older, ..default() });
+        app.init_asset::<Probe>().register_asset_loader(ProbeLoader(gate.clone()));
+        directory.insert_asset_text(Path::new("root.reload_probe"), "probe");
+        let server = app.world().resource::<AssetServer>().clone();
+        let handle: Handle<Probe> = server.load("fixture://root.reload_probe");
+        tick_until(&mut app, |world| world.resource::<Assets<Probe>>().get(&handle).is_some());
+
+        server.reload("fixture://root.reload_probe");
+        tick_until(&mut app, |_| gate.calls.load(Ordering::SeqCst) >= 2);
+        server.reload("fixture://root.reload_probe");
+        directory.insert_asset_text(Path::new("other.reload_probe"), "other");
+        let other: Handle<Probe> = server.load("fixture://other.reload_probe");
+        tick_until(&mut app, |world| world.resource::<Assets<Probe>>().get(&other).is_some());
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 2);
+
+        gate.release[1].store(true, Ordering::SeqCst);
+        gate.release[0].store(true, Ordering::SeqCst);
+        if let Some(waker) = gate.waker[0].lock().unwrap().take() { waker.wake(); }
+        let final_call = if fail_older { 3 } else { 2 };
+        tick_until(&mut app, |world| {
+            world.resource::<Assets<Probe>>().get(&handle).is_some_and(|probe| probe.0 == final_call)
+                && matches!(server.get_load_state(handle.id()), Some(LoadState::Loaded))
+        });
+    }
+
     fn watched_memory_app() -> (App, bevy::asset::io::memory::Dir, impl Fn(&str)) {
         use bevy::asset::io::{
             AssetSourceBuilder,
@@ -1435,7 +1521,9 @@ def Material "Mat" {
         changed("bundle.usdz");
         tick_until(&mut app, |world| entities.iter().all(|entity|
             world.resource::<Assets<Image>>().get(&image_handle(world, *entity)).unwrap().data.as_deref() == Some([255, 255, 0, 255].as_slice())));
-        for pixel in [[0, 255, 0, 255], [0, 0, 255, 255]] {
+        for pixel in [[0, 255, 0, 255], [0, 0, 255, 255], [255, 0, 255, 255],
+            [0, 255, 255, 255], [255, 0, 0, 255], [255, 255, 0, 255],
+            [255, 255, 255, 255], [0, 0, 0, 255]] {
             let retained = entities.map(|entity| image_handle(app.world(), entity));
             directory.insert_asset(Path::new("bundle.usdz"), package(None));
             changed("bundle.usdz");

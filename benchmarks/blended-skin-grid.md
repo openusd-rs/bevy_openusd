@@ -1,5 +1,35 @@
 # Blended-skin preparation cost
 
+## Fixed-pose GPU render timestamps
+
+At time 5 of the animated-joint grid, collect 120 fresh timestamp samples per
+pass after capture readiness. RTX 4080, NVIDIA 595.84, Vulkan, 1280x720,
+forward MSAA Off, shadows off, /ReferenceCamera, no selected dome. GPU first,
+CPU second; pose is held fixed during collection. No concurrent build/test job.
+
+| Pass | GPU deformation median / p95 (ms) | CPU-deformed median / p95 (ms) |
+|---|---:|---:|
+| Bin unpacking | 0.009216 / 0.010240 | 0.009216 / 0.010240 |
+| Clustering | 0.057344 / 0.060416 | 0.057344 / 0.060416 |
+| Early mesh preprocessing | 0.010240 / 0.011264 | 0.010240 / 0.011264 |
+| Main opaque | 0.015360 / 0.016384 | 0.013312 / 0.015360 |
+| Main transparent | 0.015360 / 0.016384 | 0.016384 / 0.016384 |
+| Upscaling | 0.006144 / 0.007168 | 0.006144 / 0.007168 |
+
+Do not sum pass percentiles into frame times or treat these as animated upload,
+presentation or wall-clock playback performance. This evidence points to the
+measured ~21 ms CPU preparation as a much larger cost than these fixed-pose
+passes, not to a GPU speedup or a universal bottleneck conclusion.
+
+Both `target/animated-grid-timing-{gpu,cpu}.png` were inspected. Their strict RGB
+comparison differs at one pixel by max RGB 1 (failure at tolerance zero).
+Metadata confirms two GPU skin/morph entities versus zero for CPU, and preserves
+all raw timestamp samples in the adjacent capture.txt files. Logs:
+`/tmp/animated-grid-timing-{gpu,cpu,compare}.log`. No source code changed.
+
+Reproduce with the ordinary capture command plus USD_CAPTURE_GPU_SAMPLES=120;
+set USD_CPU_SKINNING=1 only for the CPU run. Use distinct output paths.
+
 ## Animated joint palette
 
 `assets/skel_morph_blended_animated.usda` samples both joints' translations,

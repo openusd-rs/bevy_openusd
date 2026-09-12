@@ -1,5 +1,94 @@
 # CPU/GPU deformation capture sweep
 
+## Additional blended render paths
+
+At da06181, the two-joint fixture at ten was captured in forward MSAA4,
+prepass MSAA Off and deferred MSAA Off, with shadows off and the authored
+/ReferenceCamera. All six CPU/GPU images were inspected. Forward and deferred
+are RGB-exact; prepass maximum RGB error is 1 and passes tolerance 1.
+Artifacts: target/blended-{forward,prepass,deferred}-10-{gpu,cpu}.png;
+logs /tmp/blended-{forward,prepass,deferred}-10-compare.log.
+This extends the small-fixture path checks, not all animation/normal-map cases.
+
+The larger varying-weight fixture and measured preparation bottleneck are
+documented in benchmarks/blended-skin-grid.md.
+
+## Blended-joint normal and tangent repair
+
+`assets/skel_morph_blended_normals.usda` adds two independent joints with
+different rotations/nonuniform scales and equal per-vertex weights to the
+combined morph/normal-map/subset fixture. Native normal sampling exposed an
+actual mismatch: at time zero, native normal X was 0.372133719 while Bevy CPU
+returned 0.5331887 (/tmp/native-blended-normal-rust-test.log).
+
+For per-vertex classic-linear skinning, CPU normals now use the weighted sum
+of per-joint inverse-transpose transforms. Rigid constant-influence binding
+retains the inverse transpose of its combined rigid transform. For GPU vertex
+skinning, let B be the blended position matrix and N the native weighted normal
+matrix. Base normals and morph normal offsets are multiplied by B-transpose*N
+so Bevy's subsequent inverse-transpose B yields N. Active zero/nonfinite
+normal results reject instead of reaching shader normalization.
+
+Normal-mapped geometry also needs a consistent tangent frame. When the normal
+correction is nonidentity and UVs exist, tangents are recomputed from the sampled
+CPU geometry/normals, then transformed by inverse B before GPU skinning. This
+keeps GPU positions/morphs active but adds CPU geometry/tangent work for those
+bindings; no large-rig performance claim is made. Identity corrections skip
+this path. The shader-simulation regression covers normals, tangents and
+handedness at five times.
+
+Native numerical checks pass after the fix. The normal-only fix still produced
+GPU/CPU image errors up to RGB 6 with the constant normal-map fixture; the
+tangent correction removes those differences. Forward, MSAA Off, shadows off,
+authored /ReferenceCamera at times 0,5,10 are all RGB-exact (0/921600 changed).
+All six images were inspected: target/blended-tangent-{0,5,10}-{gpu,cpu}.png.
+GPU metadata reports two skinned/two morphed entities; CPU reports zero.
+Logs: /tmp/blended-tangent-{0,5,10}-compare.log. These captures precede the
+additional zero-normal rejection guard; they exercise the same valid-value
+normal and tangent math, not that guard's failure path.
+
+The final guard-inclusive release was also captured at ten; both
+target/blended-final-10-{gpu,cpu}.png were inspected and are RGB-exact
+(/tmp/blended-final-10-compare.log). Final ordinary library tests pass 494 with
+18 ignored, all three explicit native checks pass, and check-all/release build
+pass: /tmp/blended-normal-final-{tests,native,check,build}.log.
+
+The earlier failed native/image diagnostics remain available. This verifies
+the two-joint fixture, not arbitrary rigs, spatially varying normal maps,
+deferred rendering or the complete deformation/environment acceptance item.
+
+## Native baked normal oracle
+
+The native sampler accepts `--normals`, reads baked built-in mesh normals,
+transforms them by the inverse transpose into the original mesh's local frame,
+and normalizes them. Singular transforms and zero/nonfinite normals fail.
+`assets/skel_morph_native_normals.usda` keeps the combined fixture's geometry,
+animation and material but replaces indexed normal primvars with equivalent
+built-in vertex normals. The original indexed fixture remains unchanged.
+
+The native point and normal integration tests both pass at 0,2.5,5,7.5,10 with
+absolute component tolerance 1e-5. Use the `native_baked_` test filter to execute
+both ignored tests with USD_NATIVE_DEFORMATION_TOOL set. Log:
+/tmp/native-normal-rust-tests-final.log. At ten, native normal zero is
+(0.769800313,0.272165537,0.577350326); the other three are
+(0.707106722,0,0.707106841). This covers one nonuniformly scaled joint plus
+sparse morph normal offsets, not arbitrary multi-joint normal blending.
+
+An ordinary regression verifies identical CPU normal results between the two
+fixture encodings at all five times. The Bevy time-ten built-in-normal image
+was inspected and is RGB-exact with the indexed image (0/921600 changed),
+using the same release capture executable and authored camera:
+target/combined-bevy-builtin-normal-10.png versus
+target/combined-bevy-canonical-10.png; /tmp/combined-builtin-normal-compare.log.
+Native target/combined-storm-builtin-normal10/frame.png was also inspected:
+its triangle shading difference persists, so the encoding substitution does
+not establish rendered shading parity. Lighting and surface-normal handling
+still need isolated comparison.
+
+Ordinary library tests pass 492 with 17 ignored; make check-all passes.
+Logs: /tmp/native-normal-{library-tests,check}.log. Native compiler validation:
+/tmp/native-normal-build-final.log. No production Rust behavior changed.
+
 ## Native CPU-baked point oracle
 
 `scripts/sample_native_deformation.cpp` uses native UsdSkelBakeSkinning on an

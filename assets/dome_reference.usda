@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    subLayers = [@dome_directional.usda@]
+)
+over "Diffuse" (prepend apiSchemas = ["MaterialBindingAPI"]) {}
+over "Metal" (prepend apiSchemas = ["MaterialBindingAPI"]) {}
+def Camera "ReferenceCamera"
+{
+    float focalLength = 50
+    float verticalAperture = 41.421356
+    float horizontalAperture = 73.637966
+    double2 clippingRange = (0.1, 10000)
+    matrix4d xformOp:transform = ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,1,6,1))
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}

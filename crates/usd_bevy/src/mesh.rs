@@ -127,6 +127,10 @@ fn select_flat_indices(read: &ReadMesh, triangles: &[u32], subset: Option<&[i32]
 
 /// Builds all faces or the supplied face subset, retaining the vertex layout.
 pub fn mesh_from_usd_subset(read: &ReadMesh, face_subset: Option<&[i32]>) -> Mesh {
+    assemble_mesh(read, face_subset, true)
+}
+
+pub(crate) fn assemble_mesh(read: &ReadMesh, face_subset: Option<&[i32]>, tangents: bool) -> Mesh {
     let expand = expands_vertices(read);
 
     let (positions, normals, uvs, colors, indices) = if uses_flat_normals(read) {
@@ -161,7 +165,7 @@ pub fn mesh_from_usd_subset(read: &ReadMesh, face_subset: Option<&[i32]>) -> Mes
     } else {
         mesh.compute_smooth_normals();
     }
-    if read.uvs.is_some() {
+    if tangents && read.uvs.is_some() {
         if let Err(e) = mesh.generate_tangents() {
             bevy::log::debug!("mesh: generate_tangents failed: {e}");
         }

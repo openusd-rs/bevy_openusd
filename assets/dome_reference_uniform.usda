@@ -1,0 +1,9 @@
+#usda 1.0
+(
+    subLayers = [@dome_reference_unit.usda@]
+)
+over "Env"
+{
+    asset inputs:texture:file = @dome_warm.exr@
+    float inputs:intensity.timeSamples = { 0: 1, 10: 2 }
+}

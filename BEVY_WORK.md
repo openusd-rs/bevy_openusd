@@ -3,6 +3,146 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Reuse sampled joint normal inverses
+
+CPU normals and GPU corrections now reuse joint inverse-transposes within one
+sample, preserving lazy singular-joint validation and rigid-binding behavior.
+Library tests (496), three native checks, check-all and release examples pass.
+Inspected CPU/GPU and before/after images are RGB-exact. Grid preparation stays
+near 38 ms; no meaningful overall speedup is claimed. Expensive CPU tangent work
+remains. Evidence: `benchmarks/blended-skin-grid.md`.
+
+## Quantify uniform environment response
+
+Added a uniform EXR dome with intensities 1 and 2. Four inspected captures use
+matched intensity, unit Bevy exposure and disabled tone mapping. Interior
+32x32 diffuse/metal patches differ from native Storm by at most 2 RGB bytes
+at intensity 1 and 2/3 bytes at intensity 2. Strict comparisons fail; this is
+close local response, not whole-image or arbitrary-material parity. No runtime
+lighting adjustment was made. Evidence: `benchmarks/dome-native-reference.md`.
+
+## Isolate capture camera response
+
+Standalone captures now expose bounded EV100 and optional disabled tone mapping,
+recording both settings. Defaults retain pixel-exact output. With unit exposure,
+unit EXR dome intensity and no tone mapping, inspected Bevy output has a similarly
+dark response to native Storm. This is not numeric brightness parity; filtering
+and tessellation differ. Twenty capture tests, check-all and release capture build
+pass. Details: `benchmarks/dome-native-reference.md`.
+
+## Correct environment cubemap handedness
+
+The USD latlong converter now compensates for Bevy's environment shader Z
+reflection. A 384-texel regression fails before and passes after correction;
+all nine environment-map tests pass. Inspected release captures at dome
+rotations 0 and 180 now place the colored reflection in the same front/rim
+regions as native Storm's EXR reference. This does not establish brightness or
+pixel parity. Evidence and remaining qualifications:
+`benchmarks/dome-native-reference.md`.
+
+Full workspace gates pass: 659 tests, 18 ignored, 33 suites; check-all and
+viewer build pass. Logs: `/tmp/dome-handedness-{all-tests,check,viewer-build}.log`.
+
+## Native dome reference isolation
+
+Added fixed-camera directional dome references and an optional native camera
+light switch. Both Bevy rotation captures show changing reflections, but native
+unit-intensity controls still produce white silhouettes or black frames with
+successful exit status. The camera-light-on control also rendered black.
+An exposure-only explanation is not established; no production lighting change
+was made. Native environment parity remains open. Reproduction and validation:
+`benchmarks/dome-native-reference.md`.
+
+Follow-up EXR and mipmapped-EXR controls render colored spheres at both dome
+rotations; a subsequent HDR control reproduces white silhouettes. Added the
+equivalent directional EXR fixture as a native comparison path. Native missing-
+mip warnings and reflection-placement differences remain documented; no
+production orientation correction is justified until the native sampling and
+transform conventions are traced.
+
+## Skip discarded rest-pose skin tangents
+
+GPU skin preparation omits rest-pose tangent generation when the fully skinned
+tangent correction will replace it. Public mesh conversion remains unchanged.
+The shader-simulation regression starts without tangents and now covers varying
+joint weights. CPU/GPU and before/after GPU grid captures are RGB-exact.
+
+First measured GPU-prepared median was 40.163 ms versus the previous 56.289 ms;
+a reverse-order repeat was noisy at 63.207 ms, with CPU also rising to 47.463 ms.
+No stable playback-rate or robust percentage improvement is claimed. A more
+complex sampled-buffer tangent candidate showed negligible timing change and
+was removed. Evidence: benchmarks/blended-skin-grid.md.
+
+494 library tests, three native checks, check-all and release example build
+pass; logs /tmp/skip-rest-tangents-{tests-final,native,check,build}.log.
+Broader rendering/environment acceptance and stable large-mesh playback remain
+open; this step removes redundant work without changing rendered output.
+
+## Skip redundant morph tangent preparation
+
+GPU skinning now tells morph preparation when a subsequent fully skinned
+tangent pass will replace its output. That case skips the discarded morph-only
+mesh/tangent rebuild; standalone and unaffected bindings retain their path.
+On the fixed 20,000-triangle grid, GPU-prepared median seek fell from 73.172 ms
+to 56.289 ms in a subsequent profiled pair; CPU control was 37.728 ms.
+CPU/GPU and before/after GPU images are RGB-exact and were inspected.
+
+494 ordinary library tests, three native tests, check-all and release example
+build pass. Evidence and limits: benchmarks/blended-skin-grid.md and
+/tmp/skip-morph-tangents-{tests-final,native,check,build-final}.log.
+Preparation still exceeds a 60 Hz budget. Reusing already sampled GPU data
+instead of rerunning the full CPU deformation path for tangents remains open.
+
+## Blended-skin integration and scaling baseline
+
+At da06181, make test-all passes 658 tests with 18 ignored across 33 suites;
+make check-all and make build pass. Logs:
+/tmp/blended-integration-{tests,check,build}.log.
+The two-joint time-ten fixture also passes CPU/GPU comparisons in forward
+MSAA4, prepass and deferred; all six images were inspected.
+
+Added scripts/make_skin_grid.sh for self-contained variable-weight grids.
+The corrected 100-by-100 fixture is accepted natively and its Bevy CPU/GPU
+time-five images are RGB-exact. Its measured preparation cost is not acceptable
+as evidence of fast playback: median repeated seek is 37.402 ms for CPU versus
+73.172 ms for GPU-prepared in one profiled ordered pair. This measures editor
+preparation, not GPU execution. Details, reproducible commands and artifact
+paths are in benchmarks/blended-skin-grid.md. Removing redundant sampled
+geometry/tangent work is the next concrete performance task.
+
+## Blended-joint normal and tangent correctness
+
+The new two-joint native fixture exposed a CPU normal mismatch that the
+single-joint oracle could not detect. Per-vertex skinning now blends individual
+inverse-transpose normal transforms; rigid bindings retain their combined
+transform behavior. GPU base/morph normals compensate for Bevy's built-in
+inverse-blended normal transform. Affected UV meshes rebuild sampled tangents
+and compensate their GPU input transforms. Zero active normal results reject.
+
+Three native tests pass, including the new blended-joint normal comparison at
+five times. Ordinary library tests pass 494 with 18 ignored; make check-all and
+the release viewer_capture build pass. Logs:
+/tmp/blended-normal-final-{tests,native,check,build}.log.
+CPU/GPU forward MSAA-Off captures at 0,5,10 are RGB-exact with active GPU
+skin/morph metadata. See benchmarks/deformation-captures.md for failed controls,
+images and scope limits. The correction adds CPU tangent work for affected
+bindings; its large-rig cost and broader render-path fidelity remain unmeasured.
+
+## Native normal deformation oracle
+
+Extended the native sampler with --normals and added an equivalent built-in
+vertex-normal fixture without replacing indexed-normal coverage. Native baked
+point and normal comparisons pass at five times with tolerance 1e-5 for the
+combined single-joint/nonuniform-scale/morph fixture. The ordinary encoding
+equivalence test passes, and Bevy time-ten captures are RGB-exact across the
+two normal encodings. Native rendered shading still differs; this is not a
+full shading or multi-joint-normal acceptance claim.
+
+492 ordinary library tests pass with 17 ignored; the two ignored native oracle
+tests were separately executed and passed. make check-all passes. Evidence and
+limitations: benchmarks/deformation-captures.md and
+/tmp/native-normal-{rust-tests-final,library-tests,check}.log.
+
 ## Native CPU deformation point oracle
 
 Added scripts/sample_native_deformation.cpp using installed native OpenUSD

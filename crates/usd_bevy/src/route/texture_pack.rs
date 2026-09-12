@@ -108,6 +108,9 @@ fn plane(world: &World, path: &Option<String>, channel: usize, srgb: bool, [scal
     anyhow::ensure!(matches!(image.sampler, bevy::image::ImageSampler::Default), "scalar packing requires a shared default sampler");
     let count = u64::from(size.width) * u64::from(size.height);
     anyhow::ensure!(count > 0 && count <= 16_777_216, "scalar image exceeds the 16M pixel packing limit");
+    if let Some(values) = rgba8_plane(image, count as usize, channel, scale, bias)? {
+        return Ok(Some(Plane { width: size.width, height: size.height, values }));
+    }
     let mut values = Vec::with_capacity(count as usize);
     for y in 0..size.height {
         for x in 0..size.width {
@@ -118,6 +121,24 @@ fn plane(world: &World, path: &Option<String>, channel: usize, srgb: bool, [scal
         }
     }
     Ok(Some(Plane { width: size.width, height: size.height, values }))
+}
+
+fn rgba8_plane(image: &Image, count: usize, channel: usize, scale: f32, bias: f32) -> anyhow::Result<Option<Vec<u8>>> {
+    let srgb = match image.texture_descriptor.format {
+        TextureFormat::Rgba8UnormSrgb => true,
+        TextureFormat::Rgba8Unorm => false,
+        _ => return Ok(None),
+    };
+    let Some(data) = image.data.as_ref().and_then(|data| data.get(..count.checked_mul(4)?)) else { return Ok(None) };
+    let mut table = [0; 256];
+    for (byte, output) in table.iter_mut().enumerate() {
+        let value = byte as f32 / 255.0;
+        let linear = if srgb && channel < 3 { Color::srgb(value, value, value).to_linear().red } else { value };
+        let value = linear * scale + bias;
+        if !value.is_finite() { return Ok(None); }
+        *output = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+    Ok(Some(data.chunks_exact(4).map(|pixel| table[pixel[channel] as usize]).collect()))
 }
 
 pub(crate) fn metallic_roughness(world: &mut World, read: &ReadPreviewMaterial) -> anyhow::Result<Option<Handle<Image>>> {
@@ -168,6 +189,39 @@ fn pack(world: &mut World, rough: Option<Plane>, metal: Option<Plane>, occlusion
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rgba8_scalar_lookup_matches_pixel_conversion() {
+        for format in [TextureFormat::Rgba8Unorm, TextureFormat::Rgba8UnormSrgb] {
+            let mut data = Vec::new();
+            for byte in 0..=255_u8 { data.extend_from_slice(&[byte, 255-byte, byte.rotate_left(3), byte.rotate_right(2)]); }
+            let image = Image::new(Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+                TextureDimension::D2, data, format, bevy::asset::RenderAssetUsages::default());
+            for channel in 0..4 {
+                for [scale, bias] in [[1.0, 0.0], [2.0, -1.0], [-0.7, 0.8], [0.0, 0.5]] {
+                    let actual = rgba8_plane(&image, 256, channel, scale, bias).unwrap().unwrap();
+                    let expected: Vec<_> = (0..256).map(|i| {
+                        let color = image.get_color_at(i % 16, i / 16).unwrap().to_linear();
+                        let value = [color.red, color.green, color.blue, color.alpha][channel] * scale + bias;
+                        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+                    }).collect();
+                    assert_eq!(actual, expected, "{format:?} channel={channel} scale={scale} bias={bias}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rgba8_scalar_lookup_defers_unsupported_inputs() {
+        let mut image = Image::new(Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            TextureDimension::D2, vec![0; 4], TextureFormat::Rgba8Unorm, bevy::asset::RenderAssetUsages::default());
+        assert!(rgba8_plane(&image, 1, 0, f32::MAX, f32::MAX).unwrap().is_none());
+        assert!(rgba8_plane(&image, 2, 0, 1.0, 0.0).unwrap().is_none());
+        image.data = None;
+        assert!(rgba8_plane(&image, 1, 0, 1.0, 0.0).unwrap().is_none());
+        image.texture_descriptor.format = TextureFormat::Rgba16Float;
+        assert!(rgba8_plane(&image, 1, 0, 1.0, 0.0).unwrap().is_none());
+    }
 
     #[test]
     fn pruning_packed_and_alpha_images_preserves_owners_and_byte_counts() {

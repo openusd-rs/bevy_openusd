@@ -3,6 +3,14 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Ropa startup profiling
+
+[Ropa startup measurements](benchmarks/ropa-startup.md) locate the large-scene
+CPU cost in material/subset projection. RGBA8 scalar transfer lookup reduces
+the measured headless open from 167 to 88 seconds in one ordered pair, with
+exhaustive byte-domain conversion checks. GPU/UI readiness and full-scene
+fidelity remain separate acceptance requirements.
+
 ## Post-OIT workspace and deformation gate
 
 At d17f61b, Make test-all passes 645 tests across 33 suites, with 15 ignored;

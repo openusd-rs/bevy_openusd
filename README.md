@@ -490,6 +490,9 @@ regressions. It does not establish GPU or frame-rate improvements.
 mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
 includes file reading and texture decoding, but excludes GPU work and the UI:
 
+Set `USD_PROFILE_ROUTES=1` to report initial-open route costs before idle
+updates, plus measured-seek route costs when a seek mode is selected.
+
 ```sh
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/material_subsets.usda'
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/morph_animation.usda 3 gpu-prepared'

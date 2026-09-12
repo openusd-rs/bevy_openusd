@@ -27,6 +27,17 @@ fn asset_counts(world: &World) -> [usize; 3] {
     [world.resource::<Assets<Mesh>>().len(), world.resource::<Assets<StandardMaterial>>().len(), world.resource::<Assets<Image>>().len()]
 }
 
+fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionTimings>() {
+        let mut routes: Vec<_> = timings.0.iter().collect();
+        routes.sort_by_key(|(_, timing)| std::cmp::Reverse(timing.matching + timing.application));
+        for (name, timing) in routes {
+            eprintln!("route_profile phase={phase} samples={samples} route={name} attempts={} matches={} match_ms={:.3} apply_ms={:.3}",
+                timing.attempts, timing.matches, timing.matching.as_secs_f64()*1000.0, timing.application.as_secs_f64()*1000.0);
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 struct Measurement {
     open: Duration,
@@ -63,6 +74,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     let start = Instant::now();
     app.update();
     let open = start.elapsed();
+    report_routes(app.world(), "initial-open", 1);
     let view = bridge.view()?;
     if view.status != "Ready" { return Err(format!("editor open failed: {}", view.status).into()); }
     let start = Instant::now();
@@ -102,14 +114,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
         result.seek_median = timings[timings.len().div_ceil(2)-1];
         result.seek_p95 = timings[(timings.len()*95).div_ceil(100)-1];
         result.seek_max = *timings.last().unwrap();
-        if let Some(timings) = app.world().get_resource::<usd_bevy::route::ProjectionTimings>() {
-            let mut routes: Vec<_> = timings.0.iter().collect();
-            routes.sort_by_key(|(_, timing)| std::cmp::Reverse(timing.matching + timing.application));
-            for (name, timing) in routes {
-                eprintln!("route_profile phase=measured-seeks samples={} route={name} attempts={} matches={} match_ms={:.3} apply_ms={:.3}",
-                    seek.samples(), timing.attempts, timing.matches, timing.matching.as_secs_f64()*1000.0, timing.application.as_secs_f64()*1000.0);
-            }
-        }
+        report_routes(app.world(), "measured-seeks", seek.samples());
     }
     result.rss_after_seeks = resident_bytes();
     if let Some(cache) = app.world().get_resource::<usd_bevy::route::cache::ProjectionCache>() {

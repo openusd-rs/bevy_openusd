@@ -1,5 +1,27 @@
 # Ropa material projection
 
+## Avoid duplicate initial projection
+
+The live loader projected the stage, then reapplied all routes when its initially
+unset AppliedPurposes state was compared with the current display purposes.
+The initial animation sample was also left unrecorded. project_on_load_system
+now records the purpose/time snapshot used by the initial projection. Later
+changes still reapply the affected routes; a regression verifies first-pass
+counts, idle behavior, sampled geometry and a subsequent guide-visibility toggle.
+
+On the same fixed source below, release open time is 16441.770ms versus the
+color-lookup baseline's 29818.080ms. MeshRoute matches fall from 1184 to 592,
+with 2227 total route attempts instead of 4455. Retained mesh assets/vertices
+stay at 1015/918650. This is one additional headless measurement, not a full
+viewer-startup or general performance guarantee. Log:
+/tmp/ropa-single-projection-profile.log.
+
+Both whole-host and compositor Ropa captures were inspected with intact model,
+grid and outliner: target/ropa-single-projection-{host,desktop}.png. Capture log:
+/tmp/ropa-single-projection-capture.log. All 491 library tests pass (15 ignored),
+check-all and release viewer build pass; logs use /tmp/initial-projection-*
+and /tmp/single-projection-* prefixes.
+
 ## Fixed-source color transform comparison
 
 The user's Ropa source changed externally to 153124035 bytes (mtime

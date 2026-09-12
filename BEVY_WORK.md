@@ -3,6 +3,17 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Avoid duplicate first-load route application
+
+project_on_load_system now records the display-purpose and sample-time snapshot
+already applied by initial projection. Previously the uninitialized purpose
+state forced a second full route pass. A regression verifies one initial shape
+projection, no idle repeat, and correct subsequent time/guide changes without
+entity replacement. All 491 library tests pass (15 ignored), check-all and
+release build pass. The fixed Ropa sample opens in 16.4 seconds versus 29.8,
+with exactly 592 mesh route matches rather than 1184. Both whole-host and
+desktop captures were inspected. Details are in benchmarks/ropa-startup.md.
+
 ## Color transfer startup optimization
 
 RGBA8 color transforms now use exact per-channel half-float lookup tables,

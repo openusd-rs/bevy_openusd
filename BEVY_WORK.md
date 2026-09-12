@@ -3,6 +3,25 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Remaining machine-corpus GPU views
+
+The full workspace gate at 03c9b69 passes 649 tests with 15 ignored across
+33 suites; check-all passes. Logs: /tmp/post-texture-workspace-{tests,check}.log.
+This includes both byte-transfer optimizations and the host capture timer fix.
+
+Fresh release viewer_capture runs at 03c9b69 complete for Claas, Knoche and
+Krampe at time zero, OIT enabled and shadows off. Inspected images:
+target/claas_trailer-corpus-gpu.png, target/knoche_disc_harrow-corpus-gpu.png and
+target/krampe_trailer-corpus-gpu.png. Matching logs are
+/tmp/{claas_trailer,knoche_disc_harrow,krampe_trailer}-corpus-gpu.log.
+
+Claas shows its green slatted body, branding, tires and hitch; Krampe shows its
+red body, wheels and hoses. Knoche shows its red frame and discs, but also two
+bright horizontal shapes above the frame that are not yet attributed to source
+geometry or material/rendering behavior. Thin-edge aliasing remains visible.
+All seven user-supplied machine packages now have inspected rendered evidence
+across the recorded revisions; this is not a clean native-fidelity matrix.
+
 ## Whole-host capture delay after initial UI work
 
 Host capture now starts its delay at the end of the first viewer UI update,

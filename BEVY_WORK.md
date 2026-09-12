@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Matched showcase GPU-pass measurements
+
+benchmarks/deformation-gpu-cost.md records four CPU/GPU/GPU/CPU release runs,
+120 fresh timestamp samples per pass, fixed pose at time 30 and filtered dome
+lighting. Opaque-pass medians are 0.027648ms for both CPU controls and
+0.029696/0.028672ms for GPU deformation. Both image comparisons pass tolerance
+one; the first pair was visually inspected. This measures posed-scene GPU pass
+cost, not advancing-clock playback, cold filtering or total frame time.
+
 ## EXR source and package lifecycle
 
 The asset-system regression exr_dome_samples_reload_fail_and_recover_in_sources_and_packages

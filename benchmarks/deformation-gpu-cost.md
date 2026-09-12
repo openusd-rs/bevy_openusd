@@ -40,3 +40,26 @@ the posed meshes and directional dome contribution on the sphere are present.
 Artifacts: `target/showcase-gpu-cost-{0-cpu,1-gpu,2-gpu,3-cpu}.*`; every sidecar
 retains raw samples and all pass statistics. Logs use matching `/tmp/` names;
 comparison logs are `/tmp/showcase-gpu-cost-{first,second}-compare.log`.
+
+## Sustained viewer playback cadence
+
+A separate release viewer run at a58d5e4 used the real Timeline Play button
+via `scripts/replays/timeline_play.replay`, with the showcase dome selected.
+The isolated headless-Weston wrapper waited 78 seconds after initial UI work;
+direct host capture used a 70-second delay. Neither capture time is a frame-time
+metric. Both images were inspected: the timeline says Playing, with different
+clock values and corresponding mesh poses/colors in the two captures.
+
+The measurement window starts five seconds after the replayed Play-button
+release and lasts 60 seconds. Timestamped `/Showcase/Morph/Face` projection
+messages give 3576 updates spanning 59.988308 seconds, or 59.594946 updates/s.
+The 3575 successive gaps have median 16.755ms, p95 18.146ms, max 50.584ms.
+These are CPU scene-projection intervals, not presented-frame timestamps,
+per-frame computation durations or GPU timings. Tracing overhead is included.
+The observed maximum rules out claiming every update met a 16.7ms deadline.
+
+Artifacts: `target/sustained-playback-{host,desktop}.png`,
+`target/sustained-playback-desktop.viewer.log`,
+`/tmp/sustained-playback-{capture,cadence,gaps}.txt` (capture log uses `.log`).
+The wrapper's panic-log and near-black checks passed and its owned session
+exited. This is one scene/device/backend run, not general playback certification.

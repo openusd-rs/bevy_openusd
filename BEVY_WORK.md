@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## One-minute real-viewer playback
+
+The current release viewer sustains 59.595 animated-mesh projections/s over a
+60-second observation window with the showcase dome selected. Median/p95/max
+projection intervals are 16.755/18.146/50.584ms. Both host and desktop captures
+were visually inspected, showing Playing and different clock/pose/color states.
+benchmarks/deformation-gpu-cost.md records scope and artifacts; these intervals
+are not GPU execution times or presented-frame timings. No source changed.
+
 ## Matched showcase GPU-pass measurements
 
 benchmarks/deformation-gpu-cost.md records four CPU/GPU/GPU/CPU release runs,

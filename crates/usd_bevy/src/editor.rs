@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 mod layer_changes;
+pub mod reload;
 pub mod save_state;
 
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
@@ -18,6 +19,8 @@ pub enum EditorCommand {
     OpenChecked { filename: String, document_id: u64, revision: u64 },
     /// Reload source-backed images without replacing the document or edit history.
     RefreshTextures,
+    /// Refreshes changed disk layers in the current document.
+    ReloadSources(Vec<std::path::PathBuf>),
     Select(Option<String>),
     Visibility { prim: String, visible: bool },
     Edit(EditorEdit),
@@ -83,6 +86,10 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::route::StageTime>()
             .add_systems(PreUpdate, (process_commands, advance_editor_time).chain())
             .add_systems(Last, publish_projection_issues);
+        #[cfg(not(target_arch = "wasm32"))]
+        app.init_resource::<reload::EditorReloadStatus>()
+            .init_resource::<reload::WatchState>()
+            .add_systems(PreUpdate, reload::watch.before(process_commands));
     }
 }
 
@@ -275,6 +282,13 @@ fn process_commands(world: &mut World) {
                 })
         } else if let Some(editor) = &mut session {
             match command {
+                EditorCommand::ReloadSources(paths) => {
+                    let result = editor.reload_paths(Some(&paths));
+                    if let Some(mut status) = world.get_resource_mut::<reload::EditorReloadStatus>() {
+                        status.error = result.as_ref().err().map(|error| format!("{error:#}"));
+                    }
+                    result
+                }
                 EditorCommand::Visibility { prim, visible } => {
                     let time = world.resource::<crate::route::StageTime>().current;
                     visibility_edit(editor.stage(), prim, visible, time).and_then(|edit| editor.edit(edit))

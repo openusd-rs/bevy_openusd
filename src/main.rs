@@ -244,7 +244,6 @@ impl WindowApp for UsdApp {
     }
 
     fn update(&mut self, host: &mut MaraHostCtx<'_>) {
-        if let Some(capture) = &mut self.host_capture { capture.update(host.__internal_egui()); }
         self.close_confirmation.show(host.__internal_egui());
         let Self {
             bevy_view,
@@ -355,6 +354,7 @@ impl WindowApp for UsdApp {
             eprintln!("USD_VIEWER_UI_UPDATED");
             *capture_handshake = false;
         }
+        if let Some(capture) = &mut self.host_capture { capture.update(host.__internal_egui()); }
     }
 }
 

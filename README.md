@@ -490,6 +490,9 @@ regressions. It does not establish GPU or frame-rate improvements.
 mesh/image payload after 100 idle updates with Bevy asset tracking enabled. It
 includes file reading and texture decoding, but excludes GPU work and the UI:
 
+Set `USD_PROFILE_ROUTES=1` to report initial-open route costs before idle
+updates, plus measured-seek route costs when a seek mode is selected.
+
 ```sh
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/material_subsets.usda'
 make run RUN_WITH= APP_TARGET='--release --example editor_benchmark' ARGS='assets/morph_animation.usda 3 gpu-prepared'
@@ -803,6 +806,20 @@ the callback.
 The standalone `viewer_capture` example below has explicit readiness checks and
 process exit status. Use `scripts/capture_viewer_ui.sh` to capture UI composition.
 
+For larger scenes, `USD_CAPTURE_TIMEOUT_SECS=180` increases the standalone
+capture deadline; accepted values are 1–600 seconds, with a default of 60.
+`USD_CAPTURE_GPU_SAMPLES=120` records fresh per-pass GPU timestamps after warm-up.
+These are not full-frame timings. `USD_CAPTURE_RENDERER=oit` enables
+order-independent transparency with prepasses and MSAA off, without FXAA.
+
+In the interactive viewer, **Rendering → Enable OIT** enables OIT with FXAA.
+`USD_VIEWER_OIT=1` enables it at startup. Disabling restores prior AA settings;
+oversized OIT buffers trigger a device-limit fallback with an explanation.
+See [support limits](SUPPORT.md) for memory, overflow and backend qualifications.
+The order-invariance and real-window resize gates are
+`scripts/check_transparency_order.sh` and `scripts/check_oit_resize.sh`;
+each accepts a new output directory and can be run through a Make `--eval` target.
+
 Scalar UsdUVTexture inputs now apply the selected channel's `scale` and `bias`
 when packing roughness, metallic, occlusion and opacity. Values are transformed
 after color-space decoding, then clamped/quantized into the existing 8-bit packed
@@ -821,8 +838,8 @@ coefficients and float16 overflow return material warnings. Alpha is preserved,
 and subsequent opacity packing retains transformed HDR RGB. Identity RGB
 transforms reuse original images. Transformed content uses a 64 MiB accounted
 cache and a 16M-pixel input limit; those are not total process/VRAM limits.
-Float16 rounding remains an approximation, and normal-map scale/bias is not
-implemented by this path.
+Float16 rounding remains an approximation. Signed normal-map scale/bias is
+encoded into Bevy's texture-normal representation by the color-transform path.
 Material graph evaluation has a 256-input traversal budget and a separate
 32-level recursion limit for arithmetic/constant nodes; exceeding either reports
 an error rather than continuing unbounded recursion.
@@ -1554,6 +1571,11 @@ defaults to 20000 and accepts 0..300000. The viewer stays open. Watch stderr for
 `HOST_CAPTURE_OK` or `HOST_CAPTURE_ERROR`; a missing callback times out after
 30 additional seconds. Existing files and symlinks are not overwritten.
 
+The delay starts after the first completed viewer UI update, not at application
+construction. Long initial scene loading therefore does not consume the delay.
+This is a settling interval, not a GPU/scene-readiness assertion; inspect the
+result before treating it as rendering evidence.
+
 ```sh
 USD_HOST_SCREENSHOT="$PWD/target/NEW-host-gpu.png" \
 USD_HOST_SCREENSHOT_DELAY_MS=20000 make run ARGS=assets/layer_muting.usda
@@ -1784,8 +1806,11 @@ ambient; authored USD lights remain unchanged. A missing selected dome is report
 and detached, rather than silently replaced by another dome.
 For startup selection, use `USD_VIEWER_DOME=/Env`; `USD_VIEWER_PANE=lighting`
 opens that pane initially. Without a selection, studio lighting remains the default.
-EXR and non-HDR dome color-space
-metadata remain unsupported; automatic layout currently accepts only 2:1 latlong.
+EXR decoding is enabled; `assets/dome_environment_exr.usda` is the equivalent
+half-float EXR version of the warm HDR fixture. Single-part RGB half-float
+decoding, values above one and matched GPU output are tested. Deep/multipart
+EXR and non-HDR dome color-space metadata are not validated; automatic layout
+currently accepts only 2:1 latlong.
 `assets/dome_directional.usda` uses a red/blue HDR and rotates the dome 180 degrees
 between times 0 and 10. Use the same camera arguments above for both captures;
 the blue contribution moves from right to left on the spheres. Capture metadata

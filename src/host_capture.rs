@@ -9,6 +9,7 @@ pub struct Capture {
     path: PathBuf,
     delay: Duration,
     started: Instant,
+    armed: bool,
     requested: Option<Instant>,
     token: egui::UserData,
     complete: bool,
@@ -47,6 +48,7 @@ fn configure(
         path,
         delay: Duration::from_millis(delay),
         started: Instant::now(),
+        armed: false,
         requested: None,
         token: egui::UserData::new("usdview-host-capture"),
         complete: false,
@@ -61,6 +63,10 @@ impl Capture {
     fn update_at(&mut self, ctx: &egui::Context, now: Instant) {
         if self.complete {
             return;
+        }
+        if !self.armed {
+            self.started = now;
+            self.armed = true;
         }
         let screenshot = ctx.input(|input| {
             input.events.iter().find_map(|event| match event {
@@ -135,6 +141,21 @@ fn write_png(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_time_does_not_consume_the_capture_delay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut capture = configure(Some(dir.path().join("host.png")), Some("1000")).unwrap().unwrap();
+        let ctx = egui::Context::default();
+        let first_ui = capture.started + Duration::from_secs(180);
+        let _ = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), first_ui));
+        assert_eq!(capture.started, first_ui);
+        assert!(capture.requested.is_none());
+        let _ = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), first_ui + Duration::from_millis(999)));
+        assert!(capture.requested.is_none());
+        let _ = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), first_ui + Duration::from_secs(1)));
+        assert!(capture.requested.is_some());
+    }
 
     #[test]
     fn configuration_rejects_invalid_or_existing_outputs() {

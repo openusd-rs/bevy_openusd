@@ -85,6 +85,37 @@ mod tests {
     use bevy::camera::visibility::NoFrustumCulling;
 
     #[test]
+    fn combined_normal_fixture_keeps_skin_morph_uvs_and_materials() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_tangent_normals.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        for time in [0.0, 5.0, 10.0] {
+            let ctx = RouteCtx::at(&stage, &path, Some(time));
+            let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+            assert!(read.double_sided);
+            assert_eq!(read.subsets.len(), 1);
+            let mut mesh = crate::mesh::mesh_from_usd(&read);
+            let weights = prepare(&ctx, &read, &mut mesh).unwrap();
+            assert_eq!(weights, [time as f32 / 10.0]);
+            assert!(mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
+            assert!(mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
+            assert!(mesh.get_morph_targets().unwrap().iter().any(|target| target.normal != Vec3::ZERO));
+            let skin = crate::read::skel::gpu_skin_sample(&stage, &path, Some(time)).unwrap();
+            assert!((skin.matrices[0].x_axis.truncate().length() - 2.0).abs() < 1e-5);
+            assert!((skin.matrices[0].z_axis.truncate().length() - 0.5).abs() < 1e-5);
+            for path in [path.clone(), path.append_path("Part").unwrap()] {
+                let (handle, warnings) = super::super::material::resolve_material(
+                    &RouteCtx::at(&stage, &path, Some(time)), &mut world).unwrap().unwrap();
+                assert!(warnings.is_empty(), "{warnings:?}");
+                assert!(world.resource::<Assets<StandardMaterial>>().get(&handle).unwrap().normal_map_texture.is_some());
+            }
+        }
+    }
+
+    #[test]
     fn sampled_morph_tangents_match_cpu_geometry() {
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/morph_tangent_normals.usda");
         let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();

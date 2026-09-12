@@ -3,6 +3,199 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Combined normal-map deformation acceptance
+
+The new skel_morph_tangent_normals fixture and composition regression cover
+normal-map material binding together with indexed morph normals, nonuniform
+skinning, tangents, double-sided geometry and subsets. Forward/deferred sweeps
+at 0,5,10 and a back-face control are recorded in
+benchmarks/deformation-captures.md. Deferred and no-MSAA controls pass RGB
+tolerance one; the forward time-10 view exceeds it at one pixel (difference two).
+The failed gate is retained rather than relabeled as passing. No production
+renderer behavior changed in this coverage step.
+
+## EXR dome decoding
+
+Enabled Bevy's exr image feature in usd_bevy; Cargo.lock records exr 1.74.2
+and its codec dependencies. No alternative texture-loading or filtering path
+was added. The warm EXR fixture is generated from dome_warm.hdr with OpenImageIO
+2.5.19.1 (`oiiotool assets/dome_warm.hdr -d half -o NEW.exr`). The high-radiance
+fixture uses `--pattern constant:color=8,2,0.5 2x1 3 -d half -o NEW.exr`.
+
+Decoder tests compare every warm-fixture pixel and cubemap bytes against HDR,
+verify explicit radiance (8,2,0.5), and reject truncated EXR input. All eight
+environment-map tests pass in /tmp/exr-dome-tests-fixed.log; check passes in
+/tmp/exr-check.log. The initial test incorrectly expected the existing warm HDR
+to exceed one; it contains 0.119141/0.0625/0.03125. That failed test is retained
+in /tmp/exr-dome-tests.log; the added high fixture tests HDR preservation directly.
+The full library gate passes 487 tests with 15 ignored:
+/tmp/exr-library-tests.log.
+
+Release GPU captures select /Env at time zero, forward rendering and shadows
+off. target/dome-codec-{hdr,exr}.png are RGB-identical across all 921600 pixels
+at tolerance zero; the EXR image was visually inspected. Metadata records one
+environment generation, maps attached and no remaining generator. Logs:
+/tmp/dome-codec-{hdr,exr}.log and /tmp/dome-codec-compare-fixed.log.
+This covers single-part half-float RGB EXR, not deep/multipart files or general
+color management. The full integration goal remains active.
+
+## Knoche light-bar geometry attribution
+
+The two bright shapes in the Knoche capture are now traced to
+/robot/chassis/visual_033_lightBar_new/lightBar_new_001. Native usdcat shows
+this authored mesh bound to crossmax600_reflectorWhite_mat___PBR, whose preview
+diffuse color is (0.752,0.752,0.752). A stronger-layer visibility override hiding
+only its parent removes the shapes from the otherwise matching Bevy view:
+target/knoche-lightbar-z-control.png, /tmp/knoche-lightbar-z-control.log.
+
+A native OpenUSD Embree capture from the matching camera also shows the same
+two elevated shapes: target/knoche-native-reference.png and
+/tmp/knoche-native-reference.log. Both images were visually inspected. Embree
+warns that Material prims and GPU color correction are unsupported; this is
+geometry-placement evidence, not PBR appearance equivalence. No renderer or
+original asset change was needed for these shapes.
+
+Controls use target/knoche-control-source.usdz, a byte-identical local copy of
+the user's source (SHA256 335dae1853f96b35b48ce4d87e4b9bde67019857283a9af9a41ae2f0e1c567f9).
+The initial visibility wrapper omitted root upAxis metadata and consequently
+rotated the scene; target/knoche-lightbar-control.png is not a matched control.
+The corrected wrapper explicitly preserves Z-up and metersPerUnit=1.
+
+## Remaining machine-corpus GPU views
+
+The full workspace gate at 03c9b69 passes 649 tests with 15 ignored across
+33 suites; check-all passes. Logs: /tmp/post-texture-workspace-{tests,check}.log.
+This includes both byte-transfer optimizations and the host capture timer fix.
+
+Fresh release viewer_capture runs at 03c9b69 complete for Claas, Knoche and
+Krampe at time zero, OIT enabled and shadows off. Inspected images:
+target/claas_trailer-corpus-gpu.png, target/knoche_disc_harrow-corpus-gpu.png and
+target/krampe_trailer-corpus-gpu.png. Matching logs are
+/tmp/{claas_trailer,knoche_disc_harrow,krampe_trailer}-corpus-gpu.log.
+
+Claas shows its green slatted body, branding, tires and hitch; Krampe shows its
+red body, wheels and hoses. Knoche shows its red frame and discs, but also two
+bright horizontal shapes above the frame that are not yet attributed to source
+geometry or material/rendering behavior. Thin-edge aliasing remains visible.
+All seven user-supplied machine packages now have inspected rendered evidence
+across the recorded revisions; this is not a clean native-fidelity matrix.
+
+## Whole-host capture delay after initial UI work
+
+Host capture now starts its delay at the end of the first viewer UI update,
+after BevyView::show, rather than consuming it during application construction
+and initial scene loading. A deterministic test advances construction-to-first-
+update time by 180 seconds and verifies the full requested delay remains.
+Callback correlation, timeout and no-overwrite tests remain intact.
+
+Ropa's fresh release capture passes both direct GPU and compositor capture:
+target/ropa-delayed-host.png and target/ropa-delayed-desktop.png were visually
+inspected with the model, grid, toolbar and outliner present. The host used a
+20-second delay after initial UI work; desktop capture waited 35 seconds.
+Logs: /tmp/host-delay-{tests,build}.log and /tmp/ropa-delayed-capture.log.
+This fixes capture timer ordering, not arbitrary GPU readiness or the separately
+observed intermittent compositor black-frame issue.
+
+## Ropa startup profiling
+
+[Ropa startup measurements](benchmarks/ropa-startup.md) locate the large-scene
+CPU cost in material/subset projection. RGBA8 scalar transfer lookup reduces
+the measured headless open from 167 to 88 seconds in one ordered pair, with
+exhaustive byte-domain conversion checks. GPU/UI readiness and full-scene
+fidelity remain separate acceptance requirements.
+
+The subsequent base-color/alpha lookup reduces the same headless open to
+67 seconds. Its matched Ropa GPU capture is RGB-identical to the scalar-only
+capture (921600 pixels, tolerance zero); all 179 route tests pass. Details and
+limitations are in the same benchmark report.
+
+## Post-OIT workspace and deformation gate
+
+At d17f61b, Make test-all passes 645 tests across 33 suites, with 15 ignored;
+check-all passes. Logs: /tmp/post-oit-workspace-{tests,check}.log. The gate
+includes the anti-alias feature and viewer transparency/buffer-limit changes,
+not just the new isolated UI tests. No ignored test is counted as passed.
+
+The fresh GPU/CPU showcase comparison at times 0,30,60 also passes RGB tolerance
+one, with dome lighting selected and shadows off. Each has max RGB error one.
+target/post-oit-deformation/results.tsv and /tmp/post-oit-deformation.log retain
+the result; the time-60 GPU image was inspected. This is deformation regression
+coverage with the changed dependency features, not native renderer parity or
+a performance benchmark (the workspace gate ran concurrently).
+
+README now documents the standalone timeout, OIT/timestamp modes, viewer toggle
+and two native/GPU gates. It also corrects the stale statement that signed
+normal-map scale/bias was unimplemented. This validation does not close the
+remaining full-scene fidelity and backend qualifications in SUPPORT.md.
+
+## Real 4K resize guard acceptance
+
+scripts/check_oit_resize.sh starts an isolated Xwayland viewer with OIT enabled,
+resizes its client to 3840x2160, checks actual X window dimensions and the guard
+warning, then restores 1440x920 and requires survival plus direct GPU readback.
+scripts/resize_window.c sends the low-level request to the exact X window ID;
+the harness selects exactly one Mara window on its private display. The helper
+compiles with -Wall -Wextra -Werror; invalid dimensions/display and shell syntax
+were checked through Make (/tmp/resize-cli-tests.log).
+
+The live gate passes in /tmp/oit-real-resize-restored.log. Inspected
+target/oit-real-resize-restored/restored.png shows OIT off, intact triangles and
+a readable wrapped explanation. The guard fired at intermediate target 2530x1423
+against the real 128MiB limit, before reaching 4K. large-window.txt independently
+confirms the client reached 3840x2160. Resize requests and viewer/compositor logs
+are retained in the same directory; owned sessions were cleaned up.
+
+The first harness attempt incorrectly required 3840x2160 in the warning and
+failed, although the guard had fired earlier. That failure remains in
+/tmp/oit-real-resize.log and target/oit-real-resize/. The corrected assertion
+accepts intermediate dimensions while still requiring actual 4K window geometry.
+This is native Xwayland resize acceptance, not every window-system backend.
+
+## OIT device-buffer limit guard
+
+The viewer now checks OIT's shared target dimensions and fragment-node/head
+buffer requirements against the smaller of max_buffer_size and
+max_storage_buffer_binding_size. It runs in Last before state publication and
+render extraction. Oversized configurations disable only viewer-owned OIT,
+restore prior AA settings and publish a wrapped explanation in Rendering.
+Inactive cameras do not inflate the calculation; active OIT cameras contribute
+componentwise maximum target dimensions, matching Bevy's shared-buffer policy.
+
+The default four fragments/pixel require a 398131200-byte node buffer at 4K,
+which exceeds a 128MiB binding limit. Arithmetic checks cover zero dimensions,
+large targets, nonfinite inputs and u32 indexing overflow. A world-level
+regression simulates a 1280x720-to-3840x2160 resize with that limit and verifies
+OIT removal, MSAA restoration, FXAA cleanup and the explanation. This is not an
+actual 4K GPU-resize or available-VRAM test.
+
+All 91 viewer tests and the build pass in /tmp/oit-budget-{tests,build}.log.
+Normal-size live capture also completes: target/oit-budget-normal-host.png was
+inspected with OIT still on and overlapping triangles visible. Wrapper log:
+/tmp/oit-budget-capture.log. Fragment overflow within valid allocated buffers,
+total VRAM pressure and externally owned oversized OIT remain outside this guard.
+
+## Oxbo native reference and its material limitation
+
+Native usdrecord/Embree completes at /ReferenceCamera, 1280px width, frame zero:
+target/oxbo-native-reference.png and /tmp/oxbo-native-reference.log. The authored
+Z-up camera corresponds to Bevy eye (12,10,16), focus (0,2,0). A Bevy OIT capture
+using that same camera also completes and was inspected alongside the native
+image: target/oxbo-reference-bevy.png, /tmp/oxbo-reference-bevy-local.log.
+
+Native geometry/framing broadly agree, but Embree explicitly warns that it does
+not support Material prims and disables GPU color correction. Its gray, opaque
+glass appearance is not a PBR material or transparency reference. The comparison
+therefore cannot certify full visual parity or attribute all shading differences
+to faulty Bevy geometry.
+
+The first AssetServer capture correctly rejected an absolute sublayer escaping
+its source root (/tmp/oxbo-reference-bevy.log). The successful probe uses a
+byte-identical local package copy and a relative sublayer in
+target/oxbo-native-reference.usda. Original/copy SHA256 both equal
+816409b1c2d5adeb17039963045edb7326cd8096a7f257af244bceced5e09d84.
+No resolver sandbox or source asset was modified. These are render probes, not
+a new production code change or test-suite gate.
+
 ## Oxbo shadow control and source geometry inspection
 
 Matched release viewer_capture runs at eye (12,10,16), focus (0,2,0), time zero

@@ -553,6 +553,38 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires USD_NATIVE_DEFORMATION_TOOL built against native OpenUSD"]
+    fn native_baked_positions_match_combined_skin_and_morph() {
+        let tool = std::env::var("USD_NATIVE_DEFORMATION_TOOL").expect("native deformation executable");
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_reference.usda");
+        let original = std::fs::read(file).unwrap();
+        let stage = crate::UsdSource::new(file, original.clone()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+            let output = std::process::Command::new(&tool).args([file, path.as_str(), &time.to_string()])
+                .output().expect("run native deformation tool");
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let text = String::from_utf8(output.stdout).unwrap();
+            let mut lines = text.lines();
+            assert!(lines.next().unwrap().ends_with(" points=4"));
+            let expected = super::skinned_points_at(&stage, &path, Some(time)).unwrap().unwrap();
+            let samples = lines.collect::<Vec<_>>();
+            assert_eq!(samples.len(), expected.len());
+            for (index, (line, expected)) in samples.iter().zip(expected).enumerate() {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                assert_eq!(fields.len(), 4);
+                assert_eq!(fields[0].parse::<usize>().unwrap(), index);
+                for axis in 0..3 {
+                    let actual = fields[axis + 1].parse::<f64>().unwrap();
+                    assert!(actual.is_finite() && (actual - f64::from(expected[axis])).abs() < 1e-5,
+                        "time {time}, point {index}, axis {axis}: native {actual}, Bevy {}", expected[axis]);
+                }
+            }
+        }
+        assert_eq!(std::fs::read(file).unwrap(), original);
+    }
+
     use super::*;
     use super::super::util::read_int_vec;
     use openusd::usd::Stage;

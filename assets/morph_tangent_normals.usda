@@ -4,11 +4,11 @@
 )
 over "Test"
 {
-    over "Face"
+    over "Face" (prepend apiSchemas = ["MaterialBindingAPI"])
     {
         texCoord2f[] primvars:st = [(0,0),(1,0),(1,1),(0,1)] (interpolation = "vertex")
         rel material:binding = </Normal>
-        over "Part"
+        over "Part" (prepend apiSchemas = ["MaterialBindingAPI"])
         {
             rel material:binding = </Normal>
         }

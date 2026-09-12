@@ -1089,6 +1089,27 @@ make capture-reference ARGS='--renderer Embree --disableGpu assets/subdivision_c
 Renderer availability depends on that native installation. Inspect the result;
 successful image writing does not prove that the native stage contained meshes.
 
+For native Storm material references on a headless Linux host with Weston
+Vulkan, Xwayland and Qt XCB installed, use an isolated display:
+
+```bash
+make --eval='native-storm:; @/bin/bash scripts/capture_native_storm.sh ASSET.usdz target/NEW_REFERENCE /Camera 0' native-storm
+```
+
+The output directory must be new. The tool writes `frame.png`, renderer and
+compositor logs, settings and exit status, then stops only its own processes.
+`USD_NATIVE_CAPTURE_TIMEOUT` bounds recording to 1–300 seconds (default 120).
+Camera and numeric time are optional; omitted time is zero. Inspect the image
+and diagnostics: successful recording is not lighting or pixel parity with
+Bevy. This isolated Xwayland path rendered Knoche materials successfully where
+the earlier offscreen Storm probe crashed.
+
+`assets/skel_morph_reference.usda` provides `/ReferenceCamera` for the combined
+skin/morph/normal fixture at times 0–10. Use the same asset with
+`USD_CAPTURE_CAMERA=/ReferenceCamera` for Bevy capture. The native animated
+reference has produced intermittent black frames despite exit zero; inspect
+every output. See `benchmarks/deformation-captures.md` for evidence and limits.
+
 For a local-space triangle/normal isolation probe:
 
 ```bash
@@ -1922,9 +1943,12 @@ USD_CAPTURE_INSTANCE_TIMES=0,10 USD_CAPTURE_SHADOWS=off make run APP_TARGET='--e
 Set `USD_CAPTURE_SHADOWS=off` to disable directional, point and spot shadow maps
 for an isolated rendering comparison. The default `scene` preserves each light's
 shadow setting. This diagnostic is recorded in metadata and does not edit USD.
-Set `USD_CAPTURE_RENDERER=forward|prepass|deferred` to select the render path
-(default `forward`). The latter two enable depth, normal and motion-vector
+Set `USD_CAPTURE_RENDERER=forward|prepass|deferred|oit` to select the render path
+(default `forward`). Non-forward modes enable depth, normal and motion-vector
 prepasses and disable MSAA; deferred also selects Bevy's deferred opaque renderer.
+`USD_CAPTURE_MSAA=off|1|2|4|8` controls forward sampling independently of
+prepasses (default 4). Non-forward modes reject multisampling overrides.
+The selected MSAA value is recorded in capture metadata.
 The selected renderer and subdivision level (`0` means disabled) are recorded in
 capture metadata. Set `USD_SUBDIVISION_LEVELS=1..6` to refine the scene. Match renderer settings
 as well as camera/time when comparing CPU and GPU captures.

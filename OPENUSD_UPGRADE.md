@@ -168,6 +168,9 @@ gaps not covered by the Rust reader/writer self-reopen tests:
   Logs: `/tmp/single-api-export.log`, `/tmp/single-api-native-error.log`.
 - A native Storm offscreen attempt segfaulted in this environment; it provides
   no acceptance evidence. CPU Embree emits a color-correction limitation warning.
+  A subsequent isolated Weston/Xwayland capture succeeds with Storm materials
+  for Knoche and Oxbo; see `scripts/capture_native_storm.sh` and BEVY_WORK.md.
+  The historical offscreen failure is not a current native-rendering blocker.
 
 The original Spot binary compatibility issue is not yet attributed to a writer
 version or specific binary field. The minimal text-export failure is reproduced

@@ -3,6 +3,161 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Native CPU deformation point oracle
+
+Added scripts/sample_native_deformation.cpp using installed native OpenUSD
+UsdSkelBakeSkinning on an anonymous flattened stage. It materializes the
+requested animated sample and maps baked points/transforms back to the original
+mesh's local space. It never saves source layers. The new explicitly ignored
+native integration test compares all combined-fixture points at 0,2.5,5,7.5,10
+against Bevy CPU deformation at absolute tolerance 1e-5.
+
+The native integration test was executed and passed:
+/tmp/native-deformation-rust-test.log. Invalid NaN time and missing mesh
+probes reject with status 2. Ordinary library tests pass 491 with 16 ignored,
+and make check-all passes: /tmp/native-deformation-{library-tests,check}.log.
+Build requirements, native sample values and pitfalls are documented in
+benchmarks/deformation-captures.md. This verifies sampled point deformation,
+not normal/tangent fidelity, GPU execution or full renderer acceptance.
+
+## Native deformation fixture schema repair
+
+Native Storm exposed missing applied APIs in the deformation fixture:
+blendshape_test.usda now declares SkelBindingAPI on its skeleton, and
+morph_tangent_normals.usda declares MaterialBindingAPI on the mesh and subset.
+The composed GPU regression checks those schemas. A reusable
+assets/skel_morph_reference.usda supplies the matched /ReferenceCamera.
+
+Visible native endpoint shapes agree qualitatively with Bevy after the API
+repair, but unchanged native time-ten runs sometimes produce a black frame.
+The successful native image also shades differently under native lighting.
+Neither full normal/material parity nor repeatable native animated capture is
+established. Detailed artifacts and limitations are recorded in
+benchmarks/deformation-captures.md.
+
+make test-all passes 655 tests, 15 ignored, across 33 suites; make check-all
+passes. Logs: /tmp/deformation-native-api-{tests,check}.log.
+Both target/combined-bevy-canonical-{0,10}.png were inspected, using the
+existing release capture binary with the repaired assets and authored camera.
+No production Rust behavior changed: this repairs test assets and reference
+coverage. The remaining rendering acceptance item stays open.
+
+## Native Storm material reference capture
+
+### Independent forward MSAA control
+
+`USD_CAPTURE_MSAA=off|1|2|4|8` now selects forward sampling without enabling
+prepasses. Non-forward capture modes reject multisampling; metadata records
+the selected value. Nineteen viewer_capture tests pass, including defaults,
+valid overrides and incompatible-mode rejection. Release capture and
+make check-all pass; logs `/tmp/capture-msaa-{tests,check}.log`.
+
+Inspected Oxbo forward MSAA4, forward Off, prepass Off and OIT Off captures at
+the same authored /ReferenceCamera and time zero, with shadows disabled:
+`target/oxbo-storm-{forward,forward-noaa,prepass,oit}-control.png`.
+Fine stippling remains without OIT and is visually reduced with MSAA4.
+Prepass/OIT differ in 2914 pixels (max RGB 38); forward Off/prepass Off differ
+in 7410 pixels (max RGB 3), out of 921600. Logs:
+`/tmp/oxbo-storm-{prepass-oit,noaa-prepass}-compare.log`.
+This rules out OIT as a necessary cause of the fine stippling; it does not
+prove its underlying geometry/material cause or native material parity.
+
+`scripts/capture_native_storm.sh` runs native usdrecord in private headless
+Weston Vulkan/Xwayland with Qt XCB, bounded recording time and owned process-group
+cleanup. It refuses existing output directories, retains diagnostics, renders a
+numbered single frame and normalizes its name to frame.png. Explicit usdrecord
+--frames requires a numbered output template even for time zero.
+
+The Knoche capture at `target/storm-native-tool-fixed/frame.png` was inspected:
+red frame, black discs, yellow decals and the elevated white light bars are
+present. The native log identifies HdStormRendererPlugin with exit zero and no
+unsupported-Material warning. This supersedes the earlier offscreen Storm
+failure as a reference-rendering blocker; lighting is not matched and pixel
+parity is not claimed. The earlier failed tool run remains in
+`target/storm-native-tool/` with its output-template diagnostic.
+
+Validation includes a real Knoche render, shell syntax, existing-directory
+rejection and git diff --check. These are capture-tool checks, not a new full
+Rust gate. The deformation/environment acceptance checklist remains open.
+
+The final script also captured Oxbo successfully at
+`target/oxbo-storm-reference-fixed/frame.png`; its log identifies Storm without
+material warnings. Both that image and `target/oxbo-reference-bevy.png` were
+inspected. Framing and major geometry agree, but Bevy is brighter and has more
+visible fine stippling along panels and wheels. Lighting/background differ,
+so this does not isolate the cause or establish material parity. A prior Oxbo
+attempt rendered its numbered image but failed during postprocessing because
+PATH's bash resolves to Oslo with nullglob disabled. The script no longer
+requires nullglob and the documented invocation explicitly uses /bin/bash.
+
+## Post-startup-fix full and native gates
+
+At 7e67bc4, make test-all passes 654 tests with 15 ignored across 33 suites.
+make test-native separately executes and passes 14 native-export tests, including
+retimed instances, clips, moved dependencies, variants, affine reset and package
+source removal. check-all and viewer build pass. Logs:
+/tmp/single-pass-{workspace-tests,native-tests,check,build}.log.
+
+Review of the acceptance checklist still leaves its GPU deformation/environment
+fidelity item open. The repository now has explicit CPU/GPU image comparisons,
+GPU pass timings and real-viewer playback observations, but these do not close
+the recorded forward comparison failure or full-scene native PBR qualifications.
+No acceptance checkbox was changed by the passing general-purpose test gates.
+
+## Avoid duplicate first-load route application
+
+project_on_load_system now records the display-purpose and sample-time snapshot
+already applied by initial projection. Previously the uninitialized purpose
+state forced a second full route pass. A regression verifies one initial shape
+projection, no idle repeat, and correct subsequent time/guide changes without
+entity replacement. All 491 library tests pass (15 ignored), check-all and
+release build pass. The fixed Ropa sample opens in 16.4 seconds versus 29.8,
+with exactly 592 mesh route matches rather than 1184. Both whole-host and
+desktop captures were inspected. Details are in benchmarks/ropa-startup.md.
+
+## Color transfer startup optimization
+
+RGBA8 color transforms now use exact per-channel half-float lookup tables,
+with the prior path retained for other formats or overflow. The fixed-source
+Ropa comparison reduces headless open from 70.3 to 29.8 seconds, with identical
+matched GPU pixels. All 490 library tests pass (15 ignored). The source package
+had changed externally since earlier measurements, so a hash-verified local
+copy was used for both paths; benchmarks/ropa-startup.md records the controls.
+
+## One-minute real-viewer playback
+
+The current release viewer sustains 59.595 animated-mesh projections/s over a
+60-second observation window with the showcase dome selected. Median/p95/max
+projection intervals are 16.755/18.146/50.584ms. Both host and desktop captures
+were visually inspected, showing Playing and different clock/pose/color states.
+benchmarks/deformation-gpu-cost.md records scope and artifacts; these intervals
+are not GPU execution times or presented-frame timings. No source changed.
+
+## Matched showcase GPU-pass measurements
+
+benchmarks/deformation-gpu-cost.md records four CPU/GPU/GPU/CPU release runs,
+120 fresh timestamp samples per pass, fixed pose at time 30 and filtered dome
+lighting. Opaque-pass medians are 0.027648ms for both CPU controls and
+0.029696/0.028672ms for GPU deformation. Both image comparisons pass tolerance
+one; the first pair was visually inspected. This measures posed-scene GPU pass
+cost, not advancing-clock playback, cold filtering or total frame time.
+
+## EXR source and package lifecycle
+
+The asset-system regression exr_dome_samples_reload_fail_and_recover_in_sources_and_packages
+passes for both watcher-enabled named memory sources and USDZ archives. It loads
+two sampled EXRs, seeks to time ten, replaces the selected sample, injects corrupt
+EXR bytes and repairs them. Failure publishes UsdSceneState::Failed while retaining
+the last valid radiance; repair publishes Ready with the new radiance on the same
+dome entity, without resetting the root clock. Log: /tmp/exr-lifecycle-test.log.
+The events use real AssetServer loading with synthetic source-change notifications,
+not native filesystem notifications or a new GPU reload capture.
+
+The full workspace gate including EXR and combined-normal fixture coverage
+passes 652 tests with 15 ignored across 33 suites; check-all and viewer build
+also pass. Logs: /tmp/post-exr-workspace-{tests,check}.log and
+/tmp/post-exr-viewer-build.log. No ignored test is counted as passing.
+
 ## Combined normal-map deformation acceptance
 
 The new skel_morph_tangent_normals fixture and composition regression cover

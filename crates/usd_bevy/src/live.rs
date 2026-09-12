@@ -718,7 +718,11 @@ fn project_on_load_system(world: &mut World) {
         return;
     };
     let mut map = world.remove_resource::<PrimEntities>().unwrap_or_default();
+    let purposes = world.get_resource::<crate::route::DisplayPurposes>().copied();
+    let time = world.get_resource::<StageTime>().map(|time| time.current);
     project_stage(world, &live, &mut map);
+    world.resource_mut::<AppliedPurposes>().0 = purposes;
+    world.resource_mut::<SampledTime>().0 = time;
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     world.resource_mut::<AppliedSubdivision>().0 = subdivision_levels;
     world.resource_mut::<AppliedCurveSteps>().0 = crate::route::curves::current_geometry_key(world);
@@ -881,6 +885,45 @@ pub fn current_transform(stage: &Stage, prim_path: &str) -> Option<Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_projection_records_purpose_and_sample_without_repeating_routes() {
+        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Cube "Box" {
+    uniform token purpose = "guide"
+    double size.timeSamples = {0: 2, 10: 4}
+}
+"#).open_stage().unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), crate::UsdPlugin, LiveStagePlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
+        app.init_resource::<crate::route::ProjectionTimings>();
+        app.world_mut().resource_mut::<StageTime>().current = 5.0;
+        app.insert_non_send(LiveStage::new(stage));
+        let projections = |world: &World| world.resource::<crate::route::ProjectionTimings>().0
+            .get(std::any::type_name::<crate::route::shapes::ShapesRoute>()).unwrap().matches;
+        app.update();
+        let entity = app.world().resource::<PrimEntities>().entity("/Box").unwrap();
+        let half_width = |world: &World| {
+            let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
+            let bevy::mesh::VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!() };
+            points.iter().map(|point| point[0]).fold(f32::NEG_INFINITY, f32::max)
+        };
+        assert_eq!(projections(app.world()), 1);
+        assert_eq!(half_width(app.world()), 1.5);
+        assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
+        app.update();
+        assert_eq!(projections(app.world()), 1);
+        app.world_mut().resource_mut::<StageTime>().current = 10.0;
+        app.update();
+        assert_eq!(projections(app.world()), 2);
+        assert_eq!(half_width(app.world()), 2.0);
+        app.world_mut().resource_mut::<crate::route::DisplayPurposes>().guide = true;
+        app.update();
+        assert_eq!(projections(app.world()), 3);
+        assert_ne!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
+        assert_eq!(app.world().resource::<PrimEntities>().entity("/Box"), Some(entity));
+    }
 
     #[test]
     fn shader_connection_edits_refresh_live_animation_membership() {

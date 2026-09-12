@@ -1,5 +1,67 @@
 # Ropa material projection
 
+## Avoid duplicate initial projection
+
+The live loader projected the stage, then reapplied all routes when its initially
+unset AppliedPurposes state was compared with the current display purposes.
+The initial animation sample was also left unrecorded. project_on_load_system
+now records the purpose/time snapshot used by the initial projection. Later
+changes still reapply the affected routes; a regression verifies first-pass
+counts, idle behavior, sampled geometry and a subsequent guide-visibility toggle.
+
+On the same fixed source below, release open time is 16441.770ms versus the
+color-lookup baseline's 29818.080ms. MeshRoute matches fall from 1184 to 592,
+with 2227 total route attempts instead of 4455. Retained mesh assets/vertices
+stay at 1015/918650. This is one additional headless measurement, not a full
+viewer-startup or general performance guarantee. Log:
+/tmp/ropa-single-projection-profile.log.
+
+Both whole-host and compositor Ropa captures were inspected with intact model,
+grid and outliner: target/ropa-single-projection-{host,desktop}.png. Capture log:
+/tmp/ropa-single-projection-capture.log. All 491 library tests pass (15 ignored),
+check-all and release viewer build pass; logs use /tmp/initial-projection-*
+and /tmp/single-projection-* prefixes.
+
+## Fixed-source color transform comparison
+
+The user's Ropa source changed externally to 153124035 bytes (mtime
+2026-09-12 10:01:56 UTC), so the later color-transform measurement is not compared
+directly with the older results below. A byte-identical copy was made at
+target/ropa-color-benchmark-source.usdz, SHA256
+e72ee9b52cc153b5cbc18e0aa1db254a0119e0032dc7f5250fe138dff1115292. This hash was
+verified again after both runs. The user's source was not modified.
+
+With the existing scalar/alpha optimizations retained, the new RGBA8 color
+transfer fast path was temporarily disabled for the baseline and restored for
+the second run. Both used the release editor_benchmark command below with that
+fixed copy and one gpu-prepared sample. No concurrent test/build workload was
+intentionally launched during either measurement.
+
+| Phase | Original conversion ms | Color lookup ms |
+|---|---:|---:|
+| Editor open | 70275.850 | 29818.080 |
+| Material route application | 33219.894 | 12401.403 |
+| Subset route application | 31852.852 | 12392.861 |
+
+This ordered pair measures a 57.6% lower headless open time, not UI startup or
+GPU upload. Allocations and image cache retention still vary; GPU clocks and
+filesystem caching were not controlled. It is not a repeated-sample estimate.
+
+The optimization builds per-channel byte-to-half-float tables for RGBA8 linear
+and sRGB sources. Other formats and table overflow retain the original path.
+Tests compare every byte value, negative/HDR transforms and same-image edits
+against the original conversion. All 490 library tests pass with 15 ignored.
+Matched OIT/shadows-off GPU captures of the fixed source have zero changed RGB
+pixels out of 921600 at tolerance zero; the optimized image was inspected.
+
+Artifacts: target/ropa-color-fixed-{before,after}.*, target/ropa-color-fixed-diff.png.
+Logs: /tmp/ropa-color-fixed-{before,after}-{profile,capture}.log,
+/tmp/ropa-color-fixed-compare.log and /tmp/color-lookup-library-tests.log.
+The preliminary unpaired run is retained in /tmp/ropa-color-lookup-profile.log;
+it is not the basis of the matched speedup above.
+
+## Earlier scalar and alpha comparisons
+
 Asset: `/home/bresilla/machines/usd/ropa_harvester.usdz`.
 
 Command, before and after the RGBA8 scalar lookup change:

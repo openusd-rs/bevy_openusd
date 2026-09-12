@@ -1177,6 +1177,55 @@ def DomeLight "Env" {
 "#;
 
     #[test]
+    fn exr_dome_samples_reload_fail_and_recover_in_sources_and_packages() {
+        use crate::route::dome::UsdDomeTexture;
+        let high = include_bytes!("../../../assets/dome_high.exr");
+        let warm = include_bytes!("../../../assets/dome_warm.exr");
+        let text = DOME_TEXTURES.replace(".hdr", ".exr");
+        let package = |second: &[u8]| {
+            let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
+            archive.add_layer("models/dome.usda", text.as_bytes()).unwrap();
+            archive.add_layer("textures/first.exr", high).unwrap();
+            archive.add_layer("textures/second.exr", second).unwrap();
+            archive.finish().unwrap().into_inner()
+        };
+        for packaged in [false, true] {
+            let (mut app, directory, changed) = watched_memory_app();
+            directory.insert_asset_text(Path::new("models/dome.usda"), &text);
+            directory.insert_asset(Path::new("textures/first.exr"), high.to_vec());
+            directory.insert_asset(Path::new("textures/second.exr"), warm.to_vec());
+            directory.insert_asset(Path::new("dome.usdz"), package(warm));
+            let path = if packaged { "fixture://dome.usdz" } else { "fixture://models/dome.usda" };
+            let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load(path);
+            let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+            tick_until(&mut app, |world| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+                && world.resource::<AssetServer>().is_loaded_with_dependencies(handle.id()));
+            let entity = app.world_mut().query_filtered::<Entity, With<UsdDomeTexture>>().single(app.world()).unwrap();
+            let radiance = |world: &World| {
+                let texture = &world.get::<UsdDomeTexture>(entity).unwrap().0;
+                world.resource::<Assets<Image>>().get(texture).unwrap().get_color_at(0, 0).unwrap().to_linear().red
+            };
+            assert_eq!(radiance(app.world()), 8.0);
+            app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = 10.0;
+            tick_until(&mut app, |world| radiance(world) == 0.119140625);
+            for (bytes, expected) in [(high.as_slice(), Some(8.0)), (b"corrupt".as_slice(), None), (warm.as_slice(), Some(0.119140625))] {
+                let path = if packaged { "dome.usdz" } else { "textures/second.exr" };
+                directory.insert_asset(Path::new(path), if packaged { package(bytes) } else { bytes.to_vec() });
+                changed(path);
+                if let Some(expected) = expected {
+                    tick_until(&mut app, |world| world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+                        && radiance(world) == expected);
+                } else {
+                    tick_until(&mut app, |world| matches!(world.get::<UsdSceneState>(root), Some(UsdSceneState::Failed(_))));
+                    assert_eq!(radiance(app.world()), 8.0);
+                }
+                assert_eq!(app.world().get::<UsdInstanceTime>(root).unwrap().current, 10.0);
+                assert!(app.world().get::<UsdDomeTexture>(entity).is_some());
+            }
+        }
+    }
+
+    #[test]
     fn dome_hdr_samples_load_project_and_reload_from_named_source() {
         use crate::route::dome::UsdDomeTexture;
         let (mut app, directory, changed) = watched_memory_app();

@@ -36,6 +36,7 @@ struct Capture {
     camera_path: Option<String>,
     camera_ready: bool,
     renderer: CaptureRenderer,
+    msaa: Msaa,
     shadow_maps: bool,
     subdivision_levels: Option<u32>,
     curve_steps: usize,
@@ -66,6 +67,21 @@ enum CaptureRenderer {
 }
 
 impl CaptureRenderer {
+    fn msaa(self, value: Option<&str>) -> Result<Msaa, String> {
+        let samples = match value {
+            None if self == Self::Forward => Msaa::Sample4,
+            None | Some("off") | Some("1") => Msaa::Off,
+            Some("2") => Msaa::Sample2,
+            Some("4") => Msaa::Sample4,
+            Some("8") => Msaa::Sample8,
+            _ => return Err("USD_CAPTURE_MSAA must be off, 1, 2, 4 or 8".into()),
+        };
+        if self != Self::Forward && samples != Msaa::Off {
+            return Err("multisampled capture requires the forward renderer".into());
+        }
+        Ok(samples)
+    }
+
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "forward" => Ok(Self::Forward),
@@ -97,7 +113,7 @@ impl Capture {
         }
         let output = PathBuf::from(&args[1]);
         if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
-        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, shadow_maps: true, subdivision_levels: None, curve_steps: 8, curve_surface_sides: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
+        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, msaa: Msaa::Sample4, shadow_maps: true, subdivision_levels: None, curve_steps: 8, curve_surface_sides: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
             instance_times: vec![time], instance_spacing: 2.5, swap_clocks: false, clocks_swapped: false,
             started: Instant::now(), timeout: Duration::from_secs(60), ready_frames: 0, requested: false, mesh_report: String::new() })
     }
@@ -170,6 +186,15 @@ fn main() -> AppExit {
     };
     capture.renderer = match CaptureRenderer::parse(&std::env::var("USD_CAPTURE_RENDERER").unwrap_or_else(|_| "forward".into())) {
         Ok(renderer) => renderer,
+        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+    };
+    let msaa = match std::env::var("USD_CAPTURE_MSAA") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+    };
+    capture.msaa = match capture.renderer.msaa(msaa.as_deref()) {
+        Ok(msaa) => msaa,
         Err(error) => { eprintln!("{error}"); return AppExit::error(); }
     };
     match std::env::var("USD_CAPTURE_TIMEOUT_SECS") {
@@ -275,7 +300,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
     let mut image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
-    let mut camera = commands.spawn((Camera3d::default(), CaptureCamera, RenderTarget::from(target),
+    let mut camera = commands.spawn((Camera3d::default(), CaptureCamera, capture.msaa, RenderTarget::from(target),
         Transform::from_translation(capture.eye).looking_at(capture.focus, Vec3::Y),
         AmbientLight { color: Color::srgb(0.78,0.85,1.0), brightness: 160.0, ..default() }));
     if capture.renderer != CaptureRenderer::Forward {
@@ -473,7 +498,7 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
         + &format!("instance_times={:?}\ninstance_spacing={}\n", capture.instance_times, capture.instance_spacing)
         + &format!("clocks_reversed_after_ready_frames={}\n", if capture.clocks_swapped { 30 } else { 0 })
         + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
-        capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("curve_steps={}\ncurve_surface_sides={:?}\n", capture.curve_steps, capture.curve_surface_sides) + &capture.mesh_report;
+        capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("msaa={:?}\n", capture.msaa) + &format!("curve_steps={}\ncurve_surface_sides={:?}\n", capture.curve_steps, capture.curve_surface_sides) + &capture.mesh_report;
     std::fs::write(capture.output.with_extension("capture.txt"), report).map_err(|error| format!("metadata write: {error}"))?;
     std::fs::rename(&temporary, &capture.output).map_err(|error| format!("PNG publish: {error}"))?;
     Ok(())
@@ -481,6 +506,24 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capture_msaa_defaults_overrides_and_incompatible_modes() {
+        use super::*;
+        assert_eq!(CaptureRenderer::Forward.msaa(None).unwrap(), Msaa::Sample4);
+        for (value, expected) in [("off", Msaa::Off), ("1", Msaa::Off),
+            ("2", Msaa::Sample2), ("4", Msaa::Sample4), ("8", Msaa::Sample8)] {
+            assert_eq!(CaptureRenderer::Forward.msaa(Some(value)).unwrap(), expected);
+        }
+        for renderer in [CaptureRenderer::Prepass, CaptureRenderer::Deferred, CaptureRenderer::Oit] {
+            assert_eq!(renderer.msaa(None).unwrap(), Msaa::Off);
+            assert_eq!(renderer.msaa(Some("off")).unwrap(), Msaa::Off);
+            for value in ["2", "4", "8"] { assert!(renderer.msaa(Some(value)).is_err()); }
+        }
+        for value in ["", "0", "3", "16", "NaN"] {
+            assert!(CaptureRenderer::Forward.msaa(Some(value)).is_err());
+        }
+    }
+
     #[test]
     fn live_clock_reversal_waits_and_mutates_existing_roots_once() {
         use super::*;
@@ -609,10 +652,12 @@ mod tests {
         for levels in [None, Some(2)] {
             capture.subdivision_levels = levels;
             capture.curve_steps = if levels.is_some() { 32 } else { 8 };
+            capture.msaa = if levels.is_some() { Msaa::Off } else { Msaa::Sample4 };
             save(&image, &capture).unwrap();
             let report = std::fs::read_to_string(output.with_extension("capture.txt")).unwrap();
             assert!(report.contains(&format!("subdivision_levels={}\n", levels.unwrap_or(0))));
             assert!(report.contains(&format!("curve_steps={}\n", capture.curve_steps)));
+            assert!(report.contains(&format!("msaa={:?}\n", capture.msaa)));
             assert!(report.contains("requested_eye=Vec3(6.0, 4.0, 8.0)\n"));
             assert!(!report.contains("\neye="));
             assert_eq!(std::fs::metadata(output.with_extension("rgba")).unwrap().len(), 1280 * 720 * 4);

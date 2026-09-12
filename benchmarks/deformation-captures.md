@@ -1,5 +1,91 @@
 # CPU/GPU deformation capture sweep
 
+## Native CPU-baked point oracle
+
+`scripts/sample_native_deformation.cpp` uses native UsdSkelBakeSkinning on an
+anonymous flattened stage, never saving source layers. It prints sampled points
+in the original mesh's local coordinate space. Native baking can move rigid
+skinning into the mesh transform rather than its points, so the tool includes
+the baked transform and removes the original world transform. Nonfinite times,
+invalid mesh paths and singular original transforms are rejected.
+
+The tool materializes existing animated attributes at the requested time before
+baking that single instant. Without this step, the native bake at intermediate
+time 5 used the default blend weight instead of the interpolated value. Native
+output at 0/5/10 now gives first-point positions (0,0,0),
+(0.176776677,0,0.176776707), (0.353553355,0,0.353553414), respectively.
+This is a CPU point oracle, not a normal/tangent or GPU timing check.
+
+Build against an installed OpenUSD SDK, its Python development library and
+compatible TBB headers/library. Set CPPFLAGS, LDFLAGS and LDLIBS for those SDKs:
+
+```sh
+make --eval='native-sample-build:; @$(CXX) -std=c++17 $(CPPFLAGS) scripts/sample_native_deformation.cpp $(LDFLAGS) $(LDLIBS) -o target/sample-native-deformation' native-sample-build
+USD_NATIVE_DEFORMATION_TOOL="$PWD/target/sample-native-deformation" make test CARGO='cargo --offline' APP_TARGET='-p usd_bevy --lib native_baked_positions_match_combined_skin_and_morph -- --ignored --nocapture'
+```
+
+The ignored integration test directly runs native baking at 0,2.5,5,7.5,10 and
+compares all four source-order points against the Bevy CPU deformation result
+with absolute tolerance 1e-5. It is separate from the native-export test lane.
+It was executed and passed (/tmp/native-deformation-rust-test.log). Ordinary
+library tests pass 491 with 16 ignored, and make check-all passes. NaN time and
+missing mesh probes reject with status 2. These checks do not validate arbitrary
+assets, normals, tangents or native GPU rendering.
+The SDK used here is OpenUSD 25.05.01, Python 3.13.12, TBB 2022.2 headers and
+the SDK's oneTBB 2022.3 runtime. Initial missing-header/linker failures remain
+in /tmp/native-deformation-build*.log; the successful sampled build is
+/tmp/native-deformation-build-sampled.log, with outputs in
+/tmp/native-deformation-sampled-{0,5,10}.log.
+
+## Native Storm deformation reference
+
+The base blendshape skeleton now applies SkelBindingAPI, and the normal-map
+mesh/subset apply MaterialBindingAPI. Native Storm previously displayed the
+unskinned square at time zero and warned about the missing material APIs.
+An overlay adding the schemas produced the rotated/nonuniformly scaled shape
+at zero and the morphed shape at ten. The canonical fixture declarations now
+include those APIs, and the composed fixture regression checks their presence.
+
+`assets/skel_morph_reference.usda` adds /ReferenceCamera, matching Bevy fixed
+eye (1,0.5,5), target (1,0.5,0). Native captures use:
+
+```sh
+make --eval='native-storm:; @/bin/bash scripts/capture_native_storm.sh assets/skel_morph_reference.usda target/NEW_NATIVE /ReferenceCamera 10' native-storm
+```
+
+Inspected native `target/combined-storm-api-time-{0,10}/frame.png`, canonical
+`target/combined-storm-fixture-time-{0,10}/frame.png`, and
+`target/combined-storm-repeat10/frame.png`, alongside Bevy
+`target/combined-bevy-native-camera-{0,10}.png`.
+The visible native endpoint silhouettes agree qualitatively with Bevy. Native
+time-ten recording is not yet reliable: the canonical first run was black,
+but an unchanged repeat rendered the expected shape, both with exit zero and
+no renderer warning. Therefore these are qualified shape observations, not a
+repeatable native acceptance gate. Native shading differs (visible triangle
+gradient versus Bevy's nearly uniform surface), with different lighting setups;
+normal/material parity remains unproven. No reference image was overwritten.
+
+## Forward-only MSAA isolation
+
+The independent `USD_CAPTURE_MSAA` control changes sampling without adding
+prepasses. Same-release forward GPU/CPU captures of
+`assets/skel_morph_tangent_normals.usda`, time 10, default eye/target and
+shadows off give:
+
+| Sampling | Max RGB error | Pixels exceeding tolerance 1 |
+| --- | ---: | ---: |
+| Off | 1 | 0 |
+| 4 | 2 | 1 at (711,442) |
+
+All four images were inspected. GPU metadata reports two skinned and two
+morphed entities, CPU reports zero, and metadata confirms the requested MSAA.
+Artifacts: `target/combined-normal-forward-{noaa,aa4}-{gpu,cpu}.png` with raw
+RGBA/settings sidecars; logs `/tmp/combined-normal-forward-{noaa,aa4}-compare.log`.
+The four-sample failure reproduces with the same release build used for Off;
+sampling is sufficient to change this fixture's tolerance outcome. This does
+not prove the underlying floating-point/rasterization cause, establish native
+normal parity or waive the original tolerance failure.
+
 ## Combined normal-map, skin and morph fixture
 
 `assets/skel_morph_tangent_normals.usda` combines indexed morph normals,

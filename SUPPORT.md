@@ -40,10 +40,12 @@ explanation. This does not measure free VRAM or prevent fragment-capacity overfl
 
 The full integration goal remains active. The [work log](BEVY_WORK.md) records
 revision-specific tests, inspected images and failed probes; historical benchmark
-numbers are not measurements of a later checkout. At 03c9b69, the full workspace
-gate passes 649 tests with 15 ignored across 33 suites, and check-all passes.
-Logs: /tmp/post-texture-workspace-{tests,check}.log. The separate 23-test native
-run is historical; these counts are not a release certification.
+numbers are not measurements of a later checkout. At 7e67bc4, the full workspace
+gate passes 654 tests with 15 ignored across 33 suites. The separate Make
+test-native gate executes and passes 14 native-export tests; check-all and viewer
+build pass. Logs: /tmp/single-pass-{workspace-tests,native-tests,check,build}.log.
+The older 23-test native run has a different scope; these counts are not a
+release certification.
 
 ## Capability matrix
 

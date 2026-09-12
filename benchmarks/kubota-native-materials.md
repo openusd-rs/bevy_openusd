@@ -1,5 +1,38 @@
 # Kubota matched-camera material comparison
 
+## Scalar clearcoat input fix
+
+The hood authors clearcoat 0.5 and clearcoat roughness 0.15. The Bevy reader and
+conversion previously omitted both inputs. A native-only override setting that
+coat amount to zero lowers the hood RGB mean error against the old Bevy frame
+from 0.0458333 to 0.00273693. Its maximum remains 20/255; this control isolates a
+significant coat contribution without claiming all other behavior matches.
+The inspected control is `target/kubota-no-coat-native/frame.png`, with ROI log
+`/tmp/kubota-no-coat-roi.log`.
+
+Preview Surface scalar clearcoat and roughness now resolve through the existing
+material graph/time-sampling path and map to Bevy StandardMaterial. An authored
+coat without roughness uses USD's 0.01 roughness default, verified in the installed
+native `usdShaders/resources/shaders/shaderDefs.usda`, rather than Bevy's 0.5.
+Unsupported coat textures and nonscalar values produce explicit warnings;
+nonfinite scalar coat inputs are rejected. This does not implement textured
+clearcoat or claim that the two renderers' coat BRDFs are identical.
+
+The inspected `target/kubota-coat-bevy.png` visibly renders the machine. Against
+the original coated native reference, the hood ROI mean error is now 0.0220588,
+RMS 0.0285256 and maximum 25/255. This roughly halves the mean error, but all 256
+ROI pixels still differ and the strict comparison still fails. Glass and decal
+differences remain. No light intensity, camera or source-machine data changed.
+
+The added tests cover graph-connected sampled scalar coat amounts, authored
+roughness, USD's omitted-roughness default, an uncoated default and unsupported
+texture diagnostics. The library passes 515 tests with 19 ignored; release
+viewer and capture builds pass. Logs: `/tmp/clearcoat-tests.log`,
+`/tmp/clearcoat-library.log`, `/tmp/clearcoat-release.log`,
+`/tmp/kubota-coat-bevy.log`, `/tmp/kubota-coat-roi.log`.
+
+## Baseline comparison
+
 Runtime: d84be09, release `viewer_capture`, Bevy 0.19.1, RTX 4080 Vulkan.
 Native: installed OpenUSD 25.05.01 Storm through `capture_native_storm.sh`.
 This comparison establishes a remaining mismatch, not rendering acceptance.

@@ -3,6 +3,20 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Post-startup-fix full and native gates
+
+At 7e67bc4, make test-all passes 654 tests with 15 ignored across 33 suites.
+make test-native separately executes and passes 14 native-export tests, including
+retimed instances, clips, moved dependencies, variants, affine reset and package
+source removal. check-all and viewer build pass. Logs:
+/tmp/single-pass-{workspace-tests,native-tests,check,build}.log.
+
+Review of the acceptance checklist still leaves its GPU deformation/environment
+fidelity item open. The repository now has explicit CPU/GPU image comparisons,
+GPU pass timings and real-viewer playback observations, but these do not close
+the recorded forward comparison failure or full-scene native PBR qualifications.
+No acceptance checkbox was changed by the passing general-purpose test gates.
+
 ## Avoid duplicate first-load route application
 
 project_on_load_system now records the display-purpose and sample-time snapshot

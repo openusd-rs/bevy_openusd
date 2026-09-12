@@ -108,6 +108,41 @@ also passes (`/tmp/dome-handedness-build.log`). Both capture logs contain
 CAPTURE_OK with no WARN/ERROR. git diff --check passes. Ignored native tests
 were not explicitly rerun for this environment-only change.
 
+## Explicit camera response control
+
+The standalone capture accepts USD_CAPTURE_EV100 (finite -20..30) and
+USD_CAPTURE_TONEMAPPING=default|none. Both are optional; the existing defaults
+remain EV100 9.7 and TonyMcMapface. Selection is recorded in capture.txt.
+These controls affect the capture camera only, not viewer lighting or imported
+USD light intensity. Invalid values fail before GPU initialization/output.
+
+For unit exposure, Bevy's exposure equation `2^(-EV100) / 1.2` gives
+EV100 approximately -0.2630344. The following control uses the same unit dome
+intensity and EXR source as the native reference, with tone mapping disabled:
+
+```sh
+USD_CAPTURE_EV100=-0.2630344 USD_CAPTURE_TONEMAPPING=none USD_CAPTURE_DOME=/Env USD_CAPTURE_CAMERA=/ReferenceCamera USD_CAPTURE_SHADOWS=off make --eval='response:; @nixVulkan target/release/examples/viewer_capture assets/dome_reference_exr.usda target/NEW_RESPONSE.png 0' response
+```
+
+`target/dome-response-unit.png` was inspected: colored spheres have a similarly
+dark response to native Storm, rather than the much brighter earlier capture.
+This is not quantitative brightness parity; tessellation and filtering still
+differ. The output is still sRGB PNG/RGBA, not linear HDR readback. The prior
+comparison used different intensities and tone mapping and could not diagnose
+a production light-unit bug.
+
+`target/dome-response-default.png` was also inspected and is RGB-exact with
+`target/dome-bevy-handedness-0.png` across all 921600 pixels at tolerance zero.
+Metadata confirms default EV100 9.7/TonyMcMapface and override
+-0.2630344/None. Both capture logs are free of WARN/ERROR.
+
+Validation: all 20 capture-example tests pass (including boundaries, nonfinite
+values, atomic invalid-option rejection and metadata); check-all and release
+capture build pass. CLI NaN rejection exits nonzero without creating output.
+Logs: `/tmp/capture-response-{tests-final,check,build}.log` and
+`/tmp/dome-response-{default,unit}.log`. Full workspace tests were not rerun for
+this example-only change; their last complete run is recorded above.
+
 Validation: wrapper syntax passes through Make; invalid camera-light selection
 returns 2 without creating target/dome-invalid-light-probe; runtime settings
 confirm both on and off paths. Native flatten accepts the unit fixture. No Rust

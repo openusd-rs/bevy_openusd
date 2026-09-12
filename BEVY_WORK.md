@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Isolate capture camera response
+
+Standalone captures now expose bounded EV100 and optional disabled tone mapping,
+recording both settings. Defaults retain pixel-exact output. With unit exposure,
+unit EXR dome intensity and no tone mapping, inspected Bevy output has a similarly
+dark response to native Storm. This is not numeric brightness parity; filtering
+and tessellation differ. Twenty capture tests, check-all and release capture build
+pass. Details: `benchmarks/dome-native-reference.md`.
+
 ## Correct environment cubemap handedness
 
 The USD latlong converter now compensates for Bevy's environment shader Z

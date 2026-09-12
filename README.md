@@ -1949,6 +1949,12 @@ prepasses and disable MSAA; deferred also selects Bevy's deferred opaque rendere
 `USD_CAPTURE_MSAA=off|1|2|4|8` controls forward sampling independently of
 prepasses (default 4). Non-forward modes reject multisampling overrides.
 The selected MSAA value is recorded in capture metadata.
+`USD_CAPTURE_EV100` sets capture-camera exposure (finite -20..30), and
+`USD_CAPTURE_TONEMAPPING=default|none` selects the default tone mapper or disables
+it. Defaults remain EV100 9.7 and TonyMcMapface. Both settings are recorded;
+these overrides do not modify the interactive viewer or USD light intensities.
+For unit exposure use EV100 -0.2630344. Disabling tone mapping does not change
+the output from sRGB PNG/RGBA to linear HDR.
 The selected renderer and subdivision level (`0` means disabled) are recorded in
 capture metadata. Set `USD_SUBDIVISION_LEVELS=1..6` to refine the scene. Match renderer settings
 as well as camera/time when comparing CPU and GPU captures.

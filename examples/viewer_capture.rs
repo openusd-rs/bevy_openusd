@@ -4,6 +4,7 @@ use std::{path::PathBuf, time::{Duration, Instant}};
 use bevy::{app::{AppExit, ScheduleRunnerPlugin}, camera::RenderTarget, prelude::*};
 use bevy::render::{render_resource::{TextureFormat, TextureUsages}, view::screenshot::{Screenshot, ScreenshotCaptured}};
 use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot};
+use bevy::{camera::Exposure, core_pipeline::tonemapping::Tonemapping};
 
 #[derive(Resource, Clone, Default)]
 struct PipelineProgress(std::sync::Arc<std::sync::Mutex<Option<(usize, Vec<String>)>>>);
@@ -37,6 +38,8 @@ struct Capture {
     camera_ready: bool,
     renderer: CaptureRenderer,
     msaa: Msaa,
+    exposure: Exposure,
+    tonemapping: Tonemapping,
     shadow_maps: bool,
     subdivision_levels: Option<u32>,
     curve_steps: usize,
@@ -94,6 +97,26 @@ impl CaptureRenderer {
 }
 
 impl Capture {
+    fn set_camera_response(&mut self, ev100: Option<&str>, tonemapping: Option<&str>) -> Result<(), String> {
+        let exposure = match ev100 {
+            None => Exposure::default(),
+            Some(value) => {
+                let ev100 = value.parse::<f32>().map_err(|_| "USD_CAPTURE_EV100 must be a finite number in -20..30")?;
+                if !ev100.is_finite() || !(-20.0..=30.0).contains(&ev100) {
+                    return Err("USD_CAPTURE_EV100 must be a finite number in -20..30".into());
+                }
+                Exposure { ev100 }
+            }
+        };
+        let tonemapping = match tonemapping {
+            None | Some("default") => Tonemapping::default(),
+            Some("none") => Tonemapping::None,
+            _ => return Err("USD_CAPTURE_TONEMAPPING must be default or none".into()),
+        };
+        self.exposure = exposure;
+        self.tonemapping = tonemapping;
+        Ok(())
+    }
     fn parse(args: &[String]) -> Result<Self, String> {
         if args.len() != 3 && args.len() != 9 {
             return Err("usage: viewer_capture ASSET OUTPUT.png TIME [EYE_X EYE_Y EYE_Z TARGET_X TARGET_Y TARGET_Z]".into());
@@ -113,7 +136,7 @@ impl Capture {
         }
         let output = PathBuf::from(&args[1]);
         if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
-        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, msaa: Msaa::Sample4, shadow_maps: true, subdivision_levels: None, curve_steps: 8, curve_surface_sides: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
+        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, msaa: Msaa::Sample4, exposure: Exposure::default(), tonemapping: Tonemapping::default(), shadow_maps: true, subdivision_levels: None, curve_steps: 8, curve_surface_sides: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
             instance_times: vec![time], instance_spacing: 2.5, swap_clocks: false, clocks_swapped: false,
             started: Instant::now(), timeout: Duration::from_secs(60), ready_frames: 0, requested: false, mesh_report: String::new() })
     }
@@ -197,6 +220,18 @@ fn main() -> AppExit {
         Ok(msaa) => msaa,
         Err(error) => { eprintln!("{error}"); return AppExit::error(); }
     };
+    let response = ["USD_CAPTURE_EV100", "USD_CAPTURE_TONEMAPPING"].map(|key| match std::env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error),
+    });
+    let [ev100, tonemapping] = response;
+    match (ev100, tonemapping) {
+        (Ok(ev100), Ok(tonemapping)) => if let Err(error) = capture.set_camera_response(ev100.as_deref(), tonemapping.as_deref()) {
+            eprintln!("{error}"); return AppExit::error();
+        },
+        (Err(error), _) | (_, Err(error)) => { eprintln!("{error}"); return AppExit::error(); }
+    }
     match std::env::var("USD_CAPTURE_TIMEOUT_SECS") {
         Ok(value) => if let Err(error) = capture.set_timeout(&value) {
             eprintln!("{error}"); return AppExit::error();
@@ -300,7 +335,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
     let mut image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
-    let mut camera = commands.spawn((Camera3d::default(), CaptureCamera, capture.msaa, RenderTarget::from(target),
+    let mut camera = commands.spawn((Camera3d::default(), CaptureCamera, capture.msaa, capture.exposure, capture.tonemapping, RenderTarget::from(target),
         Transform::from_translation(capture.eye).looking_at(capture.focus, Vec3::Y),
         AmbientLight { color: Color::srgb(0.78,0.85,1.0), brightness: 160.0, ..default() }));
     if capture.renderer != CaptureRenderer::Forward {
@@ -499,6 +534,7 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
         + &format!("clocks_reversed_after_ready_frames={}\n", if capture.clocks_swapped { 30 } else { 0 })
         + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
         capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("msaa={:?}\n", capture.msaa) + &format!("curve_steps={}\ncurve_surface_sides={:?}\n", capture.curve_steps, capture.curve_surface_sides) + &capture.mesh_report;
+    let report = report + &format!("exposure_ev100={}\ntonemapping={:?}\n", capture.exposure.ev100, capture.tonemapping);
     std::fs::write(capture.output.with_extension("capture.txt"), report).map_err(|error| format!("metadata write: {error}"))?;
     std::fs::rename(&temporary, &capture.output).map_err(|error| format!("PNG publish: {error}"))?;
     Ok(())
@@ -506,6 +542,30 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn camera_response_defaults_bounds_and_atomic_failure() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let mut capture = Capture::parse(&["assets/dome_reference.usda".into(),
+            dir.path().join("new.png").display().to_string(), "0".into()]).unwrap();
+        capture.set_camera_response(None, None).unwrap();
+        assert_eq!(capture.exposure.ev100, Exposure::default().ev100);
+        assert_eq!(capture.tonemapping, Tonemapping::default());
+        for value in ["-20", "0", "30", "-0.2630344"] {
+            capture.set_camera_response(Some(value), Some("none")).unwrap();
+            assert_eq!(capture.exposure.ev100, value.parse::<f32>().unwrap());
+            assert_eq!(capture.tonemapping, Tonemapping::None);
+        }
+        let previous = capture.exposure.ev100;
+        for value in ["", "NaN", "inf", "-inf", "-21", "31", "1e40"] {
+            assert!(capture.set_camera_response(Some(value), None).is_err());
+            assert_eq!(capture.exposure.ev100, previous);
+        }
+        assert!(capture.set_camera_response(Some("5"), Some("unknown")).is_err());
+        assert_eq!(capture.exposure.ev100, previous);
+        assert_eq!(capture.tonemapping, Tonemapping::None);
+    }
+
     #[test]
     fn capture_msaa_defaults_overrides_and_incompatible_modes() {
         use super::*;
@@ -658,6 +718,8 @@ mod tests {
             assert!(report.contains(&format!("subdivision_levels={}\n", levels.unwrap_or(0))));
             assert!(report.contains(&format!("curve_steps={}\n", capture.curve_steps)));
             assert!(report.contains(&format!("msaa={:?}\n", capture.msaa)));
+            assert!(report.contains(&format!("exposure_ev100={}\n", capture.exposure.ev100)));
+            assert!(report.contains(&format!("tonemapping={:?}\n", capture.tonemapping)));
             assert!(report.contains("requested_eye=Vec3(6.0, 4.0, 8.0)\n"));
             assert!(!report.contains("\neye="));
             assert_eq!(std::fs::metadata(output.with_extension("rgba")).unwrap().len(), 1280 * 720 * 4);

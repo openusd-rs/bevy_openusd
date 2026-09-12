@@ -6,6 +6,14 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
 
 ## Current release blockers
 
+The viewer supports experimental order-independent transparency with
+the Rendering pane's Enable OIT button, or at startup with
+`USD_VIEWER_OIT=1 make run ARGS='/path/to/scene.usdz'`. Disabling it restores
+the viewer camera's previous MSAA and FXAA settings. It removes the observed
+Kubota grille triangle-ordering patches, but does not fix its roof speckling.
+This is opt-in, replaces MSAA with FXAA and uses additional fragment-buffer memory;
+performance, overflow and cross-device acceptance remain unverified.
+
 - Intermittent black frames remain a native-capture acceptance blocker. The
   standalone Khronos Vulkan cube reproduced the same visible-to-black failure
   under headless Weston Vulkan on NVIDIA, without Mara, egui, Bevy or USD.

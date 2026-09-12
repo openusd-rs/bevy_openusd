@@ -50,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     curve_quality::from_env()?;
     capture::CaptureConfig::from_env()?;
     host_capture::from_env()?;
+    render_settings::oit_from_env()?;
     let watch = match std::env::var("USD_WATCH_TEXTURES") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
@@ -618,6 +619,7 @@ fn setup_camera(
         },
         chase,
     ));
+    render_settings::configure_transparency(&mut camera, render_settings::oit_from_env().expect("invalid transparency configuration"));
     if let Some(render_target) = render_target {
         camera.insert(RenderTarget::from(render_target.0.clone()));
     }

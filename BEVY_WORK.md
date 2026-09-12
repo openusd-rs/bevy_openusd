@@ -3,6 +3,246 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Oxbo shadow control and source geometry inspection
+
+Matched release viewer_capture runs at eye (12,10,16), focus (0,2,0), time zero
+and OIT compare scene shadows against forced off. Both images were inspected:
+target/oxbo-shadows-{scene,off}.png. Panel patches remain without shadows, while
+cast-shadow regions change. Both captures complete (/tmp/oxbo-shadows-*.log).
+The initial attempt used unsupported value on and correctly failed; the
+accepted setting is scene, not on. No rendering policy changed.
+
+The fresh release source report/export is /tmp/oxbo-inspection.log and
+target/oxbo-inspection.usda. Of 33 authored Preview Surface opacity values,
+29 are opaque and four translucent. Geometry diagnostics identify five exact
+duplicate triangles in Threshing_side_access_right_04 and 448 in combineRolls.
+These are coincident position tuples within each mesh, not proven causes of the
+observed upper-panel marks. The source assets remain untouched. This rules out
+shadows as a complete repair and provides bounded candidates for isolation;
+it is not a blanket declaration that the package is invalid.
+
+## Release Oxbo harvester inspection
+
+The current release viewer builds successfully (/tmp/machine-release-build.log)
+and loads /home/bresilla/machines/usd/oxbo_harvester.usdz with OIT/FXAA enabled.
+Its previously measured 1760 traversed meshes and 935066 triangles include hidden
+and collision geometry, not just visible draw calls. The package contains one
+USDC layer and no texture images.
+
+Inspected target/oxbo-release-host.png: the complete yellow/green harvester,
+header, cabin, wheels and railings render. Some upper panels show patchy shading;
+this is not clean visual acceptance or a new claim of native parity. The
+capture completes successfully in /tmp/oxbo-release-capture.log; matching
+desktop, viewer log and profile settings are retained under target/oxbo-release-*.
+The wrapper's final TERM/setsid diagnostics are its owned-session cleanup,
+not an application panic. No source assets or rendering defaults were changed.
+
+This extends actual rendering coverage to a larger machine. Shadows and
+overlapping-surface controls remain useful for the visible panel artifacts;
+normal texture removal cannot explain this texture-free package.
+
+## OIT pass timings and configurable capture deadline
+
+The small transparency fixture completed 120 fresh GPU samples per pass in both
+prepass and OIT modes. Transparent-pass medians were 0.071680/0.064512ms, with
+an additional OIT resolve median 0.022528ms. Logs/artifacts: /tmp/order-timed-*
+and target/order-timed-*. These are not whole-frame durations or speedup evidence.
+
+The first Kubota measurement failed the fixed 60-second deadline despite a ready
+camera and no pending pipelines (/tmp/kubota-timed-prepass.log). viewer_capture
+now accepts USD_CAPTURE_TIMEOUT_SECS=1..600, preserving default 60 and recording
+the selected deadline in metadata. Invalid input fails before window creation;
+the regression checks bounds, overflow and unchanged configuration on failure.
+All 18 capture-example tests pass in /tmp/capture-timeout-tests.log.
+
+With a 180-second deadline both Kubota runs completed 120 fresh samples/pass:
+
+| GPU pass | Median ms | p95 ms | Maximum ms |
+| --- | ---: | ---: | ---: |
+| Ordinary transparent | 0.162816 | 0.173056 | 0.176128 |
+| OIT transparent | 0.199680 | 0.209920 | 0.214016 |
+| OIT resolve | 0.207872 | 0.215040 | 0.223232 |
+
+The OIT image was inspected and shows the whole tractor and corrected grille.
+Raw measurements/metadata are in target/kubota-timing-180-*.capture.txt; PNGs
+use matching prefixes and logs /tmp/kubota-timing-180-*.log. Both use 1280x720,
+fixed eye (6,4,8), focus (0,1,0), shadows off, MSAA off and no FXAA. This single
+ordered pair is not a clock-controlled benchmark, a summed frame-time estimate,
+an embedded-viewer measurement or evidence for universal performance bounds.
+
+## Controlled transparent triangle-order regression
+
+assets/transparency_order{,_reversed}.usda contain the same two overlapping
+half-opacity triangles in one mesh; only face index order changes. The capture
+example now accepts USD_CAPTURE_RENDERER=oit, using OIT plus the same prepasses
+and Msaa::Off as the ordinary prepass control. Neither has FXAA.
+
+The original four captures all complete. OIT images match at strict RGB-zero
+tolerance across 921600 pixels; ordinary blending changes 60552 pixels with
+maximum RGB error 44. Both representative images were inspected, showing the
+overlapping red/blue triangles rather than empty renders. Artifacts are
+target/order-{oit,prepass}*, logs /tmp/order-*.log.
+
+The reusable Make-driven gate also passes:
+`make --eval='test-transparency-order:; @/bin/bash scripts/check_transparency_order.sh target/NEW_DIRECTORY' test-transparency-order`.
+It requires all four captures, exact OIT equality, and a numerical nonzero
+ordinary-blending difference, not merely an arbitrary failed comparison.
+Evidence: target/transparency-order-regression/ and
+/tmp/transparency-order-regression.log. All 17 capture-example tests pass in
+/tmp/oit-order-tests.log. This establishes bounded order invariance independently
+of MSAA; it does not certify transparency overflow, ties or every material path.
+
+## FXAA with viewer-owned OIT
+
+Enabling viewer OIT now enables FXAA while MSAA is off. Disabling restores the
+previous FXAA component (including disabled state and sensitivity values), or
+removes it if originally absent, alongside restoring MSAA. Repeated enable
+commands do not overwrite saved state. The Rendering pane states the AA policy.
+Cargo enables Bevy's bevy_anti_alias feature; DefaultPlugins supplies its plugin.
+
+All 89 viewer tests, build and check-all pass in /tmp/oit-fxaa-{tests,build,check}.log.
+The new test covers repeated cycles with absent and preconfigured disabled FXAA.
+Initial compilation exposed the missing feature; it was enabled before the gates.
+
+Inspected target/kubota-oit-fxaa-host.png: the complete tractor renders with the
+OIT grille improvement retained and no new missing surfaces apparent. Fine roof
+highlights remain; this is not a claim that FXAA removes specular aliasing or
+matches a reference renderer. The capture wrapper exits successfully in
+/tmp/kubota-oit-fxaa.log, retaining desktop and direct GPU evidence. GPU overhead
+and a controlled pixel-level AA comparison have not been measured at this step.
+
+## Roof close-up and body/cabin overlap check
+
+Inspected target/kubota-roof-close.png from viewer_capture at eye (2,4.4,2),
+focus (0,2.8,0), time zero, forward rendering and shadows off. The bright marks
+follow modeled roof ribs and recessed borders. This no longer supports treating
+every bright roof line as random mesh corruption; highlight aliasing remains a
+quality concern. /tmp/kubota-roof-close.log records CAPTURE_OK.
+
+A read-only comparison of the exported USDA's main-body and cabin arrays found
+41952 and 20773 triangles respectively, with zero exactly shared triangles after
+sorting each triangle's three position tuples. Both meshes occupy the same
+identity-transform chassis branch in the inspected source. This narrow probe
+does not detect near-coincident faces, intersecting triangles or overlaps with
+other meshes. Result: /tmp/kubota-body-cabin-overlap.log. The initial probe failed
+its index check because a Perl regex capture was reused during iteration; the
+corrected probe stores the captured point text before parsing it.
+
+No geometry repair or normal-map removal is justified by these controls.
+Anti-aliasing while OIT disables MSAA is the next viewer-side quality target.
+
+## Kubota orange-paint normal-map control
+
+target/kubota-orange-normal-control.usda sublayers the original USDZ and blocks
+only the orange paint Preview Surface normal connection, replacing it with
+(0,0,1). The USDZ is untouched. Both paths retain OIT and the same framing.
+The inspected target/kubota-orange-normal-control-host.png still shows the thin
+bright roof lines. Thus this single normal-map override is not a demonstrated
+repair; no normal-map policy was changed in production.
+
+The source normal texture was extracted and inspected as
+target/kubota-orange-normal-source.png. It contains dense authored panel/edge
+detail. The current decoder creates ordinary images without generating mipmaps,
+but that alone does not establish the cause of these particular roof marks.
+Close-up geometry/material isolation remains necessary to distinguish unwanted
+overlap from aliased highlights on authored roof details.
+
+The capture wrapper completed successfully, with direct host readback and desktop
+companions retained under target/kubota-orange-normal-control-* and log
+/tmp/kubota-orange-normal-control.log. This was a diagnostic-layer/render step,
+not a production source change or a new Rust test gate.
+
+## Live transparency control
+
+The Rendering pane now exposes Enable/Disable OIT with current state and the
+memory/MSAA trade-off. Commands target only viewer chase cameras. Enabling saves
+each camera's prior MSAA value; disabling restores it. Repeated commands preserve
+the original value, unrelated cameras remain untouched, and externally owned OIT
+components are not removed. Startup environment configuration uses the same path.
+
+All 88 viewer tests and the build pass (/tmp/oit-toggle-all-tests.log and
+/tmp/oit-toggle-build.log). The new regression cycles on/off repeatedly with
+8x MSAA and checks ownership boundaries. An initial compile failed on a missing
+Mara module import, corrected before these passing gates.
+
+scripts/replays/transparency_toggle.replay enables at 10s and disables at 25s.
+Both resulting images were inspected: target/oit-toggle-on-host.png reports on,
+and target/oit-toggle-off-desktop.png reports off in the same viewer process.
+/tmp/oit-toggle-capture.log records successful capture and runtime-log checks.
+This proves injected-egui toggle routing, not OS mouse input or a Kubota
+same-process material comparison. Roof diagnosis and the matched MSAA-off
+transparency control remain open.
+
+## Opt-in order-independent transparency
+
+USD_VIEWER_OIT=1 adds Bevy's OrderIndependentTransparencySettings to the viewer
+camera and sets Msaa::Off; absent/0 preserves the existing rendering policy.
+Other values fail before window creation. A regression checks parsing and both
+camera-component policies. All 87 viewer tests and the viewer build pass:
+/tmp/oit-viewer-tests.log and /tmp/oit-build.log.
+
+The inspected target/kubota-oit-desktop.png removes the large triangular grille
+patches seen in target/kubota-machine-desktop.png. Roof speckling remains, and
+OIT's MSAA-off edges are visibly rougher. This supports transparent ordering as
+the grille defect mechanism, not complete material or scene fidelity. Neither
+the USDZ nor its material values were changed. The earlier direct host capture
+again caught an incomplete scene; only the later desktop image supports this
+comparison. /tmp/kubota-oit-capture.log records successful wrapper completion.
+
+OIT remains opt-in: upstream defaults use eight sorted fragments and a four-
+fragment-per-pixel average allocation. Overflow, memory/performance and other
+GPU/backend behavior have not been accepted. A user-facing toggle, matched
+MSAA-off control and independent roof-artifact diagnosis remain follow-ups.
+
+## Seven-machine geometry audit and Kubota transparency lead
+
+All seven USDZ files now pass Make-driven scene_report at time zero. Logs and
+exit statuses are retained in target/machine-corpus-reports. These counts cover
+all traversed meshes, including collision/hidden geometry, without deformation:
+
+| Asset | Meshes | Triangles | Degenerate triangles |
+| --- | ---: | ---: | ---: |
+| Claas | 53 | 109465 | 4 |
+| Fendt | 258 | 413643 | 0 |
+| Knoche | 85 | 150616 | 0 |
+| Krampe | 81 | 113477 | 0 |
+| Kubota | 199 | 404261 | 7 |
+| Oxbo | 1760 | 935066 | 1 |
+| Ropa | 592 | 305920 | 14 |
+
+Every report has zero invalid indices and invalid referenced normals. This is
+geometry validation, not rendered acceptance for all seven assets.
+
+Inspected target/kubota-machine-host.png: the orange tractor renders, but grille
+surfaces show triangular patching and roof edges show thin speckled lines.
+The direct GPU capture confirms these are not compositor-only artifacts.
+The isolated capture exits successfully; /tmp/kubota-machine-capture.log and
+target/kubota-machine-desktop.* retain the run.
+
+Exported inspection layer target/kubota-inspection.usda shows both grille
+materials use texture alpha connected to Preview Surface opacity, with no
+opacityThreshold authored. They also have signed normal texture scale/bias.
+Transparent triangle ordering is a testable lead, not an established cause.
+Bevy 0.19.1's local order_independent_transparency example demonstrates the
+camera OIT component and Msaa::Off requirement; no OIT change is applied yet.
+
+## Machine USDZ collection: initial acceptance
+
+The user supplied /home/bresilla/machines/usd as an additional asset corpus:
+Fendt and Kubota tractors, Ropa and Oxbo harvesters, Claas and Krampe trailers,
+and a Knoche disc harrow. All seven archives pass unzip -t integrity checks.
+Only Fendt has been inspected in the viewer at this step; archive integrity is
+not USD semantic or rendering validation for the other six.
+
+The Make-driven scene_report for fendt_tractor.usdz reports 258 meshes and
+413643 triangles, with zero degenerate triangles, invalid referenced normals
+and invalid indices. Log: /tmp/fendt-machine-report.log.
+The inspected target/fendt-machine-desktop.png shows the complete green tractor,
+red wheels, cabin and decals. The earlier direct host image captured renderer
+warm-up instead, so it is not scene-rendering evidence. Capture log:
+/tmp/fendt-machine-capture.log. Source archives were not changed. Material,
+transparency and native-reference parity still require targeted comparisons.
+
 ## Whole-UR5 native subdivision audit
 
 Rebuilt scripts/compare_subdivision_reference.cpp against OpenSubdiv and ran

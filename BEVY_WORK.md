@@ -3,6 +3,22 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Whole-host capture delay after initial UI work
+
+Host capture now starts its delay at the end of the first viewer UI update,
+after BevyView::show, rather than consuming it during application construction
+and initial scene loading. A deterministic test advances construction-to-first-
+update time by 180 seconds and verifies the full requested delay remains.
+Callback correlation, timeout and no-overwrite tests remain intact.
+
+Ropa's fresh release capture passes both direct GPU and compositor capture:
+target/ropa-delayed-host.png and target/ropa-delayed-desktop.png were visually
+inspected with the model, grid, toolbar and outliner present. The host used a
+20-second delay after initial UI work; desktop capture waited 35 seconds.
+Logs: /tmp/host-delay-{tests,build}.log and /tmp/ropa-delayed-capture.log.
+This fixes capture timer ordering, not arbitrary GPU readiness or the separately
+observed intermittent compositor black-frame issue.
+
 ## Ropa startup profiling
 
 [Ropa startup measurements](benchmarks/ropa-startup.md) locate the large-scene

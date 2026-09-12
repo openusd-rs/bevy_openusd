@@ -1571,6 +1571,11 @@ defaults to 20000 and accepts 0..300000. The viewer stays open. Watch stderr for
 `HOST_CAPTURE_OK` or `HOST_CAPTURE_ERROR`; a missing callback times out after
 30 additional seconds. Existing files and symlinks are not overwritten.
 
+The delay starts after the first completed viewer UI update, not at application
+construction. Long initial scene loading therefore does not consume the delay.
+This is a settling interval, not a GPU/scene-readiness assertion; inspect the
+result before treating it as rendering evidence.
+
 ```sh
 USD_HOST_SCREENSHOT="$PWD/target/NEW-host-gpu.png" \
 USD_HOST_SCREENSHOT_DELAY_MS=20000 make run ARGS=assets/layer_muting.usda

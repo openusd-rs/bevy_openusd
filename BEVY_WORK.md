@@ -3,6 +3,26 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Release Oxbo harvester inspection
+
+The current release viewer builds successfully (/tmp/machine-release-build.log)
+and loads /home/bresilla/machines/usd/oxbo_harvester.usdz with OIT/FXAA enabled.
+Its previously measured 1760 traversed meshes and 935066 triangles include hidden
+and collision geometry, not just visible draw calls. The package contains one
+USDC layer and no texture images.
+
+Inspected target/oxbo-release-host.png: the complete yellow/green harvester,
+header, cabin, wheels and railings render. Some upper panels show patchy shading;
+this is not clean visual acceptance or a new claim of native parity. The
+capture completes successfully in /tmp/oxbo-release-capture.log; matching
+desktop, viewer log and profile settings are retained under target/oxbo-release-*.
+The wrapper's final TERM/setsid diagnostics are its owned-session cleanup,
+not an application panic. No source assets or rendering defaults were changed.
+
+This extends actual rendering coverage to a larger machine. Shadows and
+overlapping-surface controls remain useful for the visible panel artifacts;
+normal texture removal cannot explain this texture-free package.
+
 ## OIT pass timings and configurable capture deadline
 
 The small transparency fixture completed 120 fresh GPU samples per pass in both

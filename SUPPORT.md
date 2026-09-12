@@ -78,7 +78,7 @@ entries, preserving layer composition and live edits rather than archive layout.
 | Area | Implemented integration | Limits / outstanding acceptance |
 | --- | --- | --- |
 | Asset loading | Source-backed USD and in-memory USDZ, including bounded nested reads; relative layer and image dependencies through AssetServer | Dependency discovery follows composed variant selections; total stage memory is not bounded by entry-read limits |
-| Reloads | Tracked AssetServer dependencies; last-good projection on failure; explicit editor texture refresh and opt-in native texture watching; failed watcher setups retry at one-second intervals; initial image read/decode failures retry on texture recovery only when no document is open | Native watching requires file_watcher; AssetServer removal handling uses the explicit file_source adapter. Editor watching excludes USD layers and package members; directory replacement recovery is Unix-only. Failed replacement opens never defer replacement of an existing document |
+| Reloads | Default native editor polling for filesystem USD layers, outer packages and requested textures; in-place stage updates, last-good projection on failure, dirty-layer protection and unrelated undo preservation; tracked AssetServer dependencies | AssetServer OS watching still requires file_watcher and removal handling uses file_source. Editor polling can miss identical-metadata writes; snapshot/browser sources are not watched. Some shared-schema changes reconcile broadly; arbitrary nested/default-entry package changes and large-machine latency are not fully qualified. Failed initial Open requires explicit retry |
 | Instances | Independent stages, clocks, playback, variants and attribute overrides | Direct stage edits are transient across asset reload |
 | Identity | Same-asset reconciliation preserves matching prim entities; editor namespace commands remap entities | External namespace edits do not infer identity; deletion loses runtime state |
 | Ordinary transforms | Affine residual propagation, USD reset-stack prefix/ancestor exclusion, preserved scene placement/up-axis; runtime descendants follow corrected globals; malformed matrix edits retain last-good globals and recover through the stage change sink; half scalar/vector/quaternion decoding; scalar-axis ops and adjacent inverse cancellation | Affine and Z-up reset fixtures captured against explicit geometry; quaternion conversion checked against native axis-angle cases. Scalar-axis inverse scale follows native 25.05.01 negation, not vector-scale reciprocal behavior. Singular lighting, broader animated/native coverage and propagation performance remain unverified. Non-finite orientations, overflowing axis lengths and uncancelled singular matrix/vector-scale inverses produce diagnostics. Point-prototype hierarchy limits below still apply |
@@ -142,19 +142,22 @@ latency to the native debounce. Failed initial setup retries on Unix when a root
 directory becomes available, including directories created after startup.
 Processed sources and non-Unix source-root replacement are not covered.
 
-The direct viewer/editor and AssetServer are separate loading paths. Enable
-viewer texture watching with:
+The direct viewer/editor and AssetServer are separate loading paths. Native
+viewer builds enable core layer/package/texture polling by default:
 
 ```sh
-USD_WATCH_TEXTURES=1 make run APP_TARGET='--bin usdview --features file_watcher' ARGS='path/to/scene.usda'
+make run APP_TARGET='--release --bin usdview' ARGS='path/to/scene.usda'
 ```
 
-The viewer logs watcher setup errors and active file counts. Native tests cover
-atomic image replacement, deletion/recreation, unrelated-file filtering, document
-switching, failed Open, setup-retry refresh of missed image edits and cleanup.
-The inspected viewer capture confirms an
-automatic red-to-blue update with selection retained. Package image refresh
-still reads the opened package snapshot, not a replaced package on disk.
+Set `USD_HOT_RELOAD=0` to disable it. Library editor applications configure
+`EditorReloadSettings`; no Cargo watcher feature is needed for this polling path.
+The viewer logs active file counts and errors. Changed disk layers update the
+existing stage, while changed textures update their consumers. Dirty conflicting
+layers and malformed replacements retain the last good scene. Automatic reload
+reads replaced package bytes; the separate manual RefreshTextures command only
+refreshes images against the current source snapshot. See
+[editor hot reload](benchmarks/editor-hot-reload.md) for current validation and
+limits, including the inspected same-window referenced-asset update.
 
 For repeatable native GPU evidence using bundled/generated fixtures:
 

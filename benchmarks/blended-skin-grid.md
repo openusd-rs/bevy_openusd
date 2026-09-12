@@ -1,5 +1,33 @@
 # Blended-skin preparation cost
 
+## Skip discarded morph tangents
+
+When blended skinning will regenerate fully deformed tangents, GPU morph
+preparation now skips its earlier morph-only tangent pass. Standalone morphs
+and bindings without that later tangent pass retain their existing behavior.
+The correction's final tangent computation and rendered normal math are
+unchanged. The shader-simulation regression exercises the skipped-pass path.
+
+On the same 100-by-100 source, one subsequent profiled CPU/GPU-prepared pair
+with 100 repeated seeks measured:
+
+| Mode | Median seek | p95 seek | Maximum seek |
+| --- | ---: | ---: | ---: |
+| CPU | 37.728 ms | 40.402 ms | 44.485 ms |
+| GPU-prepared | 56.289 ms | 60.411 ms | 70.748 ms |
+
+GPU-prepared median is 23.1% lower than the 73.172 ms baseline, but remains
+slower than CPU preparation. This is not GPU frame time or proof of responsive
+large-rig playback. Logs: /tmp/skip-morph-tangents-{cpu,gpu-prepared}-benchmark.log.
+
+Both new posed images were inspected. At time five, forward MSAA Off,
+shadows off and /ReferenceCamera, CPU/GPU remain RGB-exact and the GPU image
+is RGB-exact with the baseline (0/921600 changed):
+target/skin-grid-skip-morph-{gpu,cpu}.png;
+/tmp/skin-grid-skip-morph-{compare,before-after}.log.
+494 library tests, three explicit native tests, check-all and release example
+build pass: /tmp/skip-morph-tangents-{tests-final,native,check,build-final}.log.
+
 ## Fixture and method
 
 At da06181, `scripts/make_skin_grid.sh` generates a self-contained USDA fixture

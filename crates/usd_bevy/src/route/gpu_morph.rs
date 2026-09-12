@@ -34,7 +34,7 @@ pub(crate) fn set_weights(world: &mut World, entity: Entity, weights: Vec<f32>) 
 pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyhow::Result<()> {
     let read = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)?.ok_or_else(|| anyhow::anyhow!("missing morph mesh"))?;
     let mut mesh = crate::mesh::mesh_from_usd(&read);
-    let weights = prepare(ctx, &read, &mut mesh)?;
+    let weights = prepare(ctx, &read, &mut mesh, true)?;
     let handle = super::cache::intern_mesh(world, mesh);
     set_weights(world, entity, weights);
     world.entity_mut(entity).insert(Mesh3d(handle))
@@ -44,7 +44,7 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     Ok(())
 }
 
-pub(crate) fn prepare(ctx: &RouteCtx, read: &crate::read::geom::ReadMesh, mesh: &mut Mesh) -> anyhow::Result<Vec<f32>> {
+pub(crate) fn prepare(ctx: &RouteCtx, read: &crate::read::geom::ReadMesh, mesh: &mut Mesh, prepare_tangents: bool) -> anyhow::Result<Vec<f32>> {
     let authored = read.normals.is_some();
     anyhow::ensure!(crate::mesh::uses_flat_normals(&read) || authored,
         "GPU morph normal mode is unsupported");
@@ -54,8 +54,8 @@ pub(crate) fn prepare(ctx: &RouteCtx, read: &crate::read::geom::ReadMesh, mesh: 
     anyhow::ensure!(!mapping.is_empty() && mapping.len() == mesh.count_vertices(), "invalid morph vertex mapping");
     anyhow::ensure!(mapping.len() <= (MAX_TEXTURE_WIDTH as usize).pow(2) / MorphAttributes::COMPONENT_COUNT,
         "morph target exceeds Bevy texture-backend capacity");
-    let normals = if authored { Some(crate::read::skel::morph_normals(read, &sample)?.0) } else { None };
-    if read.uvs.is_some() {
+    let normals = if authored && prepare_tangents { Some(crate::read::skel::morph_normals(read, &sample)?.0) } else { None };
+    if prepare_tangents && read.uvs.is_some() {
         let mut deformed = read.clone();
         deformed.triangulation_points = Some(read.points.clone());
         for (point, position) in deformed.points.iter_mut().enumerate() {
@@ -102,7 +102,7 @@ mod tests {
             assert!(read.double_sided);
             assert_eq!(read.subsets.len(), 1);
             let mut mesh = crate::mesh::mesh_from_usd(&read);
-            let weights = prepare(&ctx, &read, &mut mesh).unwrap();
+            let weights = prepare(&ctx, &read, &mut mesh, true).unwrap();
             assert_eq!(weights, [time as f32 / 10.0]);
             assert!(mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
             assert!(mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
@@ -130,7 +130,7 @@ mod tests {
             let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
             let mut gpu = crate::mesh::mesh_from_usd(&read);
             let rest = gpu.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().clone();
-            prepare(&ctx, &read, &mut gpu).unwrap();
+            prepare(&ctx, &read, &mut gpu, true).unwrap();
             let cpu = crate::mesh::mesh_from_usd(&super::super::skel::deformed_mesh(&ctx).unwrap().unwrap());
             let bevy::mesh::VertexAttributeValues::Float32x4(actual) = gpu.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap() else { panic!("gpu tangents") };
             let bevy::mesh::VertexAttributeValues::Float32x4(expected) = cpu.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap() else { panic!("cpu tangents") };
@@ -184,7 +184,7 @@ mod tests {
                 let cpu_mesh = crate::mesh::mesh_from_usd(&cpu);
                 let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
                 let mut gpu_mesh = crate::mesh::mesh_from_usd(&read);
-                let weights = prepare(&ctx, &read, &mut gpu_mesh).unwrap();
+                let weights = prepare(&ctx, &read, &mut gpu_mesh, true).unwrap();
                 let sample = crate::read::skel::gpu_skin_sample(&stage, &path, Some(time)).unwrap();
                 let bevy::mesh::VertexAttributeValues::Float32x3(base) = gpu_mesh.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap() else { panic!() };
                 let bevy::mesh::VertexAttributeValues::Float32x3(expected) = cpu_mesh.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap() else { panic!() };
@@ -211,7 +211,7 @@ mod tests {
             let normals = cpu.normals.unwrap().values;
             let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
             let mut mesh = crate::mesh::mesh_from_usd(&read);
-            let weights = prepare(&ctx, &read, &mut mesh).unwrap();
+            let weights = prepare(&ctx, &read, &mut mesh, true).unwrap();
             let targets = mesh.get_morph_targets().unwrap();
             for point in 0..4 {
                 let morphed = Vec3::Z + targets[point].normal * weights[0];

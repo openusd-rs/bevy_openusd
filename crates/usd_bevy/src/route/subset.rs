@@ -169,7 +169,7 @@ mod tests {
         let reference_ctx = RouteCtx::at(&reference_stage, &reference_path, Some(0.0));
         let reference_read = crate::read::geom::read_mesh_at(&reference_stage, &reference_path, Some(0.0)).unwrap().unwrap();
         let mut reference = crate::mesh::mesh_from_usd(&reference_read);
-        super::super::gpu_morph::prepare(&reference_ctx, &reference_read, &mut reference).unwrap();
+        super::super::gpu_morph::prepare(&reference_ctx, &reference_read, &mut reference, true).unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
         app.init_resource::<Assets<Mesh>>();

@@ -58,13 +58,14 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
     let sample = crate::read::skel::gpu_skin_sample(ctx.stage, ctx.path, ctx.time)?;
     let mut mesh = crate::mesh::mesh_from_usd(&read);
+    let skinned_tangents = read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY);
     let morph_weights = if crate::read::skel::has_blend_shapes(ctx.stage, ctx.path) {
-        Some(super::gpu_morph::prepare(ctx, &read, &mut mesh)?)
+        Some(super::gpu_morph::prepare(ctx, &read, &mut mesh, !skinned_tangents)?)
     } else { None };
     let source_points = crate::mesh::vertex_point_indices(&read);
     anyhow::ensure!(source_points.len() == mesh.count_vertices(), "skin vertex map does not match render mesh");
     correct_normals(&mut mesh, &source_points, &sample.normal_corrections, morph_weights.as_deref().unwrap_or(&[]))?;
-    if read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY) {
+    if skinned_tangents {
         correct_tangents(ctx, &mut mesh, &source_points, &sample)?;
     }
     let indices: Vec<_> = source_points.iter().map(|&point| sample.indices[point]).collect();
@@ -171,7 +172,7 @@ mod tests {
             let skin = crate::read::skel::gpu_skin_sample(&stage, &path, Some(time)).unwrap();
             let mapping = crate::mesh::vertex_point_indices(&read);
             let mut gpu = crate::mesh::mesh_from_usd(&read);
-            let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu).unwrap();
+            let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu, false).unwrap();
             correct_normals(&mut gpu, &mapping, &skin.normal_corrections, &weights).unwrap();
             correct_tangents(&ctx, &mut gpu, &mapping, &skin).unwrap();
             let morph = crate::read::skel::morph_sample(&stage, &path, Some(time)).unwrap();

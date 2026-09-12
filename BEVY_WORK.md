@@ -3,6 +3,21 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Skip redundant morph tangent preparation
+
+GPU skinning now tells morph preparation when a subsequent fully skinned
+tangent pass will replace its output. That case skips the discarded morph-only
+mesh/tangent rebuild; standalone and unaffected bindings retain their path.
+On the fixed 20,000-triangle grid, GPU-prepared median seek fell from 73.172 ms
+to 56.289 ms in a subsequent profiled pair; CPU control was 37.728 ms.
+CPU/GPU and before/after GPU images are RGB-exact and were inspected.
+
+494 ordinary library tests, three native tests, check-all and release example
+build pass. Evidence and limits: benchmarks/blended-skin-grid.md and
+/tmp/skip-morph-tangents-{tests-final,native,check,build-final}.log.
+Preparation still exceeds a 60 Hz budget. Reusing already sampled GPU data
+instead of rerunning the full CPU deformation path for tangents remains open.
+
 ## Blended-skin integration and scaling baseline
 
 At da06181, make test-all passes 658 tests with 18 ignored across 33 suites;

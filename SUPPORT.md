@@ -12,6 +12,9 @@ review patches recorded in `vendor/openusd/VENDORED.md`.
   the sampled Kubota headless open from 12.60 to 7.22 seconds, preserving its host
   pixels. General performance and native material parity remain unqualified.
   Evidence: `benchmarks/machine-texture-memory.md`.
+- A matched-camera/dome Kubota comparison still fails material fidelity: an
+  opaque hood ROI differs by up to 35/255 in encoded RGB. The cause is not yet
+  isolated. Evidence and native warnings: `benchmarks/kubota-native-materials.md`.
 
 The viewer supports experimental order-independent transparency with
 the Rendering pane's Enable OIT button, or at startup with

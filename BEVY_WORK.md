@@ -3,6 +3,15 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Compare machinery with a shared camera and dome
+
+Added a reusable Kubota reference setup and inspected native Storm/Bevy captures
+with the same authored camera, warm dome and source package. Framing aligns,
+but a 16x16 opaque hood ROI differs by up to 35/255 in encoded RGB; the strict
+comparison fails. Glass/decals also differ visually, with background and native
+ambient caveats. This is evidence of unfinished material fidelity, not a pass.
+Details and reproduction: `benchmarks/kubota-native-materials.md`.
+
 ## Avoid rebuilding unchanged packed textures
 
 A bounded input-plane fingerprint index validates live packed pixels and image

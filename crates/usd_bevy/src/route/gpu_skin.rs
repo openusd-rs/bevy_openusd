@@ -63,6 +63,10 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     } else { None };
     let source_points = crate::mesh::vertex_point_indices(&read);
     anyhow::ensure!(source_points.len() == mesh.count_vertices(), "skin vertex map does not match render mesh");
+    correct_normals(&mut mesh, &source_points, &sample.normal_corrections, morph_weights.as_deref().unwrap_or(&[]))?;
+    if read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY) {
+        correct_tangents(ctx, &mut mesh, &source_points, &sample)?;
+    }
     let indices: Vec<_> = source_points.iter().map(|&point| sample.indices[point]).collect();
     let weights: Vec<_> = source_points.iter().map(|&point| sample.weights[point]).collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, bevy::mesh::VertexAttributeValues::Uint16x4(indices));
@@ -91,9 +95,112 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     Ok(())
 }
 
+fn correct_normals(mesh: &mut Mesh, source_points: &[usize], corrections: &[Mat3], weights: &[f32]) -> anyhow::Result<()> {
+    if corrections.iter().all(|matrix| *matrix == Mat3::IDENTITY) { return Ok(()); }
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) = mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL) {
+        for (normal, &point) in normals.iter_mut().zip(source_points) {
+            let value = corrections[point] * Vec3::from(*normal);
+            anyhow::ensure!(value.is_finite(), "nonfinite corrected normal");
+            *normal = value.to_array();
+        }
+    }
+    if let Some(targets) = mesh.get_morph_targets() {
+        let mut targets = targets.to_vec();
+        for (index, target) in targets.iter_mut().enumerate() {
+            target.normal = corrections[source_points[index % source_points.len()]] * target.normal;
+            anyhow::ensure!(target.normal.is_finite(), "nonfinite corrected morph normal");
+        }
+        mesh.set_morph_targets(targets);
+    }
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+        for (vertex, normal) in normals.iter().enumerate() {
+            let mut value = Vec3::from(*normal);
+            if let Some(targets) = mesh.get_morph_targets() {
+                for (target, weight) in weights.iter().enumerate() { value += targets[target * normals.len() + vertex].normal * *weight; }
+            }
+            anyhow::ensure!(value.is_finite() && value.length_squared() > 1e-20, "invalid corrected skinned normal");
+        }
+    }
+    Ok(())
+}
+
+fn correct_tangents(ctx: &RouteCtx, mesh: &mut Mesh, mapping: &[usize], skin: &crate::read::skel::GpuSkinSample) -> anyhow::Result<()> {
+    let read = super::skel::deformed_mesh(ctx)?.ok_or_else(|| anyhow::anyhow!("missing tangent deformation"))?;
+    let deformed = crate::mesh::mesh_from_usd(&read);
+    anyhow::ensure!(deformed.count_vertices() == mesh.count_vertices(), "skinned tangent mapping changed");
+    let Some(bevy::mesh::VertexAttributeValues::Float32x4(tangents)) = deformed.attribute(Mesh::ATTRIBUTE_TANGENT) else {
+        mesh.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
+        return Ok(());
+    };
+    let mut corrected = Vec::with_capacity(tangents.len());
+    for (tangent, &point) in tangents.iter().zip(mapping) {
+        let matrix = skin.indices[point].iter().zip(skin.weights[point]).fold(Mat4::ZERO,
+            |matrix, (&index, weight)| matrix + skin.matrices[index as usize] * weight);
+        let value = Mat3::from_mat4(matrix).inverse() * Vec3::from_slice(&tangent[..3]);
+        anyhow::ensure!(value.is_finite(), "nonfinite skinned tangent correction");
+        corrected.push([value.x, value.y, value.z, tangent[3]]);
+    }
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, corrected);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrected_normals_validate_the_active_morph_result() {
+        let mut source = Mesh::from(Rectangle::default());
+        let count = source.count_vertices();
+        source.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![Vec3::X.to_array(); count]);
+        source.set_morph_targets(vec![bevy::mesh::morph::MorphAttributes::new(Vec3::ZERO, Vec3::Y, Vec3::ZERO); count]);
+        let mapping = (0..count).collect::<Vec<_>>();
+        let corrections = vec![Mat3::from_diagonal(Vec3::new(0.0, 1.0, 1.0)); count];
+        assert!(correct_normals(&mut source.clone(), &mapping, &corrections, &[0.0]).is_err());
+        assert!(correct_normals(&mut source, &mapping, &corrections, &[1.0]).is_ok());
+    }
+
+    #[test]
+    fn blended_gpu_normal_inputs_reproduce_native_cpu_normals() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_normals.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+            let ctx = RouteCtx::at(&stage, &path, Some(time));
+            let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+            let skin = crate::read::skel::gpu_skin_sample(&stage, &path, Some(time)).unwrap();
+            let mapping = crate::mesh::vertex_point_indices(&read);
+            let mut gpu = crate::mesh::mesh_from_usd(&read);
+            let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu).unwrap();
+            correct_normals(&mut gpu, &mapping, &skin.normal_corrections, &weights).unwrap();
+            correct_tangents(&ctx, &mut gpu, &mapping, &skin).unwrap();
+            let morph = crate::read::skel::morph_sample(&stage, &path, Some(time)).unwrap();
+            let (mut normals, points) = crate::read::skel::morph_normals(&read, &morph).unwrap();
+            crate::read::skel::skin_normals(&stage, &path, Some(time), &mut normals, &points, read.points.len()).unwrap();
+            let mut deformed = read.clone();
+            deformed.normals = Some(normals);
+            let cpu = crate::mesh::mesh_from_usd(&deformed);
+            let tangent_cpu = crate::mesh::mesh_from_usd(&super::super::skel::deformed_mesh(&ctx).unwrap().unwrap());
+            let Some(bevy::mesh::VertexAttributeValues::Float32x4(actual_tangents)) = gpu.attribute(Mesh::ATTRIBUTE_TANGENT) else { panic!() };
+            let Some(bevy::mesh::VertexAttributeValues::Float32x4(expected_tangents)) = tangent_cpu.attribute(Mesh::ATTRIBUTE_TANGENT) else { panic!() };
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(actual)) = gpu.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!() };
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(expected)) = cpu.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!() };
+            assert!(skin.normal_corrections.iter().any(|matrix| !matrix.abs_diff_eq(Mat3::IDENTITY, 1e-3)));
+            for (vertex, &point) in mapping.iter().enumerate() {
+                let mut normal = Vec3::from(actual[vertex]);
+                for (target, weight) in weights.iter().enumerate() {
+                    normal += gpu.get_morph_targets().unwrap()[target * mapping.len() + vertex].normal * *weight;
+                }
+                let matrix = skin.indices[point].iter().zip(skin.weights[point]).fold(Mat4::ZERO,
+                    |matrix, (&index, weight)| matrix + skin.matrices[index as usize] * weight);
+                normal = (Mat3::from_mat4(matrix).inverse().transpose() * normal).normalize();
+                assert!(normal.abs_diff_eq(Vec3::from(expected[vertex]), 1e-5), "time {time}, vertex {vertex}");
+                let tangent = (Mat3::from_mat4(matrix) * Vec3::from_slice(&actual_tangents[vertex][..3])).normalize();
+                assert!(tangent.abs_diff_eq(Vec3::from_slice(&expected_tangents[vertex][..3]), 1e-5));
+                assert_eq!(actual_tangents[vertex][3], expected_tangents[vertex][3]);
+            }
+        }
+    }
 
     #[test]
     fn influence_only_animation_updates_independent_gpu_instances() {

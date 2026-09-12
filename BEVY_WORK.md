@@ -3,6 +3,24 @@
 Goal: complete the Bevy-facing work identified in OPENUSD_UPGRADE.md.
 The dependency upgrade is a baseline, not completion of this goal.
 
+## Blended-joint normal and tangent correctness
+
+The new two-joint native fixture exposed a CPU normal mismatch that the
+single-joint oracle could not detect. Per-vertex skinning now blends individual
+inverse-transpose normal transforms; rigid bindings retain their combined
+transform behavior. GPU base/morph normals compensate for Bevy's built-in
+inverse-blended normal transform. Affected UV meshes rebuild sampled tangents
+and compensate their GPU input transforms. Zero active normal results reject.
+
+Three native tests pass, including the new blended-joint normal comparison at
+five times. Ordinary library tests pass 494 with 18 ignored; make check-all and
+the release viewer_capture build pass. Logs:
+/tmp/blended-normal-final-{tests,native,check,build}.log.
+CPU/GPU forward MSAA-Off captures at 0,5,10 are RGB-exact with active GPU
+skin/morph metadata. See benchmarks/deformation-captures.md for failed controls,
+images and scope limits. The correction adds CPU tangent work for affected
+bindings; its large-rig cost and broader render-path fidelity remain unmeasured.
+
 ## Native normal deformation oracle
 
 Extended the native sampler with --normals and added an equivalent built-in

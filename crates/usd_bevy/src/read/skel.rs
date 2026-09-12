@@ -214,7 +214,14 @@ pub(crate) fn skin_normals(stage: &Stage, path: &Path, time: Option<f64>, normal
         let start = if skin.is_rigidly_deformed() { 0 } else { point * stride };
         let matrix = (start..start+stride).fold(Mat4::ZERO, |matrix, slot|
             matrix + transforms[indices[slot] as usize] * weights[slot]);
-        let result = (normal_skin_matrix(matrix)? * Vec3::from(*normal)).try_normalize()
+        let normal_matrix = if skin.is_rigidly_deformed() { normal_skin_matrix(matrix)? } else {
+            let mut result = bevy::math::Mat3::ZERO;
+            for slot in start..start+stride {
+                if weights[slot] != 0.0 { result += normal_skin_matrix(transforms[indices[slot] as usize])? * weights[slot]; }
+            }
+            result
+        };
+        let result = (normal_matrix * Vec3::from(*normal)).try_normalize()
             .ok_or_else(|| anyhow::anyhow!("invalid skinned normal"))?;
         *normal = result.to_array();
     }
@@ -502,6 +509,7 @@ pub struct GpuSkinSample {
     pub indices: Vec<[u16; 4]>,
     pub weights: Vec<[f32; 4]>,
     pub matrices: Vec<bevy::math::Mat4>,
+    pub(crate) normal_corrections: Vec<bevy::math::Mat3>,
 }
 
 pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> anyhow::Result<GpuSkinSample> {
@@ -531,13 +539,24 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
         && weights.iter().all(|weight| weight.is_finite() && *weight >= 0.0), "invalid joint indices or weights");
     let mut packed_indices = Vec::with_capacity(mesh.points.len());
     let mut packed_weights = Vec::with_capacity(mesh.points.len());
+    let mut normal_corrections = Vec::with_capacity(mesh.points.len());
     for (indices, weights) in indices.chunks_exact(stride).zip(weights.chunks_exact(stride)) {
         anyhow::ensure!((weights.iter().sum::<f32>() - 1.0).abs() <= 1e-5, "GPU skinning requires normalized weights");
+        let mut correction = bevy::math::Mat3::IDENTITY;
         if !crate::mesh::uses_flat_normals(&mesh) {
             let blended = indices.iter().zip(weights).fold(bevy::math::Mat4::ZERO,
                 |matrix, (&index, &weight)| matrix + matrices[index as usize] * weight);
             normal_skin_matrix(blended)?;
+            if !skin.is_rigidly_deformed() {
+                let mut native_normal = bevy::math::Mat3::ZERO;
+                for (&index, &weight) in indices.iter().zip(weights) {
+                    if weight != 0.0 { native_normal += normal_skin_matrix(matrices[index as usize])? * weight; }
+                }
+                correction = bevy::math::Mat3::from_mat4(blended).transpose() * native_normal;
+                anyhow::ensure!(correction.is_finite(), "nonfinite normal correction");
+            }
         }
+        normal_corrections.push(correction);
         let mut packed_i = [0; 4];
         let mut packed_w = [0.0; 4];
         for i in 0..stride { packed_i[i] = indices[i] as u16; packed_w[i] = weights[i]; }
@@ -547,8 +566,9 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
     if skin.is_rigidly_deformed() {
         packed_indices.resize(mesh.points.len(), packed_indices[0]);
         packed_weights.resize(mesh.points.len(), packed_weights[0]);
+        normal_corrections.resize(mesh.points.len(), normal_corrections[0]);
     }
-    Ok(GpuSkinSample { indices: packed_indices, weights: packed_weights, matrices })
+    Ok(GpuSkinSample { indices: packed_indices, weights: packed_weights, matrices, normal_corrections })
 }
 
 #[cfg(test)]
@@ -575,8 +595,17 @@ mod tests {
     #[test]
     #[ignore = "requires USD_NATIVE_DEFORMATION_TOOL built against native OpenUSD"]
     fn native_baked_normals_match_combined_skin_and_morph() {
+        compare_native_normals(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_native_normals.usda"));
+    }
+
+    #[test]
+    #[ignore = "requires USD_NATIVE_DEFORMATION_TOOL built against native OpenUSD"]
+    fn native_baked_normals_match_blended_joints() {
+        compare_native_normals(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_normals.usda"));
+    }
+
+    fn compare_native_normals(file: &str) {
         let tool = std::env::var("USD_NATIVE_DEFORMATION_TOOL").expect("native deformation executable");
-        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_native_normals.usda");
         let original = std::fs::read(file).unwrap();
         let stage = crate::UsdSource::new(file, original.clone()).unwrap().open_stage().unwrap();
         let path = openusd::sdf::path("/Test/Face").unwrap();

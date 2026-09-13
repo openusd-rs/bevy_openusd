@@ -65,6 +65,7 @@ pub struct UsdSceneTimings {
     pub open: std::time::Duration,
     pub overrides: std::time::Duration,
     pub validation: std::time::Duration,
+    pub textures: std::time::Duration,
     pub projection: std::time::Duration,
 }
 
@@ -247,7 +248,7 @@ fn spawn_usd_scenes(world: &mut World) {
             continue;
         }
         // Skip until the asset has actually loaded.
-        let Some((source, textures)) = world
+        let Some((source, mut textures)) = world
             .resource::<Assets<UsdScene>>()
             .get(&handle)
             .map(|s| (s.source.clone(), s.textures.clone()))
@@ -273,6 +274,7 @@ fn spawn_usd_scenes(world: &mut World) {
         let opened = timed(profiled, &mut timing.open, || source.open_stage()).map_err(anyhow::Error::from).and_then(|stage| {
             timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
             timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
+            timed(profiled, &mut timing.textures, || decode_missing_textures(world, &stage, &source, &mut textures))?;
             Ok(stage)
         });
         timing.failures = usize::from(opened.is_err());
@@ -351,12 +353,43 @@ fn spawn_usd_scenes(world: &mut World) {
             total.open += timing.open;
             total.overrides += timing.overrides;
             total.validation += timing.validation;
+            total.textures += timing.textures;
             total.projection += timing.projection;
         }
     }
     continue_projections(world, &mut instances, budget);
     crate::instance::tick(world, &mut instances);
     world.insert_non_send(instances);
+}
+
+/// A scene added straight to `Assets<UsdScene>` skips the loader, so any
+/// texture the stage asks for that the map lacks is decoded here from the
+/// source bytes instead.
+fn decode_missing_textures(
+    world: &mut World,
+    stage: &openusd::usd::Stage,
+    source: &UsdSource,
+    textures: &mut bevy::platform::collections::HashMap<(String, bool), Handle<Image>>,
+) -> anyhow::Result<()> {
+    let requests = UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?;
+    let missing: Vec<_> = requests.into_iter().filter(|key| !textures.contains_key(key)).collect();
+    if missing.is_empty() { return Ok(()); }
+    anyhow::ensure!(world.contains_resource::<Assets<Image>>(), "image assets are unavailable");
+    for (path, srgb) in missing {
+        let bytes = source.read_asset(&path)
+            .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
+        let inner = openusd::ar::split_package_relative_path_inner(&path)
+            .map(|(_, inner)| inner).unwrap_or_else(|| path.clone());
+        let extension = Path::new(&inner).extension().and_then(|extension| extension.to_str())
+            .ok_or_else(|| anyhow::anyhow!("texture has no extension: {path}"))?;
+        let image = Image::from_buffer(&bytes, bevy::image::ImageType::Extension(extension),
+            bevy::image::CompressedImageFormats::NONE, srgb, bevy::image::ImageSampler::default(),
+            bevy::asset::RenderAssetUsages::default())
+            .map_err(|error| anyhow::anyhow!("cannot decode texture {path}: {error}"))?;
+        let handle = world.resource_mut::<Assets<Image>>().add(image);
+        textures.insert((path, srgb), handle);
+    }
+    Ok(())
 }
 
 /// Spend this frame's budget on the roots whose projection is still running;

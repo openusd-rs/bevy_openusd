@@ -479,6 +479,7 @@ impl ProjectionJob {
             pending.push_back(path.clone());
         });
         let total = pending.len();
+        world.insert_non_send(crate::route::material::ProjectionMaterials::new(stage));
         (Self { root, pending, total }, map)
     }
 
@@ -508,6 +509,9 @@ impl ProjectionJob {
             if started.elapsed() >= budget {
                 break;
             }
+        }
+        if self.pending.is_empty() {
+            world.remove_non_send::<crate::route::material::ProjectionMaterials>();
         }
         self.pending.is_empty()
     }

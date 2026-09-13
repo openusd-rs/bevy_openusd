@@ -39,9 +39,13 @@ pub(crate) fn warn_geometry_inputs(mesh: &Mesh, material: &StandardMaterial, war
     }
 }
 
+fn double_sided(ctx: &RouteCtx) -> bool {
+    ctx.stage.prim(ctx.path.clone()).ok()
+        .and_then(|prim| prim.attribute("doubleSided").get::<bool>().ok().flatten()).unwrap_or(false)
+}
+
 pub(crate) fn apply_sidedness(ctx: &RouteCtx, material: &mut StandardMaterial) {
-    let double_sided = ctx.stage.prim(ctx.path.clone()).ok()
-        .and_then(|prim| prim.attribute("doubleSided").get::<bool>().ok().flatten()).unwrap_or(false);
+    let double_sided = double_sided(ctx);
     material.double_sided = double_sided;
     material.cull_mode = if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) };
 }
@@ -64,11 +68,28 @@ pub(crate) fn default_material_with_opacity(ctx: &RouteCtx, opacity: Option<&cra
 }
 
 /// The prim's decoded preview material, if it has a binding that resolves.
-fn material_of(ctx: &RouteCtx) -> anyhow::Result<Option<ReadPreviewMaterial>> {
-    let Some(binding) = read_material_binding(ctx.stage, ctx.path)? else { return Ok(None) };
-    let read = read_preview_material_at(ctx.stage, &binding, ctx.time)?
-        .ok_or_else(|| anyhow::anyhow!("unsupported material surface at {binding}"))?;
-    Ok(Some(read))
+fn material_at(ctx: &RouteCtx, binding: &openusd::sdf::Path) -> anyhow::Result<ReadPreviewMaterial> {
+    read_preview_material_at(ctx.stage, binding, ctx.time)?
+        .ok_or_else(|| anyhow::anyhow!("unsupported material surface at {binding}"))
+}
+
+/// Materials resolved while one projection job runs. The gprims of a stage
+/// mostly share a few materials, and resolving one packs its textures, so
+/// the job keeps each (binding, time, sidedness) result until it finishes.
+/// Non-send because it pins the stage it belongs to.
+pub(crate) struct ProjectionMaterials {
+    stage: openusd::usd::Stage,
+    resolved: std::collections::HashMap<(String, Option<u64>, bool), (Handle<StandardMaterial>, Vec<String>)>,
+}
+
+impl ProjectionMaterials {
+    pub(crate) fn new(stage: &openusd::usd::Stage) -> Self {
+        Self { stage: stage.clone(), resolved: Default::default() }
+    }
+}
+
+fn memo_key(ctx: &RouteCtx, binding: &openusd::sdf::Path) -> (String, Option<u64>, bool) {
+    (binding.to_string(), ctx.time.map(f64::to_bits), double_sided(ctx))
 }
 
 fn warn_material(world: &mut World, entity: Entity, ctx: &RouteCtx, message: String) {
@@ -137,7 +158,15 @@ pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
 ) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>)>> {
-    let Some(read) = material_of(ctx)? else { return Ok(None) };
+    let Some(binding) = read_material_binding(ctx.stage, ctx.path)? else { return Ok(None) };
+    let key = memo_key(ctx, &binding);
+    if let Some(memo) = world.get_non_send::<ProjectionMaterials>()
+        && memo.stage.ptr_eq(ctx.stage)
+        && let Some(resolved) = memo.resolved.get(&key)
+    {
+        return Ok(Some(resolved.clone()));
+    }
+    let read = material_at(ctx, &binding)?;
     let assets = world.get_resource::<AssetServer>().cloned();
     let textures = world.get_resource::<crate::asset::SnapshotTextures>();
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
@@ -192,6 +221,11 @@ pub(crate) fn resolve_material(
         }
     }
     let handle = super::cache::intern_material(world, material);
+    if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
+        && memo.stage.ptr_eq(ctx.stage)
+    {
+        memo.resolved.insert(key, (handle.clone(), warnings.clone()));
+    }
     Ok(Some((handle, warnings)))
 }
 

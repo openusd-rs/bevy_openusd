@@ -106,40 +106,44 @@ impl AssetLoader for UsdAssetLoader {
             return Err(std::io::Error::other("USD root escapes asset source"));
         }
         for _ in 0..128 {
-            let (result, missing) = source.probe();
-            if missing.is_empty() {
-                result.map_err(std::io::Error::other)?;
-                let mut textures = bevy::platform::collections::HashMap::default();
-                for (index, (path, srgb)) in source
-                    .texture_requests()
-                    .map_err(std::io::Error::other)?
-                    .into_iter()
-                    .enumerate()
-                {
-                    let bytes = source.read_asset(&path)?;
-                    let inner = openusd::ar::split_package_relative_path_inner(&path)
-                        .map(|(_, inner)| inner)
-                        .unwrap_or_else(|| path.clone());
-                    let extension = Path::new(&inner)
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .ok_or_else(|| {
-                            std::io::Error::other(format!("texture has no extension: {path}"))
-                        })?;
-                    let image = Image::from_buffer(
-                        &bytes,
-                        bevy::image::ImageType::Extension(extension),
-                        bevy::image::CompressedImageFormats::NONE,
-                        srgb,
-                        bevy::image::ImageSampler::default(),
-                        bevy::asset::RenderAssetUsages::default(),
-                    )
-                    .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
-                    let handle = load_context.add_labeled_asset(format!("texture_{index}"), image);
-                    textures.insert((path, srgb), handle);
+            // The stage is `Rc`-based, so it is dropped inside this block
+            // before the dependency reads below await.
+            let missing = {
+                let (result, missing) = source.probe_stage();
+                if missing.is_empty() {
+                    let stage = result.map_err(std::io::Error::other)?;
+                    let mut textures = bevy::platform::collections::HashMap::default();
+                    for (index, (path, srgb)) in UsdSource::stage_texture_requests(&stage)
+                        .map_err(std::io::Error::other)?
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let bytes = source.read_asset(&path)?;
+                        let inner = openusd::ar::split_package_relative_path_inner(&path)
+                            .map(|(_, inner)| inner)
+                            .unwrap_or_else(|| path.clone());
+                        let extension = Path::new(&inner)
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .ok_or_else(|| {
+                                std::io::Error::other(format!("texture has no extension: {path}"))
+                            })?;
+                        let image = Image::from_buffer(
+                            &bytes,
+                            bevy::image::ImageType::Extension(extension),
+                            bevy::image::CompressedImageFormats::NONE,
+                            srgb,
+                            bevy::image::ImageSampler::default(),
+                            bevy::asset::RenderAssetUsages::default(),
+                        )
+                        .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
+                        let handle = load_context.add_labeled_asset(format!("texture_{index}"), image);
+                        textures.insert((path, srgb), handle);
+                    }
+                    return Ok(UsdScene { source, textures });
                 }
-                return Ok(UsdScene { source, textures });
-            }
+                missing
+            };
             for identifier in missing {
                 if openusd::ar::is_package_relative_path(&identifier) {
                     return Err(std::io::Error::other(format!(

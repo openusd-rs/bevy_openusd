@@ -103,11 +103,6 @@ impl UsdSource {
         .read_all()
     }
 
-    pub(crate) fn texture_requests(&self) -> Result<BTreeSet<(String, bool)>, String> {
-        let stage = self.open_stage().map_err(|error| error.to_string())?;
-        Self::stage_texture_requests(&stage)
-    }
-
     pub(crate) fn stage_texture_requests(stage: &Stage) -> Result<BTreeSet<(String, bool)>, String> {
         let mut paths = Vec::new();
         stage
@@ -317,11 +312,20 @@ impl UsdSource {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn probe(&self) -> (Result<(), String>, BTreeSet<String>) {
+        let (result, missing) = self.probe_stage();
+        (result.map(|_| ()), missing)
+    }
+
+    /// Like `probe`, keeping the validated stage so a caller that needs it
+    /// next (texture requests, say) does not parse the source again.
+    pub(crate) fn probe_stage(&self) -> (Result<Stage, String>, BTreeSet<String>) {
         let requests = Arc::new(Mutex::new(BTreeSet::new()));
-        let result = (|| -> anyhow::Result<()> {
+        let result = (|| -> anyhow::Result<Stage> {
             let stage = self.open_tracked(requests.clone())?;
-            Self::validate_composition(&stage)
+            Self::validate_composition(&stage)?;
+            Ok(stage)
         })()
         .map_err(|error| error.to_string());
         let missing = std::mem::take(&mut *requests.lock().expect("dependency requests"));

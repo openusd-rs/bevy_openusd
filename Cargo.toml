@@ -9,6 +9,12 @@ opt-level = 3
 [profile.dev.package.usd_bevy]
 opt-level = 3
 
+[profile.dev.package.bevy_mesh]
+opt-level = 3
+
+[profile.dev.package.bevy_mikktspace]
+opt-level = 3
+
 [patch.crates-io]
 bevy_asset = { path = "vendor/bevy_asset" }
 bevy_pbr = { path = "vendor/bevy_pbr" }

@@ -245,12 +245,20 @@ fn process_commands(world: &mut World) {
             texture_dirty = true;
         }
         let result = if let EditorCommand::Open(path) | EditorCommand::OpenChecked { filename: path, .. } = &command {
+            let started = bevy::platform::time::Instant::now();
+            let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
+            let profile = |phase: &str| {
+                if profiling { eprintln!("editor_load phase={phase} elapsed_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0); }
+            };
             world.remove_resource::<PendingInitialOpen>();
             if session.is_none() { set_texture_requests(world, Default::default()); }
             std::fs::read(path).map_err(anyhow::Error::from)
                 .and_then(|bytes| crate::UsdSource::new(path, bytes).map_err(anyhow::Error::from)).and_then(|source| {
+                    profile("source-bytes");
                     let (stage, disk_baselines) = source.open_stage_for_editor()?;
+                    profile("stage-open");
                     crate::UsdSource::validate_composition(&stage)?;
+                    profile("composition-validated");
                     let textures = match prepare_textures(&stage, &source) {
                         Ok(textures) => textures,
                         Err(error) => {
@@ -265,6 +273,7 @@ fn process_commands(world: &mut World) {
                     if !textures.is_empty() && !world.contains_resource::<Assets<Image>>() {
                         anyhow::bail!("image assets are unavailable for this document");
                     }
+                    profile("textures-decoded");
                     world.remove_non_send::<crate::live::LiveStage>();
                     if let Some(map) = world.remove_resource::<crate::live::PrimEntities>() {
                         if let Some(root) = map.entity("/") { world.despawn(root); }
@@ -272,10 +281,13 @@ fn process_commands(world: &mut World) {
                     world.insert_resource(crate::live::PrimEntities::default());
                     world.insert_non_send(crate::live::LiveStage::new(stage.clone()));
                     let mut editor = EditorSession::new(stage);
+                    profile("editor-created");
                     editor.save_state.borrow_mut().disk = Some(disk_baselines);
                     editor.save_state.borrow_mut().opened(editor.stage(), &editor.layer_changes.revisions());
+                    profile("save-baselines");
                     editor.source = Some(source);
                     install_textures(world, textures)?;
+                    profile("textures-installed");
                     world.resource_mut::<EditorPlayback>().0.playing = false;
                     texture_dirty = false;
                     session = Some(editor);
@@ -1927,7 +1939,7 @@ def Xform "Model" (
         let directory = tempfile::tempdir().unwrap();
         let root_file = directory.path().join("root.usda");
         let weak_file = directory.path().join("weak.usda");
-        std::fs::write(&root_file, "#usda 1.0\n(subLayers = [@weak.usda@])\nover \"Root\" {}\n").unwrap();
+        std::fs::write(&root_file, "#usda 1.0\n(subLayers = [@weak.usda@])\nover \"Root\" { point3f[] points = [(0,0,0), (1,0,0)] }\n").unwrap();
         std::fs::write(&weak_file, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let source = crate::UsdSource::new(&root_file, std::fs::read(&root_file).unwrap()).unwrap();
         let mut editor = EditorSession::new(source.open_stage().unwrap());
@@ -1969,6 +1981,11 @@ def Xform "Model" (
         editor.stage().prim("/Root").unwrap().attribute("score").set(9_f64).unwrap();
         assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Modified);
         editor.stage().prim("/Root").unwrap().attribute("score").set(4_f64).unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Clean);
+        let points = editor.stage().prim("/Root").unwrap().attribute("points");
+        points.clone().set(Value::Vec3fVec(vec![[0.0, 0.0, 0.0].into(), [1.0, 0.5, 0.0].into()])).unwrap();
+        assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Modified);
+        points.set(Value::Vec3fVec(vec![[0.0, 0.0, 0.0].into(), [1.0, 0.0, 0.0].into()])).unwrap();
         assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Clean);
     }
 

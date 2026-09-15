@@ -17,6 +17,7 @@ openusd-schemas = { path = "../../vendor/openusd/crates/openusd-schemas", featur
 glam = "0.30"
 anyhow = "1"
 blake3 = "1"
+bytemuck = "1"
 half = "2"
 log = "0.4"
 tempfile = "3"

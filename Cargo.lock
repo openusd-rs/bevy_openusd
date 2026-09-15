@@ -5827,6 +5827,7 @@ dependencies = [
  "bevy",
  "bevy_pbr",
  "blake3",
+ "bytemuck",
  "glam 0.30.10",
  "half",
  "log",

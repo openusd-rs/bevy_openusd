@@ -227,6 +227,7 @@ impl PrimEntities {
 // `UsdPrimRef` + `Transform`. Mesh / material / the full field→component
 // routing (RETHINK §12) layer on top of this same shape.
 
+use crate::instance::UsdInstanceOverrides;
 use crate::prim_ref::UsdPrimRef;
 use crate::read::xform::read_transform;
 use crate::route::{SchemaRegistry, StageTime};
@@ -651,7 +652,7 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         && let Ok(mut scopes) = material_consumer_scopes(&live.stage, map, &graph_paths) {
         scopes.extend(graph_paths.iter().map(|path| prim_of(path).to_owned()));
         if expand_instancer_consumers(&live.stage, map, &mut scopes).is_ok() {
-            reconcile_scoped(world, live, map, true, Some(&scopes));
+            reconcile_scoped(world, live, map, true, Some(&scopes), &[]);
         } else {
             reconcile(world, live, map, true);
         }
@@ -665,7 +666,7 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         } else {
             let mut scopes: Vec<_> = paths.iter().map(|path| prim_of(path).to_owned()).collect();
             scopes.extend(consumers.unwrap_or_default());
-            reconcile_scoped(world, live, map, true, Some(&scopes));
+            reconcile_scoped(world, live, map, true, Some(&scopes), &[]);
         }
         return;
     }
@@ -735,11 +736,81 @@ pub(crate) fn remap_namespace(world: &mut World, old: &str, new: &str) {
 
 /// Reconciles paths, hierarchy and routed components, optionally rebuilding the live animation index.
 pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool) {
-    reconcile_scoped(world, live, map, collect_animation, None);
+    reconcile_scoped(world, live, map, collect_animation, None, &[]);
 }
 
-fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool, scopes: Option<&[String]>) {
-    let affected = |path: &str| scopes.is_none_or(|scopes| scopes.iter().any(|scope|
+/// Reconciles only `subtrees` and the prims in `exact`, so entities outside
+/// them keep whatever state the app has given them since projection.
+pub(crate) fn reconcile_opinions(world: &mut World, live: &LiveStage, map: &mut PrimEntities, subtrees: &[String], exact: &[String]) {
+    reconcile_scoped(world, live, map, false, Some(subtrees), exact);
+}
+
+/// What a change of instance opinions can touch: subtrees to reconcile and
+/// prims to patch on their own, or `None` when only a full reconcile is safe.
+/// A switched variant touches the specs either selection authors in the root
+/// layer stack; its set's owner prim is patched alone.
+pub(crate) fn opinion_scopes(before: &Stage, after: &Stage, old: &UsdInstanceOverrides, new: &UsdInstanceOverrides) -> Option<(Vec<String>, Vec<String>)> {
+    let (mut subtrees, mut exact) = (Vec::new(), Vec::new());
+    let mut sets: Vec<(&str, &str)> = old.variants.iter().chain(&new.variants)
+        .map(|(prim, set, _)| (prim.as_str(), set.as_str())).collect();
+    sets.sort_unstable();
+    sets.dedup();
+    let layers = after.layer_stack();
+    for (prim, set) in sets {
+        let owner = openusd::sdf::path(prim).ok()?;
+        let was = crate::read::variants::variant_selection(before, &owner, set);
+        let now = crate::read::variants::variant_selection(after, &owner, set);
+        if was == now {
+            continue;
+        }
+        let authored = layers.iter().any(|id| after.layer(id).is_some_and(|layer|
+            layer.prim(owner.clone()).ok().flatten().is_some_and(|spec| spec.has_field("variantSetNames"))));
+        if !authored {
+            return None;
+        }
+        exact.push(prim.to_string());
+        for selection in [was, now].into_iter().flatten() {
+            let variant = owner.append_variant_selection(set, &selection).ok()?;
+            for id in &layers {
+                if let Some(layer) = after.layer(id) {
+                    collect_variant_specs(layer.data(), &variant, &mut subtrees, &mut exact);
+                }
+            }
+        }
+    }
+    for attribute in old.attributes.iter().chain(&new.attributes) {
+        if !(old.attributes.contains(attribute) && new.attributes.contains(attribute)) {
+            exact.push(attribute.prim.clone());
+        }
+    }
+    Some((subtrees, exact))
+}
+
+/// Children of a variant spec: a `def` scopes its whole subtree, an `over`
+/// scopes itself and is walked for the specs beneath it. Variant specs are
+/// not prim specs, so this reads the layer's raw fields.
+fn collect_variant_specs(data: &dyn openusd::sdf::AbstractData, spec_path: &openusd::sdf::Path, subtrees: &mut Vec<String>, exact: &mut Vec<String>) {
+    let children = match data.try_field(spec_path, "primChildren").ok().flatten().map(|value| value.into_owned()) {
+        Some(openusd::sdf::Value::TokenVec(children)) => children,
+        _ => return,
+    };
+    for child in children {
+        let Ok(child_path) = spec_path.append_path(child.as_str()) else {
+            continue;
+        };
+        let prim = child_path.strip_all_variant_selections().as_str().to_string();
+        let specifier = data.try_field(&child_path, "specifier").ok().flatten().map(|value| value.into_owned());
+        if matches!(specifier, Some(openusd::sdf::Value::Specifier(openusd::sdf::Specifier::Over))) {
+            exact.push(prim);
+            collect_variant_specs(data, &child_path, subtrees, exact);
+        } else {
+            subtrees.push(prim);
+        }
+    }
+}
+
+fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool, scopes: Option<&[String]>, exact: &[String]) {
+    let affected = |path: &str| exact.iter().any(|prim| prim == path) || scopes.is_none_or(|scopes| scopes.iter().any(|scope|
         scope == "/" || path == scope || path.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))));
     let stage = &live.stage;
     let registry = registry_of(world);

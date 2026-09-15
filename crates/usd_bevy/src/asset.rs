@@ -16,7 +16,7 @@ use bevy::prelude::*;
 
 use crate::live::ProjectionJob;
 use crate::instance::{InstanceRuntime, UsdInstanceOverrides, UsdInstanceTime, UsdInstances, UsdPlayback};
-use crate::live::{AnimatedPrims, LiveStage, reconcile, stage_up_axis};
+use crate::live::{AnimatedPrims, LiveStage, opinion_scopes, reconcile, reconcile_opinions, stage_up_axis};
 use crate::route::StageTime;
 use crate::{SchemaRegistry, UsdSource};
 
@@ -297,7 +297,15 @@ fn spawn_usd_scenes(world: &mut World) {
                 let mut job = None;
                 let map = timed(profiled, &mut timing.projection, || {
                     if let Some(mut runtime) = retained {
-                        reconcile(world, &live, &mut runtime.map, false);
+                        // A changed variant or attribute opinion on an unchanged
+                        // source only reconciles what that opinion authors.
+                        let scopes = previous.as_ref()
+                            .filter(|old| old.revision == source.revision())
+                            .and_then(|old| opinion_scopes(&runtime.live.stage, &live.stage, &old.overrides, &overrides));
+                        match scopes {
+                            Some((subtrees, exact)) => reconcile_opinions(world, &live, &mut runtime.map, &subtrees, &exact),
+                            None => reconcile(world, &live, &mut runtime.map, false),
+                        }
                         if let Some(root) = runtime.map.entity("/") {
                             world.entity_mut(root).insert(Transform::from_rotation(stage_up_axis(&live.stage)));
                         }
@@ -704,6 +712,50 @@ def Xform "Model" (
         assert!(world.get_entity(variant_b).is_err());
         assert!(world.non_send::<UsdInstances>().entity(b, "/Model/A").is_some());
         assert_ne!(world.get::<Visibility>(model_b), Some(&Visibility::Hidden));
+    }
+
+    #[test]
+    fn variant_switches_leave_untouched_prims_alone() {
+        let (mut world, handle) = instance_world();
+        let source = r#"#usda 1.0
+def Xform "Model" (
+    variants = { string tool = "none" }
+    prepend variantSets = "tool"
+) {
+    def Xform "Body" {}
+    def Xform "Arm" {}
+    variantSet "tool" = {
+        "none" {}
+        "loader" {
+            def Xform "Loader" {}
+            over "Arm" { token visibility = "invisible" }
+        }
+    }
+}
+"#;
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", source.as_bytes()).unwrap();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let body = instance_entity(&world, root, "/Model/Body");
+        let arm = instance_entity(&world, root, "/Model/Arm");
+        // The app moved the body after projection; a tool swap must keep it.
+        world.get_mut::<Transform>(body).unwrap().translation.x = 5.0;
+        let tool = |selection: &str| UsdInstanceOverrides {
+            variants: vec![("/Model".into(), "tool".into(), selection.into())],
+            ..default()
+        };
+        world.entity_mut(root).insert(tool("loader"));
+        spawn_usd_scenes(&mut world);
+        let loader = instance_entity(&world, root, "/Model/Loader");
+        assert_eq!(instance_entity(&world, root, "/Model/Body"), body);
+        assert_eq!(world.get::<Transform>(body).unwrap().translation.x, 5.0);
+        assert_eq!(world.get::<Visibility>(arm), Some(&Visibility::Hidden));
+        world.entity_mut(root).insert(tool("none"));
+        spawn_usd_scenes(&mut world);
+        assert!(world.get_entity(loader).is_err());
+        assert_eq!(world.get::<Transform>(body).unwrap().translation.x, 5.0);
+        assert_ne!(world.get::<Visibility>(arm), Some(&Visibility::Hidden));
     }
 
     #[test]

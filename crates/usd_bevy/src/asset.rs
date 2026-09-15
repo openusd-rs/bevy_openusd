@@ -16,7 +16,7 @@ use bevy::prelude::*;
 
 use crate::live::ProjectionJob;
 use crate::instance::{InstanceRuntime, UsdInstanceOverrides, UsdInstanceTime, UsdInstances, UsdPlayback};
-use crate::live::{AnimatedPrims, LiveStage, opinion_scopes, reconcile, reconcile_opinions, stage_up_axis};
+use crate::live::{AnimatedPrims, LiveStage, opinion_scopes, reconcile, reconcile_opinions, stage_up_axis, variant_scopes};
 use crate::route::StageTime;
 use crate::{SchemaRegistry, UsdSource};
 
@@ -269,6 +269,28 @@ fn spawn_usd_scenes(world: &mut World) {
         {
             continue;
         }
+        // A variant switch on a live instance of an unchanged source is set on
+        // its open stage: no reparse or revalidation, and the decoded textures
+        // and material memo stay warm.
+        if let Some(old) = previous.as_ref()
+            && old.asset == handle.id()
+            && old.revision == source.revision()
+            && old.overrides.attributes == overrides.attributes
+            && old.overrides.variants.iter().all(|(prim, set, _)| {
+                overrides.variants.iter().any(|(p, s, _)| p == prim && s == set)
+            })
+            && let Some(runtime) = instances.roots.get_mut(&entity)
+                .filter(|runtime| runtime.asset == handle.id() && runtime.job.is_none())
+        {
+            let current = world.get::<UsdInstanceTime>(entity).map_or(0.0, |time| time.current);
+            switch_variants_in_place(world, runtime, &source, &overrides, current);
+            let subtree = old.subtree;
+            world.entity_mut(entity).insert((
+                UsdSceneInstance { asset: handle.id(), revision: source.revision(), subtree, overrides },
+                UsdSceneState::Ready,
+            ));
+            continue;
+        }
         let profiled = world.contains_resource::<UsdSceneTimings>();
         let mut timing = UsdSceneTimings { attempts: 1, ..default() };
         let opened = timed(profiled, &mut timing.open, || source.open_stage()).map_err(anyhow::Error::from).and_then(|stage| {
@@ -373,6 +395,52 @@ fn spawn_usd_scenes(world: &mut World) {
 /// A scene added straight to `Assets<UsdScene>` skips the loader, so any
 /// texture the stage asks for that the map lacks is decoded here from the
 /// source bytes instead.
+/// Sets `overrides`' variant selections on a live instance's own stage and
+/// reconciles what the switched variants author.
+fn switch_variants_in_place(
+    world: &mut World,
+    runtime: &mut InstanceRuntime,
+    source: &UsdSource,
+    overrides: &UsdInstanceOverrides,
+    current: f64,
+) {
+    let mut changes = Vec::new();
+    for (prim, set, selection) in &overrides.variants {
+        let Ok(owner) = openusd::sdf::path(prim.as_str()) else {
+            continue;
+        };
+        let was = crate::read::variants::variant_selection(&runtime.live.stage, &owner, set);
+        if was.as_deref() == Some(selection.as_str()) {
+            continue;
+        }
+        if let Err(error) = crate::authoring::set_variant(&runtime.live.stage, prim, set, selection) {
+            bevy::log::warn!("variant {set} = {selection} on {prim}: {error}");
+            continue;
+        }
+        changes.push((prim.clone(), set.clone(), was, Some(selection.clone())));
+    }
+    // This switch is reconciled here; the live-edit pass must not redo it.
+    let _ = runtime.live.drain_changes();
+    if let Err(error) = decode_missing_textures(world, &runtime.live.stage, source, &mut runtime.textures.0) {
+        bevy::log::warn!("textures after a variant switch: {error}");
+    }
+    let previous_time = world.remove_resource::<StageTime>();
+    let previous_animated = world.remove_resource::<AnimatedPrims>();
+    let previous_textures = world.remove_resource::<SnapshotTextures>();
+    world.insert_resource(StageTime { current });
+    world.insert_resource(runtime.textures.clone());
+    match variant_scopes(&runtime.live.stage, &changes) {
+        Some((subtrees, exact)) => reconcile_opinions(world, &runtime.live, &mut runtime.map, &subtrees, &exact),
+        None => reconcile(world, &runtime.live, &mut runtime.map, false),
+    }
+    world.remove_resource::<SnapshotTextures>();
+    world.remove_resource::<StageTime>();
+    world.remove_resource::<AnimatedPrims>();
+    if let Some(previous) = previous_time { world.insert_resource(previous); }
+    if let Some(previous) = previous_animated { world.insert_resource(previous); }
+    if let Some(previous) = previous_textures { world.insert_resource(previous); }
+}
+
 fn decode_missing_textures(
     world: &mut World,
     stage: &openusd::usd::Stage,
@@ -756,6 +824,34 @@ def Xform "Model" (
         assert!(world.get_entity(loader).is_err());
         assert_eq!(world.get::<Transform>(body).unwrap().translation.x, 5.0);
         assert_ne!(world.get::<Visibility>(arm), Some(&Visibility::Hidden));
+    }
+
+    #[test]
+    fn variant_switches_keep_the_open_stage() {
+        let (mut world, handle) = instance_world();
+        let source = r#"#usda 1.0
+def Xform "Model" (
+    variants = { string tool = "none" }
+    prepend variantSets = "tool"
+) {
+    variantSet "tool" = {
+        "none" {}
+        "loader" { def Xform "Loader" {} }
+    }
+}
+"#;
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", source.as_bytes()).unwrap();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let before = world.non_send::<UsdInstances>().stage(root).unwrap().clone();
+        world.entity_mut(root).insert(UsdInstanceOverrides {
+            variants: vec![("/Model".into(), "tool".into(), "loader".into())],
+            ..default()
+        });
+        spawn_usd_scenes(&mut world);
+        assert!(world.non_send::<UsdInstances>().stage(root).unwrap().ptr_eq(&before));
+        instance_entity(&world, root, "/Model/Loader");
     }
 
     #[test]

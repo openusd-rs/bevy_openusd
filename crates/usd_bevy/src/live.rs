@@ -750,37 +750,49 @@ pub(crate) fn reconcile_opinions(world: &mut World, live: &LiveStage, map: &mut 
 /// A switched variant touches the specs either selection authors in the root
 /// layer stack; its set's owner prim is patched alone.
 pub(crate) fn opinion_scopes(before: &Stage, after: &Stage, old: &UsdInstanceOverrides, new: &UsdInstanceOverrides) -> Option<(Vec<String>, Vec<String>)> {
-    let (mut subtrees, mut exact) = (Vec::new(), Vec::new());
     let mut sets: Vec<(&str, &str)> = old.variants.iter().chain(&new.variants)
         .map(|(prim, set, _)| (prim.as_str(), set.as_str())).collect();
     sets.sort_unstable();
     sets.dedup();
-    let layers = after.layer_stack();
+    let mut changes = Vec::new();
     for (prim, set) in sets {
         let owner = openusd::sdf::path(prim).ok()?;
         let was = crate::read::variants::variant_selection(before, &owner, set);
         let now = crate::read::variants::variant_selection(after, &owner, set);
-        if was == now {
-            continue;
+        if was != now {
+            changes.push((prim.to_string(), set.to_string(), was, now));
         }
-        let authored = layers.iter().any(|id| after.layer(id).is_some_and(|layer|
+    }
+    let (subtrees, mut exact) = variant_scopes(after, &changes)?;
+    for attribute in old.attributes.iter().chain(&new.attributes) {
+        if !(old.attributes.contains(attribute) && new.attributes.contains(attribute)) {
+            exact.push(attribute.prim.clone());
+        }
+    }
+    Some((subtrees, exact))
+}
+
+/// Specs a variant switch touches on `stage`, from (owner prim, set, old
+/// selection, new selection); `None` when a set is not authored in the root
+/// layer stack, where only a full reconcile is safe.
+pub(crate) fn variant_scopes(stage: &Stage, changes: &[(String, String, Option<String>, Option<String>)]) -> Option<(Vec<String>, Vec<String>)> {
+    let (mut subtrees, mut exact) = (Vec::new(), Vec::new());
+    let layers = stage.layer_stack();
+    for (prim, set, was, now) in changes {
+        let owner = openusd::sdf::path(prim.as_str()).ok()?;
+        let authored = layers.iter().any(|id| stage.layer(id).is_some_and(|layer|
             layer.prim(owner.clone()).ok().flatten().is_some_and(|spec| spec.has_field("variantSetNames"))));
         if !authored {
             return None;
         }
-        exact.push(prim.to_string());
+        exact.push(prim.clone());
         for selection in [was, now].into_iter().flatten() {
-            let variant = owner.append_variant_selection(set, &selection).ok()?;
+            let variant = owner.append_variant_selection(set, selection).ok()?;
             for id in &layers {
-                if let Some(layer) = after.layer(id) {
+                if let Some(layer) = stage.layer(id) {
                     collect_variant_specs(layer.data(), &variant, &mut subtrees, &mut exact);
                 }
             }
-        }
-    }
-    for attribute in old.attributes.iter().chain(&new.attributes) {
-        if !(old.attributes.contains(attribute) && new.attributes.contains(attribute)) {
-            exact.push(attribute.prim.clone());
         }
     }
     Some((subtrees, exact))

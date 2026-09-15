@@ -157,6 +157,11 @@ pub(crate) struct InstanceRuntime {
     pub job: Option<crate::live::ProjectionJob>,
     pub subdivision_levels: Option<u32>,
     pub curve_steps: (usize, Option<usize>),
+    /// Mesh and material handles of prims a variant switch turned off, kept
+    /// so switching back finds them interned instead of uploading again.
+    pub parked: bevy::platform::collections::HashMap<bevy::asset::UntypedAssetId, bevy::asset::UntypedHandle>,
+    /// Material memo for variant switches on this runtime's own stage.
+    pub materials: Option<crate::route::material::ProjectionMaterials>,
 }
 
 #[cfg(test)]

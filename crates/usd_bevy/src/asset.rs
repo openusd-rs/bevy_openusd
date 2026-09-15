@@ -363,6 +363,8 @@ fn spawn_usd_scenes(world: &mut World) {
                     subdivision_levels: crate::route::subdivision::current_levels(world),
                     curve_steps: crate::route::curves::current_geometry_key(world),
                     job,
+                    parked: default(),
+                    materials: None,
                 });
             }
             Err(error) => {
@@ -429,9 +431,22 @@ fn switch_variants_in_place(
     let previous_textures = world.remove_resource::<SnapshotTextures>();
     world.insert_resource(StageTime { current });
     world.insert_resource(runtime.textures.clone());
-    match variant_scopes(&runtime.live.stage, &changes) {
+    let scopes = variant_scopes(&runtime.live.stage, &changes);
+    if let Some((subtrees, exact)) = &scopes {
+        park_assets(world, runtime, subtrees, exact);
+    }
+    // Resolved materials outlive the switch: the stage stays the same one.
+    let other_memo = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+    let memo = runtime.materials.take()
+        .unwrap_or_else(|| crate::route::material::ProjectionMaterials::new(&runtime.live.stage));
+    world.insert_non_send(memo);
+    match scopes {
         Some((subtrees, exact)) => reconcile_opinions(world, &runtime.live, &mut runtime.map, &subtrees, &exact),
         None => reconcile(world, &runtime.live, &mut runtime.map, false),
+    }
+    runtime.materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+    if let Some(memo) = other_memo {
+        world.insert_non_send(memo);
     }
     world.remove_resource::<SnapshotTextures>();
     world.remove_resource::<StageTime>();
@@ -439,6 +454,33 @@ fn switch_variants_in_place(
     if let Some(previous) = previous_time { world.insert_resource(previous); }
     if let Some(previous) = previous_animated { world.insert_resource(previous); }
     if let Some(previous) = previous_textures { world.insert_resource(previous); }
+}
+
+/// Keeps the mesh and material handles of the prims a switch may despawn, and
+/// of their material-subset children, so the caches still hold them when the
+/// variant is switched back on.
+fn park_assets(world: &World, runtime: &mut InstanceRuntime, subtrees: &[String], exact: &[String]) {
+    let scoped = |path: &str| exact.iter().any(|prim| prim == path)
+        || subtrees.iter().any(|scope| path == scope
+            || path.strip_prefix(scope.as_str()).is_some_and(|rest| rest.starts_with('/')));
+    let mut entities: Vec<Entity> = runtime.map.iter()
+        .filter(|(path, _)| scoped(path))
+        .map(|(_, entity)| entity)
+        .collect();
+    let subsets: Vec<Entity> = entities.iter()
+        .filter_map(|entity| world.get::<Children>(*entity))
+        .flat_map(|children| children.iter())
+        .filter(|child| world.get::<crate::UsdPrimRef>(*child).is_none())
+        .collect();
+    entities.extend(subsets);
+    for entity in entities {
+        if let Some(mesh) = world.get::<Mesh3d>(entity) {
+            runtime.parked.entry(mesh.0.id().untyped()).or_insert_with(|| mesh.0.clone().untyped());
+        }
+        if let Some(material) = world.get::<MeshMaterial3d<StandardMaterial>>(entity) {
+            runtime.parked.entry(material.0.id().untyped()).or_insert_with(|| material.0.clone().untyped());
+        }
+    }
 }
 
 fn decode_missing_textures(
@@ -852,6 +894,49 @@ def Xform "Model" (
         spawn_usd_scenes(&mut world);
         assert!(world.non_send::<UsdInstances>().stage(root).unwrap().ptr_eq(&before));
         instance_entity(&world, root, "/Model/Loader");
+    }
+
+    #[test]
+    fn switched_off_variants_keep_their_meshes() {
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut world, handle) = instance_world();
+        world.init_resource::<crate::route::cache::ProjectionCache>();
+        let source = r#"#usda 1.0
+def Xform "Model" (
+    variants = { string tool = "none" }
+    prepend variantSets = "tool"
+) {
+    variantSet "tool" = {
+        "none" {}
+        "loader" {
+            def Mesh "Loader" {
+                point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+                int[] faceVertexCounts = [3]
+                int[] faceVertexIndices = [0, 1, 2]
+            }
+        }
+    }
+}
+"#;
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", source.as_bytes()).unwrap();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let tool = |selection: &str| UsdInstanceOverrides {
+            variants: vec![("/Model".into(), "tool".into(), selection.into())],
+            ..default()
+        };
+        world.entity_mut(root).insert(tool("loader"));
+        spawn_usd_scenes(&mut world);
+        let loader = instance_entity(&world, root, "/Model/Loader");
+        let mesh = world.get::<Mesh3d>(loader).unwrap().0.id();
+        world.entity_mut(root).insert(tool("none"));
+        spawn_usd_scenes(&mut world);
+        world.run_system_once(crate::route::cache::prune_mesh_cache).unwrap();
+        world.entity_mut(root).insert(tool("loader"));
+        spawn_usd_scenes(&mut world);
+        let loader = instance_entity(&world, root, "/Model/Loader");
+        assert_eq!(world.get::<Mesh3d>(loader).unwrap().0.id(), mesh);
     }
 
     #[test]

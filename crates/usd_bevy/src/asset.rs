@@ -115,9 +115,9 @@ impl AssetLoader for UsdAssetLoader {
                 if missing.is_empty() {
                     let stage = result.map_err(std::io::Error::other)?;
                     let mut textures = bevy::platform::collections::HashMap::default();
-                    for (index, (path, srgb)) in UsdSource::stage_texture_requests(&stage)
+                    for (index, (path, srgb)) in source.texture_requests(&stage, true)
                         .map_err(std::io::Error::other)?
-                        .into_iter()
+                        .iter().cloned()
                         .enumerate()
                     {
                         let bytes = source.read_asset(&path)?;
@@ -303,7 +303,7 @@ fn spawn_usd_scenes(world: &mut World) {
                 timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
                 if default_composition { source.record_default_validation(); }
             }
-            timed(profiled, &mut timing.textures, || decode_missing_textures(world, &stage, &source, &mut textures))?;
+            timed(profiled, &mut timing.textures, || decode_missing_textures(world, &stage, &source, &mut textures, default_composition))?;
             Ok(stage)
         });
         timing.failures = usize::from(opened.is_err());
@@ -431,7 +431,7 @@ fn switch_variants_in_place(
     }
     // This switch is reconciled here; the live-edit pass must not redo it.
     let _ = runtime.live.drain_changes();
-    if let Err(error) = decode_missing_textures(world, &runtime.live.stage, source, &mut runtime.textures.0) {
+    if let Err(error) = decode_missing_textures(world, &runtime.live.stage, source, &mut runtime.textures.0, false) {
         bevy::log::warn!("textures after a variant switch: {error}");
     }
     let previous_time = world.remove_resource::<StageTime>();
@@ -496,9 +496,10 @@ fn decode_missing_textures(
     stage: &openusd::usd::Stage,
     source: &UsdSource,
     textures: &mut bevy::platform::collections::HashMap<(String, bool), Handle<Image>>,
+    default_composition: bool,
 ) -> anyhow::Result<()> {
-    let requests = UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?;
-    let missing: Vec<_> = requests.into_iter().filter(|key| !textures.contains_key(key)).collect();
+    let requests = source.texture_requests(stage, default_composition).map_err(anyhow::Error::msg)?;
+    let missing: Vec<_> = requests.iter().filter(|key| !textures.contains_key(*key)).cloned().collect();
     if missing.is_empty() { return Ok(()); }
     anyhow::ensure!(world.contains_resource::<Assets<Image>>(), "image assets are unavailable");
     for (path, srgb) in missing {

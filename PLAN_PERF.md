@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3/P6 in progress; P4 attribution underway; P5/P7/P8 planned**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3/P6/P7 in progress; P4 attribution underway; P5/P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -627,6 +627,28 @@ retained payload budgets. Native prototype identities are never persisted as
 stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
+
+Manifest increment: immutable `UsdSource` snapshots retain one shared texture-
+request manifest tagged with the exact source revision. The asset loader records
+it after dependency discovery; freshly opened instances without overrides reuse
+it. Manually constructed snapshots populate it on their first default instance.
+Source/dependency replacement changes the revision. Filesystem-backed sources,
+attribute/variant overrides and in-place variant switches still scan the stage.
+Edited editor stages retain their uncached discovery path. Failed scans are not
+cached. The manifest retains the original complete sample and raw/sRGB keys;
+image decoding and missing-texture checks are unchanged.
+
+Verification: 578 focused release tests pass, 19 ignored (555 library, one source
+benchmark, 22 capture). New coverage checks shared allocation reuse across fresh
+stages, bypass after edits, dependency/root revision changes, and filesystem
+exclusion. Existing texture color-space/dependency-reload and variant tests pass.
+Three source-benchmark samples cover independent one/four-root loads and reloads.
+Caldera's overview capture is pixel-identical to the FIFO baseline; process time
+was 80.70 s with 15,317,308 KiB peak RSS. Oxbo's capture is pixel-identical to the
+P4 residency baseline, at 10.82 s and 1,276,340 KiB peak RSS. This is not evidence of a loading speedup
+or a matched first-frame result. Logs and captures are in
+`target/perf/p7-manifest/`. Shared parser buffers, package-range reuse and bounded
+image jobs remain unimplemented.
 
 **Scope:** `source.rs`, `asset.rs`, texture preparation; explicitly reviewed
 `vendor/openusd` asset/file-format changes if required. No dependency refresh.

@@ -34,6 +34,7 @@ pub struct UsdSource {
     files: Arc<BTreeMap<String, Arc<[u8]>>>,
     filesystem: bool,
     validated_default: Arc<Mutex<Option<u64>>>,
+    default_textures: Arc<Mutex<Option<(u64, Arc<BTreeSet<(String, bool)>>)>>>,
 }
 
 impl UsdSource {
@@ -73,6 +74,7 @@ impl UsdSource {
             files: Arc::default(),
             filesystem: true,
             validated_default: Arc::default(),
+            default_textures: Arc::default(),
         })
     }
 
@@ -113,6 +115,20 @@ impl UsdSource {
         }
         .open_asset(&ResolvedPath::new(identifier))?
         .read_all()
+    }
+
+    /// `default_composition` requires a freshly opened stage without overrides or edits.
+    pub(crate) fn texture_requests(&self, stage: &Stage, default_composition: bool) -> Result<Arc<BTreeSet<(String, bool)>>, String> {
+        let reusable = default_composition && !self.filesystem;
+        if reusable && let Some((revision, requests)) = &*self.default_textures.lock().expect("source textures")
+            && *revision == self.identity {
+            return Ok(requests.clone());
+        }
+        let requests = Arc::new(Self::stage_texture_requests(stage)?);
+        if reusable {
+            *self.default_textures.lock().expect("source textures") = Some((self.identity, requests.clone()));
+        }
+        Ok(requests)
     }
 
     pub(crate) fn stage_texture_requests(stage: &Stage) -> Result<BTreeSet<(String, bool)>, String> {
@@ -596,6 +612,37 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn texture_manifest_reuse_requires_an_unchanged_default_snapshot() {
+        use super::*;
+        let bytes = b"#usda 1.0\ndef DomeLight \"Sky\" { asset inputs:texture:file = @sky.exr@ }\n";
+        let mut source = UsdSource::snapshot("textures.usda", bytes.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let first = source.texture_requests(&stage, true).unwrap();
+        assert_eq!(first.len(), 1);
+        let independent = source.clone().open_stage().unwrap();
+        assert!(Arc::ptr_eq(&first, &source.texture_requests(&independent, true).unwrap()));
+        stage.attribute("/Sky.inputs:texture:file").unwrap().set(openusd::sdf::Value::AssetPath(
+            openusd::sdf::AssetPath::new("changed.exr"))).unwrap();
+        let edited = source.texture_requests(&stage, false).unwrap();
+        assert_ne!(*first, *edited);
+        assert!(Arc::ptr_eq(&first, &source.texture_requests(&independent, true).unwrap()));
+        let dependency = UsdSource::snapshot("other.usda", b"#usda 1.0\n".as_slice()).unwrap();
+        let changed = source.with_dependency(&dependency).unwrap();
+        let second = changed.texture_requests(&changed.open_stage().unwrap(), true).unwrap();
+        assert_eq!(*first, *second);
+        assert!(!Arc::ptr_eq(&first, &second));
+        source.replace_file_bytes(source.identifier().to_owned(), b"#usda 1.0\n".to_vec());
+        assert!(source.texture_requests(&source.open_stage().unwrap(), true).unwrap().is_empty());
+        let disk = UsdSource::new("textures.usda", bytes.as_slice()).unwrap();
+        let stage = disk.open_stage().unwrap();
+        let a = disk.texture_requests(&stage, true).unwrap();
+        let b = disk.texture_requests(&stage, true).unwrap();
+        assert_eq!(*a, *b);
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert!(disk.default_textures.lock().unwrap().is_none());
+    }
+
     #[test]
     fn default_validation_is_snapshot_and_revision_bound() {
         let mut source = super::UsdSource::snapshot("proof.usda", b"#usda 1.0\ndef Xform \"M\" {}\n".as_slice()).unwrap();

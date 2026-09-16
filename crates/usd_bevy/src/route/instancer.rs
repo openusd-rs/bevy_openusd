@@ -409,8 +409,8 @@ fn bake_mesh(ctx: &RouteCtx, world: &mut World, proto_path: &openusd::sdf::Path,
     if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
         super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
     }
-    let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh, &material);
     let mesh_handle = super::cache::intern_mesh(world, mesh);
+    let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh_handle, &material)?;
     Some((mesh_handle, material, warnings, subsets))
 }
 

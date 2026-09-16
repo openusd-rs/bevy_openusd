@@ -53,12 +53,11 @@ pub(crate) fn clear(world: &mut World, entity: Entity) {
     world.entity_mut(entity).remove::<SkinnedMesh>();
 }
 
-pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyhow::Result<()> {
+pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity, has_morphs: bool) -> anyhow::Result<()> {
     let read = ctx.read_mesh()?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
     let sample = crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
     let skinned_tangents = read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY);
-    let has_morphs = crate::read::skel::has_blend_shapes(ctx.stage, ctx.path);
     let mut mesh = if !skinned_tangents && !has_morphs {
         super::cache::assemble_cached_mesh(world, read)
     } else { crate::mesh::assemble_mesh(read, None, false) };
@@ -282,7 +281,7 @@ mod tests {
             let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
             assert!((read.points[0][0] - rest[0][0] - time as f32 / 15.0).abs() < 1e-6);
             let cpu = crate::read::skel::skinned_points_at(&stage, &path, Some(time)).unwrap().unwrap();
-            attach(&RouteCtx::at(&stage, &path, Some(time)), &mut world, entity).unwrap();
+            attach(&RouteCtx::at(&stage, &path, Some(time)), &mut world, entity, crate::read::skel::has_blend_shapes(&stage, &path)).unwrap();
             let skin = world.get::<UsdGpuSkin>(entity).unwrap();
             let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
             let bevy::mesh::VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!("positions") };
@@ -335,7 +334,7 @@ mod tests {
             if rotated { assert_ne!(expected, previous); }
             let mut retained = 0;
             for warm in [false, true] {
-                attach(&RouteCtx::at(&stage, &path, Some(0.0)), &mut world, entity).unwrap();
+                attach(&RouteCtx::at(&stage, &path, Some(0.0)), &mut world, entity, crate::read::skel::has_blend_shapes(&stage, &path)).unwrap();
                 let handle = &world.get::<Mesh3d>(entity).unwrap().0;
                 let mesh = world.resource::<Assets<Mesh>>().get(handle).unwrap();
                 assert_eq!(mesh.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().get_bytes(), expected);
@@ -365,7 +364,7 @@ mod tests {
         world.insert_resource(Assets::<Mesh>::default());
         world.insert_resource(Assets::<SkinnedMeshInverseBindposes>::default());
         let entity = world.spawn_empty().id();
-        attach(&RouteCtx::at(&stage, &path, Some(30.0)), &mut world, entity).unwrap();
+        attach(&RouteCtx::at(&stage, &path, Some(30.0)), &mut world, entity, crate::read::skel::has_blend_shapes(&stage, &path)).unwrap();
         let skin = world.get::<UsdGpuSkin>(entity).unwrap();
         let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
         let mapping = crate::mesh::vertex_point_indices(&read);

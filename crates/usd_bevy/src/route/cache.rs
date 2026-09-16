@@ -57,7 +57,7 @@ fn same_geometry(a: &ReadMesh, b: &ReadMesh) -> bool {
         && a.subdivision_scheme == b.subdivision_scheme
 }
 
-fn read_mesh_bytes(read: &ReadMesh) -> usize {
+pub(crate) fn read_mesh_bytes(read: &ReadMesh) -> usize {
     fn primvar<T>(value: &Option<MeshPrimvar<T>>) -> usize {
         value.as_ref().map_or(0, |value| std::mem::size_of_val(value.values.as_slice())
             + std::mem::size_of_val(value.indices.as_slice()))

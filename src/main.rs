@@ -13,6 +13,7 @@ mod lighting;
 mod inspector;
 mod capture;
 mod capture_metadata;
+mod perf_render;
 mod framing;
 mod timeline;
 mod ui_replay;
@@ -611,6 +612,7 @@ fn configure_usd_app(app: &mut App, editor: EditorBridge) {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
     capture::configure(app);
+    perf_render::configure(app);
     if let Ok(levels) = std::env::var("USD_SUBDIVISION_LEVELS") {
         app.insert_resource(usd_bevy::route::subdivision::UsdSubdivisionSettings::new(
             levels.parse().expect("USD_SUBDIVISION_LEVELS must be an integer")).expect("invalid subdivision levels"));

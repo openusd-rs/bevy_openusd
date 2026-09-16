@@ -20,7 +20,7 @@ use crate::read::geom::{ReadMesh, MeshPrimvar};
 /// Bounded geometry-input cache containing immutable assembled meshes.
 #[derive(Resource)]
 pub struct MeshAssemblyCache {
-    entries: std::collections::VecDeque<(u64, ReadMesh, Mesh, usize)>,
+    entries: std::collections::VecDeque<(u64, ReadMesh, Mesh, usize, Option<AssetId<Mesh>>)>,
     payload_bytes: usize,
     byte_budget: usize,
 }
@@ -59,15 +59,46 @@ fn read_mesh_bytes(read: &ReadMesh) -> usize {
         + primvar(&read.normals) + primvar(&read.uvs) + primvar(&read.display_color) + primvar(&read.display_opacity)
 }
 
-pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
-    world.init_resource::<MeshAssemblyCache>();
+fn geometry_signature(read: &ReadMesh) -> u64 {
     let mut hash = FixedHasher.build_hasher();
     bytemuck::cast_slice::<_, u8>(&read.points).hash(&mut hash);
     read.face_vertex_counts.hash(&mut hash);
     read.face_vertex_indices.hash(&mut hash);
-    let signature = hash.finish();
+    hash.finish()
+}
+
+pub(crate) fn intern_assembled_mesh(world: &mut World, read: &ReadMesh) -> Handle<Mesh> {
+    world.init_resource::<MeshAssemblyCache>();
+    let signature = geometry_signature(read);
+    let budget = world.get_resource::<ProjectionCache>().map_or(0, |cache| cache.byte_budget);
+    let cached = if budget == 0 { None } else {
+        let assets = world.resource::<Assets<Mesh>>();
+        world.resource::<MeshAssemblyCache>().entries.iter().enumerate().find_map(|(index, (key, input, mesh, _, id))| {
+            if *key != signature || !same_geometry(input, read) || mesh_payload_bytes(mesh) > budget { return None; }
+            id.filter(|id| assets.get(*id).is_some_and(|asset| meshes_equal(asset, mesh))).map(|id| (index, id))
+        })
+    };
+    if let Some((index, id)) = cached
+        && let Some(handle) = world.resource_mut::<Assets<Mesh>>().get_strong_handle(id) {
+        let mut cache = world.resource_mut::<MeshAssemblyCache>();
+        let entry = cache.entries.remove(index).unwrap();
+        cache.entries.push_back(entry);
+        return handle;
+    }
+    let mesh = assemble_cached_mesh(world, read);
+    let handle = intern_mesh(world, mesh);
+    if let Some((_, _, _, _, id)) = world.resource_mut::<MeshAssemblyCache>().entries.iter_mut()
+        .find(|(key, input, _, _, _)| *key == signature && same_geometry(input, read)) {
+        *id = Some(handle.id());
+    }
+    handle
+}
+
+pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
+    world.init_resource::<MeshAssemblyCache>();
+    let signature = geometry_signature(read);
     let hit = world.resource::<MeshAssemblyCache>().entries.iter()
-        .position(|(key, input, _, _)| *key == signature && same_geometry(input, read));
+        .position(|(key, input, _, _, _)| *key == signature && same_geometry(input, read));
     if let Some(index) = hit {
         let mut cache = world.resource_mut::<MeshAssemblyCache>();
         let entry = cache.entries.remove(index).unwrap();
@@ -81,12 +112,12 @@ pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
     let mut cache = world.resource_mut::<MeshAssemblyCache>();
     if cache.byte_budget == 0 || bytes > cache.byte_budget { return mesh; }
     while cache.entries.len() >= 256 || bytes > cache.byte_budget.saturating_sub(cache.payload_bytes) {
-        let Some((_, _, _, removed)) = cache.entries.pop_front() else { break; };
+        let Some((_, _, _, removed, _)) = cache.entries.pop_front() else { break; };
         cache.payload_bytes -= removed;
     }
     let mut input = read.clone();
     input.subsets = Vec::new();
-    cache.entries.push_back((signature, input, mesh.clone(), bytes));
+    cache.entries.push_back((signature, input, mesh.clone(), bytes, None));
     cache.payload_bytes += bytes;
     mesh
 }
@@ -329,6 +360,7 @@ fn meshes_equal(a: &Mesh, b: &Mesh) -> bool {
     a.primitive_topology() == b.primitive_topology()
         && a.asset_usage == b.asset_usage
         && a.enable_raytracing == b.enable_raytracing
+        && a.final_aabb == b.final_aabb
         && a.morph_target_names() == b.morph_target_names()
         && a.get_morph_targets() == b.get_morph_targets()
         && a.indices().map(std::mem::discriminant) == b.indices().map(std::mem::discriminant)
@@ -341,6 +373,32 @@ fn meshes_equal(a: &Mesh, b: &Mesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assembled_handles_recheck_mutations_removal_and_cache_budget() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/material_subsets.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let read = crate::read::geom::read_mesh_at(&stage, &openusd::sdf::path("/Panels").unwrap(), Some(0.0)).unwrap().unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<ProjectionCache>();
+        let first = intern_assembled_mesh(&mut world, &read);
+        assert_eq!(first.id(), intern_assembled_mesh(&mut world, &read).id());
+        world.resource_mut::<Assets<Mesh>>().get_mut(&first).unwrap()
+            .insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[9.0; 3]; read.points.len()]);
+        let second = intern_assembled_mesh(&mut world, &read);
+        assert_ne!(first.id(), second.id());
+        assert!(meshes_equal(world.resource::<Assets<Mesh>>().get(&second).unwrap(), &crate::mesh::assemble_mesh(&read, None, true)));
+        world.resource_mut::<Assets<Mesh>>().get_mut(&second).unwrap().final_aabb =
+            Some(bevy::math::bounding::Aabb3d::new(Vec3::ZERO, Vec3::ONE));
+        let third = intern_assembled_mesh(&mut world, &read);
+        assert_ne!(second.id(), third.id());
+        world.resource_mut::<Assets<Mesh>>().remove(third.id());
+        let fourth = intern_assembled_mesh(&mut world, &read);
+        assert_ne!(third.id(), fourth.id());
+        world.insert_resource(ProjectionCache::with_byte_budget(0));
+        assert_ne!(fourth.id(), intern_assembled_mesh(&mut world, &read).id());
+    }
 
     #[test]
     fn assembly_cache_checks_geometry_and_isolates_mutations() {

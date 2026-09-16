@@ -111,8 +111,7 @@ impl MeshRoute {
             ctx.prim_str(),
             read.points.len()
         );
-        let mesh = super::cache::assemble_cached_mesh(world, read);
-        let mesh_handle = super::cache::intern_mesh(world, mesh);
+        let mesh_handle = super::cache::intern_assembled_mesh(world, read);
         let material = super::cache::intern_material(world, super::material::default_material(ctx));
         if let Ok(mut e) = world.get_entity_mut(entity) {
             e.insert((Mesh3d(mesh_handle), MeshMaterial3d(material), GeometryOwner::Mesh));

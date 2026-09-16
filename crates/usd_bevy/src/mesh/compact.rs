@@ -8,15 +8,17 @@ pub(crate) fn compact(mesh: &Mesh, indices: &Indices) -> Option<Mesh> {
         || mesh.get_morph_targets().is_some_and(|targets|
             if count == 0 { !targets.is_empty() } else { targets.len() % count != 0 })
     { return None; }
-    let mut used = vec![false; count];
-    for index in indices.iter() { used[index] = true; }
-    let retained: Vec<_> = used.iter().enumerate().filter_map(|(index, used)| used.then_some(index)).collect();
+    let retained: Vec<_> = if indices.is_empty() { Vec::new() } else {
+        let mut used = vec![false; count];
+        for index in indices.iter() { used[index] = true; }
+        used.iter().enumerate().filter_map(|(index, used)| used.then_some(index)).collect()
+    };
     if retained.len() == count {
         let mut output = mesh.clone();
         output.insert_indices(indices.clone());
         return Some(output);
     }
-    let mut remap = vec![0_u32; count];
+    let mut remap = vec![0_u32; if retained.is_empty() { 0 } else { count }];
     for (new, &old) in retained.iter().enumerate() { remap[old] = new as u32; }
     let indices = Indices::U32(indices.iter().map(|old| remap[old]).collect());
     let morph = mesh.get_morph_targets().map(|targets| targets.chunks_exact(count)

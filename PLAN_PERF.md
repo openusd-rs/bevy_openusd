@@ -617,6 +617,16 @@ The release workspace/all-targets gate passes 737 tests in 34 suites, 19 ignored
 evidence is in `target/perf/p5-clock/`. This checks clock coherence, not asynchronous
 worker cancellation or a loading-speed improvement.
 
+Pending-edit correction: completing initial projection no longer drains and
+discards its `LiveStage` change queue. The ordinary instance synchronization pass
+consumes changes made while loading and updates already-projected entities. The
+regression test edits a projected transform while another prim remains queued,
+then verifies the Ready scene contains the edit on the same entity and the change
+queue has been consumed. The release workspace/all-targets gate passes 738 tests
+in 34 suites, 19 ignored; evidence is in `target/perf/p5-edits/`. This preserves
+live-stage edits across projection slices; it is not the planned asynchronous
+revision/cancellation protocol or a new performance result.
+
 **Scope:** `live.rs`, `route/mod.rs`, geometry preparation modules and scheduler
 helpers within `crates/usd_bevy/src/`; do not rewrite upstream Stage threading.
 

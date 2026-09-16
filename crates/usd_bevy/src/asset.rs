@@ -560,8 +560,6 @@ fn continue_projections(world: &mut World, instances: &mut UsdInstances, budget:
         if let Some(previous) = previous_textures { world.insert_resource(previous); }
         if done {
             runtime.job = None;
-            // Projecting authored the initial read; the first sync starts clean.
-            let _ = runtime.live.drain_changes();
             if let Ok(mut e) = world.get_entity_mut(root) {
                 e.insert(UsdSceneState::Ready);
             }
@@ -598,6 +596,27 @@ def Xform "Old" {}
 
     fn instance_entity(world: &World, root: Entity, path: &str) -> Entity {
         world.non_send::<UsdInstances>().entity(root, path).unwrap()
+    }
+
+    #[test]
+    fn edits_during_sliced_loading_reach_the_completed_scene() {
+        let (mut world, handle) = instance_world();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::ZERO));
+        let root = world.spawn(UsdSceneRoot(handle)).id();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Loading));
+        let (path, entity) = world.non_send::<UsdInstances>().roots[&root].map.iter()
+            .find(|(path, _)| *path != "/").map(|(path, entity)| (path.to_owned(), entity)).unwrap();
+        let stage = world.non_send::<UsdInstances>().stage(root).unwrap().clone();
+        stage.create_attribute(openusd::sdf::path(&format!("{path}.xformOp:translate")).unwrap(), "double3").unwrap()
+            .set_at(openusd::sdf::Value::Vec3d([7.0, 0.0, 0.0].into()), openusd::usd::TimeCode::new(0.0)).unwrap();
+        stage.create_attribute(openusd::sdf::path(&format!("{path}.xformOpOrder")).unwrap(), "token[]").unwrap()
+            .set(openusd::sdf::Value::TokenVec(vec!["xformOp:translate".into()])).unwrap();
+        for _ in 0..8 { spawn_usd_scenes(&mut world); }
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        assert_eq!(instance_entity(&world, root, &path), entity);
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 7.0);
+        assert!(!world.non_send::<UsdInstances>().roots[&root].live.has_changes());
     }
 
     #[test]

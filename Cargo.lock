@@ -5861,6 +5861,8 @@ dependencies = [
  "openusd-schemas",
  "png",
  "rfd",
+ "serde",
+ "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",

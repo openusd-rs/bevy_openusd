@@ -22,6 +22,7 @@ mod render_settings;
 mod file_dialog;
 mod close_confirmation;
 mod host_capture;
+mod camera_plan;
 mod toolbar_icons;
 mod payload_editor;
 
@@ -150,6 +151,7 @@ const PANE_PROPERTIES: &str = "usd_pane_properties";
 const PANE_TIMELINE: &str = "usd_pane_timeline";
 const PANE_LIGHTING: &str = "usd_pane_lighting";
 const PANE_RENDERING: &str = "usd_pane_rendering";
+const PANE_CAMERA_PLAN: &str = "usd_pane_camera_plan";
 const ACTION_SAVE: &str = "usd_action_save";
 const ACTION_OPEN: &str = "usd_action_open";
 const ACTION_UNDO: &str = "usd_action_undo";
@@ -184,6 +186,7 @@ struct UsdApp {
     capture_handshake: bool,
     close_confirmation: close_confirmation::CloseConfirmation,
     host_capture: Option<host_capture::Capture>,
+    camera_plan: camera_plan::CameraPlan,
 }
 
 impl WindowApp for UsdApp {
@@ -205,6 +208,8 @@ impl WindowApp for UsdApp {
         let rendering_bridge = rendering.clone();
         let framing = framing::FrameRequest::default();
         let framing_bridge = framing.clone();
+        let camera_plan = camera_plan::CameraPlan::default();
+        let camera_plan_bridge = camera_plan.clone();
         let bevy_view = mara_bevy::MaraBevyViewport::with_render_state_and_content(
             ctx.__internal_render_state(),
             move |app: &mut App| {
@@ -212,6 +217,7 @@ impl WindowApp for UsdApp {
                 app.insert_resource(framing_bridge.clone());
                 lighting::configure(app, lighting_bridge.clone());
                 render_settings::configure(app, rendering_bridge.clone());
+                camera_plan::configure(app, camera_plan_bridge.clone());
             },
         );
 
@@ -233,6 +239,7 @@ impl WindowApp for UsdApp {
             capture_handshake,
             close_confirmation,
             host_capture: host_capture::from_env().expect("invalid host capture configuration"),
+            camera_plan,
         }
     }
 
@@ -249,6 +256,7 @@ impl WindowApp for UsdApp {
             framing,
             file_dialogs,
             capture_handshake,
+            camera_plan,
             ..
         } = self;
         if let Some(command) = file_dialogs.poll() { send(editor, command); }
@@ -268,7 +276,7 @@ impl WindowApp for UsdApp {
         // Panes + ribbon rail. Mara owns the pane/ribbon wiring,
         // open-state, pane-id publication, and paint ordering.
         let view = match editor.view() { Ok(view) => view, Err(error) => { error!("{error}"); return; } };
-        bevy_view.set_continuous_rendering(view.timeline.playing);
+        bevy_view.set_continuous_rendering(view.timeline.playing || camera_plan.playing());
         let renderer_error = rendering.renderer_error();
         let prims: Vec<_> = view.document.prims.iter().map(|path| PrimRow {
             path: path.clone(), name: path.rsplit('/').next().unwrap_or(path).to_string(),
@@ -279,6 +287,7 @@ impl WindowApp for UsdApp {
                 Ok("inspector") => PANE_PROPERTIES,
                 Ok("timeline") => PANE_TIMELINE,
                 Ok("rendering") => PANE_RENDERING,
+                Ok("camera") => PANE_CAMERA_PLAN,
                 _ => PANE_OUTLINER,
             })
             .pane(
@@ -307,6 +316,9 @@ impl WindowApp for UsdApp {
             })
             .pane(PANE_RENDERING, toolbar_icons::RENDERING, "Rendering", PaneAnchor::LeftRail(RailZone::Middle), |body| {
                 render_settings::show(body, rendering);
+            })
+            .pane(PANE_CAMERA_PLAN, toolbar_icons::CAMERA_PLAN, "Camera path", PaneAnchor::LeftRail(RailZone::Middle), |body| {
+                camera_plan::show(body, camera_plan);
             })
             .action(
                 ACTION_OPEN,

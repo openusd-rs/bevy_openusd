@@ -138,7 +138,7 @@ Update status only with linked evidence and a commit.
 | P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | ATTRIBUTION ONLY |
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | TODO |
 | P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | LOOKUP IN PROGRESS |
-| P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | TODO |
+| P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | MANIFEST IN PROGRESS |
 | P8 | Revision-based transactional hot reload | P0, P3; reuse P7 | L / high | TODO |
 
 Implement P1–P3 as independently measured changes. Reprofile before P4–P8 and
@@ -338,6 +338,25 @@ partitions, holes, both orientations and CPU/GPU deformation invalidate or fall
 back correctly. Compare Caldera/Oxbo captures and SubsetRoute CPU time against P0.
 
 ## P2 — Separate deformation structure from changing poses
+
+GPU influence increment: adjacent points with identical influence indices and
+bit-identical weights reuse their normal-correction matrix within one sampled
+pose. The one-entry memo borrows input slices and does not retain stage data,
+poses or mesh assets. Flat-normal meshes skip the comparison. Weight validation
+still runs for every point; the first occurrence still performs singular-matrix
+and finite-result checks. This does not implement cross-frame structural reuse.
+
+Verification: 584 focused release tests pass, 19 ignored. The new test checks
+repeated, changing and alternating influences at five times against uncached
+matrix calculations; existing CPU/GPU normal, tangent and fallback tests pass.
+Caldera CPU opens measured 53.463 / 48.431 s, with SkinRoute 4.864 / 4.438 s and
+unchanged entity/asset/payload counts versus the FIFO baseline. These diagnostic
+runs do not establish a loading speedup. Evidence is in
+`target/perf/p2-influences/`. The Caldera capture is byte-identical to the texture-
+manifest baseline (66.41 s process duration, 15,287,396 KiB peak RSS). The animated
+skin/morph fixture also completed two runs of 1,000 distinct timeline seeks with
+unchanged asset counts; seek medians were 714 / 683 microseconds. Neither capture
+duration nor this small-fixture timing proves the large-scene first-frame target.
 
 First increment reuses SkinRoute's local skin/morph classification in CPU
 fallback preparation and GPU attachment. CPU normal preparation no longer

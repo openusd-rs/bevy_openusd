@@ -28,6 +28,11 @@ fn asset_counts(world: &World) -> [usize; 3] {
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(metrics) = world.get_resource::<usd_bevy::route::cache::MeshCacheMetrics>() {
+        for (name, value) in &metrics.0 {
+            eprintln!("mesh_cache_profile phase={phase} samples={samples} counter={name} value={value}");
+        }
+    }
     if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionTimings>() {
         let mut routes: Vec<_> = timings.0.iter().collect();
         routes.sort_by_key(|(_, timing)| std::cmp::Reverse(timing.matching + timing.application));
@@ -69,7 +74,10 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, LiveStagePlugin, EditorPlugin));
     app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
-    if std::env::var_os("USD_PROFILE_ROUTES").is_some() { app.init_resource::<usd_bevy::route::ProjectionTimings>(); }
+    if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::route::ProjectionTimings>();
+        app.init_resource::<usd_bevy::route::cache::MeshCacheMetrics>();
+    }
     app.update();
     let bridge = app.world().resource::<EditorBridge>().clone();
     bridge.send(EditorCommand::Open(path.to_str().ok_or("asset path must be UTF-8")?.into()))?;
@@ -95,6 +103,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
         for iteration in 0..seek.samples()+4 {
             if iteration == 4 {
                 if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionTimings>() { timings.0.clear(); }
+                if let Some(mut metrics) = app.world_mut().get_resource_mut::<usd_bevy::route::cache::MeshCacheMetrics>() { metrics.0.clear(); }
             }
             let normalized = seek.clock(iteration);
             let time = if seek == SeekMode::Timeline {

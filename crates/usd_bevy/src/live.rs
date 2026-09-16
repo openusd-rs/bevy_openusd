@@ -252,8 +252,8 @@ fn has_time_samples(stage: &Stage, path: &openusd::sdf::Path) -> bool {
     prim.authored_attributes()
         .map(|attrs| {
             attrs.iter().any(|a| {
-                a.time_sample_times()
-                    .map(|times| !times.is_empty())
+                a.num_time_samples()
+                    .map(|count| count != 0)
                     .unwrap_or(false)
             })
         })
@@ -293,6 +293,76 @@ fn prim_inputs_are_animated(stage: &Stage, path: &openusd::sdf::Path) -> bool {
         || ["primvars:normals", "primvars:displayColor", "primvars:displayOpacity", "primvars:st", "primvars:st0"].iter()
             .any(|name| inherited_primvar_is_animated(stage, path, name))
         || crate::read::shade::bound_material_is_time_varying(stage, path)
+}
+
+#[derive(Default)]
+struct AnimationDiscovery {
+    binding_opinions: HashMap<openusd::sdf::Path, bool>,
+    materials: HashMap<openusd::sdf::Path, bool>,
+    primvar_owners: HashMap<(openusd::sdf::Path, &'static str), Option<openusd::sdf::Path>>,
+}
+
+impl AnimationDiscovery {
+    fn has_binding_opinions(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
+        let mut pending = Vec::new();
+        let mut current = Some(path.clone());
+        let mut result = false;
+        while let Some(path) = current {
+            if path.is_abs_root() { break; }
+            if let Some(cached) = self.binding_opinions.get(&path) { result = *cached; break; }
+            let names = stage.prim(&path).ok().and_then(|prim| prim.authored_property_names().ok());
+            let local = names.is_none_or(|names| names.iter().any(|name|
+                name.as_str() == "material:binding" || name.as_str().starts_with("material:binding:")));
+            current = path.parent();
+            pending.push(path);
+            if local { result = true; break; }
+        }
+        for path in pending { self.binding_opinions.insert(path, result); }
+        result
+    }
+
+    fn material_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
+        if !self.has_binding_opinions(stage, path) { return false; }
+        let Ok(Some(material)) = crate::read::shade::read_material_binding(stage, path) else { return false };
+        *self.materials.entry(material.clone()).or_insert_with(||
+            crate::read::shade::material_is_time_varying(stage, &material))
+    }
+
+    fn inherited_primvar_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path, name: &'static str) -> anyhow::Result<bool> {
+        let info = stage.prim(path)?.attribute(name).resolve_info()?;
+        if info.has_authored_value() && !info.value_is_blocked() { return Ok(false); }
+        let mut current = path.parent();
+        let mut pending = Vec::new();
+        let mut owner = None;
+        while let Some(path) = current {
+            if path.is_abs_root() { break; }
+            let key = (path.clone(), name);
+            if let Some(cached) = self.primvar_owners.get(&key) { owner = cached.clone(); break; }
+            let info = stage.prim(&path)?.attribute(name).resolve_info()?;
+            let constant = info.has_authored_value() && !info.value_is_blocked()
+                && crate::read::geom::read_primvar_interpolation(stage, &path, name)?
+                    .unwrap_or(crate::read::geom::Interpolation::Constant) == crate::read::geom::Interpolation::Constant;
+            current = path.parent();
+            pending.push(key);
+            if constant { owner = Some(path); break; }
+        }
+        for key in pending { self.primvar_owners.insert(key, owner.clone()); }
+        let Some(owner) = owner else { return Ok(false) };
+        let prim = stage.prim(owner)?;
+        Ok([name.to_owned(), format!("{name}:indices")].iter().any(|name|
+            prim.attribute(name.as_str()).num_time_samples().is_ok_and(|count| count != 0)))
+    }
+
+    fn prim_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
+        if stage.prim(path).ok().and_then(|prim| prim.type_name().ok().flatten()).as_deref() == Some("PointInstancer") {
+            return prim_is_animated(stage, path);
+        }
+        has_time_samples(stage, path) || subsets_are_animated(stage, path)
+            || crate::read::skel::deformation_is_time_varying(stage, path)
+            || ["primvars:normals", "primvars:displayColor", "primvars:displayOpacity", "primvars:st", "primvars:st0"].iter()
+                .any(|name| self.inherited_primvar_is_animated(stage, path, name).unwrap_or(false))
+            || self.material_is_animated(stage, path)
+    }
 }
 
 fn prototype_is_animated(stage: &Stage, root: &openusd::sdf::Path) -> bool {
@@ -399,6 +469,8 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     map.insert("/", root);
 
     let mut prim_count = 0usize;
+    let mut discovery = AnimationDiscovery::default();
+    let mut composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
     let mut animated: std::collections::HashSet<String> = std::collections::HashSet::new();
     let _ = stage.traverse(
         traverse_predicate(),
@@ -415,12 +487,17 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
                 .id();
             map.insert(path.as_str().to_string(), entity);
             prim_count += 1;
-            if prim_is_animated(stage, path) {
+            if discovery.prim_is_animated(stage, path) {
                 animated.insert(path.as_str().to_string());
             }
             // Every prim→component mapping goes through the registry.
             registry.project_prim(stage, path, world, entity);
             map.remember_type(stage, path.as_str());
+            let current_composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
+            if live.has_changes() || current_composition != composition {
+                discovery = AnimationDiscovery::default();
+                composition = current_composition;
+            }
         },
     );
     bevy::log::info!(
@@ -1121,6 +1198,41 @@ pub fn current_transform(stage: &Stage, prim_path: &str) -> Option<Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_animation_discovery_matches_inheritance_and_material_collections() {
+        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Xform "Group" {
+    float[] primvars:displayOpacity.timeSamples = {0: [1], 10: [0.5]}
+    def Cube "Inherited" {}
+    def Xform "Local" {
+        float[] primvars:displayOpacity = [1] (interpolation = "vertex")
+        def Cube "Child" {}
+    }
+}
+def Xform "Bindings" {
+    rel collection:paint:includes = </Bindings/Painted>
+    rel material:binding:collection:paint = [</Bindings.collection:paint>, </Mat>]
+    def Cube "Painted" {}
+    def Cube "Plain" {}
+}
+def Material "Mat" {
+    token outputs:surface.connect = </Shader.outputs:surface>
+}
+def Shader "Shader" {
+    uniform token info:id = "UsdPreviewSurface"
+    float inputs:roughness.timeSamples = {0: 0.2, 10: 0.8}
+    token outputs:surface
+}
+"#).open_stage().unwrap();
+        let mut discovery = AnimationDiscovery::default();
+        for (path, expected) in [("/Group", true), ("/Group/Inherited", true), ("/Group/Local", false),
+            ("/Group/Local/Child", true), ("/Bindings", false), ("/Bindings/Plain", false), ("/Bindings/Painted", true)] {
+            let path = openusd::sdf::path(path).unwrap();
+            assert_eq!(prim_is_animated(&stage, &path), expected, "baseline {path}");
+            assert_eq!(discovery.prim_is_animated(&stage, &path), expected, "cached {path}");
+        }
+    }
 
     #[test]
     fn initial_projection_records_purpose_and_sample_without_repeating_routes() {

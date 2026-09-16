@@ -103,7 +103,9 @@ pub fn vertex_point_indices(read: &ReadMesh) -> Vec<usize> {
 }
 
 /// Indices for selected faces in the full mesh's render-vertex layout.
+#[cfg(test)]
 pub(crate) fn mesh_indices_for_faces(read: &ReadMesh, faces: &[i32]) -> Indices {
+    if faces.is_empty() { return Indices::U32(Vec::new()); }
     let indices = if uses_flat_normals(read) {
         select_flat_indices(read, &flat_corner_indices(read, None), Some(faces))
     } else if expands_vertices(read) {
@@ -112,6 +114,45 @@ pub(crate) fn mesh_indices_for_faces(read: &ReadMesh, faces: &[i32]) -> Indices 
         triangulate_mesh(read, triangulation_points(read), &read.face_vertex_indices, Some(faces))
     };
     Indices::U32(indices)
+}
+
+pub(crate) struct MeshFaceIndices {
+    indices: Vec<u32>,
+    ranges: Vec<std::ops::Range<usize>>,
+    flat: bool,
+}
+
+impl MeshFaceIndices {
+    pub(crate) fn new(read: &ReadMesh) -> Self {
+        let flat = uses_flat_normals(read);
+        let expanded = expands_vertices(read);
+        let positions: std::borrow::Cow<'_, [[f32; 3]]> = if expanded {
+            corner_points(read).into_iter().map(|point|
+                triangulation_points(read).get(point).copied().unwrap_or([0.0; 3])).collect::<Vec<_>>().into()
+        } else { triangulation_points(read).into() };
+        let corners: std::borrow::Cow<'_, [i32]> = if expanded {
+            (0..positions.len()).map(|corner| corner as i32).collect::<Vec<_>>().into()
+        } else { read.face_vertex_indices.as_slice().into() };
+        let holes: std::collections::HashSet<_> = read.hole_indices.iter().copied().collect();
+        let faces: Vec<_> = (0..read.face_vertex_counts.len() as i32).filter(|face| !holes.contains(face)).collect();
+        let mut ranges = vec![0..0; read.face_vertex_counts.len()];
+        let mut indices = triangulate_polygon_with_ranges(&positions, &read.face_vertex_counts, &corners,
+            read.orientation, Some(&faces), |face, range| ranges[face] = range);
+        if flat { indices.iter_mut().enumerate().for_each(|(index, value)| *value = index as u32); }
+        Self { indices, ranges, flat }
+    }
+
+    pub(crate) fn for_faces(&self, faces: &[i32]) -> Indices {
+        let mut ordered;
+        let faces = if self.flat {
+            ordered = faces.to_vec();
+            ordered.sort_unstable();
+            ordered.dedup();
+            ordered.as_slice()
+        } else { faces };
+        Indices::U32(faces.iter().filter_map(|face| usize::try_from(*face).ok().and_then(|face| self.ranges.get(face)))
+            .flat_map(|range| self.indices[range.clone()].iter().copied()).collect())
+    }
 }
 
 fn select_flat_indices(read: &ReadMesh, triangles: &[u32], subset: Option<&[i32]>) -> Vec<u32> {
@@ -615,6 +656,13 @@ fn triangulate_polygon(
     orientation: Orientation,
     face_subset: Option<&[i32]>,
 ) -> Vec<u32> {
+    triangulate_polygon_with_ranges(positions, counts, indices, orientation, face_subset, |_, _| {})
+}
+
+fn triangulate_polygon_with_ranges(
+    positions: &[[f32; 3]], counts: &[i32], indices: &[i32], orientation: Orientation,
+    face_subset: Option<&[i32]>, mut record: impl FnMut(usize, std::ops::Range<usize>),
+) -> Vec<u32> {
     // No vertices → no triangles. Emitting indices into an empty buffer would
     // later panic Bevy's normal/tangent generation.
     if positions.is_empty() {
@@ -667,6 +715,7 @@ fn triangulate_polygon(
     };
 
     for face_ix in face_iter {
+        let start = out.len();
         let face_start = face_starts[face_ix];
         let n = counts[face_ix].max(0) as usize;
         if n < 3 {
@@ -677,6 +726,7 @@ fn triangulate_polygon(
             let b = clamp_v(idx_at(face_start + 1));
             let c = clamp_v(idx_at(face_start + 2));
             emit(&mut out, a, b, c);
+            record(face_ix, start..out.len());
             continue;
         }
         if n == 4 {
@@ -698,6 +748,7 @@ fn triangulate_polygon(
                 emit(&mut out, clamp_v(i1), clamp_v(i2), clamp_v(i3));
                 emit(&mut out, clamp_v(i1), clamp_v(i3), clamp_v(i0));
             }
+            record(face_ix, start..out.len());
             continue;
         }
         // n >= 5: ear clip. Clamp the slice end so a counts/indices mismatch
@@ -713,6 +764,7 @@ fn triangulate_polygon(
             .collect();
         let face_positions: Vec<Vec3> = face_indices.iter().map(|i| pos_of(*i)).collect();
         ear_clip_into(&face_positions, &face_indices, &mut out, orientation);
+        record(face_ix, start..out.len());
     }
     out
 }
@@ -1131,9 +1183,27 @@ def Mesh "M" {
                             }
                             let expected = mesh_from_usd_subset(&sampled, Some(faces));
                             let indices = mesh_indices_for_faces(&sampled, faces);
+                            assert_eq!(MeshFaceIndices::new(&sampled).for_faces(faces), indices);
                             assert_eq!(Some(&indices), expected.indices(), "layout={layout} orientation={orientation:?} faces={faces:?} deformed={deformed}");
                             assert!(indices.iter().all(|index| index < expected.count_vertices()));
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn face_index_map_preserves_malformed_and_degenerate_faces() {
+        for scheme in [SubdivScheme::None, SubdivScheme::CatmullClark] {
+            for points in [vec![], vec![[0.0; 3]; 4]] {
+                for indices in [vec![], vec![0, -1, 900, 2, 3, 0, 1]] {
+                    let mut read = mesh(points.clone(), vec![-1, 1, 2, 3, 4, 5], indices);
+                    read.subdivision_scheme = scheme;
+                    read.hole_indices = vec![3];
+                    let mapping = MeshFaceIndices::new(&read);
+                    for faces in [&[][..], &[5, 4, 3, 2, 1, 0], &[4, 4], &[-1, 99]] {
+                        assert_eq!(mapping.for_faces(faces), mesh_indices_for_faces(&read, faces));
                     }
                 }
             }

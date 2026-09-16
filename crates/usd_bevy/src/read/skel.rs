@@ -523,6 +523,13 @@ pub struct GpuSkinSample {
 }
 
 pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> anyhow::Result<GpuSkinSample> {
+    let mesh = super::geom::read_mesh_at(stage, mesh_path, time)?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
+    gpu_skin_sample_with_mesh(stage, mesh_path, time, &mesh)
+}
+
+pub(crate) fn gpu_skin_sample_with_mesh(
+    stage: &Stage, mesh_path: &Path, time: Option<f64>, mesh: &super::geom::ReadMesh,
+) -> anyhow::Result<GpuSkinSample> {
     let binding = binding_of(stage, mesh_path).ok_or_else(|| anyhow::anyhow!("missing skin binding"))?;
     let skeleton_path = binding.skeleton.clone().ok_or_else(|| anyhow::anyhow!("missing skeleton"))?;
     let skeleton = Skeleton::get(stage, skeleton_path.clone())?.ok_or_else(|| anyhow::anyhow!("invalid skeleton"))?;
@@ -541,7 +548,6 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
     }).collect();
     anyhow::ensure!(!matrices.is_empty() && matrices.len() <= 256, "GPU joint palette must contain 1–256 joints");
     anyhow::ensure!(matrices.iter().all(|matrix| matrix.is_finite()), "nonfinite skinning matrix");
-    let mesh = super::geom::read_mesh_at(stage, mesh_path, time)?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     let (indices, weights) = sampled_influences(stage, mesh_path, time)?;
     let components = if skin.is_rigidly_deformed() { 1 } else { mesh.points.len() };
     anyhow::ensure!(components.checked_mul(stride) == Some(indices.len()) && indices.len() == weights.len(), "invalid influence count");
@@ -554,7 +560,7 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
     for (indices, weights) in indices.chunks_exact(stride).zip(weights.chunks_exact(stride)) {
         anyhow::ensure!((weights.iter().sum::<f32>() - 1.0).abs() <= 1e-5, "GPU skinning requires normalized weights");
         let mut correction = bevy::math::Mat3::IDENTITY;
-        if !crate::mesh::uses_flat_normals(&mesh) {
+        if !crate::mesh::uses_flat_normals(mesh) {
             let blended = indices.iter().zip(weights).fold(bevy::math::Mat4::ZERO,
                 |matrix, (&index, &weight)| matrix + matrices[index as usize] * weight);
             normal_skin_matrix(blended)?;

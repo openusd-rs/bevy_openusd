@@ -66,6 +66,7 @@ pub(crate) fn prepare(
             }
         }
     }
+    let face_indices = crate::mesh::MeshFaceIndices::new(read);
     for subset in &read.subsets {
         let Ok(path) = ctx.path.append_path(subset.name.as_str()) else { continue };
         let subset_ctx = RouteCtx::at(ctx.stage, &path, ctx.time);
@@ -78,14 +79,14 @@ pub(crate) fn prepare(
             Ok(None) => (default_material.clone(), Vec::new()),
             Err(error) => (default_material.clone(), vec![error.to_string()]),
         };
-        let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &subset.indices));
+        let mesh = subset_mesh(source, face_indices.for_faces(&subset.indices));
         if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
             super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
         }
         prepared.parts.push((subset.name.clone(), super::cache::intern_mesh(world, mesh), material, warnings));
     }
     let remaining: Vec<i32> = assigned.iter().enumerate().filter_map(|(face, assigned)| (!assigned).then_some(face as i32)).collect();
-    let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &remaining));
+    let mesh = subset_mesh(source, face_indices.for_faces(&remaining));
     prepared.remainder = Some(super::cache::intern_mesh(world, mesh));
     prepared
 }
@@ -133,8 +134,8 @@ impl PrimRoute for SubsetRoute {
     fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) { clear(world, entity); }
 
     fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        let read = world.get::<super::skel::CpuSubsetGeometry>(entity).map(|geometry| geometry.0.clone())
-            .or_else(|| crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time).ok().flatten());
+        let read = world.get::<super::skel::CpuSubsetGeometry>(entity).map(|geometry| std::borrow::Cow::Owned(geometry.0.clone()))
+            .or_else(|| ctx.read_mesh().ok().flatten().map(std::borrow::Cow::Borrowed));
         let Some(read) = read else {
             clear(world, entity);
             return;

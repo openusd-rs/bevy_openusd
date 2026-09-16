@@ -352,8 +352,12 @@ impl UsdSource {
     pub(crate) fn validate_composition(stage: &Stage) -> anyhow::Result<()> {
         let mut paths = Vec::new();
         stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| paths.push(path.clone()))?;
+        let mut clip_prims = std::collections::HashSet::new();
         for path in paths {
             let prim = stage.prim(&path)?;
+            let has_clips = path.parent().is_some_and(|parent| clip_prims.contains(&parent))
+                || prim.get_metadata::<openusd::sdf::Value>("clips")?.is_some();
+            if has_clips { clip_prims.insert(path.clone()); }
             if let Some(openusd::sdf::Value::ReferenceListOp(references)) = prim.get_metadata("references")? {
                 for reference in references.explicit_items.iter().chain(&references.prepended_items)
                     .chain(&references.appended_items).chain(&references.added_items) {
@@ -368,13 +372,15 @@ impl UsdSource {
                         "unsupported payload time offset at {path}: {:?}", payload.layer_offset);
                 }
             }
-            for attribute in prim.attributes()? {
+            let attributes = if has_clips { prim.attributes()? } else { prim.authored_attributes()? };
+            for attribute in attributes {
                 attribute.get::<openusd::sdf::Value>()?;
-                let times = attribute.time_sample_times()?;
                 if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
-                    for time in times {
+                    for time in attribute.time_sample_times()? {
                         attribute.get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(time)))?;
                     }
+                } else {
+                    attribute.num_time_samples()?;
                 }
             }
         }
@@ -715,6 +721,38 @@ def Sphere "Model" { double radius.timeSamples = {0: 1, 10: 3} }
     }
 
     use super::*;
+
+    #[test]
+    fn composition_validation_rechecks_shared_prototypes_after_edits() {
+        let source = UsdSource::snapshot("validation-instances.usda", br#"#usda 1.0
+def Xform "Template" {
+    def Sphere "Shape" { double radius.timeSamples = {0: 1, 10: 2} }
+}
+def Xform "First" (
+    instanceable = true
+    prepend references = </Template>
+) {}
+def Xform "Second" (
+    instanceable = true
+    prepend references = </Template>
+) {}
+"#.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let first = stage.prim("/First/Shape").unwrap().prim_in_prototype().unwrap().unwrap();
+        let second = stage.prim("/Second/Shape").unwrap().prim_in_prototype().unwrap().unwrap();
+        assert_eq!(first.path(), second.path());
+        UsdSource::validate_composition(&stage).unwrap();
+        stage.prim("/Template/Shape").unwrap().set_metadata("references",
+            openusd::sdf::Value::ReferenceListOp(openusd::sdf::ListOp {
+                prepended_items: vec![openusd::sdf::Reference {
+                    prim_path: openusd::sdf::path("/Template").unwrap(),
+                    layer_offset: openusd::sdf::LayerOffset::new(0.0, -1.0),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })).unwrap();
+        assert!(UsdSource::validate_composition(&stage).is_err());
+    }
 
     #[test]
     fn reference_assembly_preserves_sources_dependencies_and_reuse() {

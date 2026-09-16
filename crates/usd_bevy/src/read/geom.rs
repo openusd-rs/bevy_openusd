@@ -112,7 +112,8 @@ pub fn read_mesh_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Re
         return Ok(None);
     };
 
-    let normal_owner = inherited_primvar_owner(stage, prim, "primvars:normals")?;
+    let [normal_owner, st_owner, st0_owner, color_owner, opacity_owner] = inherited_primvar_owners(
+        stage, prim, ["primvars:normals", "primvars:st", "primvars:st0", "primvars:displayColor", "primvars:displayOpacity"])?;
     let normals = match read_primvar_vec3f(stage, &normal_owner, "primvars:normals", time)? {
         Some(mut normals) => {
             normals.interpolation = read_primvar_interpolation(stage, &normal_owner, "primvars:normals")?
@@ -121,18 +122,14 @@ pub fn read_mesh_at(stage: &Stage, prim: &Path, time: Option<f64>) -> anyhow::Re
         }
         None => read_primvar_vec3f(stage, prim, "normals", time)?,
     };
-    let uvs = read_primvar_vec2f(stage, prim, "primvars:st", time)?.or(read_primvar_vec2f(
-        stage,
-        prim,
-        "primvars:st0",
-        time,
-    )?);
+    let uvs = read_owned_primvar(stage, prim, &st_owner, "primvars:st", time, Interpolation::FaceVarying, vec2f_values)?
+        .or(read_owned_primvar(stage, prim, &st0_owner, "primvars:st0", time, Interpolation::FaceVarying, vec2f_values)?);
     let orientation = match read_token(stage, prim, "orientation")?.as_deref() {
         Some("leftHanded") => Orientation::LeftHanded,
         _ => Orientation::RightHanded,
     };
-    let display_color = read_primvar_vec3f(stage, prim, "primvars:displayColor", time)?;
-    let display_opacity = read_primvar_float(stage, prim, "primvars:displayOpacity", time)?;
+    let display_color = read_owned_primvar(stage, prim, &color_owner, "primvars:displayColor", time, Interpolation::Vertex, vec3f_values)?;
+    let display_opacity = read_owned_primvar(stage, prim, &opacity_owner, "primvars:displayOpacity", time, Interpolation::Vertex, float_values)?;
     let subsets = read_material_subsets(stage, prim, time)?;
     let double_sided = read_bool(stage, prim, "doubleSided")?.unwrap_or(false);
     let extent = vec3f_values(attr_at(stage, prim, "extent", time)?)
@@ -1116,6 +1113,40 @@ pub(crate) fn inherited_primvar_owner(stage: &Stage, prim: &Path, name: &str) ->
     Ok(prim.clone())
 }
 
+fn inherited_primvar_owners<const N: usize>(stage: &Stage, prim: &Path, names: [&str; N]) -> anyhow::Result<[Path; N]> {
+    let mut owners: [Option<Path>; N] = std::array::from_fn(|_| None);
+    let mut candidate = Some(prim.clone());
+    while let Some(path) = candidate {
+        if path.is_abs_root() || owners.iter().all(Option::is_some) { break; }
+        let current = stage.prim(&path)?;
+        for (name, owner) in names.iter().zip(&mut owners) {
+            if owner.is_some() { continue; }
+            let info = current.attribute(*name).resolve_info()?;
+            if info.has_authored_value() && !info.value_is_blocked()
+                && (path == *prim || read_primvar_interpolation(stage, &path, name)?
+                    .unwrap_or(Interpolation::Constant) == Interpolation::Constant) {
+                *owner = Some(path.clone());
+            }
+        }
+        candidate = path.parent();
+    }
+    Ok(owners.map(|owner| owner.unwrap_or_else(|| prim.clone())))
+}
+
+fn read_owned_primvar<T>(
+    stage: &Stage, prim: &Path, owner: &Path, name: &str, time: Option<f64>,
+    fallback: Interpolation, decode: impl FnOnce(Option<Value>) -> Option<Vec<T>>,
+) -> anyhow::Result<Option<MeshPrimvar<T>>> {
+    let Some(values) = decode(attr_at(stage, owner, name, time)?) else { return Ok(None); };
+    Ok(Some(MeshPrimvar {
+        values,
+        interpolation: if owner != prim { Interpolation::Constant } else {
+            read_primvar_interpolation(stage, owner, name)?.unwrap_or(fallback)
+        },
+        indices: read_int_array_at(stage, owner, &format!("{name}:indices"), time)?.unwrap_or_default(),
+    }))
+}
+
 pub(crate) fn read_primvar_interpolation(
     stage: &Stage,
     prim: &Path,
@@ -1181,23 +1212,38 @@ pub(crate) fn read_primvar_float(
     }))
 }
 
-fn read_primvar_vec2f(
-    stage: &Stage,
-    prim: &Path,
-    name: &str,
-    time: Option<f64>,
-) -> anyhow::Result<Option<MeshPrimvar<[f32; 2]>>> {
-    let owner = inherited_primvar_owner(stage, prim, name)?;
-    let inherited = owner != *prim;
-    let prim = &owner;
-    let Some(values) = vec2f_values(attr_at(stage, prim, name, time)?) else {
-        return Ok(None);
-    };
-    Ok(Some(MeshPrimvar {
-        values,
-        interpolation: if inherited { Interpolation::Constant } else {
-            read_primvar_interpolation(stage, prim, name)?.unwrap_or(Interpolation::FaceVarying)
-        },
-        indices: read_int_array_at(stage, prim, &format!("{name}:indices"), time)?.unwrap_or_default(),
-    }))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batched_owners_match_independent_walks_before_and_after_edits() {
+        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Xform "Root" {
+    texCoord2f[] primvars:st = [(0,0)] (interpolation = "constant")
+    color3f[] primvars:displayColor = [(1,0,0)] (interpolation = "constant")
+    def Xform "Parent" {
+        color3f[] primvars:displayColor = [(0,1,0)] (interpolation = "vertex")
+        def Mesh "Mesh" {
+            texCoord2f[] primvars:st = None
+            float[] primvars:displayOpacity = [0.5]
+        }
+    }
+}
+"#).open_stage().unwrap();
+        let names = ["primvars:normals", "primvars:st", "primvars:st0", "primvars:displayColor", "primvars:displayOpacity"];
+        for edited in [false, true] {
+            if edited {
+                stage.attribute("/Root/Parent.primvars:displayColor").unwrap()
+                    .set_metadata("interpolation", Value::Token("constant".into())).unwrap();
+            }
+            for path in ["/Root", "/Root/Parent", "/Root/Parent/Mesh"] {
+                let path = openusd::sdf::path(path).unwrap();
+                let owners = inherited_primvar_owners(&stage, &path, names).unwrap();
+                for (name, owner) in names.iter().zip(&owners) {
+                    assert_eq!(*owner, inherited_primvar_owner(&stage, &path, name).unwrap());
+                }
+            }
+        }
+    }
 }

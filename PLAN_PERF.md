@@ -442,6 +442,24 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+Mesh-read increment: the five inherited primvar owner searches now walk each
+ancestor together, obtaining one prim handle per level instead of one per
+attribute. Owner resolution preserves local/constant inheritance, blocking and
+fallback behavior; value reads still evaluate both UV candidates and propagate
+errors. The batching is local to one mesh read, with no cross-stage or cross-edit
+memo. The single-owner reader remains the independent test reference and serves
+other callers.
+
+Verification: the release workspace/all-targets gate passes 739 tests in 34
+suites, 19 ignored. A nested hierarchy test compares batched and separate walks
+for missing, blocked, local and nonconstant inherited values before/after a
+metadata edit; existing inherited geometry tests pass. Caldera CPU opens measured
+41.378 / 40.689 s, with mesh reads 5.644 / 5.682 s and unchanged read counts,
+decoded bytes, entities, assets and retained payloads. These are diagnostic runs,
+not a controlled speedup or first-frame result. Evidence is in
+`target/perf/read-owners/`. The capture is pixel-identical to the GPU-influence
+baseline, at 59.60 s process duration and 15,277,036 KiB peak RSS.
+
 Snapshot-proof increment (2026-09-17): `UsdSource` retains a bounded shared
 default-composition validation stamp keyed by its exact source revision.
 Successful dependency probes record it only when no dependencies are missing;

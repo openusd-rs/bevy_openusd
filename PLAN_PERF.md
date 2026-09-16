@@ -271,6 +271,22 @@ assets and 66,456,232 vertices. Oxbo opens measured 3.712 / 3.395 s, retaining
 diagnostics with an external Gearbox process active, not a controlled speedup
 or first-frame acceptance. A fresh visual comparison remains outstanding.
 
+Rejected experiment: a 64 MiB source/product snapshot cache, limited to 64
+sources and 64 products per source, checked complete source and output equality
+before returning weakly referenced assets. It passed 576 focused tests but
+Caldera's SubsetRoute took 4.056 / 3.859 s enabled versus 3.556 / 3.089 s with
+the same binary's cache disabled. Each enabled run avoided 6,890 of 42,402
+compactions but evicted 16,103 source entries. Geometry counts stayed unchanged.
+Whole-open times (46.107 / 44.242 s enabled, 47.450 / 44.264 s disabled) do not
+prove a speedup; the experiment was sequential and externally contended.
+The implementation was removed, not shipped. Logs and the rejected patch are
+retained in `target/perf/p1-cache/`; its `USD_SUBSET_CACHE_BYTES` switch belongs
+only to that experimental patch, not the current benchmark. Do not repeat this
+snapshot-per-source design or increase budgets without new evidence. Next,
+evaluate batched/sparse partition remapping and a reliable synchronous source
+mutation token before another persistent product-cache attempt. Asset events
+polled only between frames cannot invalidate mutations during one projection.
+
 1. Resolve per-instance materials separately from immutable subset geometry.
 2. Check a subset-product cache before cloning the parent or compacting it.
    Key by source asset identity plus a reliable mutation generation, face

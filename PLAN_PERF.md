@@ -583,8 +583,29 @@ equal to 3,282 builds + 16,640 owned-clone hits + 15,874 handle hits; mesh/entit
 and vertex counts are unchanged. CPU opens measured 46.237 / 44.392 s on
 Caldera and 3.880 / 3.696 s on Oxbo. These are diagnostic iterations, not a
 controlled speedup claim or first-frame result. Evidence is in
-`target/perf/p6-lookup/`. Hash indexing, eviction-policy changes and pre-decode
-prototype sharing remain TODO.
+`target/perf/p6-lookup/`. Hash indexing and pre-decode prototype sharing remain
+TODO.
+
+Selective-eviction increment: `ProjectionCache` now evicts oldest insertions
+only until the entry and payload limits admit the new mesh, instead of clearing
+the entire cache. Hits do not promote entries. The FIFO stores weak asset IDs;
+normal cache pruning removes its stale records, and eviction does not delete
+assets held by entities. Existing full-output equality and byte budgets remain.
+The metric `intern_eviction_batches` replaces `intern_flushes` for this policy.
+
+Verification: 582 focused release tests pass, 19 ignored, including partial
+eviction, hit ordering, external-handle survival and FIFO pruning. Both Caldera
+runs reduce intern misses from 4,628 to 3,152 and evicted entries from 4,619 to
+3,143. Retained mesh assets fall from 3,312 to 2,509 through sharing; mesh entities
+remain 50,125 and subset entities 23,291. Unique retained vertex/index payload
+falls from 3,558,177,104 to 3,349,077,812 bytes. The overview capture is byte-for-
+byte identical to the assembly-borrow baseline. CPU opens measured 47.007 /
+53.611 s, versus the preceding 46.237 / 44.392 s: no loading speedup is established.
+Oxbo measured 3.860 / 3.367 s with unchanged counts. The first Caldera iteration
+overlapped the Oxbo diagnostic; these are not controlled timing comparisons.
+Capture process duration was 61.43 s with 16,670,800 KiB peak RSS, not a first-frame
+measurement. Evidence is in `target/perf/p6-fifo/`. This increment improves cache
+reuse at the existing budget but does not complete P6 or the performance target.
 
 **Scope:** `route/native.rs`, `route/cache.rs`, `route/mod.rs`, `read/geom.rs`,
 instance/reload invalidation and focused tests.

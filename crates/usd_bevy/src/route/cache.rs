@@ -218,6 +218,7 @@ const MAX_INTERNED: usize = 8192;
 #[derive(Resource)]
 pub struct ProjectionCache {
     meshes: HashMap<u64, Vec<(Handle<Mesh>, usize)>>,
+    insertion_order: std::collections::VecDeque<(u64, AssetId<Mesh>)>,
     count: usize,
     payload_bytes: usize,
     byte_budget: usize,
@@ -230,7 +231,7 @@ impl Default for ProjectionCache {
 impl ProjectionCache {
     /// Limits retained mesh payload bytes; zero disables new cache entries.
     pub fn with_byte_budget(byte_budget: usize) -> Self {
-        Self { meshes: HashMap::new(), count: 0, payload_bytes: 0, byte_budget }
+        Self { meshes: HashMap::new(), insertion_order: default(), count: 0, payload_bytes: 0, byte_budget }
     }
 
     /// Payload bytes measured at insertion, excluding allocator and GPU overhead.
@@ -254,6 +255,9 @@ impl ProjectionCache {
             self.count += candidates.len();
             self.payload_bytes += candidates.iter().map(|(_, bytes)| bytes).sum::<usize>();
             !candidates.is_empty()
+        });
+        self.insertion_order.retain(|(signature, id)| {
+            self.meshes.get(signature).is_some_and(|entries| entries.iter().any(|(handle, _)| handle.id() == *id))
         });
     }
 }
@@ -299,18 +303,24 @@ pub fn intern_mesh(world: &mut World, mesh: Mesh) -> Handle<Mesh> {
     record_cache(world, "intern_inserted_bytes", payload_bytes as u64);
     let mut cache = world.resource_mut::<ProjectionCache>();
     let mut evicted = (0, 0);
-    // Release cached handles when either retention limit would be exceeded.
-    if cache.len() >= MAX_INTERNED || payload_bytes > cache.byte_budget.saturating_sub(cache.payload_bytes) {
-        evicted = (cache.count as u64, cache.payload_bytes as u64);
-        cache.meshes.clear();
-        cache.count = 0;
-        cache.payload_bytes = 0;
+    // Evict in insertion order until both retention limits admit the new mesh.
+    while cache.len() >= MAX_INTERNED || payload_bytes > cache.byte_budget.saturating_sub(cache.payload_bytes) {
+        let Some((signature, id)) = cache.insertion_order.pop_front() else { break; };
+        let Some(entries) = cache.meshes.get_mut(&signature) else { continue; };
+        let Some(index) = entries.iter().position(|(handle, _)| handle.id() == id) else { continue; };
+        let (_, bytes) = entries.swap_remove(index);
+        if entries.is_empty() { cache.meshes.remove(&signature); }
+        cache.count -= 1;
+        cache.payload_bytes -= bytes;
+        evicted.0 += 1;
+        evicted.1 += bytes as u64;
     }
     cache.meshes.entry(sig).or_default().push((handle.clone(),payload_bytes));
+    cache.insertion_order.push_back((sig, handle.id()));
     cache.count += 1;
     cache.payload_bytes += payload_bytes;
     if evicted.0 != 0 {
-        record_cache(world, "intern_flushes", 1);
+        record_cache(world, "intern_eviction_batches", 1);
         record_cache(world, "intern_evicted_entries", evicted.0);
         record_cache(world, "intern_evicted_bytes", evicted.1);
     }
@@ -428,6 +438,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fifo_eviction_preserves_newer_entries_and_external_handles() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<MeshCacheMetrics>();
+        let mesh = |width| Mesh::from(Rectangle::new(width, 1.0));
+        let bytes = mesh_payload_bytes(&mesh(1.0));
+        world.insert_resource(ProjectionCache::with_byte_budget(bytes * 2));
+        let first = intern_mesh(&mut world, mesh(1.0));
+        let second = intern_mesh(&mut world, mesh(2.0));
+        assert_eq!(intern_mesh(&mut world, mesh(1.0)), first);
+        let third = intern_mesh(&mut world, mesh(3.0));
+        assert_eq!(intern_mesh(&mut world, mesh(2.0)), second);
+        assert_eq!(intern_mesh(&mut world, mesh(3.0)), third);
+        let cache = world.resource::<ProjectionCache>();
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.payload_bytes, bytes * 2);
+        assert_eq!(cache.insertion_order.len(), 2);
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["intern_evicted_entries"], 1);
+        assert!(world.resource::<Assets<Mesh>>().contains(&first));
+        drop(second);
+        world.resource_scope(|world, mut cache: Mut<ProjectionCache>| {
+            cache.retain_live(world.resource::<Assets<Mesh>>());
+        });
+        let cache = world.resource::<ProjectionCache>();
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.insertion_order.len(), 1);
+        assert_eq!(cache.insertion_order.front().unwrap().1, third.id());
+        assert_eq!(cache.payload_bytes, bytes);
+    }
+
+    #[test]
     fn metrics_distinguish_reuse_eviction_and_disabled_caches() {
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
@@ -445,7 +486,7 @@ mod tests {
         let _ = intern_mesh(&mut world, mesh);
         let metrics = &world.resource::<MeshCacheMetrics>().0;
         for (name, expected) in [("intern_no_cache", 1), ("intern_hits", 1),
-            ("intern_misses", 2), ("intern_flushes", 1), ("intern_evicted_entries", 1),
+            ("intern_misses", 2), ("intern_eviction_batches", 1), ("intern_evicted_entries", 1),
             ("intern_evicted_bytes", bytes as u64), ("intern_budget_bypasses", 1),
             ("intern_bypassed_bytes", bytes as u64), ("intern_reused_bytes", bytes as u64)] {
             assert_eq!(metrics[name], expected, "{name}");

@@ -604,6 +604,31 @@ old eager mesh counts. Keep an eager mode as a correctness/performance control.
 
 ## P5 — Add bounded pure preparation jobs
 
+Rejected scoped-subset worker trial: an opt-in dedicated pool split large
+parents' subsets in ordered batches, with 1/2/4/8-thread configurations and a
+64 MiB estimated scratch/output limit. Workers borrowed only immutable mesh and
+face-index data; USD/material reads and asset insertion stayed serial, and every
+scope joined before publication. Small/oversized batches fell back to serial.
+740 experimental workspace tests passed, including serial/worker attribute,
+index and morph parity and budget fallback. Caldera counts stayed unchanged.
+
+| Threads | CPU open samples, s | SubsetRoute samples, s | Worker jobs/run | Peak estimated batch bytes |
+| --- | --- | --- | --- | --- |
+| 1 (serial) | 42.092 / 40.904 | 2.934 / 2.871 | 0 | 0 |
+| 2 | 41.684 / 40.801 | 2.943 / 2.915 | 2,686 | 17,390,922 |
+| 4 | 43.070 / 40.949 | 3.132 / 2.917 | 3,120 | 34,781,844 |
+| 8 | 42.853 / 41.542 | 3.153 / 3.003 | 3,144 | 34,781,844 |
+
+There is no useful scaling signal: more workers do not consistently reduce
+subset time or total CPU opening. These two-sample diagnostic runs are not
+acceptance statistics. The production changes and experimental environment
+switch were removed; the normal benchmark/capture binaries were rebuilt.
+The patch, build/test logs and raw measurements are archived under
+`target/perf/p5-subset-workers/`. No scoped subset pool is shipped. This trial
+does not validate an asynchronous pipeline: further worker work should overlap
+owned preparation across prims, rather than joining a tiny batch per mesh, and
+must still meet revision, cancellation, memory and custom-route gates below.
+
 Scheduling increment: finite initial-projection budgets are now shared across
 loading roots. Newly opened roots enqueue their projection instead of taking a
 full slice immediately and then another in the continuation pass. The pass

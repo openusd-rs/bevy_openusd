@@ -317,9 +317,7 @@ pub(crate) fn build_vertex_colors(display_color: Option<&MeshPrimvar<[f32; 3]>>,
 fn build_expanded(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
     let corner_count: usize = read.face_vertex_counts.iter().map(|c| (*c).max(0) as usize).sum();
     let mut positions = Vec::with_capacity(corner_count);
-    let mut normals_out: Vec<[f32; 3]> = Vec::with_capacity(corner_count);
     let mut uvs_out: Vec<[f32; 2]> = Vec::with_capacity(corner_count);
-    let mut colors_out: Vec<[f32; 4]> = Vec::with_capacity(corner_count);
 
     let want_normals = read.normals.is_some();
     let want_uvs = read.uvs.is_some();
@@ -328,6 +326,8 @@ fn build_expanded(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
     // Smooth fallback normals are computed before corner expansion.
     let smooth_per_point: Option<Vec<[f32; 3]>> =
         (!want_normals && !uses_flat_normals(read)).then(|| compute_point_smooth_normals(read));
+    let mut normals_out: Vec<[f32; 3]> = Vec::with_capacity(if want_normals || smooth_per_point.is_some() { corner_count } else { 0 });
+    let mut colors_out: Vec<[f32; 4]> = Vec::with_capacity(if want_colors { corner_count } else { 0 });
 
     let mut corner_ix: usize = 0;
     for (face_ix, face_verts) in read.face_vertex_counts.iter().enumerate() {
@@ -368,9 +368,13 @@ fn build_expanded(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
             running += 1;
         }
     }
-    let reference_positions: Vec<_> = corner_points(read).into_iter()
-        .map(|point| triangulation_points(read).get(point).copied().unwrap_or([0.0; 3])).collect();
-    let indices = triangulate_mesh(read, &reference_positions, &sequential, face_subset);
+    let indices = if read.triangulation_points.as_ref().is_some_and(|points| points.len() == read.points.len()) {
+        let reference_positions: Vec<_> = corner_points(read).into_iter()
+            .map(|point| triangulation_points(read).get(point).copied().unwrap_or([0.0; 3])).collect();
+        triangulate_mesh(read, &reference_positions, &sequential, face_subset)
+    } else {
+        triangulate_mesh(read, &positions, &sequential, face_subset)
+    };
 
     let emit_normals = want_normals || smooth_per_point.is_some();
     (
@@ -1205,6 +1209,27 @@ def Mesh "M" {
                     for faces in [&[][..], &[5, 4, 3, 2, 1, 0], &[4, 4], &[-1, 99]] {
                         assert_eq!(mapping.for_faces(faces), mesh_indices_for_faces(&read, faces));
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_triangulation_positions_match_explicit_reference_expansion() {
+        for scheme in [SubdivScheme::None, SubdivScheme::CatmullClark] {
+            for orientation in [Orientation::LeftHanded, Orientation::RightHanded] {
+                let mut read = mesh(vec![[0.0,0.0,0.0], [2.0,0.0,0.0], [1.0,0.5,0.0],
+                    [2.0,2.0,0.0], [0.0,2.0,0.0]], vec![5,3], vec![0,1,2,3,4,0,-1,99]);
+                read.subdivision_scheme = scheme;
+                read.orientation = orientation;
+                read.hole_indices = vec![1];
+                let mut explicit = read.clone();
+                explicit.triangulation_points = Some(read.points.clone());
+                for faces in [None, Some(&[0][..]), Some(&[1,0][..])] {
+                    assert_eq!(build_expanded(&read, faces), build_expanded(&explicit, faces));
+                    let mut invalid_reference = read.clone();
+                    invalid_reference.triangulation_points = Some(vec![]);
+                    assert_eq!(build_expanded(&invalid_reference, faces), build_expanded(&explicit, faces));
                 }
             }
         }

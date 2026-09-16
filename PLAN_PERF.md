@@ -486,6 +486,25 @@ all its CPU data was available, and the final build/tests include that check.
 Deferred-state implementation remains TODO. Prioritize profiling visible-mesh
 decoding, assembly and transfer costs alongside (not after) hidden-prim work.
 
+Visible-assembly follow-up: static expanded/flat meshes now triangulate from
+their already assembled corner positions instead of allocating another expanded
+position buffer and corner-point mapping. Valid deformation reference positions
+still use the separate original-position path, preserving reference diagonals;
+invalid-length references retain the existing current-position fallback.
+Expanded construction no longer reserves normal/color buffers when those
+attributes will not be emitted. No vertex layout or final mesh payload changed.
+
+Verification: 581 focused release tests pass (19 ignored), including new parity
+checks for concave faces, holes, malformed indices, both orientations, subsets
+and invalid-length reference arrays, plus the existing deformed-diagonal test.
+Caldera retains the same 50,125 mesh entities, 23,291 subsets, 3,312 mesh assets
+and 66,456,232 vertices. CPU opens were 45.143 / 49.174 s, assembly counters
+4.790 / 4.312 s: no established timing improvement. The capture completed in
+66.06 s with peak RSS 16,518,040 KiB and byte-identical RGBA to the preceding
+capture. Logs and hashes are in `target/perf/assembly-borrow/`. This removes
+specific transient allocations; it does not reduce the 3.17 GB visible payload
+or implement parallel preparation/deferred residency.
+
 **Scope:** `live.rs`, `asset.rs`, `instance.rs`, built-in geometry/material/
 deformation routes and their tests. Preserve arbitrary custom routes.
 

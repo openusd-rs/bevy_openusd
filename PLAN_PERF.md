@@ -287,6 +287,26 @@ evaluate batched/sparse partition remapping and a reliable synchronous source
 mutation token before another persistent product-cache attempt. Asset events
 polled only between frames cannot invalidate mutations during one projection.
 
+Sparse-remapping increment: `mesh/compact.rs` sorts/deduplicates selected vertex
+indices and binary-searches their remapping when index count is at most one
+eighth of the source vertex count. Scratch storage then scales with selected
+indices instead of allocating/scanning parent-sized marking and remapping
+arrays. Dense subsets retain the original path and ascending source-vertex
+ordering. Both index widths, repeated/out-of-order indices, joint attributes
+and target-major morph data are covered by the new regression test.
+
+Verification: 576 focused release tests pass, 19 ignored. Caldera CPU opens
+measured 49.294 / 42.498 s; SubsetRoute measured 3.118 / 3.013 s with unchanged
+entity, mesh and vertex counts. Oxbo opens measured 5.297 / 4.471 s with
+unchanged geometry counts. External Gearbox activity continued: these samples
+do not establish a loading speedup. The memory benefit is the removal of
+parent-sized scratch arrays for sparse selections, not reduced final residency.
+The inspected Caldera capture completed in 65.14 s (not first-frame timing),
+peak RSS 16,596,520 KiB, and its raw RGBA is byte-identical to
+`/tmp/caldera-geometry-reuse.rgba`. That proves this change preserved the
+baseline image, not full renderer fidelity. Evidence, logs, PNG and matching
+SHA-256 hashes are under `target/perf/p1-sparse/`.
+
 1. Resolve per-instance materials separately from immutable subset geometry.
 2. Check a subset-product cache before cloning the parent or compacting it.
    Key by source asset identity plus a reliable mutation generation, face

@@ -8,7 +8,13 @@ pub(crate) fn compact(mesh: &Mesh, indices: &Indices) -> Option<Mesh> {
         || mesh.get_morph_targets().is_some_and(|targets|
             if count == 0 { !targets.is_empty() } else { targets.len() % count != 0 })
     { return None; }
-    let retained: Vec<_> = if indices.is_empty() { Vec::new() } else {
+    let sparse = indices.len() <= count / 8;
+    let retained: Vec<_> = if sparse {
+        let mut retained: Vec<_> = indices.iter().collect();
+        retained.sort_unstable();
+        retained.dedup();
+        retained
+    } else {
         let mut used = vec![false; count];
         for index in indices.iter() { used[index] = true; }
         used.iter().enumerate().filter_map(|(index, used)| used.then_some(index)).collect()
@@ -18,9 +24,13 @@ pub(crate) fn compact(mesh: &Mesh, indices: &Indices) -> Option<Mesh> {
         output.insert_indices(indices.clone());
         return Some(output);
     }
-    let mut remap = vec![0_u32; if retained.is_empty() { 0 } else { count }];
-    for (new, &old) in retained.iter().enumerate() { remap[old] = new as u32; }
-    let indices = Indices::U32(indices.iter().map(|old| remap[old]).collect());
+    let indices = if sparse {
+        Indices::U32(indices.iter().map(|old| retained.binary_search(&old).unwrap() as u32).collect())
+    } else {
+        let mut remap = vec![0_u32; count];
+        for (new, &old) in retained.iter().enumerate() { remap[old] = new as u32; }
+        Indices::U32(indices.iter().map(|old| remap[old]).collect())
+    };
     let morph = mesh.get_morph_targets().map(|targets| targets.chunks_exact(count)
         .flat_map(|target| retained.iter().map(|&old| target[old])).collect());
     let mut output = Mesh::new(mesh.primitive_topology(), mesh.asset_usage);
@@ -59,6 +69,33 @@ mod tests {
         let Some(output) = super::compact(mesh, &indices) else { return false };
         *mesh = output;
         true
+    }
+
+    #[test]
+    fn sparse_selection_preserves_order_attributes_and_target_major_morphs() {
+        let mut source = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        source.insert_attribute(Mesh::ATTRIBUTE_POSITION, (0..1024).map(|i| [i as f32;3]).collect::<Vec<_>>());
+        source.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX,
+            VertexAttributeValues::Uint16x4((0..1024).map(|i| [i;4]).collect()));
+        source.set_morph_targets((0..2048).map(|i| MorphAttributes {
+            position: Vec3::splat(i as f32), ..Default::default()
+        }).collect());
+        for indices in [Indices::U16(vec![900, 3, 500, 3, 900, 500]), Indices::U32(vec![900, 3, 500, 3, 900, 500])] {
+            let result = super::compact(&source, &indices).unwrap();
+            assert_eq!(result.count_vertices(), 3);
+            assert_eq!(result.indices().unwrap().iter().collect::<Vec<_>>(), [2, 0, 1, 0, 2, 1]);
+            for (attribute, values) in source.attributes() {
+                assert_eq!(result.attribute(attribute.id).unwrap(), &select(values, &[3, 500, 900]));
+            }
+            for target in 0..2 {
+                for (new, old) in [3, 500, 900].into_iter().enumerate() {
+                    assert_eq!(result.get_morph_targets().unwrap()[target*3+new],
+                        source.get_morph_targets().unwrap()[target*1024+old]);
+                }
+            }
+        }
+        assert_eq!(source.count_vertices(), 1024);
+        assert!(source.indices().is_none());
     }
 
     #[test]

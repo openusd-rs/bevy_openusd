@@ -145,6 +145,28 @@ Do not add projected speedups together: several phases remove the same work.
 
 ## P0 — Establish trustworthy measurements
 
+Actual-viewer render probe: launch with `USD_PROFILE_RENDER=1` to emit JSON
+`render_asset_profile` records from `src/perf_render.rs`. Main-world manifests
+carry document identity and an asset-event generation into the render world.
+The post-render probe counts missing `RenderMesh`/`GpuImage` entries and global
+pending/error pipelines. It covers all currently retained RENDER_WORLD meshes
+and images, including environment assets, not just visible scene dependencies.
+Manifests rebuild on document/asset events rather than scanning geometry every
+frame. Time starts at probe configuration, not process creation or open-command
+submission. Every record explicitly says `complete_frame: false`: materials,
+deformation resource bindings, relevant view queues and submitted-generation
+acknowledgment remain outstanding.
+
+Probe verification: 100 release viewer tests pass and the release viewer builds.
+An isolated-settings X11 Oxbo run produced a mapped 1440×920 window and a verified
+viewport screenshot at `target/perf/p0-render/oxbo.png`. Its log observed 1,598
+retained mesh assets and 10 images after cleanup, and pending pipelines resolving
+to zero at 3.903 s from probe setup. This is a single diagnostic observation,
+not a matched timing or complete-frame claim. Logs and build/test evidence are
+in `target/perf/p0-render/`. The owned viewer process uses a 35-second timeout;
+that expected timeout is not a loader failure. X11 launching required unsetting
+`WAYLAND_DISPLAY` and `WAYLAND_SOCKET`; no user environment files were changed.
+
 First increment: `route::cache::MeshCacheMetrics` is an opt-in resource enabled
 by `USD_PROFILE_ROUTES` in `editor_benchmark`. It reports cumulative key/value
 records separately for initial open and measured seeks (reset after seek warmup).

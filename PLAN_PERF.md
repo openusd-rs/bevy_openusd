@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0 in progress; P1–P8 planned**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0/P1 in progress; P2–P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -132,7 +132,7 @@ Update status only with linked evidence and a commit.
 | ID | Work | Depends on | Effort / risk | Status |
 | --- | --- | --- | --- | --- |
 | P0 | Matched first-frame benchmark and attribution | None | M–L / medium | IN PROGRESS |
-| P1 | Cache subset products before construction | P0 | M–L / medium | TODO |
+| P1 | Cache subset products before construction | P0 attribution | M–L / medium | IN PROGRESS |
 | P2 | Cache deformation discovery and preparation | P0 | L / high | TODO |
 | P3 | Separate validation from discarded geometry decoding | P0 | M–L / high | TODO |
 | P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | TODO |
@@ -249,6 +249,27 @@ Store a machine-readable report with the configuration and asset manifest.
 ## P1 — Reuse prepared material subsets
 
 **Scope:** `route/subset.rs`, `mesh/compact.rs`, `route/cache.rs`, related tests.
+
+First increment removes the unconditional full-parent mesh clone from
+`SubsetRoute::project`. Preparation holds a strong source handle and borrows the
+current asset only while compacting each partition. Point-instancer prototypes
+use the same path after interning their source mesh. Materials remain resolved
+per context; missing source assets abort preparation without publishing partial
+subsets. Compaction's existing malformed-layout fallback may still clone.
+This is not the subset-product cache: repeated compaction remains outstanding.
+P0 route attribution supports this change; P0's matched first-frame acceptance
+is still open and remains mandatory for overall performance acceptance.
+
+Verification: 575 focused release tests pass (19 ignored), including a new
+source-mutation/removal regression and existing subset animation, skin/morph,
+prototype and live-edit coverage. Evidence is in `target/perf/p1-borrow/`.
+Caldera CPU opens measured 44.213 / 42.874 s; SubsetRoute application measured
+3.035 / 2.999 s versus P0 read-profile observations of 3.428 / 3.397 s.
+Geometry counts remain 50,125 mesh entities, 23,291 subset entities, 3,312 mesh
+assets and 66,456,232 vertices. Oxbo opens measured 3.712 / 3.395 s, retaining
+1,786 mesh entities, 14 subset entities and 1,597 mesh assets. These are two-run
+diagnostics with an external Gearbox process active, not a controlled speedup
+or first-frame acceptance. A fresh visual comparison remains outstanding.
 
 1. Resolve per-instance materials separately from immutable subset geometry.
 2. Check a subset-product cache before cloning the parent or compacting it.

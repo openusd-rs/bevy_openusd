@@ -94,7 +94,8 @@ pub fn configure(app: &mut App) {
         Option<&bevy::light::EnvironmentMapLight>, Option<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState>), With<Camera3d>>,
         generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
         diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
-        session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>| {
+        session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>,
+        meshes: Res<Assets<Mesh>>, mesh_references: Query<(&Mesh3d, &InheritedVisibility)>| {
         let active = cameras.iter().find(|(camera, ..)| camera.is_active);
         let document = active.and_then(|_| session.as_ref().map(|session| session.document_id()));
         gate.delay = std::time::Duration::from_millis(delay_ms);
@@ -107,6 +108,8 @@ pub fn configure(app: &mut App) {
                 let mut timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
                 timing.push_str(&crate::capture_metadata::camera_report(transform, camera.clip_from_view()));
+                timing.push_str(&crate::capture_metadata::mesh_residency_report(&meshes,
+                    mesh_references.iter().map(|(mesh, visibility)| (mesh.0.id(), visibility.get()))));
                 timing.push_str(&crate::capture_metadata::environment_report(environment, environment_state,
                     diagnostics.as_ref().map_or(0, |value| value.recorded_generations), generators.iter().count(), "Last-at-request"));
                 commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>| {

@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3 in progress; P4–P8 planned**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3 in progress; P4 attribution underway; P5–P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -135,7 +135,7 @@ Update status only with linked evidence and a commit.
 | P1 | Cache subset products before construction | P0 attribution | M–L / medium | IN PROGRESS |
 | P2 | Cache deformation discovery and preparation | P0 attribution | L / high | IN PROGRESS |
 | P3 | Separate validation from discarded geometry decoding | P0 attribution | M–L / high | IN PROGRESS |
-| P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | TODO |
+| P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | ATTRIBUTION ONLY |
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | TODO |
 | P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | TODO |
 | P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | TODO |
@@ -457,6 +457,34 @@ pass. Counters show removed duplicate array decoding and manifest reuse without
 skipping necessary composition. Benchmark editor and asset-instance paths separately.
 
 ## P4 — Separate logical prims from initial geometry residency
+
+Attribution increment: embedded-viewer and offscreen capture metadata now group
+unique retained mesh assets into visible-only, hidden-only, shared and
+unreferenced buckets using propagated `InheritedVisibility`. Per-bucket vertex,
+index and inline morph bytes are reported separately, with render-world usage
+and unavailable CPU data counts. This is not frustum visibility, actual GPU
+allocation, texture residency or a preparation-time profile. The collector runs
+at screenshot request, not every update; it does not alter loading policy.
+
+Caldera findings: 168 visible-only assets hold 3,171,023,264 render-world CPU
+payload bytes; 3,142 hidden-only assets hold 387,153,840 bytes. The two shared
+assets contain no geometry payload. Thus hidden-only geometry represents about
+10.9% of this payload, despite dominating the asset/entity counts. Oxbo has
+76,604,544 visible-only bytes and only 37,776 hidden-only bytes (nine assets).
+Deferring hidden assets alone is therefore not a credible explanation for a
+large memory/transfer improvement on these configurations. It may still avoid
+substantial per-prim CPU work; that needs separate attribution.
+
+Verification: 101 release viewer tests and 22 capture tests pass. The new test
+covers duplicate/shared references, hidden and unreferenced assets, missing
+assets and already-extracted CPU data. Both captures completed; Caldera's RGBA
+is byte-identical to the P3 baseline. Evidence and reports are under
+`target/perf/p4-residency/`. Caldera completed in 67.77 s, Oxbo in 12.06 s;
+these include warmup/readback and are not first-frame timings or speedup claims.
+Caldera's report predates a final defensive check for extracted morph data;
+all its CPU data was available, and the final build/tests include that check.
+Deferred-state implementation remains TODO. Prioritize profiling visible-mesh
+decoding, assembly and transfer costs alongside (not after) hidden-prim work.
 
 **Scope:** `live.rs`, `asset.rs`, `instance.rs`, built-in geometry/material/
 deformation routes and their tests. Preserve arbitrary custom routes.

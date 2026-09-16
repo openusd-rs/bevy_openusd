@@ -1116,7 +1116,7 @@ pub(crate) fn inherited_primvar_owner(stage: &Stage, prim: &Path, name: &str) ->
     Ok(prim.clone())
 }
 
-fn read_primvar_interpolation(
+pub(crate) fn read_primvar_interpolation(
     stage: &Stage,
     prim: &Path,
     name: &str,

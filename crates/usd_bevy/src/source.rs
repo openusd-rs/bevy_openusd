@@ -613,6 +613,51 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn package_root_lookup_reads_directory_without_copying_payload() {
+        use super::*;
+        use std::io::Write;
+        use openusd::sdf::FileFormat;
+        struct CountedAsset(Cursor<Arc<[u8]>>, Arc<AtomicU64>);
+        impl Read for CountedAsset {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let count = self.0.read(buffer)?;
+                self.1.fetch_add(count as u64, Ordering::Relaxed);
+                Ok(count)
+            }
+        }
+        impl Seek for CountedAsset {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> { self.0.seek(position) }
+        }
+        impl Asset for CountedAsset {
+            fn size(&self) -> io::Result<u64> { Ok(self.0.get_ref().len() as u64) }
+        }
+        struct CountedResolver(Arc<[u8]>, Arc<AtomicU64>);
+        impl Resolver for CountedResolver {
+            fn create_identifier(&self, path: &str, _: Option<&ResolvedPath>) -> String { path.into() }
+            fn resolve(&self, path: &str) -> Option<ResolvedPath> { Some(ResolvedPath::new(path)) }
+            fn resolve_for_new_asset(&self, path: &str) -> Option<ResolvedPath> { self.resolve(path) }
+            fn open_asset(&self, _: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
+                Ok(Box::new(CountedAsset(Cursor::new(self.0.clone()), self.1.clone())))
+            }
+        }
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        archive.start_file("root.usda", options).unwrap();
+        archive.write_all(b"#usda 1.0\n").unwrap();
+        archive.start_file("payload.bin", options).unwrap();
+        archive.write_all(&vec![42; 4 * 1024 * 1024]).unwrap();
+        let bytes: Arc<[u8]> = archive.finish().unwrap().into_inner().into();
+        let read = Arc::new(AtomicU64::new(0));
+        let resolver = CountedResolver(bytes.clone(), read.clone());
+        let path = ResolvedPath::new("memory.usdz");
+        let resolved = openusd::usdz::UsdzFileFormat.resolve_layer(&resolver, &path).unwrap();
+        assert_eq!(resolved.to_string(), "memory.usdz[root.usda]");
+        assert!(read.load(Ordering::Relaxed) < bytes.len() as u64 / 4);
+        let invalid = CountedResolver(Arc::from(b"not a zip".as_slice()), read);
+        assert_eq!(openusd::usdz::UsdzFileFormat.resolve_layer(&invalid, &path), Some(path));
+    }
+
+    #[test]
     fn texture_manifest_reuse_requires_an_unchanged_default_snapshot() {
         use super::*;
         let bytes = b"#usda 1.0\ndef DomeLight \"Sky\" { asset inputs:texture:file = @sky.exr@ }\n";

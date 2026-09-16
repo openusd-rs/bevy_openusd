@@ -647,6 +647,23 @@ stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
 
+Package-directory increment: the vendored USDZ format now opens its default-layer
+directory through the resolver's seekable asset, instead of `read_all()` copying
+the entire package first. Public `Archive::from_asset` remains unchanged; corrupt
+or rootless archives still retain their package path for format-error reporting.
+The patch is recorded in `patches/openusd-package-directory.patch`, without a
+dependency refresh. This removes a root-lookup copy, not entry extraction or
+parser-owned buffer copies.
+
+Verification: 585 focused release tests pass, 19 ignored, plus 14 native export
+tests run explicitly. A counted in-memory resolver verifies default-layer lookup
+reads less than one quarter of a 4 MiB stored package and preserves corrupt-package
+fallback. Existing nested package and dependency reload tests pass. Oxbo CPU opens
+measured 3.499 / 3.102 / 3.123 s with unchanged mesh/entity/payload counts; capture
+was 10.23 s with 1,290,148 KiB peak RSS and pixel-identical to the manifest baseline.
+These are diagnostic timings, not a controlled or matched first-frame speedup.
+Evidence is in `target/perf/p7-directory/`.
+
 Manifest increment: immutable `UsdSource` snapshots retain one shared texture-
 request manifest tagged with the exact source revision. The asset loader records
 it after dependency discovery; freshly opened instances without overrides reuse

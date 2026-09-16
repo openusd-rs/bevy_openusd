@@ -606,6 +606,17 @@ source benchmark completes load/reload checks. Evidence is in
 is claimed by this cache-lifetime change. Oxbo's capture is pixel-identical to
 the shared-budget baseline.
 
+Clock-coherence correction: continuation slices now use the runtime's initial
+sample time, rather than reading a possibly different root clock for each slice.
+On completion, the existing instance tick applies the latest requested clock.
+Previously a 0 → 10 → 0 scrub during loading could leave a middle prim at time
+10 because the final clock equaled the runtime's initial sample, suppressing
+the final animation update. The regression test uses three independently sliced
+animated transforms and verifies their final values and subsequent clock updates.
+The release workspace/all-targets gate passes 737 tests in 34 suites, 19 ignored;
+evidence is in `target/perf/p5-clock/`. This checks clock coherence, not asynchronous
+worker cancellation or a loading-speed improvement.
+
 **Scope:** `live.rs`, `route/mod.rs`, geometry preparation modules and scheduler
 helpers within `crates/usd_bevy/src/`; do not rewrite upstream Stage threading.
 

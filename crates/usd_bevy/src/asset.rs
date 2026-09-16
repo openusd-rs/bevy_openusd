@@ -541,7 +541,7 @@ fn continue_projections(world: &mut World, instances: &mut UsdInstances, budget:
         let Some(job) = runtime.job.as_mut() else {
             continue;
         };
-        let current = world.get::<UsdInstanceTime>(root).map_or(0.0, |time| time.current);
+        let current = runtime.sampled;
         let previous_time = world.remove_resource::<StageTime>();
         let previous_animated = world.remove_resource::<AnimatedPrims>();
         let previous_textures = world.remove_resource::<SnapshotTextures>();
@@ -598,6 +598,38 @@ def Xform "Old" {}
 
     fn instance_entity(world: &World, root: Entity, path: &str) -> Entity {
         world.non_send::<UsdInstances>().entity(root, path).unwrap()
+    }
+
+    #[test]
+    fn loading_clock_roundtrip_does_not_publish_mixed_sample_times() {
+        let (mut world, handle) = instance_world();
+        let mut text = String::from("#usda 1.0\n");
+        for name in ["A", "B", "C"] {
+            text.push_str(&format!(r#"def Xform "{name}" {{
+                double3 xformOp:translate.timeSamples = {{ 0: (0,0,0), 10: (10,0,0) }}
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+            }}
+"#));
+        }
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::snapshot("loading-clock.usda", text.into_bytes()).unwrap();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::ZERO));
+        let root = world.spawn((UsdSceneRoot(handle), UsdInstanceTime { current: 0.0 })).id();
+        for time in [0.0, 10.0, 0.0] {
+            world.get_mut::<UsdInstanceTime>(root).unwrap().current = time;
+            spawn_usd_scenes(&mut world);
+        }
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        for path in ["/A", "/B", "/C"] {
+            let entity = instance_entity(&world, root, path);
+            assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 0.0, "{path}");
+        }
+        world.get_mut::<UsdInstanceTime>(root).unwrap().current = 10.0;
+        spawn_usd_scenes(&mut world);
+        for path in ["/A", "/B", "/C"] {
+            let entity = instance_entity(&world, root, path);
+            assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 10.0, "{path}");
+        }
     }
 
     #[test]

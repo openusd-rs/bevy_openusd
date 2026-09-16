@@ -28,12 +28,14 @@ pub(crate) fn deformed_mesh(ctx: &RouteCtx) -> anyhow::Result<Option<crate::read
 
 fn deformed_mesh_with_kinds(ctx: &RouteCtx, skinned: bool, blended: bool) -> anyhow::Result<Option<crate::read::geom::ReadMesh>> {
     let Some(source) = ctx.read_mesh()? else { return Ok(None) };
-    let points = if skinned {
-        crate::read::skel::skinned_points_with_mesh(ctx.stage, ctx.path, ctx.time, Some(source))?
+    let sample = if skinned {
+        crate::read::skel::cpu_skin_sample(ctx.stage, ctx.path, ctx.time, Some(source))?
+            .map(|sample| (sample.points, Some(sample.normals)))
     } else {
         crate::read::skel::blend_shape_deform(ctx.stage, ctx.path, &source.points, ctx.time)
+            .map(|points| (points, None))
     };
-    let Some(points) = points else { return Ok(None) };
+    let Some((points, skin_normals)) = sample else { return Ok(None) };
     let mut read = source.clone();
     read.triangulation_points = Some(std::mem::replace(&mut read.points, points));
     read.normals = if read.normals.is_some() {
@@ -41,7 +43,7 @@ fn deformed_mesh_with_kinds(ctx: &RouteCtx, skinned: bool, blended: bool) -> any
             crate::read::skel::morph_sample_with_mesh(ctx.stage, ctx.path, ctx.time, source)?
         } else { crate::read::skel::MorphSample { targets: Vec::new(), normal_targets: Vec::new(), weights: Vec::new() } };
         let (mut normals, points) = crate::read::skel::morph_normals(&read, &sample)?;
-        if skinned { crate::read::skel::skin_normals(ctx.stage, ctx.path, ctx.time, &mut normals, &points, read.points.len())?; }
+        if let Some(skin) = skin_normals { skin.apply(&mut normals, &points, read.points.len())?; }
         Some(normals)
     } else { None };
     Ok(Some(read))

@@ -360,6 +360,28 @@ test/build evidence are in `target/perf/p2-mesh/`. Registry mesh-read counters
 still exclude independent standalone reads, so those counters alone are not
 proof of the removed duplicate reads. No large-scene speedup is asserted.
 
+CPU palette-sharing increment: a sample now owns the remapped joint palette,
+skinning resolver and sampled influence arrays alongside its deformed points.
+CPU normal preparation consumes that same sample instead of rediscovering the
+binding, rebuilding skeleton topology/inverse binds, resampling animation and
+rereading influences. Rigid normal transforms are evaluated lazily once per
+sample, while vertex-weighted normals retain their per-joint lazy palette.
+The duplicate joint-palette remap used only to obtain its length is removed.
+All reuse is sample-local; no pose, resolver or influence data survives a route
+call. Persistent structural reuse and GPU palette-only updates remain open.
+
+Verification: 577 focused release tests pass (19 ignored). Borrowed/standalone
+normal parity now covers five poses each for vertex influences, constant
+influences and combined animated skin/morph geometry. All four ignored
+`native_baked_` position/normal tests pass against the existing native OpenUSD
+tool. Two CPU fixture runs each completed 1,000 timeline seeks, with medians
+631 / 602 microseconds and stable peak asset counts; this is not a controlled
+speedup comparison. Evidence is under `target/perf/p2-palette/`. Native gate:
+`USD_NATIVE_DEFORMATION_TOOL="$PWD/target/sample-native-deformation" make test
+CARGO='cargo --offline' APP_TARGET='--release -p usd_bevy --lib native_baked_ --
+--ignored --nocapture'`. This focused deformation gate is not `make test-native`
+(which currently covers persistence exports) or full-workspace acceptance.
+
 **Scope:** `read/skel.rs`, `route/skel.rs`, `route/gpu_skin.rs`,
 `route/gpu_morph.rs`, `live.rs`, focused existing deformation fixtures/tests.
 

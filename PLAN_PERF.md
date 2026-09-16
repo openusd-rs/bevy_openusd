@@ -150,14 +150,28 @@ Do not add projected speedups together: several phases remove the same work.
 Actual-viewer render probe: launch with `USD_PROFILE_RENDER=1` to emit JSON
 `render_asset_profile` records from `src/perf_render.rs`. Main-world manifests
 carry document identity and an asset-event generation into the render world.
-The post-render probe counts missing `RenderMesh`/`GpuImage` entries and global
-pending/error pipelines. It covers all currently retained RENDER_WORLD meshes
-and images, including environment assets, not just visible scene dependencies.
+The post-render probe counts missing `RenderMesh`/`GpuImage` entries, prepared
+StandardMaterial/FlatMaterial entries and global pending/error pipelines. It
+covers all currently retained RENDER_WORLD meshes/images and supported retained
+materials, including environment assets, not just visible scene dependencies.
 Manifests rebuild on document/asset events rather than scanning geometry every
 frame. Time starts at probe configuration, not process creation or open-command
-submission. Every record explicitly says `complete_frame: false`: materials,
-deformation resource bindings, relevant view queues and submitted-generation
-acknowledgment remain outstanding.
+submission. Every record explicitly says `complete_frame: false`: material
+binding revisions, deformation resource bindings, relevant view queues and
+submitted-generation acknowledgment remain outstanding. Prepared entry presence
+alone does not prove an in-place asset update reached the GPU.
+
+Material-probe increment: material-only changes rebuild the extracted manifest,
+including optional flat-material resource addition/removal. Pending material
+entries now prevent `observed_uploads_ready`. 102 release viewer tests pass;
+the release binary builds with the same three existing camera-plan warnings.
+An isolated-settings Oxbo viewer run observed 31 prepared standard materials,
+1,598 meshes and 10 images; all observed queues became ready at 4.809 s from
+probe setup, not process start or a proven first complete frame. Its viewport
+screenshot was inspected. A GPU skin fixture separately observed one prepared
+flat material. Logs/screenshot/build evidence are in `target/perf/p0-material/`.
+Both owned viewer processes ended at their deliberate timeouts; no persistent
+viewer was left running. This probe remains opt-in via `USD_PROFILE_RENDER`.
 
 Probe verification: 100 release viewer tests pass and the release viewer builds.
 An isolated-settings X11 Oxbo run produced a mapped 1440×920 window and a verified

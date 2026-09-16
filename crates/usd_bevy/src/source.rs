@@ -33,6 +33,7 @@ pub struct UsdSource {
     identity: u64,
     files: Arc<BTreeMap<String, Arc<[u8]>>>,
     filesystem: bool,
+    validated_default: Arc<Mutex<Option<u64>>>,
 }
 
 impl UsdSource {
@@ -71,6 +72,7 @@ impl UsdSource {
             identity: NEXT_SOURCE.fetch_add(1, Ordering::Relaxed),
             files: Arc::default(),
             filesystem: true,
+            validated_default: Arc::default(),
         })
     }
 
@@ -86,6 +88,16 @@ impl UsdSource {
 
     pub(crate) fn revision(&self) -> u64 {
         self.identity
+    }
+
+    pub(crate) fn has_default_validation(&self) -> bool {
+        !self.filesystem && *self.validated_default.lock().expect("source validation") == Some(self.identity)
+    }
+
+    pub(crate) fn record_default_validation(&self) {
+        if !self.filesystem {
+            *self.validated_default.lock().expect("source validation") = Some(self.identity);
+        }
     }
 
     pub(crate) fn read_asset(&self, identifier: &str) -> io::Result<Vec<u8>> {
@@ -329,6 +341,7 @@ impl UsdSource {
         })()
         .map_err(|error| error.to_string());
         let missing = std::mem::take(&mut *requests.lock().expect("dependency requests"));
+        if result.is_ok() && missing.is_empty() { self.record_default_validation(); }
         (result, missing)
     }
 
@@ -583,6 +596,30 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn default_validation_is_snapshot_and_revision_bound() {
+        let mut source = super::UsdSource::snapshot("proof.usda", b"#usda 1.0\ndef Xform \"M\" {}\n".as_slice()).unwrap();
+        assert!(!source.has_default_validation());
+        assert!(source.probe().0.is_ok());
+        assert!(source.clone().has_default_validation());
+        let dependency = super::UsdSource::snapshot("other.usda", b"#usda 1.0\n".as_slice()).unwrap();
+        let changed = source.with_dependency(&dependency).unwrap();
+        assert!(!changed.has_default_validation());
+        assert!(source.has_default_validation());
+        source.replace_file_bytes(source.identifier().to_owned(), b"not valid USD".to_vec());
+        assert!(!source.has_default_validation());
+        assert!(source.probe().0.is_err());
+        assert!(!source.has_default_validation());
+        let disk = super::UsdSource::new("disk.usda", b"#usda 1.0\n".as_slice()).unwrap();
+        assert!(disk.probe().0.is_ok());
+        assert!(!disk.has_default_validation());
+        let missing = super::UsdSource::snapshot("missing.usda",
+            b"#usda 1.0\ndef Xform \"M\" (prepend references = @absent.usda@</M>) {}\n".as_slice()).unwrap();
+        let (_, requests) = missing.probe();
+        assert!(!requests.is_empty());
+        assert!(!missing.has_default_validation());
+    }
+
     #[test]
     fn typed_builder_publishes_independent_snapshot_without_files() {
         use openusd_schemas::geom::{Sphere, SphereSchema};

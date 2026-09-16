@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0–P2 in progress; P3–P8 planned**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3 in progress; P4–P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -134,7 +134,7 @@ Update status only with linked evidence and a commit.
 | P0 | Matched first-frame benchmark and attribution | None | M–L / medium | IN PROGRESS |
 | P1 | Cache subset products before construction | P0 attribution | M–L / medium | IN PROGRESS |
 | P2 | Cache deformation discovery and preparation | P0 attribution | L / high | IN PROGRESS |
-| P3 | Separate validation from discarded geometry decoding | P0 | M–L / high | TODO |
+| P3 | Separate validation from discarded geometry decoding | P0 attribution | M–L / high | IN PROGRESS |
 | P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | TODO |
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | TODO |
 | P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | TODO |
@@ -408,6 +408,33 @@ rebuild mesh buffers. Sampled influences, nonuniform scale, morph combinations,
 normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
+
+Snapshot-proof increment (2026-09-17): `UsdSource` retains a bounded shared
+default-composition validation stamp keyed by its exact source revision.
+Successful dependency probes record it only when no dependencies are missing;
+fresh default instances can also record it after strict validation. Every
+source-byte/dependency mutation changes the revision, so the stamp cannot
+authorize a different snapshot. Filesystem-backed sources never qualify.
+Instances with any variant or attribute override still validate exhaustively.
+Each instance still opens its own mutable stage, applies overrides and resolves
+textures. This removes repeated validation, not initial strict validation or
+the lazy composition work still needed by each independent stage.
+
+`UsdSceneTimings::validation_reuses` counts reuse. `USD_PROFILE_SOURCES=1`
+reports it in `source_benchmark` and in the capture's `capture_source_profile`.
+Tests cover revision/dependency replacement, failed/missing sources, filesystem
+exclusion and overridden instances. 579 focused tests pass (19 ignored), plus
+the source benchmark's integration test. Three benchmark samples with 128
+prototypes per root report three validation reuses for four-root loads and
+source replacements, preserving entity/runtime tags and asset sharing.
+
+The inspected Caldera capture reports one loader-proof reuse, zero repeated
+instance-validation time and 30.630 s projection time. It is pixel-identical
+to the P1 sparse-remapping baseline. Process-to-exit was 73.71 s versus that
+earlier run's 65.14 s; peak RSS was 16,801,432 KiB. This is not a speedup or
+matched first-frame claim. Evidence, source benchmark, tests/build logs and
+RGBA hashes are in `target/perf/p3-proof/`. Initial validation value decoding,
+composition/dependency attribution and the wider integration gates remain open.
 
 **Scope:** `source.rs`, `asset.rs`, `editor.rs`, dependency/validation tests;
 upstream parser changes require the separate P7 boundary.

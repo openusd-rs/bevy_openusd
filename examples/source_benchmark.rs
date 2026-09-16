@@ -26,7 +26,8 @@ fn model(size: f64) -> UsdSource {
 fn profile(app: &mut App, phase: &str, roots: usize) {
     if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::asset::UsdSceneTimings>() {
         assert_eq!((timings.attempts, timings.failures), (roots, 0));
-        eprintln!("source_profile phase={phase} roots={roots} open_ms={:.3} overrides_ms={:.3} validation_ms={:.3} projection_ms={:.3}",
+        eprintln!("source_profile phase={phase} roots={roots} validation_reuses={} open_ms={:.3} overrides_ms={:.3} validation_ms={:.3} projection_ms={:.3}",
+            timings.validation_reuses,
             timings.open.as_secs_f64()*1000.0, timings.overrides.as_secs_f64()*1000.0,
             timings.validation.as_secs_f64()*1000.0, timings.projection.as_secs_f64()*1000.0);
         *timings = default();

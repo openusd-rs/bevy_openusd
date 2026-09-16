@@ -296,6 +296,7 @@ fn main() -> AppExit {
         app.add_plugins(usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin)
             .add_systems(Update, select_dome);
     }
+    if std::env::var_os("USD_PROFILE_SOURCES").is_some() { app.init_resource::<usd_bevy::asset::UsdSceneTimings>(); }
     if timing_enabled { app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin); }
     app.sub_app_mut(bevy::render::RenderApp).insert_resource(progress)
         .add_systems(bevy::render::Render, pipeline_progress.after(bevy::render::RenderSystems::Render));
@@ -523,7 +524,12 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     capture.mesh_report.push_str(shadows);
     capture.requested = true;
     commands.spawn(Screenshot(target.clone())).observe(
-        |event: On<ScreenshotCaptured>, capture: Res<Capture>, mut exit: MessageWriter<AppExit>| {
+        |event: On<ScreenshotCaptured>, capture: Res<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>, mut exit: MessageWriter<AppExit>| {
+            if let Some(timings) = timings {
+                eprintln!("capture_source_profile attempts={} failures={} validation_reuses={} open_ms={:.3} validation_ms={:.3} projection_ms={:.3}",
+                    timings.attempts, timings.failures, timings.validation_reuses, timings.open.as_secs_f64()*1000.0,
+                    timings.validation.as_secs_f64()*1000.0, timings.projection.as_secs_f64()*1000.0);
+            }
             match save(&event.image, &capture) {
                 Ok(()) => { println!("CAPTURE_OK {output}", output = capture.output.display()); exit.write(AppExit::Success); }
                 Err(error) => { eprintln!("CAPTURE_FAILED {error}"); exit.write(AppExit::error()); }

@@ -62,6 +62,7 @@ pub enum UsdSceneState {
 pub struct UsdSceneTimings {
     pub attempts: usize,
     pub failures: usize,
+    pub validation_reuses: usize,
     pub open: std::time::Duration,
     pub overrides: std::time::Duration,
     pub validation: std::time::Duration,
@@ -293,9 +294,15 @@ fn spawn_usd_scenes(world: &mut World) {
         }
         let profiled = world.contains_resource::<UsdSceneTimings>();
         let mut timing = UsdSceneTimings { attempts: 1, ..default() };
+        let default_composition = overrides.variants.is_empty() && overrides.attributes.is_empty();
         let opened = timed(profiled, &mut timing.open, || source.open_stage()).map_err(anyhow::Error::from).and_then(|stage| {
             timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
-            timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
+            if default_composition && source.has_default_validation() {
+                timing.validation_reuses += 1;
+            } else {
+                timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
+                if default_composition { source.record_default_validation(); }
+            }
             timed(profiled, &mut timing.textures, || decode_missing_textures(world, &stage, &source, &mut textures))?;
             Ok(stage)
         });
@@ -385,6 +392,7 @@ fn spawn_usd_scenes(world: &mut World) {
             total.open += timing.open;
             total.overrides += timing.overrides;
             total.validation += timing.validation;
+            total.validation_reuses += timing.validation_reuses;
             total.textures += timing.textures;
             total.projection += timing.projection;
         }
@@ -570,6 +578,30 @@ def Xform "Old" {}
 
     fn instance_entity(world: &World, root: Entity, path: &str) -> Entity {
         world.non_send::<UsdInstances>().entity(root, path).unwrap()
+    }
+
+    #[test]
+    fn snapshot_validation_is_reused_only_without_overrides() {
+        let (mut world, handle) = instance_world();
+        let source = UsdSource::snapshot("instances.usda", ANIMATED.as_bytes()).unwrap();
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = source.clone();
+        world.init_resource::<UsdSceneTimings>();
+        let first = world.spawn(UsdSceneRoot(handle.clone())).id();
+        let second = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(first), Some(&UsdSceneState::Ready));
+        assert_eq!(world.get::<UsdSceneState>(second), Some(&UsdSceneState::Ready));
+        assert_eq!(world.resource::<UsdSceneTimings>().attempts, 2);
+        assert_eq!(world.resource::<UsdSceneTimings>().validation_reuses, 1);
+        assert!(source.has_default_validation());
+        let overridden = world.spawn((UsdSceneRoot(handle), UsdInstanceOverrides {
+            attributes: vec![crate::instance::UsdAttributeOverride { prim: "/Old".into(), name: "visibility".into(),
+                type_name: "token".into(), value: openusd::sdf::Value::Token("invisible".into()) }], ..default()
+        })).id();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(overridden), Some(&UsdSceneState::Ready));
+        assert_eq!(world.resource::<UsdSceneTimings>().attempts, 3);
+        assert_eq!(world.resource::<UsdSceneTimings>().validation_reuses, 1);
     }
 
     #[test]

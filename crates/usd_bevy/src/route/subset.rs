@@ -133,8 +133,8 @@ impl PrimRoute for SubsetRoute {
     fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) { clear(world, entity); }
 
     fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        let read = world.get::<super::skel::CpuSubsetGeometry>(entity).map(|geometry| geometry.0.clone())
-            .or_else(|| crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time).ok().flatten());
+        let read = world.get::<super::skel::CpuSubsetGeometry>(entity).map(|geometry| std::borrow::Cow::Owned(geometry.0.clone()))
+            .or_else(|| ctx.read_mesh().ok().flatten().map(std::borrow::Cow::Borrowed));
         let Some(read) = read else {
             clear(world, entity);
             return;

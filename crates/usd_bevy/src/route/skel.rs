@@ -29,7 +29,7 @@ pub(crate) fn deformed_mesh(ctx: &RouteCtx) -> anyhow::Result<Option<crate::read
         blend_shaped_points_at(ctx.stage, ctx.path, ctx.time)?
     };
     let Some(points) = points else { return Ok(None) };
-    let Some(mut read) = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)? else { return Ok(None) };
+    let Some(mut read) = ctx.read_mesh()?.cloned() else { return Ok(None) };
     read.triangulation_points = Some(std::mem::replace(&mut read.points, points));
     read.normals = if read.normals.is_some() {
         let sample = if has_blend_shapes(ctx.stage, ctx.path) {

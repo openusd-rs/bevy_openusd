@@ -54,19 +54,18 @@ pub(crate) fn clear(world: &mut World, entity: Entity) {
 }
 
 pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyhow::Result<()> {
-    let read = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
+    let read = ctx.read_mesh()?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
-    let sample = crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, &read)?;
+    let sample = crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
     let skinned_tangents = read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY);
     let has_morphs = crate::read::skel::has_blend_shapes(ctx.stage, ctx.path);
-    let mut mesh = crate::mesh::assemble_mesh(&read, None, false);
-    if read.uvs.is_some() && !skinned_tangents && !has_morphs {
-        super::cache::generate_cached_tangents(world, &mut mesh);
-    }
+    let mut mesh = if !skinned_tangents && !has_morphs {
+        super::cache::assemble_cached_mesh(world, read)
+    } else { crate::mesh::assemble_mesh(read, None, false) };
     let morph_weights = if has_morphs {
-        Some(super::gpu_morph::prepare(ctx, &read, &mut mesh, !skinned_tangents)?)
+        Some(super::gpu_morph::prepare(ctx, read, &mut mesh, !skinned_tangents)?)
     } else { None };
-    let source_points = crate::mesh::vertex_point_indices(&read);
+    let source_points = crate::mesh::vertex_point_indices(read);
     anyhow::ensure!(source_points.len() == mesh.count_vertices(), "skin vertex map does not match render mesh");
     correct_normals(&mut mesh, &source_points, &sample.normal_corrections, morph_weights.as_deref().unwrap_or(&[]))?;
     if skinned_tangents {
@@ -95,7 +94,7 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     if let Some(weights) = morph_weights { super::gpu_morph::set_weights(world, entity, weights); }
     world.entity_mut(entity).insert(Mesh3d(handle))
         .remove::<UsdCpuSkinFallback>();
-    if crate::mesh::uses_flat_normals(&read) { super::flat_material::attach(world, entity); }
+    if crate::mesh::uses_flat_normals(read) { super::flat_material::attach(world, entity); }
     else { super::flat_material::clear(world, entity); }
     Ok(())
 }

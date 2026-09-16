@@ -60,7 +60,7 @@ impl SubdivScheme {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MeshPrimvar<T> {
     pub values: Vec<T>,
     pub interpolation: Interpolation,

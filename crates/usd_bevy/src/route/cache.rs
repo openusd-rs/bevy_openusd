@@ -15,6 +15,81 @@ use std::hash::{BuildHasher, Hash, Hasher};
 
 use bevy::platform::hash::FixedHasher;
 use bevy::prelude::*;
+use crate::read::geom::{ReadMesh, MeshPrimvar};
+
+/// Bounded geometry-input cache containing immutable assembled meshes.
+#[derive(Resource)]
+pub struct MeshAssemblyCache {
+    entries: std::collections::VecDeque<(u64, ReadMesh, Mesh, usize)>,
+    payload_bytes: usize,
+    byte_budget: usize,
+}
+
+impl Default for MeshAssemblyCache {
+    fn default() -> Self { Self::with_byte_budget(128 * 1024 * 1024) }
+}
+
+impl MeshAssemblyCache {
+    pub fn with_byte_budget(byte_budget: usize) -> Self {
+        Self { entries: default(), payload_bytes: 0, byte_budget }
+    }
+
+    pub fn retained_payload_bytes(&self) -> usize { self.payload_bytes }
+}
+
+fn same_geometry(a: &ReadMesh, b: &ReadMesh) -> bool {
+    a.points == b.points && a.triangulation_points == b.triangulation_points
+        && a.face_vertex_counts == b.face_vertex_counts && a.face_vertex_indices == b.face_vertex_indices
+        && a.hole_indices == b.hole_indices && a.orientation == b.orientation
+        && a.normals == b.normals && a.uvs == b.uvs
+        && a.display_color == b.display_color && a.display_opacity == b.display_opacity
+        && a.subdivision_scheme == b.subdivision_scheme
+}
+
+fn read_mesh_bytes(read: &ReadMesh) -> usize {
+    fn primvar<T>(value: &Option<MeshPrimvar<T>>) -> usize {
+        value.as_ref().map_or(0, |value| std::mem::size_of_val(value.values.as_slice())
+            + std::mem::size_of_val(value.indices.as_slice()))
+    }
+    std::mem::size_of_val(read.points.as_slice())
+        + read.triangulation_points.as_ref().map_or(0, |points| std::mem::size_of_val(points.as_slice()))
+        + std::mem::size_of_val(read.face_vertex_counts.as_slice())
+        + std::mem::size_of_val(read.face_vertex_indices.as_slice())
+        + std::mem::size_of_val(read.hole_indices.as_slice())
+        + primvar(&read.normals) + primvar(&read.uvs) + primvar(&read.display_color) + primvar(&read.display_opacity)
+}
+
+pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
+    world.init_resource::<MeshAssemblyCache>();
+    let mut hash = FixedHasher.build_hasher();
+    bytemuck::cast_slice::<_, u8>(&read.points).hash(&mut hash);
+    read.face_vertex_counts.hash(&mut hash);
+    read.face_vertex_indices.hash(&mut hash);
+    let signature = hash.finish();
+    let hit = world.resource::<MeshAssemblyCache>().entries.iter()
+        .position(|(key, input, _, _)| *key == signature && same_geometry(input, read));
+    if let Some(index) = hit {
+        let mut cache = world.resource_mut::<MeshAssemblyCache>();
+        let entry = cache.entries.remove(index).unwrap();
+        let mesh = entry.2.clone();
+        cache.entries.push_back(entry);
+        return mesh;
+    }
+    let mut mesh = crate::mesh::assemble_mesh(read, None, false);
+    if read.uvs.is_some() { generate_cached_tangents(world, &mut mesh); }
+    let bytes = read_mesh_bytes(read).saturating_add(mesh_payload_bytes(&mesh));
+    let mut cache = world.resource_mut::<MeshAssemblyCache>();
+    if cache.byte_budget == 0 || bytes > cache.byte_budget { return mesh; }
+    while cache.entries.len() >= 256 || bytes > cache.byte_budget.saturating_sub(cache.payload_bytes) {
+        let Some((_, _, _, removed)) = cache.entries.pop_front() else { break; };
+        cache.payload_bytes -= removed;
+    }
+    let mut input = read.clone();
+    input.subsets = Vec::new();
+    cache.entries.push_back((signature, input, mesh.clone(), bytes));
+    cache.payload_bytes += bytes;
+    mesh
+}
 
 #[derive(Resource, Default)]
 pub struct MaterialCache {
@@ -266,6 +341,44 @@ fn meshes_equal(a: &Mesh, b: &Mesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assembly_cache_checks_geometry_and_isolates_mutations() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/material_subsets.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Panels").unwrap();
+        let mut read = crate::read::geom::read_mesh_at(&stage, &path, Some(0.0)).unwrap().unwrap();
+        let mut world = World::new();
+        let expected = crate::mesh::assemble_mesh(&read, None, true);
+        let mut first = assemble_cached_mesh(&mut world, &read);
+        assert!(meshes_equal(&first, &expected));
+        first.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[9.0; 3]; first.count_vertices()]);
+        read.subsets.clear();
+        read.double_sided = !read.double_sided;
+        assert!(meshes_equal(&assemble_cached_mesh(&mut world, &read), &expected));
+        assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 1);
+        for change in 0..3 {
+            match change {
+                0 => read.normals.as_mut().unwrap().values[0] = [0.0, 1.0, 0.0],
+                1 => read.hole_indices = vec![0],
+                _ => read.orientation = crate::read::geom::Orientation::LeftHanded,
+            }
+            let reference = crate::mesh::assemble_mesh(&read, None, true);
+            assert!(meshes_equal(&assemble_cached_mesh(&mut world, &read), &reference));
+        }
+        assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 4);
+        let budget = read_mesh_bytes(&read) + mesh_payload_bytes(&expected);
+        world.insert_resource(MeshAssemblyCache::with_byte_budget(budget));
+        for offset in [1.0, 2.0, 3.0] {
+            read.points[0][0] = offset;
+            assemble_cached_mesh(&mut world, &read);
+            assert!(world.resource::<MeshAssemblyCache>().retained_payload_bytes() <= budget);
+            assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 1);
+        }
+        world.insert_resource(MeshAssemblyCache::with_byte_budget(0));
+        assert!(meshes_equal(&assemble_cached_mesh(&mut world, &read), &crate::mesh::assemble_mesh(&read, None, true)));
+        assert!(world.resource::<MeshAssemblyCache>().entries.is_empty());
+    }
 
     #[test]
     fn tangent_cache_reuses_exact_inputs_and_isolates_output_mutation() {

@@ -113,7 +113,7 @@ impl DisplayPurposes {
 
 /// What a [`PrimRoute`] needs to read the stage for one prim. Built once per
 /// prim per projection/patch and shared across every route, so the composed
-/// `typeName` is read a single time.
+/// `typeName` and mesh geometry are read once within that projection.
 pub struct RouteCtx<'a> {
     /// The live stage (source of truth).
     pub stage: &'a Stage,
@@ -123,6 +123,7 @@ pub struct RouteCtx<'a> {
     pub type_name: Option<String>,
     /// The time code to resolve animated attributes at (`None` = default time).
     pub time: Option<f64>,
+    decoded_mesh: std::cell::OnceCell<anyhow::Result<Option<crate::read::geom::ReadMesh>>>,
 }
 
 impl<'a> RouteCtx<'a> {
@@ -144,12 +145,18 @@ impl<'a> RouteCtx<'a> {
             path,
             type_name,
             time,
+            decoded_mesh: Default::default(),
         }
     }
 
     /// The prim path as a string.
     pub fn prim_str(&self) -> &str {
         self.path.as_str()
+    }
+
+    pub(crate) fn read_mesh(&self) -> anyhow::Result<Option<&crate::read::geom::ReadMesh>> {
+        self.decoded_mesh.get_or_init(|| crate::read::geom::read_mesh_at(self.stage, self.path, self.time))
+            .as_ref().map(Option::as_ref).map_err(|error| anyhow::anyhow!("{error:#}"))
     }
 }
 

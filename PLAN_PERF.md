@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0/P1 in progress; P2–P8 planned**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0–P2 in progress; P3–P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -133,7 +133,7 @@ Update status only with linked evidence and a commit.
 | --- | --- | --- | --- | --- |
 | P0 | Matched first-frame benchmark and attribution | None | M–L / medium | IN PROGRESS |
 | P1 | Cache subset products before construction | P0 attribution | M–L / medium | IN PROGRESS |
-| P2 | Cache deformation discovery and preparation | P0 | L / high | TODO |
+| P2 | Cache deformation discovery and preparation | P0 attribution | L / high | IN PROGRESS |
 | P3 | Separate validation from discarded geometry decoding | P0 | M–L / high | TODO |
 | P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | TODO |
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | TODO |
@@ -324,6 +324,24 @@ partitions, holes, both orientations and CPU/GPU deformation invalidate or fall
 back correctly. Compare Caldera/Oxbo captures and SubsetRoute CPU time against P0.
 
 ## P2 — Separate deformation structure from changing poses
+
+First increment reuses SkinRoute's local skin/morph classification in CPU
+fallback preparation and GPU attachment. CPU normal preparation no longer
+decodes default joint weights a second time just to repeat `is_skinned`.
+Standalone prototype deformation also evaluates classification once per call.
+Influence discovery uses `num_time_samples()` rather than materializing sample
+timestamps; the vendored implementation requests the composed sample count,
+including clips, and retains the existing nonzero-count semantics.
+No answer survives a projection call: live edits, independent roots/clocks,
+binding resolution and pose-dependent normal/tangent corrections remain intact.
+Persistent structural-query reuse and palette-only updates remain TODO.
+
+Verification: 576 focused release tests pass (19 ignored), covering sampled
+influences without defaults, CPU/GPU deformation and bounds. Two CPU and two
+GPU-prepared `assets/skel_influences.usda` editor runs each completed 1,000
+timeline seeks. Raw timings, asset counts, test/build logs and patch evidence
+are in `target/perf/p2-classify/`. These small-fixture runs exercise the paths;
+they do not establish a large-scene speedup or GPU first-frame acceptance.
 
 **Scope:** `read/skel.rs`, `route/skel.rs`, `route/gpu_skin.rs`,
 `route/gpu_morph.rs`, `live.rs`, focused existing deformation fixtures/tests.

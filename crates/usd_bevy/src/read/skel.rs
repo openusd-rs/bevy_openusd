@@ -28,7 +28,7 @@ pub fn is_skinned(stage: &Stage, prim: &Path) -> bool {
 fn influences_are_time_varying(stage: &Stage, path: &Path) -> bool {
     stage.prim(path.clone()).is_ok_and(|prim| {
         ["primvars:skel:jointIndices", "primvars:skel:jointWeights"].iter().any(|name|
-            prim.attribute(*name).time_sample_times().is_ok_and(|times| !times.is_empty()))
+            prim.attribute(*name).num_time_samples().is_ok_and(|count| count != 0))
     })
 }
 

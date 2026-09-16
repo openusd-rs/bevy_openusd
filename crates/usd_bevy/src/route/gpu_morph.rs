@@ -48,7 +48,7 @@ pub(crate) fn prepare(ctx: &RouteCtx, read: &crate::read::geom::ReadMesh, mesh: 
     let authored = read.normals.is_some();
     anyhow::ensure!(crate::mesh::uses_flat_normals(&read) || authored,
         "GPU morph normal mode is unsupported");
-    let sample = crate::read::skel::morph_sample(ctx.stage, ctx.path, ctx.time)?;
+    let sample = crate::read::skel::morph_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
     anyhow::ensure!(!sample.targets.is_empty() && sample.targets.len() <= MAX_MORPH_WEIGHTS, "unsupported morph target count");
     let mapping = crate::mesh::vertex_point_indices(&read);
     anyhow::ensure!(!mapping.is_empty() && mapping.len() == mesh.count_vertices(), "invalid morph vertex mapping");

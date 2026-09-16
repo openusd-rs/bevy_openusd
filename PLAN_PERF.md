@@ -343,6 +343,23 @@ timeline seeks. Raw timings, asset counts, test/build logs and patch evidence
 are in `target/perf/p2-classify/`. These small-fixture runs exercise the paths;
 they do not establish a large-scene speedup or GPU first-frame acceptance.
 
+Geometry-reuse increment: CPU skin/blend preparation and CPU/GPU morph sampling
+now accept the route's already decoded `ReadMesh`. CPU normal-target sampling
+uses the same original sample, not a second decode or the deformed point array.
+Standalone public readers retain their existing stage-reading behavior;
+standalone skinning still checks bindings/influences before decoding geometry.
+No persistent cache or cross-frame ownership was added. The skinning path also
+borrows unmorphed base points rather than allocating another fallback copy.
+
+Verification: 577 focused release tests pass (19 ignored). A new five-pose
+comparison checks borrowed versus standalone skin results and morph position,
+normal-target and weight arrays for skin-only and combined animated fixtures.
+Two CPU and two GPU-prepared runs of `skel_morph_blended_animated.usda` each
+completed 1,000 timeline seeks with stable peak asset counts. Logs, patch and
+test/build evidence are in `target/perf/p2-mesh/`. Registry mesh-read counters
+still exclude independent standalone reads, so those counters alone are not
+proof of the removed duplicate reads. No large-scene speedup is asserted.
+
 **Scope:** `read/skel.rs`, `route/skel.rs`, `route/gpu_skin.rs`,
 `route/gpu_morph.rs`, `live.rs`, focused existing deformation fixtures/tests.
 

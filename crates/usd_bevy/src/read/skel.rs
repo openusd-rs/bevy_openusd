@@ -78,6 +78,10 @@ pub struct MorphSample {
 /// Expands sparse shapes and inbetweens into reusable linear morph channels.
 pub fn morph_sample(stage: &Stage, path: &Path, time: Option<f64>) -> anyhow::Result<MorphSample> {
     let mesh = super::geom::read_mesh_at(stage, path, time)?.ok_or_else(|| anyhow::anyhow!("missing morph mesh"))?;
+    morph_sample_with_mesh(stage, path, time, &mesh)
+}
+
+pub(crate) fn morph_sample_with_mesh(stage: &Stage, path: &Path, time: Option<f64>, mesh: &super::geom::ReadMesh) -> anyhow::Result<MorphSample> {
     let binding = binding_of(stage, path).ok_or_else(|| anyhow::anyhow!("missing morph binding"))?;
     let skeleton = binding.skeleton.clone().ok_or_else(|| anyhow::anyhow!("missing morph skeleton"))?;
     let animation = animation_source(stage, &skeleton, &binding).ok_or_else(|| anyhow::anyhow!("missing morph animation"))?;
@@ -254,7 +258,7 @@ fn cached_normal_skin_matrix(matrices: &[bevy::math::Mat4], cache: &mut [Option<
 /// Weights come from the bound `SkelAnimation`, mapped to the mesh's blend
 /// shapes *by name* (the animation's `blendShapes` order need not match the
 /// mesh's). Inbetween shapes are resolved via [`resolve_blend_shape_offsets`].
-fn blend_shape_deform(
+pub(crate) fn blend_shape_deform(
     stage: &Stage,
     mesh_path: &Path,
     rest: &[[f32; 3]],
@@ -450,6 +454,12 @@ pub fn skinned_points_at(
     mesh_path: &Path,
     time: Option<f64>,
 ) -> anyhow::Result<Option<Vec<[f32; 3]>>> {
+    skinned_points_with_mesh(stage, mesh_path, time, None)
+}
+
+pub(crate) fn skinned_points_with_mesh(
+    stage: &Stage, mesh_path: &Path, time: Option<f64>, mesh: Option<&super::geom::ReadMesh>,
+) -> anyhow::Result<Option<Vec<[f32; 3]>>> {
     let Some(binding) = binding_of(stage, mesh_path) else {
         return Ok(None);
     };
@@ -486,11 +496,18 @@ pub fn skinned_points_at(
     let skel_xforms =
         resolver.compute_skinning_transforms_from_local(&locals, gf::Matrix4d::IDENTITY);
 
-    let Some(mesh) = super::geom::read_mesh_at(stage, mesh_path, time)? else {
-        return Ok(None);
+    let decoded;
+    let mesh = match mesh {
+        Some(mesh) => mesh,
+        None => {
+            decoded = super::geom::read_mesh_at(stage, mesh_path, time)?;
+            let Some(mesh) = decoded.as_ref() else { return Ok(None) };
+            mesh
+        }
     };
     // Canonical UsdSkel order: morph blend shapes first, then skin the result.
-    let rest = blend_shape_deform(stage, mesh_path, &mesh.points, time).unwrap_or(mesh.points);
+    let morphed = blend_shape_deform(stage, mesh_path, &mesh.points, time);
+    let rest = morphed.as_deref().unwrap_or(&mesh.points);
     let pts: Vec<gf::Vec3f> = rest.iter().map(|p| gf::Vec3f::from(*p)).collect();
     let components = if skinning.is_rigidly_deformed() { 1 } else { pts.len() };
     let expected = components.checked_mul(skinning.num_influences_per_component());
@@ -590,6 +607,28 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn borrowed_geometry_deformation_matches_standalone_readers() {
+        for (file, prim) in [("skel_influences.usda", "/Test/Bar"),
+            ("skel_morph_blended_animated.usda", "/Test/Face")] {
+            let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets").join(file);
+            let stage = crate::UsdSource::new(file.to_str().unwrap(), std::fs::read(&file).unwrap()).unwrap().open_stage().unwrap();
+            let path = openusd::sdf::path(prim).unwrap();
+            for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+                let read = super::super::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+                assert_eq!(super::skinned_points_with_mesh(&stage, &path, Some(time), Some(&read)).unwrap(),
+                    super::skinned_points_at(&stage, &path, Some(time)).unwrap());
+                if super::has_blend_shapes(&stage, &path) {
+                    let borrowed = super::morph_sample_with_mesh(&stage, &path, Some(time), &read).unwrap();
+                    let standalone = super::morph_sample(&stage, &path, Some(time)).unwrap();
+                    assert_eq!(borrowed.targets, standalone.targets);
+                    assert_eq!(borrowed.normal_targets, standalone.normal_targets);
+                    assert_eq!(borrowed.weights, standalone.weights);
+                }
+            }
+        }
+    }
+
     #[test]
     fn normal_palette_is_lazy_and_sample_local() {
         use bevy::math::{Mat3, Mat4, Vec3};

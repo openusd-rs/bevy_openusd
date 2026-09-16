@@ -10,7 +10,7 @@
 use bevy::prelude::*;
 
 use super::{PrimRoute, RouteCtx};
-use crate::read::skel::{blend_shaped_points_at, has_blend_shapes, is_skinned, skinned_points_at};
+use crate::read::skel::{has_blend_shapes, is_skinned};
 
 /// Replaces a skinned / blend-shaped mesh's geometry with its deformed points.
 pub struct SkinRoute;
@@ -27,17 +27,18 @@ pub(crate) fn deformed_mesh(ctx: &RouteCtx) -> anyhow::Result<Option<crate::read
 }
 
 fn deformed_mesh_with_kinds(ctx: &RouteCtx, skinned: bool, blended: bool) -> anyhow::Result<Option<crate::read::geom::ReadMesh>> {
+    let Some(source) = ctx.read_mesh()? else { return Ok(None) };
     let points = if skinned {
-        skinned_points_at(ctx.stage, ctx.path, ctx.time)?
+        crate::read::skel::skinned_points_with_mesh(ctx.stage, ctx.path, ctx.time, Some(source))?
     } else {
-        blend_shaped_points_at(ctx.stage, ctx.path, ctx.time)?
+        crate::read::skel::blend_shape_deform(ctx.stage, ctx.path, &source.points, ctx.time)
     };
     let Some(points) = points else { return Ok(None) };
-    let Some(mut read) = ctx.read_mesh()?.cloned() else { return Ok(None) };
+    let mut read = source.clone();
     read.triangulation_points = Some(std::mem::replace(&mut read.points, points));
     read.normals = if read.normals.is_some() {
         let sample = if blended {
-            crate::read::skel::morph_sample(ctx.stage, ctx.path, ctx.time)?
+            crate::read::skel::morph_sample_with_mesh(ctx.stage, ctx.path, ctx.time, source)?
         } else { crate::read::skel::MorphSample { targets: Vec::new(), normal_targets: Vec::new(), weights: Vec::new() } };
         let (mut normals, points) = crate::read::skel::morph_normals(&read, &sample)?;
         if skinned { crate::read::skel::skin_normals(ctx.stage, ctx.path, ctx.time, &mut normals, &points, read.points.len())?; }

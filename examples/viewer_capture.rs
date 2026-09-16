@@ -287,6 +287,7 @@ fn main() -> AppExit {
         .disable::<bevy::winit::WinitPlugin>())
         .add_plugins((ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 60.0)),
             UsdPlugin, UsdAssetPlugin, environment::ViewerEnvironmentPlugin))
+        .insert_resource(usd_bevy::UsdProjectionBudget(Duration::MAX))
         .add_systems(Startup, setup)
         .add_systems(Update, (select_authored_camera, reverse_capture_clocks).chain())
         .add_systems(PostUpdate, configure_shadow_maps)
@@ -359,12 +360,22 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
 
 fn fit_capture_grid(
     capture: Res<Capture>,
+    states: Query<&usd_bevy::asset::UsdSceneState, With<CaptureInstance>>,
+    mut fitted: Local<Option<Vec<u64>>>,
     meshes: Query<(&Mesh3d, Option<&bevy::camera::primitives::Aabb>, &GlobalTransform, &InheritedVisibility,
         Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&bevy::mesh::morph::MeshMorphWeights>)>,
     mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
     mut grids: Query<(&mut Transform, &mut bevy::dev_tools::infinite_grid::InfiniteGridSettings), With<environment::ViewerGrid>>,
 ) {
     if capture.requested { return; }
+    if states.iter().count() != capture.instance_times.len()
+        || states.iter().any(|state| !matches!(state, usd_bevy::asset::UsdSceneState::Ready)) {
+        *fitted = None;
+        return;
+    }
+    let clocks: Vec<_> = capture.instance_times.iter().map(|time| time.to_bits()).collect();
+    if capture.ready_frames == 0 { return; }
+    if fitted.as_ref() == Some(&clocks) { return; }
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
     for (mesh, bounds, transform, visibility, skin, morph) in &meshes {
@@ -379,6 +390,7 @@ fn fit_capture_grid(
             settings.scale = scale;
             settings.fadeout_distance = fade;
         }
+        *fitted = Some(clocks);
     }
 }
 
@@ -609,6 +621,38 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn grid_fit_waits_for_scene_and_repeats_only_for_new_clocks_or_loading() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>();
+        let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();
+        capture.ready_frames = 1;
+        app.insert_resource(capture);
+        app.add_systems(Update, fit_capture_grid);
+        let root = app.world_mut().spawn((CaptureInstance(0), usd_bevy::asset::UsdSceneState::Loading)).id();
+        let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(Mesh::from(Cuboid::default()));
+        let mesh = app.world_mut().spawn((Mesh3d(handle), GlobalTransform::from_translation(Vec3::Y * 5.0), InheritedVisibility::VISIBLE)).id();
+        let grid = app.world_mut().spawn((environment::ViewerGrid, Transform::default(), bevy::dev_tools::infinite_grid::InfiniteGridSettings::default())).id();
+        app.update();
+        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, 0.0);
+        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Ready);
+        app.update();
+        let first = app.world().get::<Transform>(grid).unwrap().translation.y;
+        assert_ne!(first, 0.0);
+        app.world_mut().entity_mut(mesh).insert(GlobalTransform::from_translation(Vec3::Y * 10.0));
+        app.update();
+        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
+        app.world_mut().resource_mut::<Capture>().instance_times[0] = 1.0;
+        app.update();
+        assert_ne!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
+        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Loading);
+        app.update();
+        app.world_mut().entity_mut(mesh).insert(GlobalTransform::from_translation(Vec3::Y * 5.0));
+        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Ready);
+        app.update();
+        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
+    }
+
     #[test]
     fn instance_spacing_is_finite_positive_and_atomic() {
         let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();

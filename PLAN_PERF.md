@@ -567,6 +567,27 @@ Record reload latency and changed/unchanged bytes for single and multiple roots.
 
 ## Verification commands
 
+Workspace checkpoint, 2026-09-17, implementation `cc09616`:
+
+- `CARGO_BUILD_JOBS=4 make check-all CARGO='cargo --offline'`: passed. Three
+  existing camera-plan dead-code warnings remain; no new compiler errors.
+- `CARGO_BUILD_JOBS=4 make test-all CARGO='cargo --offline'`: 726 tests passed
+  across 34 suites, zero failures, 19 ignored. This includes viewer, examples,
+  integration targets and the core library, not just the focused release lane.
+- `USD_CAT="$(command -v usdcat)" CARGO_BUILD_JOBS=4 make test-native
+  CARGO='cargo --offline'`: 14 native persistence-export tests passed against
+  OpenUSD 25.05.01. Four native deformation comparisons were separately verified
+  for the P2 palette increment; the remaining ignored large-scene prerequisite
+  is not treated as passed by either gate.
+
+Full command logs, validated commit and native tool path are retained in
+`target/perf/integration/`. These gates validate the implemented increments;
+they do not complete P0–P3 or prove the ≤5× first-complete-frame requirement.
+Before implementing demand-driven residency, measure unique asset bytes that
+are used by visible entities versus exclusively hidden entities: Caldera's
+4,621 hierarchy-visible mesh entities alone do not quantify avoidable work
+because visible and hidden entities can share the same mesh assets.
+
 Run from repository root. These existing commands do not imply unimplemented
 benchmark options already exist. Add and document P0's new invocation when it
 lands; do not substitute the current capture endpoint for that acceptance gate.

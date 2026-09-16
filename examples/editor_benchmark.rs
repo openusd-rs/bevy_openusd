@@ -28,6 +28,10 @@ fn asset_counts(world: &World) -> [usize; 3] {
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(reads) = world.get_resource::<usd_bevy::route::MeshReadTiming>() {
+        eprintln!("mesh_read_profile phase={phase} samples={samples} requests={} decodes={} missing={} errors={} array_bytes={} elapsed_ms={:.3} scope=registry-contexts overlaps=route-matching-and-application",
+            reads.requests, reads.decodes, reads.missing, reads.errors, reads.array_bytes, reads.elapsed.as_secs_f64()*1000.0);
+    }
     if let Some(metrics) = world.get_resource::<usd_bevy::route::cache::MeshCacheMetrics>() {
         for (name, value) in &metrics.0 {
             eprintln!("mesh_cache_profile phase={phase} samples={samples} counter={name} value={value}");
@@ -77,6 +81,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
         app.init_resource::<usd_bevy::route::ProjectionTimings>();
         app.init_resource::<usd_bevy::route::cache::MeshCacheMetrics>();
+        app.init_resource::<usd_bevy::route::MeshReadTiming>();
     }
     app.update();
     let bridge = app.world().resource::<EditorBridge>().clone();
@@ -104,6 +109,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
             if iteration == 4 {
                 if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionTimings>() { timings.0.clear(); }
                 if let Some(mut metrics) = app.world_mut().get_resource_mut::<usd_bevy::route::cache::MeshCacheMetrics>() { metrics.0.clear(); }
+                if let Some(mut reads) = app.world_mut().get_resource_mut::<usd_bevy::route::MeshReadTiming>() { *reads = default(); }
             }
             let normalized = seek.clock(iteration);
             let time = if seek == SeekMode::Timeline {

@@ -124,6 +124,7 @@ pub struct RouteCtx<'a> {
     /// The time code to resolve animated attributes at (`None` = default time).
     pub time: Option<f64>,
     decoded_mesh: std::cell::OnceCell<anyhow::Result<Option<crate::read::geom::ReadMesh>>>,
+    read_timing: std::cell::Cell<Option<MeshReadTiming>>,
 }
 
 impl<'a> RouteCtx<'a> {
@@ -146,6 +147,7 @@ impl<'a> RouteCtx<'a> {
             type_name,
             time,
             decoded_mesh: Default::default(),
+            read_timing: Default::default(),
         }
     }
 
@@ -155,9 +157,52 @@ impl<'a> RouteCtx<'a> {
     }
 
     pub(crate) fn read_mesh(&self) -> anyhow::Result<Option<&crate::read::geom::ReadMesh>> {
-        self.decoded_mesh.get_or_init(|| crate::read::geom::read_mesh_at(self.stage, self.path, self.time))
+        if let Some(mut timing) = self.read_timing.get() {
+            timing.requests += 1;
+            self.read_timing.set(Some(timing));
+        }
+        self.decoded_mesh.get_or_init(|| {
+            let started = self.read_timing.get().map(|_| std::time::Instant::now());
+            let result = crate::read::geom::read_mesh_at(self.stage, self.path, self.time);
+            if let Some(started) = started {
+                let mut timing = self.read_timing.get().unwrap();
+                timing.elapsed += started.elapsed();
+                timing.decodes += 1;
+                match &result {
+                    Ok(Some(read)) => timing.array_bytes += cache::read_mesh_bytes(read) as u64,
+                    Ok(None) => timing.missing += 1,
+                    Err(_) => timing.errors += 1,
+                }
+                self.read_timing.set(Some(timing));
+            }
+            result
+        })
             .as_ref().map(Option::as_ref).map_err(|error| anyhow::anyhow!("{error:#}"))
     }
+
+    fn report_read_timing(&self, world: &mut World) {
+        if let Some(timing) = self.read_timing.get()
+            && let Some(mut total) = world.get_resource_mut::<MeshReadTiming>() {
+            total.requests += timing.requests;
+            total.decodes += timing.decodes;
+            total.missing += timing.missing;
+            total.errors += timing.errors;
+            total.array_bytes += timing.array_bytes;
+            total.elapsed += timing.elapsed;
+        }
+    }
+}
+
+/// Opt-in mesh reads through registry contexts; elapsed time overlaps route timings.
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct MeshReadTiming {
+    pub requests: u64,
+    pub decodes: u64,
+    pub missing: u64,
+    pub errors: u64,
+    /// Returned geometry array payload, excluding subset data and allocator overhead.
+    pub array_bytes: u64,
+    pub elapsed: std::time::Duration,
 }
 
 /// One prim-schema → component mapping. Object-safe so routes can be boxed and
@@ -283,9 +328,11 @@ impl SchemaRegistry {
     /// resolving animated attributes at the world's [`StageTime`] (if any).
     pub fn project_prim(&self, stage: &Stage, path: &Path, world: &mut World, entity: Entity) {
         let ctx = RouteCtx::at(stage, path, time_of(world));
+        if world.contains_resource::<MeshReadTiming>() { ctx.read_timing.set(Some(MeshReadTiming::default())); }
         for route in &self.routes {
             run_route(route.as_ref(), &ctx, world, entity, None);
         }
+        ctx.report_read_timing(world);
     }
 
     /// Run every matching route's [`patch`](PrimRoute::patch) on `entity`,
@@ -299,9 +346,11 @@ impl SchemaRegistry {
         changed: &[&str],
     ) {
         let ctx = RouteCtx::at(stage, path, time_of(world));
+        if world.contains_resource::<MeshReadTiming>() { ctx.read_timing.set(Some(MeshReadTiming::default())); }
         for route in &self.routes {
             run_route(route.as_ref(), &ctx, world, entity, Some(changed));
         }
+        ctx.report_read_timing(world);
     }
 }
 
@@ -340,6 +389,36 @@ fn time_of(world: &World) -> Option<f64> {
 #[cfg(test)]
 mod timing_tests {
     use super::*;
+
+    struct ReadsMesh;
+    impl PrimRoute for ReadsMesh {
+        fn matches(&self, ctx: &RouteCtx) -> bool { ctx.read_mesh().unwrap().is_some() }
+        fn project(&self, ctx: &RouteCtx, _: &mut World, _: Entity) {
+            assert!(ctx.read_mesh().unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn mesh_read_timing_counts_shared_reads_once_per_context() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/material_subsets.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Panels").unwrap();
+        let read = crate::read::geom::read_mesh(&stage, &path).unwrap().unwrap();
+        let mut registry = SchemaRegistry::new();
+        registry.register(ReadsMesh);
+        registry.register(ReadsMesh);
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        registry.project_prim(&stage, &path, &mut world, entity);
+        assert!(!world.contains_resource::<MeshReadTiming>());
+        world.init_resource::<MeshReadTiming>();
+        registry.project_prim(&stage, &path, &mut world, entity);
+        registry.patch_prim(&stage, &path, &mut world, entity, &["points"]);
+        registry.project_prim(&stage, &openusd::sdf::path("/").unwrap(), &mut world, entity);
+        let reads = world.resource::<MeshReadTiming>();
+        assert_eq!((reads.requests, reads.decodes, reads.missing, reads.errors), (10, 3, 1, 0));
+        assert_eq!(reads.array_bytes, 2 * cache::read_mesh_bytes(&read) as u64);
+    }
 
     struct Matches;
     impl PrimRoute for Matches {

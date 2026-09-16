@@ -158,6 +158,27 @@ mean removed cache entries, not memory freed: entities may still own assets.
 Absent counter keys mean zero. These counters do not constitute GPU readiness
 or a first-complete-frame benchmark; the remainder of P0 is still outstanding.
 
+Second increment: opt-in `route::MeshReadTiming` measures geometry reads through
+registry-owned `RouteCtx` objects. It distinguishes requests from actual reads
+shared by the context's `OnceCell`, including missing and failed reads. Returned
+array bytes exclude material subsets and allocator overhead. Elapsed time includes
+geometry/primvar/subset resolution and overlaps route matching/application;
+never add it to route time. Direct reads outside registry contexts, validation,
+animation discovery and standalone nested contexts are not included. Benchmark
+reporting and seek-warmup reset use the same `USD_PROFILE_ROUTES` switch.
+
+Second-increment evidence: `target/perf/p0-reads/` contains the patch, base commit,
+release test/build logs and two runs per scene. The focused suite passes 574
+tests, with 19 ignored. Caldera recorded 55,642 requests but only 19,156 actual
+context reads, returning 1,807,177,852 geometry-array bytes per open; read time
+was 5.832/5.839 s and assembly/tangent-build time 4.453/4.042 s. Oxbo recorded
+3,524 requests, 1,762 reads and 63,628,972 returned bytes; reads took 87/84 ms
+and assembly 305/298 ms. Both had zero missing/error context reads. Other
+project builds and a running Gearbox process overlapped these runs, so use the
+timings for attribution rather than speedup acceptance. Mesh/entity/vertex
+counts remained unchanged. Remaining P0 work includes validation/animation and
+GPU attribution plus the actual-viewer complete-frame manifest and benchmark.
+
 Initial instrumentation verification (2026-09-16): focused release suite passes
 573 tests, with 19 ignored; release editor benchmark builds. Evidence resides in
 `target/perf/p0-cache/`, including the base commit and instrumentation patch.

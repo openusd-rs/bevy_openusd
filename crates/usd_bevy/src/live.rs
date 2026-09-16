@@ -534,6 +534,7 @@ pub struct ProjectionJob {
     root: Entity,
     pending: std::collections::VecDeque<openusd::sdf::Path>,
     total: usize,
+    materials: Option<crate::route::material::ProjectionMaterials>,
 }
 
 impl ProjectionJob {
@@ -557,8 +558,8 @@ impl ProjectionJob {
             pending.push_back(path.clone());
         });
         let total = pending.len();
-        world.insert_non_send(crate::route::material::ProjectionMaterials::new(stage));
-        (Self { root, pending, total }, map)
+        let materials = Some(crate::route::material::ProjectionMaterials::new(stage));
+        (Self { root, pending, total, materials }, map)
     }
 
     /// Project prims until `budget` is spent; `true` once nothing is left.
@@ -569,6 +570,9 @@ impl ProjectionJob {
         map: &mut PrimEntities,
         budget: std::time::Duration,
     ) -> bool {
+        if self.pending.is_empty() { self.materials = None; return true; }
+        let previous_materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+        if let Some(materials) = self.materials.take() { world.insert_non_send(materials); }
         let registry = registry_of(world);
         let started = std::time::Instant::now();
         while let Some(path) = self.pending.pop_front() {
@@ -588,9 +592,9 @@ impl ProjectionJob {
                 break;
             }
         }
-        if self.pending.is_empty() {
-            world.remove_non_send::<crate::route::material::ProjectionMaterials>();
-        }
+        let materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+        if !self.pending.is_empty() { self.materials = materials; }
+        if let Some(previous) = previous_materials { world.insert_non_send(previous); }
         self.pending.is_empty()
     }
 

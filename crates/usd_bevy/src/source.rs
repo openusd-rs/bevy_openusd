@@ -34,6 +34,7 @@ pub struct UsdSource {
     files: Arc<BTreeMap<String, Arc<[u8]>>>,
     filesystem: bool,
     validated_default: Arc<Mutex<Option<u64>>>,
+    default_textures: Arc<Mutex<Option<(u64, Arc<BTreeSet<(String, bool)>>)>>>,
 }
 
 impl UsdSource {
@@ -73,6 +74,7 @@ impl UsdSource {
             files: Arc::default(),
             filesystem: true,
             validated_default: Arc::default(),
+            default_textures: Arc::default(),
         })
     }
 
@@ -113,6 +115,20 @@ impl UsdSource {
         }
         .open_asset(&ResolvedPath::new(identifier))?
         .read_all()
+    }
+
+    /// `default_composition` requires a freshly opened stage without overrides or edits.
+    pub(crate) fn texture_requests(&self, stage: &Stage, default_composition: bool) -> Result<Arc<BTreeSet<(String, bool)>>, String> {
+        let reusable = default_composition && !self.filesystem;
+        if reusable && let Some((revision, requests)) = &*self.default_textures.lock().expect("source textures")
+            && *revision == self.identity {
+            return Ok(requests.clone());
+        }
+        let requests = Arc::new(Self::stage_texture_requests(stage)?);
+        if reusable {
+            *self.default_textures.lock().expect("source textures") = Some((self.identity, requests.clone()));
+        }
+        Ok(requests)
     }
 
     pub(crate) fn stage_texture_requests(stage: &Stage) -> Result<BTreeSet<(String, bool)>, String> {
@@ -596,6 +612,82 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn package_root_lookup_reads_directory_without_copying_payload() {
+        use super::*;
+        use std::io::Write;
+        use openusd::sdf::FileFormat;
+        struct CountedAsset(Cursor<Arc<[u8]>>, Arc<AtomicU64>);
+        impl Read for CountedAsset {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let count = self.0.read(buffer)?;
+                self.1.fetch_add(count as u64, Ordering::Relaxed);
+                Ok(count)
+            }
+        }
+        impl Seek for CountedAsset {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> { self.0.seek(position) }
+        }
+        impl Asset for CountedAsset {
+            fn size(&self) -> io::Result<u64> { Ok(self.0.get_ref().len() as u64) }
+        }
+        struct CountedResolver(Arc<[u8]>, Arc<AtomicU64>);
+        impl Resolver for CountedResolver {
+            fn create_identifier(&self, path: &str, _: Option<&ResolvedPath>) -> String { path.into() }
+            fn resolve(&self, path: &str) -> Option<ResolvedPath> { Some(ResolvedPath::new(path)) }
+            fn resolve_for_new_asset(&self, path: &str) -> Option<ResolvedPath> { self.resolve(path) }
+            fn open_asset(&self, _: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
+                Ok(Box::new(CountedAsset(Cursor::new(self.0.clone()), self.1.clone())))
+            }
+        }
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        archive.start_file("root.usda", options).unwrap();
+        archive.write_all(b"#usda 1.0\n").unwrap();
+        archive.start_file("payload.bin", options).unwrap();
+        archive.write_all(&vec![42; 4 * 1024 * 1024]).unwrap();
+        let bytes: Arc<[u8]> = archive.finish().unwrap().into_inner().into();
+        let read = Arc::new(AtomicU64::new(0));
+        let resolver = CountedResolver(bytes.clone(), read.clone());
+        let path = ResolvedPath::new("memory.usdz");
+        let resolved = openusd::usdz::UsdzFileFormat.resolve_layer(&resolver, &path).unwrap();
+        assert_eq!(resolved.to_string(), "memory.usdz[root.usda]");
+        assert!(read.load(Ordering::Relaxed) < bytes.len() as u64 / 4);
+        let invalid = CountedResolver(Arc::from(b"not a zip".as_slice()), read);
+        assert_eq!(openusd::usdz::UsdzFileFormat.resolve_layer(&invalid, &path), Some(path));
+    }
+
+    #[test]
+    fn texture_manifest_reuse_requires_an_unchanged_default_snapshot() {
+        use super::*;
+        let bytes = b"#usda 1.0\ndef DomeLight \"Sky\" { asset inputs:texture:file = @sky.exr@ }\n";
+        let mut source = UsdSource::snapshot("textures.usda", bytes.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let first = source.texture_requests(&stage, true).unwrap();
+        assert_eq!(first.len(), 1);
+        let independent = source.clone().open_stage().unwrap();
+        assert!(Arc::ptr_eq(&first, &source.texture_requests(&independent, true).unwrap()));
+        stage.attribute("/Sky.inputs:texture:file").unwrap().set(openusd::sdf::Value::AssetPath(
+            openusd::sdf::AssetPath::new("changed.exr"))).unwrap();
+        let edited = source.texture_requests(&stage, false).unwrap();
+        assert_ne!(*first, *edited);
+        assert!(Arc::ptr_eq(&first, &source.texture_requests(&independent, true).unwrap()));
+        let dependency = UsdSource::snapshot("other.usda", b"#usda 1.0\n".as_slice()).unwrap();
+        let changed = source.with_dependency(&dependency).unwrap();
+        let second = changed.texture_requests(&changed.open_stage().unwrap(), true).unwrap();
+        assert_eq!(*first, *second);
+        assert!(!Arc::ptr_eq(&first, &second));
+        source.replace_file_bytes(source.identifier().to_owned(), b"#usda 1.0\n".to_vec());
+        assert!(source.texture_requests(&source.open_stage().unwrap(), true).unwrap().is_empty());
+        let disk = UsdSource::new("textures.usda", bytes.as_slice()).unwrap();
+        let stage = disk.open_stage().unwrap();
+        let a = disk.texture_requests(&stage, true).unwrap();
+        let b = disk.texture_requests(&stage, true).unwrap();
+        assert_eq!(*a, *b);
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert!(disk.default_textures.lock().unwrap().is_none());
+    }
+
     #[test]
     fn default_validation_is_snapshot_and_revision_bound() {
         let mut source = super::UsdSource::snapshot("proof.usda", b"#usda 1.0\ndef Xform \"M\" {}\n".as_slice()).unwrap();

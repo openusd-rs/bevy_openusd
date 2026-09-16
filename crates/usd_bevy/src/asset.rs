@@ -115,9 +115,9 @@ impl AssetLoader for UsdAssetLoader {
                 if missing.is_empty() {
                     let stage = result.map_err(std::io::Error::other)?;
                     let mut textures = bevy::platform::collections::HashMap::default();
-                    for (index, (path, srgb)) in UsdSource::stage_texture_requests(&stage)
+                    for (index, (path, srgb)) in source.texture_requests(&stage, true)
                         .map_err(std::io::Error::other)?
-                        .into_iter()
+                        .iter().cloned()
                         .enumerate()
                     {
                         let bytes = source.read_asset(&path)?;
@@ -184,9 +184,13 @@ pub struct UsdAssetPlugin;
 /// Main-thread time one frame may spend projecting scene roots. A stage
 /// larger than that is spread over frames and its root stays
 /// [`UsdSceneState::Loading`] until the last prim is in. `Duration::MAX`
-/// projects everything at once.
+/// projects everything at once. Finite budgets are shared across loading roots;
+/// a single prim's synchronous routes may exceed the budget.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct UsdProjectionBudget(pub std::time::Duration);
+
+#[derive(Resource, Default)]
+struct ProjectionTurn(Option<Entity>);
 
 impl Default for UsdProjectionBudget {
     fn default() -> Self {
@@ -303,7 +307,7 @@ fn spawn_usd_scenes(world: &mut World) {
                 timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
                 if default_composition { source.record_default_validation(); }
             }
-            timed(profiled, &mut timing.textures, || decode_missing_textures(world, &stage, &source, &mut textures))?;
+            timed(profiled, &mut timing.textures, || decode_missing_textures(world, &stage, &source, &mut textures, default_composition))?;
             Ok(stage)
         });
         timing.failures = usize::from(opened.is_err());
@@ -341,7 +345,7 @@ fn spawn_usd_scenes(world: &mut World) {
                         runtime.map
                     } else {
                         let (mut started, mut map) = ProjectionJob::begin(world, &live.stage, entity);
-                        if !started.step(world, &live.stage, &mut map, budget) {
+                        if budget != std::time::Duration::MAX || !started.step(world, &live.stage, &mut map, budget) {
                             job = Some(started);
                         }
                         map
@@ -431,7 +435,7 @@ fn switch_variants_in_place(
     }
     // This switch is reconciled here; the live-edit pass must not redo it.
     let _ = runtime.live.drain_changes();
-    if let Err(error) = decode_missing_textures(world, &runtime.live.stage, source, &mut runtime.textures.0) {
+    if let Err(error) = decode_missing_textures(world, &runtime.live.stage, source, &mut runtime.textures.0, false) {
         bevy::log::warn!("textures after a variant switch: {error}");
     }
     let previous_time = world.remove_resource::<StageTime>();
@@ -496,9 +500,10 @@ fn decode_missing_textures(
     stage: &openusd::usd::Stage,
     source: &UsdSource,
     textures: &mut bevy::platform::collections::HashMap<(String, bool), Handle<Image>>,
+    default_composition: bool,
 ) -> anyhow::Result<()> {
-    let requests = UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?;
-    let missing: Vec<_> = requests.into_iter().filter(|key| !textures.contains_key(key)).collect();
+    let requests = source.texture_requests(stage, default_composition).map_err(anyhow::Error::msg)?;
+    let missing: Vec<_> = requests.iter().filter(|key| !textures.contains_key(*key)).cloned().collect();
     if missing.is_empty() { return Ok(()); }
     anyhow::ensure!(world.contains_resource::<Assets<Image>>(), "image assets are unavailable");
     for (path, srgb) in missing {
@@ -521,17 +526,32 @@ fn decode_missing_textures(
 /// Spend this frame's budget on the roots whose projection is still running;
 /// a root whose last prim lands becomes `Ready`.
 fn continue_projections(world: &mut World, instances: &mut UsdInstances, budget: std::time::Duration) {
-    for (&root, runtime) in &mut instances.roots {
+    let mut roots: Vec<_> = instances.roots.iter().filter_map(|(&root, runtime)| runtime.job.is_some().then_some(root)).collect();
+    roots.sort_unstable();
+    if let Some(previous) = world.get_resource::<ProjectionTurn>().and_then(|turn| turn.0) {
+        let start = roots.partition_point(|root| *root <= previous);
+        if start < roots.len() { roots.rotate_left(start); }
+    }
+    let started = std::time::Instant::now();
+    for (index, root) in roots.into_iter().enumerate() {
+        let remaining = budget.saturating_sub(started.elapsed());
+        if index != 0 && remaining.is_zero() { break; }
+        world.insert_resource(ProjectionTurn(Some(root)));
+        let runtime = instances.roots.get_mut(&root).unwrap();
         let Some(job) = runtime.job.as_mut() else {
             continue;
         };
-        let current = world.get::<UsdInstanceTime>(root).map_or(0.0, |time| time.current);
+        let current = runtime.sampled;
         let previous_time = world.remove_resource::<StageTime>();
         let previous_animated = world.remove_resource::<AnimatedPrims>();
         let previous_textures = world.remove_resource::<SnapshotTextures>();
         world.insert_resource(StageTime { current });
         world.insert_resource(runtime.textures.clone());
-        let done = job.step(world, &runtime.live.stage, &mut runtime.map, budget);
+        let profiled = world.contains_resource::<UsdSceneTimings>().then(std::time::Instant::now);
+        let done = job.step(world, &runtime.live.stage, &mut runtime.map, remaining);
+        if let Some(started) = profiled {
+            world.resource_mut::<UsdSceneTimings>().projection += started.elapsed();
+        }
         world.remove_resource::<SnapshotTextures>();
         world.remove_resource::<StageTime>();
         world.remove_resource::<AnimatedPrims>();
@@ -578,6 +598,64 @@ def Xform "Old" {}
 
     fn instance_entity(world: &World, root: Entity, path: &str) -> Entity {
         world.non_send::<UsdInstances>().entity(root, path).unwrap()
+    }
+
+    #[test]
+    fn loading_clock_roundtrip_does_not_publish_mixed_sample_times() {
+        let (mut world, handle) = instance_world();
+        let mut text = String::from("#usda 1.0\n");
+        for name in ["A", "B", "C"] {
+            text.push_str(&format!(r#"def Xform "{name}" {{
+                double3 xformOp:translate.timeSamples = {{ 0: (0,0,0), 10: (10,0,0) }}
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+            }}
+"#));
+        }
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::snapshot("loading-clock.usda", text.into_bytes()).unwrap();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::ZERO));
+        let root = world.spawn((UsdSceneRoot(handle), UsdInstanceTime { current: 0.0 })).id();
+        for time in [0.0, 10.0, 0.0] {
+            world.get_mut::<UsdInstanceTime>(root).unwrap().current = time;
+            spawn_usd_scenes(&mut world);
+        }
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        for path in ["/A", "/B", "/C"] {
+            let entity = instance_entity(&world, root, path);
+            assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 0.0, "{path}");
+        }
+        world.get_mut::<UsdInstanceTime>(root).unwrap().current = 10.0;
+        spawn_usd_scenes(&mut world);
+        for path in ["/A", "/B", "/C"] {
+            let entity = instance_entity(&world, root, path);
+            assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 10.0, "{path}");
+        }
+    }
+
+    #[test]
+    fn finite_projection_budget_is_shared_and_rotates_roots() {
+        let (mut world, handle) = instance_world();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::ZERO));
+        let roots: Vec<_> = (0..3).map(|_| world.spawn(UsdSceneRoot(handle.clone())).id()).collect();
+        for frame in 1..=3 {
+            spawn_usd_scenes(&mut world);
+            let instances = world.non_send::<UsdInstances>();
+            let progress: Vec<_> = roots.iter().map(|root|
+                instances.roots[root].job.as_ref().unwrap().progress().0).collect();
+            assert_eq!(progress.iter().sum::<usize>(), frame);
+            assert!(progress.iter().all(|&count| count <= 1));
+        }
+        world.despawn(roots[0]);
+        for _ in 0..8 { spawn_usd_scenes(&mut world); }
+        assert_eq!(world.non_send::<UsdInstances>().len(), 2);
+        for root in &roots[1..] {
+            assert_eq!(world.get::<UsdSceneState>(*root), Some(&UsdSceneState::Ready));
+            assert!(world.non_send::<UsdInstances>().entity(*root, "/Old").is_some());
+        }
+        let late = world.spawn(UsdSceneRoot(handle)).id();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::MAX));
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(late), Some(&UsdSceneState::Ready));
     }
 
     #[test]

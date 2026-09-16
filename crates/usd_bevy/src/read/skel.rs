@@ -609,10 +609,18 @@ pub(crate) fn gpu_skin_sample_with_mesh(
     let mut packed_weights = Vec::with_capacity(mesh.points.len());
     let mut normal_corrections = Vec::with_capacity(mesh.points.len());
     let mut normal_palette = vec![None; matrices.len()];
+    let flat = crate::mesh::uses_flat_normals(mesh);
+    let mut previous: Option<(&[i32], &[f32], bevy::math::Mat3)> = None;
     for (indices, weights) in indices.chunks_exact(stride).zip(weights.chunks_exact(stride)) {
         anyhow::ensure!((weights.iter().sum::<f32>() - 1.0).abs() <= 1e-5, "GPU skinning requires normalized weights");
         let mut correction = bevy::math::Mat3::IDENTITY;
-        if !crate::mesh::uses_flat_normals(mesh) {
+        let repeated = if flat { None } else {
+            previous.filter(|(old_indices, old_weights, _)| *old_indices == indices
+                && old_weights.iter().zip(weights).all(|(a, b)| a.to_bits() == b.to_bits()))
+        };
+        if let Some((_, _, cached)) = repeated {
+            correction = cached;
+        } else if !flat {
             let blended = indices.iter().zip(weights).fold(bevy::math::Mat4::ZERO,
                 |matrix, (&index, &weight)| matrix + matrices[index as usize] * weight);
             normal_skin_matrix(blended)?;
@@ -625,6 +633,7 @@ pub(crate) fn gpu_skin_sample_with_mesh(
                 anyhow::ensure!(correction.is_finite(), "nonfinite normal correction");
             }
         }
+        previous = Some((indices, weights, correction));
         normal_corrections.push(correction);
         let mut packed_i = [0; 4];
         let mut packed_w = [0.0; 4];
@@ -642,6 +651,34 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repeated_gpu_influences_match_uncached_normal_corrections() {
+        use bevy::math::{Mat3, Mat4};
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_animated.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        for weights in [[0.5; 8], [1.0,0.0,1.0,0.0,0.25,0.75,0.25,0.75],
+            [1.0,0.0,0.25,0.75,1.0,0.0,0.25,0.75]] {
+            stage.attribute("/Test/Face.primvars:skel:jointWeights").unwrap()
+                .set(openusd::sdf::Value::FloatVec(weights.to_vec())).unwrap();
+            for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+                let sample = gpu_skin_sample(&stage, &path, Some(time)).unwrap();
+                for point in 0..sample.indices.len() {
+                    let mut blended = Mat4::ZERO;
+                    let mut native = Mat3::ZERO;
+                    for slot in 0..2 {
+                        let matrix = sample.matrices[sample.indices[point][slot] as usize];
+                        let weight = sample.weights[point][slot];
+                        blended += matrix * weight;
+                        if weight != 0.0 { native += normal_skin_matrix(matrix).unwrap() * weight; }
+                    }
+                    let expected = Mat3::from_mat4(blended).transpose() * native;
+                    assert_eq!(sample.normal_corrections[point], expected);
+                }
+            }
+        }
+    }
+
     #[test]
     fn borrowed_geometry_deformation_matches_standalone_readers() {
         for (file, prim) in [("skel_influences.usda", "/Test/Bar"),

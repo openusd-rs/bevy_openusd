@@ -17,6 +17,7 @@ Changes from the base source are recorded in these patches in the project root:
 - `patches/openusd-singleton-listops.patch`
 - `patches/openusd-token-vector-fields.patch`
 - `patches/openusd-stage-packaging.patch`
+- `patches/openusd-package-directory.patch`
 - `patches/openusd-reference-diagnostics.patch`
 - `patches/openusd-layer-reanchoring.patch`
 - `patches/openusd-clip-activation-samples.patch`

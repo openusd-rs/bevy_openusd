@@ -262,6 +262,48 @@ impl PrimRoute for MaterialRoute {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn interleaved_projection_jobs_retain_separate_material_memos() {
+        use crate::live::ProjectionJob;
+        let stage = || crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (1, 0, 0)
+        token outputs:surface
+    }
+}
+def Cube "A" { rel material:binding = </Mat> }
+def Cube "B" { rel material:binding = </Mat> }
+"#).open_stage().unwrap();
+        let first = stage();
+        let second = stage();
+        let surrounding = stage();
+        let mut world = World::new();
+        world.insert_resource(crate::route::SchemaRegistry::builtin());
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.insert_non_send(ProjectionMaterials::new(&surrounding));
+        let a = world.spawn_empty().id();
+        let b = world.spawn_empty().id();
+        let (mut one, mut map_one) = ProjectionJob::begin(&mut world, &first, a);
+        let (mut two, mut map_two) = ProjectionJob::begin(&mut world, &second, b);
+        assert!(world.non_send::<ProjectionMaterials>().stage.ptr_eq(&surrounding));
+        for _ in 0..16 {
+            let done_one = one.step(&mut world, &first, &mut map_one, std::time::Duration::ZERO);
+            let done_two = two.step(&mut world, &second, &mut map_two, std::time::Duration::ZERO);
+            assert!(world.non_send::<ProjectionMaterials>().stage.ptr_eq(&surrounding));
+            if done_one && done_two { break; }
+        }
+        let material = |map: &crate::live::PrimEntities, path|
+            world.get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap()).unwrap().0.id();
+        assert_eq!(material(&map_one, "/A"), material(&map_one, "/B"));
+        assert_eq!(material(&map_two, "/A"), material(&map_two, "/B"));
+        assert_ne!(material(&map_one, "/A"), material(&map_two, "/A"));
+        assert!(!world.contains_resource::<super::super::cache::MaterialCache>());
+    }
+
     use super::*;
 
     #[test]

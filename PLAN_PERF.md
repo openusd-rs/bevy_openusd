@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3 in progress; P4–P8 planned**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3/P5–P7 in progress; P4 attribution underway; P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -135,10 +135,10 @@ Update status only with linked evidence and a commit.
 | P1 | Cache subset products before construction | P0 attribution | M–L / medium | IN PROGRESS |
 | P2 | Cache deformation discovery and preparation | P0 attribution | L / high | IN PROGRESS |
 | P3 | Separate validation from discarded geometry decoding | P0 attribution | M–L / high | IN PROGRESS |
-| P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | TODO |
-| P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | TODO |
-| P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | TODO |
-| P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | TODO |
+| P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | ATTRIBUTION ONLY |
+| P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | SCHEDULING IN PROGRESS |
+| P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | LOOKUP IN PROGRESS |
+| P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | MANIFEST IN PROGRESS |
 | P8 | Revision-based transactional hot reload | P0, P3; reuse P7 | L / high | TODO |
 
 Implement P1–P3 as independently measured changes. Reprofile before P4–P8 and
@@ -150,14 +150,28 @@ Do not add projected speedups together: several phases remove the same work.
 Actual-viewer render probe: launch with `USD_PROFILE_RENDER=1` to emit JSON
 `render_asset_profile` records from `src/perf_render.rs`. Main-world manifests
 carry document identity and an asset-event generation into the render world.
-The post-render probe counts missing `RenderMesh`/`GpuImage` entries and global
-pending/error pipelines. It covers all currently retained RENDER_WORLD meshes
-and images, including environment assets, not just visible scene dependencies.
+The post-render probe counts missing `RenderMesh`/`GpuImage` entries, prepared
+StandardMaterial/FlatMaterial entries and global pending/error pipelines. It
+covers all currently retained RENDER_WORLD meshes/images and supported retained
+materials, including environment assets, not just visible scene dependencies.
 Manifests rebuild on document/asset events rather than scanning geometry every
 frame. Time starts at probe configuration, not process creation or open-command
-submission. Every record explicitly says `complete_frame: false`: materials,
-deformation resource bindings, relevant view queues and submitted-generation
-acknowledgment remain outstanding.
+submission. Every record explicitly says `complete_frame: false`: material
+binding revisions, deformation resource bindings, relevant view queues and
+submitted-generation acknowledgment remain outstanding. Prepared entry presence
+alone does not prove an in-place asset update reached the GPU.
+
+Material-probe increment: material-only changes rebuild the extracted manifest,
+including optional flat-material resource addition/removal. Pending material
+entries now prevent `observed_uploads_ready`. 102 release viewer tests pass;
+the release binary builds with the same three existing camera-plan warnings.
+An isolated-settings Oxbo viewer run observed 31 prepared standard materials,
+1,598 meshes and 10 images; all observed queues became ready at 4.809 s from
+probe setup, not process start or a proven first complete frame. Its viewport
+screenshot was inspected. A GPU skin fixture separately observed one prepared
+flat material. Logs/screenshot/build evidence are in `target/perf/p0-material/`.
+Both owned viewer processes ended at their deliberate timeouts; no persistent
+viewer was left running. This probe remains opt-in via `USD_PROFILE_RENDER`.
 
 Probe verification: 100 release viewer tests pass and the release viewer builds.
 An isolated-settings X11 Oxbo run produced a mapped 1440×920 window and a verified
@@ -325,6 +339,25 @@ back correctly. Compare Caldera/Oxbo captures and SubsetRoute CPU time against P
 
 ## P2 — Separate deformation structure from changing poses
 
+GPU influence increment: adjacent points with identical influence indices and
+bit-identical weights reuse their normal-correction matrix within one sampled
+pose. The one-entry memo borrows input slices and does not retain stage data,
+poses or mesh assets. Flat-normal meshes skip the comparison. Weight validation
+still runs for every point; the first occurrence still performs singular-matrix
+and finite-result checks. This does not implement cross-frame structural reuse.
+
+Verification: 584 focused release tests pass, 19 ignored. The new test checks
+repeated, changing and alternating influences at five times against uncached
+matrix calculations; existing CPU/GPU normal, tangent and fallback tests pass.
+Caldera CPU opens measured 53.463 / 48.431 s, with SkinRoute 4.864 / 4.438 s and
+unchanged entity/asset/payload counts versus the FIFO baseline. These diagnostic
+runs do not establish a loading speedup. Evidence is in
+`target/perf/p2-influences/`. The Caldera capture is byte-identical to the texture-
+manifest baseline (66.41 s process duration, 15,287,396 KiB peak RSS). The animated
+skin/morph fixture also completed two runs of 1,000 distinct timeline seeks with
+unchanged asset counts; seek medians were 714 / 683 microseconds. Neither capture
+duration nor this small-fixture timing proves the large-scene first-frame target.
+
 First increment reuses SkinRoute's local skin/morph classification in CPU
 fallback preparation and GPU attachment. CPU normal preparation no longer
 decodes default joint weights a second time just to repeat `is_skinned`.
@@ -458,6 +491,53 @@ skipping necessary composition. Benchmark editor and asset-instance paths separa
 
 ## P4 — Separate logical prims from initial geometry residency
 
+Attribution increment: embedded-viewer and offscreen capture metadata now group
+unique retained mesh assets into visible-only, hidden-only, shared and
+unreferenced buckets using propagated `InheritedVisibility`. Per-bucket vertex,
+index and inline morph bytes are reported separately, with render-world usage
+and unavailable CPU data counts. This is not frustum visibility, actual GPU
+allocation, texture residency or a preparation-time profile. The collector runs
+at screenshot request, not every update; it does not alter loading policy.
+
+Caldera findings: 168 visible-only assets hold 3,171,023,264 render-world CPU
+payload bytes; 3,142 hidden-only assets hold 387,153,840 bytes. The two shared
+assets contain no geometry payload. Thus hidden-only geometry represents about
+10.9% of this payload, despite dominating the asset/entity counts. Oxbo has
+76,604,544 visible-only bytes and only 37,776 hidden-only bytes (nine assets).
+Deferring hidden assets alone is therefore not a credible explanation for a
+large memory/transfer improvement on these configurations. It may still avoid
+substantial per-prim CPU work; that needs separate attribution.
+
+Verification: 101 release viewer tests and 22 capture tests pass. The new test
+covers duplicate/shared references, hidden and unreferenced assets, missing
+assets and already-extracted CPU data. Both captures completed; Caldera's RGBA
+is byte-identical to the P3 baseline. Evidence and reports are under
+`target/perf/p4-residency/`. Caldera completed in 67.77 s, Oxbo in 12.06 s;
+these include warmup/readback and are not first-frame timings or speedup claims.
+Caldera's report predates a final defensive check for extracted morph data;
+all its CPU data was available, and the final build/tests include that check.
+Deferred-state implementation remains TODO. Prioritize profiling visible-mesh
+decoding, assembly and transfer costs alongside (not after) hidden-prim work.
+
+Visible-assembly follow-up: static expanded/flat meshes now triangulate from
+their already assembled corner positions instead of allocating another expanded
+position buffer and corner-point mapping. Valid deformation reference positions
+still use the separate original-position path, preserving reference diagonals;
+invalid-length references retain the existing current-position fallback.
+Expanded construction no longer reserves normal/color buffers when those
+attributes will not be emitted. No vertex layout or final mesh payload changed.
+
+Verification: 581 focused release tests pass (19 ignored), including new parity
+checks for concave faces, holes, malformed indices, both orientations, subsets
+and invalid-length reference arrays, plus the existing deformed-diagonal test.
+Caldera retains the same 50,125 mesh entities, 23,291 subsets, 3,312 mesh assets
+and 66,456,232 vertices. CPU opens were 45.143 / 49.174 s, assembly counters
+4.790 / 4.312 s: no established timing improvement. The capture completed in
+66.06 s with peak RSS 16,518,040 KiB and byte-identical RGBA to the preceding
+capture. Logs and hashes are in `target/perf/assembly-borrow/`. This removes
+specific transient allocations; it does not reduce the 3.17 GB visible payload
+or implement parallel preparation/deferred residency.
+
 **Scope:** `live.rs`, `asset.rs`, `instance.rs`, built-in geometry/material/
 deformation routes and their tests. Preserve arbitrary custom routes.
 
@@ -484,6 +564,59 @@ old eager mesh counts. Keep an eager mode as a correctness/performance control.
 
 ## P5 — Add bounded pure preparation jobs
 
+Scheduling increment: finite initial-projection budgets are now shared across
+loading roots. Newly opened roots enqueue their projection instead of taking a
+full slice immediately and then another in the continuation pass. The pass
+rotates its first root after the last serviced entity, spends only the remaining
+budget on subsequent roots, and guarantees one prim of progress even at zero
+budget. Despawning a root does not stall rotation. `Duration::MAX` retains the
+synchronous initial-projection path. Continuation work now contributes to
+`UsdSceneTimings::projection`.
+
+This is a soft budget for initial prim routing, not a hard frame-time bound:
+individual routes, stage opening/traversal, validation, texture decoding and
+existing reload reconciliation remain synchronous and can exceed it. There are
+no CPU worker queues yet. The source benchmark now explicitly updates until all
+roots are Ready rather than assuming one update completes every root.
+
+Focused verification: 581 release tests pass, 19 ignored (558 library, one source
+benchmark, 22 capture). A zero-budget three-root test verifies exactly one prim
+per update across all roots, first-turn fairness, despawn handling and later
+unlimited publication. Three 128-prototype source-benchmark samples pass with
+one/four independent roots, reload entity retention and geometry sharing.
+Evidence is in `target/perf/p5-budget/`. Worker scaling and first-frame acceptance
+remain open; this change bounds multiplied projection slices, not total load time.
+The broader release workspace/all-targets gate also passes: 735 tests in 34
+suites, 19 ignored. Oxbo's capture is pixel-identical to the package-directory
+baseline. The native export tests were not rerun for this scheduling-only change.
+
+Per-job material increment: `ProjectionJob` now owns its material memo between
+slices. Each `step` temporarily installs that job's memo, captures it afterward
+if work remains, and restores any surrounding World memo. `begin` no longer
+overwrites another job's memo. Completion/cancellation drops the job-owned memo.
+This preserves material reuse as the scheduler rotates among independent stages;
+the old World-global slot only retained whichever stage began last.
+
+Verification: the release workspace/all-targets gate passes 736 tests in 34
+suites, 19 ignored. An interleaved two-stage, zero-budget test runs without the
+global material interner: matching bindings share handles within each job but
+not across stages, and a surrounding memo survives every slice. The one/four-root
+source benchmark completes load/reload checks. Evidence is in
+`target/perf/p5-materials/`. No large-scene speedup or worker-pipeline completion
+is claimed by this cache-lifetime change. Oxbo's capture is pixel-identical to
+the shared-budget baseline.
+
+Clock-coherence correction: continuation slices now use the runtime's initial
+sample time, rather than reading a possibly different root clock for each slice.
+On completion, the existing instance tick applies the latest requested clock.
+Previously a 0 → 10 → 0 scrub during loading could leave a middle prim at time
+10 because the final clock equaled the runtime's initial sample, suppressing
+the final animation update. The regression test uses three independently sliced
+animated transforms and verifies their final values and subsequent clock updates.
+The release workspace/all-targets gate passes 737 tests in 34 suites, 19 ignored;
+evidence is in `target/perf/p5-clock/`. This checks clock coherence, not asynchronous
+worker cancellation or a loading-speed improvement.
+
 **Scope:** `live.rs`, `route/mod.rs`, geometry preparation modules and scheduler
 helpers within `crates/usd_bevy/src/`; do not rewrite upstream Stage threading.
 
@@ -506,6 +639,46 @@ retain only configurations with an evidenced end-to-end benefit.
 
 ## P6 — Move sharing ahead of decoding and improve cache indexing
 
+Lookup increment: the existing assembly cache now hashes and searches geometry
+once per preparation request. The interned-handle path passes that lookup to
+assembly rather than repeating it, then attaches the result to the known MRU
+entry instead of searching/equality-checking the input again. Full input
+equality, live output equality, mutation/removal checks and existing byte
+budgets remain enforced. Uncached oversized builds cannot overwrite a previous
+entry's asset ID. This is independent of the still-open subset-product cache
+and does not yet share prototype data before decoding.
+
+Verification: 581 focused release tests pass, 19 ignored. Extended cache tests
+check one lookup per call and oversized-build isolation alongside mutation,
+removal and disabled-budget behavior. Both Caldera runs report 35,796 lookups,
+equal to 3,282 builds + 16,640 owned-clone hits + 15,874 handle hits; mesh/entity
+and vertex counts are unchanged. CPU opens measured 46.237 / 44.392 s on
+Caldera and 3.880 / 3.696 s on Oxbo. These are diagnostic iterations, not a
+controlled speedup claim or first-frame result. Evidence is in
+`target/perf/p6-lookup/`. Hash indexing and pre-decode prototype sharing remain
+TODO.
+
+Selective-eviction increment: `ProjectionCache` now evicts oldest insertions
+only until the entry and payload limits admit the new mesh, instead of clearing
+the entire cache. Hits do not promote entries. The FIFO stores weak asset IDs;
+normal cache pruning removes its stale records, and eviction does not delete
+assets held by entities. Existing full-output equality and byte budgets remain.
+The metric `intern_eviction_batches` replaces `intern_flushes` for this policy.
+
+Verification: 582 focused release tests pass, 19 ignored, including partial
+eviction, hit ordering, external-handle survival and FIFO pruning. Both Caldera
+runs reduce intern misses from 4,628 to 3,152 and evicted entries from 4,619 to
+3,143. Retained mesh assets fall from 3,312 to 2,509 through sharing; mesh entities
+remain 50,125 and subset entities 23,291. Unique retained vertex/index payload
+falls from 3,558,177,104 to 3,349,077,812 bytes. The overview capture is byte-for-
+byte identical to the assembly-borrow baseline. CPU opens measured 47.007 /
+53.611 s, versus the preceding 46.237 / 44.392 s: no loading speedup is established.
+Oxbo measured 3.860 / 3.367 s with unchanged counts. The first Caldera iteration
+overlapped the Oxbo diagnostic; these are not controlled timing comparisons.
+Capture process duration was 61.43 s with 16,670,800 KiB peak RSS, not a first-frame
+measurement. Evidence is in `target/perf/p6-fifo/`. This increment improves cache
+reuse at the existing budget but does not complete P6 or the performance target.
+
 **Scope:** `route/native.rs`, `route/cache.rs`, `route/mod.rs`, `read/geom.rs`,
 instance/reload invalidation and focused tests.
 
@@ -526,6 +699,45 @@ retained payload budgets. Native prototype identities are never persisted as
 stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
+
+Package-directory increment: the vendored USDZ format now opens its default-layer
+directory through the resolver's seekable asset, instead of `read_all()` copying
+the entire package first. Public `Archive::from_asset` remains unchanged; corrupt
+or rootless archives still retain their package path for format-error reporting.
+The patch is recorded in `patches/openusd-package-directory.patch`, without a
+dependency refresh. This removes a root-lookup copy, not entry extraction or
+parser-owned buffer copies.
+
+Verification: 585 focused release tests pass, 19 ignored, plus 14 native export
+tests run explicitly. A counted in-memory resolver verifies default-layer lookup
+reads less than one quarter of a 4 MiB stored package and preserves corrupt-package
+fallback. Existing nested package and dependency reload tests pass. Oxbo CPU opens
+measured 3.499 / 3.102 / 3.123 s with unchanged mesh/entity/payload counts; capture
+was 10.23 s with 1,290,148 KiB peak RSS and pixel-identical to the manifest baseline.
+These are diagnostic timings, not a controlled or matched first-frame speedup.
+Evidence is in `target/perf/p7-directory/`.
+
+Manifest increment: immutable `UsdSource` snapshots retain one shared texture-
+request manifest tagged with the exact source revision. The asset loader records
+it after dependency discovery; freshly opened instances without overrides reuse
+it. Manually constructed snapshots populate it on their first default instance.
+Source/dependency replacement changes the revision. Filesystem-backed sources,
+attribute/variant overrides and in-place variant switches still scan the stage.
+Edited editor stages retain their uncached discovery path. Failed scans are not
+cached. The manifest retains the original complete sample and raw/sRGB keys;
+image decoding and missing-texture checks are unchanged.
+
+Verification: 578 focused release tests pass, 19 ignored (555 library, one source
+benchmark, 22 capture). New coverage checks shared allocation reuse across fresh
+stages, bypass after edits, dependency/root revision changes, and filesystem
+exclusion. Existing texture color-space/dependency-reload and variant tests pass.
+Three source-benchmark samples cover independent one/four-root loads and reloads.
+Caldera's overview capture is pixel-identical to the FIFO baseline; process time
+was 80.70 s with 15,317,308 KiB peak RSS. Oxbo's capture is pixel-identical to the
+P4 residency baseline, at 10.82 s and 1,276,340 KiB peak RSS. This is not evidence of a loading speedup
+or a matched first-frame result. Logs and captures are in
+`target/perf/p7-manifest/`. Shared parser buffers, package-range reuse and bounded
+image jobs remain unimplemented.
 
 **Scope:** `source.rs`, `asset.rs`, texture preparation; explicitly reviewed
 `vendor/openusd` asset/file-format changes if required. No dependency refresh.

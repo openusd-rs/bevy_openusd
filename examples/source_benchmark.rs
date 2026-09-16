@@ -61,7 +61,7 @@ fn measure(count: usize, root_count: usize, profiled: bool, routes: bool) -> Mea
     let handle = app.world_mut().resource_mut::<Assets<UsdScene>>().add(UsdScene { source, textures: default() });
     let roots: Vec<_> = (0..root_count).map(|_| app.world_mut().spawn(UsdSceneRoot(handle.clone())).id()).collect();
     let start = Instant::now();
-    app.update();
+    update_until_ready(&mut app, &roots);
     let load = start.elapsed();
     profile(&mut app, "load", root_count);
     let initial_meshes = app.world().resource::<Assets<Mesh>>().len();
@@ -91,7 +91,7 @@ fn measure(count: usize, root_count: usize, profiled: bool, routes: bool) -> Mea
     let replacement_assembly = start.elapsed();
     let start = Instant::now();
     app.world_mut().resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = replacement;
-    app.update();
+    update_until_ready(&mut app, &roots);
     let reload = start.elapsed();
     profile(&mut app, "reload", root_count);
     let shared = app.world().get::<Mesh3d>(entities[0].2).unwrap().0.clone();
@@ -117,6 +117,20 @@ fn measure(count: usize, root_count: usize, profiled: bool, routes: bool) -> Mea
     if routes { assert!(app.world().resource::<usd_bevy::route::ProjectionTimings>().0.is_empty()); }
     assert_eq!(root_source.dependencies().count(), 0);
     Measurement { assembly, replacement_assembly, load, reload, idle, initial_meshes, initial_materials, projected_meshes: entities.len() }
+}
+
+fn update_until_ready(app: &mut App, roots: &[Entity]) {
+    let started = Instant::now();
+    loop {
+        app.update();
+        let ready = roots.iter().filter(|root| match app.world().get::<UsdSceneState>(**root) {
+            Some(UsdSceneState::Ready) => true,
+            Some(UsdSceneState::Failed(error)) => panic!("source publication failed: {error}"),
+            _ => false,
+        }).count();
+        if ready == roots.len() { return; }
+        assert!(started.elapsed() < Duration::from_secs(30), "source publication timed out");
+    }
 }
 
 fn main() {

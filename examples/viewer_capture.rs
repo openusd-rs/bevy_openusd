@@ -412,7 +412,7 @@ fn select_authored_camera(mut capture: ResMut<Capture>,
 }
 
 fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
-    timing: (Res<bevy::diagnostic::DiagnosticsStore>, ResMut<gpu_timing::GpuTiming>, Res<PipelineProgress>),
+    timing: (Res<bevy::diagnostic::DiagnosticsStore>, ResMut<gpu_timing::GpuTiming>, Res<PipelineProgress>, Res<Assets<Mesh>>, Query<(&Mesh3d, &InheritedVisibility)>),
     states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
     meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>, Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>), With<Mesh3d>>,
     camera: Query<(&RenderTarget, &GlobalTransform, &Camera), With<CaptureCamera>>,
@@ -426,7 +426,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     instancer_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>,
     geometry_errors: Query<(&usd_bevy::UsdPrimRef, Option<&usd_bevy::route::shapes::UsdShapeError>, Option<&usd_bevy::route::curves::UsdCurveError>, Option<&usd_bevy::route::xform::UsdTransformError>)>,
     mut exit: MessageWriter<AppExit>) {
-    let (diagnostics, mut timing, progress) = timing;
+    let (diagnostics, mut timing, progress, mesh_assets, mesh_references) = timing;
     if capture.started.elapsed() > capture.timeout {
         eprintln!("capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}", capture.camera_path, capture.camera_ready, progress.0.lock().unwrap());
         exit.write(AppExit::error());
@@ -503,6 +503,8 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     let flat_unique: std::collections::HashSet<_> = flat_handles.iter().copied().collect();
     capture.mesh_report = format!("hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n");
     capture.mesh_report.push_str(&timing.report());
+    capture.mesh_report.push_str(&capture_metadata::mesh_residency_report(&mesh_assets,
+        mesh_references.iter().map(|(mesh, visibility)| (mesh.0.id(), visibility.get()))));
     capture.mesh_report.push_str(&capture_metadata::camera_report(camera_transform, camera.clip_from_view()));
     capture.mesh_report.push_str(&format!("hierarchy_visible_flat_material_entities={}\nhierarchy_visible_unique_flat_materials={}\n", flat_handles.len(), flat_unique.len()));
     capture.mesh_report.push_str(&format!("studio_baseline_lux={:?}\n", studio_lights.iter().map(|light| light.0).collect::<Vec<_>>()));

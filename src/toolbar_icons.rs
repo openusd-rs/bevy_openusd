@@ -11,7 +11,6 @@ pub const UNDO: &str = "arrow-undo";
 pub const REDO: &str = "arrow-redo";
 pub const REFRESH_TEXTURES: &str = "image-arrow-counterclockwise";
 pub const FRAME: &str = "scan";
-pub const CAMERA_PLAN: &str = "camera";
 
 #[cfg(test)]
 mod tests {
@@ -22,7 +21,7 @@ mod tests {
         let mut glyphs = std::collections::HashSet::new();
         for name in [
             OUTLINER, PROPERTIES, TIMELINE, LIGHTING, RENDERING, OPEN,
-            SAVE_ROOT, SAVE_LAYER, EXPORT, UNDO, REDO, REFRESH_TEXTURES, FRAME, CAMERA_PLAN,
+            SAVE_ROOT, SAVE_LAYER, EXPORT, UNDO, REDO, REFRESH_TEXTURES, FRAME,
         ] {
             let glyph = mara::ui::mara_core::icons::icon_glyph(name)
                 .unwrap_or_else(|| panic!("missing icon: {name}"));

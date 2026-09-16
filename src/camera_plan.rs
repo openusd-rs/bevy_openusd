@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 use bevy::prelude::*;
-use mara::ui::{mara_core::{pane::PaneBody, pod::Pod}, modules::bevy as mara_bevy};
+use mara::ui::modules::bevy as mara_bevy;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,14 +57,11 @@ struct State {
     current: Option<Waypoint>,
     jump: Option<usize>,
     elapsed: Option<f32>,
-    path: String,
-    status: String,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { points: vec![], current: None, jump: None, elapsed: None,
-            path: "camera-plan.json".into(), status: String::new() }
+        Self { points: vec![], current: None, jump: None, elapsed: None }
     }
 }
 
@@ -117,78 +114,6 @@ fn update(bridge: Res<CameraPlan>, time: Res<Time<Real>>,
     }
     state.current = Some(Waypoint { name: String::new(), focus: rig.focus.to_array(), yaw: rig.yaw,
         elevation: rig.elevation, distance: rig.distance, fov: perspective.fov, seconds: 3.0 });
-}
-
-pub fn show(body: &mut PaneBody, bridge: &CameraPlan) {
-    let bridge = bridge.clone();
-    let rows = bridge.0.lock().unwrap().points.len();
-    body.add_normal("camera.plan", "Camera path", "camera", vec![
-        Pod::new("camera.plan.controls").with_custom_units(8 + rows * 3, move |ui| {
-            let mut state = bridge.0.lock().unwrap();
-            let playing = state.elapsed.is_some();
-            ui.label("Move the camera, then add a waypoint.");
-            ui.horizontal(|ui| {
-                if !playing && state.current.is_some() && ui.button("Add view").clicked {
-                    let mut pose = state.current.clone().unwrap();
-                    pose.name = format!("View {}", state.points.len() + 1);
-                    state.points.push(pose);
-                }
-                if !playing && state.points.len() >= 2 && ui.button("Play path").clicked {
-                    state.elapsed = Some(0.0);
-                }
-                if playing && ui.button("Stop").clicked { state.elapsed = None; }
-            });
-            let mut jump = None;
-            let mut remove = None;
-            let mut swap = None;
-            if !playing {
-                let current = state.current.clone();
-                for (i, point) in state.points.iter_mut().enumerate() {
-                    ui.in_id_scope(mara::ui::mara_core::vocab::Id::new(("camera.point", i)), &mut |ui| {
-                        ui.text_input(&mut point.name, "Waypoint name");
-                        ui.horizontal(|ui| {
-                            if ui.button("Go").clicked { jump = Some(i); }
-                            if current.is_some() && ui.button("Update").clicked {
-                                let mut replacement = current.clone().unwrap();
-                                replacement.name = point.name.clone(); replacement.seconds = point.seconds; *point = replacement;
-                            }
-                            if i > 0 && ui.button("Up").clicked { swap = Some(i); }
-                            if ui.button("Delete").clicked { remove = Some(i); }
-                        });
-                        if i > 0 {
-                            let mut seconds = point.seconds as f64;
-                            ui.drag_value("Travel", &mut seconds, 0.1, 0.01..=3600.0, 2, "s");
-                            point.seconds = seconds as f32;
-                        }
-                        else { ui.label("Starting view"); }
-                    });
-                }
-                if let Some(i) = swap { state.points.swap(i, i - 1); }
-                if let Some(i) = remove { state.points.remove(i); }
-                state.jump = jump;
-                ui.text_input(&mut state.path, "Plan file path");
-                ui.horizontal(|ui| {
-                    if ui.button("Save new plan").clicked {
-                        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-                            let bytes = serde_json::to_vec_pretty(&Plan { version: 1, points: state.points.clone() })?;
-                            use std::io::Write;
-                            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&state.path)?;
-                            file.write_all(&bytes)?; file.sync_all()?; Ok(())
-                        })();
-                        state.status = result.map(|_| "Plan saved".into()).unwrap_or_else(|e| e.to_string());
-                    }
-                    if ui.button("Load plan").clicked {
-                        let result = std::fs::read(&state.path).map_err(|e| e.to_string()).and_then(|bytes| Plan::decode(&bytes));
-                        match result {
-                            Ok(plan) => { state.points = plan.points; state.jump = None; state.status = "Plan loaded".into(); }
-                            Err(error) => state.status = error,
-                        }
-                    }
-                });
-            }
-            ui.label(&state.status);
-        }),
-    ]);
 }
 
 #[cfg(test)]

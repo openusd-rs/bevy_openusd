@@ -590,6 +590,22 @@ The broader release workspace/all-targets gate also passes: 735 tests in 34
 suites, 19 ignored. Oxbo's capture is pixel-identical to the package-directory
 baseline. The native export tests were not rerun for this scheduling-only change.
 
+Per-job material increment: `ProjectionJob` now owns its material memo between
+slices. Each `step` temporarily installs that job's memo, captures it afterward
+if work remains, and restores any surrounding World memo. `begin` no longer
+overwrites another job's memo. Completion/cancellation drops the job-owned memo.
+This preserves material reuse as the scheduler rotates among independent stages;
+the old World-global slot only retained whichever stage began last.
+
+Verification: the release workspace/all-targets gate passes 736 tests in 34
+suites, 19 ignored. An interleaved two-stage, zero-budget test runs without the
+global material interner: matching bindings share handles within each job but
+not across stages, and a surrounding memo survives every slice. The one/four-root
+source benchmark completes load/reload checks. Evidence is in
+`target/perf/p5-materials/`. No large-scene speedup or worker-pipeline completion
+is claimed by this cache-lifetime change. Oxbo's capture is pixel-identical to
+the shared-budget baseline.
+
 **Scope:** `live.rs`, `route/mod.rs`, geometry preparation modules and scheduler
 helpers within `crates/usd_bevy/src/`; do not rewrite upstream Stage threading.
 

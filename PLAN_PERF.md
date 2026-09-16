@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3/P6/P7 in progress; P4 attribution underway; P5/P8 planned**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3/P5–P7 in progress; P4 attribution underway; P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -136,7 +136,7 @@ Update status only with linked evidence and a commit.
 | P2 | Cache deformation discovery and preparation | P0 attribution | L / high | IN PROGRESS |
 | P3 | Separate validation from discarded geometry decoding | P0 attribution | M–L / high | IN PROGRESS |
 | P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | ATTRIBUTION ONLY |
-| P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | TODO |
+| P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | SCHEDULING IN PROGRESS |
 | P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | LOOKUP IN PROGRESS |
 | P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | MANIFEST IN PROGRESS |
 | P8 | Revision-based transactional hot reload | P0, P3; reuse P7 | L / high | TODO |
@@ -563,6 +563,32 @@ latest data. Compare complete-frame images and required-asset manifests, not
 old eager mesh counts. Keep an eager mode as a correctness/performance control.
 
 ## P5 — Add bounded pure preparation jobs
+
+Scheduling increment: finite initial-projection budgets are now shared across
+loading roots. Newly opened roots enqueue their projection instead of taking a
+full slice immediately and then another in the continuation pass. The pass
+rotates its first root after the last serviced entity, spends only the remaining
+budget on subsequent roots, and guarantees one prim of progress even at zero
+budget. Despawning a root does not stall rotation. `Duration::MAX` retains the
+synchronous initial-projection path. Continuation work now contributes to
+`UsdSceneTimings::projection`.
+
+This is a soft budget for initial prim routing, not a hard frame-time bound:
+individual routes, stage opening/traversal, validation, texture decoding and
+existing reload reconciliation remain synchronous and can exceed it. There are
+no CPU worker queues yet. The source benchmark now explicitly updates until all
+roots are Ready rather than assuming one update completes every root.
+
+Focused verification: 581 release tests pass, 19 ignored (558 library, one source
+benchmark, 22 capture). A zero-budget three-root test verifies exactly one prim
+per update across all roots, first-turn fairness, despawn handling and later
+unlimited publication. Three 128-prototype source-benchmark samples pass with
+one/four independent roots, reload entity retention and geometry sharing.
+Evidence is in `target/perf/p5-budget/`. Worker scaling and first-frame acceptance
+remain open; this change bounds multiplied projection slices, not total load time.
+The broader release workspace/all-targets gate also passes: 735 tests in 34
+suites, 19 ignored. Oxbo's capture is pixel-identical to the package-directory
+baseline. The native export tests were not rerun for this scheduling-only change.
 
 **Scope:** `live.rs`, `route/mod.rs`, geometry preparation modules and scheduler
 helpers within `crates/usd_bevy/src/`; do not rewrite upstream Stage threading.

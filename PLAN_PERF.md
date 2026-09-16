@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3 in progress; P4 attribution underway; P5–P8 planned**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3/P6 in progress; P4 attribution underway; P5/P7/P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -137,7 +137,7 @@ Update status only with linked evidence and a commit.
 | P3 | Separate validation from discarded geometry decoding | P0 attribution | M–L / high | IN PROGRESS |
 | P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | ATTRIBUTION ONLY |
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | TODO |
-| P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | TODO |
+| P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | LOOKUP IN PROGRESS |
 | P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | TODO |
 | P8 | Revision-based transactional hot reload | P0, P3; reuse P7 | L / high | TODO |
 
@@ -566,6 +566,25 @@ budget without accounting. Measure 1/2/4/8-worker scaling and memory sequentiall
 retain only configurations with an evidenced end-to-end benefit.
 
 ## P6 — Move sharing ahead of decoding and improve cache indexing
+
+Lookup increment: the existing assembly cache now hashes and searches geometry
+once per preparation request. The interned-handle path passes that lookup to
+assembly rather than repeating it, then attaches the result to the known MRU
+entry instead of searching/equality-checking the input again. Full input
+equality, live output equality, mutation/removal checks and existing byte
+budgets remain enforced. Uncached oversized builds cannot overwrite a previous
+entry's asset ID. This is independent of the still-open subset-product cache
+and does not yet share prototype data before decoding.
+
+Verification: 581 focused release tests pass, 19 ignored. Extended cache tests
+check one lookup per call and oversized-build isolation alongside mutation,
+removal and disabled-budget behavior. Both Caldera runs report 35,796 lookups,
+equal to 3,282 builds + 16,640 owned-clone hits + 15,874 handle hits; mesh/entity
+and vertex counts are unchanged. CPU opens measured 46.237 / 44.392 s on
+Caldera and 3.880 / 3.696 s on Oxbo. These are diagnostic iterations, not a
+controlled speedup claim or first-frame result. Evidence is in
+`target/perf/p6-lookup/`. Hash indexing, eviction-policy changes and pre-decode
+prototype sharing remain TODO.
 
 **Scope:** `route/native.rs`, `route/cache.rs`, `route/mod.rs`, `read/geom.rs`,
 instance/reload invalidation and focused tests.

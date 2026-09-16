@@ -79,13 +79,13 @@ fn geometry_signature(read: &ReadMesh) -> u64 {
 }
 
 pub(crate) fn intern_assembled_mesh(world: &mut World, read: &ReadMesh) -> Handle<Mesh> {
-    world.init_resource::<MeshAssemblyCache>();
-    let signature = geometry_signature(read);
+    let (signature, hit) = lookup_assembly(world, read);
     let budget = world.get_resource::<ProjectionCache>().map_or(0, |cache| cache.byte_budget);
     let cached = if budget == 0 { None } else {
         let assets = world.resource::<Assets<Mesh>>();
-        world.resource::<MeshAssemblyCache>().entries.iter().enumerate().find_map(|(index, (key, input, mesh, _, id))| {
-            if *key != signature || !same_geometry(input, read) || mesh_payload_bytes(mesh) > budget { return None; }
+        hit.and_then(|index| {
+            let (_, _, mesh, _, id) = &world.resource::<MeshAssemblyCache>().entries[index];
+            if mesh_payload_bytes(mesh) > budget { return None; }
             id.filter(|id| assets.get(*id).is_some_and(|asset| meshes_equal(asset, mesh))).map(|id| (index, id))
         })
     };
@@ -97,27 +97,37 @@ pub(crate) fn intern_assembled_mesh(world: &mut World, read: &ReadMesh) -> Handl
         record_cache(world, "assembly_handle_hits", 1);
         return handle;
     }
-    let mesh = assemble_cached_mesh(world, read);
+    let (mesh, retained) = assemble_after_lookup(world, read, signature, hit);
     let handle = intern_mesh(world, mesh);
-    if let Some((_, _, _, _, id)) = world.resource_mut::<MeshAssemblyCache>().entries.iter_mut()
-        .find(|(key, input, _, _, _)| *key == signature && same_geometry(input, read)) {
-        *id = Some(handle.id());
+    if retained {
+        world.resource_mut::<MeshAssemblyCache>().entries.back_mut().unwrap().4 = Some(handle.id());
     }
     handle
 }
 
 pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
+    let (signature, hit) = lookup_assembly(world, read);
+    assemble_after_lookup(world, read, signature, hit).0
+}
+
+fn lookup_assembly(world: &mut World, read: &ReadMesh) -> (u64, Option<usize>) {
     world.init_resource::<MeshAssemblyCache>();
     let signature = geometry_signature(read);
     let hit = world.resource::<MeshAssemblyCache>().entries.iter()
         .position(|(key, input, _, _, _)| *key == signature && same_geometry(input, read));
+    record_cache(world, "assembly_lookups", 1);
+    (signature, hit)
+}
+
+/// Returns the mesh and whether its immutable snapshot occupies the MRU slot.
+fn assemble_after_lookup(world: &mut World, read: &ReadMesh, signature: u64, hit: Option<usize>) -> (Mesh, bool) {
     if let Some(index) = hit {
         let mut cache = world.resource_mut::<MeshAssemblyCache>();
         let entry = cache.entries.remove(index).unwrap();
         let mesh = entry.2.clone();
         cache.entries.push_back(entry);
         record_cache(world, "assembly_clone_hits", 1);
-        return mesh;
+        return (mesh, true);
     }
     let started = world.contains_resource::<MeshCacheMetrics>().then(std::time::Instant::now);
     let mut mesh = crate::mesh::assemble_mesh(read, None, false);
@@ -131,7 +141,7 @@ pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
     let mut cache = world.resource_mut::<MeshAssemblyCache>();
     if cache.byte_budget == 0 || bytes > cache.byte_budget {
         record_cache(world, "assembly_uncached_builds", 1);
-        return mesh;
+        return (mesh, false);
     }
     let mut evictions = 0;
     let mut evicted_bytes = 0;
@@ -147,7 +157,7 @@ pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
     cache.payload_bytes += bytes;
     record_cache(world, "assembly_evictions", evictions);
     record_cache(world, "assembly_evicted_bytes", evicted_bytes);
-    mesh
+    (mesh, true)
 }
 
 #[derive(Resource, Default)]
@@ -472,7 +482,20 @@ mod tests {
         assert_eq!(metrics["assembly_builds"], 1);
         assert_eq!(metrics["assembly_handle_hits"], 1);
         assert_eq!(metrics["assembly_clone_hits"], 4);
+        assert_eq!(metrics["assembly_lookups"], 6);
         assert_eq!(metrics["assembly_build_input_bytes"], read_mesh_bytes(&read) as u64);
+        let previous = world.resource::<MeshAssemblyCache>().entries.back().unwrap().4;
+        let bytes = world.resource::<MeshAssemblyCache>().payload_bytes;
+        world.resource_mut::<MeshAssemblyCache>().byte_budget = bytes;
+        let mut oversized = read.clone();
+        oversized.points.push([10.0; 3]);
+        let uncached = intern_assembled_mesh(&mut world, &oversized);
+        let cache = world.resource::<MeshAssemblyCache>();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.entries.back().unwrap().4, previous);
+        assert_eq!(cache.payload_bytes, bytes);
+        assert_ne!(Some(uncached.id()), previous);
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["assembly_uncached_builds"], 1);
     }
 
     #[test]

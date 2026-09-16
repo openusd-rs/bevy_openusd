@@ -56,10 +56,13 @@ pub(crate) fn clear(world: &mut World, entity: Entity) {
 pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyhow::Result<()> {
     let read = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
-    let sample = crate::read::skel::gpu_skin_sample(ctx.stage, ctx.path, ctx.time)?;
+    let sample = crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, &read)?;
     let skinned_tangents = read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY);
     let has_morphs = crate::read::skel::has_blend_shapes(ctx.stage, ctx.path);
-    let mut mesh = crate::mesh::assemble_mesh(&read, None, !skinned_tangents && !has_morphs);
+    let mut mesh = crate::mesh::assemble_mesh(&read, None, false);
+    if read.uvs.is_some() && !skinned_tangents && !has_morphs {
+        super::cache::generate_cached_tangents(world, &mut mesh);
+    }
     let morph_weights = if has_morphs {
         Some(super::gpu_morph::prepare(ctx, &read, &mut mesh, !skinned_tangents)?)
     } else { None };
@@ -306,6 +309,44 @@ mod tests {
         stage.prim(path.clone()).unwrap().attribute("points").set_at(Value::Vec3fVec(vec![[0.0,0.0,0.0].into()]), TimeCode::new(40.0)).unwrap();
         assert!(crate::read::skel::gpu_skin_sample(&stage, &path, Some(40.0)).err().unwrap().to_string().contains("influence count"));
         assert!(crate::read::skel::skinned_points_at(&stage, &path, Some(40.0)).unwrap().is_none());
+    }
+
+    #[test]
+    fn cached_skin_tangents_match_direct_generation_after_uv_edits() {
+        use openusd::sdf::Value;
+        let stage = stage();
+        let path = openusd::sdf::path("/Test/Bar").unwrap();
+        let corners = crate::read::geom::read_mesh(&stage, &path).unwrap().unwrap().face_vertex_indices.len();
+        let uv = stage.create_attribute("/Test/Bar.primvars:st", "texCoord2f[]").unwrap()
+            .set_metadata("interpolation", Value::Token("faceVarying".into())).unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<SkinnedMeshInverseBindposes>>();
+        let entity = world.spawn_empty().id();
+        let mut previous = Vec::new();
+        for rotated in [false, true] {
+            let values = (0..corners).map(|corner| {
+                let [u, v] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][corner % 4];
+                if rotated { [v, 1.0 - u].into() } else { [u, v].into() }
+            }).collect();
+            uv.clone().set(Value::Vec2fVec(values)).unwrap();
+            let read = crate::read::geom::read_mesh_at(&stage, &path, Some(0.0)).unwrap().unwrap();
+            let direct = crate::mesh::assemble_mesh(&read, None, true);
+            let expected = direct.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().get_bytes().to_vec();
+            if rotated { assert_ne!(expected, previous); }
+            let mut retained = 0;
+            for warm in [false, true] {
+                attach(&RouteCtx::at(&stage, &path, Some(0.0)), &mut world, entity).unwrap();
+                let handle = &world.get::<Mesh3d>(entity).unwrap().0;
+                let mesh = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+                assert_eq!(mesh.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().get_bytes(), expected);
+                let bytes = world.resource::<super::super::cache::MeshTangentCache>().retained_payload_bytes();
+                assert!(bytes > 0);
+                if warm { assert_eq!(bytes, retained); }
+                retained = bytes;
+            }
+            previous = expected;
+        }
     }
 
     #[test]

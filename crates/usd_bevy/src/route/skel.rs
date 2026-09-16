@@ -105,7 +105,9 @@ impl PrimRoute for SkinRoute {
             return;
         }
         if super::subdivision::enabled(ctx, world) { return; }
-        if !is_skinned(ctx.stage, ctx.path) && !has_blend_shapes(ctx.stage, ctx.path) {
+        let skinned = is_skinned(ctx.stage, ctx.path);
+        let blended = has_blend_shapes(ctx.stage, ctx.path);
+        if !skinned && !blended {
             super::gpu_morph::clear(world, entity);
             if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
                 super::gpu_skin::clear(world, entity);
@@ -114,11 +116,11 @@ impl PrimRoute for SkinRoute {
             return;
         }
         if world.contains_resource::<super::gpu_skin::GpuSkinningEnabled>() {
-            let result = if !is_skinned(ctx.stage, ctx.path) && has_blend_shapes(ctx.stage, ctx.path) {
+            let result = if !skinned && blended {
                 if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() { super::gpu_skin::clear(world, entity); }
                 super::gpu_morph::attach(ctx, world, entity)
             } else {
-                if !has_blend_shapes(ctx.stage, ctx.path) { super::gpu_morph::clear(world, entity); }
+                if !blended { super::gpu_morph::clear(world, entity); }
                 super::gpu_skin::attach(ctx, world, entity)
             };
             match result {

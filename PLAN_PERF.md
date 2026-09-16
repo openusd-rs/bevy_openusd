@@ -1,6 +1,8 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **planned, not implemented**.
+Planned against `1dd38c8` on 2026-09-16. Status: **P0 in progress; P1–P8 planned**.
+Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
+The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
 ## Objective
 
@@ -125,7 +127,7 @@ geometry also incurs GPU work.
 ## Execution order
 
 M means approximately day-scale; L means multi-day work including verification.
-All rows start TODO. Update status only with linked evidence and a commit.
+Update status only with linked evidence and a commit.
 
 | ID | Work | Depends on | Effort / risk | Status |
 | --- | --- | --- | --- | --- |

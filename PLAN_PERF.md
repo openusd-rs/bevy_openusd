@@ -460,6 +460,28 @@ not a controlled speedup or first-frame result. Evidence is in
 `target/perf/read-owners/`. The capture is pixel-identical to the GPU-influence
 baseline, at 59.60 s process duration and 15,277,036 KiB peak RSS.
 
+Paired A/B follow-up: separately built `b20f599` and `cb39477` benchmark binaries
+were run in alternating before/after order, five separate processes per variant
+and asset, with identical profiling and 24 GiB/no-swap limits. The current source
+and normal benchmark binary were restored before measurement. Binary hashes,
+raw logs, per-run load/background-build snapshots and calculated results are in
+`target/perf/read-owners-ab/`.
+
+| CPU workload | Before median (range), s | After median (range), s |
+| --- | --- | --- |
+| Oxbo open | 3.135 (3.125–3.425) | 3.115 (3.105–3.122) |
+| Caldera open | 41.807 (41.338–46.756) | 41.670 (41.318–42.700) |
+| Caldera mesh reads | 5.814 (5.787–6.388) | 5.697 (5.651–5.722) |
+
+All entity, mesh, vertex and payload counts match across variants. The observed
+median open reductions are only 0.62% on Oxbo and 0.33% on Caldera. Other project
+builds occurred during some samples; this is not an isolated-machine experiment
+or statistical evidence of an end-to-end speedup. Retain the local reduction in
+owner-walk work, but do not use the earlier 53-to-41-second diagnostic difference
+as its benefit. These results make further owner-walk micro-optimization a low
+priority: focus subsequent work on duplicate preparation before decoding,
+bounded parallel preparation and the still-missing complete-frame gate.
+
 Snapshot-proof increment (2026-09-17): `UsdSource` retains a bounded shared
 default-composition validation stamp keyed by its exact source revision.
 Successful dependency probes record it only when no dependencies are missing;

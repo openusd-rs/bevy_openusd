@@ -7,6 +7,12 @@ See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
 ## Traversal ancestry queries
 
+`openusd-specifier-status.patch` computes defined and abstract state in one
+ancestor-specifier walk when both bits are requested. Individual-bit queries
+keep their existing paths. The combined walk stops only when both answers are
+settled and retains no state across queries. The Bevy ancestry regression also
+compares combined status with individual queries before and after edits.
+
 `openusd-abstract-ancestry.patch` resolves abstract ancestry through one
 mask-gated composition-cache query, matching the existing defined-state query
 structure. It preserves composed specifier resolution and holds no result cache

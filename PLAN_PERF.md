@@ -586,6 +586,24 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+Combined specifier-status increment: status queries requesting both DEFINED and
+ABSTRACT now resolve ancestor specifiers once for both answers. Individual-bit
+queries keep their existing implementations. The combined walk only stops when
+both answers are settled; nothing is retained across edits or traversal callbacks.
+Review patch: `patches/openusd-specifier-status.patch`.
+
+761 Make release workspace/all-target tests pass (19 ignored). The existing
+ancestry differential regression now checks combined status against individual
+defined/abstract queries, including masks, instance proxies and class-to-def
+edits. Moana's bounded diagnostic retains 416,549 prims and 6,400,861 attributes.
+Traversal measured 24.468 s versus 31.625 s after the abstract-walk change;
+total validation measured 58.890 s versus 66.833 s. These are sequential
+diagnostics, not controlled paired or first-frame acceptance. The 110-second
+run still exits 124 without completed CPU open, at 19,990,932 KiB peak RSS
+within the 24 GiB/no-swap cap. Evidence: `target/perf/p3-specifier-walk/`.
+All 14 explicit native export checks pass, and the new Oxbo capture is RGBA
+byte-identical to `target/perf/oxbo-current/original.rgba`.
+
 Abstract-ancestry increment: `Prim::is_abstract` now delegates its ancestor
 specifier walk to one mask-gated composition-cache query, rather than repeating
 stage query/settlement for each ancestor. It retains the same composed field

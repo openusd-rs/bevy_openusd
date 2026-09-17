@@ -654,6 +654,9 @@ over "Undefined" { def Xform "Child" {} }
                     let expected = !path.is_abs_root() && prim.is_valid().unwrap()
                         && path.ancestors_below_root().any(|ancestor| stage.field::<openusd::sdf::Specifier>(&ancestor, "specifier").unwrap() == Some(openusd::sdf::Specifier::Class));
                     assert_eq!(prim.is_abstract().unwrap(), expected, "{name}");
+                    let status = stage.prim_status(&path).unwrap();
+                    assert_eq!(status.contains(openusd::usd::PrimStatus::ABSTRACT), expected, "{name}");
+                    assert_eq!(status.contains(openusd::usd::PrimStatus::DEFINED), prim.is_defined().unwrap(), "{name}");
                 }
             };
             check();

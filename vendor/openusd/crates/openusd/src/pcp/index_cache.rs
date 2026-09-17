@@ -1799,6 +1799,21 @@ impl IndexCache {
         Ok(false)
     }
 
+    /// Resolves defined and abstract state from one ancestor-specifier walk.
+    pub(crate) fn specifier_status(&mut self, graph: &LayerGraph, path: &Path) -> Result<(bool, bool), QueryError> {
+        if path.is_abs_root() { return Ok((true, false)); }
+        if !self.has_spec(graph, path)? { return Ok((false, false)); }
+        let (mut defined, mut abstract_) = (true, false);
+        for ancestor in path.ancestors_below_root() {
+            let specifier = self.resolve_field(graph, &ancestor, FieldKey::Specifier.as_str())?
+                .map(sdf::Specifier::try_from).transpose()?;
+            defined &= matches!(specifier, Some(sdf::Specifier::Def | sdf::Specifier::Class));
+            abstract_ |= specifier == Some(sdf::Specifier::Class);
+            if !defined && abstract_ { break; }
+        }
+        Ok((defined, abstract_))
+    }
+
     /// This prim's own composed `active` opinion, defaulting to `true`. The
     /// per-prim read [`Self::is_active`] walks and [`Self::is_populated`] takes
     /// for the prim it is deciding, its ancestors having been decided already.

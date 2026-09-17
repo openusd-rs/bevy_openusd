@@ -2991,11 +2991,13 @@ impl Stage {
             } else { prim.is_loaded()? };
             status.set(PrimStatus::LOADED, loaded);
         }
-        if mask.contains(PrimStatus::DEFINED) {
-            status.set(PrimStatus::DEFINED, prim.is_defined()?);
-        }
-        if mask.contains(PrimStatus::ABSTRACT) {
-            status.set(PrimStatus::ABSTRACT, prim.is_abstract()?);
+        if mask.contains(PrimStatus::DEFINED | PrimStatus::ABSTRACT) {
+            let (defined, abstract_) = self.masked(prim.path(), |g, cache| cache.specifier_status(g, prim.path()))?;
+            status.set(PrimStatus::DEFINED, defined);
+            status.set(PrimStatus::ABSTRACT, abstract_);
+        } else {
+            if mask.contains(PrimStatus::DEFINED) { status.set(PrimStatus::DEFINED, prim.is_defined()?); }
+            if mask.contains(PrimStatus::ABSTRACT) { status.set(PrimStatus::ABSTRACT, prim.is_abstract()?); }
         }
         if mask.contains(PrimStatus::INSTANCE) {
             status.set(PrimStatus::INSTANCE, prim.is_instance()?);

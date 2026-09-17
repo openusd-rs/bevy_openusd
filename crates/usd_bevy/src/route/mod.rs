@@ -262,6 +262,26 @@ pub struct RouteTiming {
 #[derive(Resource, Debug, Default)]
 pub struct ProjectionTimings(pub std::collections::BTreeMap<&'static str, RouteTiming>);
 
+/// Route costs by hierarchy visibility at entry; excludes camera/frustum visibility.
+#[derive(Resource, Default)]
+pub struct ProjectionVisibilityTimings(pub std::collections::BTreeMap<(&'static str, Option<bool>), RouteTiming>);
+
+fn hierarchy_hidden(world: &World, mut entity: Entity) -> Option<bool> {
+    use bevy::prelude::{ChildOf, Visibility};
+    for _ in 0..128 {
+        let current = world.get_entity(entity).ok()?;
+        match current.get::<Visibility>() {
+            Some(Visibility::Hidden) => return Some(true),
+            Some(Visibility::Visible) => return Some(false),
+            None => return Some(false),
+            Some(Visibility::Inherited) => (),
+        }
+        let Some(parent) = current.get::<ChildOf>() else { return Some(false); };
+        entity = parent.parent();
+    }
+    None
+}
+
 impl SchemaRegistry {
     /// An empty registry.
     pub fn new() -> Self {
@@ -355,7 +375,7 @@ impl SchemaRegistry {
 }
 
 fn run_route(route: &dyn PrimRoute, ctx: &RouteCtx, world: &mut World, entity: Entity, changed: Option<&[&str]>) {
-    let timed = world.contains_resource::<ProjectionTimings>();
+    let timed = world.contains_resource::<ProjectionTimings>() || world.contains_resource::<ProjectionVisibilityTimings>();
     if !timed {
         if route.matches(ctx) {
             if let Some(changed) = changed { route.patch(ctx, world, entity, changed); }
@@ -366,6 +386,8 @@ fn run_route(route: &dyn PrimRoute, ctx: &RouteCtx, world: &mut World, entity: E
     let start = std::time::Instant::now();
     let matched = route.matches(ctx);
     let matching = start.elapsed();
+    let hidden = (matched && world.contains_resource::<ProjectionVisibilityTimings>())
+        .then(|| hierarchy_hidden(world, entity));
     let start = std::time::Instant::now();
     if matched {
         if let Some(changed) = changed { route.patch(ctx, world, entity, changed); }
@@ -379,6 +401,13 @@ fn run_route(route: &dyn PrimRoute, ctx: &RouteCtx, world: &mut World, entity: E
         entry.matching += matching;
         entry.application += application;
     }
+    if let Some(hidden) = hidden && let Some(mut timings) = world.get_resource_mut::<ProjectionVisibilityTimings>() {
+        let entry = timings.0.entry((route.name(), hidden)).or_default();
+        entry.attempts += 1;
+        entry.matches += 1;
+        entry.matching += matching;
+        entry.application += application;
+    }
 }
 
 /// The current [`StageTime`] in `world`, if the resource is present.
@@ -389,6 +418,29 @@ fn time_of(world: &World) -> Option<f64> {
 #[cfg(test)]
 mod timing_tests {
     use super::*;
+
+    #[test]
+    fn hierarchy_profiling_handles_inheritance_overrides_and_depth_limits() {
+        use bevy::prelude::{ChildOf, Visibility};
+        let mut world = World::new();
+        let parent = world.spawn(Visibility::Hidden).id();
+        let child = world.spawn((Visibility::Inherited, ChildOf(parent))).id();
+        assert_eq!(hierarchy_hidden(&world, child), Some(true));
+        world.entity_mut(child).insert(Visibility::Visible);
+        assert_eq!(hierarchy_hidden(&world, child), Some(false));
+        world.entity_mut(child).insert(Visibility::Inherited);
+        world.entity_mut(parent).insert(Visibility::Inherited);
+        assert_eq!(hierarchy_hidden(&world, child), Some(false));
+        world.entity_mut(parent).insert(Visibility::Hidden);
+        let gap = world.spawn(ChildOf(parent)).id();
+        let leaf = world.spawn((Visibility::Inherited, ChildOf(gap))).id();
+        assert_eq!(hierarchy_hidden(&world, leaf), Some(false));
+        let mut deep = child;
+        for _ in 0..128 { deep = world.spawn((Visibility::Inherited, ChildOf(deep))).id(); }
+        assert_eq!(hierarchy_hidden(&world, deep), None);
+        world.despawn(deep);
+        assert_eq!(hierarchy_hidden(&world, deep), None);
+    }
 
     struct ReadsMesh;
     impl PrimRoute for ReadsMesh {
@@ -443,8 +495,14 @@ mod timing_tests {
         registry.project_prim(&stage, &path, &mut world, entity);
         assert!(!world.contains_resource::<ProjectionTimings>());
         world.init_resource::<ProjectionTimings>();
+        world.init_resource::<ProjectionVisibilityTimings>();
         registry.project_prim(&stage, &path, &mut world, entity);
+        world.entity_mut(entity).insert(bevy::prelude::Visibility::Hidden);
         registry.patch_prim(&stage, &path, &mut world, entity, &["visibility"]);
+        let visibility = &world.resource::<ProjectionVisibilityTimings>().0;
+        assert_eq!(visibility[&(Matches.name(), Some(false))].matches, 1);
+        assert_eq!(visibility[&(Matches.name(), Some(true))].matches, 1);
+        assert_eq!(visibility.len(), 2);
         let timings = world.resource::<ProjectionTimings>();
         let matched = &timings.0[Matches.name()];
         assert_eq!((matched.attempts, matched.matches), (2, 2));

@@ -531,6 +531,42 @@ skipping necessary composition. Benchmark editor and asset-instance paths separa
 
 ## P4 — Separate logical prims from initial geometry residency
 
+CPU attribution: `ProjectionVisibilityTimings` splits matching-route application
+time by hierarchy visibility at route entry. It walks `Visibility`/`ChildOf`
+without waiting for transform/visibility propagation, honors explicit Visible
+overrides and missing visibility boundaries, and reports unknown for missing
+entities or chains exceeding 128 levels. Classification time is outside route
+application timing but still contributes to wall time. Early metadata routes
+may run before their own VisibilityRoute; use the mesh/skin/subset rows below
+for geometry demand, not sums of every visible/hidden row. Frustum/shadow demand
+and final submitted-frame visibility are not measured by this probe.
+
+Enable with `USD_PROFILE_VISIBILITY=1` alongside `USD_PROFILE_ROUTES=1` in the
+editor benchmark, or on its own in `viewer_capture`. Two diagnostic Caldera
+opens found 18,932 hierarchy-hidden mesh prims versus 224 visible mesh prims:
+
+| Caldera route | Hidden application samples, s | Visible application samples, s |
+| --- | --- | --- |
+| MeshRoute | 8.856 / 8.698 | 2.353 / 2.068 |
+| SkinRoute | 3.468 / 3.334 | 0.007 / 0.007 |
+| SubsetRoute | 2.956 / 2.883 | 0.017 / 0.017 |
+
+The hidden contribution across these three sequential routes is about 15.28 /
+14.91 s, not a promised saving: some deferred data may still be dependencies of
+demanded content, and reveal/reload work remains mandatory. Visible shape-route
+prims add 4,187 entities, so the 224 mesh-prim count is not the capture's total
+visible-mesh-entity count. Oxbo has only three hidden mesh prims and about 0.15 ms
+of hidden work in these routes; this strategy will not materially improve Oxbo.
+
+The offscreen Caldera asset-instance path independently reports 14.737 s hidden
+across these routes and is pixel-identical to the owner-walk baseline. Its capture
+process duration is 58.64 s, not first-frame time. Full workspace release tests
+pass (740 tests, 19 ignored); inheritance/override/depth and timing-bucket tests
+cover the profiler. Evidence is in `target/perf/p4-cpu/`. This promotes authored-
+visibility/purpose deferral ahead of another narrow worker experiment for Caldera,
+while preserving the dependency, reveal, retained-variant and custom-route gates
+below. No geometry deferral is enabled by this profiling increment.
+
 Attribution increment: embedded-viewer and offscreen capture metadata now group
 unique retained mesh assets into visible-only, hidden-only, shared and
 unreferenced buckets using propagated `InheritedVisibility`. Per-bucket vertex,

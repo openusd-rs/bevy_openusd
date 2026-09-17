@@ -28,6 +28,13 @@ fn asset_counts(world: &World) -> [usize; 3] {
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionVisibilityTimings>() {
+        for ((route, hidden), row) in &timings.0 {
+            let visibility = match hidden { Some(true) => "hidden", Some(false) => "visible", None => "unknown" };
+            eprintln!("route_visibility_profile phase={phase} samples={samples} route={route} hierarchy={visibility} matches={} apply_ms={:.3}",
+                row.matches, row.application.as_secs_f64()*1000.0);
+        }
+    }
     if let Some(reads) = world.get_resource::<usd_bevy::route::MeshReadTiming>() {
         eprintln!("mesh_read_profile phase={phase} samples={samples} requests={} decodes={} missing={} errors={} array_bytes={} elapsed_ms={:.3} scope=registry-contexts overlaps=route-matching-and-application",
             reads.requests, reads.decodes, reads.missing, reads.errors, reads.array_bytes, reads.elapsed.as_secs_f64()*1000.0);
@@ -80,6 +87,9 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
         app.init_resource::<usd_bevy::route::ProjectionTimings>();
+        if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
+            app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>();
+        }
         app.init_resource::<usd_bevy::route::cache::MeshCacheMetrics>();
         app.init_resource::<usd_bevy::route::MeshReadTiming>();
     }
@@ -108,6 +118,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
         for iteration in 0..seek.samples()+4 {
             if iteration == 4 {
                 if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionTimings>() { timings.0.clear(); }
+                if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionVisibilityTimings>() { timings.0.clear(); }
                 if let Some(mut metrics) = app.world_mut().get_resource_mut::<usd_bevy::route::cache::MeshCacheMetrics>() { metrics.0.clear(); }
                 if let Some(mut reads) = app.world_mut().get_resource_mut::<usd_bevy::route::MeshReadTiming>() { *reads = default(); }
             }

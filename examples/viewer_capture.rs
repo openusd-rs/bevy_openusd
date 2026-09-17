@@ -297,6 +297,7 @@ fn main() -> AppExit {
             .add_systems(Update, select_dome);
     }
     if std::env::var_os("USD_PROFILE_SOURCES").is_some() { app.init_resource::<usd_bevy::asset::UsdSceneTimings>(); }
+    if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() { app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>(); }
     if timing_enabled { app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin); }
     app.sub_app_mut(bevy::render::RenderApp).insert_resource(progress)
         .add_systems(bevy::render::Render, pipeline_progress.after(bevy::render::RenderSystems::Render));
@@ -526,7 +527,15 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     capture.mesh_report.push_str(shadows);
     capture.requested = true;
     commands.spawn(Screenshot(target.clone())).observe(
-        |event: On<ScreenshotCaptured>, capture: Res<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>, mut exit: MessageWriter<AppExit>| {
+        |event: On<ScreenshotCaptured>, capture: Res<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>,
+         visibility: Option<Res<usd_bevy::route::ProjectionVisibilityTimings>>, mut exit: MessageWriter<AppExit>| {
+            if let Some(timings) = visibility {
+                for ((route, hidden), row) in &timings.0 {
+                    let hierarchy = match hidden { Some(true) => "hidden", Some(false) => "visible", None => "unknown" };
+                    eprintln!("route_visibility_profile phase=capture route={route} hierarchy={hierarchy} matches={} apply_ms={:.3}",
+                        row.matches, row.application.as_secs_f64()*1000.0);
+                }
+            }
             if let Some(timings) = timings {
                 eprintln!("capture_source_profile attempts={} failures={} validation_reuses={} open_ms={:.3} validation_ms={:.3} projection_ms={:.3}",
                     timings.attempts, timings.failures, timings.validation_reuses, timings.open.as_secs_f64()*1000.0,

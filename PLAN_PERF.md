@@ -883,6 +883,70 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+### Shared immutable SdfPath text trial
+
+The first trial changed private `Path` storage from `String` to `Arc<str>`,
+sharing cloned text without a global interner. Derivations
+still create independent paths; validation, hashing, ordering, display and serde
+remain content-based. This differs from the rejected per-node property-path cache:
+it changes ownership of immutable text, not query caching or invalidation.
+The trade-off is an atomic reference count and a copy when converting an owned
+String into shared storage.
+
+Five alternating fresh-process Moana `stage_benchmark ... proxies` runs under
+24 GiB/no-swap, with no own concurrent builds, preserve **416,549 prims and 459
+layers** in every row. Baseline traversal milliseconds:
+`19214.989,19242.988,19190.095,19025.213,18868.766`; candidate:
+`16975.994,16857.449,16996.987,16856.918,16810.543`. Median traversal falls
+**19,190.095 → 16,857.449 ms (12.2%)**. Median post-traversal RSS falls
+**12,303,516 → 8,343,096 KiB**, saving **3,960,420 KiB (3.78 GiB, 32.2%)**.
+Raw rows, process peak RSS and saved binaries are under
+`target/perf/p3-shared-sdf-paths/`. This excludes validation, Bevy projection,
+textures, GPU preparation and UI; it is not a completed Moana viewer load or
+the ≤5× first-frame acceptance. Full regression/native export and rendered
+controls must pass before accepting this vendor increment.
+
+**Rejected representation, not discarded ownership strategy:** the `Arc<str>`
+Oxbo control regressed consistently: median CPU open 2,061.196 → 2,117.033 ms
+(2.7% slower), despite unchanged geometry counts. The follow-up representation
+in `patches/openusd-shared-path-text.patch` uses **`Arc<String>`**, retaining
+owned input buffers rather than copying them into a new `Arc<str>` allocation.
+The public path API and content-based semantics remain unchanged; the private
+representation is smaller, but unique paths retain a separate String allocation.
+The path regression test checks input-buffer reuse as well as clone sharing.
+
+Five fresh alternating Oxbo controls for this representation record baseline
+milliseconds `2040.775,2051.421,2049.000,2061.587,2043.151` versus candidate
+`2019.656,2010.308,2027.707,2011.150,2022.259`: medians
+**2,049.000 → 2,019.656 ms**. This removes the observed regression; the small
+1.4% reduction is not the primary acceptance argument. All geometry, asset and
+payload counts match. A preliminary Moana traversal uses 8,072,812 KiB RSS;
+the repeated Moana trial and final validation below must supersede this one run.
+Artifacts are `owned-oxbo-*.log`, `arcstring-stage-1.log` in the same directory.
+
+The final five alternating Moana pairs for `Arc<String>` preserve 416,549 prims
+and 459 layers. Baseline traversal milliseconds
+`19015.276,18943.741,18804.090,18828.552,18861.525`; candidate
+`17262.340,17217.293,17228.653,17367.598,17260.008`. Median traversal falls
+**18,861.525 → 17,260.008 ms (8.5%)**; median post-traversal RSS falls
+**12,303,432 → 8,071,992 KiB**, saving **4,231,440 KiB (4.04 GiB, 34.4%)**.
+Use these accepted-representation measurements rather than the faster but
+Oxbo-regressing `Arc<str>` numbers. Raw results: `owned-moana-*.log`.
+
+Final `Arc<String>` validation: 768 workspace/all-target release tests pass
+(19 ignored), 14 native export tests pass, and 40 upstream path tests pass with
+serde enabled, including clone sharing, owned-buffer preservation, derivations,
+content hashing and string/empty-path serialization. Run the standalone path
+gate through Make with
+`CARGO_WORKSPACE_DIR="$PWD/vendor/openusd/" CARGO_BUILD_JOBS=4 make test CARGO='cargo --offline' APP_TARGET='--manifest-path vendor/openusd/Cargo.toml --release -p openusd --lib sdf::path::tests --features serde'`.
+The command needs that workspace environment variable even with a path-only
+filter because the complete upstream test module compiles; external fixture
+tests are not part of this 40-test gate. Its generated standalone Cargo.lock is
+not retained. Final logs use the `owned-` prefix. Fresh Oxbo and Caldera captures
+match their retained RGBA controls byte-for-byte; Caldera's known visual defects
+remain unchanged. No Blender parity or complete-frame claim follows from these
+regression checks. The full Moana editor workload must be rerun separately.
+
 Traversal-local parent status: `DEFAULT_PROXIES` now carries a population-epoch
 witness from a matching parent to queued children. With unchanged population
 and no authored load rules, each child resolves its own active/specifier opinions

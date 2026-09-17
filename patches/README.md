@@ -7,6 +7,12 @@ See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
 ## Traversal ancestry queries
 
+`openusd-shared-path-text.patch` stores private `SdfPath` text in `Arc<String>`.
+Clones share immutable text; derived paths allocate their own text. Equality,
+ordering, hashing, validation and string serialization retain value semantics.
+This is not a global interner or a composition-result cache. Owned-string
+construction retains the String buffer in shared immutable storage.
+
 `openusd-traversal-parent-status.patch` carries a population-epoch witness for
 default-matching parents during `DEFAULT_PROXIES` traversal. Under unchanged
 population and empty load rules, children resolve only their local active and

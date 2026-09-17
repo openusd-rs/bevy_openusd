@@ -1,7 +1,7 @@
 # USD loading performance plan
 
 Planned against `1dd38c8` on 2026-09-16; reconciled against `9ea5ced` and the
-working tree on 2026-09-17. Status: **P0–P7 in progress; P4 opt-in only; P8 planned**.
+working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
@@ -182,7 +182,7 @@ Update status only with linked evidence and a commit.
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | SCHEDULING IN PROGRESS |
 | P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | LOOKUP IN PROGRESS |
 | P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | MANIFEST IN PROGRESS |
-| P8 | Revision-based transactional hot reload | P0, P3; reuse P7 | L / high | TODO |
+| P8 | Revision-based transactional hot reload | P0, P3; reuse P7 | L / high | NO-OP INSPECTION IN PROGRESS |
 
 Implement P1–P3 as independently measured changes. Reprofile before P4–P8 and
 adjust their order using measured bytes, duplicate work and serial CPU fractions.
@@ -1122,6 +1122,28 @@ copied/decompressed, peak memory and Oxbo loading. No pathname-only cache may
 serve old contents after Blender saves a new file.
 
 ## P8 — Make reload preparation proportional to changed layers
+
+No-op inspector increment: `editor::process_commands` retains the existing
+inspector snapshot when a command batch contains only successful ReloadSources
+checks with no publication, revision change or detected external edits. Actual
+reload publication, errors, other commands and external/texture changes still
+refresh it. Source reading/hashing and watcher behavior are unchanged; this is
+not a metadata shortcut or removal of the initial load-to-watch verification.
+Optional `EditorSnapshotTiming` counts command-driven inspection work, and
+`USD_PROFILE_LOADING` enables it with per-snapshot timing output.
+
+750 workspace/all-target tests pass (19 ignored). The regression checks prove
+that an unchanged reload avoids a new snapshot, while changed disk content,
+mixed Select/reload batches, malformed-file failures and an external stage edit
+all refresh inspection and preserve document/last-good state as appropriate.
+
+Caldera diagnostic: the initial 265-file reload still costs 1,191.722 ms, but
+the slow update falls from 2,259.507 ms to 1,210.093 ms. Initial-open inspection
+separately costs 987.856 ms; no second snapshot is emitted for the no-op reload.
+Budgeted prewarm completes all 18,932 meshes in 22.583 s / 1,520 updates, with
+16.846 ms p95. This single comparison isolates avoided inspection work; it does
+not establish a general load-speed ratio or remove the remaining verification
+stall. Evidence: `target/perf/p8-noop-inspection/` (`caldera.log`, `tests.log`).
 
 **Scope:** `reload.rs`, `editor/reload.rs`, `source.rs`, persistence/conflict tests;
 review upstream immutable-layer APIs separately if required.

@@ -679,6 +679,19 @@ to Bevy Visibility outside USD are not currently a promotion trigger. Non-Mesh
 geometry remains eager, and promotion is synchronous; bounded asynchronous
 states/cancellation are not implemented by this increment.
 
+Rejected follow-up: a temporary per-promotion `ProjectionMaterials` memo passed
+747 experimental workspace/all-target tests (19 ignored), including shared
+material handles and restoration of a surrounding stage's memo. Caldera's
+MaterialRoute cost remained 1.225 / 1.239 s, versus roughly 1.235 s in the first
+ordered baseline sample. Full prewarm was 16.692 / 16.788 s versus 17.023 /
+16.841 s; these two-run differences do not establish a useful gain. The memo
+starts after binding resolution and cannot skip that prerequisite. The trial
+was removed rather than adding unproven caching complexity. The rejected patch,
+raw measurements, experimental tests and restored benchmark build log are in
+`target/perf/p4-promotion-materials/`. Existing projection-job material caches
+remain unchanged; this result does not reject their use or prove a memo could
+never help scenes with different material workloads.
+
 CPU attribution: `ProjectionVisibilityTimings` splits matching-route application
 time by hierarchy visibility at route entry. It walks `Visibility`/`ChildOf`
 without waiting for transform/visibility propagation, honors explicit Visible

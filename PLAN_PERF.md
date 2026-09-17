@@ -1137,6 +1137,43 @@ stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
 
+Oxbo source-format investigation at `f0a60e7`: the original USDZ contains a single
+165,860,567-byte USDA entry. A native `usdcat` conversion into an ignored USDC
+under `target/perf/oxbo-current/` leaves the original untouched. This is a source-
+format experiment, not an implemented cache or a matched native-render benchmark.
+
+Original CPU open measured 3.461 / 3.104 / 3.083 s; USDC measured
+1.502 / 1.509 / 1.491 s, each in a fresh process using the same release binary.
+Order was original/binary, binary/original, original/binary. Filesystem caches
+were not cleared. The first original sample spent 468 ms reading/constructing
+the source and another 1,771 ms opening its stage; MeshRoute was 420 ms,
+MaterialRoute 193 ms and SkinRoute only 9 ms. Thus further skin-check optimization
+is not the priority for this Oxbo workload. USDC's first sample spent 27 ms on
+source construction and 40 ms on stage open. Its total CPU open still includes
+validation, projection and editor work.
+
+All six samples retain 1,786 mesh entities, 14 subsets, 1,597 mesh assets and
+1,739,712 vertices, with identical reported vertex/index payload sizes. Original
+and binary captures both completed and their RGBA files are byte-identical:
+`cb192f7a8647daacaaed2ac55ecbaaab4b7428bbe41288c716ed30142fed0b0c`.
+The binary image was visually inspected. This verifies the captured static view,
+not animation, editing or a general guarantee for relocated asset dependencies.
+First-run process peak RSS was 731,608 KiB for original versus 251,476 KiB for
+binary. Raw CPU logs, conversion output and both captures are retained under
+`target/perf/oxbo-current/`; all runs used the 24 GiB/no-swap cap.
+
+**Next source-loader implementation:** `StageBuilder::open` calls
+`root_stack_expression_variables`, whose `LayerRegistry::own_expression_variables`
+reads/parses the root. `collect_layers` then calls `open_stack`, which reads/parses
+it again. The registry explicitly has no read cache. Pass already-parsed root
+and session-root data through this single open operation, preserving canonical
+identifiers, resolved paths, expression-variable precedence, muted-session
+behavior and error reporting. Do not add a long-lived pathname-only cache.
+Prove one parse per ordinary root, expression-valued sublayer behavior, fresh
+contents after a subsequent open, and independent mutable stages; run the full
+workspace gate and repeat original-format Oxbo timing and capture. Keep binary
+conversion optional evidence, not a prerequisite for faster original USD loading.
+
 Package-directory increment: the vendored USDZ format now opens its default-layer
 directory through the resolver's seekable asset, instead of `read_all()` copying
 the entire package first. Public `Archive::from_asset` remains unchanged; corrupt

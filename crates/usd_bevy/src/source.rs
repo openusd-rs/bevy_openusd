@@ -621,6 +621,68 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn stage_open_reuses_root_parses_without_retaining_stale_data() {
+        use super::*;
+        type Files = Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>;
+        type Counts = Arc<Mutex<std::collections::HashMap<String, usize>>>;
+        struct CountedResolver(Files, Counts);
+        impl Resolver for CountedResolver {
+            fn create_identifier(&self, path: &str, _: Option<&ResolvedPath>) -> String { path.into() }
+            fn resolve(&self, path: &str) -> Option<ResolvedPath> {
+                self.0.lock().unwrap().contains_key(path).then(|| ResolvedPath::new(path))
+            }
+            fn resolve_for_new_asset(&self, path: &str) -> Option<ResolvedPath> { self.resolve(path) }
+            fn open_asset(&self, path: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
+                let path = path.to_string_lossy().into_owned();
+                *self.1.lock().unwrap().entry(path.clone()).or_default() += 1;
+                Ok(Box::new(Cursor::new(self.0.lock().unwrap().get(&path).unwrap().clone())))
+            }
+        }
+        let files: Files = Arc::new(Mutex::new([
+            ("root.usda", r#"#usda 1.0
+(
+    expressionVariables = { string WHICH = "a" string SHARED = "shared" }
+    subLayers = [@`"${WHICH}.usda"`@]
+)
+def Xform "Root" {}
+"#),
+            ("session.usda", r#"#usda 1.0
+(
+    expressionVariables = { string WHICH = "b" }
+    subLayers = [@`"${SHARED}.usda"`@]
+)
+"#),
+            ("a.usda", "#usda 1.0\ndef Xform \"A\" {}\n"),
+            ("b.usda", "#usda 1.0\ndef Xform \"B\" {}\n"),
+            ("shared.usda", "#usda 1.0\ndef Xform \"Shared\" {}\n"),
+        ].into_iter().map(|(path, text)| (path.into(), text.as_bytes().to_vec())).collect()));
+        let counts: Counts = Default::default();
+        let open = |muted| {
+            let builder = Stage::builder().resolver(CountedResolver(files.clone(), counts.clone())).session_layer("session.usda");
+            if muted { builder.mute(["session.usda"]).open("root.usda").unwrap() }
+            else { builder.open("root.usda").unwrap() }
+        };
+        let first = open(false);
+        assert!(first.prim("/B").unwrap().is_valid().unwrap());
+        assert!(first.prim("/Shared").unwrap().is_valid().unwrap());
+        assert!(!first.prim("/A").unwrap().is_valid().unwrap());
+        for path in ["root.usda", "session.usda", "b.usda", "shared.usda"] {
+            assert_eq!(counts.lock().unwrap().get(path), Some(&1), "{path}");
+        }
+        files.lock().unwrap().insert("b.usda".into(), b"#usda 1.0\ndef Xform \"Updated\" {}\n".to_vec());
+        let second = open(false);
+        assert!(second.prim("/Updated").unwrap().is_valid().unwrap());
+        assert!(first.prim("/B").unwrap().is_valid().unwrap());
+        second.define_prim("/OnlySecond").unwrap();
+        assert!(!first.prim("/OnlySecond").unwrap().is_valid().unwrap());
+        assert_eq!(counts.lock().unwrap().get("root.usda"), Some(&2));
+        assert_eq!(counts.lock().unwrap().get("session.usda"), Some(&2));
+        let muted = open(true);
+        assert!(muted.prim("/A").unwrap().is_valid().unwrap());
+        assert!(!muted.prim("/Shared").unwrap().is_valid().unwrap());
+    }
+
+    #[test]
     fn package_root_lookup_reads_directory_without_copying_payload() {
         use super::*;
         use std::io::Write;

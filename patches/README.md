@@ -5,6 +5,15 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Prepared stage roots
+
+`openusd-prepared-roots.patch` passes parsed root and session-root data from
+expression-variable inspection into initial layer-stack collection. The data
+is consumed by that open operation; the registry retains no cross-open cache.
+Canonical identifiers and resolved paths travel with each parsed layer.
+Bevy's counted-resolver regression covers root/session reads, variable
+precedence, muted sessions, fresh reopen and independent stage edits.
+
 ## Empty prim-index paths
 
 `openusd-empty-index.patch` leaves the empty path uncached in `ensure_index`.

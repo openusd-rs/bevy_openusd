@@ -1162,7 +1162,7 @@ First-run process peak RSS was 731,608 KiB for original versus 251,476 KiB for
 binary. Raw CPU logs, conversion output and both captures are retained under
 `target/perf/oxbo-current/`; all runs used the 24 GiB/no-swap cap.
 
-**Next source-loader implementation:** `StageBuilder::open` calls
+**Identified source-loader duplication:** `StageBuilder::open` calls
 `root_stack_expression_variables`, whose `LayerRegistry::own_expression_variables`
 reads/parses the root. `collect_layers` then calls `open_stack`, which reads/parses
 it again. The registry explicitly has no read cache. Pass already-parsed root
@@ -1173,6 +1173,30 @@ Prove one parse per ordinary root, expression-valued sublayer behavior, fresh
 contents after a subsequent open, and independent mutable stages; run the full
 workspace gate and repeat original-format Oxbo timing and capture. Keep binary
 conversion optional evidence, not a prerequisite for faster original USD loading.
+
+Prepared-root implementation: the vendored registry now returns owned parsed
+root data with its canonical identifier and resolved path. StageBuilder reads
+root/session expression variables from that data, then consumes the same data
+for stack collection. No cross-open cache or shared mutable stage is added.
+The review patch is `patches/openusd-prepared-roots.patch`; dependency revision
+and original assets are unchanged.
+
+757 Make release workspace/all-target tests pass (19 ignored), plus 14 native
+export checks run explicitly. A counted-resolver test verifies one read of each
+root/session layer, session-over-root variable precedence, root variables in
+session sublayers, muted session behavior, fresh dependency data on reopen and
+independent stage edits. Evidence: `target/perf/p7-root-parse/tests-final.log`
+and `native-exports.log`.
+
+Three original-format Oxbo CPU opens measured 2.265 / 2.260 / 2.265 s, versus
+the prior warm original runs' 3.104 / 3.083 s (about 27% lower). Source construction
+took 99–110 ms; stage opening after it took 923–941 ms. These are sequential
+before/after diagnostics, not randomized paired acceptance. Entity/mesh/payload
+counts match the previous baseline. The new original-asset capture completed
+and its RGBA is byte-identical to `target/perf/oxbo-current/original.rgba`.
+Logs, capture and build output are under `target/perf/p7-root-parse/`.
+This improves original USDA loading without requiring binary conversion; the
+matched first-complete-frame target and broader Moana acceptance remain open.
 
 Package-directory increment: the vendored USDZ format now opens its default-layer
 directory through the resolver's seekable asset, instead of `read_all()` copying

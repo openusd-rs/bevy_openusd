@@ -13,6 +13,13 @@ pub struct UsdGpuSkin {
     pub joints: Vec<Entity>,
 }
 
+#[derive(Resource, Default)]
+pub struct GpuSkinUpdateTiming {
+    pub updates: usize,
+    pub joints: usize,
+    pub elapsed: std::time::Duration,
+}
+
 #[derive(Component, Debug)]
 pub struct UsdCpuSkinFallback(pub String);
 
@@ -33,13 +40,27 @@ impl Plugin for UsdGpuSkinningPlugin {
     }
 }
 
-fn update_joint_globals(world: &mut World) {
-    let updates: Vec<_> = world.query::<(&GlobalTransform, &UsdGpuSkin)>().iter(world)
+fn update_joint_globals(
+    mut queries: ParamSet<(
+        Query<(&GlobalTransform, &UsdGpuSkin), Or<(Changed<GlobalTransform>, Changed<UsdGpuSkin>)>>,
+        Query<&mut GlobalTransform>,
+    )>,
+    timing: Option<ResMut<GpuSkinUpdateTiming>>,
+) {
+    let started = timing.as_ref().map(|_| std::time::Instant::now());
+    let updates: Vec<_> = queries.p0().iter()
         .flat_map(|(transform, skin)| skin.joints.iter().zip(&skin.matrices)
             .map(move |(&joint, matrix)| (joint, GlobalTransform::from(transform.to_matrix() * *matrix))))
         .collect();
+    let count = updates.len();
+    let mut globals = queries.p1();
     for (joint, transform) in updates {
-        if let Some(mut global) = world.get_mut::<GlobalTransform>(joint) { *global = transform; }
+        if let Ok(mut global) = globals.get_mut(joint) { global.set_if_neq(transform); }
+    }
+    if let (Some(started), Some(mut timing)) = (started, timing) {
+        timing.updates += 1;
+        timing.joints += count;
+        timing.elapsed += started.elapsed();
     }
 }
 
@@ -150,6 +171,29 @@ fn correct_tangents(ctx: &RouteCtx, mesh: &mut Mesh, mapping: &[usize], skin: &c
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joint_globals_only_resample_changed_placement_or_pose() {
+        let mut app = App::new();
+        app.init_resource::<GpuSkinUpdateTiming>().add_systems(Update, update_joint_globals);
+        let joint = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+        let mesh = app.world_mut().spawn((GlobalTransform::from_translation(Vec3::X),
+            UsdGpuSkin { joints: vec![joint], matrices: vec![Mat4::from_translation(Vec3::Y)] })).id();
+        app.update();
+        assert_eq!(app.world().get::<GlobalTransform>(joint).unwrap().translation(), Vec3::X + Vec3::Y);
+        assert_eq!(app.world().resource::<GpuSkinUpdateTiming>().joints, 1);
+        app.update();
+        assert_eq!(app.world().resource::<GpuSkinUpdateTiming>().joints, 1);
+        app.world_mut().entity_mut(mesh).insert(GlobalTransform::from_translation(Vec3::Z));
+        app.update();
+        assert_eq!(app.world().get::<GlobalTransform>(joint).unwrap().translation(), Vec3::Z + Vec3::Y);
+        app.world_mut().get_mut::<UsdGpuSkin>(mesh).unwrap().matrices[0] = Mat4::IDENTITY;
+        app.update();
+        assert_eq!(app.world().get::<GlobalTransform>(joint).unwrap().translation(), Vec3::Z);
+        assert_eq!(app.world().resource::<GpuSkinUpdateTiming>().joints, 3);
+        app.update();
+        assert_eq!(app.world().resource::<GpuSkinUpdateTiming>().joints, 3);
+    }
 
     #[test]
     fn corrected_normals_validate_the_active_morph_result() {
@@ -445,7 +489,8 @@ mod tests {
         assert_eq!(world.get::<UsdGpuSkin>(entity).unwrap().joints, joints);
         let placement = Mat4::from_translation(Vec3::new(10.0, 2.0, 3.0));
         world.entity_mut(entity).insert(GlobalTransform::from(placement));
-        update_joint_globals(&mut world);
+        use bevy::ecs::system::RunSystemOnce;
+        world.run_system_once(update_joint_globals).unwrap();
         let skin = world.get::<UsdGpuSkin>(entity).unwrap();
         for (&joint, matrix) in joints.iter().zip(&skin.matrices) {
             assert!(world.get::<GlobalTransform>(joint).unwrap().to_matrix().abs_diff_eq(placement * *matrix, 1e-5));

@@ -709,6 +709,38 @@ budget. Investigate these costs and split heavy preparation before making any
 hard latency claim. Fair scheduling among roots and viewer loading/readiness
 presentation remain follow-up work; logical Ready is not a rendered-frame gate.
 
+Palette-update follow-up: opt-in `GpuSkinUpdateTiming` exposed 929,252 generated
+joint transforms rebuilt on every eager Caldera update. Over 100 idle updates,
+the old pass processed another 92,925,200 joints and spent about 3.26 s inside
+the pass. `gpu_skin::update_joint_globals` now uses Bevy change tracking on mesh
+GlobalTransform and UsdGpuSkin, and writes a joint GlobalTransform only when its
+value differs. Initial palettes and changed placements/poses still update; idle
+meshes perform no palette multiplication or joint writes. The benchmark reports
+cumulative palette counts/times at initial-open, after-idle and prewarm checkpoints.
+
+Diagnostic before/after results (single processes, not controlled acceptance):
+
+| Caldera CPU workload | Before | After |
+| --- | --- | --- |
+| Mean eager idle update, 100 updates | 55.693 ms | 0.095 ms |
+| 10 ms-budget all-deferred preparation | 49.980 s | 23.276 s |
+| Preparation update p95 | 45.645 ms | 16.805 ms |
+| Preparation maximum update | 2,232.132 ms | 2,250.883 ms |
+
+The unchanged large maximum confirms that cooperative scheduling still cannot
+bound one heavy prim. The final queue drained 18,932 meshes in 1,507 updates,
+preserving the previous budgeted mesh/subset/entity payload counts. Eager CPU
+open did not improve in these samples (41.006 vs 42.014 s); the win is redundant
+per-update work, not faster initial projection or a GPU frame-rate measurement.
+
+749 workspace/all-target tests pass (19 ignored), including explicit idle,
+placement and pose change checks. Four native baked deformation comparisons pass.
+The eager Caldera capture is byte-identical to `target/perf/p4-cpu/caldera.rgba`;
+its 58.21-second process duration is not first-frame latency. Logs, images and
+test evidence are in `target/perf/p4-skin-updates/`. Engine-generated joints are
+derived from their owning mesh placement and UsdGpuSkin pose; independently
+authoring their GlobalTransform is not a supported pose-edit path.
+
 Rejected follow-up: a temporary per-promotion `ProjectionMaterials` memo passed
 747 experimental workspace/all-target tests (19 ignored), including shared
 material handles and restoration of a surrounding stage's memo. Caldera's

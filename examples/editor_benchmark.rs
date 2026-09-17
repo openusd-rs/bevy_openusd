@@ -66,6 +66,9 @@ fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(timing) = world.get_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>() {
+        eprintln!("gpu_skin_update_profile phase={phase} updates={} joints={} elapsed_ms={:.3}", timing.updates, timing.joints, timing.elapsed.as_secs_f64()*1000.0);
+    }
     if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionVisibilityTimings>() {
         for ((route, hidden), row) in &timings.0 {
             let visibility = match hidden { Some(true) => "hidden", Some(false) => "visible", None => "unknown" };
@@ -128,6 +131,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     }
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
         app.init_resource::<usd_bevy::route::ProjectionTimings>();
         if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
             app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>();
@@ -147,6 +151,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     let start = Instant::now();
     for _ in 0..100 { app.update(); }
     let idle = start.elapsed() / 100;
+    report_routes(app.world(), "after-idle", 100);
     if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() { promote_deferred(&mut app)?; }
     let mut result = Measurement { open, idle, peak_asset_counts: asset_counts(app.world()), rss_before_seeks: resident_bytes(), ..default() };
     if seek != SeekMode::Idle {

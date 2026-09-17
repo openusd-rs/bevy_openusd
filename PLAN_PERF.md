@@ -214,6 +214,28 @@ Do not add projected speedups together: several phases remove the same work.
 
 ## P0 — Establish trustworthy measurements
 
+Material-image dependency increment: the opt-in viewer probe now visits image
+dependencies of retained/referenced StandardMaterial assets and the base of
+FlatMaterial assets. Unloaded texture handles remain in the required image set;
+multiple texture slots referencing one image are deduplicated. Material changes
+rebuild these requirements through the existing generation triggers. Visiting
+ExtendedMaterial directly did not expose its base textures in this checkout,
+so the flat-material path explicitly visits its StandardMaterial base.
+
+Coverage checks missing textures, stable idle generations, texture replacement
+without an image event, duplicate texture slots and flat-material removal.
+This is dependency-presence tracking, not a GPU revision or frame-submission
+acknowledgment. Unloaded material assets are already pending themselves; their
+image dependencies become known when the material arrives. Environment bindings,
+mesh morph/skin bindings and view-specific readiness remain separate work.
+Validation artifacts are under `target/perf/p0-texture-dependencies/`.
+The Make release workspace/all-target gate passes 759 tests (19 ignored).
+The release viewer builds, and a time-limited isolated-settings run of
+`assets/clearcoat_texture.usda` observes 14 images, four meshes and three
+materials with no pending uploads/pipelines at 617 ms from probe setup.
+It exits at the deliberate 12-second timeout. This runtime smoke check does
+not establish a first complete frame or a performance improvement.
+
 Entity-reference probe increment: the actual-viewer manifest now includes mesh,
 StandardMaterial and FlatMaterial handles referenced by entities, even if their
 assets have not loaded into CPU storage. Handle additions/replacements/removals

@@ -1,5 +1,5 @@
 use std::{sync::Arc, time::Instant};
-use bevy::{asset::{AssetId, RenderAssetUsages}, prelude::*};
+use bevy::{asset::{AssetId, RenderAssetUsages, VisitAssetDependencies}, prelude::*};
 use bevy::render::{
     erased_render_asset::ErasedRenderAssets,
     extract_resource::{ExtractResource, ExtractResourcePlugin},
@@ -77,8 +77,20 @@ fn collect_manifest(
         if let Some(flat) = flat { required_flat.insert(flat.id()); }
     }
     manifest.meshes = required_meshes.into_iter().collect::<Vec<_>>().into();
-    manifest.images = images.iter().filter(|(_, image)| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD))
-        .map(|(id, _)| id).collect::<Vec<_>>().into();
+    let mut required_images: std::collections::HashSet<_> = images.iter()
+        .filter(|(_, image)| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)).map(|(id, _)| id).collect();
+    let mut visit_image = |id| {
+        if let Ok(id) = AssetId::<Image>::try_from(id) { required_images.insert(id); }
+    };
+    for id in &required_materials {
+        if let Some(material) = materials.get(*id) { material.visit_dependencies(&mut visit_image); }
+    }
+    for id in &required_flat {
+        if let Some(material) = flat_materials.as_ref().and_then(|materials| materials.get(*id)) {
+            material.base.visit_dependencies(&mut visit_image);
+        }
+    }
+    manifest.images = required_images.into_iter().collect::<Vec<_>>().into();
     manifest.materials = required_materials.into_iter().collect::<Vec<_>>().into();
     manifest.flat_materials = required_flat.into_iter().collect::<Vec<_>>().into();
 }
@@ -132,6 +144,47 @@ fn report_uploads(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn material_dependencies_track_missing_replaced_and_flat_textures() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<Image>>()
+            .init_resource::<Assets<StandardMaterial>>().init_resource::<Assets<FlatMaterial>>()
+            .init_resource::<UploadManifest>()
+            .add_message::<AssetEvent<Mesh>>().add_message::<AssetEvent<Image>>()
+            .add_message::<AssetEvent<StandardMaterial>>().add_systems(Update, collect_manifest);
+        let first = app.world().resource::<Assets<Image>>().reserve_handle();
+        let second = app.world().resource::<Assets<Image>>().reserve_handle();
+        let material = app.world_mut().resource_mut::<Assets<StandardMaterial>>().add(StandardMaterial {
+            base_color_texture: Some(first.clone()), normal_map_texture: Some(first.clone()), ..default()
+        });
+        app.world_mut().write_message(AssetEvent::<StandardMaterial>::Added { id: material.id() });
+        app.update();
+        assert_eq!(app.world().resource::<UploadManifest>().images.as_ref(), &[first.id()]);
+        assert_eq!(pending(&app.world().resource::<UploadManifest>().images, |_| false), 1);
+        let generation = app.world().resource::<UploadManifest>().generation;
+        app.update();
+        assert_eq!(app.world().resource::<UploadManifest>().generation, generation);
+        {
+            let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+            let mut material = materials.get_mut(&material).unwrap();
+            material.base_color_texture = Some(second.clone());
+            material.normal_map_texture = None;
+        }
+        app.world_mut().write_message(AssetEvent::<StandardMaterial>::Modified { id: material.id() });
+        app.update();
+        assert_eq!(app.world().resource::<UploadManifest>().images.as_ref(), &[second.id()]);
+        let flat = app.world_mut().resource_mut::<Assets<FlatMaterial>>().add(FlatMaterial {
+            base: StandardMaterial { emissive_texture: Some(first.clone()), ..default() }, ..default()
+        });
+        app.update();
+        let required = &app.world().resource::<UploadManifest>().images;
+        assert_eq!(required.len(), 2);
+        assert!(required.contains(&first.id()) && required.contains(&second.id()));
+        app.world_mut().resource_mut::<Assets<FlatMaterial>>().remove(flat.id());
+        app.update();
+        assert_eq!(app.world().resource::<UploadManifest>().images.as_ref(), &[second.id()]);
+    }
 
     #[test]
     fn referenced_unloaded_assets_remain_required_until_handles_change() {

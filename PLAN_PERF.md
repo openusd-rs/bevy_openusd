@@ -22,13 +22,12 @@ research, measurements, rejected experiments and acceptance requirements.
   approximately 191 seconds; its last sampled checkpoint is 333,824 prims.
   This is a confirmed memory-limit failure, not a completed load or timeout.
   Keep hidden-mesh deferral opt-in.
-- **New attribution, not a fix:** the working-tree memory instrumentation locates
-  Moana's failure during point-instance expansion at
-  `/island/isBeach/geometry/xgFibers/instancer`. The latest attempt reads 452,662
-  instances and four prototypes, validates implicit IDs, and reaches 300,000
-  spawned instances before a confirmed 24 GiB cgroup OOM. Removing implicit-ID
-  scratch allocations alone does not solve this failure. Follow the bounded
-  instancer investigation below; do not raise the cap or omit scene content.
+- **Latest bounded Moana outcome:** after `5b9e18b`, all 452,662 fibers instances
+  complete expansion. The 300-second-capped attempt still suffers a confirmed
+  24 GiB cgroup OOM after 190.188 seconds, now during
+  `/island/isBeach/geometry/xgShells/instancer` (70,972 points). Its last coarse
+  checkpoint is 334,848 prims; 7,106,420 live entities exist before shells expand.
+  Follow the bounded investigation below; do not raise the cap or omit content.
 - **Acceptance blocker:** finish P0's revision-specific submitted-frame gate and
   matched native runs for Oxbo/Caldera. Headless CPU improvements do not establish
   the ≤5× rendered-frame target.
@@ -111,6 +110,19 @@ where render output can change. Commit only validated changes; leave incomplete
 phases marked incomplete. Validation of an increment does not complete its phase.
 
 ### Bounded point-instancer memory investigation (P6)
+
+**Full-stage retest after shared keys:** the existing fibers failure is passed,
+but the following shells instancer exhausts the same 24 GiB/no-swap budget.
+`target/perf/p6-shared-paths/moana.log` records the fibers PointInstancerRoute
+completion, then successful decoding/ID validation for 70,972 shells and one
+spawn-progress checkpoint. On entry to shells expansion, RSS is
+25,725,472,768 bytes, live entity count is 7,106,420 and inline table component
+capacity is 1,617,895,892 bytes. `moana-scope.log` confirms `Result=oom-kill`,
+25,769,803,776-byte peak and 190.188 seconds wall time (188.915 seconds CPU).
+This is not a timeout or complete load. Retain the successful isolated memory
+result, but do not extrapolate it to full-scene acceptance. Broader source/ECS
+retained-memory attribution and a compact-instancing design are still required;
+another small scratch reduction is not an adequate Moana strategy.
 
 **ECS attribution:** opt-in table diagnostics in `route/profiling.rs` now sum
 live table rows independently of allocated entity-index capacity, and rank

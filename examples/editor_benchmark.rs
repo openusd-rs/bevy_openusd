@@ -27,6 +27,31 @@ fn asset_counts(world: &World) -> [usize; 3] {
     [world.resource::<Assets<Mesh>>().len(), world.resource::<Assets<StandardMaterial>>().len(), world.resource::<Assets<Image>>().len()]
 }
 
+fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    use usd_bevy::route::residency::{DeferHiddenMeshes, UsdDeferredMesh};
+    if !app.world().contains_resource::<DeferHiddenMeshes>() {
+        return Err("USD_BENCH_PREWARM_HIDDEN requires USD_DEFER_HIDDEN_MESHES".into());
+    }
+    let pending_before = app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).count();
+    let meshes_before = app.world().resource::<Assets<Mesh>>().len();
+    let rss_before = resident_bytes();
+    if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionTimings>() { timings.0.clear(); }
+    if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionVisibilityTimings>() { timings.0.clear(); }
+    if let Some(mut metrics) = app.world_mut().get_resource_mut::<usd_bevy::route::cache::MeshCacheMetrics>() { metrics.0.clear(); }
+    if let Some(mut reads) = app.world_mut().get_resource_mut::<usd_bevy::route::MeshReadTiming>() { *reads = default(); }
+    let start = Instant::now();
+    app.world_mut().remove_resource::<DeferHiddenMeshes>();
+    app.update();
+    let elapsed = start.elapsed();
+    let pending_after = app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).count();
+    eprintln!("deferred_prewarm scope=all-deferred-cpu excludes=gpu,visibility-edit pending_before={pending_before} pending_after={pending_after} elapsed_ms={:.3} mesh_assets_before={meshes_before} mesh_assets_after={} rss_before={} rss_after={}",
+        elapsed.as_secs_f64()*1000.0, app.world().resource::<Assets<Mesh>>().len(),
+        rss_before.map_or("NA".into(), |value| value.to_string()), resident_bytes().map_or("NA".into(), |value| value.to_string()));
+    report_routes(app.world(), "deferred-prewarm", 1);
+    if pending_after != 0 { return Err("prewarm left deferred meshes pending".into()); }
+    Ok(())
+}
+
 fn report_routes(world: &World, phase: &str, samples: usize) {
     if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionVisibilityTimings>() {
         for ((route, hidden), row) in &timings.0 {
@@ -106,6 +131,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     let start = Instant::now();
     for _ in 0..100 { app.update(); }
     let idle = start.elapsed() / 100;
+    if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() { promote_deferred(&mut app)?; }
     let mut result = Measurement { open, idle, peak_asset_counts: asset_counts(app.world()), rss_before_seeks: resident_bytes(), ..default() };
     if seek != SeekMode::Idle {
         if seek == SeekMode::Timeline {
@@ -229,6 +255,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         path.display(), if cfg!(debug_assertions) { "debug" } else { "release" },
         if gpu_prepared { "gpu-prepared" } else { "cpu" });
     println!("payloads=retained-cpu-bytes excludes=gpu-allocation,asset-handles,allocator-overhead");
+    if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() {
+        println!("prewarm=all-deferred-after-idle payload_phase_override=after-prewarm-or-seeks idle_phase=before-prewarm");
+    }
     println!("seek={seek:?} seek_clocks={} seek_warmup={} seek_samples={} seek_percentiles=nearest-rank payload_phase={}",
         if seek == SeekMode::Timeline { "1000-distinct-times-in-authored-range" }
         else if seek == SeekMode::Unique { "1000-distinct-times-in-(0,10]" } else { "0,5,10,5" },

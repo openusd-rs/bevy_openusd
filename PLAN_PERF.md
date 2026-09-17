@@ -649,8 +649,32 @@ CARGO_BUILD_JOBS=4 make test CARGO='cargo --offline' \
   APP_TARGET='--release --workspace --lib --features file_watcher native_file_watcher_ -- --ignored --nocapture'
 ```
 
+Deferred preparation latency increment: `editor_benchmark` accepts
+`USD_BENCH_PREWARM_HIDDEN=1` together with `USD_DEFER_HIDDEN_MESHES=1`. After
+measuring initial open and idle, it removes the deferral resource and times one
+update preparing all remaining deferred meshes. It reports before/after pending
+counts, mesh-asset counts, RSS and separate `deferred-prewarm` route counters,
+and errors if any markers remain. CSV asset payloads then describe the post-
+prewarm state; initial open/idle timing remains separate. This measures the
+all-deferred CPU workload, not a particular visibility edit or GPU reveal frame.
+
+The first Caldera runs exposed randomized HashMap promotion order: preparation
+took 28.278 / 28.356 s and ended with 3,315 / 3,390 mesh assets. Sorting promotion
+paths in namespace order reduced this to 17.023 / 16.841 s, with 2,854 mesh assets
+in both runs. MeshRoute application dropped from about 18.6 s to 7.9 s in the
+first respective samples. All runs moved 18,932 deferred markers to zero and
+ended with 50,125 mesh entities / 23,291 subset entities. The locality improvement
+does not eliminate retained copies or establish image equivalence for every
+hidden asset. These are two-run diagnostics, not the paired startup benchmark.
+
+746 workspace/all-target tests pass (19 ignored). Logs are retained under
+`target/perf/p4-prewarm/`: `caldera.log` before ordering, `caldera-ordered.log`
+after ordering, and `ordered-tests.log`. Preparing every hidden mesh still
+blocks for about 17 seconds: bounded preparation/publication remains necessary;
+do not characterize deferred startup as eliminating the work.
+
 Remaining before default enablement: variant/dependency closure cases,
-deferred failed-save recovery and reveal latency. Direct application edits
+deferred failed-save recovery and visibility-specific reveal latency. Direct application edits
 to Bevy Visibility outside USD are not currently a promotion trigger. Non-Mesh
 geometry remains eager, and promotion is synchronous; bounded asynchronous
 states/cancellation are not implemented by this increment.

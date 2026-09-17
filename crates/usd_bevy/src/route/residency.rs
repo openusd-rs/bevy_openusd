@@ -45,9 +45,10 @@ pub(crate) fn materialize(world: &mut World, stage: &openusd::usd::Stage, map: &
         && world.query_filtered::<Entity, With<UsdDeferredMesh>>().iter(world).next().is_none() { return; }
     let registry = world.get_resource::<SchemaRegistry>().cloned().unwrap_or_else(SchemaRegistry::builtin);
     let eager = !world.contains_resource::<DeferHiddenMeshes>() || !registry.builtin_only;
-    let pending: Vec<_> = map.iter().filter(|(_, entity)| world.get::<UsdDeferredMesh>(*entity).is_some())
+    let mut pending: Vec<_> = map.iter().filter(|(_, entity)| world.get::<UsdDeferredMesh>(*entity).is_some())
         .filter(|(_, entity)| eager || super::hierarchy_hidden(world, *entity) != Some(true))
         .map(|(path, entity)| (path.to_owned(), entity)).collect();
+    pending.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     for (path, entity) in pending {
         if let Ok(path) = openusd::sdf::path(&path) { registry.project_prim(stage, &path, world, entity); }
     }

@@ -1,9 +1,33 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `9ea5ced` and the
+Planned against `1dd38c8` on 2026-09-16; reconciled against `6fe49c3` and the
 working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
+
+## Immediate handoff
+
+Keep implementation incremental. The detailed P0–P8 sections below retain the
+research, measurements, rejected experiments and acceptance requirements.
+
+| Priority | Work | Completion evidence |
+| --- | --- | --- |
+| 1 | Extend retained promotion-queue validation to matched rendered workloads. | CPU regression gate and diagnostic timing are recorded under P4; still measure reveal-frame latency, rendered parity and queue allocation under scene churn. |
+| 2 | Finish generation-specific first-complete-frame measurement (P0). | Required assets from the current scene revision are ready and included in submitted rendering; matched native settings and at least five alternating runs. |
+| 3 | Profile Oxbo independently. | Ranked phase timings, allocation/peak-memory evidence and one measured bottleneck selected before implementation. |
+| 4 | Complete deferred-residency correctness before default enablement (P4). | Variant/dependency coverage, failed-save recovery, visibility-demand semantics, reveal latency and unchanged rendered output. |
+| 5 | Reduce remaining long updates and reload verification costs (P5/P8). | Bounded work and stale-result rejection without weakening transactional asset-local reload or missing external edits. |
+| 6 | Revisit Moana under explicit time and memory limits. | Completion or an attributed timeout, retained logs and no unsupported large-scene performance claim. |
+
+Recent committed work includes skipping unchanged joint-palette updates,
+avoiding inspection after no-change reloads, indexing texture-bearing prims,
+and rotating deferred preparation across asset roots. These are incremental
+improvements, not completion of their architectural phases. The retained queue
+has passed the CPU regression gate; rendered-frame acceptance remains separate.
+
+Report CPU open, first complete frame, reveal latency, reload latency and peak
+memory separately. Neither historical native timings nor headless CPU gains
+establish the ≤5× rendered-frame target.
 
 ## Next implementation checkpoints
 
@@ -724,6 +748,39 @@ prepare exactly one additional mesh in each root, rather than draining one root
 first. Existing shared-budget, latest-clock and cancellation checks also pass.
 Evidence: `target/perf/p4-fairness/tests.log`. This is a scheduling correctness
 change, not a new single-scene loading-speed claim.
+
+Retained promotion queue increment: each stage root now owns an ordered deque
+of entity IDs instead of rescanning queued entities, cloning their paths and
+sorting them on every update. Demand changes rebuild ordering; execution reads
+the entity's current path from its owning map and projects the current stage
+and clock. Despawned, unmapped, cancelled and rehidden entries are discarded.
+Root despawn drops the queue; rootless maps retain the reconstruction fallback.
+No decoded geometry, source snapshot or asset handles are retained by this queue.
+Storage scales with pending entity IDs, not path lengths or mesh payloads;
+allocator/capacity overhead has not been measured separately.
+
+The current-tree Make release workspace/all-target gate passes 756 tests with
+19 ignored across 34 suites. The added despawn regression ran as a Rust test,
+not fixture text, and verifies all surviving roots finish and queues disappear.
+Existing latest-clock, cancellation and root-fairness checks pass as well.
+Evidence: `target/perf/p4-retained-queue/tests-final.log`.
+
+Caldera's first diagnostic run with the same 10 ms soft preparation budget
+drained 18,932 meshes in 18.076 s (1,541 updates), versus the preceding texture
+index run's 21.514 s (1,525 updates). Update p95 was 15.346 ms versus 16.862 ms;
+maximum was 102.854 ms versus 111.069 ms. Final mesh assets remained 2,369.
+Peak process RSS was 5,671,228 KiB under the 24 GiB/no-swap cap. Logs are
+`target/perf/p4-retained-queue/caldera.log` and
+`target/perf/p8-texture-index/caldera.log`. This is an approximately 16% CPU
+promotion reduction in a historical single-run comparison, not a controlled
+paired speedup, memory reduction, reveal-frame result or the ≤5× acceptance.
+A second fresh-process run (`caldera-repeat.log` in the retained-queue directory)
+drained all 18,932 entries in 17.840 s across 1,525 updates, with 15.006 ms p95
+and 119.368 ms maximum. Final mesh assets again numbered 2,369. This supports
+the CPU trend but does not establish improved worst-case latency: the largest
+update included 107.279 ms of reload processing outside the preparation budget.
+Discovery, queue rebuilding and other update systems remain outside the soft
+route timer; individual mesh preparation remains indivisible.
 
 Palette-update follow-up: opt-in `GpuSkinUpdateTiming` exposed 929,252 generated
 joint transforms rebuilt on every eager Caldera update. Over 100 idle updates,

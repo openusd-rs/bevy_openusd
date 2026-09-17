@@ -19,6 +19,9 @@ pub struct UsdResidencyBudget(pub std::time::Duration);
 #[derive(Component)]
 pub struct UsdMeshPreparationQueued;
 
+#[derive(Component)]
+struct PreparationQueue(std::collections::VecDeque<Entity>);
+
 /// Accumulated promotion work and the slowest attempted prim.
 #[derive(Resource, Default)]
 pub struct ResidencyPreparationTiming {
@@ -83,36 +86,56 @@ pub(crate) fn materialize(world: &mut World, stage: &openusd::usd::Stage, map: &
         && world.query_filtered::<Entity, With<UsdDeferredMesh>>().iter(world).next().is_none() { return; }
     let registry = world.get_resource::<SchemaRegistry>().cloned().unwrap_or_else(SchemaRegistry::builtin);
     let eager = !world.contains_resource::<DeferHiddenMeshes>() || !registry.builtin_only;
-    let mut pending: Vec<_> = map.iter().filter(|(_, entity)| world.get::<UsdDeferredMesh>(*entity).is_some())
+    let pending: Vec<_> = map.iter().filter(|(_, entity)| world.get::<UsdDeferredMesh>(*entity).is_some())
         .filter(|(_, entity)| eager || super::hierarchy_hidden(world, *entity) != Some(true))
-        .map(|(path, entity)| (path.to_owned(), entity)).collect();
-    for (_, entity) in &pending { world.entity_mut(*entity).insert(UsdMeshPreparationQueued); }
-    prepare(world, stage, &registry, &mut pending);
+        .map(|(_, entity)| entity).collect();
+    for entity in pending { world.entity_mut(entity).insert(UsdMeshPreparationQueued); }
+    let queue = ordered_queue(world, map);
+    if let Some(root) = map.entity("/").filter(|root| world.get_entity(*root).is_ok()) {
+        if queue.is_empty() { world.entity_mut(root).remove::<PreparationQueue>(); }
+        else { world.entity_mut(root).insert(PreparationQueue(queue)); }
+    }
+    resume(world, stage, map);
 }
 
 pub(crate) fn resume(world: &mut World, stage: &openusd::usd::Stage, map: &crate::live::PrimEntities) {
     if world.get_resource::<SchemaRegistry>().is_none_or(|registry| registry.builtin_only) && exhausted(world) { return; }
-    let mut pending: Vec<_> = world.query_filtered::<Entity, With<UsdMeshPreparationQueued>>().iter(world)
-        .filter_map(|entity| map.path(entity).map(|path| (path.to_owned(), entity))).collect();
+    let root = map.entity("/").filter(|root| world.get_entity(*root).is_ok());
+    let mut pending = if let Some(root) = root {
+        let Some(queue) = world.entity_mut(root).take::<PreparationQueue>() else { return; };
+        queue.0
+    } else { ordered_queue(world, map) };
     if pending.is_empty() { return; }
     let registry = world.get_resource::<SchemaRegistry>().cloned().unwrap_or_else(SchemaRegistry::builtin);
-    prepare(world, stage, &registry, &mut pending);
+    prepare(world, stage, &registry, map, &mut pending);
+    if !pending.is_empty() && let Some(root) = root && let Ok(mut root) = world.get_entity_mut(root) {
+        root.insert(PreparationQueue(pending));
+    }
 }
 
-fn prepare(world: &mut World, stage: &openusd::usd::Stage, registry: &SchemaRegistry, pending: &mut [(String, Entity)]) {
+fn ordered_queue(world: &World, map: &crate::live::PrimEntities) -> std::collections::VecDeque<Entity> {
+    let mut pending: Vec<_> = map.iter().filter(|(_, entity)| world.get::<UsdMeshPreparationQueued>(*entity).is_some()).collect();
+    pending.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    pending.into_iter().map(|(_, entity)| entity).collect()
+}
+
+fn prepare(world: &mut World, stage: &openusd::usd::Stage, registry: &SchemaRegistry, map: &crate::live::PrimEntities,
+    pending: &mut std::collections::VecDeque<Entity>) {
     if registry.builtin_only && exhausted(world) { return; }
-    pending.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let eager = !world.contains_resource::<DeferHiddenMeshes>() || !registry.builtin_only;
     let budget = if registry.builtin_only { world.get_resource::<UsdResidencyBudget>().map(|budget| budget.0) } else { None };
     world.init_resource::<PreparationTurn>();
-    for (path, entity) in pending.iter() {
-        let entity = *entity;
-        if world.get::<UsdDeferredMesh>(entity).is_none() || (!eager && super::hierarchy_hidden(world, entity) == Some(true)) {
-            world.entity_mut(entity).remove::<UsdMeshPreparationQueued>();
+    while let Some(&entity) = pending.front() {
+        if world.get::<UsdMeshPreparationQueued>(entity).is_none() || world.get::<UsdDeferredMesh>(entity).is_none()
+            || map.path(entity).is_none() || (!eager && super::hierarchy_hidden(world, entity) == Some(true)) {
+            pending.pop_front();
+            if let Ok(mut entity) = world.get_entity_mut(entity) { entity.remove::<UsdMeshPreparationQueued>(); }
             continue;
         }
         let turn = world.resource::<PreparationTurn>();
         if budget.is_some_and(|budget| budget != std::time::Duration::MAX && turn.attempts > 0 && turn.spent >= budget) { break; }
+        pending.pop_front();
+        let path = map.path(entity).unwrap();
         world.resource_mut::<PreparationTurn>().active = Some(entity);
         let started = std::time::Instant::now();
         if let Ok(path) = openusd::sdf::path(path) { registry.project_prim(stage, &path, world, entity); }
@@ -125,7 +148,7 @@ fn prepare(world: &mut World, stage: &openusd::usd::Stage, registry: &SchemaRegi
             timing.attempts += 1;
             timing.elapsed += elapsed;
             if timing.slowest.as_ref().is_none_or(|(_, previous)| elapsed > *previous) {
-                timing.slowest = Some((path.clone(), elapsed));
+                timing.slowest = Some((path.to_owned(), elapsed));
             }
         }
         world.entity_mut(entity).remove::<UsdMeshPreparationQueued>();
@@ -221,6 +244,26 @@ def Xform "Hidden" {
             assert!(app.world().get::<Mesh3d>(entity).is_some());
             assert!(app.world().get::<UsdMeshPreparationQueued>(entity).is_none());
         }
+    }
+
+    #[test]
+    fn retained_queue_discards_despawned_entities() {
+        let (mut app, asset) = setup();
+        app.insert_resource(UsdResidencyBudget(std::time::Duration::ZERO));
+        let roots = [0, 1, 2].map(|_| app.world_mut().spawn(UsdSceneRoot(asset.clone())).id());
+        app.update();
+        let entities = roots.map(|root| mesh_entity(&app, root));
+        app.world_mut().remove_resource::<DeferHiddenMeshes>();
+        app.update();
+        let removed = entities.into_iter().find(|entity| app.world().get::<UsdMeshPreparationQueued>(*entity).is_some()).unwrap();
+        app.world_mut().despawn(removed);
+        for _ in 0..3 { app.update(); }
+        assert!(app.world().get_entity(removed).is_err());
+        for entity in entities.into_iter().filter(|entity| *entity != removed) {
+            assert!(app.world().get::<Mesh3d>(entity).is_some());
+            assert!(app.world().get::<UsdMeshPreparationQueued>(entity).is_none());
+        }
+        assert_eq!(app.world_mut().query::<&PreparationQueue>().iter(app.world()).count(), 0);
     }
 
     #[test]

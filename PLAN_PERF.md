@@ -56,6 +56,26 @@ research, measurements, rejected experiments and acceptance requirements.
 
 ### P0 extraction-revision checkpoint (2026-09-17)
 
+The follow-up GPU completion probe registers `RenderQueue::on_submitted_work_done`
+after the render schedule reports upload readiness. It emits a separate
+`render_gpu_completion_profile` record with the captured document/generation,
+registration timestamp and callback-observed timestamp. Only one callback may
+be pending; newer generations retry after it completes. No blocking device poll
+or GPU fence wait is introduced. The probe remains opt-in.
+The Make release workspace/all-target gate passes 772 tests, 19 ignored; the
+new request-state test verifies the one-callback bound and latest-revision retry.
+
+The real Oxbo run in `target/perf/p0-gpu-completion/viewer.log` observes callback
+completion at 3,233.689 ms, registered at 3,177.070 ms (56.619 ms later).
+This is one diagnostic run, not a benchmark distribution or a speedup. Callback
+latency includes polling/scheduling and must not be called GPU execution time.
+The inspected `oxbo.png` confirms a rendered viewport; the owned viewer exits
+under its explicit 25-second timeout after capture. A late completion belongs
+to its captured revision, not necessarily the document currently being edited:
+`current_revision_verified:false` and `complete_frame:false` remain explicit.
+Per-view inclusion, transform freshness and full dependency coverage are still
+required before using this as the first-complete-frame acceptance metric.
+
 The opt-in renderer probe now tracks CPU revisions for meshes, images, standard
 materials and flat materials, plus a render-world extraction witness. An old GPU
 asset under the same ID cannot satisfy a new revision solely by being present.

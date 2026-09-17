@@ -7,6 +7,7 @@ use bevy::render::{
     mesh::RenderMesh, render_asset::RenderAssets,
     render_resource::{CachedPipelineState, PipelineCache},
     texture::GpuImage, Render, RenderApp, RenderSystems,
+    renderer::RenderQueue,
 };
 use usd_bevy::route::flat_material::FlatMaterial;
 
@@ -164,11 +165,28 @@ fn pending<T: Copy>(ids: &[T], mut prepared: impl FnMut(T) -> bool) -> usize {
     ids.iter().filter(|&&id| !prepared(id)).count()
 }
 
+#[derive(Default)]
+struct GpuCompletionProbe {
+    pending: Arc<std::sync::atomic::AtomicBool>,
+    requested: Option<(u64, u64)>,
+}
+
+impl GpuCompletionProbe {
+    fn request(&mut self, document: u64, generation: u64) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        use std::sync::atomic::Ordering;
+        let revision = (document, generation);
+        if self.requested == Some(revision) || self.pending.swap(true, Ordering::AcqRel) { return None; }
+        self.requested = Some(revision);
+        Some(self.pending.clone())
+    }
+}
+
 fn report_uploads(
     manifest: Option<Res<UploadManifest>>,
     meshes: Res<RenderAssets<RenderMesh>>, images: Res<RenderAssets<GpuImage>>,
     materials: Res<ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
     pipelines: Res<PipelineCache>, revisions: Res<ExtractedRevisions>,
+    queue: Res<RenderQueue>, mut completion: Local<GpuCompletionProbe>,
     mut previous: Local<Option<(u64, usize, usize, usize, usize, usize, usize)>>,
 ) {
     let Some(manifest) = manifest.filter(|manifest| manifest.document.is_some()) else { return; };
@@ -185,6 +203,27 @@ fn report_uploads(
             CachedPipelineState::Err(error) => errors.push(error.to_string()),
             _ => waiting += 1,
         }
+    }
+    let ready = missing_meshes == 0 && missing_images == 0 && missing_materials == 0
+        && pending_revisions == 0 && waiting == 0 && errors.is_empty();
+    if ready && let Some(pending) = completion.request(manifest.document.unwrap(), manifest.generation) {
+        let document = manifest.document;
+        let generation = manifest.generation;
+        let started = manifest.started;
+        let registered_ms = started.elapsed().as_secs_f64() * 1000.0;
+        queue.on_submitted_work_done(move || {
+            let completed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            eprintln!("render_gpu_completion_profile {}", serde_json::json!({
+                "document": document, "generation": generation, "complete_frame": false,
+                "scope": "queue-work-submitted-before-upload-ready-callback-registration",
+                "clock_origin": "viewer-render-probe-configuration",
+                "callback_registered_elapsed_ms": registered_ms,
+                "completion_observed_elapsed_ms": completed_ms,
+                "callback_delay_ms": completed_ms - registered_ms,
+                "current_revision_verified": false,
+            }));
+            pending.store(false, std::sync::atomic::Ordering::Release);
+        });
     }
     let state = (manifest.generation, missing_meshes, missing_images, missing_materials, waiting, errors.len(), pending_revisions);
     if previous.as_ref() == Some(&state) { return; }
@@ -206,13 +245,30 @@ fn report_uploads(
         "pending_revision_extractions": pending_revisions,
         "revision_scope": "mesh-image-standard-material-flat-material",
         "pending_pipelines": waiting, "pipeline_errors": errors,
-        "observed_uploads_ready": missing_meshes == 0 && missing_images == 0 && missing_materials == 0 && pending_revisions == 0 && waiting == 0 && errors.is_empty(),
+        "observed_uploads_ready": ready,
     }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_completion_requests_are_bounded_and_retry_latest_revision() {
+        use std::sync::atomic::Ordering;
+        let mut probe = GpuCompletionProbe::default();
+        let first = probe.request(1, 2).unwrap();
+        assert!(probe.request(1, 2).is_none());
+        assert!(probe.request(1, 3).is_none());
+        assert!(probe.request(2, 1).is_none());
+        first.store(false, Ordering::Release);
+        assert!(probe.request(1, 2).is_none());
+        let latest = probe.request(2, 1).unwrap();
+        assert!(Arc::ptr_eq(&first, &latest));
+        assert!(probe.request(2, 1).is_none());
+        latest.store(false, Ordering::Release);
+        assert!(probe.request(2, 2).is_some());
+    }
 
     #[test]
     fn extraction_observer_runs_after_manifest_commands_before_asset_drain() {

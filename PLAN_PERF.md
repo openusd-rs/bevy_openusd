@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `fc5aabe` and the
+Planned against `1dd38c8` on 2026-09-16; reconciled against `490b221` and the
 working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
@@ -14,22 +14,22 @@ research, measurements, rejected experiments and acceptance requirements.
 
 - **Implemented, not full acceptance:** parsed-root reuse, retained deferred
   queues, traversal-local parent status, reduced repeated ancestry queries, and
-  batched property classification. The latest P3 evidence records 763 passing tests,
-  19 ignored, 14 separately run native export checks and an unchanged Oxbo RGBA
-  capture. Logs are under `target/perf/p3-inherited-status/`.
+  batched property classification and scoped decoded-material reuse. The latest
+  material-cache gate records 766 passing tests, 19 ignored and unchanged Oxbo
+  and Caldera RGBA captures. Logs are under `target/perf/p1-material-reads/`.
 - **Still unresolved:** matched first-complete-frame measurement and the ≤5×
-  ratio. Moana still times out: the latest 180-second full-open attempt is not a
-  successful load. Keep hidden-mesh deferral opt-in.
-- **Next CPU investigation:** target material resolution and animation discovery,
-  now attributed by bounded in-update progress reports. At Moana's last sampled
-  229,376 prims, material projection takes 27.964 s; animation discovery spends
-  13.431 s on authored sample checks and 12.961 s on material animation queries.
-  Split binding lookup, shader-network reads and packing inside
-  `crates/usd_bevy/src/route/material.rs::resolve_material`, and measure distinct
-  binding/time/sidedness keys before choosing a cache. Initial live projection
-  does not install the existing `ProjectionMaterials` job memo. Reuse must reject
-  stale results after edits, preserve warnings and handle instance-local opinions;
-  do not simply extend that memo's lifetime without proving those properties.
+  ratio. Moana's 300-second attempt is killed at the 24 GiB memory cap after
+  approximately 191 seconds; its last sampled checkpoint is 333,824 prims.
+  This is a confirmed memory-limit failure, not a completed load or timeout.
+  Keep hidden-mesh deferral opt-in.
+- **Next investigation:** attribute the memory growth around the failing Moana
+  projection region. Record current prim/route and retained source, geometry,
+  texture and preparation bytes before large allocations; the 1,024-prim sampling
+  interval does not identify the exact failing allocation. Keep the 24 GiB/no-swap
+  cap. Material read reuse is implemented; do not repeat that experiment.
+- **Acceptance blocker:** finish P0's revision-specific submitted-frame gate and
+  matched native runs for Oxbo/Caldera. Headless CPU improvements do not establish
+  the ≤5× rendered-frame target.
 - **Property-source investigation:** profile redundant existence,
   sample-source and spec-stack walks in
   `vendor/openusd/crates/openusd/src/pcp/index_cache.rs`. Count-only sample queries
@@ -498,11 +498,52 @@ interning 0.759 s. These overlap MaterialRoute application and describe an
 unfinished prefix, not an end-to-end result. 763 Make release tests pass,
 19 ignored. Artifacts: `target/perf/p1-material-attribution/`.
 
-Selected experiment: bounded, projection-local reuse of successfully decoded
-shader material data, not prepared Bevy handles. Keep binding resolution and
-texture preparation live; invalidate on stage changes and discard the cache
-after initial projection. Include edit-during-projection, independent stages,
-time codes and failed-read recovery in the regression checks before acceptance.
+Decoded-read reuse is now implemented for initial live projection. A stage-pinned
+FIFO retains at most 4,096 successful `ReadPreviewMaterial` values, keyed by
+binding path and time-code bits. This is an entry-count bound, not a byte budget.
+A stage change sink marks the cache dirty; the next lookup discards prior reads.
+Reads interrupted by a stage change are not inserted. Errors are not cached.
+Binding resolution, sidedness, texture preparation, warnings derived from Bevy
+assets and material interning still run live. The scope restores any surrounding
+read cache, drops its own values and unregisters its sink after projection.
+
+Five alternating fresh-process Oxbo pairs, profiling disabled:
+
+| Mode | CPU-open samples (seconds) | Median |
+| --- | --- | --- |
+| Baseline | 2.210 / 2.189 / 2.184 / 2.171 / 2.171 | 2.184 s |
+| Decoded-read reuse | 2.266 / 2.150 / 2.083 / 2.066 / 2.070 | 2.083 s |
+
+The median is 4.6% lower; retain the slower first candidate rather than selecting
+only favorable runs. Geometry, asset-count and cached-payload CSV fields match
+across all ten runs. These are headless CPU opens, not first-complete-frame times.
+
+At the same 216,064-prim Moana checkpoint, the sequential diagnostic records
+145,466 bound requests and 9,234 distinct keys in both builds. Shader-read time
+falls from 20.769 s to 1.310 s, with 136,232 decoded-read hits. Projection elapsed
+is 68.712 s versus 91.178 s. This is matched-prefix attribution, not a repeated
+end-to-end Moana benchmark. The candidate reaches 303,104 sampled prims before
+the 180-second deadline (exit 124), with peak RSS 22,578,252 KiB and no swap.
+
+766 Make release workspace/all-target tests pass (19 ignored). New regressions
+cover shader edits during projection, time codes, independent stages, sidedness,
+replacement texture handles, failed-read recovery, scope restoration, capacity
+eviction and sink removal. Oxbo and Caldera captures are RGBA byte-identical to
+their existing controls; Caldera's pre-existing color/noise artifacts remain,
+so this is regression evidence rather than Blender/EEVEE parity. Evidence:
+`target/perf/p1-material-reads/` and baseline executable/logs in
+`target/perf/p1-material-attribution/`.
+
+The longer 300-second Moana attempt does **not** time out: systemd scope
+`run-p2020278-i39748898.scope` reports `Result=oom-kill`, a 24 GiB peak and
+190.879 s wall time. The kernel identifies the benchmark PID and
+`CONSTRAINT_MEMCG`; no higher memory budget was used. The last completed sampled
+prim is 333,824, 102.145 s into projection, with 173,044 bound requests,
+17,569 distinct keys and 155,475 decoded-read hits. There is no CPU-open CSV row.
+Logs: `moana-300s.log` and `moana-300s-scope.log` in the same artifact directory.
+The read cache did not resolve full-scene memory residency; do not describe this
+as successful Moana loading or attribute the failing allocation to a specific
+route without finer evidence.
 
 **Scope:** `route/subset.rs`, `mesh/compact.rs`, `route/cache.rs`, related tests.
 

@@ -468,6 +468,8 @@ fn registry_of(world: &World) -> SchemaRegistry {
 pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
     let stage = &live.stage;
     let registry = registry_of(world);
+    let previous_material_reads = world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
+    world.insert_non_send(crate::route::material::ProjectionMaterialReads::new(stage));
     let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
     let started = profiling.then(std::time::Instant::now);
     let mut animation_time = std::time::Duration::ZERO;
@@ -478,8 +480,8 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         eprintln!("projection_progress phase={phase} prims={count} elapsed_ms={:.3} animation_ms={:.3} routes_ms={:.3} path={path:?} scope=live-initial-projection",
             started.elapsed().as_secs_f64()*1000.0, animation.as_secs_f64()*1000.0, routes.as_secs_f64()*1000.0);
         if let Some(row) = world.get_resource::<crate::route::material::MaterialResolveTimings>() {
-            eprintln!("material_resolve_progress phase={phase} prims={count} requests={} bound={} errors={} cache_hits={} distinct_keys={} keys_capped={} binding_ms={:.3} reading_ms={:.3} preparing_ms={:.3} interning_ms={:.3} scope=world-cumulative overlaps=route-application keys=stage-agnostic-binding-time-sidedness",
-                row.requests, row.bound, row.errors, row.cache_hits, row.distinct_keys(), row.keys_capped,
+            eprintln!("material_resolve_progress phase={phase} prims={count} requests={} bound={} errors={} cache_hits={} read_cache_hits={} distinct_keys={} keys_capped={} binding_ms={:.3} reading_ms={:.3} preparing_ms={:.3} interning_ms={:.3} scope=world-cumulative overlaps=route-application keys=stage-agnostic-binding-time-sidedness",
+                row.requests, row.bound, row.errors, row.cache_hits, row.read_cache_hits, row.distinct_keys(), row.keys_capped,
                 row.binding.as_secs_f64()*1000.0, row.reading.as_secs_f64()*1000.0,
                 row.preparing.as_secs_f64()*1000.0, row.interning.as_secs_f64()*1000.0);
         }
@@ -565,6 +567,8 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     world.insert_resource(AnimatedPrims(animated));
     // Projecting authored the initial read; clear so the first sync starts clean.
     let _ = live.drain_changes();
+    world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
+    if let Some(previous) = previous_material_reads { world.insert_non_send(previous); }
 }
 
 /// Project `stage` as a **static subtree** parented under `parent` — the asset

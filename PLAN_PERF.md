@@ -586,6 +586,23 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+Rejected per-node property-path trial: the value-resolution walk temporarily
+retained one node/path pair and lent that property path to successive layer
+sites of the same node. It kept no cross-query cache and passed all 761
+workspace/all-target tests (19 ignored), but did not isolate a useful timing
+improvement on Moana. Sample checks measured 11.529 s versus 11.781 s; unrelated
+default/type reads also improved (7.703/4.674 s versus 7.908/4.886 s), while
+traversal and total validation worsened (29.340/65.097 s versus 26.593/63.036 s).
+The diagnostic still timed out at 110 seconds with unchanged 416,549 prims and
+6,400,861 attributes. This is insufficient evidence for the added borrowed-site
+representation, not proof that property-path allocation is free.
+
+The trial is removed from source; its patch and logs are retained under
+`target/perf/p3-site-path/`, including `rejected.patch`. The normal benchmark
+is rebuilt after restoration. No dependency refresh, content pruning or
+validation shortcut was retained. Next work should measure/optimize the broader
+property-source walk rather than reintroducing this local cache on assumption.
+
 Validation getter attribution: `USD_PROFILE_VALIDATION_VALUES=1` adds separate
 timers for default-value reads, declared-type lookup, and sample checks. For
 asset-valued attributes, the sample group includes reading each authored sample;

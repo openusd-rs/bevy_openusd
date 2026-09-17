@@ -694,7 +694,11 @@ impl Prim {
     /// or above it (per the stage's runtime load rules) is excluded. Mirrors
     /// C++ `UsdPrim::IsLoaded`.
     pub fn is_loaded(&self) -> Result<bool> {
-        if !self.is_active()? {
+        self.is_loaded_with_active(self.is_active()?)
+    }
+
+    pub(crate) fn is_loaded_with_active(&self, active: bool) -> Result<bool> {
+        if !active {
             return Ok(false);
         }
         // No rule anywhere means every path resolves loaded (`LoadRules`'
@@ -739,15 +743,7 @@ impl Prim {
     /// `true` if the prim or any ancestor resolves to `class`. Mirrors C++
     /// `UsdPrim::IsAbstract`.
     pub fn is_abstract(&self) -> Result<bool> {
-        if self.path == sdf::Path::abs_root() || !self.stage.has_spec(&self.path)? {
-            return Ok(false);
-        }
-        for path in self.path.ancestors_below_root() {
-            if self.stage.field::<sdf::Specifier>(&path, sdf::FieldKey::Specifier)? == Some(sdf::Specifier::Class) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(self.stage.masked(&self.path, |g, cache| cache.is_abstract(g, &self.path))?)
     }
 
     /// `true` if the prim index contains at least one composition arc.
@@ -1055,23 +1051,20 @@ impl Prim {
         let info = self.prim_type_info()?;
         let definition = info.prim_definition();
 
-        let mut paths = Vec::new();
-        for name in names {
-            let path = self.property_path(&name);
-            let spec_type = match (self.stage.spec_type(&path)?, source) {
-                (Some(spec_type), _) => Some(spec_type),
-                // A property the prim only inherits from its schema has no
-                // composed spec, so its kind comes from the declaration.
-                (None, PropertySource::Composed) => definition.property(&name).map(|property| property.spec_type()),
-                // Nothing a schema declares is authored, so a name with no
-                // composed spec belongs to neither kind.
-                (None, PropertySource::Authored) => None,
-            };
-            if spec_type == Some(ty) {
-                paths.push(path);
+        Ok(self.stage.masked(&self.path, |graph, cache| {
+            let mut paths = Vec::new();
+            for name in &names {
+                let path = self.property_path(name);
+                let authored = if path.is_empty() { None } else { cache.spec_type(graph, &path)? };
+                let spec_type = match (authored, source) {
+                    (Some(spec_type), _) => Some(spec_type),
+                    (None, PropertySource::Composed) => definition.property(name).map(|property| property.spec_type()),
+                    (None, PropertySource::Authored) => None,
+                };
+                if spec_type == Some(ty) { paths.push(path); }
             }
-        }
-        Ok(paths)
+            Ok(paths)
+        })?)
     }
 
     /// Property path for `name` under this prim. An invalid name yields the

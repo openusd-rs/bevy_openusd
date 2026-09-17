@@ -387,10 +387,22 @@ impl UsdSource {
     }
 
     pub(crate) fn validate_composition(stage: &Stage) -> anyhow::Result<()> {
+        let profile_values = std::env::var_os("USD_PROFILE_VALIDATION_VALUES").is_some();
+        let mut value_times = [std::time::Duration::ZERO; 3];
+        let started = (std::env::var_os("USD_PROFILE_LOADING").is_some()).then(std::time::Instant::now);
+        let report = |phase: &str, prims: usize, attributes: usize| {
+            if let Some(started) = started {
+                eprintln!("validation_profile phase={phase} elapsed_ms={:.3} prims={prims} attributes={attributes}", started.elapsed().as_secs_f64()*1000.0);
+            }
+        };
+        report("traverse-start", 0, 0);
         let mut paths = Vec::new();
         stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| paths.push(path.clone()))?;
+        let prim_count = paths.len();
+        let mut attribute_count = 0;
+        report("traverse-complete", prim_count, 0);
         let mut clip_prims = std::collections::HashSet::new();
-        for path in paths {
+        for (index, path) in paths.into_iter().enumerate() {
             let prim = stage.prim(&path)?;
             let has_clips = path.parent().is_some_and(|parent| clip_prims.contains(&parent))
                 || prim.get_metadata::<openusd::sdf::Value>("clips")?.is_some();
@@ -411,15 +423,29 @@ impl UsdSource {
             }
             let attributes = if has_clips { prim.attributes()? } else { prim.authored_attributes()? };
             for attribute in attributes {
+                attribute_count += 1;
+                let value_started = profile_values.then(std::time::Instant::now);
                 attribute.get::<openusd::sdf::Value>()?;
-                if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
+                if let Some(started) = value_started { value_times[0] += started.elapsed(); }
+                let type_started = profile_values.then(std::time::Instant::now);
+                let asset = attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]"));
+                if let Some(started) = type_started { value_times[1] += started.elapsed(); }
+                let samples_started = profile_values.then(std::time::Instant::now);
+                if asset {
                     for time in attribute.time_sample_times()? {
                         attribute.get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(time)))?;
                     }
                 } else {
                     attribute.num_time_samples()?;
                 }
+                if let Some(started) = samples_started { value_times[2] += started.elapsed(); }
             }
+            if started.is_some() && (index + 1) % 4096 == 0 { report("attribute-progress", index + 1, attribute_count); }
+        }
+        report("attributes-complete", prim_count, attribute_count);
+        if profile_values {
+            eprintln!("validation_value_profile attributes={attribute_count} default_ms={:.3} type_ms={:.3} samples_ms={:.3} scope=attribute-get-type-and-samples excludes=enumeration,prim-metadata,traversal includes=per-attribute-timer-overhead",
+                value_times[0].as_secs_f64()*1000.0, value_times[1].as_secs_f64()*1000.0, value_times[2].as_secs_f64()*1000.0);
         }
         for identifier in stage.layer_identifiers() {
             if stage.is_layer_muted(&identifier) { continue; }
@@ -435,6 +461,7 @@ impl UsdSource {
         let errors = stage.composition_errors();
         anyhow::ensure!(errors.is_empty(), "USD composition failed: {}",
             errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "));
+        report("complete", prim_count, attribute_count);
         Ok(())
     }
 
@@ -620,6 +647,174 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn property_classification_preserves_schemas_masks_and_edits() {
+        use super::*;
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("properties.usda");
+        std::fs::write(&file, br#"#usda 1.0
+def Sphere "Shape" { double customValue = 1 rel link = </Shape> }
+def "Instance" (instanceable = true prepend references = </Shape>) {}
+"#).unwrap();
+        for masked in [false, true] {
+            let mask = if masked { openusd::usd::StagePopulationMask::new(["/Shape"]).unwrap() }
+                else { openusd::usd::StagePopulationMask::all() };
+            let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).mask(mask).open(file.to_str().unwrap()).unwrap();
+            let shape = stage.prim("/Shape").unwrap();
+            assert_eq!(shape.authored_attributes().unwrap().iter().map(|attr| attr.path().to_string()).collect::<Vec<_>>(), ["/Shape.customValue"]);
+            assert_eq!(shape.authored_relationships().unwrap().len(), 1);
+            assert!(shape.attributes().unwrap().iter().any(|attr| attr.path().as_str() == "/Shape.radius"));
+            assert!(stage.prim("/Absent").unwrap().attributes().unwrap().is_empty());
+            assert_eq!(stage.prim("/Instance").unwrap().authored_attributes().unwrap().len(), usize::from(!masked));
+            shape.create_attribute("added", "float").unwrap();
+            assert_eq!(shape.authored_attributes().unwrap().len(), 2);
+            stage.remove_property("/Shape.link").unwrap();
+            shape.create_attribute("link", "double").unwrap();
+            assert!(shape.authored_relationships().unwrap().is_empty());
+            assert_eq!(shape.authored_attributes().unwrap().len(), 3);
+            assert_eq!(stage.prim("/Instance").unwrap().authored_attributes().unwrap().len(), if masked { 0 } else { 3 });
+        }
+    }
+
+    #[test]
+    fn default_traversal_matches_uncached_walk_during_visitor_edits() {
+        use super::*;
+        use openusd::usd::PrimPredicate;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("payload.usda"), b"#usda 1.0\ndef \"Model\" { def \"Child\" {} }\n").unwrap();
+        let file = directory.path().join("traversal.usda");
+        std::fs::write(&file, br#"#usda 1.0
+def "Root" {
+    def "A" { def "Leaf" {} }
+    def "B" { def "Leaf" {} }
+    def "Model" { def "Child" { def "Leaf" {} } }
+    def "Instance" (instanceable = true prepend references = </Root/Model>) {}
+    def "Payload" (prepend payload = @payload.usda@</Model>) {}
+    class "Abstract" { def "Child" {} }
+    over "Undefined" { def "Child" {} }
+}
+"#).unwrap();
+        for masked in [false, true] {
+            for initially_loaded in [true, false] {
+                for edit in 0..9 {
+                    let mut results = Vec::new();
+                    for optimized in [false, true] {
+                        let mask = if masked {
+                            openusd::usd::StagePopulationMask::new(["/Root/A", "/Root/B/Leaf", "/Root/Model", "/Root/Instance", "/Root/Payload"]).unwrap()
+                        } else { openusd::usd::StagePopulationMask::all() };
+                        let stage = Stage::builder().mask(mask).open(file.to_str().unwrap()).unwrap();
+                        if !initially_loaded { stage.set_load_rules(openusd::pcp::LoadRules::none()); }
+                        let mut visited = Vec::new();
+                        let mut visit = |path: &openusd::sdf::Path| {
+                            visited.push(path.clone());
+                            if path.as_str() != "/Root/A" { return; }
+                            match edit {
+                                1 => { stage.prim("/Root").unwrap().set_active(false).unwrap(); }
+                                2 => { stage.prim("/Root").unwrap().set_metadata("specifier", openusd::sdf::Specifier::Class).unwrap(); }
+                                3 => { stage.prim("/Root/B").unwrap().set_active(false).unwrap(); }
+                                4 => stage.set_load_rules(openusd::pcp::LoadRules::none()),
+                                5 => { stage.prim("/Root/Model").unwrap().set_active(false).unwrap(); }
+                                6 => { stage.prim("/Root").unwrap().set_metadata("specifier", openusd::sdf::Specifier::Over).unwrap(); }
+                                7 => { stage.define_prim("/Root/B/New").unwrap(); }
+                                8 => stage.set_load_rules(openusd::pcp::LoadRules::all()),
+                                _ => {}
+                            }
+                        };
+                        if optimized {
+                            stage.traverse(PrimPredicate::DEFAULT_PROXIES, &mut visit).unwrap();
+                        } else {
+                            let mut stack = vec![openusd::sdf::Path::abs_root()];
+                            while let Some(path) = stack.pop() {
+                                let prim = stage.prim(&path).unwrap();
+                                if !path.is_abs_root() {
+                                    let active = prim.is_active().unwrap();
+                                    let loaded = prim.is_loaded().unwrap();
+                                    let defined = prim.is_defined().unwrap();
+                                    let abstract_ = prim.is_abstract().unwrap();
+                                    if !(active && loaded && defined && !abstract_) { continue; }
+                                    visit(&path);
+                                }
+                                stack.extend(prim.children().unwrap().into_iter().rev().map(|child| child.path().clone()));
+                            }
+                        }
+                        results.push(visited);
+                    }
+                    assert_eq!(results[0], results[1], "masked={masked}, loaded={initially_loaded}, edit={edit}");
+                    assert_eq!(results[0].first().unwrap().as_str(), "/Root");
+                    if edit == 0 {
+                        assert!(results[0].iter().any(|path| path.as_str() == "/Root/Instance/Child/Leaf"));
+                        assert_eq!(results[0].iter().any(|path| path.as_str() == "/Root/Payload/Child"), initially_loaded);
+                        assert!(!results[0].iter().any(|path| path.as_str().contains("Abstract") || path.as_str().contains("Undefined")));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn abstract_ancestry_matches_field_queries_and_live_edits() {
+        use super::*;
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("classes.usda");
+        std::fs::write(&file, br#"#usda 1.0
+class "Abstract" { def Xform "Child" { def Xform "Leaf" {} } }
+def Xform "Model" { def Xform "Child" {} }
+def Xform "Instance" (instanceable = true prepend references = </Model>) {}
+over "Undefined" { def Xform "Child" {} }
+"#).unwrap();
+        for mask in [openusd::usd::StagePopulationMask::all(), openusd::usd::StagePopulationMask::new(["/Abstract/Child"]).unwrap()] {
+            let stage = Stage::builder().mask(mask).open(file.to_str().unwrap()).unwrap();
+            let check = || {
+                for name in ["/", "/Abstract", "/Abstract/Child", "/Abstract/Child/Leaf", "/Abstract/Missing", "/Model/Child", "/Instance/Child", "/Undefined/Child"] {
+                    let path = openusd::sdf::path(name).unwrap();
+                    let prim = stage.prim(&path).unwrap();
+                    let expected = !path.is_abs_root() && prim.is_valid().unwrap()
+                        && path.ancestors_below_root().any(|ancestor| stage.field::<openusd::sdf::Specifier>(&ancestor, "specifier").unwrap() == Some(openusd::sdf::Specifier::Class));
+                    assert_eq!(prim.is_abstract().unwrap(), expected, "{name}");
+                    let status = stage.prim_status(&path).unwrap();
+                    assert_eq!(status.contains(openusd::usd::PrimStatus::ABSTRACT), expected, "{name}");
+                    assert_eq!(status.contains(openusd::usd::PrimStatus::DEFINED), prim.is_defined().unwrap(), "{name}");
+                }
+            };
+            check();
+            assert!(stage.prim("/Abstract/Child").unwrap().is_abstract().unwrap());
+            stage.define_prim("/Abstract").unwrap();
+            check();
+            assert!(!stage.prim("/Abstract/Child").unwrap().is_abstract().unwrap());
+        }
+    }
+
+    #[test]
+    fn traversal_loaded_status_matches_direct_queries_after_edits() {
+        use super::*;
+        use openusd::usd::{PrimPredicate, PrimStatus};
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("payload.usda"), b"#usda 1.0\ndef Xform \"Model\" { def Xform \"Child\" {} }\n").unwrap();
+        let source = UsdSource::new(directory.path().join("root.usda"), br#"#usda 1.0
+def Xform "Root" {
+    def Xform "Payload" (prepend payload = @payload.usda@</Model>) {}
+    def Xform "Ordinary" { def Xform "Child" {} }
+}
+"#.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        for loaded in [true, false, true] {
+            stage.set_load_rules(if loaded { openusd::pcp::LoadRules::all() } else { openusd::pcp::LoadRules::none() });
+            for active in [true, false, true] {
+                stage.prim("/Root/Ordinary").unwrap().set_active(active).unwrap();
+                let mut all = Vec::new();
+                stage.traverse(PrimPredicate::ALL, |path| all.push(path.clone())).unwrap();
+                let expected: Vec<_> = all.into_iter().filter(|path| stage.prim(path).unwrap().is_loaded().unwrap()).collect();
+                for bits in [PrimStatus::LOADED, PrimStatus::ACTIVE | PrimStatus::LOADED] {
+                    let mut actual = Vec::new();
+                    stage.traverse(PrimPredicate::new(bits, PrimStatus::empty()).with_instance_proxies(true), |path| actual.push(path.clone())).unwrap();
+                    assert_eq!(actual, expected, "loaded={loaded}, active={active}, bits={bits:?}");
+                }
+                assert_eq!(stage.prim("/Root/Ordinary").unwrap().is_loaded().unwrap(), active);
+                assert_eq!(stage.prim("/Root/Payload").unwrap().is_loaded().unwrap(), loaded);
+            }
+        }
+    }
+
     #[test]
     fn stage_open_reuses_root_parses_without_retaining_stale_data() {
         use super::*;

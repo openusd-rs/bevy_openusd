@@ -145,6 +145,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     }
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::route::material::MaterialResolveTimings>();
         app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
         app.init_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>();
         app.init_resource::<usd_bevy::route::ProjectionTimings>();

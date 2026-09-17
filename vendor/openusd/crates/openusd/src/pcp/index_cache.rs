@@ -1788,6 +1788,52 @@ impl IndexCache {
         Ok(true)
     }
 
+    /// Whether the existing prim or any ancestor below the pseudo-root is a class.
+    pub(crate) fn is_abstract(&mut self, graph: &LayerGraph, path: &Path) -> Result<bool, QueryError> {
+        if path.is_abs_root() || !self.has_spec(graph, path)? { return Ok(false); }
+        for ancestor in path.ancestors_below_root() {
+            let specifier = self.resolve_field(graph, &ancestor, FieldKey::Specifier.as_str())?
+                .map(sdf::Specifier::try_from).transpose()?;
+            if specifier == Some(sdf::Specifier::Class) { return Ok(true); }
+        }
+        Ok(false)
+    }
+
+    /// Resolves defined and abstract state from one ancestor-specifier walk.
+    pub(crate) fn specifier_status(&mut self, graph: &LayerGraph, path: &Path) -> Result<(bool, bool), QueryError> {
+        if path.is_abs_root() { return Ok((true, false)); }
+        if !self.has_spec(graph, path)? { return Ok((false, false)); }
+        let (mut defined, mut abstract_) = (true, false);
+        for ancestor in path.ancestors_below_root() {
+            let specifier = self.resolve_field(graph, &ancestor, FieldKey::Specifier.as_str())?
+                .map(sdf::Specifier::try_from).transpose()?;
+            defined &= matches!(specifier, Some(sdf::Specifier::Def | sdf::Specifier::Class));
+            abstract_ |= specifier == Some(sdf::Specifier::Class);
+            if !defined && abstract_ { break; }
+        }
+        Ok((defined, abstract_))
+    }
+
+    /// Resolves local status below a default-matching parent at `epoch`.
+    pub(crate) fn default_child_status(
+        &mut self,
+        graph: &LayerGraph,
+        path: &Path,
+        epoch: u64,
+    ) -> Result<Option<(bool, bool, bool)>, QueryError> {
+        if self.population_epoch != epoch || !self.load_rules.is_empty() {
+            return Ok(None);
+        }
+        if !self.has_spec(graph, path)? {
+            return Ok(Some((false, false, false)));
+        }
+        let active = self.active_locally(graph, path)?;
+        let specifier = self.resolve_field(graph, path, FieldKey::Specifier.as_str())?
+            .map(sdf::Specifier::try_from).transpose()?;
+        Ok(Some((active, matches!(specifier, Some(sdf::Specifier::Def | sdf::Specifier::Class)),
+            specifier == Some(sdf::Specifier::Class))))
+    }
+
     /// This prim's own composed `active` opinion, defaulting to `true`. The
     /// per-prim read [`Self::is_active`] walks and [`Self::is_populated`] takes
     /// for the prim it is deciding, its ancestors having been decided already.

@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `6fe49c3` and the
+Planned against `1dd38c8` on 2026-09-16; reconciled against `fc5aabe` and the
 working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
@@ -9,6 +9,41 @@ The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
 Keep implementation incremental. The detailed P0–P8 sections below retain the
 research, measurements, rejected experiments and acceptance requirements.
+
+### Current checkpoint and next bounded increment
+
+- **Implemented, not full acceptance:** parsed-root reuse, retained deferred
+  queues, traversal-local parent status, reduced repeated ancestry queries, and
+  batched property classification. The latest P3 evidence records 763 passing tests,
+  19 ignored, 14 separately run native export checks and an unchanged Oxbo RGBA
+  capture. Logs are under `target/perf/p3-inherited-status/`.
+- **Still unresolved:** matched first-complete-frame measurement and the ≤5×
+  ratio. Moana still times out: the latest 180-second full-open attempt is not a
+  successful load. Keep hidden-mesh deferral opt-in.
+- **Next CPU investigation:** target material resolution and animation discovery,
+  now attributed by bounded in-update progress reports. At Moana's last sampled
+  229,376 prims, material projection takes 27.964 s; animation discovery spends
+  13.431 s on authored sample checks and 12.961 s on material animation queries.
+  Split binding lookup, shader-network reads and packing inside
+  `crates/usd_bevy/src/route/material.rs::resolve_material`, and measure distinct
+  binding/time/sidedness keys before choosing a cache. Initial live projection
+  does not install the existing `ProjectionMaterials` job memo. Reuse must reject
+  stale results after edits, preserve warnings and handle instance-local opinions;
+  do not simply extend that memo's lifetime without proving those properties.
+- **Property-source investigation:** profile redundant existence,
+  sample-source and spec-stack walks in
+  `vendor/openusd/crates/openusd/src/pcp/index_cache.rs`. Count-only sample queries
+  already exist; do not propose them as a new optimization. Do not repeat the
+  rejected per-node property-path cache without new attribution.
+- **Exit gate for either investigation:** one isolated patch, differential edit and
+  composition checks, Make-based validation, unchanged rendered output, and at
+  least five alternating baseline/candidate runs with matching profiler settings.
+  Retain raw timings and RSS under the 24 GiB/no-swap cap; reject unconvincing
+  changes rather than accumulating speculative caches.
+
+P0 remains the acceptance blocker regardless of CPU progress. The historical
+implementation checkpoints below describe the wider sequence, not an instruction
+to repeat already completed increments.
 
 | Priority | Work | Completion evidence |
 | --- | --- | --- |
@@ -214,6 +249,102 @@ Do not add projected speedups together: several phases remove the same work.
 
 ## P0 — Establish trustworthy measurements
 
+Live projection attribution: `USD_PROFILE_LOADING=1` now reports projection
+start, the first eight prims, every 1,024th prim, traversal return and completion
+of materialization. Reports split animation discovery from registry projection.
+With `ProjectionTimings` installed (`USD_PROFILE_ROUTES=1` in the benchmark), each
+checkpoint also reports the five largest cumulative route costs. Animation
+reports preserve the existing short-circuit order and split instancer scans,
+authored sample checks, subset checks, deformation, inherited primvars and
+material queries. Reset counts distinguish recomputation from normal discovery.
+The normal path performs no clock reads or progress output from this probe.
+
+The 180-second Moana diagnostic still times out (exit 124), but now identifies
+the work in flight rather than leaving an empty end-of-update report. Its last
+completed sample is 229,376 prims, 92.670 s into live projection:
+
+| Work | Elapsed in sampled prefix |
+| --- | --- |
+| Animation discovery, total | 33.024 s |
+| ↳ Authored attribute sample checks | 13.431 s |
+| ↳ Material animation queries | 12.961 s |
+| ↳ Inherited primvars | 2.883 s |
+| ↳ Deformation checks | 2.218 s |
+| Registry projection, total | 56.725 s |
+| ↳ MaterialRoute application | 27.964 s |
+| ↳ MeshRoute application | 17.124 s |
+| ↳ VisibilityRoute application | 3.334 s |
+
+Indented rows are included in their parent totals, not additional costs. These
+are incomplete-prefix diagnostic costs, with timer/log overhead; do not
+extrapolate them into a full-load or first-frame result. Discovery resets are
+zero. Peak RSS is 21,320,384 KiB under the 24 GiB/no-swap cap. The earlier broad
+probe also showed continued progress rather than a single hung call; its
+235,520-prim prefix is a different sample, not a before/after performance claim.
+Artifacts: `target/perf/p0-projection-progress/{moana,moana-initial}.log`.
+
+763 Make release workspace/all-target tests pass (19 ignored). The existing
+purpose/time-change projection regression also passes with profiling enabled.
+Oxbo completes its diagnostic CPU open in 2.208 s and reports projection through
+materialization for all 3,743 prims. This is not GPU/frame timing or a claimed
+speedup. Logs and builds: `target/perf/p0-projection-progress/`.
+The profiling-disabled Oxbo run emits none of the new progress records and has
+identical geometry, asset-count and cached-payload CSV fields to the enabled run;
+elapsed times and process RSS are excluded from that equality check.
+
+Moana validation attribution: `USD_PROFILE_LOADING` now logs validation traversal
+start/completion, attribute progress every 4,096 prims, attribute completion and
+successful validation completion. Counters describe visited prims and inspected
+attributes, not geometry bytes or draw calls. Validation semantics are unchanged;
+the normal path emits no new logs. The full Make release workspace/all-target
+gate passes 759 tests (19 ignored), and the benchmark builds.
+
+The current original Moana root still fails the bounded 180-second CPU-open run:
+exit 124, peak RSS 19,986,164 KiB, no swap, under the 24 GiB cap. Stage open
+reported 13 ms, but composition is lazy: validation completed at 71.390 s,
+texture preparation at 97.947 s and save baselines at 102.675 s. A later editor
+snapshot cost 7.875 s. No initial-open benchmark row or rendered frame completed.
+This is not an OOM result and not evidence that loading only costs 13 ms.
+
+A second, deliberately 110-second diagnostic with validation attribution found
+416,549 traversed prims and 6,400,861 inspected attributes. Traversal alone took
+40.534 s; the attribute loop took another 36.884 s; remaining validation was
+about 5 ms. Do not interpret the difference from the earlier 71-second result
+as a regression or compare these diagnostic samples as a controlled speedup.
+Artifacts are `target/perf/moana-current/{baseline,validation,tests,build}.log`.
+A debugger attach was rejected by the host; no ptrace/security settings changed.
+
+Next Moana optimization should target traversal and validation reads, not more
+small mesh-route changes. The upstream traversal recomputes inherited status
+along ancestor chains for each prim; inspect a traversal-local inherited-state
+implementation with parity for inactive/undefined/abstract branches, load rules,
+instance proxies and edits made by traversal callbacks. Attribute validation
+also needs shared query/value-source work across its get/type/sample checks.
+Do not skip proxy subtrees or validation errors to make the benchmark complete.
+Moana render acceptance remains unproven.
+
+Material-image dependency increment: the opt-in viewer probe now visits image
+dependencies of retained/referenced StandardMaterial assets and the base of
+FlatMaterial assets. Unloaded texture handles remain in the required image set;
+multiple texture slots referencing one image are deduplicated. Material changes
+rebuild these requirements through the existing generation triggers. Visiting
+ExtendedMaterial directly did not expose its base textures in this checkout,
+so the flat-material path explicitly visits its StandardMaterial base.
+
+Coverage checks missing textures, stable idle generations, texture replacement
+without an image event, duplicate texture slots and flat-material removal.
+This is dependency-presence tracking, not a GPU revision or frame-submission
+acknowledgment. Unloaded material assets are already pending themselves; their
+image dependencies become known when the material arrives. Environment bindings,
+mesh morph/skin bindings and view-specific readiness remain separate work.
+Validation artifacts are under `target/perf/p0-texture-dependencies/`.
+The Make release workspace/all-target gate passes 759 tests (19 ignored).
+The release viewer builds, and a time-limited isolated-settings run of
+`assets/clearcoat_texture.usda` observes 14 images, four meshes and three
+materials with no pending uploads/pipelines at 617 ms from probe setup.
+It exits at the deliberate 12-second timeout. This runtime smoke check does
+not establish a first complete frame or a performance improvement.
+
 Entity-reference probe increment: the actual-viewer manifest now includes mesh,
 StandardMaterial and FlatMaterial handles referenced by entities, even if their
 assets have not loaded into CPU storage. Handle additions/replacements/removals
@@ -352,6 +483,26 @@ Run the core and capture test commands below, then both matched render runs.
 Store a machine-readable report with the configuration and asset manifest.
 
 ## P1 — Reuse prepared material subsets
+
+Material-resolution attribution: `MaterialResolveTimings`, enabled by the
+benchmark's `USD_PROFILE_ROUTES`, separates binding lookup, shader reads,
+preparation and interning. Progress reports include bounded distinct
+binding/time/sidedness keys (65,536 maximum; saturation is explicit), successful
+existing memo hits and binding/shader query errors. Key identity is stage-agnostic
+and only measures reuse within this fresh single-stage benchmark.
+
+Moana's 180-second diagnostic reaches a 216,064-prim checkpoint with 145,466
+bound material requests, 9,234 distinct keys, no memo hits and no query errors.
+Binding lookup takes 6.191 s; shader reads 20.769 s; preparation 0.294 s;
+interning 0.759 s. These overlap MaterialRoute application and describe an
+unfinished prefix, not an end-to-end result. 763 Make release tests pass,
+19 ignored. Artifacts: `target/perf/p1-material-attribution/`.
+
+Selected experiment: bounded, projection-local reuse of successfully decoded
+shader material data, not prepared Bevy handles. Keep binding resolution and
+texture preparation live; invalidate on stage changes and discard the cache
+after initial projection. Include edit-during-projection, independent stages,
+time codes and failed-read recovery in the regression checks before acceptance.
 
 **Scope:** `route/subset.rs`, `mesh/compact.rs`, `route/cache.rs`, related tests.
 
@@ -532,6 +683,169 @@ rebuild mesh buffers. Sampled influences, nonuniform scale, morph combinations,
 normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
+
+Traversal-local parent status: `DEFAULT_PROXIES` now carries a population-epoch
+witness from a matching parent to queued children. With unchanged population
+and no authored load rules, each child resolves its own active/specifier opinions
+instead of walking proven ancestry again. Other predicates and load rules retain
+the full queries. Visitor edits, pending changes and lazy-load retries must pass
+the epoch check before reuse. No witness survives the traversal call.
+Patch: `patches/openusd-traversal-parent-status.patch`.
+
+Five alternating baseline/candidate traversal-only Moana pairs, same asset and
+`USD_PROFILE_LOADING=1`, all visited 416,549 prims:
+
+| Mode | Traversal samples (seconds) | Median | Peak RSS range (KiB) |
+| --- | --- | --- | --- |
+| Baseline | 29.621 / 24.646 / 24.535 / 24.417 / 24.493 | 24.535 s | 15,462,476–15,481,368 |
+| Parent status | 22.638 / 22.260 / 22.203 / 22.155 / 22.286 | 22.260 s | 15,478,488–15,480,112 |
+
+This is a **9.3% lower median for the traversal phase**, not an initial-load or
+first-frame result. Runs intentionally terminate after the traversal marker;
+their RSS is not full-load peak memory. Each used a fresh process under a
+24 GiB/no-swap scope; filesystem caches were not flushed. Other host workloads
+were not disabled, and the slower first baseline is retained in the table.
+Raw logs, retained executables and the stop script are under
+`target/perf/p3-inherited-status/`. Earlier wrapper-shell measurements under
+`invalid-wrapper/` are excluded: stopping the wrapper left benchmark children
+running. Those owned processes were terminated; the replacement uses `/bin/bash`
+and verifies no benchmark remains after each sample.
+
+763 Make release workspace/all-target tests pass (19 ignored), with 14 native
+export checks run separately. The new differential test compares an uncached
+walk with the optimized traversal across 36 combinations of masks, initial load
+rules and visitor edits, including ancestor def/class/over changes, deactivation,
+queued siblings, referenced instances, lazy payloads and newly authored children.
+Oxbo capture succeeds and is RGBA byte-identical to
+`target/perf/oxbo-current/original.rgba`; this is regression evidence, not full
+Blender/EEVEE parity.
+
+The separate 180-second full-open attempt still exits 124 without an initial-open
+CSV row. Validation completes at 55.985 s, texture decoding at cumulative
+77.550 s, texture installation at 82.039 s, and the inspector reports 5.426 s.
+Peak RSS reaches 21,344,448 KiB with no swap. This is not OOM or successful Moana
+acceptance; the remaining update is not attributed by the current end-of-update
+route report. Full-load log: `target/perf/p3-inherited-status/moana-full.log`.
+
+Property-classification batching: each prim now classifies its property names
+inside one mask-gated cache query, instead of entering the stage query layer for
+every property. Authored spec types are still read live; composed-only schema
+properties still use their declaration. There is no cross-call classification
+cache. Patch: `patches/openusd-property-classification.patch`.
+
+762 Make release workspace/all-target tests pass (19 ignored), plus 14 explicit
+native export checks. The new regression covers schema-only attributes,
+authored relationships, missing/masked prims, added properties, and relationship-
+to-attribute edits propagated to a referencing instance. The Oxbo capture is
+RGBA byte-identical to `target/perf/oxbo-current/original.rgba`.
+
+Moana's diagnostic still visits 416,549 prims and inspects 6,400,861 attributes.
+Its attribute phase was 35.293 s versus 36.438 s in the previous unmodified
+getter-profile run; total validation was 61.585 s versus 63.036 s. Getter totals
+also changed slightly, so this is a small diagnostic observation, not an
+established end-to-end speedup. The code removes per-property stage-query entry
+without introducing a result cache; the remaining per-property source walk is
+unchanged. The 110-second run still times out, with peak RSS 19,990,740 KiB under
+the 24 GiB/no-swap cap. Evidence: `target/perf/p3-property-types/`.
+
+Rejected per-node property-path trial: the value-resolution walk temporarily
+retained one node/path pair and lent that property path to successive layer
+sites of the same node. It kept no cross-query cache and passed all 761
+workspace/all-target tests (19 ignored), but did not isolate a useful timing
+improvement on Moana. Sample checks measured 11.529 s versus 11.781 s; unrelated
+default/type reads also improved (7.703/4.674 s versus 7.908/4.886 s), while
+traversal and total validation worsened (29.340/65.097 s versus 26.593/63.036 s).
+The diagnostic still timed out at 110 seconds with unchanged 416,549 prims and
+6,400,861 attributes. This is insufficient evidence for the added borrowed-site
+representation, not proof that property-path allocation is free.
+
+The trial is removed from source; its patch and logs are retained under
+`target/perf/p3-site-path/`, including `rejected.patch`. The normal benchmark
+is rebuilt after restoration. No dependency refresh, content pruning or
+validation shortcut was retained. Next work should measure/optimize the broader
+property-source walk rather than reintroducing this local cache on assumption.
+
+Validation getter attribution: `USD_PROFILE_VALIDATION_VALUES=1` adds separate
+timers for default-value reads, declared-type lookup, and sample checks. For
+asset-valued attributes, the sample group includes reading each authored sample;
+other attributes use the existing count query. This extra instrumentation is
+off by default and adds per-attribute timer overhead when enabled. Traversal,
+attribute enumeration and prim metadata are outside these three groups.
+
+Moana's 6,400,861 attributes measured 7.908 s default reads, 4.886 s type lookup,
+and 11.781 s sample checks. The full attribute phase was 36.438 s, leaving about
+11.864 s of enumeration, per-prim metadata, loop and instrumentation work outside
+the measured getter groups. The existing dependency already implements
+`num_time_samples` via `Want::Count`; ordinary sample maps do not need a times
+vector for that query. Do not implement a duplicate count-only API. Investigate
+the source-resolution walk and its default/sample reads; clip-count queries still
+have a separate schedule-materialization path. Preserve source-strength, blocks,
+clip discovery and decode-error semantics instead of blindly skipping reads.
+
+The Make release workspace/all-target gate passes 761 tests (19 ignored); the
+benchmark builds. The bounded 110-second Moana diagnostic still times out,
+without a completed CPU-open row. Raw timing/build/test logs are retained under
+`target/perf/p3-validation-values/`. This is attribution with extra timing
+overhead, not a loading-speed improvement or a first-frame result.
+
+Combined specifier-status increment: status queries requesting both DEFINED and
+ABSTRACT now resolve ancestor specifiers once for both answers. Individual-bit
+queries keep their existing implementations. The combined walk only stops when
+both answers are settled; nothing is retained across edits or traversal callbacks.
+Review patch: `patches/openusd-specifier-status.patch`.
+
+761 Make release workspace/all-target tests pass (19 ignored). The existing
+ancestry differential regression now checks combined status against individual
+defined/abstract queries, including masks, instance proxies and class-to-def
+edits. Moana's bounded diagnostic retains 416,549 prims and 6,400,861 attributes.
+Traversal measured 24.468 s versus 31.625 s after the abstract-walk change;
+total validation measured 58.890 s versus 66.833 s. These are sequential
+diagnostics, not controlled paired or first-frame acceptance. The 110-second
+run still exits 124 without completed CPU open, at 19,990,932 KiB peak RSS
+within the 24 GiB/no-swap cap. Evidence: `target/perf/p3-specifier-walk/`.
+All 14 explicit native export checks pass, and the new Oxbo capture is RGBA
+byte-identical to `target/perf/oxbo-current/original.rgba`.
+
+Abstract-ancestry increment: `Prim::is_abstract` now delegates its ancestor
+specifier walk to one mask-gated composition-cache query, rather than repeating
+stage query/settlement for each ancestor. It retains the same composed field
+resolution and no result survives the query. Review patch:
+`patches/openusd-abstract-ancestry.patch`.
+
+761 Make release workspace/all-target tests pass (19 ignored). Differential
+checks compare with individual ancestor field reads for classes, undefined and
+missing prims, instance proxies, population masks and live class-to-def edits.
+The 110-second Moana diagnostic retains 416,549 prims and 6,400,861 attributes;
+traversal measured 31.625 s versus 33.908 s after active-state reuse. Attribute
+checks stayed effectively unchanged at 35.204 s versus 35.186 s. Total validation
+was 66.833 s versus 69.099 s. These are diagnostic, sequential comparisons,
+not matched first-frame acceptance or a demonstrated general loading ratio.
+Moana still exits 124 without finishing CPU open. Artifacts:
+`target/perf/p3-abstract-walk/`. Larger reductions still require eliminating
+remaining repeated ancestry and value-source queries.
+All 14 explicit native export checks pass; the new Oxbo capture completes and
+is RGBA byte-identical to `target/perf/oxbo-current/original.rgba`.
+
+Traversal active-state increment: a prim-status query requesting both ACTIVE
+and LOADED now reuses its computed active result instead of walking active
+ancestry again inside `is_loaded`. Payload/load-rule checks remain unchanged;
+loaded-only predicates retain their own active query. Reuse is limited to one
+status evaluation, with no cache across prims, visitors or edits. Review patch:
+`patches/openusd-traversal-active.patch`.
+
+The full Make release workspace/all-target gate passes 760 tests (19 ignored).
+The added regression compares loaded-only and ACTIVE+LOADED traversal against
+direct loaded queries through repeated payload load/unload and active edits.
+A 110-second bounded Moana diagnostic visits the same 416,549 prims and checks
+the same 6,400,861 attributes. Traversal measured 33.908 s versus the preceding
+40.534 s; total validation measured 69.099 s versus 77.423 s. These are sequential
+diagnostics, not controlled paired performance acceptance. The run still exits
+124 without a complete CPU-open row; peak RSS is 19,988,312 KiB, under the same
+24 GiB/no-swap cap. Artifacts: `target/perf/p3-active-reuse/`.
+All 14 explicit native export checks pass. The current Oxbo capture completes
+and is RGBA byte-identical to `target/perf/oxbo-current/original.rgba`.
+This removes one redundant ancestry walk, not the remaining inherited-status
+walks or per-attribute validation work; Moana completion remains outstanding.
 
 Mesh-read increment: the five inherited primvar owner searches now walk each
 ancestor together, obtaining one prim handle per level instead of one per

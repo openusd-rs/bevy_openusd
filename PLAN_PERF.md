@@ -56,6 +56,32 @@ research, measurements, rejected experiments and acceptance requirements.
 
 ### P0 extraction-revision checkpoint (2026-09-17)
 
+The next view-scoped increment records each `Camera3d` view's visible standard/
+flat-material mesh requirements, including both CPU- and GPU-culling candidates.
+It checks compiled per-entity specialized pipelines, extracted mesh/material
+instances, prepared assets, mesh allocator residency and pending material queues.
+No views or a missing visibility list cannot satisfy the gate. GPU completion
+registration now requires these prerequisites as well as upload readiness.
+This is not phase-bin membership or successful draw-command evidence:
+`draw_submission_verified:false` and `complete_frame:false` remain mandatory.
+It does not cover shadow views, custom materials or deformation-buffer freshness.
+
+The real Oxbo investigation initially found seven absent GPU meshes among 1,773
+visible material entities. Source inspection (`crates/usd_bevy/src/mesh/compact.rs`)
+and the subsequent main-world counts establish that all seven are empty meshes
+explicitly marked CPU-only by subset compaction. The view scope now follows the
+same render-world usage policy as the upload manifest, while counting excluded
+CPU-only and empty CPU-only entities explicitly. Unloaded referenced meshes
+remain required; absence does not exempt an asset.
+
+`target/perf/p0-view-prerequisites/viewer-scoped.log` verifies all 1,766 renderable
+visible entities, zero missing prerequisites and subsequent GPU completion.
+Earlier `viewer.log`/`viewer-missing.log` retain the diagnostic investigation;
+`oxbo-scoped.png` captures the corrected run. These are diagnostic, not matched
+performance trials. Make release workspace/all-target validation passes 773
+tests, 19 ignored, including mixed CPU/GPU visibility, deduplication, unsupported
+material scope and referenced-unloaded versus explicitly CPU-only requirements.
+
 The follow-up GPU completion probe registers `RenderQueue::on_submitted_work_done`
 after the render schedule reports upload readiness. It emits a separate
 `render_gpu_completion_profile` record with the captured document/generation,

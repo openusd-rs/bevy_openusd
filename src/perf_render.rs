@@ -23,13 +23,17 @@ struct UploadManifest {
     flat_materials: Arc<[AssetId<FlatMaterial>]>,
     flat_assets_present: bool,
     revisions: Arc<std::collections::HashMap<UntypedAssetId, u64>>,
+    material_entities: Arc<std::collections::HashMap<Entity, AssetId<Mesh>>>,
+    cpu_only_material_meshes: usize,
+    empty_cpu_only_material_meshes: usize,
 }
 
 impl Default for UploadManifest {
     fn default() -> Self {
         Self { started: Instant::now(), document: None, generation: 0, collected_ms: 0.0,
             meshes: Arc::from([]), images: Arc::from([]), materials: Arc::from([]), flat_materials: Arc::from([]), flat_assets_present: false,
-            revisions: Default::default() }
+            revisions: Default::default(), material_entities: Default::default(),
+            cpu_only_material_meshes: 0, empty_cpu_only_material_meshes: 0 }
     }
 }
 
@@ -92,9 +96,9 @@ pub fn configure(app: &mut App) {
     }
     app.init_resource::<UploadManifest>().add_plugins(ExtractResourcePlugin::<UploadManifest>::default())
         .add_systems(Last, collect_manifest);
-    app.sub_app_mut(RenderApp).init_resource::<ExtractedRevisions>()
+    app.sub_app_mut(RenderApp).init_resource::<ExtractedRevisions>().init_resource::<ViewReadiness>()
         .add_systems(Render, observe_extraction.after(RenderSystems::ExtractCommands).before(RenderSystems::PrepareAssets))
-        .add_systems(Render, report_uploads.after(RenderSystems::Render));
+        .add_systems(Render, (report_views, report_uploads).chain().after(RenderSystems::Render));
 }
 
 fn collect_manifest(
@@ -106,7 +110,7 @@ fn collect_manifest(
     mut material_events: MessageReader<AssetEvent<StandardMaterial>>,
     flat_events: Option<Res<Messages<AssetEvent<FlatMaterial>>>>,
     mut flat_cursor: Local<MessageCursor<AssetEvent<FlatMaterial>>>,
-    renderables: Query<(Option<Ref<Mesh3d>>, Option<Ref<MeshMaterial3d<StandardMaterial>>>, Option<Ref<MeshMaterial3d<FlatMaterial>>>),
+    renderables: Query<(Entity, Option<Ref<Mesh3d>>, Option<Ref<MeshMaterial3d<StandardMaterial>>>, Option<Ref<MeshMaterial3d<FlatMaterial>>>),
         Or<(With<Mesh3d>, With<MeshMaterial3d<StandardMaterial>>, With<MeshMaterial3d<FlatMaterial>>)>>,
     mut removed: (RemovedComponents<Mesh3d>, RemovedComponents<MeshMaterial3d<StandardMaterial>>, RemovedComponents<MeshMaterial3d<FlatMaterial>>),
     mut manifest: ResMut<UploadManifest>,
@@ -118,7 +122,7 @@ fn collect_manifest(
     let changed = !revised.is_empty()
         || flat_materials.as_ref().is_some_and(|materials| materials.is_changed())
         || (flat_materials.is_none() && manifest.flat_assets_present) || removed
-        || renderables.iter().any(|(mesh, material, flat)| mesh.is_some_and(|value| value.is_changed())
+        || renderables.iter().any(|(_, mesh, material, flat)| mesh.is_some_and(|value| value.is_changed())
             || material.is_some_and(|value| value.is_changed()) || flat.is_some_and(|value| value.is_changed()));
     let document = session.as_ref().map(|session| session.document_id());
     if document == manifest.document && !changed { return; }
@@ -133,7 +137,19 @@ fn collect_manifest(
     let mut required_materials: std::collections::HashSet<_> = materials.ids().collect();
     let mut required_flat: std::collections::HashSet<_> = flat_materials.as_ref()
         .map_or_else(Default::default, |materials| materials.ids().collect());
-    for (mesh, material, flat) in &renderables {
+    let mut material_entities = std::collections::HashMap::new();
+    manifest.cpu_only_material_meshes = 0;
+    manifest.empty_cpu_only_material_meshes = 0;
+    for (entity, mesh, material, flat) in &renderables {
+        if let Some(mesh) = &mesh && (material.is_some() || flat.is_some()) {
+            match meshes.get(mesh.id()) {
+                Some(asset) if !asset.asset_usage.contains(RenderAssetUsages::RENDER_WORLD) => {
+                    manifest.cpu_only_material_meshes += 1;
+                    manifest.empty_cpu_only_material_meshes += usize::from(asset.count_vertices() == 0);
+                }
+                _ => { material_entities.insert(entity, mesh.id()); }
+            }
+        }
         if let Some(mesh) = mesh && meshes.get(mesh.id()).is_none_or(|asset| asset.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)) {
             required_meshes.insert(mesh.id());
         }
@@ -157,12 +173,105 @@ fn collect_manifest(
     manifest.images = required_images.into_iter().collect::<Vec<_>>().into();
     manifest.materials = required_materials.into_iter().collect::<Vec<_>>().into();
     manifest.flat_materials = required_flat.into_iter().collect::<Vec<_>>().into();
+    manifest.material_entities = Arc::new(material_entities);
     let required: std::collections::HashSet<_> = manifest.required_ids().collect();
     Arc::make_mut(&mut manifest.revisions).retain(|id, _| required.contains(id));
 }
 
 fn pending<T: Copy>(ids: &[T], mut prepared: impl FnMut(T) -> bool) -> usize {
     ids.iter().filter(|&&id| !prepared(id)).count()
+}
+
+#[derive(Resource, Default)]
+struct ViewReadiness {
+    ready: bool,
+    previous: Option<(u64, Vec<serde_json::Value>)>,
+}
+
+fn expected_view_meshes(manifest: &UploadManifest, visible: Option<&bevy::render::view::visibility::RenderVisibleEntities>)
+    -> std::collections::HashSet<bevy::render::sync_world::MainEntity> {
+    let mut expected = std::collections::HashSet::new();
+    if let Some(class) = visible.and_then(|visible| visible.get::<Mesh3d>()) {
+        expected.extend(class.entities_cpu_culling.iter().map(|(_, entity)| *entity));
+        expected.extend(class.entities_gpu_culling.keys().copied());
+    }
+    expected.retain(|entity| manifest.material_entities.contains_key(&entity.id()));
+    expected
+}
+
+fn report_views(
+    manifest: Option<Res<UploadManifest>>, mut readiness: ResMut<ViewReadiness>,
+    views: Query<(Entity, &bevy::render::view::ExtractedView, Option<&bevy::render::view::visibility::RenderVisibleEntities>), With<Camera3d>>,
+    specializations: Res<bevy::pbr::SpecializedMaterialPipelineCache>,
+    pending_queues: Res<bevy::pbr::PendingMeshMaterialQueues>,
+    instances: Res<bevy::pbr::RenderMeshInstances>,
+    material_instances: Res<bevy::pbr::RenderMaterialInstances>,
+    meshes: Res<RenderAssets<RenderMesh>>, materials: Res<ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
+    allocator: Res<bevy::render::mesh::allocator::MeshAllocator>, pipelines: Res<PipelineCache>,
+) {
+    let Some(manifest) = manifest.filter(|manifest| manifest.document.is_some()) else {
+        readiness.ready = false;
+        return;
+    };
+    let mut rows = Vec::new();
+    let mut ready = true;
+    for (entity, view, visible) in &views {
+        let expected = expected_view_meshes(&manifest, visible);
+        let specialized = specializations.get(&view.retained_view_entity);
+        let queued = pending_queues.get(&view.retained_view_entity);
+        let mut missing_pipeline = 0;
+        let mut missing_mesh = 0;
+        let mut missing_material = 0;
+        let mut missing_mesh_sample = Vec::new();
+        let pending_queue = queued.map_or(expected.len(), |queue| queue.current_frame.iter()
+            .filter(|(_, entity)| expected.contains(entity)).map(|(_, entity)| *entity)
+            .collect::<std::collections::HashSet<_>>().len());
+        let mut ordered: Vec<_> = expected.iter().copied().collect();
+        ordered.sort_by_key(|entity| entity.id().to_bits());
+        for entity in &ordered {
+            if specialized.and_then(|cache| cache.get(entity))
+                .is_none_or(|id| pipelines.get_render_pipeline(*id).is_none()) { missing_pipeline += 1; }
+            if instances.render_mesh_queue_data(*entity).is_none_or(|instance| {
+                let id = instance.mesh_asset_id();
+                meshes.get(id).is_none() || allocator.mesh_slabs(&id).is_none()
+            }) {
+                missing_mesh += 1;
+                if missing_mesh_sample.len() < 8 {
+                    let id = manifest.material_entities[&entity.id()];
+                    missing_mesh_sample.push(serde_json::json!({
+                        "entity": format!("{entity:?}"), "mesh": format!("{id:?}"),
+                        "gpu_mesh": meshes.get(id).map(|mesh| format!("{:?} vertices={}", mesh.buffer_info, mesh.vertex_count)),
+                    }));
+                }
+            }
+            if material_instances.instances.get(entity)
+                .is_none_or(|instance| materials.get(instance.asset_id).is_none()) { missing_material += 1; }
+        }
+        let view_ready = visible.is_some() && missing_pipeline == 0 && missing_mesh == 0
+            && missing_material == 0 && pending_queue == 0;
+        ready &= view_ready;
+        rows.push((entity.to_bits(), serde_json::json!({
+            "view": format!("{:?}", view.retained_view_entity),
+            "expected_visible_material_meshes": expected.len(), "missing_visibility_list": visible.is_none(),
+            "missing_specialized_pipelines": missing_pipeline, "missing_mesh_data": missing_mesh,
+            "missing_material_data": missing_material, "pending_queue_entities": pending_queue,
+            "missing_mesh_sample": missing_mesh_sample,
+            "queue_prerequisites_ready": view_ready,
+        })));
+    }
+    readiness.ready = ready && !rows.is_empty();
+    rows.sort_by_key(|(entity, _)| *entity);
+    let rows: Vec<_> = rows.into_iter().map(|(_, row)| row).collect();
+    if readiness.previous.as_ref().is_some_and(|(generation, previous)| *generation == manifest.generation && previous == &rows) { return; }
+    eprintln!("render_view_profile {}", serde_json::json!({
+        "document": manifest.document, "generation": manifest.generation, "complete_frame": false,
+        "scope": "camera3d-visible-standard-flat-material-queue-prerequisites",
+        "queue_prerequisites_ready": readiness.ready, "draw_submission_verified": false,
+        "cpu_only_material_mesh_entities": manifest.cpu_only_material_meshes,
+        "empty_cpu_only_material_mesh_entities": manifest.empty_cpu_only_material_meshes,
+        "views": rows,
+    }));
+    readiness.previous = Some((manifest.generation, rows));
 }
 
 #[derive(Default)]
@@ -187,7 +296,8 @@ fn report_uploads(
     materials: Res<ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
     pipelines: Res<PipelineCache>, revisions: Res<ExtractedRevisions>,
     queue: Res<RenderQueue>, mut completion: Local<GpuCompletionProbe>,
-    mut previous: Local<Option<(u64, usize, usize, usize, usize, usize, usize)>>,
+    view_readiness: Res<ViewReadiness>,
+    mut previous: Local<Option<(u64, usize, usize, usize, usize, usize, usize, bool)>>,
 ) {
     let Some(manifest) = manifest.filter(|manifest| manifest.document.is_some()) else { return; };
     let missing_meshes = pending(&manifest.meshes, |id| meshes.get(id).is_some());
@@ -206,7 +316,7 @@ fn report_uploads(
     }
     let ready = missing_meshes == 0 && missing_images == 0 && missing_materials == 0
         && pending_revisions == 0 && waiting == 0 && errors.is_empty();
-    if ready && let Some(pending) = completion.request(manifest.document.unwrap(), manifest.generation) {
+    if ready && view_readiness.ready && let Some(pending) = completion.request(manifest.document.unwrap(), manifest.generation) {
         let document = manifest.document;
         let generation = manifest.generation;
         let started = manifest.started;
@@ -225,7 +335,7 @@ fn report_uploads(
             pending.store(false, std::sync::atomic::Ordering::Release);
         });
     }
-    let state = (manifest.generation, missing_meshes, missing_images, missing_materials, waiting, errors.len(), pending_revisions);
+    let state = (manifest.generation, missing_meshes, missing_images, missing_materials, waiting, errors.len(), pending_revisions, view_readiness.ready);
     if previous.as_ref() == Some(&state) { return; }
     *previous = Some(state);
     eprintln!("render_asset_profile {}", serde_json::json!({
@@ -246,12 +356,39 @@ fn report_uploads(
         "revision_scope": "mesh-image-standard-material-flat-material",
         "pending_pipelines": waiting, "pipeline_errors": errors,
         "observed_uploads_ready": ready,
+        "view_queue_prerequisites_ready": view_readiness.ready,
     }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_requirements_include_cpu_and_gpu_visibility_without_duplicates() {
+        use bevy::render::{sync_world::MainEntity, view::visibility::{RenderVisibleEntities, RenderVisibleEntitiesClass}};
+        let mut world = World::new();
+        let cpu = world.spawn_empty().id();
+        let gpu = world.spawn_empty().id();
+        let hidden = world.spawn_empty().id();
+        let unsupported = world.spawn_empty().id();
+        let mut manifest = UploadManifest::default();
+        let assets = Assets::<Mesh>::default();
+        let mesh = assets.reserve_handle();
+        manifest.material_entities = Arc::new([cpu, gpu, hidden].into_iter().map(|entity| (entity, mesh.id())).collect());
+        let mut class = RenderVisibleEntitiesClass::default();
+        class.entities_cpu_culling = vec![(cpu, cpu.into()), (unsupported, unsupported.into())];
+        class.entities_gpu_culling.insert(cpu.into(), cpu);
+        class.entities_gpu_culling.insert(gpu.into(), gpu);
+        let mut visible = RenderVisibleEntities::default();
+        visible.classes.insert(std::any::TypeId::of::<Mesh3d>(), class);
+        assert_eq!(expected_view_meshes(&manifest, Some(&visible)),
+            [MainEntity::from(cpu), MainEntity::from(gpu)].into_iter().collect());
+        assert!(expected_view_meshes(&manifest, None).is_empty());
+        assert!(expected_view_meshes(&manifest, Some(&RenderVisibleEntities::default())).is_empty());
+        Arc::make_mut(&mut manifest.material_entities).remove(&gpu);
+        assert_eq!(expected_view_meshes(&manifest, Some(&visible)), [cpu.into()].into_iter().collect());
+    }
 
     #[test]
     fn gpu_completion_requests_are_bounded_and_retry_latest_revision() {
@@ -407,12 +544,15 @@ mod tests {
         let flat = app.world().resource::<Assets<FlatMaterial>>().reserve_handle();
         let cpu_only = app.world_mut().resource_mut::<Assets<Mesh>>().add(Mesh::new(
             bevy::mesh::PrimitiveTopology::TriangleList, RenderAssetUsages::MAIN_WORLD));
-        app.world_mut().spawn(Mesh3d(cpu_only));
+        let cpu_entity = app.world_mut().spawn((Mesh3d(cpu_only), MeshMaterial3d(material.clone()))).id();
         let entity = app.world_mut().spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), MeshMaterial3d(flat.clone()))).id();
         app.world_mut().remove_resource::<Assets<FlatMaterial>>();
         app.update();
         let manifest = app.world().resource::<UploadManifest>();
         assert_eq!(manifest.meshes.as_ref(), &[mesh.id()]);
+        assert_eq!(manifest.material_entities.as_ref(), &[(entity, mesh.id())].into_iter().collect());
+        assert_eq!(manifest.cpu_only_material_meshes, 1);
+        assert_eq!(manifest.empty_cpu_only_material_meshes, 1);
         assert_eq!(manifest.materials.as_ref(), &[material.id()]);
         assert_eq!(manifest.flat_materials.as_ref(), &[flat.id()]);
         assert_eq!(pending(&manifest.meshes, |_| false), 1);
@@ -424,9 +564,11 @@ mod tests {
         assert_eq!(app.world().resource::<UploadManifest>().meshes.as_ref(), &[next_mesh.id()]);
         assert_eq!(app.world().resource::<UploadManifest>().generation, generation + 1);
         app.world_mut().despawn(entity);
+        app.world_mut().despawn(cpu_entity);
         app.update();
         let manifest = app.world().resource::<UploadManifest>();
         assert!(manifest.meshes.is_empty() && manifest.materials.is_empty() && manifest.flat_materials.is_empty());
+        assert!(manifest.material_entities.is_empty());
         assert_eq!(manifest.generation, generation + 2);
     }
 

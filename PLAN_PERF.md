@@ -133,10 +133,29 @@ component labels. The Make release workspace/all-target gate passed 768 tests,
 19 ignored; the benchmark build passed. Profiling remains opt-in and the extra
 table scans are diagnostic overhead, not a production loading optimization.
 
-Next bounded memory experiment: share immutable prototype path keys in the
-private per-instance reconciliation maps while preserving public
-`UsdPrototypePart(String)` values and all hierarchy entities. Measure whether
-this reduces retained memory before considering API-affecting compact instancing.
+**Shared path-key candidate:** prototype descriptors and private per-instance
+reconciliation maps now use `Arc<str>` keys. Public `UsdPrototypePart(String)`
+values and all hierarchy entities remain unchanged; path-content matching still
+preserves entities across new descriptor allocations on re-projection. Existing
+independent-animation coverage additionally checks shared key allocation both
+initially and after clock changes. No global path interner or cross-stage state
+was introduced.
+
+Five alternating fresh-process isolated fibers runs, profiling disabled, record
+baseline RSS-after-idle bytes
+`1396862976,1397968896,1398149120,1398226944,1398407168` versus candidate
+`1206505472,1206226944,1206403072,1206472704,1206349824`. Median retained RSS falls
+**1,398,149,120 → 1,206,403,072 bytes**, saving **191,746,048 bytes (13.7%)**.
+Median process peak RSS falls **1,364,044 → 1,176,904 KiB**. Baseline CPU-open
+milliseconds `1145.170,1256.137,1149.910,1147.531,1147.403` versus candidate
+`1157.356,1115.445,1160.340,1130.362,1123.147` overlap; do not claim a reliable
+CPU speedup from this trial. All ten geometry/asset/payload rows match. Logs and
+saved binaries: `target/perf/p6-shared-paths/`. This is an isolated memory result,
+not evidence that full Moana now fits or that the submitted-frame target is met.
+The Make release workspace/all-target gate passed 768 tests, 19 ignored; benchmark
+and capture builds passed. Matched baseline/candidate captures of
+`assets/point_hierarchy.usda` at time zero are byte-identical in RGBA. This checks
+instancer-specific output, while the clock/reconciliation tests cover updates.
 
 **Prototype borrowing trial:** `route/instancer.rs` borrows the per-projection
 prototype descriptor and prepared subsets instead of cloning them for each point.

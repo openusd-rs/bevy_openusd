@@ -47,7 +47,7 @@ enum Prototype { Mesh(ProtoHandles), Hierarchy(Vec<PrototypePart>) }
 
 #[derive(Clone)]
 struct PrototypePart {
-    path: String,
+    path: std::sync::Arc<str>,
     parent: Option<String>,
     transform: Transform,
     visibility: Visibility,
@@ -59,7 +59,7 @@ struct PrototypePart {
 pub struct UsdPrototypePart(pub String);
 
 #[derive(Component, Default)]
-struct PrototypeEntities(HashMap<String, Entity>);
+struct PrototypeEntities(HashMap<std::sync::Arc<str>, Entity>);
 
 /// Marker on entities spawned for a PointInstancer instance.
 #[derive(Component, Debug, Clone, Copy, Default)]
@@ -385,8 +385,8 @@ fn apply_hierarchy(ctx: &RouteCtx, world: &mut World, instance: Entity, parts: &
     for part in parts {
         let entity = previous.remove(&part.path).filter(|entity| world.get_entity(*entity).is_ok())
             .unwrap_or_else(|| world.spawn_empty().id());
-        let parent = part.parent.as_ref().and_then(|path| next.get(path)).copied().unwrap_or(instance);
-        world.entity_mut(entity).insert((UsdPrototypePart(part.path.clone()), part.transform, part.visibility, ChildOf(parent)));
+        let parent = part.parent.as_ref().and_then(|path| next.get(path.as_str())).copied().unwrap_or(instance);
+        world.entity_mut(entity).insert((UsdPrototypePart(part.path.to_string()), part.transform, part.visibility, ChildOf(parent)));
         apply_handles(ctx, world, entity, part.handles.as_ref());
         next.insert(part.path.clone(), entity);
     }
@@ -554,7 +554,7 @@ mod tests {
                         assert!(colors.iter().all(|color| *color == [0.8,0.2,0.1,1.0]));
                     }
                     for &copy in &copies[index] {
-                        let node = app.world().get::<PrototypeEntities>(copy).unwrap().0[&path];
+                        let node = app.world().get::<PrototypeEntities>(copy).unwrap().0[path.as_str()];
                         assert_eq!(&app.world().get::<Mesh3d>(node).unwrap().0, expected, "{kind} at {}", times[index]);
                         assert_eq!(app.world().get::<Visibility>(node), Some(&Visibility::Inherited));
                         assert_eq!(app.world().get::<MeshMaterial3d<StandardMaterial>>(node), app.world().get::<MeshMaterial3d<StandardMaterial>>(ordinary));
@@ -608,6 +608,11 @@ mod tests {
         assert!(instances.iter().all(|instances| instances.len() == 2));
         let part = |world: &World, instance, path: &str| world.get::<PrototypeEntities>(instance).unwrap().0[path];
         let b_path = "/Library/Assembly/Nested/B";
+        for group in &instances {
+            let keys: Vec<_> = group.iter().map(|instance| app.world().get::<PrototypeEntities>(*instance).unwrap()
+                .0.get_key_value(b_path).unwrap().0).collect();
+            assert!(std::sync::Arc::ptr_eq(keys[0], keys[1]));
+        }
         let b = part(app.world(), instances[0][0], b_path);
         let runtime = app.world_mut().spawn((Transform::default(), ChildOf(b))).id();
         for times in [[0.0,10.0], [10.0,0.0], [5.0,10.0]] {
@@ -615,6 +620,9 @@ mod tests {
             app.update();
             for (index, group) in instances.iter().enumerate() {
                 assert!(app.world().get::<UsdInstancerWarning>(parents[index]).is_none());
+                let keys: Vec<_> = group.iter().map(|instance| app.world().get::<PrototypeEntities>(*instance).unwrap()
+                    .0.get_key_value(b_path).unwrap().0).collect();
+                assert!(std::sync::Arc::ptr_eq(keys[0], keys[1]));
                 let mut handles = Vec::new();
                 for &instance in group {
                     assert!(app.world().get::<Mesh3d>(instance).is_none());

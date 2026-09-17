@@ -24,7 +24,8 @@ impl LayerReload {
         }
         let root = stage.root_layer();
         let root_id = root.identifier().to_owned();
-        let mut bytes = root.export_to_string()?.into_bytes();
+        let format_path = if root_id.ends_with(".usdz") { root.resolved_path().unwrap_or(&root_id) } else { &root_id };
+        let mut bytes = layer_snapshot(&root, format_path)?;
         if root_id.ends_with(".usdz") {
             use std::io::{Read, Write};
             let resolved = root.resolved_path().ok_or_else(|| anyhow::anyhow!("package root has no resolved path"))?;
@@ -44,7 +45,7 @@ impl LayerReload {
         drop(root);
         for id in stage.layer_identifiers() {
             if id != root_id {
-                source.insert_dependency(id.clone(), stage.layer(&id).unwrap().export_to_string()?.into_bytes());
+                source.insert_dependency(id.clone(), layer_snapshot(&stage.layer(&id).unwrap(), &id)?);
             }
         }
         let (candidate, disk) = source.open_stage_for_editor()?;
@@ -78,6 +79,18 @@ impl LayerReload {
     }
 }
 
+fn layer_snapshot(layer: &Layer, format_path: &str) -> anyhow::Result<Vec<u8>> {
+    use openusd::sdf::FileFormat;
+    let packaged = openusd::ar::split_package_relative_path_inner(format_path);
+    let path = packaged.as_ref().map_or(format_path, |(_, inner)| inner.as_str());
+    if std::path::Path::new(path).extension().and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("usdc")) {
+        let mut output = std::io::Cursor::new(Vec::new());
+        openusd::usdc::UsdcFileFormat.write(layer.data(), &mut output)?;
+        Ok(output.into_inner())
+    } else { Ok(layer.export_to_string()?.into_bytes()) }
+}
+
 fn patch(target: &mut dyn AbstractData, source: &Data) {
     for path in target.spec_paths() {
         if !source.has_spec(&path) { target.erase_spec(&path); }
@@ -101,6 +114,48 @@ fn patch(target: &mut dyn AbstractData, source: &Data) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn binary_reload_case(kind: &str) {
+        use openusd::sdf::FileFormat;
+        use std::io::{Cursor, Write};
+        let binary = |size| {
+            let layer = Layer::from_bytes("fixture", format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n").into_bytes()).unwrap();
+            let mut bytes = Cursor::new(Vec::new());
+            openusd::usdc::UsdcFileFormat.write(layer.data(), &mut bytes).unwrap();
+            bytes.into_inner()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let child = directory.path().join("child.usdc");
+        let root = directory.path().join(match kind { "dependency" => "root.usda", "package" => "root.usdz", _ => "root.usdc" });
+        if kind == "dependency" {
+            std::fs::write(&child, binary(1)).unwrap();
+            std::fs::write(&root, "#usda 1.0\ndef Xform \"Model\" (prepend references = @child.usdc@</Model>) {}\n").unwrap();
+        } else if kind == "package" {
+            let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            archive.start_file("root.usdc", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+            archive.write_all(&binary(1)).unwrap();
+            std::fs::write(&root, archive.finish().unwrap().into_inner()).unwrap();
+        } else { std::fs::write(&root, binary(1)).unwrap(); }
+        let source = crate::UsdSource::from_file(&root).unwrap();
+        let stage = source.open_stage().unwrap();
+        crate::UsdSource::validate_composition(&stage).unwrap();
+        let id = if kind == "dependency" { child.to_string_lossy().into_owned() } else { stage.root_layer().identifier().to_owned() };
+        let plan = LayerReload::prepare(&stage, &[(id, binary(2))]).unwrap();
+        let size = |stage: &Stage| stage.prim("/Model").unwrap().attribute("size").get::<f64>().unwrap();
+        assert_eq!(size(&stage), Some(1.0));
+        assert_eq!(size(plan.candidate()), Some(2.0));
+        plan.apply(&stage).unwrap();
+        assert_eq!(size(&stage), Some(2.0));
+    }
+
+    #[test]
+    fn binary_root_reload_preserves_candidate_format() { binary_reload_case("root"); }
+
+    #[test]
+    fn binary_dependency_reload_preserves_candidate_format() { binary_reload_case("dependency"); }
+
+    #[test]
+    fn binary_package_root_reload_preserves_candidate_format() { binary_reload_case("package"); }
 
     #[test]
     fn candidate_preserves_unloaded_payloads_and_interpolation() {

@@ -2137,6 +2137,29 @@ serve old contents after Blender saves a new file.
 
 ## P8 — Make reload preparation proportional to changed layers
 
+### Binary candidate-snapshot correctness (2026-09-17)
+
+Live USDC reload validation exposed an existing `LayerReload::prepare` bug:
+candidate layers were always exported as USDA text, including snapshots stored
+under `.usdc` identifiers. The candidate decoder then rejected valid saved binary
+documents as corrupt crates. Binary roots, referenced binary layers and binary
+roots inside USDZ all reproduce the error before the fix.
+
+Candidate snapshots now use the USDC writer for `.usdc` paths, including package
+entry paths; text-compatible paths retain their existing text encoding. The
+original stage remains untouched during preparation. Three regression tests
+failed before the fix and pass afterward, checking candidate values and final
+publication. The current worktree passes 782 Make release workspace/all-target
+tests (19 ignored) and 14 native export tests.
+
+A live native-usdcat-generated USDC fixture failed to reload before the fix.
+After the fix, atomically replacing it updates the red cube to green, keeps the
+blue cube visually unchanged and retains document ID 1. Initial RGBA is identical
+before/after the code fix; the successful edited capture was inspected. Both
+owned viewer runs were explicitly stopped. Evidence is retained under
+`target/perf/p8-shared-replacements/`, including `binary-before-fix.log`,
+`workspace-tests-final.log`, `live.log`, `live-fixed.log` and the captures.
+
 ### Streaming no-change verification (2026-09-17)
 
 Implemented against `74ed1f4`: initial reload verification streams file content

@@ -1,9 +1,33 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `9ea5ced` and the
-working tree on 2026-09-17. Status: **P0–P7 in progress; P4 opt-in only; P8 planned**.
+Planned against `1dd38c8` on 2026-09-16; reconciled against `6fe49c3` and the
+working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
+
+## Immediate handoff
+
+Keep implementation incremental. The detailed P0–P8 sections below retain the
+research, measurements, rejected experiments and acceptance requirements.
+
+| Priority | Work | Completion evidence |
+| --- | --- | --- |
+| 1 | Extend retained promotion-queue validation to matched rendered workloads. | CPU regression gate and diagnostic timing are recorded under P4; still measure reveal-frame latency, rendered parity and queue allocation under scene churn. |
+| 2 | Finish generation-specific first-complete-frame measurement (P0). | Required assets from the current scene revision are ready and included in submitted rendering; matched native settings and at least five alternating runs. |
+| 3 | Profile Oxbo independently. | Ranked phase timings, allocation/peak-memory evidence and one measured bottleneck selected before implementation. |
+| 4 | Complete deferred-residency correctness before default enablement (P4). | Variant/dependency coverage, failed-save recovery, visibility-demand semantics, reveal latency and unchanged rendered output. |
+| 5 | Reduce remaining long updates and reload verification costs (P5/P8). | Bounded work and stale-result rejection without weakening transactional asset-local reload or missing external edits. |
+| 6 | Revisit Moana under explicit time and memory limits. | Completion or an attributed timeout, retained logs and no unsupported large-scene performance claim. |
+
+Recent committed work includes skipping unchanged joint-palette updates,
+avoiding inspection after no-change reloads, indexing texture-bearing prims,
+and rotating deferred preparation across asset roots. These are incremental
+improvements, not completion of their architectural phases. The retained queue
+has passed the CPU regression gate; rendered-frame acceptance remains separate.
+
+Report CPU open, first complete frame, reveal latency, reload latency and peak
+memory separately. Neither historical native timings nor headless CPU gains
+establish the ≤5× rendered-frame target.
 
 ## Next implementation checkpoints
 
@@ -182,13 +206,37 @@ Update status only with linked evidence and a commit.
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | SCHEDULING IN PROGRESS |
 | P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | LOOKUP IN PROGRESS |
 | P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | MANIFEST IN PROGRESS |
-| P8 | Revision-based transactional hot reload | P0, P3; reuse P7 | L / high | TODO |
+| P8 | Revision-based transactional hot reload | P0, P3; reuse P7 | L / high | NO-OP INSPECTION IN PROGRESS |
 
 Implement P1–P3 as independently measured changes. Reprofile before P4–P8 and
 adjust their order using measured bytes, duplicate work and serial CPU fractions.
 Do not add projected speedups together: several phases remove the same work.
 
 ## P0 — Establish trustworthy measurements
+
+Entity-reference probe increment: the actual-viewer manifest now includes mesh,
+StandardMaterial and FlatMaterial handles referenced by entities, even if their
+assets have not loaded into CPU storage. Handle additions/replacements/removals
+advance its generation without requiring an asset event. Duplicate references
+are deduplicated. Known CPU-only meshes are excluded using their asset usage;
+unresolved mesh references remain required. Missing mesh IDs are sampled in the
+render log (up to eight). The probe stays opt-in and `complete_frame: false`.
+
+The regression reserves unloaded handles, verifies they remain pending, changes
+a mesh handle without an asset event, despawns its entity and verifies removal.
+It also checks stable idle generations with an absent optional FlatMaterial
+asset resource, and exclusion of known CPU-only entity meshes. Broader image
+dependency closure, revision-specific GPU contents, view eligibility and
+submitted-frame acknowledgment remain outstanding.
+
+An isolated-settings, time-limited Oxbo viewer run with the probe enabled
+reported 1,598 meshes, 31 standard materials and 10 images, with all observed
+uploads and global pipelines ready at 3.254 s from probe configuration. This is
+not a first-complete-frame result. An initial diagnostic overcounted two
+CPU-only entity meshes; preserving the existing RENDER_WORLD eligibility rule
+resolved that without excluding unresolved handles. The owned viewer exited at
+its intentional 15-second timeout. Logs/build/test evidence are under
+`target/perf/p0-references/`.
 
 Actual-viewer render probe: launch with `USD_PROFILE_RENDER=1` to emit JSON
 `render_asset_profile` records from `src/perf_render.rs`. Main-world manifests
@@ -676,8 +724,149 @@ do not characterize deferred startup as eliminating the work.
 Remaining before default enablement: variant/dependency closure cases,
 deferred failed-save recovery and visibility-specific reveal latency. Direct application edits
 to Bevy Visibility outside USD are not currently a promotion trigger. Non-Mesh
-geometry remains eager, and promotion is synchronous; bounded asynchronous
-states/cancellation are not implemented by this increment.
+geometry remains eager. Asynchronous jobs and hard per-frame bounds remain
+unimplemented; the optional cooperative scheduler below is not a substitute.
+
+Cooperative promotion increment: `UsdResidencyBudget(Duration)` opts into a
+shared soft route-preparation budget, reset in the app's First schedule. With
+no resource, promotion stays synchronous. `UsdMeshPreparationQueued` identifies
+requested but not yet prepared entities; `UsdDeferredMesh` remains until their
+geometry routes run. LiveStage and asset-instance updates resume queued work
+under the appropriate stage/time/textures. Queue entries are ECS markers, not
+decoded geometry or mutable Stage objects sent to threads. Each attempt reads
+the current stage and clock; re-hidden entries are removed from the requested
+queue without losing their deferred marker. Custom registries retain eager
+execution. Zero budget advances one mesh per update globally across roots.
+
+The benchmark accepts `USD_RESIDENCY_BUDGET_MS=10` alongside the deferral and
+prewarm flags. Prewarm now drains over updates with a 120-second bound, reporting
+update count, p95 and maximum duration separately from total preparation time.
+748 workspace/all-target tests pass, 19 ignored, including shared budget across
+three roots, current-clock preparation, re-hidden cancellation and budget
+removal. Evidence: `target/perf/p4-budget/tests.log` and `caldera-10ms-final.log`.
+
+**Experimental, not default-ready:** the final Caldera diagnostic drained all
+18,932 meshes in 1,552 updates / 49.980 s, with update p95 45.645 ms and maximum
+2,232.132 ms despite a requested 10 ms route budget. Final mesh/subset entity
+counts remain 50,125 / 23,291; peak RSS was 5,709,748 KiB. An earlier version
+measured 47.904 s, so removing repeated queue-marker writes and exhausted-pass
+sorting did not establish a throughput improvement. Both are substantially
+slower in total than the ~17-second synchronous prewarm. One prim remains
+indivisible; sorting/scanning and ordinary update work sit outside the route
+budget. Investigate these costs and split heavy preparation before making any
+hard latency claim. Fair scheduling among roots and viewer loading/readiness
+presentation remain follow-up work; logical Ready is not a rendered-frame gate.
+
+Asset-root fairness increment: instance ticking orders root entities and starts
+after the last root that actually consumed promotion work. Exhausted or idle
+roots do not advance that cursor. The shared preparation budget therefore rotates
+among queued asset roots instead of repeatedly favoring the same HashMap entry.
+Stage clocks, textures and existing per-root synchronization remain installed
+only for the root being processed. Initial projection's separate scheduler is
+unchanged. Fair arbitration between a standalone LiveStage and asset roots in
+the same app remains outside this increment.
+
+755 workspace/all-target tests pass (19 ignored). A zero-budget regression with
+three roots and three hidden meshes per root verifies that every three updates
+prepare exactly one additional mesh in each root, rather than draining one root
+first. Existing shared-budget, latest-clock and cancellation checks also pass.
+Evidence: `target/perf/p4-fairness/tests.log`. This is a scheduling correctness
+change, not a new single-scene loading-speed claim.
+
+Retained promotion queue increment: each stage root now owns an ordered deque
+of entity IDs instead of rescanning queued entities, cloning their paths and
+sorting them on every update. Demand changes rebuild ordering; execution reads
+the entity's current path from its owning map and projects the current stage
+and clock. Despawned, unmapped, cancelled and rehidden entries are discarded.
+Root despawn drops the queue; rootless maps retain the reconstruction fallback.
+No decoded geometry, source snapshot or asset handles are retained by this queue.
+Storage scales with pending entity IDs, not path lengths or mesh payloads;
+allocator/capacity overhead has not been measured separately.
+
+The current-tree Make release workspace/all-target gate passes 756 tests with
+19 ignored across 34 suites. The added despawn regression ran as a Rust test,
+not fixture text, and verifies all surviving roots finish and queues disappear.
+Existing latest-clock, cancellation and root-fairness checks pass as well.
+Evidence: `target/perf/p4-retained-queue/tests-final.log`.
+
+Caldera's first diagnostic run with the same 10 ms soft preparation budget
+drained 18,932 meshes in 18.076 s (1,541 updates), versus the preceding texture
+index run's 21.514 s (1,525 updates). Update p95 was 15.346 ms versus 16.862 ms;
+maximum was 102.854 ms versus 111.069 ms. Final mesh assets remained 2,369.
+Peak process RSS was 5,671,228 KiB under the 24 GiB/no-swap cap. Logs are
+`target/perf/p4-retained-queue/caldera.log` and
+`target/perf/p8-texture-index/caldera.log`. This is an approximately 16% CPU
+promotion reduction in a historical single-run comparison, not a controlled
+paired speedup, memory reduction, reveal-frame result or the ≤5× acceptance.
+A second fresh-process run (`caldera-repeat.log` in the retained-queue directory)
+drained all 18,932 entries in 17.840 s across 1,525 updates, with 15.006 ms p95
+and 119.368 ms maximum. Final mesh assets again numbered 2,369. This supports
+the CPU trend but does not establish improved worst-case latency: the largest
+update included 107.279 ms of reload processing outside the preparation budget.
+Discovery, queue rebuilding and other update systems remain outside the soft
+route timer; individual mesh preparation remains indivisible.
+
+Palette-update follow-up: opt-in `GpuSkinUpdateTiming` exposed 929,252 generated
+joint transforms rebuilt on every eager Caldera update. Over 100 idle updates,
+the old pass processed another 92,925,200 joints and spent about 3.26 s inside
+the pass. `gpu_skin::update_joint_globals` now uses Bevy change tracking on mesh
+GlobalTransform and UsdGpuSkin, and writes a joint GlobalTransform only when its
+value differs. Initial palettes and changed placements/poses still update; idle
+meshes perform no palette multiplication or joint writes. The benchmark reports
+cumulative palette counts/times at initial-open, after-idle and prewarm checkpoints.
+
+Diagnostic before/after results (single processes, not controlled acceptance):
+
+| Caldera CPU workload | Before | After |
+| --- | --- | --- |
+| Mean eager idle update, 100 updates | 55.693 ms | 0.095 ms |
+| 10 ms-budget all-deferred preparation | 49.980 s | 23.276 s |
+| Preparation update p95 | 45.645 ms | 16.805 ms |
+| Preparation maximum update | 2,232.132 ms | 2,250.883 ms |
+
+The large maximum did not identify its cause; follow-up attribution below
+locates most of that update outside individual prim preparation. The final queue drained 18,932 meshes in 1,507 updates,
+preserving the previous budgeted mesh/subset/entity payload counts. Eager CPU
+open did not improve in these samples (41.006 vs 42.014 s); the win is redundant
+per-update work, not faster initial projection or a GPU frame-rate measurement.
+
+749 workspace/all-target tests pass (19 ignored), including explicit idle,
+placement and pose change checks. Four native baked deformation comparisons pass.
+The eager Caldera capture is byte-identical to `target/perf/p4-cpu/caldera.rgba`;
+its 58.21-second process duration is not first-frame latency. Logs, images and
+test evidence are in `target/perf/p4-skin-updates/`. Engine-generated joints are
+derived from their owning mesh placement and UsdGpuSkin pose; independently
+authoring their GlobalTransform is not a supported pose-edit path.
+
+Slow-update attribution corrects the earlier heavy-prim hypothesis. Optional
+`ResidencyPreparationTiming` retains attempt count, total route-preparation time
+and only the slowest prim (bounded profiling storage). With `USD_PROFILE_ROUTES`,
+the benchmark reports promotion/palette contributions for updates over 100 ms.
+`USD_PROFILE_LOADING` additionally times editor ReloadSources commands.
+
+Caldera's traced update 17 took 2,259.507 ms, but only 10.027 ms was promotion
+and 0.001 ms was palette updating. A 265-file editor reload command in that
+update took 1,199.800 ms. Across the entire queue, the slowest individual prim
+was 43.932 ms at
+`/world/mp_wz_island/mp_wz_island_paths/mp_wz_island_geo/map_vehicle_spawns/script_struct_mp_openjeep_113/veh_s4_mil_lnd_m151/geo/prs_bodyShape`.
+Thus the ~2.25-second maximum is not a single huge mesh. Individual work still
+exceeds the 10 ms soft budget, but splitting it alone will not fix this stall.
+
+Source inspection: `editor/reload.rs::watch` marks every observed file pending
+when it first sees a document. The next stable poll enqueues ReloadSources even
+when nothing changed on disk. `reload_paths` traverses texture requests and
+reads/hashes selected paths; afterward `process_commands` unconditionally builds
+a new editor snapshot. Snapshot time was not separately measured in this trace,
+so do not assign the entire remaining second to it without further evidence.
+Next priority: preserve the load-to-watch race checks while avoiding redundant
+initial source verification and no-op inspector reconstruction. Do not disable
+watching or blindly seed current metadata: supplied root bytes can already be
+stale, and changes during opening must still reload safely.
+
+749 workspace/all-target tests pass (19 ignored). Logs and profiler builds are
+in `target/perf/p4-heavy-prim/`; `reload-trace.log` contains correlated command,
+update and slowest-prim timings. This increment adds attribution, not a fix for
+the initial watcher stall.
 
 Rejected follow-up: a temporary per-promotion `ProjectionMaterials` memo passed
 747 experimental workspace/all-target tests (19 ignored), including shared
@@ -972,6 +1161,67 @@ stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
 
+Oxbo source-format investigation at `f0a60e7`: the original USDZ contains a single
+165,860,567-byte USDA entry. A native `usdcat` conversion into an ignored USDC
+under `target/perf/oxbo-current/` leaves the original untouched. This is a source-
+format experiment, not an implemented cache or a matched native-render benchmark.
+
+Original CPU open measured 3.461 / 3.104 / 3.083 s; USDC measured
+1.502 / 1.509 / 1.491 s, each in a fresh process using the same release binary.
+Order was original/binary, binary/original, original/binary. Filesystem caches
+were not cleared. The first original sample spent 468 ms reading/constructing
+the source and another 1,771 ms opening its stage; MeshRoute was 420 ms,
+MaterialRoute 193 ms and SkinRoute only 9 ms. Thus further skin-check optimization
+is not the priority for this Oxbo workload. USDC's first sample spent 27 ms on
+source construction and 40 ms on stage open. Its total CPU open still includes
+validation, projection and editor work.
+
+All six samples retain 1,786 mesh entities, 14 subsets, 1,597 mesh assets and
+1,739,712 vertices, with identical reported vertex/index payload sizes. Original
+and binary captures both completed and their RGBA files are byte-identical:
+`cb192f7a8647daacaaed2ac55ecbaaab4b7428bbe41288c716ed30142fed0b0c`.
+The binary image was visually inspected. This verifies the captured static view,
+not animation, editing or a general guarantee for relocated asset dependencies.
+First-run process peak RSS was 731,608 KiB for original versus 251,476 KiB for
+binary. Raw CPU logs, conversion output and both captures are retained under
+`target/perf/oxbo-current/`; all runs used the 24 GiB/no-swap cap.
+
+**Identified source-loader duplication:** `StageBuilder::open` calls
+`root_stack_expression_variables`, whose `LayerRegistry::own_expression_variables`
+reads/parses the root. `collect_layers` then calls `open_stack`, which reads/parses
+it again. The registry explicitly has no read cache. Pass already-parsed root
+and session-root data through this single open operation, preserving canonical
+identifiers, resolved paths, expression-variable precedence, muted-session
+behavior and error reporting. Do not add a long-lived pathname-only cache.
+Prove one parse per ordinary root, expression-valued sublayer behavior, fresh
+contents after a subsequent open, and independent mutable stages; run the full
+workspace gate and repeat original-format Oxbo timing and capture. Keep binary
+conversion optional evidence, not a prerequisite for faster original USD loading.
+
+Prepared-root implementation: the vendored registry now returns owned parsed
+root data with its canonical identifier and resolved path. StageBuilder reads
+root/session expression variables from that data, then consumes the same data
+for stack collection. No cross-open cache or shared mutable stage is added.
+The review patch is `patches/openusd-prepared-roots.patch`; dependency revision
+and original assets are unchanged.
+
+757 Make release workspace/all-target tests pass (19 ignored), plus 14 native
+export checks run explicitly. A counted-resolver test verifies one read of each
+root/session layer, session-over-root variable precedence, root variables in
+session sublayers, muted session behavior, fresh dependency data on reopen and
+independent stage edits. Evidence: `target/perf/p7-root-parse/tests-final.log`
+and `native-exports.log`.
+
+Three original-format Oxbo CPU opens measured 2.265 / 2.260 / 2.265 s, versus
+the prior warm original runs' 3.104 / 3.083 s (about 27% lower). Source construction
+took 99–110 ms; stage opening after it took 923–941 ms. These are sequential
+before/after diagnostics, not randomized paired acceptance. Entity/mesh/payload
+counts match the previous baseline. The new original-asset capture completed
+and its RGBA is byte-identical to `target/perf/oxbo-current/original.rgba`.
+Logs, capture and build output are under `target/perf/p7-root-parse/`.
+This improves original USDA loading without requiring binary conversion; the
+matched first-complete-frame target and broader Moana acceptance remain open.
+
 Package-directory increment: the vendored USDZ format now opens its default-layer
 directory through the resolver's seekable asset, instead of `read_all()` copying
 the entire package first. Public `Archive::from_asset` remains unchanged; corrupt
@@ -1030,6 +1280,72 @@ copied/decompressed, peak memory and Oxbo loading. No pathname-only cache may
 serve old contents after Blender saves a new file.
 
 ## P8 — Make reload preparation proportional to changed layers
+
+No-op inspector increment: `editor::process_commands` retains the existing
+inspector snapshot when a command batch contains only successful ReloadSources
+checks with no publication, revision change or detected external edits. Actual
+reload publication, errors, other commands and external/texture changes still
+refresh it. Source reading/hashing and watcher behavior are unchanged; this is
+not a metadata shortcut or removal of the initial load-to-watch verification.
+Optional `EditorSnapshotTiming` counts command-driven inspection work, and
+`USD_PROFILE_LOADING` enables it with per-snapshot timing output.
+
+750 workspace/all-target tests pass (19 ignored). The regression checks prove
+that an unchanged reload avoids a new snapshot, while changed disk content,
+mixed Select/reload batches, malformed-file failures and an external stage edit
+all refresh inspection and preserve document/last-good state as appropriate.
+
+Caldera diagnostic: the initial 265-file reload still costs 1,191.722 ms, but
+the slow update falls from 2,259.507 ms to 1,210.093 ms. Initial-open inspection
+separately costs 987.856 ms; no second snapshot is emitted for the no-op reload.
+Budgeted prewarm completes all 18,932 meshes in 22.583 s / 1,520 updates, with
+16.846 ms p95. This single comparison isolates avoided inspection work; it does
+not establish a general load-speed ratio or remove the remaining verification
+stall. Evidence: `target/perf/p8-noop-inspection/` (`caldera.log`, `tests.log`).
+
+Reload subphase attribution: `USD_PROFILE_LOADING` now separates current-stage
+texture discovery from selected-file verification. Caldera's unchanged 265-file
+check spent 1,100.573 ms in discovery and 91.891 ms in reading/hashing sources.
+The next target is therefore repeated stage discovery, not a weaker file check.
+`UsdSource::stage_texture_requests` now reuses each prim's first resolved type
+instead of querying it again for non-dome prims. This is a local read reduction,
+not a persistent cache or change to texture request/error semantics.
+
+The after sample measured 1,072.160 ms discovery / 94.955 ms verification and
+a 1,185.147 ms maximum update versus 1,210.895 ms before. These single samples
+do not establish a meaningful end-to-end speedup; most discovery cost remains.
+750 workspace/all-target tests pass (19 ignored). Evidence is in
+`target/perf/p8-texture-scan/` (`before.log`, `after.log`, `tests.log`). A future
+request-manifest cache must be bound to stage/layer and composition revisions,
+including variants, payload/load rules, population masks, muted layers, authored
+material edits and external changes. Do not reuse by pathname or editor clock
+alone, or suppress existing discovery errors for modified stages.
+
+Revision-bound candidate index increment: `editor/texture_index.rs` retains
+only paths of Material/DomeLight/DomeLight_1 prims for one EditorSession. It does
+not cache resolved texture requests, asset values or errors: each request scan
+still reads current attributes/time samples and resolves current asset paths.
+This preserves filesystem-dependent resolution, including a missing texture
+appearing without any stage edit. The key contains tracked per-layer revisions,
+structural revision, participating layers, load rules, population mask and muted
+layers. Saturated counters and changes observed during candidate discovery
+prevent reuse. Initial editor texture preparation seeds the same index used by
+reload checks; standalone source request scans remain uncached.
+
+754 workspace/all-target tests pass (19 ignored). New differential checks compare
+indexed requests with full discovery after prim type/attribute authoring, load
+rule changes, layer mute/unmute, variant switches and direct Sdf layer edits.
+Missing-file recovery verifies resolution changes while the candidate scan count
+stays unchanged. Existing reload, malformed-file, last-good and editor tests pass.
+
+Caldera's diagnostic unchanged-stage texture discovery is now 0.039 ms versus
+1,072.160 ms in the preceding run. File verification still reads/hashes 265 paths
+in 92.793 ms; total reload check is 92.942 ms. Budgeted preparation drains all
+18,932 meshes in 21.514 s / 1,525 updates, with 16.862 ms p95 and 111.069 ms max,
+versus the previous 1,185.147 ms max. These are single-run diagnostic comparisons,
+not matched first-frame acceptance. Source verification can still exceed a frame
+budget; watching and its initial race check have not been disabled or weakened.
+Logs and build/test evidence: `target/perf/p8-texture-index/`.
 
 **Scope:** `reload.rs`, `editor/reload.rs`, `source.rs`, persistence/conflict tests;
 review upstream immutable-layer APIs separately if required.

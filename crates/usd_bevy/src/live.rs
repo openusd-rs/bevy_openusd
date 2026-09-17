@@ -1003,6 +1003,7 @@ struct AppliedCurveSteps((usize, Option<usize>));
 
 impl Plugin for LiveStagePlugin {
     fn build(&self, app: &mut App) {
+        crate::route::residency::configure(app);
         app.init_resource::<PrimEntities>()
             .init_resource::<StageTime>()
             .init_resource::<AnimatedPrims>()

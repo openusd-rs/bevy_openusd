@@ -41,18 +41,48 @@ fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(mut reads) = app.world_mut().get_resource_mut::<usd_bevy::route::MeshReadTiming>() { *reads = default(); }
     let start = Instant::now();
     app.world_mut().remove_resource::<DeferHiddenMeshes>();
-    app.update();
+    let mut updates = Vec::new();
+    loop {
+        let preparation_before = app.world().get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>().map_or(Duration::ZERO, |timing| timing.elapsed);
+        let palette_before = app.world().get_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>().map_or(Duration::ZERO, |timing| timing.elapsed);
+        let update_started = Instant::now();
+        app.update();
+        let update_elapsed = update_started.elapsed();
+        updates.push(update_elapsed);
+        if update_elapsed > Duration::from_millis(100) && app.world().contains_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>() {
+            let preparation = app.world().get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>().map_or(Duration::ZERO, |timing| timing.elapsed) - preparation_before;
+            let palette = app.world().get_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>().map_or(Duration::ZERO, |timing| timing.elapsed) - palette_before;
+            eprintln!("deferred_slow_update index={} elapsed_ms={:.3} preparation_ms={:.3} palette_ms={:.3}", updates.len(),
+                update_elapsed.as_secs_f64()*1000.0, preparation.as_secs_f64()*1000.0, palette.as_secs_f64()*1000.0);
+        }
+        if app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).next().is_none() { break; }
+        if start.elapsed() > Duration::from_secs(120) { return Err("deferred prewarm exceeded 120 seconds".into()); }
+    }
     let elapsed = start.elapsed();
     let pending_after = app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).count();
     eprintln!("deferred_prewarm scope=all-deferred-cpu excludes=gpu,visibility-edit pending_before={pending_before} pending_after={pending_after} elapsed_ms={:.3} mesh_assets_before={meshes_before} mesh_assets_after={} rss_before={} rss_after={}",
         elapsed.as_secs_f64()*1000.0, app.world().resource::<Assets<Mesh>>().len(),
         rss_before.map_or("NA".into(), |value| value.to_string()), resident_bytes().map_or("NA".into(), |value| value.to_string()));
+    updates.sort_unstable();
+    eprintln!("deferred_prewarm_updates count={} p95_ms={:.3} max_ms={:.3} budget_ms={}", updates.len(),
+        updates[(updates.len()*95).div_ceil(100)-1].as_secs_f64()*1000.0,
+        updates.last().unwrap().as_secs_f64()*1000.0,
+        app.world().get_resource::<usd_bevy::route::residency::UsdResidencyBudget>()
+            .map_or("unlimited".into(), |budget| budget.0.as_millis().to_string()));
     report_routes(app.world(), "deferred-prewarm", 1);
     if pending_after != 0 { return Err("prewarm left deferred meshes pending".into()); }
     Ok(())
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(timing) = world.get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>() {
+        eprintln!("residency_preparation_profile phase={phase} attempts={} elapsed_ms={:.3} slowest_prim={:?} slowest_ms={:.3}",
+            timing.attempts, timing.elapsed.as_secs_f64()*1000.0,
+            timing.slowest.as_ref().map(|(path, _)| path), timing.slowest.as_ref().map_or(0.0, |(_, elapsed)| elapsed.as_secs_f64()*1000.0));
+    }
+    if let Some(timing) = world.get_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>() {
+        eprintln!("gpu_skin_update_profile phase={phase} updates={} joints={} elapsed_ms={:.3}", timing.updates, timing.joints, timing.elapsed.as_secs_f64()*1000.0);
+    }
     if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionVisibilityTimings>() {
         for ((route, hidden), row) in &timings.0 {
             let visibility = match hidden { Some(true) => "hidden", Some(false) => "visible", None => "unknown" };
@@ -110,8 +140,13 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, LiveStagePlugin, EditorPlugin));
     app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
     if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() { app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>(); }
+    if let Ok(value) = std::env::var("USD_RESIDENCY_BUDGET_MS") {
+        app.insert_resource(usd_bevy::route::residency::UsdResidencyBudget(Duration::from_millis(value.parse()?)));
+    }
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
+        app.init_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>();
         app.init_resource::<usd_bevy::route::ProjectionTimings>();
         if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
             app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>();
@@ -131,6 +166,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     let start = Instant::now();
     for _ in 0..100 { app.update(); }
     let idle = start.elapsed() / 100;
+    report_routes(app.world(), "after-idle", 100);
     if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() { promote_deferred(&mut app)?; }
     let mut result = Measurement { open, idle, peak_asset_counts: asset_counts(app.world()), rss_before_seeks: resident_bytes(), ..default() };
     if seek != SeekMode::Idle {

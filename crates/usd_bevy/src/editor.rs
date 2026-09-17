@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 mod layer_changes;
+mod texture_index;
 pub mod reload;
 pub mod save_state;
 
@@ -43,6 +44,13 @@ pub struct EditorView {
     pub document: EditorSnapshot,
     pub status: String,
     pub timeline: EditorTimeline,
+}
+
+/// Accumulated command-driven inspector snapshot work.
+#[derive(Resource, Default)]
+pub struct EditorSnapshotTiming {
+    pub snapshots: usize,
+    pub elapsed: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -82,6 +90,7 @@ pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
+        if std::env::var_os("USD_PROFILE_LOADING").is_some() { app.init_resource::<EditorSnapshotTiming>(); }
         app.init_resource::<EditorBridge>().init_resource::<EditorPlayback>()
             .init_resource::<crate::route::StageTime>()
             .add_systems(PreUpdate, (process_commands, advance_editor_time).chain())
@@ -200,7 +209,9 @@ fn process_commands(world: &mut World) {
     }
     let mut status = if external { "External edits detected; undo history reset".into() } else { String::new() };
     let mut texture_dirty = external;
+    let mut inspect = external;
     for command in commands {
+        inspect |= !matches!(&command, EditorCommand::ReloadSources(_));
         let command = if let EditorCommand::EditChecked { edit, document_id, revision, target } = command {
             texture_dirty |= session.as_mut().is_some_and(EditorSession::synchronize_external_edits);
             if session.as_ref().is_none_or(|editor| editor.document_id != document_id
@@ -259,7 +270,9 @@ fn process_commands(world: &mut World) {
                     profile("stage-open");
                     crate::UsdSource::validate_composition(&stage)?;
                     profile("composition-validated");
-                    let textures = match prepare_textures(&stage, &source) {
+                    let mut editor = EditorSession::new(stage.clone());
+                    profile("editor-created");
+                    let textures = match prepare_textures(&editor, &source) {
                         Ok(textures) => textures,
                         Err(error) => {
                             if session.is_none() {
@@ -280,8 +293,6 @@ fn process_commands(world: &mut World) {
                     }
                     world.insert_resource(crate::live::PrimEntities::default());
                     world.insert_non_send(crate::live::LiveStage::new(stage.clone()));
-                    let mut editor = EditorSession::new(stage);
-                    profile("editor-created");
                     editor.save_state.borrow_mut().disk = Some(disk_baselines);
                     editor.save_state.borrow_mut().opened(editor.stage(), &editor.layer_changes.revisions());
                     profile("save-baselines");
@@ -296,9 +307,16 @@ fn process_commands(world: &mut World) {
         } else if let Some(editor) = &mut session {
             match command {
                 EditorCommand::ReloadSources(paths) => {
+                    let started = bevy::platform::time::Instant::now();
+                    let revision = editor.revision;
+                    let mut published = false;
                     let result = editor.reload_paths(Some(&paths), |publication, stage| publication.preflight(world, stage)).map(|publication| {
-                        if let Some(publication) = publication { publication.install(world); }
+                        if let Some(publication) = publication { published = true; publication.install(world); }
                     });
+                    inspect |= published || result.is_err() || editor.revision != revision;
+                    if std::env::var_os("USD_PROFILE_LOADING").is_some() {
+                        eprintln!("editor_reload files={} elapsed_ms={:.3} success={}", paths.len(), started.elapsed().as_secs_f64()*1000.0, result.is_ok());
+                    }
                     if let Some(mut status) = world.get_resource_mut::<reload::EditorReloadStatus>() {
                         status.error = result.as_ref().err().map(|error| format!("{error:#}"));
                     }
@@ -371,7 +389,18 @@ fn process_commands(world: &mut World) {
         }
     }
     let time = world.resource::<crate::route::StageTime>().current;
-    let document = session.as_ref().map(|session| session.snapshot_at(Some(time))).transpose();
+    let started = world.contains_resource::<EditorSnapshotTiming>().then(bevy::platform::time::Instant::now);
+    let inspector = session.as_ref().filter(|_| inspect || texture_dirty);
+    let document = inspector.map(|session| session.snapshot_at(Some(time))).transpose();
+    if inspector.is_some() && let Some(started) = started {
+        let elapsed = started.elapsed();
+        let mut timing = world.resource_mut::<EditorSnapshotTiming>();
+        timing.snapshots += 1;
+        timing.elapsed += elapsed;
+        if std::env::var_os("USD_PROFILE_LOADING").is_some() {
+            eprintln!("editor_snapshot elapsed_ms={:.3}", elapsed.as_secs_f64()*1000.0);
+        }
+    }
     if let Ok(mut state) = bridge.0.lock() {
         match document {
             Ok(Some(document)) => state.view.document = document,
@@ -436,8 +465,8 @@ fn texture_request_paths(stage: &Stage, requests: &std::collections::BTreeSet<(S
     paths
 }
 
-fn prepare_textures(stage: &Stage, source: &crate::UsdSource) -> anyhow::Result<PreparedTextures> {
-    decode_textures(source, crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?)
+fn prepare_textures(editor: &EditorSession, source: &crate::UsdSource) -> anyhow::Result<PreparedTextures> {
+    decode_textures(source, editor.texture_requests()?)
 }
 
 fn decode_textures(source: &crate::UsdSource, requests: std::collections::BTreeSet<(String, bool)>) -> anyhow::Result<PreparedTextures> {
@@ -685,6 +714,7 @@ pub struct EditorSession {
     history_limit: usize,
     layer_changes: layer_changes::LayerChanges,
     save_state: std::cell::RefCell<save_state::SaveState>,
+    texture_index: std::cell::RefCell<texture_index::TextureIndex>,
 }
 
 impl EditorSession {
@@ -702,10 +732,15 @@ impl EditorSession {
             history_limit: 128,
             layer_changes,
             save_state: Default::default(),
+            texture_index: Default::default(),
         }
     }
 
     pub fn stage(&self) -> &Stage { &self.stage }
+
+    fn texture_requests(&self) -> anyhow::Result<std::collections::BTreeSet<(String, bool)>> {
+        self.texture_index.borrow_mut().requests(self.stage(), &self.layer_changes).map_err(anyhow::Error::msg)
+    }
 
     /// Opens a source with resolver-byte baselines for guarded in-place saves.
     pub fn from_source(source: crate::UsdSource) -> anyhow::Result<Self> {
@@ -3127,6 +3162,49 @@ def Xform "Model" (
         app.update();
         assert!(bridge.view().unwrap().status.starts_with("Failed:"));
         assert_eq!(app.world().resource::<crate::live::PrimEntities>().entity("/Root"), Some(entity));
+    }
+
+    #[test]
+    fn unchanged_reload_reuses_inspection_but_changes_and_errors_refresh_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("document.usda");
+        std::fs::write(&path, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
+        app.init_resource::<EditorSnapshotTiming>();
+        app.world_mut().resource_mut::<reload::EditorReloadSettings>().enabled = false;
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge.send(EditorCommand::Open(path.to_string_lossy().into_owned())).unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<EditorSnapshotTiming>().snapshots, 1);
+        let document = bridge.view().unwrap().document.document_id;
+        bridge.send(EditorCommand::ReloadSources(vec![path.clone()])).unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<EditorSnapshotTiming>().snapshots, 1);
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        std::fs::write(&path, "#usda 1.0\ndef Xform \"Root\" {}\ndef Xform \"Added\" {}\n").unwrap();
+        bridge.send(EditorCommand::ReloadSources(vec![path.clone()])).unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<EditorSnapshotTiming>().snapshots, 2);
+        assert!(bridge.view().unwrap().document.prims.contains(&"/Added".to_owned()));
+        bridge.send(EditorCommand::Select(Some("/Added".into()))).unwrap();
+        bridge.send(EditorCommand::ReloadSources(vec![path.clone()])).unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<EditorSnapshotTiming>().snapshots, 3);
+        assert_eq!(bridge.view().unwrap().document.selected.as_deref(), Some("/Added"));
+        std::fs::write(&path, "not a USD layer").unwrap();
+        bridge.send(EditorCommand::ReloadSources(vec![path.clone()])).unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<EditorSnapshotTiming>().snapshots, 4);
+        assert!(bridge.view().unwrap().status.starts_with("Failed:"));
+        assert_eq!(bridge.view().unwrap().document.document_id, document);
+        assert!(bridge.view().unwrap().document.prims.contains(&"/Added".to_owned()));
+        std::fs::write(&path, "#usda 1.0\ndef Xform \"Root\" {}\ndef Xform \"Added\" {}\n").unwrap();
+        app.world().non_send::<crate::live::LiveStage>().stage.define_prim("/External").unwrap().set_type_name("Xform").unwrap();
+        bridge.send(EditorCommand::ReloadSources(vec![path])).unwrap();
+        app.update();
+        assert_eq!(app.world().resource::<EditorSnapshotTiming>().snapshots, 5);
+        assert!(bridge.view().unwrap().document.prims.contains(&"/External".to_owned()));
     }
 
     #[test]

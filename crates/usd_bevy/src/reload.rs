@@ -13,13 +13,27 @@ pub struct LayerReload {
 impl LayerReload {
     /// Parses replacement bytes and validates composition without modifying `stage`.
     pub fn prepare(stage: &Stage, replacements: &[(String, Vec<u8>)]) -> anyhow::Result<Self> {
+        Self::prepare_decoded(stage, replacements, |id, bytes| {
+            Ok(openusd::sdf::LayerRegistry::read_bytes(std::borrow::Cow::Owned(bytes.clone()), id)?)
+        })
+    }
+
+    pub(crate) fn prepare_shared(stage: &Stage, replacements: &[(String, std::sync::Arc<[u8]>)]) -> anyhow::Result<Self> {
+        Self::prepare_decoded(stage, replacements, |id, bytes| {
+            Ok(openusd::sdf::LayerRegistry::read_shared_bytes(bytes.clone(), id)?)
+        })
+    }
+
+    fn prepare_decoded<B>(stage: &Stage, replacements: &[(String, B)],
+        decode: impl Fn(&str, &B) -> anyhow::Result<openusd::sdf::LayerData>,
+    ) -> anyhow::Result<Self> {
         let mut layers = Vec::new();
         let mut expected = Vec::new();
         for (id, bytes) in replacements {
             anyhow::ensure!(stage.layer(id).is_some(), "reload layer is not in the stage: {id}");
             anyhow::ensure!(!layers.iter().any(|(existing, _)| existing == id), "duplicate reload layer: {id}");
-            let layer = Layer::from_bytes(id, bytes.clone())?;
-            layers.push((id.clone(), Data::from_abstract(layer.data())?));
+            let data = decode(id, bytes)?;
+            layers.push((id.clone(), Data::from_abstract(data.as_ref())?));
             expected.push(blake3::hash(stage.layer(id).unwrap().export_to_string()?.as_bytes()));
         }
         let root = stage.root_layer();
@@ -140,12 +154,17 @@ mod tests {
         let stage = source.open_stage().unwrap();
         crate::UsdSource::validate_composition(&stage).unwrap();
         let id = if kind == "dependency" { child.to_string_lossy().into_owned() } else { stage.root_layer().identifier().to_owned() };
-        let plan = LayerReload::prepare(&stage, &[(id, binary(2))]).unwrap();
+        let plan = LayerReload::prepare(&stage, &[(id.clone(), binary(2))]).unwrap();
         let size = |stage: &Stage| stage.prim("/Model").unwrap().attribute("size").get::<f64>().unwrap();
+        assert_eq!(size(&stage), Some(1.0));
+        assert_eq!(size(plan.candidate()), Some(2.0));
+        let shared = std::sync::Arc::<[u8]>::from(binary(2));
+        let plan = LayerReload::prepare_shared(&stage, &[(id, shared.clone())]).unwrap();
         assert_eq!(size(&stage), Some(1.0));
         assert_eq!(size(plan.candidate()), Some(2.0));
         plan.apply(&stage).unwrap();
         assert_eq!(size(&stage), Some(2.0));
+        assert_eq!(shared.as_ref(), binary(2));
     }
 
     #[test]
@@ -156,6 +175,25 @@ mod tests {
 
     #[test]
     fn binary_package_root_reload_preserves_candidate_format() { binary_reload_case("package"); }
+
+    #[test]
+    fn shared_reload_rejects_invalid_input_and_stale_publication() {
+        use std::sync::Arc;
+        let source = crate::UsdSource::new("shared-reload.usda", b"#usda 1.0\ndef Cube \"Model\" {}\n".as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        let id = source.identifier().to_owned();
+        let valid = Arc::<[u8]>::from(b"#usda 1.0\ndef Sphere \"Model\" {}\n".as_slice());
+        let before = stage.root_layer().export_to_string().unwrap();
+        assert!(LayerReload::prepare_shared(&stage, &[(id.clone(), Arc::from(b"broken".as_slice()))]).is_err());
+        assert!(LayerReload::prepare_shared(&stage, &[("missing".into(), valid.clone())]).is_err());
+        assert!(LayerReload::prepare_shared(&stage, &[(id.clone(), valid.clone()), (id.clone(), valid.clone())]).is_err());
+        assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+        let plan = LayerReload::prepare_shared(&stage, &[(id, valid)]).unwrap();
+        stage.define_prim("/NewEdit").unwrap();
+        assert!(plan.apply(&stage).unwrap_err().to_string().contains("changed after preparation"));
+        assert!(stage.prim("/NewEdit").unwrap().is_valid().unwrap());
+        assert_eq!(stage.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+    }
 
     #[test]
     fn candidate_preserves_unloaded_payloads_and_interpolation() {

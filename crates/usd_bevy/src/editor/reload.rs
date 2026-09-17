@@ -152,16 +152,16 @@ impl EditorSession {
                 "reload conflict: {id} has unsaved edits; save elsewhere or undo them before reloading");
             let replacement = if let Some((outer, inner)) = openusd::ar::split_package_relative_path_outer(path) {
                 source_bytes.insert(outer, bytes.clone());
-                openusd::ar::read_package_entry(Box::new(crate::source::SharedAsset(std::io::Cursor::new(bytes.clone()))), &inner)?
+                Arc::<[u8]>::from(openusd::ar::read_package_entry(Box::new(crate::source::SharedAsset(std::io::Cursor::new(bytes.clone()))), &inner)?)
             } else {
                 source_bytes.insert(path.to_owned(), bytes.clone());
-                bytes.to_vec()
+                bytes.clone()
             };
             replacements.push((id, replacement));
             accepted.insert(key);
         }
         let plan = if replacements.is_empty() { None } else {
-            Some(crate::reload::LayerReload::prepare(self.stage(), &replacements)?)
+            Some(crate::reload::LayerReload::prepare_shared(self.stage(), &replacements)?)
         };
         let candidate = plan.as_ref().map_or(self.stage(), |plan| plan.candidate());
         let requests = crate::UsdSource::stage_texture_requests(candidate).map_err(anyhow::Error::msg)?;

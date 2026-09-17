@@ -1,9 +1,48 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `bd54421` and the
-working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
+Planned against `1dd38c8` on 2026-09-16; reconciled against `e689fcf` on
+2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
+
+## Read this first
+
+This file is the single performance plan and evidence ledger. The execution
+roadmap immediately below takes precedence over older checkpoint sequences.
+Detailed P0–P8 sections retain historical measurements; their test counts and
+timings apply to the named increments, not automatically to current HEAD.
+
+**Target:** Oxbo and Caldera must reach a first complete rendered frame within
+5× a matched native viewer baseline, without sacrificing USD composition,
+Blender/EEVEE fidelity, independent playback roots or transactional asset-local
+reload. Moana must have an explicitly bounded, honestly reported outcome.
+
+**Latest recorded implementation checkpoint (`e689fcf`):**
+
+- Direct shared source buffers and immutable replacement snapshots are in place.
+- Binary root, dependency and packaged-USDC reload candidates preserve format.
+- The synthetic 64 MiB changed-source benchmark improves median reload from
+  229.309 to 136.823 ms; this is not a full-viewer speedup measurement.
+- Recorded validation: 782 workspace/all-target tests passed, 19 ignored;
+  14 native export tests passed. See P8 for artifacts and live reload evidence.
+
+**Remaining work, in priority order:**
+
+1. Finish P0's revision-specific submitted-frame coverage and establish matched
+   five-run native/viewer baselines. Prepared assets and successful command
+   counts alone cannot declare a complete frame.
+2. Implement and visually validate compact point-instancer rendering (P6).
+   Moana's 21,357,212-point ground cover cannot scale as four entities per point;
+   the latest recorded full-scene attempt exceeds the 24 GiB cap.
+3. Attribute and reduce remaining composition, decoding and candidate-stage
+   reconstruction costs (P3/P7/P8). Investigate independent in-memory candidate
+   construction before adding more byte-copy micro-optimizations; preserve the
+   old stage on validation failure and reject changes made during preparation.
+4. Finish bounded preparation, residency and reload correctness (P4/P5/P8),
+   then rerun the final acceptance checklist. Keep incomplete deferral opt-in.
+
+The shared-decoder follow-up below records subsequent implementation validation;
+the checkpoint above remains the `e689fcf` baseline.
 
 ## Execution roadmap
 
@@ -2136,6 +2175,44 @@ copied/decompressed, peak memory and Oxbo loading. No pathname-only cache may
 serve old contents after Blender saves a new file.
 
 ## P8 — Make reload preparation proportional to changed layers
+
+### Shared decoder inputs (2026-09-17)
+
+The editor now passes immutable replacement snapshots into a crate-private
+`LayerReload::prepare_shared` route. Both it and the unchanged public Vec-based
+API use one preparation implementation. Decoding calls the canonical layer
+registry directly; non-package editor inputs no longer become a temporary Vec
+and then another owned decoder copy. USDC retains its shared reader; formats
+using the default shared decoder can still make their required owned copy.
+Package entry extraction still allocates an entry buffer, and candidate-stage
+serialization/reopening remains unchanged.
+
+Five alternating/order-reversed 64 MiB synthetic trials compare `e689fcf` with
+this increment, under a 24 GiB/no-swap cap and 45-second per-run timeout:
+
+| Metric | Baseline median | Candidate median |
+| --- | ---: | ---: |
+| Changed-source reload | 130.676 ms | 110.558 ms (15.4% lower) |
+| Process peak RSS | 297,412 KiB | 232,476 KiB (63.4 MiB saved) |
+
+Artifacts: `target/perf/p8-shared-decode/`, including all ten trial logs. This
+fixture isolates source ownership, not large geometry or first rendered frame.
+Workspace/all-target release validation passes 783 tests with 19 ignored;
+14 native export tests pass. Binary root/dependency/package cases exercise both
+APIs; shared-input tests cover malformed bytes, duplicate/unknown layers and
+rejection of publication after intervening authoring.
+
+A real viewer reload of a private USDC fixture changes the left cube from red
+to green while the right cube stays blue. The initial RGBA and final PNG are
+byte-identical to the preceding binary-reload baseline captures; the final image
+was inspected. Logs report one changed source and successful reload. This is
+Bevy regression evidence, not Blender parity. The owned viewer scope was stopped.
+
+The next architectural investigation must preserve independent candidate data:
+`Stage::clone` shares its `Rc<StageInner>`, and `AbstractData` currently has no
+snapshot/fork method. Merely cloning the stage would mutate the live document
+during preflight. A genuine isolated layer-data/registry snapshot is needed to
+remove whole-stage serialization safely; this increment does not provide one.
 
 ### Shared replacement snapshots (2026-09-17)
 

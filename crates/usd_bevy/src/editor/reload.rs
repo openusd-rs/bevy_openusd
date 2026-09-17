@@ -106,7 +106,11 @@ impl EditorSession {
         let disk = self.save_state.borrow().disk.clone()
             .ok_or_else(|| anyhow::anyhow!("document has no disk provenance"))?;
         let baselines = disk.lock().expect("disk baselines").clone();
+        let profiled = std::env::var_os("USD_PROFILE_LOADING").is_some();
+        let started = profiled.then(Instant::now);
         let old_requests = crate::UsdSource::stage_texture_requests(self.stage()).map_err(anyhow::Error::msg)?;
+        if let Some(started) = started { eprintln!("editor_reload_phase phase=texture-requests elapsed_ms={:.3}", started.elapsed().as_secs_f64()*1000.0); }
+        let started = profiled.then(Instant::now);
         let layers = layer_files(self.stage());
         let mut watched = layers.clone();
         watched.extend(old_requests.iter().map(|(path, _)| outer_path(path)));
@@ -122,6 +126,7 @@ impl EditorSession {
             let hash = blake3::hash(&bytes);
             if baselines.get(&path) != Some(&hash) { changed.insert(path, (bytes, hash)); }
         }
+        if let Some(started) = started { eprintln!("editor_reload_phase phase=source-verification elapsed_ms={:.3} changed={}", started.elapsed().as_secs_f64()*1000.0, changed.len()); }
         if changed.is_empty() {
             if let Some((path, error)) = missing_textures.into_iter().next() {
                 anyhow::bail!("cannot read texture {}: {error}", path.display());

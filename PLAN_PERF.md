@@ -1145,6 +1145,24 @@ Budgeted prewarm completes all 18,932 meshes in 22.583 s / 1,520 updates, with
 not establish a general load-speed ratio or remove the remaining verification
 stall. Evidence: `target/perf/p8-noop-inspection/` (`caldera.log`, `tests.log`).
 
+Reload subphase attribution: `USD_PROFILE_LOADING` now separates current-stage
+texture discovery from selected-file verification. Caldera's unchanged 265-file
+check spent 1,100.573 ms in discovery and 91.891 ms in reading/hashing sources.
+The next target is therefore repeated stage discovery, not a weaker file check.
+`UsdSource::stage_texture_requests` now reuses each prim's first resolved type
+instead of querying it again for non-dome prims. This is a local read reduction,
+not a persistent cache or change to texture request/error semantics.
+
+The after sample measured 1,072.160 ms discovery / 94.955 ms verification and
+a 1,185.147 ms maximum update versus 1,210.895 ms before. These single samples
+do not establish a meaningful end-to-end speedup; most discovery cost remains.
+750 workspace/all-target tests pass (19 ignored). Evidence is in
+`target/perf/p8-texture-scan/` (`before.log`, `after.log`, `tests.log`). A future
+request-manifest cache must be bound to stage/layer and composition revisions,
+including variants, payload/load rules, population masks, muted layers, authored
+material edits and external changes. Do not reuse by pathname or editor clock
+alone, or suppress existing discovery errors for modified stages.
+
 **Scope:** `reload.rs`, `editor/reload.rs`, `source.rs`, persistence/conflict tests;
 review upstream immutable-layer APIs separately if required.
 

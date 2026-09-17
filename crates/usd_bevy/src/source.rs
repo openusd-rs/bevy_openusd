@@ -141,7 +141,8 @@ impl UsdSource {
         let mut requests = BTreeSet::new();
         for path in paths {
             let prim = stage.prim(&path).map_err(|error| error.to_string())?;
-            if matches!(prim.type_name().map_err(|error| error.to_string())?.as_deref(), Some("DomeLight" | "DomeLight_1")) {
+            let type_name = prim.type_name().map_err(|error| error.to_string())?;
+            if matches!(type_name.as_deref(), Some("DomeLight" | "DomeLight_1")) {
                 let attr = prim.attribute("inputs:texture:file");
                 let mut times = vec![None];
                 times.extend(attr.time_sample_times().map_err(|error| error.to_string())?.into_iter()
@@ -152,14 +153,7 @@ impl UsdSource {
                 }
                 continue;
             }
-            if stage
-                .prim(&path)
-                .map_err(|error| error.to_string())?
-                .type_name()
-                .map_err(|error| error.to_string())?
-                .as_deref()
-                != Some("Material")
-            {
+            if type_name.as_deref() != Some("Material") {
                 continue;
             }
             let texture_times = crate::read::shade::material_texture_sample_times(stage, &path)

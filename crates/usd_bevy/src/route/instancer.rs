@@ -218,7 +218,7 @@ impl PrimRoute for PointInstancerRoute {
                 proto_cache
                     .entry(proto_idx)
                     .or_insert_with(|| bake_prototype(ctx, world, &read, proto_idx))
-                    .clone()
+                    .as_ref()
             } else {
                 None
             };
@@ -230,7 +230,7 @@ impl PrimRoute for PointInstancerRoute {
             match handles {
                 Some(Prototype::Hierarchy(parts)) => {
                     apply_handles(ctx, world, child, None);
-                    apply_hierarchy(ctx, world, child, &parts);
+                    apply_hierarchy(ctx, world, child, parts);
                 }
                 Some(Prototype::Mesh(handles)) => {
                     clear_hierarchy(world, child);
@@ -361,14 +361,14 @@ fn clear_hierarchy(world: &mut World, entity: Entity) {
     }
 }
 
-fn apply_handles(ctx: &RouteCtx, world: &mut World, entity: Entity, handles: Option<ProtoHandles>) {
+fn apply_handles(ctx: &RouteCtx, world: &mut World, entity: Entity, handles: Option<&ProtoHandles>) {
     let mut e = world.entity_mut(entity);
     e.remove::<bevy::camera::primitives::Aabb>();
     if let Some((mesh, material, warnings, subsets)) = handles {
-        e.insert((Mesh3d(mesh), MeshMaterial3d(material)));
+        e.insert((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
         if warnings.is_empty() { e.remove::<super::material::UsdMaterialWarning>(); }
         else { e.insert(super::material::UsdMaterialWarning(warnings.join("; "))); }
-        super::subset::apply(world, entity, &subsets);
+        super::subset::apply(world, entity, subsets);
     } else {
         e.remove::<(Mesh3d, MeshMaterial3d<StandardMaterial>, super::material::UsdMaterialWarning)>();
         super::subset::SubsetRoute.remove(ctx, world, entity);
@@ -383,7 +383,7 @@ fn apply_hierarchy(ctx: &RouteCtx, world: &mut World, instance: Entity, parts: &
             .unwrap_or_else(|| world.spawn_empty().id());
         let parent = part.parent.as_ref().and_then(|path| next.get(path)).copied().unwrap_or(instance);
         world.entity_mut(entity).insert((UsdPrototypePart(part.path.clone()), part.transform, part.visibility, ChildOf(parent)));
-        apply_handles(ctx, world, entity, part.handles.clone());
+        apply_handles(ctx, world, entity, part.handles.as_ref());
         next.insert(part.path.clone(), entity);
     }
     for entity in previous.into_values() {

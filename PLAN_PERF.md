@@ -112,6 +112,30 @@ phases marked incomplete. Validation of an increment does not complete its phase
 
 ### Bounded point-instancer memory investigation (P6)
 
+**Prototype borrowing trial:** `route/instancer.rs` borrows the per-projection
+prototype descriptor and prepared subsets instead of cloning them for each point.
+Only handles inserted into ECS components are cloned; entity layout and authored
+instance identity are unchanged. The isolated real source
+`target/large-scenes/moana/island/usd/elements/isBeach/xgenInstances/xgFibers.usd`
+completes under the 24 GiB/no-swap cap. Five alternating fresh-process trials
+with profiling disabled gave CPU-open baseline milliseconds
+`1266.649,1276.789,1363.687,1287.003,1606.864` versus candidate
+`1175.044,1160.917,1163.485,1164.562,1232.143`: medians
+**1287.003 → 1164.562 ms (9.5% lower)**. Retain the slow baseline sample;
+do not present the best pair as the result. All ten rows retain 452,666 mesh
+entities, four meshes, 240 vertices, 11,520 vertex bytes and 5,568 index bytes.
+RSS after idle remains approximately 1.398 GB: this does not solve full-island
+memory exhaustion. Raw rows and peak RSS are in
+`target/perf/p6-prototype-borrow/{baseline,candidate}-pair-{1..5}.log`.
+This is an isolated CPU workload, not a full Moana or rendered-frame result.
+The release workspace/all-target Make gate passed 768 tests with 19 ignored,
+including all 18 instancer tests covering hierarchy, subsets, deformation,
+independent clocks, masks and stable IDs. The fresh Oxbo capture is byte-identical
+to the retained RGBA control (an unrelated-scene regression check, not an
+instancer-specific visual comparison). Validation artifacts are in the same
+directory. No idle-machine guarantee was established; repeat timings on a
+controlled host before using this result as release acceptance.
+
 **Evidence checked on 2026-09-17:**
 `target/perf/p6-instancer-ids/moana.log` records successful array decoding and ID
 validation, followed by instance-spawn progress at 1, 100,000, 200,000 and 300,000

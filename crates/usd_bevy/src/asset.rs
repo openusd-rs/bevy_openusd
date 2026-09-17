@@ -371,6 +371,8 @@ fn spawn_usd_scenes(world: &mut World) {
                 ));
                 instances.roots.insert(entity, InstanceRuntime {
                     asset: handle.id(), live, map, textures: SnapshotTextures(textures), sampled: current,
+                    purposes: world.get_resource::<crate::route::DisplayPurposes>().copied().unwrap_or_default(),
+                    defer_hidden: crate::route::residency::enabled(world),
                     subdivision_levels: crate::route::subdivision::current_levels(world),
                     curve_steps: crate::route::curves::current_geometry_key(world),
                     job,
@@ -560,8 +562,6 @@ fn continue_projections(world: &mut World, instances: &mut UsdInstances, budget:
         if let Some(previous) = previous_textures { world.insert_resource(previous); }
         if done {
             runtime.job = None;
-            // Projecting authored the initial read; the first sync starts clean.
-            let _ = runtime.live.drain_changes();
             if let Ok(mut e) = world.get_entity_mut(root) {
                 e.insert(UsdSceneState::Ready);
             }
@@ -598,6 +598,27 @@ def Xform "Old" {}
 
     fn instance_entity(world: &World, root: Entity, path: &str) -> Entity {
         world.non_send::<UsdInstances>().entity(root, path).unwrap()
+    }
+
+    #[test]
+    fn edits_during_sliced_loading_reach_the_completed_scene() {
+        let (mut world, handle) = instance_world();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::ZERO));
+        let root = world.spawn(UsdSceneRoot(handle)).id();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Loading));
+        let (path, entity) = world.non_send::<UsdInstances>().roots[&root].map.iter()
+            .find(|(path, _)| *path != "/").map(|(path, entity)| (path.to_owned(), entity)).unwrap();
+        let stage = world.non_send::<UsdInstances>().stage(root).unwrap().clone();
+        stage.create_attribute(openusd::sdf::path(&format!("{path}.xformOp:translate")).unwrap(), "double3").unwrap()
+            .set_at(openusd::sdf::Value::Vec3d([7.0, 0.0, 0.0].into()), openusd::usd::TimeCode::new(0.0)).unwrap();
+        stage.create_attribute(openusd::sdf::path(&format!("{path}.xformOpOrder")).unwrap(), "token[]").unwrap()
+            .set(openusd::sdf::Value::TokenVec(vec!["xformOp:translate".into()])).unwrap();
+        for _ in 0..8 { spawn_usd_scenes(&mut world); }
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        assert_eq!(instance_entity(&world, root, &path), entity);
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 7.0);
+        assert!(!world.non_send::<UsdInstances>().roots[&root].live.has_changes());
     }
 
     #[test]
@@ -1384,6 +1405,69 @@ def Sphere "Model" (
     #[ignore = "requires native filesystem events"]
     fn native_file_watcher_reloads_layers_textures_and_recovers() {
         exercise_native_file_watcher(false);
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_updates_deferred_mesh_dependencies() {
+        use crate::route::residency::{DeferHiddenMeshes, UsdDeferredMesh};
+        let directory = tempfile::tempdir().unwrap();
+        let layer = directory.path().join("mesh.usda");
+        let geometry = |size: u32| format!(r#"#usda 1.0
+def Xform "Hidden" {{
+    token visibility = "invisible"
+    def Mesh "M" {{
+        point3f[] points = [(0,0,0),({size},0,0),(0,{size},0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+        uniform token subdivisionScheme = "none"
+    }}
+}}
+"#);
+        std::fs::write(directory.path().join("root.usda"), "#usda 1.0\n(subLayers = [@mesh.usda@])\n").unwrap();
+        std::fs::write(&layer, geometry(1)).unwrap();
+        let mut app = App::new();
+        app.register_asset_source(bevy::asset::io::AssetSourceId::Default, crate::watcher::file_source(directory.path()));
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: directory.path().to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true), ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_resource::<DeferHiddenMeshes>();
+        app.finish();
+        app.cleanup();
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("root.usda");
+        let roots = [0.0, 10.0].map(|current| app.world_mut()
+            .spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Hidden/M"));
+        let revisions = roots.map(|root| app.world().get::<UsdSceneInstance>(root).unwrap().revision);
+        for entity in entities {
+            assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+            app.world_mut().entity_mut(entity).insert(Name::new("runtime marker"));
+        }
+        std::fs::write(&layer, geometry(7)).unwrap();
+        tick_until(&mut app, |world| roots.iter().zip(revisions).all(|(root, previous)|
+            world.get::<UsdSceneInstance>(*root).is_some_and(|instance| instance.revision != previous)
+                && world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        for (root, entity) in roots.into_iter().zip(entities) {
+            assert_eq!(instance_entity(app.world(), root, "/Hidden/M"), entity);
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime marker");
+            assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+        }
+        let stage = app.world().non_send::<UsdInstances>().stage(roots[0]).unwrap().clone();
+        stage.attribute("/Hidden.visibility").unwrap().set(openusd::sdf::Value::Token("inherited".into())).unwrap();
+        tick_until(&mut app, |world| world.get::<Mesh3d>(entities[0]).is_some());
+        let mesh = app.world().resource::<Assets<Mesh>>()
+            .get(&app.world().get::<Mesh3d>(entities[0]).unwrap().0).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else { panic!("mesh positions missing") };
+        assert!(points.iter().any(|point| point[0] == 7.0));
+        assert!(app.world().get::<Mesh3d>(entities[1]).is_none());
+        assert_eq!(app.world().get::<UsdInstanceTime>(roots[1]).unwrap().current, 10.0);
     }
 
     #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]

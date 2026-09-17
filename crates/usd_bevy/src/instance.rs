@@ -153,6 +153,8 @@ pub(crate) struct InstanceRuntime {
     pub map: PrimEntities,
     pub textures: SnapshotTextures,
     pub sampled: f64,
+    pub purposes: crate::route::DisplayPurposes,
+    pub defer_hidden: bool,
     /// The projection still running for this root, spread over frames.
     pub job: Option<crate::live::ProjectionJob>,
     pub subdivision_levels: Option<u32>,
@@ -317,7 +319,23 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
         let old_textures = world.remove_resource::<SnapshotTextures>();
         world.insert_resource(StageTime { current });
         world.insert_resource(runtime.textures.clone());
+        let defer_hidden = crate::route::residency::enabled(world);
+        if defer_hidden != runtime.defer_hidden {
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
+            runtime.defer_hidden = defer_hidden;
+        }
         apply_changes(world, &runtime.live, &mut runtime.map);
+        let purposes = world.get_resource::<crate::route::DisplayPurposes>().copied().unwrap_or_default();
+        if purposes != runtime.purposes {
+            let registry = world.resource::<SchemaRegistry>().clone();
+            for (path, entity) in runtime.map.iter() {
+                if let Ok(path) = openusd::sdf::path(path) {
+                    registry.patch_prim(&runtime.live.stage, &path, world, entity, &["purpose"]);
+                }
+            }
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
+            runtime.purposes = purposes;
+        }
         if subdivision_levels != runtime.subdivision_levels {
             crate::route::subdivision::refresh_geometry(world, &runtime.live.stage, &runtime.map);
             runtime.subdivision_levels = subdivision_levels;
@@ -335,6 +353,7 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
                 }
             }
             runtime.sampled = current;
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
         }
         world.remove_resource::<StageTime>();
         world.remove_resource::<AnimatedPrims>();

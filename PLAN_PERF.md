@@ -1,8 +1,51 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3/P5–P7 in progress; P4 attribution underway; P8 planned**.
+Planned against `1dd38c8` on 2026-09-16; reconciled against `9ea5ced` and the
+working tree on 2026-09-17. Status: **P0–P7 in progress; P4 opt-in only; P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
+
+## Next implementation checkpoints
+
+This is the performance implementation plan, not a claim that its phases are
+finished. Preserve the detailed evidence below and execute in this order:
+
+1. **Finish validating the opt-in P4 prototype.** The initial implementation in
+   `crates/usd_bevy/src/route/residency.rs`, `route/mod.rs`, `live.rs`, `asset.rs`
+   and `instance.rs` defer initially hierarchy-hidden built-in Mesh preparation.
+   The benchmark/capture examples expose `USD_DEFER_HIDDEN_MESHES=1`; eager mode
+   remains the control. The test ownership error (`Attribute::set` consumes its
+   handle) is corrected; `target/perf/p4-defer/tests.log` records 743 passing
+   workspace/all-target tests and 19 ignored. Initial Caldera timing and image
+   evidence is recorded under P4 below. Do not enable this feature by default yet.
+2. **Prove P4 correctness and benefit independently.** Cover ancestor visibility,
+   purpose, per-root clocks, hidden edits/reloads, variant retention, demanded
+   prototypes and custom-route fallback. Compare eager/deferred Caldera RGBA
+   under identical settings and retain at least five alternating fresh-process
+   runs per mode (Caldera CPU results below). Record route times, total CPU
+   loading, peak RSS and reveal latency.
+   Existing attribution identifies roughly 15 seconds of hidden Caldera work,
+   not a guaranteed saving. Oxbo has almost no such work: use it as a regression
+   control, not evidence of this strategy's benefit.
+3. **Close P0 before claiming the 5× target.** Implement generation-specific
+   required-asset readiness through submitted rendering, and match camera,
+   purposes, time, textures, renderer settings and cache conditions with the
+   native comparator. CPU Ready, global pipeline readiness and screenshot
+   process exit are not interchangeable with a first complete frame.
+4. **Reprofile Oxbo separately.** Rank remaining stage open, validation,
+   geometry, deformation, texture and GPU preparation costs. Select the largest
+   measured avoidable component from P1–P3/P6/P7; do not assume Caldera's hidden
+   geometry strategy transfers. Keep each change independently measurable.
+5. **Only then expand scheduling and residency.** P5 requires bounded owned
+   inputs, revision-checked publication and cancellation, not shared mutable
+   Stage access. The rejected subset-worker trial below is not evidence that
+   all parallel preparation is futile, but repeating it without a new profile
+   is not a priority. P8 must preserve asset-local transactional reload.
+
+Acceptance for every increment: a passing Make-based workspace gate, targeted
+behavior checks, retained raw before/after measurements and visual evidence
+where render output can change. Commit only validated changes; leave incomplete
+phases marked incomplete. Validation of an increment does not complete its phase.
 
 ## Objective
 
@@ -135,7 +178,7 @@ Update status only with linked evidence and a commit.
 | P1 | Cache subset products before construction | P0 attribution | M–L / medium | IN PROGRESS |
 | P2 | Cache deformation discovery and preparation | P0 attribution | L / high | IN PROGRESS |
 | P3 | Separate validation from discarded geometry decoding | P0 attribution | M–L / high | IN PROGRESS |
-| P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | ATTRIBUTION ONLY |
+| P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | OPT-IN; INITIAL GATES PASS |
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | SCHEDULING IN PROGRESS |
 | P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | LOOKUP IN PROGRESS |
 | P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | MANIFEST IN PROGRESS |
@@ -442,6 +485,46 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+Mesh-read increment: the five inherited primvar owner searches now walk each
+ancestor together, obtaining one prim handle per level instead of one per
+attribute. Owner resolution preserves local/constant inheritance, blocking and
+fallback behavior; value reads still evaluate both UV candidates and propagate
+errors. The batching is local to one mesh read, with no cross-stage or cross-edit
+memo. The single-owner reader remains the independent test reference and serves
+other callers.
+
+Verification: the release workspace/all-targets gate passes 739 tests in 34
+suites, 19 ignored. A nested hierarchy test compares batched and separate walks
+for missing, blocked, local and nonconstant inherited values before/after a
+metadata edit; existing inherited geometry tests pass. Caldera CPU opens measured
+41.378 / 40.689 s, with mesh reads 5.644 / 5.682 s and unchanged read counts,
+decoded bytes, entities, assets and retained payloads. These are diagnostic runs,
+not a controlled speedup or first-frame result. Evidence is in
+`target/perf/read-owners/`. The capture is pixel-identical to the GPU-influence
+baseline, at 59.60 s process duration and 15,277,036 KiB peak RSS.
+
+Paired A/B follow-up: separately built `b20f599` and `cb39477` benchmark binaries
+were run in alternating before/after order, five separate processes per variant
+and asset, with identical profiling and 24 GiB/no-swap limits. The current source
+and normal benchmark binary were restored before measurement. Binary hashes,
+raw logs, per-run load/background-build snapshots and calculated results are in
+`target/perf/read-owners-ab/`.
+
+| CPU workload | Before median (range), s | After median (range), s |
+| --- | --- | --- |
+| Oxbo open | 3.135 (3.125–3.425) | 3.115 (3.105–3.122) |
+| Caldera open | 41.807 (41.338–46.756) | 41.670 (41.318–42.700) |
+| Caldera mesh reads | 5.814 (5.787–6.388) | 5.697 (5.651–5.722) |
+
+All entity, mesh, vertex and payload counts match across variants. The observed
+median open reductions are only 0.62% on Oxbo and 0.33% on Caldera. Other project
+builds occurred during some samples; this is not an isolated-machine experiment
+or statistical evidence of an end-to-end speedup. Retain the local reduction in
+owner-walk work, but do not use the earlier 53-to-41-second diagnostic difference
+as its benefit. These results make further owner-walk micro-optimization a low
+priority: focus subsequent work on duplicate preparation before decoding,
+bounded parallel preparation and the still-missing complete-frame gate.
+
 Snapshot-proof increment (2026-09-17): `UsdSource` retains a bounded shared
 default-composition validation stamp keyed by its exact source revision.
 Successful dependency probes record it only when no dependencies are missing;
@@ -490,6 +573,160 @@ pass. Counters show removed duplicate array decoding and manifest reuse without
 skipping necessary composition. Benchmark editor and asset-instance paths separately.
 
 ## P4 — Separate logical prims from initial geometry residency
+
+Initial opt-in increment, 2026-09-17: `route::residency::DeferHiddenMeshes`
+defers Mesh/Material/Skin/Subdivision/Subset routes for initially hidden Mesh
+prims in the built-in registry. Logical hierarchy and non-render metadata remain
+projected. Promotion reads the current stage, clock and settings. Resident meshes
+are not evicted. Registering custom routes disables deferral; removing the
+resource materializes pending geometry. Both LiveStage and asset-instance paths
+have promotion hooks; instance roots now also respond to DisplayPurposes changes.
+
+Validation: 743 workspace/all-target release tests passed, 19 ignored. New cases
+cover independent roots, hidden geometry edits, clock changes before reveal,
+on/off/on handle retention, disabling the feature, purpose changes and initial
+custom-route fallback. Make-built benchmark and capture examples expose the
+opt-in environment flag; no default behavior is changed.
+
+Same-binary diagnostic CPU comparison (two opens per mode, deferred then eager):
+
+| Caldera | Eager | Deferred |
+| --- | --- | --- |
+| CPU open samples | 42.297 / 40.652 s | 26.089 / 24.272 s |
+| Retained mesh entities | 50,125 | 8,111 |
+| Retained subset entities | 23,291 | 209 |
+| Unique mesh assets | 2,509 | 188 |
+
+These samples show approximately 16 seconds less initial CPU work, not a
+five-process alternating acceptance benchmark or first-complete-frame result.
+The deferred offscreen capture completed in 41.18 s with peak RSS 15,258,772 KiB;
+its RGBA is byte-identical to `target/perf/p4-cpu/caldera.rgba` (SHA-256
+`02377dd93ade5d9955a330b1e49d80822671c089d256df4fe4cb77712f56117f`).
+The inspected image retains the existing baseline's color/noise artifacts;
+identity proves non-regression for this view, not Blender fidelity. Raw logs and
+images are in `target/perf/p4-defer/`.
+Oxbo deferred CPU opens were 3.558 / 3.106 s; this is a smoke measurement,
+not an established improvement or a matched regression bound.
+
+Follow-up regression gate: 746 workspace/all-target release tests pass, with
+19 ignored (`target/perf/p4-defer/reload-tests.log`). A source asset replacement
+while hidden preserves the matching entity and its runtime component, performs
+no mesh preparation, then reveals the replacement geometry. Runtime registration
+of a custom route materializes existing deferred meshes before that route runs.
+Animated ancestor visibility promotes at the current instance clock and retains
+residency when the clock returns to the hidden sample.
+
+Alternating fresh-process Caldera CPU comparison: five processes per mode,
+one open each, same binary, round order E/D, D/E, E/D, D/E, E/D. All ten runs
+completed under the 24 GiB/no-swap cap; raw logs and binary/environment identity
+are retained in `target/perf/p4-defer/paired/`.
+
+| Mode | Median CPU open | Range | Peak RSS range, KiB |
+| --- | --- | --- | --- |
+| Eager | 41.880 s | 41.542–42.221 s | 6,093,836–6,169,256 |
+| Deferred | 25.316 s | 25.079–25.762 s | 5,293,364–5,346,416 |
+
+Median CPU loading decreased 39.6% (1.65× faster) in this comparison. OS page
+caches were not flushed; desktop/background processes remained active, but no
+concurrent Cargo/rustc build was observed at the recorded checkpoint. This is
+a repeated warm-filesystem CPU result, not cold-disk, GPU first-frame, native
+reference or reveal-latency acceptance. It does not establish the ≤5× target.
+
+Native filesystem follow-up: an actual write to a referenced sublayer now has
+an explicit deferred-mesh regression test. Two independently clocked roots retain
+their matching entities/runtime components and remain unprepared through reload;
+revealing one root produces the new geometry while the other stays deferred.
+The test passed with `--features file_watcher`; a filtered invocation without
+that feature runs zero tests and is not evidence. All four native watcher tests
+passed together, including existing missing-root recovery, removed-dependency
+invalidation and layer/texture recovery. The feature-enabled library suite
+passed 575 tests with 28 ignored; the ordinary workspace/all-target suite passed
+746 with 19 ignored. Logs: `target/perf/p4-defer/native-deferred-watcher.log`,
+`native-all-watchers.log`, `watcher-feature-tests.log` and `watcher-build-tests.log`.
+
+```sh
+CARGO_BUILD_JOBS=4 make test CARGO='cargo --offline' \
+  APP_TARGET='--release --workspace --lib --features file_watcher native_file_watcher_ -- --ignored --nocapture'
+```
+
+Deferred preparation latency increment: `editor_benchmark` accepts
+`USD_BENCH_PREWARM_HIDDEN=1` together with `USD_DEFER_HIDDEN_MESHES=1`. After
+measuring initial open and idle, it removes the deferral resource and times one
+update preparing all remaining deferred meshes. It reports before/after pending
+counts, mesh-asset counts, RSS and separate `deferred-prewarm` route counters,
+and errors if any markers remain. CSV asset payloads then describe the post-
+prewarm state; initial open/idle timing remains separate. This measures the
+all-deferred CPU workload, not a particular visibility edit or GPU reveal frame.
+
+The first Caldera runs exposed randomized HashMap promotion order: preparation
+took 28.278 / 28.356 s and ended with 3,315 / 3,390 mesh assets. Sorting promotion
+paths in namespace order reduced this to 17.023 / 16.841 s, with 2,854 mesh assets
+in both runs. MeshRoute application dropped from about 18.6 s to 7.9 s in the
+first respective samples. All runs moved 18,932 deferred markers to zero and
+ended with 50,125 mesh entities / 23,291 subset entities. The locality improvement
+does not eliminate retained copies or establish image equivalence for every
+hidden asset. These are two-run diagnostics, not the paired startup benchmark.
+
+746 workspace/all-target tests pass (19 ignored). Logs are retained under
+`target/perf/p4-prewarm/`: `caldera.log` before ordering, `caldera-ordered.log`
+after ordering, and `ordered-tests.log`. Preparing every hidden mesh still
+blocks for about 17 seconds: bounded preparation/publication remains necessary;
+do not characterize deferred startup as eliminating the work.
+
+Remaining before default enablement: variant/dependency closure cases,
+deferred failed-save recovery and visibility-specific reveal latency. Direct application edits
+to Bevy Visibility outside USD are not currently a promotion trigger. Non-Mesh
+geometry remains eager, and promotion is synchronous; bounded asynchronous
+states/cancellation are not implemented by this increment.
+
+Rejected follow-up: a temporary per-promotion `ProjectionMaterials` memo passed
+747 experimental workspace/all-target tests (19 ignored), including shared
+material handles and restoration of a surrounding stage's memo. Caldera's
+MaterialRoute cost remained 1.225 / 1.239 s, versus roughly 1.235 s in the first
+ordered baseline sample. Full prewarm was 16.692 / 16.788 s versus 17.023 /
+16.841 s; these two-run differences do not establish a useful gain. The memo
+starts after binding resolution and cannot skip that prerequisite. The trial
+was removed rather than adding unproven caching complexity. The rejected patch,
+raw measurements, experimental tests and restored benchmark build log are in
+`target/perf/p4-promotion-materials/`. Existing projection-job material caches
+remain unchanged; this result does not reject their use or prove a memo could
+never help scenes with different material workloads.
+
+CPU attribution: `ProjectionVisibilityTimings` splits matching-route application
+time by hierarchy visibility at route entry. It walks `Visibility`/`ChildOf`
+without waiting for transform/visibility propagation, honors explicit Visible
+overrides and missing visibility boundaries, and reports unknown for missing
+entities or chains exceeding 128 levels. Classification time is outside route
+application timing but still contributes to wall time. Early metadata routes
+may run before their own VisibilityRoute; use the mesh/skin/subset rows below
+for geometry demand, not sums of every visible/hidden row. Frustum/shadow demand
+and final submitted-frame visibility are not measured by this probe.
+
+Enable with `USD_PROFILE_VISIBILITY=1` alongside `USD_PROFILE_ROUTES=1` in the
+editor benchmark, or on its own in `viewer_capture`. Two diagnostic Caldera
+opens found 18,932 hierarchy-hidden mesh prims versus 224 visible mesh prims:
+
+| Caldera route | Hidden application samples, s | Visible application samples, s |
+| --- | --- | --- |
+| MeshRoute | 8.856 / 8.698 | 2.353 / 2.068 |
+| SkinRoute | 3.468 / 3.334 | 0.007 / 0.007 |
+| SubsetRoute | 2.956 / 2.883 | 0.017 / 0.017 |
+
+The hidden contribution across these three sequential routes is about 15.28 /
+14.91 s, not a promised saving: some deferred data may still be dependencies of
+demanded content, and reveal/reload work remains mandatory. Visible shape-route
+prims add 4,187 entities, so the 224 mesh-prim count is not the capture's total
+visible-mesh-entity count. Oxbo has only three hidden mesh prims and about 0.15 ms
+of hidden work in these routes; this strategy will not materially improve Oxbo.
+
+The offscreen Caldera asset-instance path independently reports 14.737 s hidden
+across these routes and is pixel-identical to the owner-walk baseline. Its capture
+process duration is 58.64 s, not first-frame time. Full workspace release tests
+pass (740 tests, 19 ignored); inheritance/override/depth and timing-bucket tests
+cover the profiler. Evidence is in `target/perf/p4-cpu/`. This promotes authored-
+visibility/purpose deferral ahead of another narrow worker experiment for Caldera,
+while preserving the dependency, reveal, retained-variant and custom-route gates
+below. No geometry deferral is enabled by this profiling increment.
 
 Attribution increment: embedded-viewer and offscreen capture metadata now group
 unique retained mesh assets into visible-only, hidden-only, shared and
@@ -564,6 +801,31 @@ old eager mesh counts. Keep an eager mode as a correctness/performance control.
 
 ## P5 — Add bounded pure preparation jobs
 
+Rejected scoped-subset worker trial: an opt-in dedicated pool split large
+parents' subsets in ordered batches, with 1/2/4/8-thread configurations and a
+64 MiB estimated scratch/output limit. Workers borrowed only immutable mesh and
+face-index data; USD/material reads and asset insertion stayed serial, and every
+scope joined before publication. Small/oversized batches fell back to serial.
+740 experimental workspace tests passed, including serial/worker attribute,
+index and morph parity and budget fallback. Caldera counts stayed unchanged.
+
+| Threads | CPU open samples, s | SubsetRoute samples, s | Worker jobs/run | Peak estimated batch bytes |
+| --- | --- | --- | --- | --- |
+| 1 (serial) | 42.092 / 40.904 | 2.934 / 2.871 | 0 | 0 |
+| 2 | 41.684 / 40.801 | 2.943 / 2.915 | 2,686 | 17,390,922 |
+| 4 | 43.070 / 40.949 | 3.132 / 2.917 | 3,120 | 34,781,844 |
+| 8 | 42.853 / 41.542 | 3.153 / 3.003 | 3,144 | 34,781,844 |
+
+There is no useful scaling signal: more workers do not consistently reduce
+subset time or total CPU opening. These two-sample diagnostic runs are not
+acceptance statistics. The production changes and experimental environment
+switch were removed; the normal benchmark/capture binaries were rebuilt.
+The patch, build/test logs and raw measurements are archived under
+`target/perf/p5-subset-workers/`. No scoped subset pool is shipped. This trial
+does not validate an asynchronous pipeline: further worker work should overlap
+owned preparation across prims, rather than joining a tiny batch per mesh, and
+must still meet revision, cancellation, memory and custom-route gates below.
+
 Scheduling increment: finite initial-projection budgets are now shared across
 loading roots. Newly opened roots enqueue their projection instead of taking a
 full slice immediately and then another in the continuation pass. The pass
@@ -616,6 +878,16 @@ animated transforms and verifies their final values and subsequent clock updates
 The release workspace/all-targets gate passes 737 tests in 34 suites, 19 ignored;
 evidence is in `target/perf/p5-clock/`. This checks clock coherence, not asynchronous
 worker cancellation or a loading-speed improvement.
+
+Pending-edit correction: completing initial projection no longer drains and
+discards its `LiveStage` change queue. The ordinary instance synchronization pass
+consumes changes made while loading and updates already-projected entities. The
+regression test edits a projected transform while another prim remains queued,
+then verifies the Ready scene contains the edit on the same entity and the change
+queue has been consumed. The release workspace/all-targets gate passes 738 tests
+in 34 suites, 19 ignored; evidence is in `target/perf/p5-edits/`. This preserves
+live-stage edits across projection slices; it is not the planned asynchronous
+revision/cancellation protocol or a new performance result.
 
 **Scope:** `live.rs`, `route/mod.rs`, geometry preparation modules and scheduler
 helpers within `crates/usd_bevy/src/`; do not rewrite upstream Stage threading.

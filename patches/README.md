@@ -5,7 +5,22 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Shared source snapshots
+
+`openusd-shared-asset-bytes.patch` adds an optional immutable byte snapshot to
+`ar::Asset` and a shared-byte decode method to `FileFormat`. Existing assets
+default to ordinary reads and existing formats default to a copy. USDC retains
+the shared buffer with normal validation; `.usd` dispatch selects by content.
+The Bevy source resolver exposes its immutable snapshots through this seam.
+Filesystem assets still copy their bytes instead of lazily observing disk edits.
+
 ## Traversal ancestry queries
+
+`openusd-shared-path-text.patch` stores private `SdfPath` text in `Arc<String>`.
+Clones share immutable text; derived paths allocate their own text. Equality,
+ordering, hashing, validation and string serialization retain value semantics.
+This is not a global interner or a composition-result cache. Owned-string
+construction retains the String buffer in shared immutable storage.
 
 `openusd-traversal-parent-status.patch` carries a population-epoch witness for
 default-matching parents during `DEFAULT_PROXIES` traversal. Under unchanged

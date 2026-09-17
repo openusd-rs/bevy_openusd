@@ -497,6 +497,7 @@ impl Seek for SharedAsset {
 
 impl Asset for SharedAsset {
     fn size(&self) -> io::Result<u64> { Ok(self.0.get_ref().len() as u64) }
+    fn shared_bytes(&self) -> Option<Arc<[u8]>> { Some(self.0.get_ref().clone()) }
 }
 
 impl SourceResolver {
@@ -647,6 +648,44 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn binary_snapshots_share_bytes_and_keep_edits_isolated() {
+        use super::*;
+        use openusd::sdf::{FileFormat, LayerRegistry, Value};
+        let text = b"#usda 1.0\ndef Xform \"Root\" { double value = 2 }";
+        let data = LayerRegistry::read_bytes(text.as_slice().into(), "source.usda").unwrap();
+        let mut output = Cursor::new(Vec::new());
+        openusd::usdc::UsdcFileFormat.write(data.as_ref(), &mut output).unwrap();
+        let bytes: Arc<[u8]> = output.into_inner().into();
+        let digest = blake3::hash(&bytes);
+        let mut asset = SharedAsset(Cursor::new(bytes.clone()));
+        asset.seek(SeekFrom::End(0)).unwrap();
+        let snapshot = asset.shared_bytes().unwrap();
+        assert!(Arc::ptr_eq(&bytes, &snapshot));
+        let owners = Arc::strong_count(&bytes);
+        let mut first = LayerRegistry::read_shared_bytes(snapshot, "first.usd").unwrap();
+        assert_eq!(Arc::strong_count(&bytes), owners);
+        let second = openusd::usdc::UsdcFileFormat.read_shared_bytes(bytes.clone(), "second.usdc").unwrap();
+        let path = openusd::sdf::path("/Root.value").unwrap();
+        first.set_field(&path, "default", Value::Double(7.0));
+        assert_eq!(first.get_field(&path, "default").unwrap().into_owned(), Value::Double(7.0));
+        assert_eq!(second.get_field(&path, "default").unwrap().into_owned(), Value::Double(2.0));
+        assert_eq!(blake3::hash(&bytes), digest);
+        drop((first, second, asset));
+        assert_eq!(Arc::strong_count(&bytes), 1);
+        for name in ["shared.usd", "shared.usdc"] {
+            let source = UsdSource::snapshot(name, bytes.as_ref().to_vec()).unwrap();
+            let first = source.open_stage().unwrap();
+            assert!(Arc::strong_count(&source.bytes) >= 3);
+            first.attribute("/Root.value").unwrap().set(Value::Double(9.0)).unwrap();
+            let second = source.open_stage().unwrap();
+            assert_eq!(second.attribute("/Root.value").unwrap().get::<f64>().unwrap(), Some(2.0));
+        }
+        let text: Arc<[u8]> = Arc::from(text.as_slice());
+        assert!(LayerRegistry::read_shared_bytes(text, "text.usd").unwrap().has_spec(&openusd::sdf::path("/Root").unwrap()));
+        assert!(LayerRegistry::read_shared_bytes(Arc::from(b"PXR-USDC".as_slice()), "broken.usd").is_err());
+    }
+
     #[test]
     fn property_classification_preserves_schemas_masks_and_edits() {
         use super::*;

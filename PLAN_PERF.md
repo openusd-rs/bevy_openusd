@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `fc5aabe` and the
+Planned against `1dd38c8` on 2026-09-16; reconciled against `2d015e4` and the
 working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
@@ -14,22 +14,23 @@ research, measurements, rejected experiments and acceptance requirements.
 
 - **Implemented, not full acceptance:** parsed-root reuse, retained deferred
   queues, traversal-local parent status, reduced repeated ancestry queries, and
-  batched property classification. The latest P3 evidence records 763 passing tests,
-  19 ignored, 14 separately run native export checks and an unchanged Oxbo RGBA
-  capture. Logs are under `target/perf/p3-inherited-status/`.
+  batched property classification and scoped decoded-material reuse. The latest
+  material-cache gate records 766 passing tests, 19 ignored and unchanged Oxbo
+  and Caldera RGBA captures. Logs are under `target/perf/p1-material-reads/`.
 - **Still unresolved:** matched first-complete-frame measurement and the ≤5×
-  ratio. Moana still times out: the latest 180-second full-open attempt is not a
-  successful load. Keep hidden-mesh deferral opt-in.
-- **Next CPU investigation:** target material resolution and animation discovery,
-  now attributed by bounded in-update progress reports. At Moana's last sampled
-  229,376 prims, material projection takes 27.964 s; animation discovery spends
-  13.431 s on authored sample checks and 12.961 s on material animation queries.
-  Split binding lookup, shader-network reads and packing inside
-  `crates/usd_bevy/src/route/material.rs::resolve_material`, and measure distinct
-  binding/time/sidedness keys before choosing a cache. Initial live projection
-  does not install the existing `ProjectionMaterials` job memo. Reuse must reject
-  stale results after edits, preserve warnings and handle instance-local opinions;
-  do not simply extend that memo's lifetime without proving those properties.
+  ratio. Moana's latest traced attempt is killed at the 24 GiB memory cap after
+  approximately 196 seconds while expanding the 21-million-point ground cover.
+  This is a confirmed memory-limit failure, not a completed load or timeout.
+  Keep hidden-mesh deferral opt-in.
+- **Latest bounded Moana outcome:** after `57173b1`, fibers, shells and subsequent
+  beach instancers complete. `/island/isBeach/geometry/xgGroundCover/instancer`
+  contains 21,357,212 points and reaches 500,000 expanded points before OOM,
+  with 14,282,235 live entities. Compact rendering is required; the P7 immutable
+  byte-sharing increment improves source residency but is not its substitute.
+  Follow the bounded investigation below; do not raise the cap or omit content.
+- **Acceptance blocker:** finish P0's revision-specific submitted-frame gate and
+  matched native runs for Oxbo/Caldera. Headless CPU improvements do not establish
+  the ≤5× rendered-frame target.
 - **Property-source investigation:** profile redundant existence,
   sample-source and spec-stack walks in
   `vendor/openusd/crates/openusd/src/pcp/index_cache.rs`. Count-only sample queries
@@ -67,7 +68,9 @@ establish the ≤5× rendered-frame target.
 ## Next implementation checkpoints
 
 This is the performance implementation plan, not a claim that its phases are
-finished. Preserve the detailed evidence below and execute in this order:
+finished. The immediate handoff and the memory investigation below take precedence
+over this earlier checkpoint sequence. Preserve the detailed evidence; remaining
+P4 validation is required before default enablement, not a prerequisite for P0.
 
 1. **Finish validating the opt-in P4 prototype.** The initial implementation in
    `crates/usd_bevy/src/route/residency.rs`, `route/mod.rs`, `live.rs`, `asset.rs`
@@ -105,6 +108,209 @@ Acceptance for every increment: a passing Make-based workspace gate, targeted
 behavior checks, retained raw before/after measurements and visual evidence
 where render output can change. Commit only validated changes; leave incomplete
 phases marked incomplete. Validation of an increment does not complete its phase.
+
+### Bounded point-instancer memory investigation (P6)
+
+**Current decisive attribution after `57173b1`:**
+`target/perf/p3-shared-sdf-paths/moana-region.log` shows that shells, seaweed,
+pebbles, small shells and palm debris complete before the fatal expansion at
+`/island/isBeach/geometry/xgGroundCover/instancer`. Ground cover contains
+**21,357,212 points and 24 prototypes**. Its decoded position/orientation/scale/
+index arrays occupy 256,286,544 / 341,715,392 / 256,286,544 / 85,428,848 bytes.
+Between 400,000 and 500,000 spawned points, live entity count rises from
+13,882,235 to 14,282,235: four entities per point in this region. The remaining
+20.86 million points cannot fit the existing representation under 24 GiB.
+`moana-region-scope.log` confirms OOM at 196.349 seconds wall time and the same
+25,769,803,776-byte cap. This is later content than the pre-sharing failure, not
+evidence that sharing failed to save memory. Initial projection RSS in this run
+is 14,636,523,520 bytes, versus approximately 19.07 GB in the earlier diagnostic.
+
+**Next architectural increment:** compact point-instancer rendering, not another
+per-instance scratch tweak. Preserve the existing expanded-entity route as the
+compatibility path while building an explicit opt-in compact path. Do not enable
+the compact route until it actually renders its supported prototypes; a data-only
+component that silently omits geometry is not an implementation of this feature.
+
+1. Define shared prototype layout plus per-instancer sampled arrays, stable point
+   IDs and masks, independent root/time ownership, and a mapping for picking and
+   authoring. Private render storage must not replace the composed USD stage.
+2. Render supported static mesh/hierarchy prototypes through Bevy PBR with compact
+   transform/ID buffers. Preserve prototype local transforms, material subsets,
+   normals/tangent handedness and shadows; retain the expanded path for unsupported
+   deformation or custom routes. Avoid creating a full ECS subtree per point.
+3. Bound CPU/GPU upload batches by bytes and support cancellation/revision-checked
+   publication. Camera culling may avoid offscreen draws, but must not discard
+   logical points or change authored masks. Do not claim a complete frame from a
+   partially uploaded required instance set.
+4. Provide an explicit expanded-entity compatibility/inspection path; preserve
+   runtime components and IDs for existing expanded instances across edits. Do
+   not silently change the public `UsdInstance`/`UsdPrototypePart` query contract.
+5. Gate the route on matched expanded/compact captures for simple, nested,
+   multi-material, masked and animated-array cases, plus independent roots,
+   picking, failed reload and transactional replacement. Only then opt the viewer
+   into it and rerun the real ground-cover asset with the same memory cap.
+
+**Separate source-side opportunity:** `SourceResolver::open_asset` retains
+`Arc<[u8]>` file snapshots for editor reload safety, while the default file-format
+read and ambiguous `.usd` dispatch call `read_all` into another owned buffer.
+A shared immutable-byte decode seam could avoid duplication for USDC without
+reading mutable disk contents lazily. Scope such a change to explicit immutable
+snapshots with a copy fallback for existing/custom resolvers, and verify edits,
+exports and reload isolation. This can improve source residency but cannot solve
+the 21-million-point entity expansion on its own.
+
+**Full-stage retest after shared keys:** the existing fibers failure is passed,
+but the following shells instancer exhausts the same 24 GiB/no-swap budget.
+`target/perf/p6-shared-paths/moana.log` records the fibers PointInstancerRoute
+completion, then successful decoding/ID validation for 70,972 shells and one
+spawn-progress checkpoint. On entry to shells expansion, RSS is
+25,725,472,768 bytes, live entity count is 7,106,420 and inline table component
+capacity is 1,617,895,892 bytes. `moana-scope.log` confirms `Result=oom-kill`,
+25,769,803,776-byte peak and 190.188 seconds wall time (188.915 seconds CPU).
+This is not a timeout or complete load. Retain the successful isolated memory
+result, but do not extrapolate it to full-scene acceptance. Broader source/ECS
+retained-memory attribution and a compact-instancing design are still required;
+another small scratch reduction is not an adequate Moana strategy.
+
+**ECS attribution:** opt-in table diagnostics in `route/profiling.rs` now sum
+live table rows independently of allocated entity-index capacity, and rank
+tables by component layout size times capacity. The isolated fibers workload
+starts expansion at 73 live entities and finishes traversal at **2,263,400**,
+with 4,194,304 allocated indices. Its dominant tables contain 1,357,986 hierarchy
+nodes, 452,662 mesh nodes and 452,662 instance roots. Native `usdcat` inspection
+of the needle prototype confirms three nested Xforms above its Mesh: this is
+five ECS entities per point, not merely one mesh entity per point.
+Table component capacity accounts for **558,902,016 bytes**; process RSS grows
+from approximately 92 MB before expansion to 1.397 GB afterwards. The estimate
+excludes component-owned heaps, change ticks, entity metadata, archetypes, sparse
+sets and allocator overhead; do not treat it as total ECS allocation or infer
+that every remaining byte belongs to hierarchy strings. Evidence:
+`target/perf/p6-ecs-layout/fibers.log`. Release builds lack general debug type
+names, so diagnostics explicitly identify common scene components by TypeId and
+retain component IDs for unknown types without enabling Bevy debug features.
+`fibers-labeled.log` confirms the three dominant table layouts with release-safe
+component labels. The Make release workspace/all-target gate passed 768 tests,
+19 ignored; the benchmark build passed. Profiling remains opt-in and the extra
+table scans are diagnostic overhead, not a production loading optimization.
+
+**Shared path-key candidate:** prototype descriptors and private per-instance
+reconciliation maps now use `Arc<str>` keys. Public `UsdPrototypePart(String)`
+values and all hierarchy entities remain unchanged; path-content matching still
+preserves entities across new descriptor allocations on re-projection. Existing
+independent-animation coverage additionally checks shared key allocation both
+initially and after clock changes. No global path interner or cross-stage state
+was introduced.
+
+Five alternating fresh-process isolated fibers runs, profiling disabled, record
+baseline RSS-after-idle bytes
+`1396862976,1397968896,1398149120,1398226944,1398407168` versus candidate
+`1206505472,1206226944,1206403072,1206472704,1206349824`. Median retained RSS falls
+**1,398,149,120 → 1,206,403,072 bytes**, saving **191,746,048 bytes (13.7%)**.
+Median process peak RSS falls **1,364,044 → 1,176,904 KiB**. Baseline CPU-open
+milliseconds `1145.170,1256.137,1149.910,1147.531,1147.403` versus candidate
+`1157.356,1115.445,1160.340,1130.362,1123.147` overlap; do not claim a reliable
+CPU speedup from this trial. All ten geometry/asset/payload rows match. Logs and
+saved binaries: `target/perf/p6-shared-paths/`. This is an isolated memory result,
+not evidence that full Moana now fits or that the submitted-frame target is met.
+The Make release workspace/all-target gate passed 768 tests, 19 ignored; benchmark
+and capture builds passed. Matched baseline/candidate captures of
+`assets/point_hierarchy.usda` at time zero are byte-identical in RGBA. This checks
+instancer-specific output, while the clock/reconciliation tests cover updates.
+
+**Prototype borrowing trial:** `route/instancer.rs` borrows the per-projection
+prototype descriptor and prepared subsets instead of cloning them for each point.
+Only handles inserted into ECS components are cloned; entity layout and authored
+instance identity are unchanged. The isolated real source
+`target/large-scenes/moana/island/usd/elements/isBeach/xgenInstances/xgFibers.usd`
+completes under the 24 GiB/no-swap cap. Five alternating fresh-process trials
+with profiling disabled gave CPU-open baseline milliseconds
+`1266.649,1276.789,1363.687,1287.003,1606.864` versus candidate
+`1175.044,1160.917,1163.485,1164.562,1232.143`: medians
+**1287.003 → 1164.562 ms (9.5% lower)**. Retain the slow baseline sample;
+do not present the best pair as the result. All ten rows retain 452,666 mesh
+entities, four meshes, 240 vertices, 11,520 vertex bytes and 5,568 index bytes.
+RSS after idle remains approximately 1.398 GB: this does not solve full-island
+memory exhaustion. Raw rows and peak RSS are in
+`target/perf/p6-prototype-borrow/{baseline,candidate}-pair-{1..5}.log`.
+This is an isolated CPU workload, not a full Moana or rendered-frame result.
+The release workspace/all-target Make gate passed 768 tests with 19 ignored,
+including all 18 instancer tests covering hierarchy, subsets, deformation,
+independent clocks, masks and stable IDs. The fresh Oxbo capture is byte-identical
+to the retained RGBA control (an unrelated-scene regression check, not an
+instancer-specific visual comparison). Validation artifacts are in the same
+directory. No idle-machine guarantee was established; repeat timings on a
+controlled host before using this result as release acceptance.
+
+**Evidence checked on 2026-09-17:**
+`target/perf/p6-instancer-ids/moana.log` records successful array decoding and ID
+validation, followed by instance-spawn progress at 1, 100,000, 200,000 and 300,000
+of 452,662 instances. RSS grows from 24,803,393,536 bytes before expansion to
+25,667,592,192 bytes at the last checkpoint. The associated
+`usd-perf-instancer-ids.scope` reports `Result=oom-kill` and
+`MemoryPeak=25769803776`. This localizes the failure to expansion, but does not
+identify the exact allocation that triggered the kill or explain earlier residency.
+The diagnostic and ID-allocation increment removes implicit-ID vector/hash scratch,
+skips uniqueness hashing for strictly increasing authored IDs, and releases other
+uniqueness scratch before expansion. The Make release workspace/all-target gate
+records 768 passing tests and 19 ignored in
+`target/perf/p6-instancer-ids/tests.log`. The benchmark/capture build passed; a
+fresh Oxbo capture was inspected and its RGBA is byte-identical to
+`target/perf/oxbo-current/original.rgba`. This is regression evidence, not Blender
+parity or a demonstrated full-load speedup. The OOM remains unresolved.
+
+The earlier `target/perf/p0-memory-region/moana.log` reports approximately
+19.07 GB RSS before projection, including 2.71 GB of image payload. Near the
+failure, mesh payload is approximately 2.70 GB. These payload figures omit
+capacity, allocator, source, ECS and GPU overhead; cache figures can overlap.
+Do not add overlapping counters or call the residual exclusively ECS memory.
+Bevy 0.19.1 `Entities::len()` counts allocated entity indices, not live entities;
+the earlier diagnostic label `entities` must not be interpreted as a live count.
+
+**Execution order and deliverables:**
+
+1. **Establish a reproducible expansion profile.** Scope source inspection to
+   `crates/usd_bevy/src/route/{instancer,profiling,cache}.rs`, `read/geom.rs`,
+   `live.rs` and the benchmark example. Retain the full-stage bounded control;
+   additionally isolate the same instancer with its required prototype/material
+   dependencies for attribution. Label isolated results separately, not as Moana
+   load times. Sample live entity counts outside the per-instance hot loop and
+   distinguish root instances from prototype descendants. Measure bytes and time
+   before arrays, prototype baking, instance construction and GPU preparation.
+2. **Test smaller representation-preserving reductions first.** Profile repeated
+   `Prototype::Hierarchy` cloning, path/map allocations and per-instance child
+   bookkeeping. Share immutable prototype descriptors where safe, without sharing
+   mutable root state. Retain ID ordering, invisible IDs, hierarchy transforms,
+   picking, updates and custom-route behavior. Reject changes without repeatable
+   time or peak-memory benefit. The implicit-ID scratch removal is not a
+   demonstrated full-scene solution.
+3. **Design compact instancing only if expansion remains dominant.** Specify a
+   logical point-ID-to-render-instance mapping and shared prototype draw data
+   instead of assuming every render instance needs a complete ECS subtree.
+   Before implementation, define compatibility for public entity access, picking,
+   material subsets, affine transforms, shadows, visibility, animated arrays,
+   independent clocks and transactional reload. Keep an explicit fallback for
+   unsupported prototypes and custom routes. Never silently drop points or
+   substitute flattened, non-editable geometry to meet the benchmark.
+4. **Validate in layers.** First cover implicit/explicit IDs, duplicate rejection,
+   reordered IDs, invisible points, multiple prototypes, nested hierarchies and
+   changed array lengths in existing instancer tests. Then compare eager and
+   candidate captures at matched time/camera, exercise two independently clocked
+   roots, and edit/reload one root while preserving the other's state. Use the
+   Make workspace gate listed below; do not substitute a test count for these
+   behavioral and visual acceptance requirements.
+5. **Accept only measured progress.** Run at least five alternating fresh-process
+   baseline/candidate trials on a completing instancer workload, with identical
+   profiler settings and retained raw times/RSS. Run full Moana separately under
+   the same 24 GiB/no-swap and explicit time limit. Record OOM, timeout and complete
+   frame as different outcomes. A surviving CPU load still requires P0's submitted
+   frame gate before it counts as rendered acceptance.
+
+**Stop conditions:** an API/semantic incompatibility requires a design decision,
+not an implicit behavior change. No memory-limit increase, unsafe `Stage`
+threading, lower visual settings, instance-count cap or unrelated environment
+changes. Keep this increment separate from the P0 readiness work and commit only
+after its own verification. The current tests/build logs are historical evidence;
+this plan update does not represent a new build or benchmark run.
 
 ## Objective
 
@@ -498,11 +704,52 @@ interning 0.759 s. These overlap MaterialRoute application and describe an
 unfinished prefix, not an end-to-end result. 763 Make release tests pass,
 19 ignored. Artifacts: `target/perf/p1-material-attribution/`.
 
-Selected experiment: bounded, projection-local reuse of successfully decoded
-shader material data, not prepared Bevy handles. Keep binding resolution and
-texture preparation live; invalidate on stage changes and discard the cache
-after initial projection. Include edit-during-projection, independent stages,
-time codes and failed-read recovery in the regression checks before acceptance.
+Decoded-read reuse is now implemented for initial live projection. A stage-pinned
+FIFO retains at most 4,096 successful `ReadPreviewMaterial` values, keyed by
+binding path and time-code bits. This is an entry-count bound, not a byte budget.
+A stage change sink marks the cache dirty; the next lookup discards prior reads.
+Reads interrupted by a stage change are not inserted. Errors are not cached.
+Binding resolution, sidedness, texture preparation, warnings derived from Bevy
+assets and material interning still run live. The scope restores any surrounding
+read cache, drops its own values and unregisters its sink after projection.
+
+Five alternating fresh-process Oxbo pairs, profiling disabled:
+
+| Mode | CPU-open samples (seconds) | Median |
+| --- | --- | --- |
+| Baseline | 2.210 / 2.189 / 2.184 / 2.171 / 2.171 | 2.184 s |
+| Decoded-read reuse | 2.266 / 2.150 / 2.083 / 2.066 / 2.070 | 2.083 s |
+
+The median is 4.6% lower; retain the slower first candidate rather than selecting
+only favorable runs. Geometry, asset-count and cached-payload CSV fields match
+across all ten runs. These are headless CPU opens, not first-complete-frame times.
+
+At the same 216,064-prim Moana checkpoint, the sequential diagnostic records
+145,466 bound requests and 9,234 distinct keys in both builds. Shader-read time
+falls from 20.769 s to 1.310 s, with 136,232 decoded-read hits. Projection elapsed
+is 68.712 s versus 91.178 s. This is matched-prefix attribution, not a repeated
+end-to-end Moana benchmark. The candidate reaches 303,104 sampled prims before
+the 180-second deadline (exit 124), with peak RSS 22,578,252 KiB and no swap.
+
+766 Make release workspace/all-target tests pass (19 ignored). New regressions
+cover shader edits during projection, time codes, independent stages, sidedness,
+replacement texture handles, failed-read recovery, scope restoration, capacity
+eviction and sink removal. Oxbo and Caldera captures are RGBA byte-identical to
+their existing controls; Caldera's pre-existing color/noise artifacts remain,
+so this is regression evidence rather than Blender/EEVEE parity. Evidence:
+`target/perf/p1-material-reads/` and baseline executable/logs in
+`target/perf/p1-material-attribution/`.
+
+The longer 300-second Moana attempt does **not** time out: systemd scope
+`run-p2020278-i39748898.scope` reports `Result=oom-kill`, a 24 GiB peak and
+190.879 s wall time. The kernel identifies the benchmark PID and
+`CONSTRAINT_MEMCG`; no higher memory budget was used. The last completed sampled
+prim is 333,824, 102.145 s into projection, with 173,044 bound requests,
+17,569 distinct keys and 155,475 decoded-read hits. There is no CPU-open CSV row.
+Logs: `moana-300s.log` and `moana-300s-scope.log` in the same artifact directory.
+The read cache did not resolve full-scene memory residency; do not describe this
+as successful Moana loading or attribute the failing allocation to a specific
+route without finer evidence.
 
 **Scope:** `route/subset.rs`, `mesh/compact.rs`, `route/cache.rs`, related tests.
 
@@ -683,6 +930,80 @@ rebuild mesh buffers. Sampled influences, nonuniform scale, morph combinations,
 normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
+
+### Shared immutable SdfPath text trial
+
+The first trial changed private `Path` storage from `String` to `Arc<str>`,
+sharing cloned text without a global interner. Derivations
+still create independent paths; validation, hashing, ordering, display and serde
+remain content-based. This differs from the rejected per-node property-path cache:
+it changes ownership of immutable text, not query caching or invalidation.
+The trade-off is an atomic reference count and a copy when converting an owned
+String into shared storage.
+
+Five alternating fresh-process Moana `stage_benchmark ... proxies` runs under
+24 GiB/no-swap, with no own concurrent builds, preserve **416,549 prims and 459
+layers** in every row. Baseline traversal milliseconds:
+`19214.989,19242.988,19190.095,19025.213,18868.766`; candidate:
+`16975.994,16857.449,16996.987,16856.918,16810.543`. Median traversal falls
+**19,190.095 → 16,857.449 ms (12.2%)**. Median post-traversal RSS falls
+**12,303,516 → 8,343,096 KiB**, saving **3,960,420 KiB (3.78 GiB, 32.2%)**.
+Raw rows, process peak RSS and saved binaries are under
+`target/perf/p3-shared-sdf-paths/`. This excludes validation, Bevy projection,
+textures, GPU preparation and UI; it is not a completed Moana viewer load or
+the ≤5× first-frame acceptance. Full regression/native export and rendered
+controls must pass before accepting this vendor increment.
+
+**Rejected representation, not discarded ownership strategy:** the `Arc<str>`
+Oxbo control regressed consistently: median CPU open 2,061.196 → 2,117.033 ms
+(2.7% slower), despite unchanged geometry counts. The follow-up representation
+in `patches/openusd-shared-path-text.patch` uses **`Arc<String>`**, retaining
+owned input buffers rather than copying them into a new `Arc<str>` allocation.
+The public path API and content-based semantics remain unchanged; the private
+representation is smaller, but unique paths retain a separate String allocation.
+The path regression test checks input-buffer reuse as well as clone sharing.
+
+Five fresh alternating Oxbo controls for this representation record baseline
+milliseconds `2040.775,2051.421,2049.000,2061.587,2043.151` versus candidate
+`2019.656,2010.308,2027.707,2011.150,2022.259`: medians
+**2,049.000 → 2,019.656 ms**. This removes the observed regression; the small
+1.4% reduction is not the primary acceptance argument. All geometry, asset and
+payload counts match. A preliminary Moana traversal uses 8,072,812 KiB RSS;
+the repeated Moana trial and final validation below must supersede this one run.
+Artifacts are `owned-oxbo-*.log`, `arcstring-stage-1.log` in the same directory.
+
+The final five alternating Moana pairs for `Arc<String>` preserve 416,549 prims
+and 459 layers. Baseline traversal milliseconds
+`19015.276,18943.741,18804.090,18828.552,18861.525`; candidate
+`17262.340,17217.293,17228.653,17367.598,17260.008`. Median traversal falls
+**18,861.525 → 17,260.008 ms (8.5%)**; median post-traversal RSS falls
+**12,303,432 → 8,071,992 KiB**, saving **4,231,440 KiB (4.04 GiB, 34.4%)**.
+Use these accepted-representation measurements rather than the faster but
+Oxbo-regressing `Arc<str>` numbers. Raw results: `owned-moana-*.log`.
+
+Final `Arc<String>` validation: 768 workspace/all-target release tests pass
+(19 ignored), 14 native export tests pass, and 40 upstream path tests pass with
+serde enabled, including clone sharing, owned-buffer preservation, derivations,
+content hashing and string/empty-path serialization. Run the standalone path
+gate through Make with
+`CARGO_WORKSPACE_DIR="$PWD/vendor/openusd/" CARGO_BUILD_JOBS=4 make test CARGO='cargo --offline' APP_TARGET='--manifest-path vendor/openusd/Cargo.toml --release -p openusd --lib sdf::path::tests --features serde'`.
+The command needs that workspace environment variable even with a path-only
+filter because the complete upstream test module compiles; external fixture
+tests are not part of this 40-test gate. Its generated standalone Cargo.lock is
+not retained. Final logs use the `owned-` prefix. Fresh Oxbo and Caldera captures
+match their retained RGBA controls byte-for-byte; Caldera's known visual defects
+remain unchanged. No Blender parity or complete-frame claim follows from these
+regression checks. The full Moana editor workload must be rerun separately.
+
+The first full-editor retest after `57173b1` still hits the 24 GiB/no-swap limit:
+`moana-editor-scope.log` records `Result=oom-kill`, 191.326 seconds wall time and
+25,769,803,776-byte peak. `moana-editor.log` reaches the coarse 334,848-prim
+checkpoint at `/island/isBeach/geometry/xgShells`, but has no per-route trace in
+this attempt; it does not establish that shells itself is the fatal allocation.
+The stage-only saving remains valid and must not be described as a completed
+Moana load. A follow-up with `USD_PROFILE_MEMORY=1` and the bounded
+`USD_PROFILE_MEMORY_RANGE=334848:338943` attributes the subsequent region rather
+than guessing from the last coarse checkpoint.
 
 Traversal-local parent status: `DEFAULT_PROXIES` now carries a population-epoch
 witness from a matching parent to queued children. With unchanged population
@@ -1474,6 +1795,40 @@ retained payload budgets. Native prototype identities are never persisted as
 stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
+
+### Shared immutable USDC byte snapshots
+
+`SourceResolver::SharedAsset` exposes its existing immutable `Arc<[u8]>` through
+the optional `ar::Asset::shared_bytes` seam. File formats receive shared bytes
+through a default copy fallback; USDC overrides that method to retain the same
+buffer, with normal crate validation. Both `.usdc` and content-dispatched `.usd`
+loads use the seam. Ordinary filesystem and custom assets without a shared
+snapshot keep the old read/copy behavior: this does not turn a loaded layer into
+a live disk mapping. Mutable authored opinions remain local to each decoded
+layer, and editor baseline hashes/snapshot retention are unchanged.
+
+Five alternating fresh-process stage-only trials on
+`elements/isBeach/xgenInstances/xgGroundCover.usd` retain **74 prims and one layer**
+in all ten rows. Baseline source-plus-stage-open milliseconds:
+`598.647,588.262,591.534,609.721,617.860`; candidate:
+`382.587,382.687,384.747,392.782,408.158`. Median falls
+**598.647 → 384.747 ms (35.7%)**. Median post-traversal RSS falls
+**1,368,788 → 701,844 KiB**, saving **666,944 KiB (651.3 MiB, 48.7%)**.
+Peak RSS does not halve: initial source-buffer construction still reaches about
+1.36 million KiB. These runs do not decode all point arrays, expand instances,
+load textures or render ground cover. Raw logs and saved binaries are under
+`target/perf/p7-shared-snapshots/`; each run uses the same 24 GiB/no-swap cap.
+The separate 21-million-point compact-rendering requirement remains open.
+
+The focused regression checks shared buffer ownership, cursor independence,
+independent layer edits, `.usd`/`.usdc` source opening, text fallback and malformed
+binary rejection. The Make release workspace/all-target gate passes **769 tests,
+19 ignored**, and all **14 native export tests** pass. Fresh Oxbo and Caldera
+captures match the retained RGBA controls byte-for-byte; this preserves the
+existing output, including known Caldera defects, rather than proving Blender
+parity. No new full Moana success is claimed: compact instancing is still needed.
+The vendor changes are recorded in
+`patches/openusd-shared-asset-bytes.patch`.
 
 Oxbo source-format investigation at `f0a60e7`: the original USDZ contains a single
 165,860,567-byte USDA entry. A native `usdcat` conversion into an ignored USDC

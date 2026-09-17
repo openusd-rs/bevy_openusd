@@ -586,6 +586,29 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+Validation getter attribution: `USD_PROFILE_VALIDATION_VALUES=1` adds separate
+timers for default-value reads, declared-type lookup, and sample checks. For
+asset-valued attributes, the sample group includes reading each authored sample;
+other attributes use the existing count query. This extra instrumentation is
+off by default and adds per-attribute timer overhead when enabled. Traversal,
+attribute enumeration and prim metadata are outside these three groups.
+
+Moana's 6,400,861 attributes measured 7.908 s default reads, 4.886 s type lookup,
+and 11.781 s sample checks. The full attribute phase was 36.438 s, leaving about
+11.864 s of enumeration, per-prim metadata, loop and instrumentation work outside
+the measured getter groups. The existing dependency already implements
+`num_time_samples` via `Want::Count`; ordinary sample maps do not need a times
+vector for that query. Do not implement a duplicate count-only API. Investigate
+the source-resolution walk and its default/sample reads; clip-count queries still
+have a separate schedule-materialization path. Preserve source-strength, blocks,
+clip discovery and decode-error semantics instead of blindly skipping reads.
+
+The Make release workspace/all-target gate passes 761 tests (19 ignored); the
+benchmark builds. The bounded 110-second Moana diagnostic still times out,
+without a completed CPU-open row. Raw timing/build/test logs are retained under
+`target/perf/p3-validation-values/`. This is attribution with extra timing
+overhead, not a loading-speed improvement or a first-frame result.
+
 Combined specifier-status increment: status queries requesting both DEFINED and
 ABSTRACT now resolve ancestor specifiers once for both answers. Individual-bit
 queries keep their existing implementations. The combined walk only stops when

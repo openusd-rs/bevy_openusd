@@ -387,6 +387,8 @@ impl UsdSource {
     }
 
     pub(crate) fn validate_composition(stage: &Stage) -> anyhow::Result<()> {
+        let profile_values = std::env::var_os("USD_PROFILE_VALIDATION_VALUES").is_some();
+        let mut value_times = [std::time::Duration::ZERO; 3];
         let started = (std::env::var_os("USD_PROFILE_LOADING").is_some()).then(std::time::Instant::now);
         let report = |phase: &str, prims: usize, attributes: usize| {
             if let Some(started) = started {
@@ -422,18 +424,29 @@ impl UsdSource {
             let attributes = if has_clips { prim.attributes()? } else { prim.authored_attributes()? };
             for attribute in attributes {
                 attribute_count += 1;
+                let value_started = profile_values.then(std::time::Instant::now);
                 attribute.get::<openusd::sdf::Value>()?;
-                if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
+                if let Some(started) = value_started { value_times[0] += started.elapsed(); }
+                let type_started = profile_values.then(std::time::Instant::now);
+                let asset = attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]"));
+                if let Some(started) = type_started { value_times[1] += started.elapsed(); }
+                let samples_started = profile_values.then(std::time::Instant::now);
+                if asset {
                     for time in attribute.time_sample_times()? {
                         attribute.get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(time)))?;
                     }
                 } else {
                     attribute.num_time_samples()?;
                 }
+                if let Some(started) = samples_started { value_times[2] += started.elapsed(); }
             }
             if started.is_some() && (index + 1) % 4096 == 0 { report("attribute-progress", index + 1, attribute_count); }
         }
         report("attributes-complete", prim_count, attribute_count);
+        if profile_values {
+            eprintln!("validation_value_profile attributes={attribute_count} default_ms={:.3} type_ms={:.3} samples_ms={:.3} scope=attribute-get-type-and-samples excludes=enumeration,prim-metadata,traversal includes=per-attribute-timer-overhead",
+                value_times[0].as_secs_f64()*1000.0, value_times[1].as_secs_f64()*1000.0, value_times[2].as_secs_f64()*1000.0);
+        }
         for identifier in stage.layer_identifiers() {
             if stage.is_layer_muted(&identifier) { continue; }
             let Some(layer) = stage.layer(&identifier) else { continue; };

@@ -947,6 +947,16 @@ match their retained RGBA controls byte-for-byte; Caldera's known visual defects
 remain unchanged. No Blender parity or complete-frame claim follows from these
 regression checks. The full Moana editor workload must be rerun separately.
 
+The first full-editor retest after `57173b1` still hits the 24 GiB/no-swap limit:
+`moana-editor-scope.log` records `Result=oom-kill`, 191.326 seconds wall time and
+25,769,803,776-byte peak. `moana-editor.log` reaches the coarse 334,848-prim
+checkpoint at `/island/isBeach/geometry/xgShells`, but has no per-route trace in
+this attempt; it does not establish that shells itself is the fatal allocation.
+The stage-only saving remains valid and must not be described as a completed
+Moana load. A follow-up with `USD_PROFILE_MEMORY=1` and the bounded
+`USD_PROFILE_MEMORY_RANGE=334848:338943` attributes the subsequent region rather
+than guessing from the last coarse checkpoint.
+
 Traversal-local parent status: `DEFAULT_PROXIES` now carries a population-epoch
 witness from a matching parent to queued children. With unchanged population
 and no authored load rules, each child resolves its own active/specifier opinions

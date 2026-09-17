@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let path = std::fs::canonicalize(&args[0])?;
     let started = Instant::now();
-    let source = usd_bevy::UsdSource::new(&path, std::fs::read(&path)?)?;
+    let source = usd_bevy::UsdSource::from_file(&path)?;
     eprintln!("phase=source elapsed_ms={:.3} {}", started.elapsed().as_secs_f64() * 1000.0, memory());
     let stage = source.open_stage()?;
     let opened = started.elapsed();

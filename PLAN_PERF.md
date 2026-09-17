@@ -1938,6 +1938,51 @@ stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
 
+### Direct shared snapshot reads (2026-09-17)
+
+Implemented against `88a636c`: `UsdSource::from_file` reads a root snapshot into
+its final `Arc<[u8]>` allocation. Editor opens and editor dependency snapshots
+use this path; `stage_benchmark` exercises the same root reader. An exact-length
+`repeat_n` iterator constructs the shared buffer safely, followed by reads into
+its unique mutable slice. There is no application-level unsafe code, file
+mapping or mutable disk-backed decoder buffer. Existing shared assets reuse
+their Arc. Size hints that shrink/grow are handled without truncation or padding;
+interrupted reads retry and other I/O errors propagate. The changed-size path
+may allocate another buffer, while the stable-file path avoids Vec-to-Arc copying.
+
+Five alternating, order-reversed baseline/candidate pairs used the unchanged
+683,530,559-byte `xgGroundCover.usd`, under 24 GiB/no-swap and a 30-second timeout
+per process. All runs finish with 74 prims and one layer. Warm filesystem caches
+were not flushed. These are source/open/traversal measurements, excluding point
+expansion, Bevy projection, textures, GPU and UI:
+
+| Metric (median of five) | Baseline | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Source + open + traversal | 394.534 ms | 252.876 ms | 35.9% lower |
+| Process peak RSS (`VmHWM`) | 1,362,188 KiB | 702,108 KiB | 48.5% lower; 644.6 MiB saved |
+
+Five alternating Oxbo headless editor pairs report 2,049.039 → 2,034.339 ms
+median open time (0.7% lower, a small effect rather than a broad viewer speedup).
+Geometry, asset counts and cached payload fields match across all ten runs.
+Make release validation passes 776 workspace/all-target tests (19 ignored) and
+14 native export tests. Added tests cover exact/under/over/zero size hints,
+partial and interrupted reads, read errors, oversized hints, shared-owner reuse,
+missing files and immutable root snapshots after external replacement.
+
+Oxbo viewport RGBA remains byte-identical. Caldera baseline and candidate CLI
+scene-only screenshots are also byte-identical. The default Caldera framing
+still shows an oversized pale ground region and tiny blue scene detail; this is
+regression evidence, not visual correctness or Blender parity. Its automatic
+capture failed the 60-second readiness/frame gate on the control; the separate
+CLI capture succeeded after loading. The initial 40-second control timed out;
+the bounded 120-second control produced the CLI capture before its timeout.
+The candidate was explicitly terminated after its successful CLI capture.
+
+Artifacts, input hashes, compiler version, saved binaries and raw trial rows:
+`target/perf/p7-direct-snapshots/`. This removes the previous snapshot-construction
+peak, not Moana's 21-million-point ECS expansion blocker. No full Moana success
+or ≤5× rendered-frame claim follows from these results.
+
 ### Shared immutable USDC byte snapshots
 
 `SourceResolver::SharedAsset` exposes its existing immutable `Arc<[u8]>` through

@@ -263,8 +263,7 @@ fn process_commands(world: &mut World) {
             };
             world.remove_resource::<PendingInitialOpen>();
             if session.is_none() { set_texture_requests(world, Default::default()); }
-            std::fs::read(path).map_err(anyhow::Error::from)
-                .and_then(|bytes| crate::UsdSource::new(path, bytes).map_err(anyhow::Error::from)).and_then(|source| {
+            crate::UsdSource::from_file(path).map_err(anyhow::Error::from).and_then(|source| {
                     profile("source-bytes");
                     let (stage, disk_baselines) = source.open_stage_for_editor()?;
                     profile("stage-open");

@@ -111,6 +111,54 @@ phases marked incomplete. Validation of an increment does not complete its phase
 
 ### Bounded point-instancer memory investigation (P6)
 
+**Current decisive attribution after `57173b1`:**
+`target/perf/p3-shared-sdf-paths/moana-region.log` shows that shells, seaweed,
+pebbles, small shells and palm debris complete before the fatal expansion at
+`/island/isBeach/geometry/xgGroundCover/instancer`. Ground cover contains
+**21,357,212 points and 24 prototypes**. Its decoded position/orientation/scale/
+index arrays occupy 256,286,544 / 341,715,392 / 256,286,544 / 85,428,848 bytes.
+Between 400,000 and 500,000 spawned points, live entity count rises from
+13,882,235 to 14,282,235: four entities per point in this region. The remaining
+20.86 million points cannot fit the existing representation under 24 GiB.
+`moana-region-scope.log` confirms OOM at 196.349 seconds wall time and the same
+25,769,803,776-byte cap. This is later content than the pre-sharing failure, not
+evidence that sharing failed to save memory. Initial projection RSS in this run
+is 14,636,523,520 bytes, versus approximately 19.07 GB in the earlier diagnostic.
+
+**Next architectural increment:** compact point-instancer rendering, not another
+per-instance scratch tweak. Preserve the existing expanded-entity route as the
+compatibility path while building an explicit opt-in compact path. Do not enable
+the compact route until it actually renders its supported prototypes; a data-only
+component that silently omits geometry is not an implementation of this feature.
+
+1. Define shared prototype layout plus per-instancer sampled arrays, stable point
+   IDs and masks, independent root/time ownership, and a mapping for picking and
+   authoring. Private render storage must not replace the composed USD stage.
+2. Render supported static mesh/hierarchy prototypes through Bevy PBR with compact
+   transform/ID buffers. Preserve prototype local transforms, material subsets,
+   normals/tangent handedness and shadows; retain the expanded path for unsupported
+   deformation or custom routes. Avoid creating a full ECS subtree per point.
+3. Bound CPU/GPU upload batches by bytes and support cancellation/revision-checked
+   publication. Camera culling may avoid offscreen draws, but must not discard
+   logical points or change authored masks. Do not claim a complete frame from a
+   partially uploaded required instance set.
+4. Provide an explicit expanded-entity compatibility/inspection path; preserve
+   runtime components and IDs for existing expanded instances across edits. Do
+   not silently change the public `UsdInstance`/`UsdPrototypePart` query contract.
+5. Gate the route on matched expanded/compact captures for simple, nested,
+   multi-material, masked and animated-array cases, plus independent roots,
+   picking, failed reload and transactional replacement. Only then opt the viewer
+   into it and rerun the real ground-cover asset with the same memory cap.
+
+**Separate source-side opportunity:** `SourceResolver::open_asset` retains
+`Arc<[u8]>` file snapshots for editor reload safety, while the default file-format
+read and ambiguous `.usd` dispatch call `read_all` into another owned buffer.
+A shared immutable-byte decode seam could avoid duplication for USDC without
+reading mutable disk contents lazily. Scope such a change to explicit immutable
+snapshots with a copy fallback for existing/custom resolvers, and verify edits,
+exports and reload isolation. This can improve source residency but cannot solve
+the 21-million-point entity expansion on its own.
+
 **Full-stage retest after shared keys:** the existing fibers failure is passed,
 but the following shells instancer exhausts the same 24 GiB/no-swap budget.
 `target/perf/p6-shared-paths/moana.log` records the fibers PointInstancerRoute

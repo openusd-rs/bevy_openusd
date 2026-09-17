@@ -214,6 +214,30 @@ Do not add projected speedups together: several phases remove the same work.
 
 ## P0 — Establish trustworthy measurements
 
+Entity-reference probe increment: the actual-viewer manifest now includes mesh,
+StandardMaterial and FlatMaterial handles referenced by entities, even if their
+assets have not loaded into CPU storage. Handle additions/replacements/removals
+advance its generation without requiring an asset event. Duplicate references
+are deduplicated. Known CPU-only meshes are excluded using their asset usage;
+unresolved mesh references remain required. Missing mesh IDs are sampled in the
+render log (up to eight). The probe stays opt-in and `complete_frame: false`.
+
+The regression reserves unloaded handles, verifies they remain pending, changes
+a mesh handle without an asset event, despawns its entity and verifies removal.
+It also checks stable idle generations with an absent optional FlatMaterial
+asset resource, and exclusion of known CPU-only entity meshes. Broader image
+dependency closure, revision-specific GPU contents, view eligibility and
+submitted-frame acknowledgment remain outstanding.
+
+An isolated-settings, time-limited Oxbo viewer run with the probe enabled
+reported 1,598 meshes, 31 standard materials and 10 images, with all observed
+uploads and global pipelines ready at 3.254 s from probe configuration. This is
+not a first-complete-frame result. An initial diagnostic overcounted two
+CPU-only entity meshes; preserving the existing RENDER_WORLD eligibility rule
+resolved that without excluding unresolved handles. The owned viewer exited at
+its intentional 15-second timeout. Logs/build/test evidence are under
+`target/perf/p0-references/`.
+
 Actual-viewer render probe: launch with `USD_PROFILE_RENDER=1` to emit JSON
 `render_asset_profile` records from `src/perf_render.rs`. Main-world manifests
 carry document identity and an asset-event generation into the render world.

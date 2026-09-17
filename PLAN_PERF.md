@@ -18,15 +18,15 @@ research, measurements, rejected experiments and acceptance requirements.
   material-cache gate records 766 passing tests, 19 ignored and unchanged Oxbo
   and Caldera RGBA captures. Logs are under `target/perf/p1-material-reads/`.
 - **Still unresolved:** matched first-complete-frame measurement and the ≤5×
-  ratio. Moana's 300-second attempt is killed at the 24 GiB memory cap after
-  approximately 191 seconds; its last sampled checkpoint is 333,824 prims.
+  ratio. Moana's latest traced attempt is killed at the 24 GiB memory cap after
+  approximately 196 seconds while expanding the 21-million-point ground cover.
   This is a confirmed memory-limit failure, not a completed load or timeout.
   Keep hidden-mesh deferral opt-in.
-- **Latest bounded Moana outcome:** after `5b9e18b`, all 452,662 fibers instances
-  complete expansion. The 300-second-capped attempt still suffers a confirmed
-  24 GiB cgroup OOM after 190.188 seconds, now during
-  `/island/isBeach/geometry/xgShells/instancer` (70,972 points). Its last coarse
-  checkpoint is 334,848 prims; 7,106,420 live entities exist before shells expand.
+- **Latest bounded Moana outcome:** after `57173b1`, fibers, shells and subsequent
+  beach instancers complete. `/island/isBeach/geometry/xgGroundCover/instancer`
+  contains 21,357,212 points and reaches 500,000 expanded points before OOM,
+  with 14,282,235 live entities. Compact rendering is required; the P7 immutable
+  byte-sharing increment improves source residency but is not its substitute.
   Follow the bounded investigation below; do not raise the cap or omit content.
 - **Acceptance blocker:** finish P0's revision-specific submitted-frame gate and
   matched native runs for Oxbo/Caldera. Headless CPU improvements do not establish
@@ -1795,6 +1795,40 @@ retained payload budgets. Native prototype identities are never persisted as
 stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
+
+### Shared immutable USDC byte snapshots
+
+`SourceResolver::SharedAsset` exposes its existing immutable `Arc<[u8]>` through
+the optional `ar::Asset::shared_bytes` seam. File formats receive shared bytes
+through a default copy fallback; USDC overrides that method to retain the same
+buffer, with normal crate validation. Both `.usdc` and content-dispatched `.usd`
+loads use the seam. Ordinary filesystem and custom assets without a shared
+snapshot keep the old read/copy behavior: this does not turn a loaded layer into
+a live disk mapping. Mutable authored opinions remain local to each decoded
+layer, and editor baseline hashes/snapshot retention are unchanged.
+
+Five alternating fresh-process stage-only trials on
+`elements/isBeach/xgenInstances/xgGroundCover.usd` retain **74 prims and one layer**
+in all ten rows. Baseline source-plus-stage-open milliseconds:
+`598.647,588.262,591.534,609.721,617.860`; candidate:
+`382.587,382.687,384.747,392.782,408.158`. Median falls
+**598.647 → 384.747 ms (35.7%)**. Median post-traversal RSS falls
+**1,368,788 → 701,844 KiB**, saving **666,944 KiB (651.3 MiB, 48.7%)**.
+Peak RSS does not halve: initial source-buffer construction still reaches about
+1.36 million KiB. These runs do not decode all point arrays, expand instances,
+load textures or render ground cover. Raw logs and saved binaries are under
+`target/perf/p7-shared-snapshots/`; each run uses the same 24 GiB/no-swap cap.
+The separate 21-million-point compact-rendering requirement remains open.
+
+The focused regression checks shared buffer ownership, cursor independence,
+independent layer edits, `.usd`/`.usdc` source opening, text fallback and malformed
+binary rejection. The Make release workspace/all-target gate passes **769 tests,
+19 ignored**, and all **14 native export tests** pass. Fresh Oxbo and Caldera
+captures match the retained RGBA controls byte-for-byte; this preserves the
+existing output, including known Caldera defects, rather than proving Blender
+parity. No new full Moana success is claimed: compact instancing is still needed.
+The vendor changes are recorded in
+`patches/openusd-shared-asset-bytes.patch`.
 
 Oxbo source-format investigation at `f0a60e7`: the original USDZ contains a single
 165,860,567-byte USDA entry. A native `usdcat` conversion into an ignored USDC

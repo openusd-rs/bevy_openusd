@@ -381,6 +381,12 @@ impl sdf::FileFormat for UsdcFileFormat {
         Ok(Box::new(data))
     }
 
+    fn read_shared_bytes(&self, bytes: std::sync::Arc<[u8]>, _source_name: &str) -> Result<sdf::LayerData, sdf::FormatError> {
+        let data = CrateData::open(io::Cursor::new(bytes), true)
+            .map_err(|error| sdf::FormatError::Decode(Box::new(error)))?;
+        Ok(Box::new(data))
+    }
+
     fn matches_content(&self, prefix: &[u8]) -> bool {
         prefix.starts_with(MAGIC)
     }

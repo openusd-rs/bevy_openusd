@@ -1,0 +1,95 @@
+diff --git a/vendor/openusd/crates/openusd/src/ar.rs b/vendor/openusd/crates/openusd/src/ar.rs
+index 34b1f68..5c6809d 100644
+--- a/vendor/openusd/crates/openusd/src/ar.rs
++++ b/vendor/openusd/crates/openusd/src/ar.rs
+@@ -118,6 +118,9 @@ pub trait Asset: Read + Seek + Send {
+     /// Returns the total size of the asset in bytes.
+     fn size(&self) -> io::Result<u64>;
+ 
++    /// Returns an immutable snapshot of the complete asset, independent of cursor position.
++    fn shared_bytes(&self) -> Option<std::sync::Arc<[u8]>> { None }
++
+     /// Reads the entire asset into a byte buffer.
+     fn read_all(&mut self) -> io::Result<Vec<u8>> {
+         let size = self.size()? as usize;
+diff --git a/vendor/openusd/crates/openusd/src/sdf/file_format.rs b/vendor/openusd/crates/openusd/src/sdf/file_format.rs
+index 06339e0..4f99689 100644
+--- a/vendor/openusd/crates/openusd/src/sdf/file_format.rs
++++ b/vendor/openusd/crates/openusd/src/sdf/file_format.rs
+@@ -163,6 +163,11 @@ pub trait FileFormat: Sync {
+     /// decode without a copy while bytes just read off disk move in.
+     fn read_bytes(&self, bytes: Cow<'static, [u8]>, source_name: &str) -> Result<LayerData, FormatError>;
+ 
++    /// Decodes a shared immutable snapshot, copying for formats without shared storage.
++    fn read_shared_bytes(&self, bytes: std::sync::Arc<[u8]>, source_name: &str) -> Result<LayerData, FormatError> {
++        self.read_bytes(bytes.as_ref().to_vec().into(), source_name)
++    }
++
+     /// Read a layer's data from `resolved`, opening the asset (and any
+     /// sibling assets) through `resolver`.
+     ///
+@@ -170,7 +175,11 @@ pub trait FileFormat: Sync {
+     /// [`read_bytes`](Self::read_bytes); one that reaches for sibling assets
+     /// overrides this.
+     fn read(&self, resolver: &dyn ar::Resolver, resolved: &ar::ResolvedPath) -> Result<LayerData, FormatError> {
+-        let bytes = resolver.open_asset(resolved)?.read_all()?;
++        let mut asset = resolver.open_asset(resolved)?;
++        if let Some(bytes) = asset.shared_bytes() {
++            return self.read_shared_bytes(bytes, &resolved.to_string());
++        }
++        let bytes = asset.read_all()?;
+         self.read_bytes(bytes.into(), &resolved.to_string())
+     }
+ 
+diff --git a/vendor/openusd/crates/openusd/src/sdf/layer_registry.rs b/vendor/openusd/crates/openusd/src/sdf/layer_registry.rs
+index 0fec719..1f39293 100644
+--- a/vendor/openusd/crates/openusd/src/sdf/layer_registry.rs
++++ b/vendor/openusd/crates/openusd/src/sdf/layer_registry.rs
+@@ -279,6 +279,13 @@ impl LayerRegistry {
+             .read_bytes(bytes, source_name)
+     }
+ 
++    /// Decodes a shared immutable snapshot using its content signature.
++    pub fn read_shared_bytes(bytes: std::sync::Arc<[u8]>, source_name: &str) -> Result<sdf::LayerData, sdf::FormatError> {
++        DEFAULT_FORMATS.iter().copied().find(|format| format.matches_content(&bytes))
++            .ok_or_else(|| sdf::FormatError::Unrecognized(source_name.into()))?
++            .read_shared_bytes(bytes, source_name)
++    }
++
+     /// Find the format claiming `ext` (without the leading dot, case-insensitive),
+     /// e.g. `"usda"` or `"usd"`. C++ `SdfFileFormat::FindByExtension`.
+     pub fn find_by_extension(ext: &str) -> Option<&'static dyn sdf::FileFormat> {
+@@ -479,11 +486,11 @@ impl LayerRegistry {
+     fn read(&self, resolved: &ar::ResolvedPath) -> Result<sdf::LayerData, LoadError> {
+         let ext = resolved.extension();
+         if ext.eq_ignore_ascii_case("usd") {
+-            let bytes = self
+-                .resolver
+-                .open_asset(resolved)
+-                .and_then(|mut asset| asset.read_all())
+-                .map_err(sdf::FormatError::from)?;
++            let mut asset = self.resolver.open_asset(resolved).map_err(sdf::FormatError::from)?;
++            if let Some(bytes) = asset.shared_bytes() {
++                return Ok(Self::read_shared_bytes(bytes, &resolved.to_string())?);
++            }
++            let bytes = asset.read_all().map_err(sdf::FormatError::from)?;
+             return Ok(Self::read_bytes(bytes.into(), &resolved.to_string())?);
+         }
+         Ok(Self::find_by_extension(&ext)
+diff --git a/vendor/openusd/crates/openusd/src/usdc/mod.rs b/vendor/openusd/crates/openusd/src/usdc/mod.rs
+index e501854..bc171d8 100644
+--- a/vendor/openusd/crates/openusd/src/usdc/mod.rs
++++ b/vendor/openusd/crates/openusd/src/usdc/mod.rs
+@@ -381,6 +381,12 @@ impl sdf::FileFormat for UsdcFileFormat {
+         Ok(Box::new(data))
+     }
+ 
++    fn read_shared_bytes(&self, bytes: std::sync::Arc<[u8]>, _source_name: &str) -> Result<sdf::LayerData, sdf::FormatError> {
++        let data = CrateData::open(io::Cursor::new(bytes), true)
++            .map_err(|error| sdf::FormatError::Decode(Box::new(error)))?;
++        Ok(Box::new(data))
++    }
++
+     fn matches_content(&self, prefix: &[u8]) -> bool {
+         prefix.starts_with(MAGIC)
+     }

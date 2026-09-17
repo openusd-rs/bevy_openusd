@@ -19,6 +19,7 @@ Changes from the base source are recorded in these patches in the project root:
 - `patches/openusd-stage-packaging.patch`
 - `patches/openusd-package-directory.patch`
 - `patches/openusd-prepared-roots.patch`
+- `patches/openusd-shared-asset-bytes.patch`
 - `patches/openusd-traversal-active.patch`
 - `patches/openusd-abstract-ancestry.patch`
 - `patches/openusd-specifier-status.patch`

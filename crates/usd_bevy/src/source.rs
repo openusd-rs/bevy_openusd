@@ -78,6 +78,13 @@ impl UsdSource {
         })
     }
 
+    /// Reads an immutable root-layer snapshot from a file.
+    pub fn from_file(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        let bytes = read_file_snapshot(path)?;
+        Self::new(path, bytes)
+    }
+
     pub fn identifier(&self) -> &str {
         &self.identifier
     }
@@ -334,12 +341,12 @@ impl UsdSource {
         Ok(combined)
     }
 
-    pub(crate) fn insert_dependency(&mut self, identifier: String, bytes: Vec<u8>) {
+    pub(crate) fn insert_dependency(&mut self, identifier: String, bytes: impl Into<Arc<[u8]>>) {
         Arc::make_mut(&mut self.files).insert(identifier, bytes.into());
         self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn replace_file_bytes(&mut self, identifier: String, bytes: Vec<u8>) {
+    pub(crate) fn replace_file_bytes(&mut self, identifier: String, bytes: impl Into<Arc<[u8]>>) {
         if identifier == self.identifier {
             self.bytes = bytes.into();
             self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
@@ -485,7 +492,39 @@ struct SourceResolver {
     disk_baselines: Option<DiskBaselines>,
 }
 
-struct SharedAsset(Cursor<Arc<[u8]>>);
+pub(crate) struct SharedAsset(pub(crate) Cursor<Arc<[u8]>>);
+
+pub(crate) fn read_file_snapshot(path: &Path) -> io::Result<Arc<[u8]>> {
+    read_shared_asset(&mut std::fs::File::open(path)?)
+}
+
+pub(crate) fn file_hash(path: &Path) -> io::Result<blake3::Hash> {
+    let mut hash = blake3::Hasher::new();
+    hash.update_reader(std::fs::File::open(path)?)?;
+    Ok(hash.finalize())
+}
+
+fn read_shared_asset(asset: &mut dyn Asset) -> io::Result<Arc<[u8]>> {
+    if let Some(bytes) = asset.shared_bytes() { return Ok(bytes); }
+    asset.seek(SeekFrom::Start(0))?;
+    let size = usize::try_from(asset.size()?).ok().filter(|size| *size <= isize::MAX as usize)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "asset snapshot size exceeds addressable memory"))?;
+    let mut bytes: Arc<[u8]> = std::iter::repeat_n(0, size).collect();
+    let buffer = Arc::get_mut(&mut bytes).expect("unshared snapshot buffer");
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match asset.read(&mut buffer[filled..]) {
+            Ok(0) => return Ok(Arc::from(&buffer[..filled])),
+            Ok(count) => filled += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let mut tail = Vec::new();
+    asset.read_to_end(&mut tail)?;
+    if tail.is_empty() { Ok(bytes) }
+    else { Ok(bytes.iter().copied().chain(tail).collect()) }
+}
 
 impl Read for SharedAsset {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> { self.0.read(buffer) }
@@ -596,7 +635,7 @@ impl Resolver for SourceResolver {
             let bytes: Arc<[u8]> = if let Some(bytes) = self.bytes(outer) {
                 bytes.clone()
             } else if self.source.filesystem {
-                self.fallback.open_asset(&ResolvedPath::new(outer))?.read_all()?.into()
+                read_shared_asset(self.fallback.open_asset(&ResolvedPath::new(outer))?.as_mut())?
             } else {
                 return Err(io::Error::new(io::ErrorKind::NotFound, outer.to_owned()));
             };
@@ -648,6 +687,78 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_replacements_share_snapshots_without_mutating_previous_sources() {
+        use super::*;
+        let mut source = UsdSource::new("shared-replacement/root.usda", b"original".as_slice()).unwrap();
+        let before = source.clone();
+        let root: Arc<[u8]> = Arc::from(b"replacement".as_slice());
+        let child: Arc<[u8]> = Arc::from(b"child".as_slice());
+        source.replace_file_bytes(source.identifier().to_owned(), root.clone());
+        source.replace_file_bytes("child.usda".into(), child.clone());
+        assert!(Arc::ptr_eq(&source.bytes, &root));
+        assert!(Arc::ptr_eq(&source.files["child.usda"], &child));
+        assert_eq!(before.bytes.as_ref(), b"original");
+        assert!(before.files.is_empty());
+        assert_ne!(source.revision(), before.revision());
+        let snapshot = source.clone();
+        source.replace_file_bytes("child.usda".into(), b"next".to_vec());
+        assert!(Arc::ptr_eq(&snapshot.files["child.usda"], &child));
+        assert_eq!(source.files["child.usda"].as_ref(), b"next");
+    }
+
+    #[test]
+    fn shared_reads_handle_size_changes_interrupts_and_failures() {
+        use super::*;
+        struct SizedAsset { data: Cursor<Vec<u8>>, hint: u64, interrupted: bool, fail: bool }
+        impl Read for SizedAsset {
+            fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                if self.fail && self.data.position() >= 3 { return Err(io::ErrorKind::Other.into()); }
+                let count = target.len().min(3);
+                self.data.read(&mut target[..count])
+            }
+        }
+        impl Seek for SizedAsset {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> { self.data.seek(position) }
+        }
+        impl Asset for SizedAsset { fn size(&self) -> io::Result<u64> { Ok(self.hint) } }
+        for data in [vec![], vec![1], (0..32).collect()] {
+            for hint in [0, 1, 4, data.len() as u64, 64] {
+                let mut asset = SizedAsset { data: Cursor::new(data.clone()), hint, interrupted: false, fail: false };
+                assert_eq!(read_shared_asset(&mut asset).unwrap().as_ref(), data);
+            }
+        }
+        for hint in [0, 4, 32] {
+            let mut asset = SizedAsset { data: Cursor::new(vec![1; 32]), hint, interrupted: false, fail: true };
+            assert_eq!(read_shared_asset(&mut asset).unwrap_err().kind(), io::ErrorKind::Other);
+        }
+        let mut invalid = SizedAsset { data: Cursor::new(vec![]), hint: u64::MAX, interrupted: false, fail: false };
+        assert_eq!(read_shared_asset(&mut invalid).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        let bytes: Arc<[u8]> = Arc::from([1, 2, 3]);
+        let mut shared = SharedAsset(Cursor::new(bytes.clone()));
+        shared.seek(SeekFrom::End(0)).unwrap();
+        assert!(Arc::ptr_eq(&bytes, &read_shared_asset(&mut shared).unwrap()));
+    }
+
+    #[test]
+    fn file_sources_keep_immutable_root_snapshots() {
+        use super::*;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("root.usda");
+        assert_eq!(UsdSource::from_file(&path).err().unwrap().kind(), io::ErrorKind::NotFound);
+        std::fs::write(&path, b"#usda 1.0\ndef Xform \"Original\" {}\n").unwrap();
+        let original = UsdSource::from_file(&path).unwrap();
+        std::fs::write(&path, b"#usda 1.0\ndef Xform \"Replacement\" {}\n").unwrap();
+        let replacement = UsdSource::from_file(&path).unwrap();
+        assert!(original.open_stage().unwrap().prim("/Original").unwrap().is_valid().unwrap());
+        assert!(!original.open_stage().unwrap().prim("/Replacement").unwrap().is_valid().unwrap());
+        assert!(replacement.open_stage().unwrap().prim("/Replacement").unwrap().is_valid().unwrap());
+    }
+
     #[test]
     fn binary_snapshots_share_bytes_and_keep_edits_isolated() {
         use super::*;

@@ -1,14 +1,195 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `2d015e4` and the
-working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
+Planned against `1dd38c8` on 2026-09-16; reconciled against `e689fcf` on
+2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
+
+## Read this first
+
+This file is the single performance plan and evidence ledger. The execution
+roadmap immediately below takes precedence over older checkpoint sequences.
+Detailed P0–P8 sections retain historical measurements; their test counts and
+timings apply to the named increments, not automatically to current HEAD.
+
+**Target:** Oxbo and Caldera must reach a first complete rendered frame within
+5× a matched native viewer baseline, without sacrificing USD composition,
+Blender/EEVEE fidelity, independent playback roots or transactional asset-local
+reload. Moana must have an explicitly bounded, honestly reported outcome.
+
+**Latest recorded implementation checkpoint (`e689fcf`):**
+
+- Direct shared source buffers and immutable replacement snapshots are in place.
+- Binary root, dependency and packaged-USDC reload candidates preserve format.
+- The synthetic 64 MiB changed-source benchmark improves median reload from
+  229.309 to 136.823 ms; this is not a full-viewer speedup measurement.
+- Recorded validation: 782 workspace/all-target tests passed, 19 ignored;
+  14 native export tests passed. See P8 for artifacts and live reload evidence.
+
+**Remaining work, in priority order:**
+
+1. Finish P0's revision-specific submitted-frame coverage and establish matched
+   five-run native/viewer baselines. Prepared assets and successful command
+   counts alone cannot declare a complete frame.
+2. Implement and visually validate compact point-instancer rendering (P6).
+   Moana's 21,357,212-point ground cover cannot scale as four entities per point;
+   the latest recorded full-scene attempt exceeds the 24 GiB cap.
+3. Attribute and reduce remaining composition, decoding and candidate-stage
+   reconstruction costs (P3/P7/P8). Investigate independent in-memory candidate
+   construction before adding more byte-copy micro-optimizations; preserve the
+   old stage on validation failure and reject changes made during preparation.
+4. Finish bounded preparation, residency and reload correctness (P4/P5/P8),
+   then rerun the final acceptance checklist. Keep incomplete deferral opt-in.
+
+The shared-decoder follow-up below records subsequent implementation validation;
+the checkpoint above remains the `e689fcf` baseline.
+
+## Execution roadmap
+
+This is the implementation plan, not a claim that the performance target has
+been met. Preserve the detailed evidence below; execute one measured increment
+at a time. The `src/perf_render.rs` revision-witness increment is validated below;
+it is not the complete submitted-frame gate.
+
+| Order | Deliverable | Acceptance gate |
+| --- | --- | --- |
+| 1 — P0 | Finish revision-aware renderer measurement in `src/perf_render.rs`, including same-ID asset replacement, required dependencies and per-view submitted-generation evidence. | Stale uploads cannot satisfy readiness; a real viewer run demonstrates the gate. Keep `complete_frame:false` until submission and dependency coverage are implemented and verified. |
+| 2 — P0 | Establish matched Oxbo and Caldera native/viewer baselines. | Same asset, camera, resolution, purpose, payload policy and declared cache state; five alternating runs, phase timings, peak RSS and first-complete-frame distributions. Report the ratio only for matched measurements. |
+| 3 — P6 | Prototype an opt-in compact point-instancer rendering route instead of expanding every point into ECS hierarchies. | Render all supported instances with correct transforms, materials, subsets and shadows; retain compatibility fallback for unsupported cases. Prove multiple roots, independent clocks, picking, bounds and asset-local reload on small fixtures before bounded Moana trials. |
+| 4 — P3/P7 | Profile remaining composition/value lookup, array decoding and source-buffer peaks. | Select the largest measured cost, change one mechanism, preserve composition/edit semantics and retain only improvements demonstrated by alternating trials. Do not repeat rejected caches without new evidence. |
+| 5 — P4/P5/P8 | Complete bounded preparation, residency and incremental reload. | Bounded frame work, cancellation and stale-result rejection; visibility/variant changes reveal correct content; changing one USD asset does not reload unrelated roots. Keep incomplete deferral opt-in. |
+| 6 — final | Re-run the complete acceptance matrix. | Oxbo/Caldera ≤5× matched native first-complete-frame, no rendered regression, and an honest bounded Moana result with retained logs. |
+
+### Why compact instancing is the major remaining change
+
+The recorded Moana investigation identifies 21,357,212 ground-cover points
+expanded into four entities each. The latest traced full-scene attempt reaches
+the 24 GiB cap before completing this expansion. Sharing paths and immutable
+source bytes reduces residency, but cannot make this representation scale.
+Do not raise the cap, silently omit points, or call a data-only compact component
+a rendered solution. Design the GPU representation and draw integration together;
+validate standard PBR, shadow/prepass behavior and instance indexing explicitly.
+
+### Rules for every implementation increment
+
+1. Record the baseline commit, candidate diff, input hashes, profiler settings
+   and raw artifacts under `target/perf/<increment>/`.
+2. Use Make-based build and validation commands from the verification section;
+   do not change environment files or clean away datasets.
+3. Run benchmarks without concurrent builds. Keep large-scene runs under
+   `MemoryMax=24G`, `MemorySwapMax=0` and an explicit timeout; distinguish OOM,
+   timeout, failed rendering and successful completion.
+4. Compare rendered output as well as timings. Bevy-baseline equality is a
+   regression check, not Blender/EEVEE parity. Caldera's known visual artifacts
+   remain a separate correctness blocker.
+5. Preserve transactional asset-local reload, authored composition and separate
+   root playback clocks. Reject speedups that weaken these contracts.
+6. Commit accepted increments separately with unsigned, title-only Conventional
+   Commits. Update this plan with evidence and remaining limitations; do not push
+   without a request.
 
 ## Immediate handoff
 
 Keep implementation incremental. The detailed P0–P8 sections below retain the
 research, measurements, rejected experiments and acceptance requirements.
+
+### P0 extraction-revision checkpoint (2026-09-17)
+
+`src/perf_draw.rs` now wraps Bevy's existing forward `DrawMaterial` command tuple
+for opaque, alpha-mask, transmissive and transparent phases when profiling is
+enabled. The wrapper calls the original tuple unchanged, records Success/Skip/
+Failure per view and phase, then returns the original result. Counters reset
+before each render. No vendored renderer changes or normal-path hooks are added.
+For a nonempty expected view, GPU completion registration requires at least one
+successful command and no recorded skips/failures, in addition to the queue and
+upload prerequisites. Queue readiness and combined render prerequisites have
+separate JSON fields.
+
+The live Oxbo trial in `target/perf/p0-draw-commands/viewer.log` records 1,591
+skipped commands during warm-up, then 1,591 successful commands and zero skips/
+failures. The corresponding view has 1,766 expected entities; commands are
+batched, so these counts are not interchangeable. GPU completion is subsequently
+observed and the captured RGBA is byte-identical to the prior view-prerequisite
+capture. Make release workspace/all-target validation passes 774 tests with 19
+ignored. The final JSON field separation was compiled/tested after this live
+trial; its log retains the earlier outer `queue_prerequisites_ready` label.
+
+This closes the distinction between prepared inputs and observed command
+outcomes, but not full coverage. Missing phase membership, unobserved custom/
+deferred/shadow commands, GPU-indirect culling and stale scene transforms still
+prevent a complete-frame claim. Continue to report `complete_frame:false` and
+`draw_submission_verified:false`; a success count alone is not proof that every
+required entity contributed to a submitted frame.
+
+The next view-scoped increment records each `Camera3d` view's visible standard/
+flat-material mesh requirements, including both CPU- and GPU-culling candidates.
+It checks compiled per-entity specialized pipelines, extracted mesh/material
+instances, prepared assets, mesh allocator residency and pending material queues.
+No views or a missing visibility list cannot satisfy the gate. GPU completion
+registration now requires these prerequisites as well as upload readiness.
+This is not phase-bin membership or successful draw-command evidence:
+`draw_submission_verified:false` and `complete_frame:false` remain mandatory.
+It does not cover shadow views, custom materials or deformation-buffer freshness.
+
+The real Oxbo investigation initially found seven absent GPU meshes among 1,773
+visible material entities. Source inspection (`crates/usd_bevy/src/mesh/compact.rs`)
+and the subsequent main-world counts establish that all seven are empty meshes
+explicitly marked CPU-only by subset compaction. The view scope now follows the
+same render-world usage policy as the upload manifest, while counting excluded
+CPU-only and empty CPU-only entities explicitly. Unloaded referenced meshes
+remain required; absence does not exempt an asset.
+
+`target/perf/p0-view-prerequisites/viewer-scoped.log` verifies all 1,766 renderable
+visible entities, zero missing prerequisites and subsequent GPU completion.
+Earlier `viewer.log`/`viewer-missing.log` retain the diagnostic investigation;
+`oxbo-scoped.png` captures the corrected run. These are diagnostic, not matched
+performance trials. Make release workspace/all-target validation passes 773
+tests, 19 ignored, including mixed CPU/GPU visibility, deduplication, unsupported
+material scope and referenced-unloaded versus explicitly CPU-only requirements.
+
+The follow-up GPU completion probe registers `RenderQueue::on_submitted_work_done`
+after the render schedule reports upload readiness. It emits a separate
+`render_gpu_completion_profile` record with the captured document/generation,
+registration timestamp and callback-observed timestamp. Only one callback may
+be pending; newer generations retry after it completes. No blocking device poll
+or GPU fence wait is introduced. The probe remains opt-in.
+The Make release workspace/all-target gate passes 772 tests, 19 ignored; the
+new request-state test verifies the one-callback bound and latest-revision retry.
+
+The real Oxbo run in `target/perf/p0-gpu-completion/viewer.log` observes callback
+completion at 3,233.689 ms, registered at 3,177.070 ms (56.619 ms later).
+This is one diagnostic run, not a benchmark distribution or a speedup. Callback
+latency includes polling/scheduling and must not be called GPU execution time.
+The inspected `oxbo.png` confirms a rendered viewport; the owned viewer exits
+under its explicit 25-second timeout after capture. A late completion belongs
+to its captured revision, not necessarily the document currently being edited:
+`current_revision_verified:false` and `complete_frame:false` remain explicit.
+Per-view inclusion, transform freshness and full dependency coverage are still
+required before using this as the first-complete-frame acceptance metric.
+
+The opt-in renderer probe now tracks CPU revisions for meshes, images, standard
+materials and flat materials, plus a render-world extraction witness. An old GPU
+asset under the same ID cannot satisfy a new revision solely by being present.
+Unknown revisions remain pending; unrelated asset changes retain valid witnesses.
+GPU asset presence and pipeline readiness remain independent requirements.
+Validation: Make-based release workspace/all-target suite passes 771 tests with
+19 ignored. New tests cover same-ID revision changes, removal, unknown revisions,
+unrelated-asset stability and extraction-command/asset-preparation ordering.
+
+A live Oxbo run exposed an ordering issue: observing before extraction commands
+were applied left all 1,639 required revisions pending. The observer now runs
+after `RenderSystems::ExtractCommands` and before `PrepareAssets`. The subsequent
+real viewer run reached zero pending revisions, assets and pipelines, reported
+`observed_uploads_ready:true`, and produced an inspected viewport screenshot.
+Artifacts: `target/perf/p0-upload-revisions/`; `viewer-live.log` preserves the
+failed ordering trial, `viewer-ordered.log` records the corrected run, and
+`oxbo-ordered.png` is the capture. The viewer was stopped by its explicit timeout
+after capture; exit 124 is not a failed load or a measured load duration.
+
+This is diagnostic evidence, not a comparative performance result. Keep
+`complete_frame:false`: per-view submitted-generation evidence and complete
+deformation/environment dependency coverage are still outstanding. The probe
+does not yet establish current-stage transform freshness or Blender parity.
 
 ### Current checkpoint and next bounded increment
 
@@ -1735,6 +1916,116 @@ retain only configurations with an evidenced end-to-end benefit.
 
 ## P6 — Move sharing ahead of decoding and improve cache indexing
 
+### Device-bounded compact batches (2026-09-17)
+
+The rendered experiment now uses 48-byte translation/quaternion/scale records
+instead of two 4×4 matrices (128 bytes). The shader rotates scaled positions and
+inverse-scaled normals. This reduces point-buffer payload by 62.5%; it is not a
+measured GPU execution speedup. The fixture has normalized rotations and positive
+nonzero scales. Zero/negative scale eligibility, shear in prototype hierarchies
+and deformation remain production integration requirements.
+
+Point batches are bounded by the actual render device's storage-binding limit,
+buffer-allocation limit and the u32 virtual-vertex draw limit. An optional fourth
+CLI argument further limits points per batch. Point records are generated one
+batch at a time, without full-scene transform and matrix scratch vectors. Both
+roots share the same immutable point buffers, with separate root materials and
+draws. The final partial batch retains its exact point count.
+
+Runtime evidence in `target/perf/p6-compact-batches/`:
+
+- 128 cubes: capacities 64, 7 and 1 produce 2, 20 and 128 render entities.
+  All three RGBA captures are byte-identical to the expanded reference, including
+  the partial final batch for capacity 7. Total shared point data is 3,072 bytes.
+- 200,000 cubes: capacity 4,093 gives 25 shared buffers and 50 render entities,
+  containing 4,800,000 bytes of point data. Its capture is byte-identical to the
+  preceding matrix-record compact capture. The same one-pixel difference from
+  the expanded reference remains; no new large-batch difference is introduced.
+- 2,000,000 cubes: capacity 65,536 gives 16 shared buffers and 32 render entities,
+  containing 48,000,000 bytes of point data. Capture succeeds and was inspected.
+  This larger case has no expanded reference comparison; it is bounded rendering
+  evidence, not full correctness or USD loading acceptance.
+- Both larger processes complete under the 24 GiB/no-swap cap and 60-second
+  timeout. Single-run process VmHWM is 419,256 KiB for 200,000 cubes and
+  512,176 KiB for 2,000,000 cubes. These are not GPU-memory measurements or
+  controlled end-to-end performance ratios.
+- Make release workspace/all-target validation passes 784 tests, 19 ignored.
+  The new limit test covers sub-record capacity, exact fit, requested caps,
+  independent storage/allocation limits, zero inputs and u32 draw overflow.
+
+Example invocation after the existing Make build:
+
+```sh
+make --eval='compact-batches:; @systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 timeout --kill-after=5s 60s nixVulkan target/release/examples/compact_instancing compact 1000000 target/perf/p6-compact-batches/million.png 65536' compact-batches
+```
+
+The USD route remains unchanged. Indirect drawing, bounds/culling, shadow/prepass,
+motion vectors, picking, independent clock updates and transactional reload are
+still required before production integration. The lower record size and bounded
+buffers close two prerequisites, not P6 or Moana acceptance.
+
+### Rendered compact point-batch experiment (2026-09-17)
+
+`examples/compact_instancing.rs` and `examples/compact_instancing.wgsl` now
+provide an isolated forward-PBR vertex-pulling experiment. This is **not wired
+into the USD route** and does not yet remove Moana's ECS expansion. It establishes
+a rendered foundation rather than a data-only compact component.
+
+One shared prototype vertex buffer and one shared point-transform buffer feed
+two independently transformed, differently colored root entities. A virtual
+vertex index selects the point and prototype vertex; Bevy's hardware instance
+index still selects the correct root mesh uniform and PBR material. Each root
+is explicitly unbatched. The ordinary expanded reference uses the same geometry,
+transforms, materials, lighting, camera and direct-drawing configuration.
+
+Verified on the RTX 4080/Vulkan, with 24 GiB/no-swap and explicit run timeouts:
+
+- **128 cubes:** compact uses 2 render entities versus 128. The 800×600 RGBA
+  captures are byte-identical, and the nonblank reference was inspected.
+- **200,000 cubes:** both modes complete and capture; the queried ECS counts
+  are 2 versus 200,000 render entities. Only one pixel differs (three channels,
+  maximum channel difference 29/255, mean absolute channel difference
+  0.00003281/255). This is not exact large-batch visual parity; retain the raw
+  difference rather than silently relaxing the gate. The differing pixel is
+  `(563, 333)` in the blue group. The compact image was inspected.
+- Single-run process VmHWM observations are 437,300 KiB compact and
+  1,106,512 KiB expanded. These include renderer/process overhead, are not a
+  five-run benchmark, and establish neither a general speedup nor Moana residency.
+- Make release workspace/all-target validation passes 783 tests, 19 ignored.
+
+Artifacts are under `target/perf/p6-compact-prototype/`: small and large PNG/RGBA
+captures, both run logs, comparison logs and the workspace test log. The example
+exits after capture; all four successful render processes have exited.
+
+Two integration constraints were confirmed by real failed runs and corrected in
+the experiment: Bevy's specialized mesh pipeline cache requires a vertex-buffer
+layout entry even with no vertex attributes, and wgpu still requires that slot
+bound. Use a zero-stride, empty-attribute layout plus the small prototype buffer.
+Also, CPU mesh-uniform building alone does not keep the render-world preprocessing
+capability disabled: render startup recreates it. This direct-only experiment
+sets the capability after its startup initializer, for **both** reference modes.
+No vendored renderer or production viewer behavior was changed.
+
+Reproduce through Make:
+
+```sh
+CARGO_BUILD_JOBS=4 make build CARGO='cargo --offline' \
+  APP_TARGET='--release --example compact_instancing'
+make --eval='compact-check:; @for mode in expanded compact; do systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 timeout --kill-after=5s 45s nixVulkan target/release/examples/compact_instancing $$mode 64 target/perf/p6-compact-prototype/$$mode.png > target/perf/p6-compact-prototype/$$mode.log 2>&1 || exit $$?; grep -q CAPTURE_OK target/perf/p6-compact-prototype/$$mode.log || exit 1; done' compact-check
+cmp target/perf/p6-compact-prototype/{expanded,compact}.png.rgba
+```
+
+**Next integration gates:** reduce the provisional 128-byte point record and
+chunk by device storage-binding and draw-count limits; integrate GPU-indirect
+counts without confusing point indices with root/material indices; implement
+shadow/prepass and motion-vector paths; preserve prototype hierarchy transforms,
+subsets, masks and stable IDs; establish bounds/culling and picking; then wire
+the opt-in route with independent clocks, transactional reload and explicit
+fallback for unsupported geometry. The example disables frustum culling and
+shadows/prepass and supports only opaque, static cuboids. Its 120-frame capture
+delay is not P0's first-complete-frame gate. Do not enable it as a production
+optimization or claim full Moana acceptance at this checkpoint.
+
 Lookup increment: the existing assembly cache now hashes and searches geometry
 once per preparation request. The interned-handle path passes that lookup to
 assembly rather than repeating it, then attaches the result to the known MRU
@@ -1795,6 +2086,51 @@ retained payload budgets. Native prototype identities are never persisted as
 stable cross-run names. PointInstancer work requires its own measured workload.
 
 ## P7 — Reduce source copies and repeated texture discovery
+
+### Direct shared snapshot reads (2026-09-17)
+
+Implemented against `88a636c`: `UsdSource::from_file` reads a root snapshot into
+its final `Arc<[u8]>` allocation. Editor opens and editor dependency snapshots
+use this path; `stage_benchmark` exercises the same root reader. An exact-length
+`repeat_n` iterator constructs the shared buffer safely, followed by reads into
+its unique mutable slice. There is no application-level unsafe code, file
+mapping or mutable disk-backed decoder buffer. Existing shared assets reuse
+their Arc. Size hints that shrink/grow are handled without truncation or padding;
+interrupted reads retry and other I/O errors propagate. The changed-size path
+may allocate another buffer, while the stable-file path avoids Vec-to-Arc copying.
+
+Five alternating, order-reversed baseline/candidate pairs used the unchanged
+683,530,559-byte `xgGroundCover.usd`, under 24 GiB/no-swap and a 30-second timeout
+per process. All runs finish with 74 prims and one layer. Warm filesystem caches
+were not flushed. These are source/open/traversal measurements, excluding point
+expansion, Bevy projection, textures, GPU and UI:
+
+| Metric (median of five) | Baseline | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Source + open + traversal | 394.534 ms | 252.876 ms | 35.9% lower |
+| Process peak RSS (`VmHWM`) | 1,362,188 KiB | 702,108 KiB | 48.5% lower; 644.6 MiB saved |
+
+Five alternating Oxbo headless editor pairs report 2,049.039 → 2,034.339 ms
+median open time (0.7% lower, a small effect rather than a broad viewer speedup).
+Geometry, asset counts and cached payload fields match across all ten runs.
+Make release validation passes 776 workspace/all-target tests (19 ignored) and
+14 native export tests. Added tests cover exact/under/over/zero size hints,
+partial and interrupted reads, read errors, oversized hints, shared-owner reuse,
+missing files and immutable root snapshots after external replacement.
+
+Oxbo viewport RGBA remains byte-identical. Caldera baseline and candidate CLI
+scene-only screenshots are also byte-identical. The default Caldera framing
+still shows an oversized pale ground region and tiny blue scene detail; this is
+regression evidence, not visual correctness or Blender parity. Its automatic
+capture failed the 60-second readiness/frame gate on the control; the separate
+CLI capture succeeded after loading. The initial 40-second control timed out;
+the bounded 120-second control produced the CLI capture before its timeout.
+The candidate was explicitly terminated after its successful CLI capture.
+
+Artifacts, input hashes, compiler version, saved binaries and raw trial rows:
+`target/perf/p7-direct-snapshots/`. This removes the previous snapshot-construction
+peak, not Moana's 21-million-point ECS expansion blocker. No full Moana success
+or ≤5× rendered-frame claim follows from these results.
 
 ### Shared immutable USDC byte snapshots
 
@@ -1949,6 +2285,145 @@ copied/decompressed, peak memory and Oxbo loading. No pathname-only cache may
 serve old contents after Blender saves a new file.
 
 ## P8 — Make reload preparation proportional to changed layers
+
+### Shared decoder inputs (2026-09-17)
+
+The editor now passes immutable replacement snapshots into a crate-private
+`LayerReload::prepare_shared` route. Both it and the unchanged public Vec-based
+API use one preparation implementation. Decoding calls the canonical layer
+registry directly; non-package editor inputs no longer become a temporary Vec
+and then another owned decoder copy. USDC retains its shared reader; formats
+using the default shared decoder can still make their required owned copy.
+Package entry extraction still allocates an entry buffer, and candidate-stage
+serialization/reopening remains unchanged.
+
+Five alternating/order-reversed 64 MiB synthetic trials compare `e689fcf` with
+this increment, under a 24 GiB/no-swap cap and 45-second per-run timeout:
+
+| Metric | Baseline median | Candidate median |
+| --- | ---: | ---: |
+| Changed-source reload | 130.676 ms | 110.558 ms (15.4% lower) |
+| Process peak RSS | 297,412 KiB | 232,476 KiB (63.4 MiB saved) |
+
+Artifacts: `target/perf/p8-shared-decode/`, including all ten trial logs. This
+fixture isolates source ownership, not large geometry or first rendered frame.
+Workspace/all-target release validation passes 783 tests with 19 ignored;
+14 native export tests pass. Binary root/dependency/package cases exercise both
+APIs; shared-input tests cover malformed bytes, duplicate/unknown layers and
+rejection of publication after intervening authoring.
+
+A real viewer reload of a private USDC fixture changes the left cube from red
+to green while the right cube stays blue. The initial RGBA and final PNG are
+byte-identical to the preceding binary-reload baseline captures; the final image
+was inspected. Logs report one changed source and successful reload. This is
+Bevy regression evidence, not Blender parity. The owned viewer scope was stopped.
+
+The next architectural investigation must preserve independent candidate data:
+`Stage::clone` shares its `Rc<StageInner>`, and `AbstractData` currently has no
+snapshot/fork method. Merely cloning the stage would mutate the live document
+during preflight. A genuine isolated layer-data/registry snapshot is needed to
+remove whole-stage serialization safely; this increment does not provide one.
+
+### Shared replacement snapshots (2026-09-17)
+
+Changed disk files now use the direct shared-buffer reader. Immutable byte
+owners are shared by the changed-file map, source snapshot and published resolver
+replacements, rather than cloning the entire file at each handoff. Package-entry
+reads borrow the same shared archive through the canonical `SharedAsset` reader;
+new dependency snapshots also keep their existing shared owners. Previous source
+versions remain immutable. Parsing and field-level candidate validation retain
+their existing owned inputs; this does not eliminate every reload allocation.
+
+`examples/reload_edit_benchmark.rs` creates a private temporary USDA file with a
+64 MiB comment, opens it, changes one Cube size on disk, and times the real reload.
+Every run verifies the new value and unchanged document identity. The fixture
+isolates large-source/small-edit byte ownership; it is explicitly synthetic and
+does not represent large geometry, composed stages or rendered-frame latency.
+No user dataset is modified by this benchmark.
+
+Five alternating/order-reversed final process pairs compare `dcaaa90` with the
+candidate including the binary-format correctness fix. Both use the same USDA
+fixture, 24 GiB/no-swap and a 45-second timeout. Medians:
+
+| Metric | Baseline | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Changed-source reload | 229.309 ms | 136.823 ms | 40.3% lower |
+| Process peak RSS | 492,868 KiB | 297,544 KiB | 39.6% lower; 190.7 MiB saved |
+| Resident bytes after reload | 231,312 KiB | 166,968 KiB | 62.8 MiB saved |
+
+Raw results are `target/perf/p8-shared-replacements/final-{baseline,candidate}-*.log`;
+earlier trials are retained separately. Validation passes 782 workspace/all-target
+tests (19 ignored) and 14 native export tests. Pointer-identity tests prove that
+source updates retain shared owners without changing older versions, and that
+published replacements share storage with the new source snapshot. The binary
+live-reload regression and visual proof are described below; its final green/
+blue capture is byte-identical to the preceding USDA live-reload capture.
+
+Large-stage candidate reconstruction, repeated layer parsing and compact
+point-instancer rendering remain separate open costs. These numbers do not
+establish the ≤5× full-viewer target or full Moana acceptance.
+
+### Binary candidate-snapshot correctness (2026-09-17)
+
+Live USDC reload validation exposed an existing `LayerReload::prepare` bug:
+candidate layers were always exported as USDA text, including snapshots stored
+under `.usdc` identifiers. The candidate decoder then rejected valid saved binary
+documents as corrupt crates. Binary roots, referenced binary layers and binary
+roots inside USDZ all reproduce the error before the fix.
+
+Candidate snapshots now use the USDC writer for `.usdc` paths, including package
+entry paths; text-compatible paths retain their existing text encoding. The
+original stage remains untouched during preparation. Three regression tests
+failed before the fix and pass afterward, checking candidate values and final
+publication. The current worktree passes 782 Make release workspace/all-target
+tests (19 ignored) and 14 native export tests.
+
+A live native-usdcat-generated USDC fixture failed to reload before the fix.
+After the fix, atomically replacing it updates the red cube to green, keeps the
+blue cube visually unchanged and retains document ID 1. Initial RGBA is identical
+before/after the code fix; the successful edited capture was inspected. Both
+owned viewer runs were explicitly stopped. Evidence is retained under
+`target/perf/p8-shared-replacements/`, including `binary-before-fix.log`,
+`workspace-tests-final.log`, `live.log`, `live-fixed.log` and the captures.
+
+### Streaming no-change verification (2026-09-17)
+
+Implemented against `74ed1f4`: initial reload verification streams file content
+through BLAKE3 before allocating a replacement buffer. Unchanged files return
+without a file-sized Vec; changed files are read into a snapshot and hashed again
+from those exact bytes. The post-preflight check also streams fresh disk content
+and still rejects changes made during preparation. The shared `source::file_hash`
+helper is used by save-destination hashing without changing its separate
+permission, regular-file and identity checks.
+
+Tradeoff: changed files with known baselines incur an extra read/hash pass before
+snapshot preparation. New files need only their snapshot read. This increment
+targets no-op verification and its temporary buffers; it does not remove all
+copies in changed-layer preparation or weaken transactional publication.
+
+`examples/reload_benchmark.rs` opens an editor document, then calls the real
+`EditorSession::reload_sources` three times without changing disk content. Five
+alternating/order-reversed Oxbo process pairs, with identical loading profiling,
+24 GiB/no-swap limits and 45-second timeouts, show first-check medians of
+95.914 → 54.858 ms (42.8% lower). All 30 checks report `changed=0`. Raw data retains
+a slower candidate trial; no samples were removed. Warm filesystem caches were
+not flushed. This measures reload verification, not changed-asset reload latency,
+initial loading, projection or rendered frames. Whole-process peak RSS is still
+dominated by opening the document; no measured peak-RSS reduction is claimed.
+
+Make release workspace/all-target validation passes 778 tests (19 ignored) and
+14 native export tests. New tests compare streaming and snapshot hashes across
+buffer boundaries, detect same-size edits, propagate missing-file errors and
+verify that a disk rewrite during preflight leaves the stage/revision unchanged
+and recovers on retry. Existing unrelated-entity/history and texture-reload tests
+remain in the gate.
+
+The live viewer smoke test edits an ignored two-cube USD fixture on disk after
+its initial capture: the red cube turns green, the blue cube remains visually
+unchanged, and the probe retains document ID 1. The watcher logs one changed file
+and successful reload; before/after captures were inspected. The owned viewer
+was terminated after capture. Artifacts and raw timings are retained under
+`target/perf/p8-streaming-verification/`; only the isolated fixture was edited.
 
 No-op inspector increment: `editor::process_commands` retains the existing
 inspector snapshot when a command batch contains only successful ReloadSources

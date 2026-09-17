@@ -374,7 +374,7 @@ pub(crate) fn generate_cached_tangents(world: &mut World, mesh: &mut Mesh) {
     cache.payload_bytes += bytes;
 }
 
-fn mesh_payload_bytes(mesh: &Mesh) -> usize {
+pub(crate) fn mesh_payload_bytes(mesh: &Mesh) -> usize {
     let attributes = mesh.attributes().fold(0usize, |total, (_, values)| total.saturating_add(values.get_bytes().len()));
     let indices = mesh.get_index_buffer_bytes().map_or(0, |bytes| bytes.len());
     let morph = mesh.get_morph_targets().map_or(0, std::mem::size_of_val);

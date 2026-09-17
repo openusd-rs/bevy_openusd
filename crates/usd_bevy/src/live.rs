@@ -471,12 +471,15 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     let previous_material_reads = world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
     world.insert_non_send(crate::route::material::ProjectionMaterialReads::new(stage));
     let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
+    let memory_profiling = profiling && std::env::var_os("USD_PROFILE_MEMORY").is_some();
+    let memory_trace = profiling.then(crate::route::profiling::memory_trace_range).flatten();
     let started = profiling.then(std::time::Instant::now);
     let mut animation_time = std::time::Duration::ZERO;
     let mut route_time = std::time::Duration::ZERO;
     let report = |phase: &str, count: usize, path: &str, animation: std::time::Duration,
                   routes: std::time::Duration, world: &World| {
         let Some(started) = started else { return };
+        if memory_profiling { crate::route::profiling::memory_snapshot(world, phase, count); }
         eprintln!("projection_progress phase={phase} prims={count} elapsed_ms={:.3} animation_ms={:.3} routes_ms={:.3} path={path:?} scope=live-initial-projection",
             started.elapsed().as_secs_f64()*1000.0, animation.as_secs_f64()*1000.0, routes.as_secs_f64()*1000.0);
         if let Some(row) = world.get_resource::<crate::route::material::MaterialResolveTimings>() {
@@ -531,6 +534,8 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
                 .id();
             map.insert(path.as_str().to_string(), entity);
             prim_count += 1;
+            let trace_memory = memory_trace.as_ref().is_some_and(|range| range.contains(&prim_count));
+            if trace_memory { crate::route::profiling::memory_event("prim-begin", path, "animation", None); }
             let sampled = profiling && (prim_count <= 8 || prim_count % 1024 == 0);
             if sampled { report("prim-start", prim_count, path.as_str(), animation_time, route_time, world); }
             let animation_started = profiling.then(std::time::Instant::now);
@@ -538,9 +543,10 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
                 animated.insert(path.as_str().to_string());
             }
             if let Some(started) = animation_started { animation_time += started.elapsed(); }
+            if trace_memory { crate::route::profiling::memory_event("animation-complete", path, "registry", None); }
             // Every prim→component mapping goes through the registry.
             let route_started = profiling.then(std::time::Instant::now);
-            registry.project_prim(stage, path, world, entity);
+            registry.project_prim_traced(stage, path, world, entity, trace_memory);
             if let Some(started) = route_started { route_time += started.elapsed(); }
             map.remember_type(stage, path.as_str());
             let current_composition = (stage.load_rules(), stage.mask(), stage.muted_layers());

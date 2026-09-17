@@ -109,6 +109,14 @@ fn instance_transform(read: &ReadPointInstancer, i: usize) -> Transform {
     xf
 }
 
+fn valid_instance_ids(ids: Option<&[i64]>, count: usize) -> bool {
+    let Some(ids) = ids else { return true };
+    if ids.len() != count { return false; }
+    if ids.windows(2).all(|pair| pair[0] < pair[1]) { return true; }
+    let mut unique = bevy::platform::collections::HashSet::with_capacity(ids.len());
+    ids.iter().all(|id| unique.insert(*id))
+}
+
 impl PointInstancerRoute {
     /// Despawn instance children this route spawned on a previous project, so a
     /// reproject doesn't stack duplicate batches.
@@ -151,24 +159,33 @@ impl PrimRoute for PointInstancerRoute {
             world.entity_mut(entity).insert(UsdInstancerWarning(error));
             return;
         }
+        if ctx.trace_memory {
+            eprintln!("point_instancer_memory path={:?} phase=arrays-read instances={} prototypes={} positions_bytes={} orientations_bytes={} scales_bytes={} indices_bytes={}", ctx.path,
+                read.positions.len(), read.prototypes.len(), std::mem::size_of_val(read.positions.as_slice()),
+                std::mem::size_of_val(read.orientations.as_slice()), std::mem::size_of_val(read.scales.as_slice()), std::mem::size_of_val(read.proto_indices.as_slice()));
+            super::profiling::memory_event("instancer-arrays-read", ctx.path, self.name(), None);
+        }
         let ids = ctx.stage.prim(ctx.path.clone()).ok()
             .and_then(|prim| {
                 let attribute = prim.attribute("ids");
                 ctx.time.map_or_else(|| attribute.get::<Value>(), |time| attribute.get_at::<Value>(openusd::usd::TimeCode::new(time))).ok().flatten()
             });
         let ids = match ids {
-            Some(Value::Int64Vec(ids)) => ids,
-            Some(Value::IntVec(ids)) => ids.into_iter().map(i64::from).collect(),
-            None => (0..read.positions.len()).map(|index| index as i64).collect(),
+            Some(Value::Int64Vec(ids)) => Some(ids),
+            Some(Value::IntVec(ids)) => Some(ids.into_iter().map(i64::from).collect()),
+            None => None,
             _ => {
                 world.entity_mut(entity).insert(UsdInstancerWarning("invalid instance IDs".into()));
                 return;
             }
         };
-        let unique: bevy::platform::collections::HashSet<_> = ids.iter().copied().collect();
-        if ids.len() != read.positions.len() || unique.len() != ids.len() {
+        if !valid_instance_ids(ids.as_deref(), read.positions.len()) {
             world.entity_mut(entity).insert(UsdInstancerWarning("instance IDs must be unique and match positions".into()));
             return;
+        }
+        if ctx.trace_memory {
+            eprintln!("point_instancer_memory path={:?} phase=ids-validated authored_ids={}", ctx.path, ids.is_some());
+            super::profiling::memory_event("instancer-ids-validated", ctx.path, self.name(), None);
         }
         let invisible = match masked_ids(ctx) {
             Ok(ids) => ids,
@@ -191,7 +208,9 @@ impl PrimRoute for PointInstancerRoute {
         let mut proto_cache: HashMap<usize, Option<Prototype>> =
             HashMap::default();
 
+        if ctx.trace_memory { super::profiling::memory_event("instancer-spawn-begin", ctx.path, self.name(), None); }
         for i in 0..read.positions.len() {
+            let id = ids.as_ref().map_or(i as i64, |ids| ids[i]);
             let xf = instance_transform(&read, i);
             let proto_idx = read.proto_indices[i] as usize;
 
@@ -204,10 +223,10 @@ impl PrimRoute for PointInstancerRoute {
                 None
             };
 
-            let child = existing.remove(&ids[i]).unwrap_or_else(|| world.spawn_empty().id());
+            let child = existing.remove(&id).unwrap_or_else(|| world.spawn_empty().id());
             let mut e = world.entity_mut(child);
-            let visibility = if invisible.contains(&ids[i]) { Visibility::Hidden } else { Visibility::default() };
-            e.insert((UsdInstance, UsdInstanceId(ids[i]), xf, visibility, ChildOf(entity)));
+            let visibility = if invisible.contains(&id) { Visibility::Hidden } else { Visibility::default() };
+            e.insert((UsdInstance, UsdInstanceId(id), xf, visibility, ChildOf(entity)));
             match handles {
                 Some(Prototype::Hierarchy(parts)) => {
                     apply_handles(ctx, world, child, None);
@@ -225,6 +244,10 @@ impl PrimRoute for PointInstancerRoute {
                     }
                     apply_handles(ctx, world, child, None);
                 }
+            }
+            if ctx.trace_memory && (i == 0 || (i+1) % 100_000 == 0) {
+                eprintln!("point_instancer_memory path={:?} phase=spawn-progress completed={} total={} allocated_entity_indices={}", ctx.path, i+1, read.positions.len(), world.entities().len());
+                super::profiling::memory_event("instancer-spawn-progress", ctx.path, self.name(), None);
             }
         }
         for child in existing.into_values() { world.despawn(child); }
@@ -416,6 +439,17 @@ fn bake_mesh(ctx: &RouteCtx, world: &mut World, proto_path: &openusd::sdf::Path,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn instance_id_validation_preserves_implicit_and_explicit_identity() {
+        assert!(super::valid_instance_ids(None, 10_000_000));
+        for ids in [&[][..], &[-5, 0, 10], &[10, -5, 0]] {
+            assert!(super::valid_instance_ids(Some(ids), ids.len()));
+        }
+        for (ids, count) in [(&[1, 1][..], 2), (&[1, 3, 1][..], 3), (&[1][..], 2), (&[][..], 1)] {
+            assert!(!super::valid_instance_ids(Some(ids), count));
+        }
+    }
+
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;

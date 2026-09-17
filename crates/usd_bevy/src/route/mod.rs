@@ -33,6 +33,7 @@ pub mod flat_material;
 pub mod native;
 pub mod light;
 pub mod points;
+pub(crate) mod profiling;
 pub mod material;
 pub mod meta;
 mod texture_pack;
@@ -126,6 +127,7 @@ pub struct RouteCtx<'a> {
     pub time: Option<f64>,
     decoded_mesh: std::cell::OnceCell<anyhow::Result<Option<crate::read::geom::ReadMesh>>>,
     read_timing: std::cell::Cell<Option<MeshReadTiming>>,
+    trace_memory: bool,
 }
 
 impl<'a> RouteCtx<'a> {
@@ -149,6 +151,7 @@ impl<'a> RouteCtx<'a> {
             time,
             decoded_mesh: Default::default(),
             read_timing: Default::default(),
+            trace_memory: false,
         }
     }
 
@@ -163,8 +166,12 @@ impl<'a> RouteCtx<'a> {
             self.read_timing.set(Some(timing));
         }
         self.decoded_mesh.get_or_init(|| {
+            if self.trace_memory { profiling::memory_event("mesh-decode-begin", self.path, "read_mesh", None); }
             let started = self.read_timing.get().map(|_| std::time::Instant::now());
             let result = crate::read::geom::read_mesh_at(self.stage, self.path, self.time);
+            if self.trace_memory {
+                profiling::memory_event("mesh-decode-returned", self.path, "read_mesh", result.as_ref().ok().and_then(Option::as_ref).map(cache::read_mesh_bytes));
+            }
             if let Some(started) = started {
                 let mut timing = self.read_timing.get().unwrap();
                 timing.elapsed += started.elapsed();
@@ -351,7 +358,12 @@ impl SchemaRegistry {
     /// Run every matching route's [`project`](PrimRoute::project) on `entity`,
     /// resolving animated attributes at the world's [`StageTime`] (if any).
     pub fn project_prim(&self, stage: &Stage, path: &Path, world: &mut World, entity: Entity) {
-        let ctx = RouteCtx::at(stage, path, time_of(world));
+        self.project_prim_traced(stage, path, world, entity, false);
+    }
+
+    pub(crate) fn project_prim_traced(&self, stage: &Stage, path: &Path, world: &mut World, entity: Entity, trace: bool) {
+        let mut ctx = RouteCtx::at(stage, path, time_of(world));
+        ctx.trace_memory = trace;
         if world.contains_resource::<MeshReadTiming>() { ctx.read_timing.set(Some(MeshReadTiming::default())); }
         self.apply_routes(&ctx, world, entity, None);
         ctx.report_read_timing(world);
@@ -387,7 +399,9 @@ impl SchemaRegistry {
                 }
             }
             if deferred && residency::geometry_route(route.name()) { continue; }
+            if ctx.trace_memory { profiling::memory_event("route-begin", ctx.path, route.name(), None); }
             run_route(route.as_ref(), ctx, world, entity, if full { None } else { changed });
+            if ctx.trace_memory { profiling::memory_event("route-complete", ctx.path, route.name(), None); }
         }
         if !self.builtin_only && full && let Ok(mut entity) = world.get_entity_mut(entity) {
             entity.remove::<residency::UsdDeferredMesh>();

@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `490b221` and the
+Planned against `1dd38c8` on 2026-09-16; reconciled against `2d015e4` and the
 working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
@@ -22,11 +22,13 @@ research, measurements, rejected experiments and acceptance requirements.
   approximately 191 seconds; its last sampled checkpoint is 333,824 prims.
   This is a confirmed memory-limit failure, not a completed load or timeout.
   Keep hidden-mesh deferral opt-in.
-- **Next investigation:** attribute the memory growth around the failing Moana
-  projection region. Record current prim/route and retained source, geometry,
-  texture and preparation bytes before large allocations; the 1,024-prim sampling
-  interval does not identify the exact failing allocation. Keep the 24 GiB/no-swap
-  cap. Material read reuse is implemented; do not repeat that experiment.
+- **New attribution, not a fix:** the working-tree memory instrumentation locates
+  Moana's failure during point-instance expansion at
+  `/island/isBeach/geometry/xgFibers/instancer`. The latest attempt reads 452,662
+  instances and four prototypes, validates implicit IDs, and reaches 300,000
+  spawned instances before a confirmed 24 GiB cgroup OOM. Removing implicit-ID
+  scratch allocations alone does not solve this failure. Follow the bounded
+  instancer investigation below; do not raise the cap or omit scene content.
 - **Acceptance blocker:** finish P0's revision-specific submitted-frame gate and
   matched native runs for Oxbo/Caldera. Headless CPU improvements do not establish
   the ≤5× rendered-frame target.
@@ -67,7 +69,9 @@ establish the ≤5× rendered-frame target.
 ## Next implementation checkpoints
 
 This is the performance implementation plan, not a claim that its phases are
-finished. Preserve the detailed evidence below and execute in this order:
+finished. The immediate handoff and the memory investigation below take precedence
+over this earlier checkpoint sequence. Preserve the detailed evidence; remaining
+P4 validation is required before default enablement, not a prerequisite for P0.
 
 1. **Finish validating the opt-in P4 prototype.** The initial implementation in
    `crates/usd_bevy/src/route/residency.rs`, `route/mod.rs`, `live.rs`, `asset.rs`
@@ -105,6 +109,79 @@ Acceptance for every increment: a passing Make-based workspace gate, targeted
 behavior checks, retained raw before/after measurements and visual evidence
 where render output can change. Commit only validated changes; leave incomplete
 phases marked incomplete. Validation of an increment does not complete its phase.
+
+### Bounded point-instancer memory investigation (P6)
+
+**Evidence checked on 2026-09-17:**
+`target/perf/p6-instancer-ids/moana.log` records successful array decoding and ID
+validation, followed by instance-spawn progress at 1, 100,000, 200,000 and 300,000
+of 452,662 instances. RSS grows from 24,803,393,536 bytes before expansion to
+25,667,592,192 bytes at the last checkpoint. The associated
+`usd-perf-instancer-ids.scope` reports `Result=oom-kill` and
+`MemoryPeak=25769803776`. This localizes the failure to expansion, but does not
+identify the exact allocation that triggered the kill or explain earlier residency.
+The diagnostic and ID-allocation increment removes implicit-ID vector/hash scratch,
+skips uniqueness hashing for strictly increasing authored IDs, and releases other
+uniqueness scratch before expansion. The Make release workspace/all-target gate
+records 768 passing tests and 19 ignored in
+`target/perf/p6-instancer-ids/tests.log`. The benchmark/capture build passed; a
+fresh Oxbo capture was inspected and its RGBA is byte-identical to
+`target/perf/oxbo-current/original.rgba`. This is regression evidence, not Blender
+parity or a demonstrated full-load speedup. The OOM remains unresolved.
+
+The earlier `target/perf/p0-memory-region/moana.log` reports approximately
+19.07 GB RSS before projection, including 2.71 GB of image payload. Near the
+failure, mesh payload is approximately 2.70 GB. These payload figures omit
+capacity, allocator, source, ECS and GPU overhead; cache figures can overlap.
+Do not add overlapping counters or call the residual exclusively ECS memory.
+Bevy 0.19.1 `Entities::len()` counts allocated entity indices, not live entities;
+the earlier diagnostic label `entities` must not be interpreted as a live count.
+
+**Execution order and deliverables:**
+
+1. **Establish a reproducible expansion profile.** Scope source inspection to
+   `crates/usd_bevy/src/route/{instancer,profiling,cache}.rs`, `read/geom.rs`,
+   `live.rs` and the benchmark example. Retain the full-stage bounded control;
+   additionally isolate the same instancer with its required prototype/material
+   dependencies for attribution. Label isolated results separately, not as Moana
+   load times. Sample live entity counts outside the per-instance hot loop and
+   distinguish root instances from prototype descendants. Measure bytes and time
+   before arrays, prototype baking, instance construction and GPU preparation.
+2. **Test smaller representation-preserving reductions first.** Profile repeated
+   `Prototype::Hierarchy` cloning, path/map allocations and per-instance child
+   bookkeeping. Share immutable prototype descriptors where safe, without sharing
+   mutable root state. Retain ID ordering, invisible IDs, hierarchy transforms,
+   picking, updates and custom-route behavior. Reject changes without repeatable
+   time or peak-memory benefit. The implicit-ID scratch removal is not a
+   demonstrated full-scene solution.
+3. **Design compact instancing only if expansion remains dominant.** Specify a
+   logical point-ID-to-render-instance mapping and shared prototype draw data
+   instead of assuming every render instance needs a complete ECS subtree.
+   Before implementation, define compatibility for public entity access, picking,
+   material subsets, affine transforms, shadows, visibility, animated arrays,
+   independent clocks and transactional reload. Keep an explicit fallback for
+   unsupported prototypes and custom routes. Never silently drop points or
+   substitute flattened, non-editable geometry to meet the benchmark.
+4. **Validate in layers.** First cover implicit/explicit IDs, duplicate rejection,
+   reordered IDs, invisible points, multiple prototypes, nested hierarchies and
+   changed array lengths in existing instancer tests. Then compare eager and
+   candidate captures at matched time/camera, exercise two independently clocked
+   roots, and edit/reload one root while preserving the other's state. Use the
+   Make workspace gate listed below; do not substitute a test count for these
+   behavioral and visual acceptance requirements.
+5. **Accept only measured progress.** Run at least five alternating fresh-process
+   baseline/candidate trials on a completing instancer workload, with identical
+   profiler settings and retained raw times/RSS. Run full Moana separately under
+   the same 24 GiB/no-swap and explicit time limit. Record OOM, timeout and complete
+   frame as different outcomes. A surviving CPU load still requires P0's submitted
+   frame gate before it counts as rendered acceptance.
+
+**Stop conditions:** an API/semantic incompatibility requires a design decision,
+not an implicit behavior change. No memory-limit increase, unsafe `Stage`
+threading, lower visual settings, instance-count cap or unrelated environment
+changes. Keep this increment separate from the P0 readiness work and commit only
+after its own verification. The current tests/build logs are historical evidence;
+this plan update does not represent a new build or benchmark run.
 
 ## Objective
 

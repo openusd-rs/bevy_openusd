@@ -1,14 +1,84 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `2d015e4` and the
+Planned against `1dd38c8` on 2026-09-16; reconciled against `bd54421` and the
 working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
+
+## Execution roadmap
+
+This is the implementation plan, not a claim that the performance target has
+been met. Preserve the detailed evidence below; execute one measured increment
+at a time. The `src/perf_render.rs` revision-witness increment is validated below;
+it is not the complete submitted-frame gate.
+
+| Order | Deliverable | Acceptance gate |
+| --- | --- | --- |
+| 1 — P0 | Finish revision-aware renderer measurement in `src/perf_render.rs`, including same-ID asset replacement, required dependencies and per-view submitted-generation evidence. | Stale uploads cannot satisfy readiness; a real viewer run demonstrates the gate. Keep `complete_frame:false` until submission and dependency coverage are implemented and verified. |
+| 2 — P0 | Establish matched Oxbo and Caldera native/viewer baselines. | Same asset, camera, resolution, purpose, payload policy and declared cache state; five alternating runs, phase timings, peak RSS and first-complete-frame distributions. Report the ratio only for matched measurements. |
+| 3 — P6 | Prototype an opt-in compact point-instancer rendering route instead of expanding every point into ECS hierarchies. | Render all supported instances with correct transforms, materials, subsets and shadows; retain compatibility fallback for unsupported cases. Prove multiple roots, independent clocks, picking, bounds and asset-local reload on small fixtures before bounded Moana trials. |
+| 4 — P3/P7 | Profile remaining composition/value lookup, array decoding and source-buffer peaks. | Select the largest measured cost, change one mechanism, preserve composition/edit semantics and retain only improvements demonstrated by alternating trials. Do not repeat rejected caches without new evidence. |
+| 5 — P4/P5/P8 | Complete bounded preparation, residency and incremental reload. | Bounded frame work, cancellation and stale-result rejection; visibility/variant changes reveal correct content; changing one USD asset does not reload unrelated roots. Keep incomplete deferral opt-in. |
+| 6 — final | Re-run the complete acceptance matrix. | Oxbo/Caldera ≤5× matched native first-complete-frame, no rendered regression, and an honest bounded Moana result with retained logs. |
+
+### Why compact instancing is the major remaining change
+
+The recorded Moana investigation identifies 21,357,212 ground-cover points
+expanded into four entities each. The latest traced full-scene attempt reaches
+the 24 GiB cap before completing this expansion. Sharing paths and immutable
+source bytes reduces residency, but cannot make this representation scale.
+Do not raise the cap, silently omit points, or call a data-only compact component
+a rendered solution. Design the GPU representation and draw integration together;
+validate standard PBR, shadow/prepass behavior and instance indexing explicitly.
+
+### Rules for every implementation increment
+
+1. Record the baseline commit, candidate diff, input hashes, profiler settings
+   and raw artifacts under `target/perf/<increment>/`.
+2. Use Make-based build and validation commands from the verification section;
+   do not change environment files or clean away datasets.
+3. Run benchmarks without concurrent builds. Keep large-scene runs under
+   `MemoryMax=24G`, `MemorySwapMax=0` and an explicit timeout; distinguish OOM,
+   timeout, failed rendering and successful completion.
+4. Compare rendered output as well as timings. Bevy-baseline equality is a
+   regression check, not Blender/EEVEE parity. Caldera's known visual artifacts
+   remain a separate correctness blocker.
+5. Preserve transactional asset-local reload, authored composition and separate
+   root playback clocks. Reject speedups that weaken these contracts.
+6. Commit accepted increments separately with unsigned, title-only Conventional
+   Commits. Update this plan with evidence and remaining limitations; do not push
+   without a request.
 
 ## Immediate handoff
 
 Keep implementation incremental. The detailed P0–P8 sections below retain the
 research, measurements, rejected experiments and acceptance requirements.
+
+### P0 extraction-revision checkpoint (2026-09-17)
+
+The opt-in renderer probe now tracks CPU revisions for meshes, images, standard
+materials and flat materials, plus a render-world extraction witness. An old GPU
+asset under the same ID cannot satisfy a new revision solely by being present.
+Unknown revisions remain pending; unrelated asset changes retain valid witnesses.
+GPU asset presence and pipeline readiness remain independent requirements.
+Validation: Make-based release workspace/all-target suite passes 771 tests with
+19 ignored. New tests cover same-ID revision changes, removal, unknown revisions,
+unrelated-asset stability and extraction-command/asset-preparation ordering.
+
+A live Oxbo run exposed an ordering issue: observing before extraction commands
+were applied left all 1,639 required revisions pending. The observer now runs
+after `RenderSystems::ExtractCommands` and before `PrepareAssets`. The subsequent
+real viewer run reached zero pending revisions, assets and pipelines, reported
+`observed_uploads_ready:true`, and produced an inspected viewport screenshot.
+Artifacts: `target/perf/p0-upload-revisions/`; `viewer-live.log` preserves the
+failed ordering trial, `viewer-ordered.log` records the corrected run, and
+`oxbo-ordered.png` is the capture. The viewer was stopped by its explicit timeout
+after capture; exit 124 is not a failed load or a measured load duration.
+
+This is diagnostic evidence, not a comparative performance result. Keep
+`complete_frame:false`: per-view submitted-generation evidence and complete
+deformation/environment dependency coverage are still outstanding. The probe
+does not yet establish current-stage transform freshness or Blender parity.
 
 ### Current checkpoint and next bounded increment
 

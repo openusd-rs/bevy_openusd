@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Instant};
-use bevy::{asset::{AssetId, RenderAssetUsages, VisitAssetDependencies}, prelude::*};
+use bevy::{asset::{AssetId, UntypedAssetId, RenderAssetUsages, VisitAssetDependencies}, prelude::*};
+use bevy::ecs::message::MessageCursor;
 use bevy::render::{
     erased_render_asset::ErasedRenderAssets,
     extract_resource::{ExtractResource, ExtractResourcePlugin},
@@ -20,13 +21,66 @@ struct UploadManifest {
     materials: Arc<[AssetId<StandardMaterial>]>,
     flat_materials: Arc<[AssetId<FlatMaterial>]>,
     flat_assets_present: bool,
+    revisions: Arc<std::collections::HashMap<UntypedAssetId, u64>>,
 }
 
 impl Default for UploadManifest {
     fn default() -> Self {
         Self { started: Instant::now(), document: None, generation: 0, collected_ms: 0.0,
-            meshes: Arc::from([]), images: Arc::from([]), materials: Arc::from([]), flat_materials: Arc::from([]), flat_assets_present: false }
+            meshes: Arc::from([]), images: Arc::from([]), materials: Arc::from([]), flat_materials: Arc::from([]), flat_assets_present: false,
+            revisions: Default::default() }
     }
+}
+
+impl UploadManifest {
+    fn required_ids(&self) -> impl Iterator<Item = UntypedAssetId> + '_ {
+        self.meshes.iter().map(|id| id.untyped()).chain(self.images.iter().map(|id| id.untyped()))
+            .chain(self.materials.iter().map(|id| id.untyped())).chain(self.flat_materials.iter().map(|id| id.untyped()))
+    }
+}
+
+#[derive(Resource, Default)]
+struct ExtractedRevisions(std::collections::HashMap<UntypedAssetId, u64>);
+
+impl ExtractedRevisions {
+    fn observe<A: Asset>(&mut self, manifest: &UploadManifest,
+        removed: impl Iterator<Item = AssetId<A>>, extracted: impl Iterator<Item = AssetId<A>>) {
+        for id in removed { self.0.remove(&id.untyped()); }
+        for id in extracted {
+            let id = id.untyped();
+            if let Some(revision) = manifest.revisions.get(&id) { self.0.insert(id, *revision); }
+            else { self.0.remove(&id); }
+        }
+    }
+
+    fn pending(&self, manifest: &UploadManifest) -> usize {
+        manifest.required_ids().filter(|id| manifest.revisions.get(id)
+            .is_none_or(|revision| self.0.get(id) != Some(revision))).count()
+    }
+}
+
+fn changed_asset<A: Asset>(event: &AssetEvent<A>) -> Option<UntypedAssetId> {
+    match event {
+        AssetEvent::Added { id } | AssetEvent::Modified { id } | AssetEvent::Removed { id } => Some(id.untyped()),
+        _ => None,
+    }
+}
+
+fn observe_extraction(
+    manifest: Option<Res<UploadManifest>>, mut revisions: ResMut<ExtractedRevisions>,
+    meshes: Option<Res<bevy::render::render_asset::ExtractedAssets<RenderMesh>>>,
+    images: Option<Res<bevy::render::render_asset::ExtractedAssets<GpuImage>>>,
+    materials: Option<Res<bevy::render::erased_render_asset::ExtractedAssets<MeshMaterial3d<StandardMaterial>>>>,
+    flat: Option<Res<bevy::render::erased_render_asset::ExtractedAssets<MeshMaterial3d<FlatMaterial>>>>,
+) {
+    let Some(manifest) = manifest else { return };
+    macro_rules! observe {
+        ($assets:expr) => { if let Some(assets) = $assets {
+            revisions.observe(&manifest, assets.removed.iter().copied(), assets.extracted.iter().map(|(id, _)| *id));
+        }};
+    }
+    observe!(meshes); observe!(images); observe!(materials); observe!(flat);
+    revisions.0.retain(|id, _| manifest.revisions.contains_key(id));
 }
 
 pub fn configure(app: &mut App) {
@@ -37,7 +91,9 @@ pub fn configure(app: &mut App) {
     }
     app.init_resource::<UploadManifest>().add_plugins(ExtractResourcePlugin::<UploadManifest>::default())
         .add_systems(Last, collect_manifest);
-    app.sub_app_mut(RenderApp).add_systems(Render, report_uploads.after(RenderSystems::Render));
+    app.sub_app_mut(RenderApp).init_resource::<ExtractedRevisions>()
+        .add_systems(Render, observe_extraction.after(RenderSystems::ExtractCommands).before(RenderSystems::PrepareAssets))
+        .add_systems(Render, report_uploads.after(RenderSystems::Render));
 }
 
 fn collect_manifest(
@@ -47,13 +103,18 @@ fn collect_manifest(
     mut mesh_events: MessageReader<AssetEvent<Mesh>>,
     mut image_events: MessageReader<AssetEvent<Image>>,
     mut material_events: MessageReader<AssetEvent<StandardMaterial>>,
+    flat_events: Option<Res<Messages<AssetEvent<FlatMaterial>>>>,
+    mut flat_cursor: Local<MessageCursor<AssetEvent<FlatMaterial>>>,
     renderables: Query<(Option<Ref<Mesh3d>>, Option<Ref<MeshMaterial3d<StandardMaterial>>>, Option<Ref<MeshMaterial3d<FlatMaterial>>>),
         Or<(With<Mesh3d>, With<MeshMaterial3d<StandardMaterial>>, With<MeshMaterial3d<FlatMaterial>>)>>,
     mut removed: (RemovedComponents<Mesh3d>, RemovedComponents<MeshMaterial3d<StandardMaterial>>, RemovedComponents<MeshMaterial3d<FlatMaterial>>),
     mut manifest: ResMut<UploadManifest>,
 ) {
     let removed = removed.0.read().count() + removed.1.read().count() + removed.2.read().count() != 0;
-    let changed = mesh_events.read().count() + image_events.read().count() + material_events.read().count() != 0
+    let mut revised: std::collections::HashSet<_> = mesh_events.read().filter_map(changed_asset)
+        .chain(image_events.read().filter_map(changed_asset)).chain(material_events.read().filter_map(changed_asset)).collect();
+    if let Some(events) = flat_events { revised.extend(flat_cursor.read(&events).filter_map(changed_asset)); }
+    let changed = !revised.is_empty()
         || flat_materials.as_ref().is_some_and(|materials| materials.is_changed())
         || (flat_materials.is_none() && manifest.flat_assets_present) || removed
         || renderables.iter().any(|(mesh, material, flat)| mesh.is_some_and(|value| value.is_changed())
@@ -63,6 +124,8 @@ fn collect_manifest(
     manifest.document = document;
     manifest.flat_assets_present = flat_materials.is_some();
     manifest.generation = manifest.generation.checked_add(1).expect("upload generation exhausted");
+    let generation = manifest.generation;
+    for id in revised { Arc::make_mut(&mut manifest.revisions).insert(id, generation); }
     manifest.collected_ms = manifest.started.elapsed().as_secs_f64() * 1000.0;
     let mut required_meshes: std::collections::HashSet<_> = meshes.iter()
         .filter(|(_, mesh)| mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)).map(|(id, _)| id).collect();
@@ -93,6 +156,8 @@ fn collect_manifest(
     manifest.images = required_images.into_iter().collect::<Vec<_>>().into();
     manifest.materials = required_materials.into_iter().collect::<Vec<_>>().into();
     manifest.flat_materials = required_flat.into_iter().collect::<Vec<_>>().into();
+    let required: std::collections::HashSet<_> = manifest.required_ids().collect();
+    Arc::make_mut(&mut manifest.revisions).retain(|id, _| required.contains(id));
 }
 
 fn pending<T: Copy>(ids: &[T], mut prepared: impl FnMut(T) -> bool) -> usize {
@@ -103,13 +168,15 @@ fn report_uploads(
     manifest: Option<Res<UploadManifest>>,
     meshes: Res<RenderAssets<RenderMesh>>, images: Res<RenderAssets<GpuImage>>,
     materials: Res<ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
-    pipelines: Res<PipelineCache>, mut previous: Local<Option<(u64, usize, usize, usize, usize, usize)>>,
+    pipelines: Res<PipelineCache>, revisions: Res<ExtractedRevisions>,
+    mut previous: Local<Option<(u64, usize, usize, usize, usize, usize, usize)>>,
 ) {
     let Some(manifest) = manifest.filter(|manifest| manifest.document.is_some()) else { return; };
     let missing_meshes = pending(&manifest.meshes, |id| meshes.get(id).is_some());
     let missing_images = pending(&manifest.images, |id| images.get(id).is_some());
     let missing_materials = pending(&manifest.materials, |id| materials.get(id.untyped()).is_some())
         + pending(&manifest.flat_materials, |id| materials.get(id.untyped()).is_some());
+    let pending_revisions = revisions.pending(&manifest);
     let mut waiting = 0;
     let mut errors = Vec::new();
     for pipeline in pipelines.pipelines() {
@@ -119,7 +186,7 @@ fn report_uploads(
             _ => waiting += 1,
         }
     }
-    let state = (manifest.generation, missing_meshes, missing_images, missing_materials, waiting, errors.len());
+    let state = (manifest.generation, missing_meshes, missing_images, missing_materials, waiting, errors.len(), pending_revisions);
     if previous.as_ref() == Some(&state) { return; }
     *previous = Some(state);
     eprintln!("render_asset_profile {}", serde_json::json!({
@@ -136,14 +203,98 @@ fn report_uploads(
         "pending_mesh_id_sample": manifest.meshes.iter().filter(|id| meshes.get(**id).is_none()).take(8)
             .map(|id| format!("{id:?}")).collect::<Vec<_>>(),
         "pending_prepared_materials": missing_materials,
+        "pending_revision_extractions": pending_revisions,
+        "revision_scope": "mesh-image-standard-material-flat-material",
         "pending_pipelines": waiting, "pipeline_errors": errors,
-        "observed_uploads_ready": missing_meshes == 0 && missing_images == 0 && missing_materials == 0 && waiting == 0 && errors.is_empty(),
+        "observed_uploads_ready": missing_meshes == 0 && missing_images == 0 && missing_materials == 0 && pending_revisions == 0 && waiting == 0 && errors.is_empty(),
     }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extraction_observer_runs_after_manifest_commands_before_asset_drain() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>().init_resource::<ExtractedRevisions>();
+        let mesh = app.world().resource::<Assets<Mesh>>().reserve_handle();
+        let id = mesh.id();
+        app.add_systems(Update, (move |mut commands: Commands| {
+            let mut manifest = UploadManifest::default();
+            manifest.meshes = Arc::from([id]);
+            Arc::make_mut(&mut manifest.revisions).insert(id.untyped(), 7);
+            commands.insert_resource(manifest);
+            let mut extracted = bevy::render::render_asset::ExtractedAssets::<RenderMesh>::default();
+            extracted.extracted.push((id, Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default())));
+            commands.insert_resource(extracted);
+        }).in_set(RenderSystems::ExtractCommands));
+        app.configure_sets(Update, (RenderSystems::ExtractCommands, RenderSystems::PrepareAssets).chain());
+        app.add_systems(Update, observe_extraction.after(RenderSystems::ExtractCommands).before(RenderSystems::PrepareAssets));
+        app.add_systems(Update, (|manifest: Res<UploadManifest>, witness: Res<ExtractedRevisions>,
+            mut extracted: ResMut<bevy::render::render_asset::ExtractedAssets<RenderMesh>>| {
+            assert_eq!(witness.pending(&manifest), 0);
+            assert_eq!(extracted.extracted.len(), 1);
+            extracted.extracted.clear();
+        }).in_set(RenderSystems::PrepareAssets));
+        app.update();
+    }
+
+    #[test]
+    fn extraction_witness_tracks_replacements_without_invalidating_other_assets() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<Image>>()
+            .init_resource::<Assets<StandardMaterial>>().init_resource::<Assets<FlatMaterial>>()
+            .init_resource::<UploadManifest>()
+            .add_message::<AssetEvent<Mesh>>().add_message::<AssetEvent<Image>>()
+            .add_message::<AssetEvent<StandardMaterial>>().add_message::<AssetEvent<FlatMaterial>>()
+            .add_systems(Update, collect_manifest);
+        let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList, RenderAssetUsages::default()));
+        app.world_mut().write_message(AssetEvent::<Mesh>::Added { id: mesh.id() });
+        app.update();
+        let mut witness = ExtractedRevisions::default();
+        let manifest = app.world().resource::<UploadManifest>();
+        assert_eq!(witness.pending(manifest), 1);
+        witness.observe(manifest, std::iter::empty(), std::iter::once(mesh.id()));
+        assert_eq!(witness.pending(manifest), 0);
+        let mesh_revision = manifest.revisions[&mesh.id().untyped()];
+
+        let flat = app.world_mut().resource_mut::<Assets<FlatMaterial>>().add(FlatMaterial::default());
+        app.world_mut().write_message(AssetEvent::<FlatMaterial>::Added { id: flat.id() });
+        app.update();
+        let manifest = app.world().resource::<UploadManifest>();
+        assert_eq!(manifest.revisions[&mesh.id().untyped()], mesh_revision);
+        assert_eq!(witness.pending(manifest), 1);
+        witness.observe(manifest, std::iter::empty(), std::iter::once(flat.id()));
+        assert_eq!(witness.pending(manifest), 0);
+
+        app.world_mut().write_message(AssetEvent::<Mesh>::Modified { id: mesh.id() });
+        app.update();
+        let manifest = app.world().resource::<UploadManifest>();
+        assert!(manifest.revisions[&mesh.id().untyped()] > mesh_revision);
+        assert_eq!(witness.pending(manifest), 1);
+        witness.observe(manifest, std::iter::empty(), std::iter::once(mesh.id()));
+        assert_eq!(witness.pending(manifest), 0);
+        assert_eq!(pending(&manifest.meshes, |_| false), 1);
+
+        app.world_mut().spawn(Mesh3d(mesh.clone()));
+        app.world_mut().resource_mut::<Assets<Mesh>>().remove(mesh.id());
+        app.world_mut().write_message(AssetEvent::<Mesh>::Removed { id: mesh.id() });
+        app.update();
+        let manifest = app.world().resource::<UploadManifest>();
+        witness.observe(manifest, std::iter::once(mesh.id()), std::iter::empty());
+        assert_eq!(witness.pending(manifest), 1);
+        assert!(!witness.0.contains_key(&mesh.id().untyped()));
+
+        let missing = app.world().resource::<Assets<Image>>().reserve_handle();
+        let mut unknown = manifest.clone();
+        unknown.images = Arc::from([missing.id()]);
+        witness.observe(&unknown, std::iter::empty(), std::iter::once(missing.id()));
+        assert_eq!(witness.pending(&unknown), 2);
+        assert!(!witness.0.contains_key(&missing.id().untyped()));
+    }
 
     #[test]
     fn material_dependencies_track_missing_replaced_and_flat_textures() {

@@ -84,6 +84,7 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, LiveStagePlugin, EditorPlugin));
     app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
+    if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() { app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>(); }
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
         app.init_resource::<usd_bevy::route::ProjectionTimings>();

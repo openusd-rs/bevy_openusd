@@ -371,6 +371,8 @@ fn spawn_usd_scenes(world: &mut World) {
                 ));
                 instances.roots.insert(entity, InstanceRuntime {
                     asset: handle.id(), live, map, textures: SnapshotTextures(textures), sampled: current,
+                    purposes: world.get_resource::<crate::route::DisplayPurposes>().copied().unwrap_or_default(),
+                    defer_hidden: crate::route::residency::enabled(world),
                     subdivision_levels: crate::route::subdivision::current_levels(world),
                     curve_steps: crate::route::curves::current_geometry_key(world),
                     job,

@@ -1,8 +1,50 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16. Status: **P0–P3/P5–P7 in progress; P4 attribution underway; P8 planned**.
+Planned against `1dd38c8` on 2026-09-16; reconciled against `9ea5ced` and the
+working tree on 2026-09-17. Status: **P0–P7 in progress; P4 opt-in only; P8 planned**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
+
+## Next implementation checkpoints
+
+This is the performance implementation plan, not a claim that its phases are
+finished. Preserve the detailed evidence below and execute in this order:
+
+1. **Finish validating the opt-in P4 prototype.** The initial implementation in
+   `crates/usd_bevy/src/route/residency.rs`, `route/mod.rs`, `live.rs`, `asset.rs`
+   and `instance.rs` defer initially hierarchy-hidden built-in Mesh preparation.
+   The benchmark/capture examples expose `USD_DEFER_HIDDEN_MESHES=1`; eager mode
+   remains the control. The test ownership error (`Attribute::set` consumes its
+   handle) is corrected; `target/perf/p4-defer/tests.log` records 743 passing
+   workspace/all-target tests and 19 ignored. Initial Caldera timing and image
+   evidence is recorded under P4 below. Do not enable this feature by default yet.
+2. **Prove P4 correctness and benefit independently.** Cover ancestor visibility,
+   purpose, per-root clocks, hidden edits/reloads, variant retention, demanded
+   prototypes and custom-route fallback. Compare eager/deferred Caldera RGBA
+   under identical settings, then alternate at least five fresh process runs
+   per mode. Record route times, total CPU loading, peak RSS and reveal latency.
+   Existing attribution identifies roughly 15 seconds of hidden Caldera work,
+   not a guaranteed saving. Oxbo has almost no such work: use it as a regression
+   control, not evidence of this strategy's benefit.
+3. **Close P0 before claiming the 5× target.** Implement generation-specific
+   required-asset readiness through submitted rendering, and match camera,
+   purposes, time, textures, renderer settings and cache conditions with the
+   native comparator. CPU Ready, global pipeline readiness and screenshot
+   process exit are not interchangeable with a first complete frame.
+4. **Reprofile Oxbo separately.** Rank remaining stage open, validation,
+   geometry, deformation, texture and GPU preparation costs. Select the largest
+   measured avoidable component from P1–P3/P6/P7; do not assume Caldera's hidden
+   geometry strategy transfers. Keep each change independently measurable.
+5. **Only then expand scheduling and residency.** P5 requires bounded owned
+   inputs, revision-checked publication and cancellation, not shared mutable
+   Stage access. The rejected subset-worker trial below is not evidence that
+   all parallel preparation is futile, but repeating it without a new profile
+   is not a priority. P8 must preserve asset-local transactional reload.
+
+Acceptance for every increment: a passing Make-based workspace gate, targeted
+behavior checks, retained raw before/after measurements and visual evidence
+where render output can change. Commit only validated changes; leave incomplete
+phases marked incomplete. Validation of an increment does not complete its phase.
 
 ## Objective
 
@@ -135,7 +177,7 @@ Update status only with linked evidence and a commit.
 | P1 | Cache subset products before construction | P0 attribution | M–L / medium | IN PROGRESS |
 | P2 | Cache deformation discovery and preparation | P0 attribution | L / high | IN PROGRESS |
 | P3 | Separate validation from discarded geometry decoding | P0 attribution | M–L / high | IN PROGRESS |
-| P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | ATTRIBUTION ONLY |
+| P4 | Demand-driven initial geometry residency | P0, P1, P2 | L / high | OPT-IN; INITIAL GATES PASS |
 | P5 | Bounded owned-data worker pipeline | P0, P1, P2 | L / high | SCHEDULING IN PROGRESS |
 | P6 | Pre-decode prototype reuse and cache indexing | P0, P1; coordinate P4/P5 | L / high | LOOKUP IN PROGRESS |
 | P7 | Shared input buffers and texture manifests | P0, P3 | M–L / medium-high | MANIFEST IN PROGRESS |
@@ -530,6 +572,47 @@ pass. Counters show removed duplicate array decoding and manifest reuse without
 skipping necessary composition. Benchmark editor and asset-instance paths separately.
 
 ## P4 — Separate logical prims from initial geometry residency
+
+Initial opt-in increment, 2026-09-17: `route::residency::DeferHiddenMeshes`
+defers Mesh/Material/Skin/Subdivision/Subset routes for initially hidden Mesh
+prims in the built-in registry. Logical hierarchy and non-render metadata remain
+projected. Promotion reads the current stage, clock and settings. Resident meshes
+are not evicted. Registering custom routes disables deferral; removing the
+resource materializes pending geometry. Both LiveStage and asset-instance paths
+have promotion hooks; instance roots now also respond to DisplayPurposes changes.
+
+Validation: 743 workspace/all-target release tests passed, 19 ignored. New cases
+cover independent roots, hidden geometry edits, clock changes before reveal,
+on/off/on handle retention, disabling the feature, purpose changes and initial
+custom-route fallback. Make-built benchmark and capture examples expose the
+opt-in environment flag; no default behavior is changed.
+
+Same-binary diagnostic CPU comparison (two opens per mode, deferred then eager):
+
+| Caldera | Eager | Deferred |
+| --- | --- | --- |
+| CPU open samples | 42.297 / 40.652 s | 26.089 / 24.272 s |
+| Retained mesh entities | 50,125 | 8,111 |
+| Retained subset entities | 23,291 | 209 |
+| Unique mesh assets | 2,509 | 188 |
+
+These samples show approximately 16 seconds less initial CPU work, not a
+five-process alternating acceptance benchmark or first-complete-frame result.
+The deferred offscreen capture completed in 41.18 s with peak RSS 15,258,772 KiB;
+its RGBA is byte-identical to `target/perf/p4-cpu/caldera.rgba` (SHA-256
+`02377dd93ade5d9955a330b1e49d80822671c089d256df4fe4cb77712f56117f`).
+The inspected image retains the existing baseline's color/noise artifacts;
+identity proves non-regression for this view, not Blender fidelity. Raw logs and
+images are in `target/perf/p4-defer/`.
+Oxbo deferred CPU opens were 3.558 / 3.106 s; this is a smoke measurement,
+not an established improvement or a matched regression bound.
+
+Remaining before default enablement: broader source-reload/variant/dependency
+closure cases, live custom-registry switching, animated ancestor visibility,
+reveal latency and alternating process measurements. Direct application edits
+to Bevy Visibility outside USD are not currently a promotion trigger. Non-Mesh
+geometry remains eager, and promotion is synchronous; bounded asynchronous
+states/cancellation are not implemented by this increment.
 
 CPU attribution: `ProjectionVisibilityTimings` splits matching-route application
 time by hierarchy visibility at route entry. It walks `Visibility`/`ChildOf`

@@ -505,6 +505,7 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         "projected {prim_count} prims ({} animated)",
         animated.len()
     );
+    crate::route::residency::materialize(world, stage, map);
     world.insert_resource(AnimatedPrims(animated));
     // Projecting authored the initial read; clear so the first sync starts clean.
     let _ = live.drain_changes();
@@ -592,6 +593,7 @@ impl ProjectionJob {
                 break;
             }
         }
+        if self.pending.is_empty() { crate::route::residency::materialize(world, stage, map); }
         let materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
         if !self.pending.is_empty() { self.materials = materials; }
         if let Some(previous) = previous_materials { world.insert_non_send(previous); }
@@ -717,6 +719,12 @@ fn expand_instancer_consumers(stage: &Stage, map: &PrimEntities, scopes: &mut Ve
 /// * Material graph, binding, collection or prototype changes → reconcile consumers.
 /// * Other `changed_info` changes → patch the touched prims in place.
 pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
+    if !live.has_changes() { return; }
+    apply_changes_inner(world, live, map);
+    crate::route::residency::materialize(world, &live.stage, map);
+}
+
+fn apply_changes_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
     let mut changes = live.drain_changes();
     if changes.is_empty() {
         return;
@@ -1003,6 +1011,7 @@ impl Plugin for LiveStagePlugin {
             .init_resource::<AppliedPurposes>()
             .init_resource::<AppliedSubdivision>()
             .init_resource::<AppliedCurveSteps>()
+            .init_resource::<crate::route::residency::AppliedDeferMode>()
             .add_systems(
                 Update,
                 (
@@ -1012,6 +1021,7 @@ impl Plugin for LiveStagePlugin {
                     apply_curve_settings_system,
                     resample_animation_system,
                     apply_display_purposes_system,
+                    crate::route::residency::refresh_mode,
                 )
                     .chain(),
             );
@@ -1102,6 +1112,7 @@ fn resample_animation_system(world: &mut World) {
             registry.patch_prim(&live.stage, &p, world, entity, &[]);
         }
     }
+    crate::route::residency::materialize(world, &live.stage, &map);
     world.insert_resource(map);
     world.insert_non_send(live);
     if let Some(mut sampled) = world.get_resource_mut::<SampledTime>() {
@@ -1134,6 +1145,7 @@ fn apply_display_purposes_system(world: &mut World) {
             registry.patch_prim(&live.stage, &p, world, entity, &["purpose"]);
         }
     }
+    crate::route::residency::materialize(world, &live.stage, &map);
     world.insert_resource(map);
     world.insert_non_send(live);
     if let Some(mut applied) = world.get_resource_mut::<AppliedPurposes>() {

@@ -50,6 +50,7 @@ pub mod reflect;
 pub mod shapes;
 pub mod skel;
 pub mod subset;
+pub mod residency;
 pub mod subdivision;
 pub mod xform;
 
@@ -248,6 +249,7 @@ pub trait PrimRoute: Send + Sync + 'static {
 #[derive(Resource, Clone, Default)]
 pub struct SchemaRegistry {
     routes: Vec<Arc<dyn PrimRoute>>,
+    builtin_only: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -325,12 +327,14 @@ impl SchemaRegistry {
         r.register(payload::PayloadRoute);
         r.register(native::NativeInstanceRoute);
         r.register(reflect::ReflectRoute);
+        r.builtin_only = true;
         r
     }
 
     /// Append a route. This is the analog of "make a component available in
     /// `bsn!`": apps register routes for their own schemas/components.
     pub fn register<R: PrimRoute>(&mut self, route: R) {
+        self.builtin_only = false;
         self.routes.push(Arc::new(route));
     }
 
@@ -349,9 +353,7 @@ impl SchemaRegistry {
     pub fn project_prim(&self, stage: &Stage, path: &Path, world: &mut World, entity: Entity) {
         let ctx = RouteCtx::at(stage, path, time_of(world));
         if world.contains_resource::<MeshReadTiming>() { ctx.read_timing.set(Some(MeshReadTiming::default())); }
-        for route in &self.routes {
-            run_route(route.as_ref(), &ctx, world, entity, None);
-        }
+        self.apply_routes(&ctx, world, entity, None);
         ctx.report_read_timing(world);
     }
 
@@ -367,10 +369,29 @@ impl SchemaRegistry {
     ) {
         let ctx = RouteCtx::at(stage, path, time_of(world));
         if world.contains_resource::<MeshReadTiming>() { ctx.read_timing.set(Some(MeshReadTiming::default())); }
-        for route in &self.routes {
-            run_route(route.as_ref(), &ctx, world, entity, Some(changed));
-        }
+        self.apply_routes(&ctx, world, entity, Some(changed));
         ctx.report_read_timing(world);
+    }
+
+    fn apply_routes(&self, ctx: &RouteCtx, world: &mut World, entity: Entity, changed: Option<&[&str]>) {
+        let mut deferred = false;
+        let mut full = world.get::<residency::UsdDeferredMesh>(entity).is_some();
+        for route in &self.routes {
+            if self.builtin_only && route.name() == geom::MeshRoute.name() {
+                deferred = residency::should_defer(ctx, world, entity);
+                if deferred {
+                    world.entity_mut(entity).insert(residency::UsdDeferredMesh);
+                    full = false;
+                } else if full {
+                    world.entity_mut(entity).remove::<residency::UsdDeferredMesh>();
+                }
+            }
+            if deferred && residency::geometry_route(route.name()) { continue; }
+            run_route(route.as_ref(), ctx, world, entity, if full { None } else { changed });
+        }
+        if !self.builtin_only && full && let Ok(mut entity) = world.get_entity_mut(entity) {
+            entity.remove::<residency::UsdDeferredMesh>();
+        }
     }
 }
 

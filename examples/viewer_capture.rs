@@ -297,6 +297,7 @@ fn main() -> AppExit {
             .add_systems(Update, select_dome);
     }
     if std::env::var_os("USD_PROFILE_SOURCES").is_some() { app.init_resource::<usd_bevy::asset::UsdSceneTimings>(); }
+    if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() { app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>(); }
     if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() { app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>(); }
     if timing_enabled { app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin); }
     app.sub_app_mut(bevy::render::RenderApp).insert_resource(progress)

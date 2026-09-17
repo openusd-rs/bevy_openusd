@@ -1916,6 +1916,68 @@ retain only configurations with an evidenced end-to-end benefit.
 
 ## P6 — Move sharing ahead of decoding and improve cache indexing
 
+### Rendered compact point-batch experiment (2026-09-17)
+
+`examples/compact_instancing.rs` and `examples/compact_instancing.wgsl` now
+provide an isolated forward-PBR vertex-pulling experiment. This is **not wired
+into the USD route** and does not yet remove Moana's ECS expansion. It establishes
+a rendered foundation rather than a data-only compact component.
+
+One shared prototype vertex buffer and one shared point-transform buffer feed
+two independently transformed, differently colored root entities. A virtual
+vertex index selects the point and prototype vertex; Bevy's hardware instance
+index still selects the correct root mesh uniform and PBR material. Each root
+is explicitly unbatched. The ordinary expanded reference uses the same geometry,
+transforms, materials, lighting, camera and direct-drawing configuration.
+
+Verified on the RTX 4080/Vulkan, with 24 GiB/no-swap and explicit run timeouts:
+
+- **128 cubes:** compact uses 2 render entities versus 128. The 800×600 RGBA
+  captures are byte-identical, and the nonblank reference was inspected.
+- **200,000 cubes:** both modes complete and capture; the queried ECS counts
+  are 2 versus 200,000 render entities. Only one pixel differs (three channels,
+  maximum channel difference 29/255, mean absolute channel difference
+  0.00003281/255). This is not exact large-batch visual parity; retain the raw
+  difference rather than silently relaxing the gate. The differing pixel is
+  `(563, 333)` in the blue group. The compact image was inspected.
+- Single-run process VmHWM observations are 437,300 KiB compact and
+  1,106,512 KiB expanded. These include renderer/process overhead, are not a
+  five-run benchmark, and establish neither a general speedup nor Moana residency.
+- Make release workspace/all-target validation passes 783 tests, 19 ignored.
+
+Artifacts are under `target/perf/p6-compact-prototype/`: small and large PNG/RGBA
+captures, both run logs, comparison logs and the workspace test log. The example
+exits after capture; all four successful render processes have exited.
+
+Two integration constraints were confirmed by real failed runs and corrected in
+the experiment: Bevy's specialized mesh pipeline cache requires a vertex-buffer
+layout entry even with no vertex attributes, and wgpu still requires that slot
+bound. Use a zero-stride, empty-attribute layout plus the small prototype buffer.
+Also, CPU mesh-uniform building alone does not keep the render-world preprocessing
+capability disabled: render startup recreates it. This direct-only experiment
+sets the capability after its startup initializer, for **both** reference modes.
+No vendored renderer or production viewer behavior was changed.
+
+Reproduce through Make:
+
+```sh
+CARGO_BUILD_JOBS=4 make build CARGO='cargo --offline' \
+  APP_TARGET='--release --example compact_instancing'
+make --eval='compact-check:; @for mode in expanded compact; do systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 timeout --kill-after=5s 45s nixVulkan target/release/examples/compact_instancing $$mode 64 target/perf/p6-compact-prototype/$$mode.png > target/perf/p6-compact-prototype/$$mode.log 2>&1 || exit $$?; grep -q CAPTURE_OK target/perf/p6-compact-prototype/$$mode.log || exit 1; done' compact-check
+cmp target/perf/p6-compact-prototype/{expanded,compact}.png.rgba
+```
+
+**Next integration gates:** reduce the provisional 128-byte point record and
+chunk by device storage-binding and draw-count limits; integrate GPU-indirect
+counts without confusing point indices with root/material indices; implement
+shadow/prepass and motion-vector paths; preserve prototype hierarchy transforms,
+subsets, masks and stable IDs; establish bounds/culling and picking; then wire
+the opt-in route with independent clocks, transactional reload and explicit
+fallback for unsupported geometry. The example disables frustum culling and
+shadows/prepass and supports only opaque, static cuboids. Its 120-frame capture
+delay is not P0's first-complete-frame gate. Do not enable it as a production
+optimization or claim full Moana acceptance at this checkpoint.
+
 Lookup increment: the existing assembly cache now hashes and searches geometry
 once per preparation request. The interned-handle path passes that lookup to
 assembly rather than repeating it, then attaches the result to the known MRU

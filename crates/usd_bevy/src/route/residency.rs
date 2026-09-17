@@ -137,6 +137,10 @@ fn exhausted(world: &World) -> bool {
         && world.get_resource::<PreparationTurn>().is_some_and(|turn| turn.attempts > 0 && turn.spent >= budget.0))
 }
 
+pub(crate) fn attempts(world: &World) -> usize {
+    world.get_resource::<PreparationTurn>().map_or(0, |turn| turn.attempts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +220,37 @@ def Xform "Hidden" {
         for entity in entities {
             assert!(app.world().get::<Mesh3d>(entity).is_some());
             assert!(app.world().get::<UsdMeshPreparationQueued>(entity).is_none());
+        }
+    }
+
+    #[test]
+    fn budget_rotates_between_busy_roots_before_draining_one() {
+        let (mut app, asset) = setup();
+        app.insert_resource(UsdResidencyBudget(std::time::Duration::ZERO));
+        app.world_mut().resource_mut::<Assets<UsdScene>>().get_mut(&asset).unwrap().source =
+            UsdSource::snapshot("fair.usda", br#"#usda 1.0
+def Xform "Hidden" {
+    token visibility = "invisible"
+    def Mesh "M" {
+        point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+        uniform token subdivisionScheme = "none"
+    }
+    def Mesh "N" (prepend references = </Hidden/M>) {}
+    def Mesh "O" (prepend references = </Hidden/M>) {}
+}
+"#.as_slice()).unwrap();
+        let roots = [0, 1, 2].map(|_| app.world_mut().spawn(UsdSceneRoot(asset.clone())).id());
+        app.update();
+        let entities = roots.map(|root| ["/Hidden/M", "/Hidden/N", "/Hidden/O"].map(|path|
+            app.world().non_send::<UsdInstances>().entity(root, path).unwrap()));
+        app.world_mut().remove_resource::<DeferHiddenMeshes>();
+        for round in 1..=3 {
+            for _ in 0..3 { app.update(); }
+            for root_entities in entities {
+                assert_eq!(root_entities.iter().filter(|entity| app.world().get::<Mesh3d>(**entity).is_some()).count(), round);
+            }
         }
     }
 

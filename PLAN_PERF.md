@@ -709,6 +709,22 @@ budget. Investigate these costs and split heavy preparation before making any
 hard latency claim. Fair scheduling among roots and viewer loading/readiness
 presentation remain follow-up work; logical Ready is not a rendered-frame gate.
 
+Asset-root fairness increment: instance ticking orders root entities and starts
+after the last root that actually consumed promotion work. Exhausted or idle
+roots do not advance that cursor. The shared preparation budget therefore rotates
+among queued asset roots instead of repeatedly favoring the same HashMap entry.
+Stage clocks, textures and existing per-root synchronization remain installed
+only for the root being processed. Initial projection's separate scheduler is
+unchanged. Fair arbitration between a standalone LiveStage and asset roots in
+the same app remains outside this increment.
+
+755 workspace/all-target tests pass (19 ignored). A zero-budget regression with
+three roots and three hidden meshes per root verifies that every three updates
+prepare exactly one additional mesh in each root, rather than draining one root
+first. Existing shared-budget, latest-clock and cancellation checks also pass.
+Evidence: `target/perf/p4-fairness/tests.log`. This is a scheduling correctness
+change, not a new single-scene loading-speed claim.
+
 Palette-update follow-up: opt-in `GpuSkinUpdateTiming` exposed 929,252 generated
 joint transforms rebuilt on every eager Caldera update. Over 100 idle updates,
 the old pass processed another 92,925,200 joints and spent about 3.26 s inside

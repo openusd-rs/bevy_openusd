@@ -298,15 +298,26 @@ def PointInstancer "PI" {{
     }
 }
 
+#[derive(Resource, Default)]
+struct ResidencyTurn(Option<Entity>);
+
 pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
     let delta = world.get_resource::<Time>().map_or(0.0, Time::delta_secs_f64);
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     let curve_steps = crate::route::curves::current_geometry_key(world);
-    for (&root, runtime) in &mut instances.roots {
+    let mut roots: Vec<_> = instances.roots.keys().copied().collect();
+    roots.sort_unstable();
+    if let Some(last) = world.get_resource::<ResidencyTurn>().and_then(|turn| turn.0) {
+        let start = roots.partition_point(|root| *root <= last);
+        roots.rotate_left(start);
+    }
+    for root in roots {
+        let runtime = instances.roots.get_mut(&root).unwrap();
         // A stage still projecting is not synced or animated yet.
         if runtime.job.is_some() {
             continue;
         }
+        let attempts = crate::route::residency::attempts(world);
         let mut current = world.get::<UsdInstanceTime>(root).map_or(0.0, |time| time.current);
         if let Some(mut playback) = world.get_mut::<UsdPlayback>(root) {
             current = playback.advance(current, delta, &runtime.live.stage);
@@ -356,6 +367,7 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
             crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
         }
         crate::route::residency::resume(world, &runtime.live.stage, &runtime.map);
+        if crate::route::residency::attempts(world) != attempts { world.insert_resource(ResidencyTurn(Some(root))); }
         world.remove_resource::<StageTime>();
         world.remove_resource::<AnimatedPrims>();
         world.remove_resource::<SnapshotTextures>();

@@ -22,6 +22,7 @@ Changes from the base source are recorded in these patches in the project root:
 - `patches/openusd-traversal-active.patch`
 - `patches/openusd-abstract-ancestry.patch`
 - `patches/openusd-specifier-status.patch`
+- `patches/openusd-property-classification.patch`
 - `patches/openusd-reference-diagnostics.patch`
 - `patches/openusd-layer-reanchoring.patch`
 - `patches/openusd-clip-activation-samples.patch`

@@ -7,6 +7,12 @@ See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
 ## Traversal ancestry queries
 
+`openusd-property-classification.patch` classifies a prim's properties within
+one mask-gated cache query. It retains live authored spec-type lookup and
+schema fallback for unauthored composed properties. No classification result
+is cached across calls. Bevy checks schema-only attributes, relationships,
+population masks and property edits inherited by instances.
+
 `openusd-specifier-status.patch` computes defined and abstract state in one
 ancestor-specifier walk when both bits are requested. Individual-bit queries
 keep their existing paths. The combined walk stops only when both answers are

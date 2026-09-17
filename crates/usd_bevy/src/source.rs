@@ -648,6 +648,35 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn property_classification_preserves_schemas_masks_and_edits() {
+        use super::*;
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("properties.usda");
+        std::fs::write(&file, br#"#usda 1.0
+def Sphere "Shape" { double customValue = 1 rel link = </Shape> }
+def "Instance" (instanceable = true prepend references = </Shape>) {}
+"#).unwrap();
+        for masked in [false, true] {
+            let mask = if masked { openusd::usd::StagePopulationMask::new(["/Shape"]).unwrap() }
+                else { openusd::usd::StagePopulationMask::all() };
+            let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).mask(mask).open(file.to_str().unwrap()).unwrap();
+            let shape = stage.prim("/Shape").unwrap();
+            assert_eq!(shape.authored_attributes().unwrap().iter().map(|attr| attr.path().to_string()).collect::<Vec<_>>(), ["/Shape.customValue"]);
+            assert_eq!(shape.authored_relationships().unwrap().len(), 1);
+            assert!(shape.attributes().unwrap().iter().any(|attr| attr.path().as_str() == "/Shape.radius"));
+            assert!(stage.prim("/Absent").unwrap().attributes().unwrap().is_empty());
+            assert_eq!(stage.prim("/Instance").unwrap().authored_attributes().unwrap().len(), usize::from(!masked));
+            shape.create_attribute("added", "float").unwrap();
+            assert_eq!(shape.authored_attributes().unwrap().len(), 2);
+            stage.remove_property("/Shape.link").unwrap();
+            shape.create_attribute("link", "double").unwrap();
+            assert!(shape.authored_relationships().unwrap().is_empty());
+            assert_eq!(shape.authored_attributes().unwrap().len(), 3);
+            assert_eq!(stage.prim("/Instance").unwrap().authored_attributes().unwrap().len(), if masked { 0 } else { 3 });
+        }
+    }
+
+    #[test]
     fn abstract_ancestry_matches_field_queries_and_live_edits() {
         use super::*;
         let directory = tempfile::tempdir().unwrap();

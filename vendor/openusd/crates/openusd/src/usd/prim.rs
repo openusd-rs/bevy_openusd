@@ -1051,23 +1051,20 @@ impl Prim {
         let info = self.prim_type_info()?;
         let definition = info.prim_definition();
 
-        let mut paths = Vec::new();
-        for name in names {
-            let path = self.property_path(&name);
-            let spec_type = match (self.stage.spec_type(&path)?, source) {
-                (Some(spec_type), _) => Some(spec_type),
-                // A property the prim only inherits from its schema has no
-                // composed spec, so its kind comes from the declaration.
-                (None, PropertySource::Composed) => definition.property(&name).map(|property| property.spec_type()),
-                // Nothing a schema declares is authored, so a name with no
-                // composed spec belongs to neither kind.
-                (None, PropertySource::Authored) => None,
-            };
-            if spec_type == Some(ty) {
-                paths.push(path);
+        Ok(self.stage.masked(&self.path, |graph, cache| {
+            let mut paths = Vec::new();
+            for name in &names {
+                let path = self.property_path(name);
+                let authored = if path.is_empty() { None } else { cache.spec_type(graph, &path)? };
+                let spec_type = match (authored, source) {
+                    (Some(spec_type), _) => Some(spec_type),
+                    (None, PropertySource::Composed) => definition.property(name).map(|property| property.spec_type()),
+                    (None, PropertySource::Authored) => None,
+                };
+                if spec_type == Some(ty) { paths.push(path); }
             }
-        }
-        Ok(paths)
+            Ok(paths)
+        })?)
     }
 
     /// Property path for `name` under this prim. An invalid name yields the

@@ -586,6 +586,27 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+Property-classification batching: each prim now classifies its property names
+inside one mask-gated cache query, instead of entering the stage query layer for
+every property. Authored spec types are still read live; composed-only schema
+properties still use their declaration. There is no cross-call classification
+cache. Patch: `patches/openusd-property-classification.patch`.
+
+762 Make release workspace/all-target tests pass (19 ignored), plus 14 explicit
+native export checks. The new regression covers schema-only attributes,
+authored relationships, missing/masked prims, added properties, and relationship-
+to-attribute edits propagated to a referencing instance. The Oxbo capture is
+RGBA byte-identical to `target/perf/oxbo-current/original.rgba`.
+
+Moana's diagnostic still visits 416,549 prims and inspects 6,400,861 attributes.
+Its attribute phase was 35.293 s versus 36.438 s in the previous unmodified
+getter-profile run; total validation was 61.585 s versus 63.036 s. Getter totals
+also changed slightly, so this is a small diagnostic observation, not an
+established end-to-end speedup. The code removes per-property stage-query entry
+without introducing a result cache; the remaining per-property source walk is
+unchanged. The 110-second run still times out, with peak RSS 19,990,740 KiB under
+the 24 GiB/no-swap cap. Evidence: `target/perf/p3-property-types/`.
+
 Rejected per-node property-path trial: the value-resolution walk temporarily
 retained one node/path pair and lent that property path to successive layer
 sites of the same node. It kept no cross-query cache and passed all 761

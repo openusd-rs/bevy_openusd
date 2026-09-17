@@ -56,6 +56,32 @@ research, measurements, rejected experiments and acceptance requirements.
 
 ### P0 extraction-revision checkpoint (2026-09-17)
 
+`src/perf_draw.rs` now wraps Bevy's existing forward `DrawMaterial` command tuple
+for opaque, alpha-mask, transmissive and transparent phases when profiling is
+enabled. The wrapper calls the original tuple unchanged, records Success/Skip/
+Failure per view and phase, then returns the original result. Counters reset
+before each render. No vendored renderer changes or normal-path hooks are added.
+For a nonempty expected view, GPU completion registration requires at least one
+successful command and no recorded skips/failures, in addition to the queue and
+upload prerequisites. Queue readiness and combined render prerequisites have
+separate JSON fields.
+
+The live Oxbo trial in `target/perf/p0-draw-commands/viewer.log` records 1,591
+skipped commands during warm-up, then 1,591 successful commands and zero skips/
+failures. The corresponding view has 1,766 expected entities; commands are
+batched, so these counts are not interchangeable. GPU completion is subsequently
+observed and the captured RGBA is byte-identical to the prior view-prerequisite
+capture. Make release workspace/all-target validation passes 774 tests with 19
+ignored. The final JSON field separation was compiled/tested after this live
+trial; its log retains the earlier outer `queue_prerequisites_ready` label.
+
+This closes the distinction between prepared inputs and observed command
+outcomes, but not full coverage. Missing phase membership, unobserved custom/
+deferred/shadow commands, GPU-indirect culling and stale scene transforms still
+prevent a complete-frame claim. Continue to report `complete_frame:false` and
+`draw_submission_verified:false`; a success count alone is not proof that every
+required entity contributed to a submitted frame.
+
 The next view-scoped increment records each `Camera3d` view's visible standard/
 flat-material mesh requirements, including both CPU- and GPU-culling candidates.
 It checks compiled per-entity specialized pipelines, extracted mesh/material

@@ -10,6 +10,8 @@ use bevy::render::{
     renderer::RenderQueue,
 };
 use usd_bevy::route::flat_material::FlatMaterial;
+#[path = "perf_draw.rs"]
+mod draw_probe;
 
 #[derive(Resource, Clone, ExtractResource)]
 struct UploadManifest {
@@ -99,6 +101,7 @@ pub fn configure(app: &mut App) {
     app.sub_app_mut(RenderApp).init_resource::<ExtractedRevisions>().init_resource::<ViewReadiness>()
         .add_systems(Render, observe_extraction.after(RenderSystems::ExtractCommands).before(RenderSystems::PrepareAssets))
         .add_systems(Render, (report_views, report_uploads).chain().after(RenderSystems::Render));
+    draw_probe::configure(app.sub_app_mut(RenderApp));
 }
 
 fn collect_manifest(
@@ -185,6 +188,7 @@ fn pending<T: Copy>(ids: &[T], mut prepared: impl FnMut(T) -> bool) -> usize {
 #[derive(Resource, Default)]
 struct ViewReadiness {
     ready: bool,
+    queue_ready: bool,
     previous: Option<(u64, Vec<serde_json::Value>)>,
 }
 
@@ -208,13 +212,16 @@ fn report_views(
     material_instances: Res<bevy::pbr::RenderMaterialInstances>,
     meshes: Res<RenderAssets<RenderMesh>>, materials: Res<ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
     allocator: Res<bevy::render::mesh::allocator::MeshAllocator>, pipelines: Res<PipelineCache>,
+    draws: Res<draw_probe::DrawProbe>,
 ) {
     let Some(manifest) = manifest.filter(|manifest| manifest.document.is_some()) else {
         readiness.ready = false;
+        readiness.queue_ready = false;
         return;
     };
     let mut rows = Vec::new();
     let mut ready = true;
+    let mut queue_ready = true;
     for (entity, view, visible) in &views {
         let expected = expected_view_meshes(&manifest, visible);
         let specialized = specializations.get(&view.retained_view_entity);
@@ -247,9 +254,11 @@ fn report_views(
             if material_instances.instances.get(entity)
                 .is_none_or(|instance| materials.get(instance.asset_id).is_none()) { missing_material += 1; }
         }
+        let draw_counts = draws.for_view(entity);
         let view_ready = visible.is_some() && missing_pipeline == 0 && missing_mesh == 0
             && missing_material == 0 && pending_queue == 0;
-        ready &= view_ready;
+        ready &= view_ready && draw_counts.ready(expected.len());
+        queue_ready &= view_ready;
         rows.push((entity.to_bits(), serde_json::json!({
             "view": format!("{:?}", view.retained_view_entity),
             "expected_visible_material_meshes": expected.len(), "missing_visibility_list": visible.is_none(),
@@ -257,16 +266,21 @@ fn report_views(
             "missing_material_data": missing_material, "pending_queue_entities": pending_queue,
             "missing_mesh_sample": missing_mesh_sample,
             "queue_prerequisites_ready": view_ready,
+            "material_draw_command_successes": draw_counts.succeeded,
+            "material_draw_command_skips": draw_counts.skipped,
+            "material_draw_command_failures": draw_counts.failed,
         })));
     }
     readiness.ready = ready && !rows.is_empty();
+    readiness.queue_ready = queue_ready && !rows.is_empty();
     rows.sort_by_key(|(entity, _)| *entity);
     let rows: Vec<_> = rows.into_iter().map(|(_, row)| row).collect();
     if readiness.previous.as_ref().is_some_and(|(generation, previous)| *generation == manifest.generation && previous == &rows) { return; }
     eprintln!("render_view_profile {}", serde_json::json!({
         "document": manifest.document, "generation": manifest.generation, "complete_frame": false,
-        "scope": "camera3d-visible-standard-flat-material-queue-prerequisites",
-        "queue_prerequisites_ready": readiness.ready, "draw_submission_verified": false,
+        "scope": "camera3d-visible-standard-flat-material-prerequisites-and-forward-draw-command-results",
+        "queue_prerequisites_ready": readiness.queue_ready,
+        "render_prerequisites_ready": readiness.ready, "draw_submission_verified": false,
         "cpu_only_material_mesh_entities": manifest.cpu_only_material_meshes,
         "empty_cpu_only_material_mesh_entities": manifest.empty_cpu_only_material_meshes,
         "views": rows,
@@ -297,7 +311,7 @@ fn report_uploads(
     pipelines: Res<PipelineCache>, revisions: Res<ExtractedRevisions>,
     queue: Res<RenderQueue>, mut completion: Local<GpuCompletionProbe>,
     view_readiness: Res<ViewReadiness>,
-    mut previous: Local<Option<(u64, usize, usize, usize, usize, usize, usize, bool)>>,
+    mut previous: Local<Option<(u64, usize, usize, usize, usize, usize, usize, (bool, bool))>>,
 ) {
     let Some(manifest) = manifest.filter(|manifest| manifest.document.is_some()) else { return; };
     let missing_meshes = pending(&manifest.meshes, |id| meshes.get(id).is_some());
@@ -335,7 +349,8 @@ fn report_uploads(
             pending.store(false, std::sync::atomic::Ordering::Release);
         });
     }
-    let state = (manifest.generation, missing_meshes, missing_images, missing_materials, waiting, errors.len(), pending_revisions, view_readiness.ready);
+    let state = (manifest.generation, missing_meshes, missing_images, missing_materials, waiting, errors.len(), pending_revisions,
+        (view_readiness.queue_ready, view_readiness.ready));
     if previous.as_ref() == Some(&state) { return; }
     *previous = Some(state);
     eprintln!("render_asset_profile {}", serde_json::json!({
@@ -356,7 +371,8 @@ fn report_uploads(
         "revision_scope": "mesh-image-standard-material-flat-material",
         "pending_pipelines": waiting, "pipeline_errors": errors,
         "observed_uploads_ready": ready,
-        "view_queue_prerequisites_ready": view_readiness.ready,
+        "view_queue_prerequisites_ready": view_readiness.queue_ready,
+        "view_render_prerequisites_ready": view_readiness.ready,
     }));
 }
 

@@ -477,6 +477,12 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         let Some(started) = started else { return };
         eprintln!("projection_progress phase={phase} prims={count} elapsed_ms={:.3} animation_ms={:.3} routes_ms={:.3} path={path:?} scope=live-initial-projection",
             started.elapsed().as_secs_f64()*1000.0, animation.as_secs_f64()*1000.0, routes.as_secs_f64()*1000.0);
+        if let Some(row) = world.get_resource::<crate::route::material::MaterialResolveTimings>() {
+            eprintln!("material_resolve_progress phase={phase} prims={count} requests={} bound={} errors={} cache_hits={} distinct_keys={} keys_capped={} binding_ms={:.3} reading_ms={:.3} preparing_ms={:.3} interning_ms={:.3} scope=world-cumulative overlaps=route-application keys=stage-agnostic-binding-time-sidedness",
+                row.requests, row.bound, row.errors, row.cache_hits, row.distinct_keys(), row.keys_capped,
+                row.binding.as_secs_f64()*1000.0, row.reading.as_secs_f64()*1000.0,
+                row.preparing.as_secs_f64()*1000.0, row.interning.as_secs_f64()*1000.0);
+        }
         if let Some(timings) = world.get_resource::<crate::route::ProjectionTimings>() {
             let mut rows: Vec<_> = timings.0.iter().collect();
             rows.sort_by_key(|(_, row)| std::cmp::Reverse(row.matching + row.application));

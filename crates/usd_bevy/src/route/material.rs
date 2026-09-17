@@ -88,6 +88,30 @@ impl ProjectionMaterials {
     }
 }
 
+/// Opt-in material resolution costs and bounded binding-key observations.
+#[derive(Resource, Default)]
+pub struct MaterialResolveTimings {
+    pub requests: u64,
+    pub bound: u64,
+    pub errors: u64,
+    pub cache_hits: u64,
+    pub binding: std::time::Duration,
+    pub reading: std::time::Duration,
+    pub preparing: std::time::Duration,
+    pub interning: std::time::Duration,
+    keys: std::collections::HashSet<(String, Option<u64>, bool)>,
+    pub keys_capped: bool,
+}
+
+impl MaterialResolveTimings {
+    pub fn distinct_keys(&self) -> usize { self.keys.len() }
+
+    fn observe(&mut self, key: &(String, Option<u64>, bool)) {
+        if self.keys.len() < 65_536 { self.keys.insert(key.clone()); }
+        else if !self.keys.contains(key) { self.keys_capped = true; }
+    }
+}
+
 fn memo_key(ctx: &RouteCtx, binding: &openusd::sdf::Path) -> (String, Option<u64>, bool) {
     (binding.to_string(), ctx.time.map(f64::to_bits), double_sided(ctx))
 }
@@ -158,15 +182,36 @@ pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
 ) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>)>> {
-    let Some(binding) = read_material_binding(ctx.stage, ctx.path)? else { return Ok(None) };
+    let profiling = world.contains_resource::<MaterialResolveTimings>();
+    let started = profiling.then(std::time::Instant::now);
+    let binding = read_material_binding(ctx.stage, ctx.path);
+    if let Some(started) = started {
+        let mut timing = world.resource_mut::<MaterialResolveTimings>();
+        timing.requests += 1;
+        timing.bound += u64::from(matches!(&binding, Ok(Some(_))));
+        timing.errors += u64::from(binding.is_err());
+        timing.binding += started.elapsed();
+    }
+    let Some(binding) = binding? else { return Ok(None) };
     let key = memo_key(ctx, &binding);
+    if profiling { world.resource_mut::<MaterialResolveTimings>().observe(&key); }
     if let Some(memo) = world.get_non_send::<ProjectionMaterials>()
         && memo.stage.ptr_eq(ctx.stage)
         && let Some(resolved) = memo.resolved.get(&key)
     {
-        return Ok(Some(resolved.clone()));
+        let resolved = resolved.clone();
+        if profiling { world.resource_mut::<MaterialResolveTimings>().cache_hits += 1; }
+        return Ok(Some(resolved));
     }
-    let read = material_at(ctx, &binding)?;
+    let started = profiling.then(std::time::Instant::now);
+    let read = material_at(ctx, &binding);
+    if let Some(started) = started {
+        let mut timing = world.resource_mut::<MaterialResolveTimings>();
+        timing.reading += started.elapsed();
+        timing.errors += u64::from(read.is_err());
+    }
+    let read = read?;
+    let started = profiling.then(std::time::Instant::now);
     let assets = world.get_resource::<AssetServer>().cloned();
     let textures = world.get_resource::<crate::asset::SnapshotTextures>();
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
@@ -220,7 +265,10 @@ pub(crate) fn resolve_material(
             Err(error) => warnings.push(error.to_string()),
         }
     }
+    if let Some(started) = started { world.resource_mut::<MaterialResolveTimings>().preparing += started.elapsed(); }
+    let started = profiling.then(std::time::Instant::now);
     let handle = super::cache::intern_material(world, material);
+    if let Some(started) = started { world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed(); }
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
         && memo.stage.ptr_eq(ctx.stage)
     {

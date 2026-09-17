@@ -484,6 +484,26 @@ Store a machine-readable report with the configuration and asset manifest.
 
 ## P1 — Reuse prepared material subsets
 
+Material-resolution attribution: `MaterialResolveTimings`, enabled by the
+benchmark's `USD_PROFILE_ROUTES`, separates binding lookup, shader reads,
+preparation and interning. Progress reports include bounded distinct
+binding/time/sidedness keys (65,536 maximum; saturation is explicit), successful
+existing memo hits and binding/shader query errors. Key identity is stage-agnostic
+and only measures reuse within this fresh single-stage benchmark.
+
+Moana's 180-second diagnostic reaches a 216,064-prim checkpoint with 145,466
+bound material requests, 9,234 distinct keys, no memo hits and no query errors.
+Binding lookup takes 6.191 s; shader reads 20.769 s; preparation 0.294 s;
+interning 0.759 s. These overlap MaterialRoute application and describe an
+unfinished prefix, not an end-to-end result. 763 Make release tests pass,
+19 ignored. Artifacts: `target/perf/p1-material-attribution/`.
+
+Selected experiment: bounded, projection-local reuse of successfully decoded
+shader material data, not prepared Bevy handles. Keep binding resolution and
+texture preparation live; invalidate on stage changes and discard the cache
+after initial projection. Include edit-during-projection, independent stages,
+time codes and failed-read recovery in the regression checks before acceptance.
+
 **Scope:** `route/subset.rs`, `mesh/compact.rs`, `route/cache.rs`, related tests.
 
 First increment removes the unconditional full-parent mesh clone from

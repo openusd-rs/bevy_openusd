@@ -635,6 +635,37 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn traversal_loaded_status_matches_direct_queries_after_edits() {
+        use super::*;
+        use openusd::usd::{PrimPredicate, PrimStatus};
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("payload.usda"), b"#usda 1.0\ndef Xform \"Model\" { def Xform \"Child\" {} }\n").unwrap();
+        let source = UsdSource::new(directory.path().join("root.usda"), br#"#usda 1.0
+def Xform "Root" {
+    def Xform "Payload" (prepend payload = @payload.usda@</Model>) {}
+    def Xform "Ordinary" { def Xform "Child" {} }
+}
+"#.as_slice()).unwrap();
+        let stage = source.open_stage().unwrap();
+        for loaded in [true, false, true] {
+            stage.set_load_rules(if loaded { openusd::pcp::LoadRules::all() } else { openusd::pcp::LoadRules::none() });
+            for active in [true, false, true] {
+                stage.prim("/Root/Ordinary").unwrap().set_active(active).unwrap();
+                let mut all = Vec::new();
+                stage.traverse(PrimPredicate::ALL, |path| all.push(path.clone())).unwrap();
+                let expected: Vec<_> = all.into_iter().filter(|path| stage.prim(path).unwrap().is_loaded().unwrap()).collect();
+                for bits in [PrimStatus::LOADED, PrimStatus::ACTIVE | PrimStatus::LOADED] {
+                    let mut actual = Vec::new();
+                    stage.traverse(PrimPredicate::new(bits, PrimStatus::empty()).with_instance_proxies(true), |path| actual.push(path.clone())).unwrap();
+                    assert_eq!(actual, expected, "loaded={loaded}, active={active}, bits={bits:?}");
+                }
+                assert_eq!(stage.prim("/Root/Ordinary").unwrap().is_loaded().unwrap(), active);
+                assert_eq!(stage.prim("/Root/Payload").unwrap().is_loaded().unwrap(), loaded);
+            }
+        }
+    }
+
+    #[test]
     fn stage_open_reuses_root_parses_without_retaining_stale_data() {
         use super::*;
         type Files = Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>;

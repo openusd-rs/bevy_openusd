@@ -5,6 +5,15 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Traversal active-state reuse
+
+`openusd-traversal-active.patch` reuses the active result when a prim-status
+query also requests loaded state. Load-rule and payload checks are unchanged;
+loaded-only queries still evaluate active state themselves. Nothing is cached
+across prims, callbacks or stage edits. The Bevy regression compares loaded-only
+and active-plus-loaded traversals with direct queries after activation and
+payload load-rule changes.
+
 ## Prepared stage roots
 
 `openusd-prepared-roots.patch` passes parsed root and session-root data from

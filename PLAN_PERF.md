@@ -586,6 +586,27 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+Traversal active-state increment: a prim-status query requesting both ACTIVE
+and LOADED now reuses its computed active result instead of walking active
+ancestry again inside `is_loaded`. Payload/load-rule checks remain unchanged;
+loaded-only predicates retain their own active query. Reuse is limited to one
+status evaluation, with no cache across prims, visitors or edits. Review patch:
+`patches/openusd-traversal-active.patch`.
+
+The full Make release workspace/all-target gate passes 760 tests (19 ignored).
+The added regression compares loaded-only and ACTIVE+LOADED traversal against
+direct loaded queries through repeated payload load/unload and active edits.
+A 110-second bounded Moana diagnostic visits the same 416,549 prims and checks
+the same 6,400,861 attributes. Traversal measured 33.908 s versus the preceding
+40.534 s; total validation measured 69.099 s versus 77.423 s. These are sequential
+diagnostics, not controlled paired performance acceptance. The run still exits
+124 without a complete CPU-open row; peak RSS is 19,988,312 KiB, under the same
+24 GiB/no-swap cap. Artifacts: `target/perf/p3-active-reuse/`.
+All 14 explicit native export checks pass. The current Oxbo capture completes
+and is RGBA byte-identical to `target/perf/oxbo-current/original.rgba`.
+This removes one redundant ancestry walk, not the remaining inherited-status
+walks or per-attribute validation work; Moana completion remains outstanding.
+
 Mesh-read increment: the five inherited primvar owner searches now walk each
 ancestor together, obtaining one prim handle per level instead of one per
 attribute. Owner resolution preserves local/constant inheritance, blocking and

@@ -694,7 +694,11 @@ impl Prim {
     /// or above it (per the stage's runtime load rules) is excluded. Mirrors
     /// C++ `UsdPrim::IsLoaded`.
     pub fn is_loaded(&self) -> Result<bool> {
-        if !self.is_active()? {
+        self.is_loaded_with_active(self.is_active()?)
+    }
+
+    pub(crate) fn is_loaded_with_active(&self, active: bool) -> Result<bool> {
+        if !active {
             return Ok(false);
         }
         // No rule anywhere means every path resolves loaded (`LoadRules`'

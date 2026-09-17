@@ -2137,6 +2137,45 @@ serve old contents after Blender saves a new file.
 
 ## P8 — Make reload preparation proportional to changed layers
 
+### Streaming no-change verification (2026-09-17)
+
+Implemented against `74ed1f4`: initial reload verification streams file content
+through BLAKE3 before allocating a replacement buffer. Unchanged files return
+without a file-sized Vec; changed files are read into a snapshot and hashed again
+from those exact bytes. The post-preflight check also streams fresh disk content
+and still rejects changes made during preparation. The shared `source::file_hash`
+helper is used by save-destination hashing without changing its separate
+permission, regular-file and identity checks.
+
+Tradeoff: changed files with known baselines incur an extra read/hash pass before
+snapshot preparation. New files need only their snapshot read. This increment
+targets no-op verification and its temporary buffers; it does not remove all
+copies in changed-layer preparation or weaken transactional publication.
+
+`examples/reload_benchmark.rs` opens an editor document, then calls the real
+`EditorSession::reload_sources` three times without changing disk content. Five
+alternating/order-reversed Oxbo process pairs, with identical loading profiling,
+24 GiB/no-swap limits and 45-second timeouts, show first-check medians of
+95.914 → 54.858 ms (42.8% lower). All 30 checks report `changed=0`. Raw data retains
+a slower candidate trial; no samples were removed. Warm filesystem caches were
+not flushed. This measures reload verification, not changed-asset reload latency,
+initial loading, projection or rendered frames. Whole-process peak RSS is still
+dominated by opening the document; no measured peak-RSS reduction is claimed.
+
+Make release workspace/all-target validation passes 778 tests (19 ignored) and
+14 native export tests. New tests compare streaming and snapshot hashes across
+buffer boundaries, detect same-size edits, propagate missing-file errors and
+verify that a disk rewrite during preflight leaves the stage/revision unchanged
+and recovers on retry. Existing unrelated-entity/history and texture-reload tests
+remain in the gate.
+
+The live viewer smoke test edits an ignored two-cube USD fixture on disk after
+its initial capture: the red cube turns green, the blue cube remains visually
+unchanged, and the probe retains document ID 1. The watcher logs one changed file
+and successful reload; before/after captures were inspected. The owned viewer
+was terminated after capture. Artifacts and raw timings are retained under
+`target/perf/p8-streaming-verification/`; only the isolated fixture was edited.
+
 No-op inspector increment: `editor::process_commands` retains the existing
 inspector snapshot when a command batch contains only successful ReloadSources
 checks with no publication, revision change or detected external edits. Actual

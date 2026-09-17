@@ -43,9 +43,7 @@ pub(crate) fn destination_hash(path: &Path) -> Result<Option<blake3::Hash>> {
         Ok(metadata) => {
             ensure!(metadata.file_type().is_file(), "save destination changed to a non-regular file");
             ensure!(!metadata.permissions().readonly(), "save destination is read-only");
-            let mut hash = blake3::Hasher::new();
-            hash.update_reader(fs::File::open(path).context("read save destination")?)?;
-            Ok(Some(hash.finalize()))
+            Ok(Some(crate::source::file_hash(path).context("read save destination")?))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).context("inspect save destination content"),

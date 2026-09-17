@@ -494,6 +494,12 @@ struct SourceResolver {
 
 struct SharedAsset(Cursor<Arc<[u8]>>);
 
+pub(crate) fn file_hash(path: &Path) -> io::Result<blake3::Hash> {
+    let mut hash = blake3::Hasher::new();
+    hash.update_reader(std::fs::File::open(path)?)?;
+    Ok(hash.finalize())
+}
+
 fn read_shared_asset(asset: &mut dyn Asset) -> io::Result<Arc<[u8]>> {
     if let Some(bytes) = asset.shared_bytes() { return Ok(bytes); }
     asset.seek(SeekFrom::Start(0))?;

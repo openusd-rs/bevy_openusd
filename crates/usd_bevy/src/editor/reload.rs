@@ -1,7 +1,7 @@
 //! Native disk-layer refresh for the live editor document.
 
 use super::*;
-use std::{collections::{BTreeMap, BTreeSet}, path::PathBuf, time::{Duration, Instant, SystemTime}};
+use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, time::{Duration, Instant, SystemTime}};
 
 #[derive(Resource, Default, Debug)]
 pub struct EditorReloadStatus {
@@ -40,6 +40,13 @@ fn layer_files(stage: &Stage) -> BTreeSet<PathBuf> {
         let path = outer_path(layer.resolved_path()?);
         Some(crate::persistence::destination_identity(&path).unwrap_or(path))
     }).collect()
+}
+
+fn changed_file(path: &Path, baseline: Option<&blake3::Hash>) -> std::io::Result<Option<(Vec<u8>, blake3::Hash)>> {
+    if let Some(expected) = baseline && crate::source::file_hash(path)? == *expected { return Ok(None); }
+    let bytes = std::fs::read(path)?;
+    let hash = blake3::hash(&bytes);
+    Ok((baseline != Some(&hash)).then_some((bytes, hash)))
 }
 
 pub(super) fn watch(
@@ -118,13 +125,12 @@ impl EditorSession {
         let mut missing_textures = BTreeMap::new();
         for path in watched {
             if paths.is_some_and(|paths| !paths.contains(&path)) { continue; }
-            let bytes = match std::fs::read(&path) {
-                Ok(bytes) => bytes,
+            let replacement = match changed_file(&path, baselines.get(&path)) {
+                Ok(replacement) => replacement,
                 Err(error) if !layers.contains(&path) => { missing_textures.insert(path, error); continue; }
                 Err(error) => return Err(error.into()),
             };
-            let hash = blake3::hash(&bytes);
-            if baselines.get(&path) != Some(&hash) { changed.insert(path, (bytes, hash)); }
+            if let Some(replacement) = replacement { changed.insert(path, replacement); }
         }
         if let Some(started) = started { eprintln!("editor_reload_phase phase=source-verification elapsed_ms={:.3} changed={}", started.elapsed().as_secs_f64()*1000.0, changed.len()); }
         if changed.is_empty() {
@@ -184,7 +190,7 @@ impl EditorSession {
         let mut publication = TexturePublication { requests, prepared, consumers: Vec::new() };
         preflight(&mut publication, candidate)?;
         for (path, (_, hash)) in &changed {
-            anyhow::ensure!(blake3::hash(&std::fs::read(path)?) == *hash, "source changed during reload: {}", path.display());
+            anyhow::ensure!(crate::source::file_hash(path)? == *hash, "source changed during reload: {}", path.display());
         }
         if let Some(plan) = &plan {
             for (path, bytes) in plan.disk.snapshots.lock().expect("prepared source snapshots").iter() {
@@ -280,6 +286,53 @@ impl TexturePublication {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_checks_detect_same_size_changes_and_return_matching_snapshot_hashes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("bytes");
+        assert_eq!(changed_file(&path, None).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        for size in [0, 1, 65535, 65536, 65537, 1024 * 1024] {
+            let bytes: Vec<_> = (0..size).map(|index| (index % 251) as u8).collect();
+            std::fs::write(&path, &bytes).unwrap();
+            let expected = blake3::hash(&bytes);
+            assert_eq!(crate::source::file_hash(&path).unwrap(), expected);
+            assert!(changed_file(&path, Some(&expected)).unwrap().is_none());
+            assert_eq!(changed_file(&path, None).unwrap().unwrap(), (bytes, expected));
+        }
+        let original = blake3::hash(b"original");
+        std::fs::write(&path, b"modified").unwrap();
+        let (bytes, hash) = changed_file(&path, Some(&original)).unwrap().unwrap();
+        assert_eq!(bytes, b"modified");
+        assert_eq!(hash, blake3::hash(&bytes));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(changed_file(&path, Some(&original)).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn disk_change_during_preflight_rejects_publication_and_recovers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("root.usda");
+        let contents = |size| format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n");
+        std::fs::write(&path, contents(1)).unwrap();
+        let mut editor = EditorSession::from_source(crate::UsdSource::from_file(&path).unwrap()).unwrap();
+        let document = editor.document_id();
+        let revision = editor.revision;
+        std::fs::write(&path, contents(2)).unwrap();
+        let result = editor.reload_paths(None, |_, _| {
+            std::fs::write(&path, contents(3))?;
+            Ok(())
+        });
+        assert!(result.err().unwrap().to_string().contains("source changed during reload"));
+        assert_eq!(editor.revision, revision);
+        assert_eq!(editor.stage().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap(), Some(1.0));
+        editor.reload_sources().unwrap();
+        assert_eq!(editor.document_id(), document);
+        assert_eq!(editor.stage().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap(), Some(3.0));
+        let revision = editor.revision;
+        assert!(editor.reload_paths(None, |_, _| panic!("unchanged input reached preflight")).unwrap().is_none());
+        assert_eq!(editor.revision, revision);
+    }
 
     #[test]
     fn snapshot_only_documents_do_not_reload_same_named_disk_files() {

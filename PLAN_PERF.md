@@ -676,8 +676,38 @@ do not characterize deferred startup as eliminating the work.
 Remaining before default enablement: variant/dependency closure cases,
 deferred failed-save recovery and visibility-specific reveal latency. Direct application edits
 to Bevy Visibility outside USD are not currently a promotion trigger. Non-Mesh
-geometry remains eager, and promotion is synchronous; bounded asynchronous
-states/cancellation are not implemented by this increment.
+geometry remains eager. Asynchronous jobs and hard per-frame bounds remain
+unimplemented; the optional cooperative scheduler below is not a substitute.
+
+Cooperative promotion increment: `UsdResidencyBudget(Duration)` opts into a
+shared soft route-preparation budget, reset in the app's First schedule. With
+no resource, promotion stays synchronous. `UsdMeshPreparationQueued` identifies
+requested but not yet prepared entities; `UsdDeferredMesh` remains until their
+geometry routes run. LiveStage and asset-instance updates resume queued work
+under the appropriate stage/time/textures. Queue entries are ECS markers, not
+decoded geometry or mutable Stage objects sent to threads. Each attempt reads
+the current stage and clock; re-hidden entries are removed from the requested
+queue without losing their deferred marker. Custom registries retain eager
+execution. Zero budget advances one mesh per update globally across roots.
+
+The benchmark accepts `USD_RESIDENCY_BUDGET_MS=10` alongside the deferral and
+prewarm flags. Prewarm now drains over updates with a 120-second bound, reporting
+update count, p95 and maximum duration separately from total preparation time.
+748 workspace/all-target tests pass, 19 ignored, including shared budget across
+three roots, current-clock preparation, re-hidden cancellation and budget
+removal. Evidence: `target/perf/p4-budget/tests.log` and `caldera-10ms-final.log`.
+
+**Experimental, not default-ready:** the final Caldera diagnostic drained all
+18,932 meshes in 1,552 updates / 49.980 s, with update p95 45.645 ms and maximum
+2,232.132 ms despite a requested 10 ms route budget. Final mesh/subset entity
+counts remain 50,125 / 23,291; peak RSS was 5,709,748 KiB. An earlier version
+measured 47.904 s, so removing repeated queue-marker writes and exhausted-pass
+sorting did not establish a throughput improvement. Both are substantially
+slower in total than the ~17-second synchronous prewarm. One prim remains
+indivisible; sorting/scanning and ordinary update work sit outside the route
+budget. Investigate these costs and split heavy preparation before making any
+hard latency claim. Fair scheduling among roots and viewer loading/readiness
+presentation remain follow-up work; logical Ready is not a rendered-frame gate.
 
 Rejected follow-up: a temporary per-promotion `ProjectionMaterials` memo passed
 747 experimental workspace/all-target tests (19 ignored), including shared

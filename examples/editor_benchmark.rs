@@ -41,12 +41,25 @@ fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(mut reads) = app.world_mut().get_resource_mut::<usd_bevy::route::MeshReadTiming>() { *reads = default(); }
     let start = Instant::now();
     app.world_mut().remove_resource::<DeferHiddenMeshes>();
-    app.update();
+    let mut updates = Vec::new();
+    loop {
+        let update_started = Instant::now();
+        app.update();
+        updates.push(update_started.elapsed());
+        if app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).next().is_none() { break; }
+        if start.elapsed() > Duration::from_secs(120) { return Err("deferred prewarm exceeded 120 seconds".into()); }
+    }
     let elapsed = start.elapsed();
     let pending_after = app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).count();
     eprintln!("deferred_prewarm scope=all-deferred-cpu excludes=gpu,visibility-edit pending_before={pending_before} pending_after={pending_after} elapsed_ms={:.3} mesh_assets_before={meshes_before} mesh_assets_after={} rss_before={} rss_after={}",
         elapsed.as_secs_f64()*1000.0, app.world().resource::<Assets<Mesh>>().len(),
         rss_before.map_or("NA".into(), |value| value.to_string()), resident_bytes().map_or("NA".into(), |value| value.to_string()));
+    updates.sort_unstable();
+    eprintln!("deferred_prewarm_updates count={} p95_ms={:.3} max_ms={:.3} budget_ms={}", updates.len(),
+        updates[(updates.len()*95).div_ceil(100)-1].as_secs_f64()*1000.0,
+        updates.last().unwrap().as_secs_f64()*1000.0,
+        app.world().get_resource::<usd_bevy::route::residency::UsdResidencyBudget>()
+            .map_or("unlimited".into(), |budget| budget.0.as_millis().to_string()));
     report_routes(app.world(), "deferred-prewarm", 1);
     if pending_after != 0 { return Err("prewarm left deferred meshes pending".into()); }
     Ok(())
@@ -110,6 +123,9 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, LiveStagePlugin, EditorPlugin));
     app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
     if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() { app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>(); }
+    if let Ok(value) = std::env::var("USD_RESIDENCY_BUDGET_MS") {
+        app.insert_resource(usd_bevy::route::residency::UsdResidencyBudget(Duration::from_millis(value.parse()?)));
+    }
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
         app.init_resource::<usd_bevy::route::ProjectionTimings>();

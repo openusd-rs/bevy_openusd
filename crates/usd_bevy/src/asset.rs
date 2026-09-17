@@ -200,6 +200,7 @@ impl Default for UsdProjectionBudget {
 
 impl Plugin for UsdAssetPlugin {
     fn build(&self, app: &mut App) {
+        crate::route::residency::configure(app);
         if !app.world().contains_resource::<Assets<Image>>() {
             app.init_asset::<Image>();
         }

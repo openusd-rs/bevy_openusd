@@ -355,6 +355,7 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
             runtime.sampled = current;
             crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
         }
+        crate::route::residency::resume(world, &runtime.live.stage, &runtime.map);
         world.remove_resource::<StageTime>();
         world.remove_resource::<AnimatedPrims>();
         world.remove_resource::<SnapshotTextures>();

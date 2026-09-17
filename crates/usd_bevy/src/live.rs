@@ -300,9 +300,24 @@ struct AnimationDiscovery {
     binding_opinions: HashMap<openusd::sdf::Path, bool>,
     materials: HashMap<openusd::sdf::Path, bool>,
     primvar_owners: HashMap<(openusd::sdf::Path, &'static str), Option<openusd::sdf::Path>>,
+    profile: bool,
+    timings: [std::time::Duration; 6],
 }
 
 impl AnimationDiscovery {
+    fn measured(&mut self, index: usize, query: impl FnOnce(&mut Self) -> bool) -> bool {
+        let started = self.profile.then(std::time::Instant::now);
+        let result = query(self);
+        if let Some(started) = started { self.timings[index] += started.elapsed(); }
+        result
+    }
+
+    fn report(&self, prims: usize, resets: usize) {
+        if !self.profile { return; }
+        let [instancer, attributes, subsets, deformation, primvars, material] = self.timings.map(|time| time.as_secs_f64()*1000.0);
+        eprintln!("animation_progress prims={prims} resets={resets} instancer_ms={instancer:.3} attributes_ms={attributes:.3} subsets_ms={subsets:.3} deformation_ms={deformation:.3} primvars_ms={primvars:.3} material_ms={material:.3} scope=live-initial-projection includes=per-query-timer-overhead");
+    }
+
     fn has_binding_opinions(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
         let mut pending = Vec::new();
         let mut current = Some(path.clone());
@@ -355,13 +370,14 @@ impl AnimationDiscovery {
 
     fn prim_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
         if stage.prim(path).ok().and_then(|prim| prim.type_name().ok().flatten()).as_deref() == Some("PointInstancer") {
-            return prim_is_animated(stage, path);
+            return self.measured(0, |_| prim_is_animated(stage, path));
         }
-        has_time_samples(stage, path) || subsets_are_animated(stage, path)
-            || crate::read::skel::deformation_is_time_varying(stage, path)
-            || ["primvars:normals", "primvars:displayColor", "primvars:displayOpacity", "primvars:st", "primvars:st0"].iter()
-                .any(|name| self.inherited_primvar_is_animated(stage, path, name).unwrap_or(false))
-            || self.material_is_animated(stage, path)
+        self.measured(1, |_| has_time_samples(stage, path))
+            || self.measured(2, |_| subsets_are_animated(stage, path))
+            || self.measured(3, |_| crate::read::skel::deformation_is_time_varying(stage, path))
+            || self.measured(4, |this| ["primvars:normals", "primvars:displayColor", "primvars:displayOpacity", "primvars:st", "primvars:st0"].iter()
+                .any(|name| this.inherited_primvar_is_animated(stage, path, name).unwrap_or(false)))
+            || self.measured(5, |this| this.material_is_animated(stage, path))
     }
 }
 
@@ -452,6 +468,25 @@ fn registry_of(world: &World) -> SchemaRegistry {
 pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
     let stage = &live.stage;
     let registry = registry_of(world);
+    let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
+    let started = profiling.then(std::time::Instant::now);
+    let mut animation_time = std::time::Duration::ZERO;
+    let mut route_time = std::time::Duration::ZERO;
+    let report = |phase: &str, count: usize, path: &str, animation: std::time::Duration,
+                  routes: std::time::Duration, world: &World| {
+        let Some(started) = started else { return };
+        eprintln!("projection_progress phase={phase} prims={count} elapsed_ms={:.3} animation_ms={:.3} routes_ms={:.3} path={path:?} scope=live-initial-projection",
+            started.elapsed().as_secs_f64()*1000.0, animation.as_secs_f64()*1000.0, routes.as_secs_f64()*1000.0);
+        if let Some(timings) = world.get_resource::<crate::route::ProjectionTimings>() {
+            let mut rows: Vec<_> = timings.0.iter().collect();
+            rows.sort_by_key(|(_, row)| std::cmp::Reverse(row.matching + row.application));
+            for (name, row) in rows.into_iter().take(5) {
+                eprintln!("projection_route_progress phase={phase} prims={count} route={name} attempts={} matches={} match_ms={:.3} apply_ms={:.3} scope=world-cumulative-top-five",
+                    row.attempts, row.matches, row.matching.as_secs_f64()*1000.0, row.application.as_secs_f64()*1000.0);
+            }
+        }
+    };
+    report("begin", 0, "/", animation_time, route_time, world);
     // The stage-root entity (the pseudo-root `/`) carries the up-axis rotation;
     // every top-level prim hangs off it, so Bevy's transform propagation
     // composes prim-local transforms into correct world transforms and the
@@ -469,10 +504,11 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     map.insert("/", root);
 
     let mut prim_count = 0usize;
-    let mut discovery = AnimationDiscovery::default();
+    let mut discovery = AnimationDiscovery { profile: profiling, ..Default::default() };
+    let mut discovery_resets = 0;
     let mut composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
     let mut animated: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let _ = stage.traverse(
+    let traversal = stage.traverse(
         traverse_predicate(),
         |path: &openusd::sdf::Path| {
             // Traversal is pre-order, so the parent prim's entity already exists.
@@ -487,25 +523,39 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
                 .id();
             map.insert(path.as_str().to_string(), entity);
             prim_count += 1;
+            let sampled = profiling && (prim_count <= 8 || prim_count % 1024 == 0);
+            if sampled { report("prim-start", prim_count, path.as_str(), animation_time, route_time, world); }
+            let animation_started = profiling.then(std::time::Instant::now);
             if discovery.prim_is_animated(stage, path) {
                 animated.insert(path.as_str().to_string());
             }
+            if let Some(started) = animation_started { animation_time += started.elapsed(); }
             // Every prim→component mapping goes through the registry.
+            let route_started = profiling.then(std::time::Instant::now);
             registry.project_prim(stage, path, world, entity);
+            if let Some(started) = route_started { route_time += started.elapsed(); }
             map.remember_type(stage, path.as_str());
             let current_composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
             if live.has_changes() || current_composition != composition {
-                discovery = AnimationDiscovery::default();
+                discovery_resets += 1;
+                discovery = AnimationDiscovery { profile: profiling, timings: discovery.timings, ..Default::default() };
                 composition = current_composition;
+            }
+            if sampled {
+                report("prim-complete", prim_count, path.as_str(), animation_time, route_time, world);
+                discovery.report(prim_count, discovery_resets);
             }
         },
     );
+    report(if traversal.is_ok() { "traversal-complete" } else { "traversal-error" }, prim_count, "/", animation_time, route_time, world);
+    discovery.report(prim_count, discovery_resets);
     bevy::log::info!(
         target: "usd_bevy::live",
         "projected {prim_count} prims ({} animated)",
         animated.len()
     );
     crate::route::residency::materialize(world, stage, map);
+    report("materialize-complete", prim_count, "/", animation_time, route_time, world);
     world.insert_resource(AnimatedPrims(animated));
     // Projecting authored the initial read; clear so the first sync starts clean.
     let _ = live.drain_changes();

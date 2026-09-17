@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `e0de656` and the
+Planned against `1dd38c8` on 2026-09-16; reconciled against `fc5aabe` and the
 working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
@@ -20,13 +20,16 @@ research, measurements, rejected experiments and acceptance requirements.
 - **Still unresolved:** matched first-complete-frame measurement and the ≤5×
   ratio. Moana still times out: the latest 180-second full-open attempt is not a
   successful load. Keep hidden-mesh deferral opt-in.
-- **Next CPU investigation:** instrument the unfinished update after editor
-  inspection. The latest full-open attempt reaches texture installation at
-  82.039 s and reports a 5.426 s inspection, then reaches the 180-second deadline
-  without an open result. `examples/editor_benchmark.rs` currently prints route
-  totals only after the update returns; add bounded progress attribution around
-  the remaining core projection/preparation work rather than guessing its owner.
-  The guarded parent witness is implemented; do not repeat it as a new experiment.
+- **Next CPU investigation:** target material resolution and animation discovery,
+  now attributed by bounded in-update progress reports. At Moana's last sampled
+  229,376 prims, material projection takes 27.964 s; animation discovery spends
+  13.431 s on authored sample checks and 12.961 s on material animation queries.
+  Split binding lookup, shader-network reads and packing inside
+  `crates/usd_bevy/src/route/material.rs::resolve_material`, and measure distinct
+  binding/time/sidedness keys before choosing a cache. Initial live projection
+  does not install the existing `ProjectionMaterials` job memo. Reuse must reject
+  stale results after edits, preserve warnings and handle instance-local opinions;
+  do not simply extend that memo's lifetime without proving those properties.
 - **Property-source investigation:** profile redundant existence,
   sample-source and spec-stack walks in
   `vendor/openusd/crates/openusd/src/pcp/index_cache.rs`. Count-only sample queries
@@ -245,6 +248,49 @@ adjust their order using measured bytes, duplicate work and serial CPU fractions
 Do not add projected speedups together: several phases remove the same work.
 
 ## P0 — Establish trustworthy measurements
+
+Live projection attribution: `USD_PROFILE_LOADING=1` now reports projection
+start, the first eight prims, every 1,024th prim, traversal return and completion
+of materialization. Reports split animation discovery from registry projection.
+With `ProjectionTimings` installed (`USD_PROFILE_ROUTES=1` in the benchmark), each
+checkpoint also reports the five largest cumulative route costs. Animation
+reports preserve the existing short-circuit order and split instancer scans,
+authored sample checks, subset checks, deformation, inherited primvars and
+material queries. Reset counts distinguish recomputation from normal discovery.
+The normal path performs no clock reads or progress output from this probe.
+
+The 180-second Moana diagnostic still times out (exit 124), but now identifies
+the work in flight rather than leaving an empty end-of-update report. Its last
+completed sample is 229,376 prims, 92.670 s into live projection:
+
+| Work | Elapsed in sampled prefix |
+| --- | --- |
+| Animation discovery, total | 33.024 s |
+| ↳ Authored attribute sample checks | 13.431 s |
+| ↳ Material animation queries | 12.961 s |
+| ↳ Inherited primvars | 2.883 s |
+| ↳ Deformation checks | 2.218 s |
+| Registry projection, total | 56.725 s |
+| ↳ MaterialRoute application | 27.964 s |
+| ↳ MeshRoute application | 17.124 s |
+| ↳ VisibilityRoute application | 3.334 s |
+
+Indented rows are included in their parent totals, not additional costs. These
+are incomplete-prefix diagnostic costs, with timer/log overhead; do not
+extrapolate them into a full-load or first-frame result. Discovery resets are
+zero. Peak RSS is 21,320,384 KiB under the 24 GiB/no-swap cap. The earlier broad
+probe also showed continued progress rather than a single hung call; its
+235,520-prim prefix is a different sample, not a before/after performance claim.
+Artifacts: `target/perf/p0-projection-progress/{moana,moana-initial}.log`.
+
+763 Make release workspace/all-target tests pass (19 ignored). The existing
+purpose/time-change projection regression also passes with profiling enabled.
+Oxbo completes its diagnostic CPU open in 2.208 s and reports projection through
+materialization for all 3,743 prims. This is not GPU/frame timing or a claimed
+speedup. Logs and builds: `target/perf/p0-projection-progress/`.
+The profiling-disabled Oxbo run emits none of the new progress records and has
+identical geometry, asset-count and cached-payload CSV fields to the enabled run;
+elapsed times and process RSS are excluded from that equality check.
 
 Moana validation attribution: `USD_PROFILE_LOADING` now logs validation traversal
 start/completion, attribute progress every 4,096 prims, attribute completion and

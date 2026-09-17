@@ -1163,6 +1163,32 @@ including variants, payload/load rules, population masks, muted layers, authored
 material edits and external changes. Do not reuse by pathname or editor clock
 alone, or suppress existing discovery errors for modified stages.
 
+Revision-bound candidate index increment: `editor/texture_index.rs` retains
+only paths of Material/DomeLight/DomeLight_1 prims for one EditorSession. It does
+not cache resolved texture requests, asset values or errors: each request scan
+still reads current attributes/time samples and resolves current asset paths.
+This preserves filesystem-dependent resolution, including a missing texture
+appearing without any stage edit. The key contains tracked per-layer revisions,
+structural revision, participating layers, load rules, population mask and muted
+layers. Saturated counters and changes observed during candidate discovery
+prevent reuse. Initial editor texture preparation seeds the same index used by
+reload checks; standalone source request scans remain uncached.
+
+754 workspace/all-target tests pass (19 ignored). New differential checks compare
+indexed requests with full discovery after prim type/attribute authoring, load
+rule changes, layer mute/unmute, variant switches and direct Sdf layer edits.
+Missing-file recovery verifies resolution changes while the candidate scan count
+stays unchanged. Existing reload, malformed-file, last-good and editor tests pass.
+
+Caldera's diagnostic unchanged-stage texture discovery is now 0.039 ms versus
+1,072.160 ms in the preceding run. File verification still reads/hashes 265 paths
+in 92.793 ms; total reload check is 92.942 ms. Budgeted preparation drains all
+18,932 meshes in 21.514 s / 1,525 updates, with 16.862 ms p95 and 111.069 ms max,
+versus the previous 1,185.147 ms max. These are single-run diagnostic comparisons,
+not matched first-frame acceptance. Source verification can still exceed a frame
+budget; watching and its initial race check have not been disabled or weakened.
+Logs and build/test evidence: `target/perf/p8-texture-index/`.
+
 **Scope:** `reload.rs`, `editor/reload.rs`, `source.rs`, persistence/conflict tests;
 review upstream immutable-layer APIs separately if required.
 

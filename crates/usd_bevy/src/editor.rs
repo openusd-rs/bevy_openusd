@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 mod layer_changes;
+mod texture_index;
 pub mod reload;
 pub mod save_state;
 
@@ -269,7 +270,9 @@ fn process_commands(world: &mut World) {
                     profile("stage-open");
                     crate::UsdSource::validate_composition(&stage)?;
                     profile("composition-validated");
-                    let textures = match prepare_textures(&stage, &source) {
+                    let mut editor = EditorSession::new(stage.clone());
+                    profile("editor-created");
+                    let textures = match prepare_textures(&editor, &source) {
                         Ok(textures) => textures,
                         Err(error) => {
                             if session.is_none() {
@@ -290,8 +293,6 @@ fn process_commands(world: &mut World) {
                     }
                     world.insert_resource(crate::live::PrimEntities::default());
                     world.insert_non_send(crate::live::LiveStage::new(stage.clone()));
-                    let mut editor = EditorSession::new(stage);
-                    profile("editor-created");
                     editor.save_state.borrow_mut().disk = Some(disk_baselines);
                     editor.save_state.borrow_mut().opened(editor.stage(), &editor.layer_changes.revisions());
                     profile("save-baselines");
@@ -464,8 +465,8 @@ fn texture_request_paths(stage: &Stage, requests: &std::collections::BTreeSet<(S
     paths
 }
 
-fn prepare_textures(stage: &Stage, source: &crate::UsdSource) -> anyhow::Result<PreparedTextures> {
-    decode_textures(source, crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?)
+fn prepare_textures(editor: &EditorSession, source: &crate::UsdSource) -> anyhow::Result<PreparedTextures> {
+    decode_textures(source, editor.texture_requests()?)
 }
 
 fn decode_textures(source: &crate::UsdSource, requests: std::collections::BTreeSet<(String, bool)>) -> anyhow::Result<PreparedTextures> {
@@ -713,6 +714,7 @@ pub struct EditorSession {
     history_limit: usize,
     layer_changes: layer_changes::LayerChanges,
     save_state: std::cell::RefCell<save_state::SaveState>,
+    texture_index: std::cell::RefCell<texture_index::TextureIndex>,
 }
 
 impl EditorSession {
@@ -730,10 +732,15 @@ impl EditorSession {
             history_limit: 128,
             layer_changes,
             save_state: Default::default(),
+            texture_index: Default::default(),
         }
     }
 
     pub fn stage(&self) -> &Stage { &self.stage }
+
+    fn texture_requests(&self) -> anyhow::Result<std::collections::BTreeSet<(String, bool)>> {
+        self.texture_index.borrow_mut().requests(self.stage(), &self.layer_changes).map_err(anyhow::Error::msg)
+    }
 
     /// Opens a source with resolver-byte baselines for guarded in-place saves.
     pub fn from_source(source: crate::UsdSource) -> anyhow::Result<Self> {

@@ -132,15 +132,29 @@ impl UsdSource {
     }
 
     pub(crate) fn stage_texture_requests(stage: &Stage) -> Result<BTreeSet<(String, bool)>, String> {
+        Self::texture_requests_for_prims(stage, &Self::stage_texture_prims(stage)?)
+    }
+
+    pub(crate) fn stage_texture_prims(stage: &Stage) -> Result<Vec<openusd::sdf::Path>, String> {
         let mut paths = Vec::new();
         stage
             .traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| {
                 paths.push(path.clone());
             })
             .map_err(|error| error.to_string())?;
-        let mut requests = BTreeSet::new();
+        let mut candidates = Vec::new();
         for path in paths {
             let prim = stage.prim(&path).map_err(|error| error.to_string())?;
+            let kind = prim.type_name().map_err(|error| error.to_string())?;
+            if matches!(kind.as_deref(), Some("Material" | "DomeLight" | "DomeLight_1")) { candidates.push(path); }
+        }
+        Ok(candidates)
+    }
+
+    pub(crate) fn texture_requests_for_prims(stage: &Stage, paths: &[openusd::sdf::Path]) -> Result<BTreeSet<(String, bool)>, String> {
+        let mut requests = BTreeSet::new();
+        for path in paths {
+            let prim = stage.prim(path).map_err(|error| error.to_string())?;
             let type_name = prim.type_name().map_err(|error| error.to_string())?;
             if matches!(type_name.as_deref(), Some("DomeLight" | "DomeLight_1")) {
                 let attr = prim.attribute("inputs:texture:file");

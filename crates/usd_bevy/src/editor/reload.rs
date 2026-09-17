@@ -108,7 +108,7 @@ impl EditorSession {
         let baselines = disk.lock().expect("disk baselines").clone();
         let profiled = std::env::var_os("USD_PROFILE_LOADING").is_some();
         let started = profiled.then(Instant::now);
-        let old_requests = crate::UsdSource::stage_texture_requests(self.stage()).map_err(anyhow::Error::msg)?;
+        let old_requests = self.texture_requests()?;
         if let Some(started) = started { eprintln!("editor_reload_phase phase=texture-requests elapsed_ms={:.3}", started.elapsed().as_secs_f64()*1000.0); }
         let started = profiled.then(Instant::now);
         let layers = layer_files(self.stage());

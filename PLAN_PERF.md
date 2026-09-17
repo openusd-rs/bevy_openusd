@@ -214,6 +214,37 @@ Do not add projected speedups together: several phases remove the same work.
 
 ## P0 — Establish trustworthy measurements
 
+Moana validation attribution: `USD_PROFILE_LOADING` now logs validation traversal
+start/completion, attribute progress every 4,096 prims, attribute completion and
+successful validation completion. Counters describe visited prims and inspected
+attributes, not geometry bytes or draw calls. Validation semantics are unchanged;
+the normal path emits no new logs. The full Make release workspace/all-target
+gate passes 759 tests (19 ignored), and the benchmark builds.
+
+The current original Moana root still fails the bounded 180-second CPU-open run:
+exit 124, peak RSS 19,986,164 KiB, no swap, under the 24 GiB cap. Stage open
+reported 13 ms, but composition is lazy: validation completed at 71.390 s,
+texture preparation at 97.947 s and save baselines at 102.675 s. A later editor
+snapshot cost 7.875 s. No initial-open benchmark row or rendered frame completed.
+This is not an OOM result and not evidence that loading only costs 13 ms.
+
+A second, deliberately 110-second diagnostic with validation attribution found
+416,549 traversed prims and 6,400,861 inspected attributes. Traversal alone took
+40.534 s; the attribute loop took another 36.884 s; remaining validation was
+about 5 ms. Do not interpret the difference from the earlier 71-second result
+as a regression or compare these diagnostic samples as a controlled speedup.
+Artifacts are `target/perf/moana-current/{baseline,validation,tests,build}.log`.
+A debugger attach was rejected by the host; no ptrace/security settings changed.
+
+Next Moana optimization should target traversal and validation reads, not more
+small mesh-route changes. The upstream traversal recomputes inherited status
+along ancestor chains for each prim; inspect a traversal-local inherited-state
+implementation with parity for inactive/undefined/abstract branches, load rules,
+instance proxies and edits made by traversal callbacks. Attribute validation
+also needs shared query/value-source work across its get/type/sample checks.
+Do not skip proxy subtrees or validation errors to make the benchmark complete.
+Moana render acceptance remains unproven.
+
 Material-image dependency increment: the opt-in viewer probe now visits image
 dependencies of retained/referenced StandardMaterial assets and the base of
 FlatMaterial assets. Unloaded texture handles remain in the required image set;

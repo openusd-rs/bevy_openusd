@@ -387,10 +387,20 @@ impl UsdSource {
     }
 
     pub(crate) fn validate_composition(stage: &Stage) -> anyhow::Result<()> {
+        let started = (std::env::var_os("USD_PROFILE_LOADING").is_some()).then(std::time::Instant::now);
+        let report = |phase: &str, prims: usize, attributes: usize| {
+            if let Some(started) = started {
+                eprintln!("validation_profile phase={phase} elapsed_ms={:.3} prims={prims} attributes={attributes}", started.elapsed().as_secs_f64()*1000.0);
+            }
+        };
+        report("traverse-start", 0, 0);
         let mut paths = Vec::new();
         stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| paths.push(path.clone()))?;
+        let prim_count = paths.len();
+        let mut attribute_count = 0;
+        report("traverse-complete", prim_count, 0);
         let mut clip_prims = std::collections::HashSet::new();
-        for path in paths {
+        for (index, path) in paths.into_iter().enumerate() {
             let prim = stage.prim(&path)?;
             let has_clips = path.parent().is_some_and(|parent| clip_prims.contains(&parent))
                 || prim.get_metadata::<openusd::sdf::Value>("clips")?.is_some();
@@ -411,6 +421,7 @@ impl UsdSource {
             }
             let attributes = if has_clips { prim.attributes()? } else { prim.authored_attributes()? };
             for attribute in attributes {
+                attribute_count += 1;
                 attribute.get::<openusd::sdf::Value>()?;
                 if attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]")) {
                     for time in attribute.time_sample_times()? {
@@ -420,7 +431,9 @@ impl UsdSource {
                     attribute.num_time_samples()?;
                 }
             }
+            if started.is_some() && (index + 1) % 4096 == 0 { report("attribute-progress", index + 1, attribute_count); }
         }
+        report("attributes-complete", prim_count, attribute_count);
         for identifier in stage.layer_identifiers() {
             if stage.is_layer_muted(&identifier) { continue; }
             let Some(layer) = stage.layer(&identifier) else { continue; };
@@ -435,6 +448,7 @@ impl UsdSource {
         let errors = stage.composition_errors();
         anyhow::ensure!(errors.is_empty(), "USD composition failed: {}",
             errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "));
+        report("complete", prim_count, attribute_count);
         Ok(())
     }
 

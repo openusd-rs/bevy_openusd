@@ -42,9 +42,9 @@ fn layer_files(stage: &Stage) -> BTreeSet<PathBuf> {
     }).collect()
 }
 
-fn changed_file(path: &Path, baseline: Option<&blake3::Hash>) -> std::io::Result<Option<(Vec<u8>, blake3::Hash)>> {
+fn changed_file(path: &Path, baseline: Option<&blake3::Hash>) -> std::io::Result<Option<(Arc<[u8]>, blake3::Hash)>> {
     if let Some(expected) = baseline && crate::source::file_hash(path)? == *expected { return Ok(None); }
-    let bytes = std::fs::read(path)?;
+    let bytes = crate::source::read_file_snapshot(path)?;
     let hash = blake3::hash(&bytes);
     Ok((baseline != Some(&hash)).then_some((bytes, hash)))
 }
@@ -152,10 +152,10 @@ impl EditorSession {
                 "reload conflict: {id} has unsaved edits; save elsewhere or undo them before reloading");
             let replacement = if let Some((outer, inner)) = openusd::ar::split_package_relative_path_outer(path) {
                 source_bytes.insert(outer, bytes.clone());
-                openusd::ar::read_package_entry(Box::new(std::io::Cursor::new(bytes.clone())), &inner)?
+                openusd::ar::read_package_entry(Box::new(crate::source::SharedAsset(std::io::Cursor::new(bytes.clone()))), &inner)?
             } else {
                 source_bytes.insert(path.to_owned(), bytes.clone());
-                bytes.clone()
+                bytes.to_vec()
             };
             replacements.push((id, replacement));
             accepted.insert(key);
@@ -177,7 +177,7 @@ impl EditorSession {
         for (path, _) in &changed_requests {
             let outer = outer_path(path);
             if !changed.contains_key(&outer) {
-                let bytes = std::fs::read(&outer)?;
+                let bytes = crate::source::read_file_snapshot(&outer)?;
                 let hash = blake3::hash(&bytes);
                 changed.insert(outer.clone(), (bytes, hash));
             }
@@ -196,13 +196,13 @@ impl EditorSession {
             for (path, bytes) in plan.disk.snapshots.lock().expect("prepared source snapshots").iter() {
                 let key = crate::persistence::destination_identity(&outer_path(path))?;
                 if !baselines.contains_key(&key) {
-                    source_bytes.insert(path.clone(), bytes.to_vec());
+                    source_bytes.insert(path.clone(), bytes.clone());
                 }
             }
         }
         let previous = disk.replacements.lock().expect("editor source replacements").clone();
         disk.replacements.lock().expect("editor source replacements")
-            .extend(source_bytes.iter().map(|(path, bytes)| (path.clone(), Arc::from(bytes.clone()))));
+            .extend(source_bytes.iter().map(|(path, bytes)| (path.clone(), bytes.clone())));
         if let Err(error) = self.stage.without_recording(|stage|
             plan.as_ref().map_or(Ok(()), |plan| plan.apply(stage))) {
             *disk.replacements.lock().expect("editor source replacements") = previous;
@@ -298,12 +298,14 @@ mod tests {
             let expected = blake3::hash(&bytes);
             assert_eq!(crate::source::file_hash(&path).unwrap(), expected);
             assert!(changed_file(&path, Some(&expected)).unwrap().is_none());
-            assert_eq!(changed_file(&path, None).unwrap().unwrap(), (bytes, expected));
+            let (snapshot, hash) = changed_file(&path, None).unwrap().unwrap();
+            assert_eq!(snapshot.as_ref(), bytes);
+            assert_eq!(hash, expected);
         }
         let original = blake3::hash(b"original");
         std::fs::write(&path, b"modified").unwrap();
         let (bytes, hash) = changed_file(&path, Some(&original)).unwrap().unwrap();
-        assert_eq!(bytes, b"modified");
+        assert_eq!(bytes.as_ref(), b"modified");
         assert_eq!(hash, blake3::hash(&bytes));
         std::fs::remove_file(&path).unwrap();
         assert_eq!(changed_file(&path, Some(&original)).unwrap_err().kind(), std::io::ErrorKind::NotFound);
@@ -329,6 +331,12 @@ mod tests {
         editor.reload_sources().unwrap();
         assert_eq!(editor.document_id(), document);
         assert_eq!(editor.stage().prim("/Model").unwrap().attribute("size").get::<f64>().unwrap(), Some(3.0));
+        let source = editor.source.as_ref().unwrap();
+        let (_, reopened_disk) = source.open_stage_for_editor().unwrap();
+        let snapshot = reopened_disk.snapshots.lock().unwrap()[source.identifier()].clone();
+        let disk = editor.save_state.borrow().disk.clone().unwrap();
+        let published = disk.replacements.lock().unwrap()[source.identifier()].clone();
+        assert!(Arc::ptr_eq(&snapshot, &published));
         let revision = editor.revision;
         assert!(editor.reload_paths(None, |_, _| panic!("unchanged input reached preflight")).unwrap().is_none());
         assert_eq!(editor.revision, revision);

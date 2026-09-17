@@ -81,7 +81,7 @@ impl UsdSource {
     /// Reads an immutable root-layer snapshot from a file.
     pub fn from_file(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
-        let bytes = read_shared_asset(&mut std::fs::File::open(path)?)?;
+        let bytes = read_file_snapshot(path)?;
         Self::new(path, bytes)
     }
 
@@ -341,12 +341,12 @@ impl UsdSource {
         Ok(combined)
     }
 
-    pub(crate) fn insert_dependency(&mut self, identifier: String, bytes: Vec<u8>) {
+    pub(crate) fn insert_dependency(&mut self, identifier: String, bytes: impl Into<Arc<[u8]>>) {
         Arc::make_mut(&mut self.files).insert(identifier, bytes.into());
         self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn replace_file_bytes(&mut self, identifier: String, bytes: Vec<u8>) {
+    pub(crate) fn replace_file_bytes(&mut self, identifier: String, bytes: impl Into<Arc<[u8]>>) {
         if identifier == self.identifier {
             self.bytes = bytes.into();
             self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
@@ -492,7 +492,11 @@ struct SourceResolver {
     disk_baselines: Option<DiskBaselines>,
 }
 
-struct SharedAsset(Cursor<Arc<[u8]>>);
+pub(crate) struct SharedAsset(pub(crate) Cursor<Arc<[u8]>>);
+
+pub(crate) fn read_file_snapshot(path: &Path) -> io::Result<Arc<[u8]>> {
+    read_shared_asset(&mut std::fs::File::open(path)?)
+}
 
 pub(crate) fn file_hash(path: &Path) -> io::Result<blake3::Hash> {
     let mut hash = blake3::Hasher::new();
@@ -683,6 +687,26 @@ fn normalize(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_replacements_share_snapshots_without_mutating_previous_sources() {
+        use super::*;
+        let mut source = UsdSource::new("shared-replacement/root.usda", b"original".as_slice()).unwrap();
+        let before = source.clone();
+        let root: Arc<[u8]> = Arc::from(b"replacement".as_slice());
+        let child: Arc<[u8]> = Arc::from(b"child".as_slice());
+        source.replace_file_bytes(source.identifier().to_owned(), root.clone());
+        source.replace_file_bytes("child.usda".into(), child.clone());
+        assert!(Arc::ptr_eq(&source.bytes, &root));
+        assert!(Arc::ptr_eq(&source.files["child.usda"], &child));
+        assert_eq!(before.bytes.as_ref(), b"original");
+        assert!(before.files.is_empty());
+        assert_ne!(source.revision(), before.revision());
+        let snapshot = source.clone();
+        source.replace_file_bytes("child.usda".into(), b"next".to_vec());
+        assert!(Arc::ptr_eq(&snapshot.files["child.usda"], &child));
+        assert_eq!(source.files["child.usda"].as_ref(), b"next");
+    }
+
     #[test]
     fn shared_reads_handle_size_changes_interrupts_and_failures() {
         use super::*;

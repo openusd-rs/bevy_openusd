@@ -2137,6 +2137,45 @@ serve old contents after Blender saves a new file.
 
 ## P8 — Make reload preparation proportional to changed layers
 
+### Shared replacement snapshots (2026-09-17)
+
+Changed disk files now use the direct shared-buffer reader. Immutable byte
+owners are shared by the changed-file map, source snapshot and published resolver
+replacements, rather than cloning the entire file at each handoff. Package-entry
+reads borrow the same shared archive through the canonical `SharedAsset` reader;
+new dependency snapshots also keep their existing shared owners. Previous source
+versions remain immutable. Parsing and field-level candidate validation retain
+their existing owned inputs; this does not eliminate every reload allocation.
+
+`examples/reload_edit_benchmark.rs` creates a private temporary USDA file with a
+64 MiB comment, opens it, changes one Cube size on disk, and times the real reload.
+Every run verifies the new value and unchanged document identity. The fixture
+isolates large-source/small-edit byte ownership; it is explicitly synthetic and
+does not represent large geometry, composed stages or rendered-frame latency.
+No user dataset is modified by this benchmark.
+
+Five alternating/order-reversed final process pairs compare `dcaaa90` with the
+candidate including the binary-format correctness fix. Both use the same USDA
+fixture, 24 GiB/no-swap and a 45-second timeout. Medians:
+
+| Metric | Baseline | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Changed-source reload | 229.309 ms | 136.823 ms | 40.3% lower |
+| Process peak RSS | 492,868 KiB | 297,544 KiB | 39.6% lower; 190.7 MiB saved |
+| Resident bytes after reload | 231,312 KiB | 166,968 KiB | 62.8 MiB saved |
+
+Raw results are `target/perf/p8-shared-replacements/final-{baseline,candidate}-*.log`;
+earlier trials are retained separately. Validation passes 782 workspace/all-target
+tests (19 ignored) and 14 native export tests. Pointer-identity tests prove that
+source updates retain shared owners without changing older versions, and that
+published replacements share storage with the new source snapshot. The binary
+live-reload regression and visual proof are described below; its final green/
+blue capture is byte-identical to the preceding USDA live-reload capture.
+
+Large-stage candidate reconstruction, repeated layer parsing and compact
+point-instancer rendering remain separate open costs. These numbers do not
+establish the ≤5× full-viewer target or full Moana acceptance.
+
 ### Binary candidate-snapshot correctness (2026-09-17)
 
 Live USDC reload validation exposed an existing `LayerReload::prepare` bug:

@@ -139,6 +139,76 @@ def Xform "Hidden" {
     }
 
     #[test]
+    fn registering_custom_route_materializes_existing_deferred_meshes() {
+        let (mut app, asset) = setup();
+        let root = app.world_mut().spawn(UsdSceneRoot(asset)).id();
+        app.update();
+        let entity = mesh_entity(&app, root);
+        assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+        app.world_mut().resource_mut::<SchemaRegistry>().register(RequiresMesh);
+        app.update();
+        assert!(app.world().get::<Mesh3d>(entity).is_some());
+        assert!(app.world().get::<UsdDeferredMesh>(entity).is_none());
+    }
+
+    #[test]
+    fn hidden_source_reload_preserves_entities_and_reveals_new_geometry() {
+        let (mut app, asset) = setup();
+        let root = app.world_mut().spawn(UsdSceneRoot(asset.clone())).id();
+        app.update();
+        let entity = mesh_entity(&app, root);
+        app.world_mut().entity_mut(entity).insert(Name::new("runtime marker"));
+        let replacement = UsdSource::snapshot("deferred.usda", br#"#usda 1.0
+def Xform "Hidden" {
+    token visibility = "invisible"
+    def Mesh "M" {
+        point3f[] points = [(0,0,0),(9,0,0),(0,9,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+        uniform token subdivisionScheme = "none"
+    }
+}
+"#.as_slice()).unwrap();
+        app.world_mut().resource_mut::<Assets<UsdScene>>().get_mut(&asset).unwrap().source = replacement;
+        for _ in 0..3 { app.update(); }
+        assert_eq!(mesh_entity(&app, root), entity);
+        assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime marker");
+        assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        let stage = app.world().non_send::<UsdInstances>().stage(root).unwrap().clone();
+        stage.attribute("/Hidden.visibility").unwrap().set(openusd::sdf::Value::Token("inherited".into())).unwrap();
+        app.update();
+        let handle = &app.world().get::<Mesh3d>(entity).unwrap().0;
+        let mesh = app.world().resource::<Assets<Mesh>>().get(handle).unwrap();
+        let bevy::mesh::VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!() };
+        assert!(points.iter().any(|point| point[0] == 9.0));
+    }
+
+    #[test]
+    fn animated_ancestor_visibility_promotes_at_current_clock() {
+        let (mut app, asset) = setup();
+        let root = app.world_mut().spawn((UsdSceneRoot(asset), UsdInstanceTime { current: 0.0 })).id();
+        app.update();
+        let entity = mesh_entity(&app, root);
+        let stage = app.world().non_send::<UsdInstances>().stage(root).unwrap().clone();
+        for (time, value) in [(0.0, "invisible"), (10.0, "inherited")] {
+            stage.attribute("/Hidden.visibility").unwrap().set_at(openusd::sdf::Value::Token(value.into()), openusd::usd::TimeCode::new(time)).unwrap();
+        }
+        app.update();
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = 10.0;
+        app.update();
+        let handle = app.world().get::<Mesh3d>(entity).unwrap().0.clone();
+        let mesh = app.world().resource::<Assets<Mesh>>().get(&handle).unwrap();
+        let bevy::mesh::VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!() };
+        assert!(points.iter().any(|point| point[0] == 3.0));
+        app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = 0.0;
+        app.update();
+        assert!(app.world().get::<Mesh3d>(entity).is_some());
+        assert!(app.world().get::<UsdDeferredMesh>(entity).is_none());
+    }
+
+    #[test]
     fn custom_registry_keeps_eager_geometry_contract() {
         let (mut app, asset) = setup();
         app.world_mut().resource_mut::<SchemaRegistry>().register(RequiresMesh);

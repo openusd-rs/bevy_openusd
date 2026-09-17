@@ -21,8 +21,9 @@ finished. Preserve the detailed evidence below and execute in this order:
 2. **Prove P4 correctness and benefit independently.** Cover ancestor visibility,
    purpose, per-root clocks, hidden edits/reloads, variant retention, demanded
    prototypes and custom-route fallback. Compare eager/deferred Caldera RGBA
-   under identical settings, then alternate at least five fresh process runs
-   per mode. Record route times, total CPU loading, peak RSS and reveal latency.
+   under identical settings and retain at least five alternating fresh-process
+   runs per mode (Caldera CPU results below). Record route times, total CPU
+   loading, peak RSS and reveal latency.
    Existing attribution identifies roughly 15 seconds of hidden Caldera work,
    not a guaranteed saving. Oxbo has almost no such work: use it as a regression
    control, not evidence of this strategy's benefit.
@@ -607,9 +608,32 @@ images are in `target/perf/p4-defer/`.
 Oxbo deferred CPU opens were 3.558 / 3.106 s; this is a smoke measurement,
 not an established improvement or a matched regression bound.
 
-Remaining before default enablement: broader source-reload/variant/dependency
-closure cases, live custom-registry switching, animated ancestor visibility,
-reveal latency and alternating process measurements. Direct application edits
+Follow-up regression gate: 746 workspace/all-target release tests pass, with
+19 ignored (`target/perf/p4-defer/reload-tests.log`). A source asset replacement
+while hidden preserves the matching entity and its runtime component, performs
+no mesh preparation, then reveals the replacement geometry. Runtime registration
+of a custom route materializes existing deferred meshes before that route runs.
+Animated ancestor visibility promotes at the current instance clock and retains
+residency when the clock returns to the hidden sample.
+
+Alternating fresh-process Caldera CPU comparison: five processes per mode,
+one open each, same binary, round order E/D, D/E, E/D, D/E, E/D. All ten runs
+completed under the 24 GiB/no-swap cap; raw logs and binary/environment identity
+are retained in `target/perf/p4-defer/paired/`.
+
+| Mode | Median CPU open | Range | Peak RSS range, KiB |
+| --- | --- | --- | --- |
+| Eager | 41.880 s | 41.542–42.221 s | 6,093,836–6,169,256 |
+| Deferred | 25.316 s | 25.079–25.762 s | 5,293,364–5,346,416 |
+
+Median CPU loading decreased 39.6% (1.65× faster) in this comparison. OS page
+caches were not flushed; desktop/background processes remained active, but no
+concurrent Cargo/rustc build was observed at the recorded checkpoint. This is
+a repeated warm-filesystem CPU result, not cold-disk, GPU first-frame, native
+reference or reveal-latency acceptance. It does not establish the ≤5× target.
+
+Remaining before default enablement: filesystem/dependency reload integration,
+variant/dependency closure cases and reveal latency. Direct application edits
 to Bevy Visibility outside USD are not currently a promotion trigger. Non-Mesh
 geometry remains eager, and promotion is synchronous; bounded asynchronous
 states/cancellation are not implemented by this increment.

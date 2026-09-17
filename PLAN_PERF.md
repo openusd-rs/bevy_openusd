@@ -112,6 +112,32 @@ phases marked incomplete. Validation of an increment does not complete its phase
 
 ### Bounded point-instancer memory investigation (P6)
 
+**ECS attribution:** opt-in table diagnostics in `route/profiling.rs` now sum
+live table rows independently of allocated entity-index capacity, and rank
+tables by component layout size times capacity. The isolated fibers workload
+starts expansion at 73 live entities and finishes traversal at **2,263,400**,
+with 4,194,304 allocated indices. Its dominant tables contain 1,357,986 hierarchy
+nodes, 452,662 mesh nodes and 452,662 instance roots. Native `usdcat` inspection
+of the needle prototype confirms three nested Xforms above its Mesh: this is
+five ECS entities per point, not merely one mesh entity per point.
+Table component capacity accounts for **558,902,016 bytes**; process RSS grows
+from approximately 92 MB before expansion to 1.397 GB afterwards. The estimate
+excludes component-owned heaps, change ticks, entity metadata, archetypes, sparse
+sets and allocator overhead; do not treat it as total ECS allocation or infer
+that every remaining byte belongs to hierarchy strings. Evidence:
+`target/perf/p6-ecs-layout/fibers.log`. Release builds lack general debug type
+names, so diagnostics explicitly identify common scene components by TypeId and
+retain component IDs for unknown types without enabling Bevy debug features.
+`fibers-labeled.log` confirms the three dominant table layouts with release-safe
+component labels. The Make release workspace/all-target gate passed 768 tests,
+19 ignored; the benchmark build passed. Profiling remains opt-in and the extra
+table scans are diagnostic overhead, not a production loading optimization.
+
+Next bounded memory experiment: share immutable prototype path keys in the
+private per-instance reconciliation maps while preserving public
+`UsdPrototypePart(String)` values and all hierarchy entities. Measure whether
+this reduces retained memory before considering API-affecting compact instancing.
+
 **Prototype borrowing trial:** `route/instancer.rs` borrows the per-projection
 prototype descriptor and prepared subsets instead of cloning them for each point.
 Only handles inserted into ECS components are cloned; entity layout and authored

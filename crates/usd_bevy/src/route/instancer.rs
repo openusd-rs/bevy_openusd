@@ -208,7 +208,10 @@ impl PrimRoute for PointInstancerRoute {
         let mut proto_cache: HashMap<usize, Option<Prototype>> =
             HashMap::default();
 
-        if ctx.trace_memory { super::profiling::memory_event("instancer-spawn-begin", ctx.path, self.name(), None); }
+        if ctx.trace_memory {
+            super::profiling::memory_event("instancer-spawn-begin", ctx.path, self.name(), None);
+            super::profiling::ecs_snapshot(world, "instancer-spawn-begin");
+        }
         for i in 0..read.positions.len() {
             let id = ids.as_ref().map_or(i as i64, |ids| ids[i]);
             let xf = instance_transform(&read, i);
@@ -248,6 +251,7 @@ impl PrimRoute for PointInstancerRoute {
             if ctx.trace_memory && (i == 0 || (i+1) % 100_000 == 0) {
                 eprintln!("point_instancer_memory path={:?} phase=spawn-progress completed={} total={} allocated_entity_indices={}", ctx.path, i+1, read.positions.len(), world.entities().len());
                 super::profiling::memory_event("instancer-spawn-progress", ctx.path, self.name(), None);
+                super::profiling::ecs_snapshot(world, "instancer-spawn-progress");
             }
         }
         for child in existing.into_values() { world.despawn(child); }

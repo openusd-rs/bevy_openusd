@@ -25,7 +25,40 @@ pub(crate) fn memory_event(phase: &str, path: &openusd::sdf::Path, route: &str, 
     eprintln!("projection_memory_event phase={phase} path={path:?} route={route} rss_bytes={:?} decoded_payload_bytes={decoded_bytes:?}", resident_bytes());
 }
 
+fn component_label(info: &bevy::ecs::component::ComponentInfo) -> String {
+    macro_rules! known {
+        ($($ty:ty),*) => { $(if info.type_id() == Some(std::any::TypeId::of::<$ty>()) {
+            return std::any::type_name::<$ty>().into();
+        })* };
+    }
+    known!(Transform, GlobalTransform, Visibility, InheritedVisibility, ViewVisibility,
+        ChildOf, Children, Mesh3d, MeshMaterial3d<StandardMaterial>,
+        super::instancer::UsdInstance, super::instancer::UsdInstanceId, super::instancer::UsdPrototypePart);
+    format!("{:?}:{}", info.id(), info.name())
+}
+
+pub(crate) fn ecs_snapshot(world: &World, phase: &str) {
+    let components: Vec<_> = world.components().iter_registered().collect();
+    let mut rows = Vec::new();
+    for (index, table) in world.storages().tables.iter().enumerate() {
+        let stride = components.iter().filter(|info| table.has_column(info.id()))
+            .map(|info| info.layout().size()).sum::<usize>();
+        rows.push((stride.saturating_mul(table.capacity()), index, table.entity_count(), table.capacity(), stride));
+    }
+    let live = rows.iter().map(|row| u64::from(row.2)).sum::<u64>();
+    let inline = rows.iter().map(|row| row.0).sum::<usize>();
+    eprintln!("projection_ecs_snapshot phase={phase} live_entities={live} allocated_entity_indices={} table_component_capacity_bytes={inline} excludes=component-heaps,ticks,entity-metadata,archetypes,sparse-sets,allocator,gpu", world.entities().len());
+    rows.sort_unstable_by_key(|row| std::cmp::Reverse(row.0));
+    for (bytes, index, count, capacity, stride) in rows.into_iter().take(5) {
+        let table = world.storages().tables.iter().nth(index).unwrap();
+        let names: Vec<_> = components.iter().filter(|info| table.has_column(info.id()))
+            .map(|info| format!("{}:{}", component_label(info), info.layout().size())).collect();
+        eprintln!("projection_ecs_table phase={phase} table={index} live={count} capacity={capacity} row_bytes={stride} component_capacity_bytes={bytes} components={names:?}");
+    }
+}
+
 pub(crate) fn memory_snapshot(world: &World, phase: &str, prims: usize) {
+    ecs_snapshot(world, phase);
     let mut unavailable = 0usize;
     let mut mesh_bytes = 0usize;
     let meshes = world.get_resource::<Assets<Mesh>>().map_or(0, |assets| {

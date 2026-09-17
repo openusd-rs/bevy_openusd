@@ -5,7 +5,14 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
-## Traversal active-state reuse
+## Traversal ancestry queries
+
+`openusd-abstract-ancestry.patch` resolves abstract ancestry through one
+mask-gated composition-cache query, matching the existing defined-state query
+structure. It preserves composed specifier resolution and holds no result cache
+across edits. Bevy checks it against individual ancestor field queries for
+classes, undefined/missing prims, instance proxies, population masks and live
+class-to-def edits.
 
 `openusd-traversal-active.patch` reuses the active result when a prim-status
 query also requests loaded state. Load-rule and payload checks are unchanged;

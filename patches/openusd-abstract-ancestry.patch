@@ -1,0 +1,43 @@
+diff --git a/crates/openusd/src/pcp/index_cache.rs b/crates/openusd/src/pcp/index_cache.rs
+index 6c51b19..e2e1573 100644
+--- a/crates/openusd/src/pcp/index_cache.rs
++++ b/crates/openusd/src/pcp/index_cache.rs
+@@ -1788,6 +1788,17 @@ impl IndexCache {
+         Ok(true)
+     }
+ 
++    /// Whether the existing prim or any ancestor below the pseudo-root is a class.
++    pub(crate) fn is_abstract(&mut self, graph: &LayerGraph, path: &Path) -> Result<bool, QueryError> {
++        if path.is_abs_root() || !self.has_spec(graph, path)? { return Ok(false); }
++        for ancestor in path.ancestors_below_root() {
++            let specifier = self.resolve_field(graph, &ancestor, FieldKey::Specifier.as_str())?
++                .map(sdf::Specifier::try_from).transpose()?;
++            if specifier == Some(sdf::Specifier::Class) { return Ok(true); }
++        }
++        Ok(false)
++    }
++
+     /// This prim's own composed `active` opinion, defaulting to `true`. The
+     /// per-prim read [`Self::is_active`] walks and [`Self::is_populated`] takes
+     /// for the prim it is deciding, its ancestors having been decided already.
+diff --git a/crates/openusd/src/usd/prim.rs b/crates/openusd/src/usd/prim.rs
+index 92b61c2..fd4b92c 100644
+--- a/crates/openusd/src/usd/prim.rs
++++ b/crates/openusd/src/usd/prim.rs
+@@ -743,15 +743,7 @@ impl Prim {
+     /// `true` if the prim or any ancestor resolves to `class`. Mirrors C++
+     /// `UsdPrim::IsAbstract`.
+     pub fn is_abstract(&self) -> Result<bool> {
+-        if self.path == sdf::Path::abs_root() || !self.stage.has_spec(&self.path)? {
+-            return Ok(false);
+-        }
+-        for path in self.path.ancestors_below_root() {
+-            if self.stage.field::<sdf::Specifier>(&path, sdf::FieldKey::Specifier)? == Some(sdf::Specifier::Class) {
+-                return Ok(true);
+-            }
+-        }
+-        Ok(false)
++        Ok(self.stage.masked(&self.path, |g, cache| cache.is_abstract(g, &self.path))?)
+     }
+ 
+     /// `true` if the prim index contains at least one composition arc.

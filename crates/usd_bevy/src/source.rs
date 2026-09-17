@@ -635,6 +635,36 @@ fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn abstract_ancestry_matches_field_queries_and_live_edits() {
+        use super::*;
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("classes.usda");
+        std::fs::write(&file, br#"#usda 1.0
+class "Abstract" { def Xform "Child" { def Xform "Leaf" {} } }
+def Xform "Model" { def Xform "Child" {} }
+def Xform "Instance" (instanceable = true prepend references = </Model>) {}
+over "Undefined" { def Xform "Child" {} }
+"#).unwrap();
+        for mask in [openusd::usd::StagePopulationMask::all(), openusd::usd::StagePopulationMask::new(["/Abstract/Child"]).unwrap()] {
+            let stage = Stage::builder().mask(mask).open(file.to_str().unwrap()).unwrap();
+            let check = || {
+                for name in ["/", "/Abstract", "/Abstract/Child", "/Abstract/Child/Leaf", "/Abstract/Missing", "/Model/Child", "/Instance/Child", "/Undefined/Child"] {
+                    let path = openusd::sdf::path(name).unwrap();
+                    let prim = stage.prim(&path).unwrap();
+                    let expected = !path.is_abs_root() && prim.is_valid().unwrap()
+                        && path.ancestors_below_root().any(|ancestor| stage.field::<openusd::sdf::Specifier>(&ancestor, "specifier").unwrap() == Some(openusd::sdf::Specifier::Class));
+                    assert_eq!(prim.is_abstract().unwrap(), expected, "{name}");
+                }
+            };
+            check();
+            assert!(stage.prim("/Abstract/Child").unwrap().is_abstract().unwrap());
+            stage.define_prim("/Abstract").unwrap();
+            check();
+            assert!(!stage.prim("/Abstract/Child").unwrap().is_abstract().unwrap());
+        }
+    }
+
+    #[test]
     fn traversal_loaded_status_matches_direct_queries_after_edits() {
         use super::*;
         use openusd::usd::{PrimPredicate, PrimStatus};

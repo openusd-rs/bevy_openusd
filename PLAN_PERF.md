@@ -586,6 +586,26 @@ normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
 
+Abstract-ancestry increment: `Prim::is_abstract` now delegates its ancestor
+specifier walk to one mask-gated composition-cache query, rather than repeating
+stage query/settlement for each ancestor. It retains the same composed field
+resolution and no result survives the query. Review patch:
+`patches/openusd-abstract-ancestry.patch`.
+
+761 Make release workspace/all-target tests pass (19 ignored). Differential
+checks compare with individual ancestor field reads for classes, undefined and
+missing prims, instance proxies, population masks and live class-to-def edits.
+The 110-second Moana diagnostic retains 416,549 prims and 6,400,861 attributes;
+traversal measured 31.625 s versus 33.908 s after active-state reuse. Attribute
+checks stayed effectively unchanged at 35.204 s versus 35.186 s. Total validation
+was 66.833 s versus 69.099 s. These are diagnostic, sequential comparisons,
+not matched first-frame acceptance or a demonstrated general loading ratio.
+Moana still exits 124 without finishing CPU open. Artifacts:
+`target/perf/p3-abstract-walk/`. Larger reductions still require eliminating
+remaining repeated ancestry and value-source queries.
+All 14 explicit native export checks pass; the new Oxbo capture completes and
+is RGBA byte-identical to `target/perf/oxbo-current/original.rgba`.
+
 Traversal active-state increment: a prim-status query requesting both ACTIVE
 and LOADED now reuses its computed active result instead of walking active
 ancestry again inside `is_loaded`. Payload/load-rule checks remain unchanged;

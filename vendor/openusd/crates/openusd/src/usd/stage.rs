@@ -3202,18 +3202,31 @@ impl Stage {
     /// excludes those regions.
     pub fn traverse(&self, predicate: PrimPredicate, mut visitor: impl FnMut(&sdf::Path)) -> Result<()> {
         let needed = predicate.consulted_bits();
-        let mut stack = vec![sdf::Path::abs_root()];
+        let inherit_default = predicate == PrimPredicate::DEFAULT_PROXIES;
+        let mut stack = vec![(sdf::Path::abs_root(), None)];
 
-        while let Some(path) = stack.pop() {
+        while let Some((path, parent_epoch)) = stack.pop() {
+            let mut child_epoch = None;
             if path != sdf::Path::abs_root() {
-                // TODO(perf): each `prim_status_masked` call recomputes the
-                // inherited bits (active/loaded/defined/abstract/model) by
-                // walking this prim's ancestor chain to the root, and several
-                // predicates re-walk it for the same fields. Since traversal is
-                // top-down, the parent's resolved inherited status could be
-                // threaded down the stack so each prim only consults its own
-                // local opinion — turning the per-prim O(depth) walk into O(1).
-                let status = self.prim_status_masked(&path, needed)?;
+                let local = match parent_epoch {
+                    Some(epoch) => self.masked(&path, |g, cache| cache.default_child_status(g, &path, epoch))?,
+                    None => None,
+                };
+                let status = if let Some((active, defined, abstract_)) = local {
+                    child_epoch = parent_epoch;
+                    let mut status = PrimStatus::empty();
+                    status.set(PrimStatus::ACTIVE | PrimStatus::LOADED, active);
+                    status.set(PrimStatus::DEFINED, defined);
+                    status.set(PrimStatus::ABSTRACT, abstract_);
+                    status
+                } else {
+                    let before = inherit_default.then(|| self.population_epoch());
+                    let status = self.prim_status_masked(&path, needed)?;
+                    if before.is_some_and(|epoch| epoch == self.population_epoch()) {
+                        child_epoch = before;
+                    }
+                    status
+                };
                 if predicate.matches(status) {
                     visitor(&path);
                 }
@@ -3231,7 +3244,7 @@ impl Stage {
             // Push in reverse so first child is visited first.
             for name in children.iter().rev() {
                 if let Ok(child) = path.append_path(name.as_str()) {
-                    stack.push(child);
+                    stack.push((child, child_epoch));
                 }
             }
         }

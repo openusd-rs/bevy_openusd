@@ -677,6 +677,81 @@ def "Instance" (instanceable = true prepend references = </Shape>) {}
     }
 
     #[test]
+    fn default_traversal_matches_uncached_walk_during_visitor_edits() {
+        use super::*;
+        use openusd::usd::PrimPredicate;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("payload.usda"), b"#usda 1.0\ndef \"Model\" { def \"Child\" {} }\n").unwrap();
+        let file = directory.path().join("traversal.usda");
+        std::fs::write(&file, br#"#usda 1.0
+def "Root" {
+    def "A" { def "Leaf" {} }
+    def "B" { def "Leaf" {} }
+    def "Model" { def "Child" { def "Leaf" {} } }
+    def "Instance" (instanceable = true prepend references = </Root/Model>) {}
+    def "Payload" (prepend payload = @payload.usda@</Model>) {}
+    class "Abstract" { def "Child" {} }
+    over "Undefined" { def "Child" {} }
+}
+"#).unwrap();
+        for masked in [false, true] {
+            for initially_loaded in [true, false] {
+                for edit in 0..9 {
+                    let mut results = Vec::new();
+                    for optimized in [false, true] {
+                        let mask = if masked {
+                            openusd::usd::StagePopulationMask::new(["/Root/A", "/Root/B/Leaf", "/Root/Model", "/Root/Instance", "/Root/Payload"]).unwrap()
+                        } else { openusd::usd::StagePopulationMask::all() };
+                        let stage = Stage::builder().mask(mask).open(file.to_str().unwrap()).unwrap();
+                        if !initially_loaded { stage.set_load_rules(openusd::pcp::LoadRules::none()); }
+                        let mut visited = Vec::new();
+                        let mut visit = |path: &openusd::sdf::Path| {
+                            visited.push(path.clone());
+                            if path.as_str() != "/Root/A" { return; }
+                            match edit {
+                                1 => { stage.prim("/Root").unwrap().set_active(false).unwrap(); }
+                                2 => { stage.prim("/Root").unwrap().set_metadata("specifier", openusd::sdf::Specifier::Class).unwrap(); }
+                                3 => { stage.prim("/Root/B").unwrap().set_active(false).unwrap(); }
+                                4 => stage.set_load_rules(openusd::pcp::LoadRules::none()),
+                                5 => { stage.prim("/Root/Model").unwrap().set_active(false).unwrap(); }
+                                6 => { stage.prim("/Root").unwrap().set_metadata("specifier", openusd::sdf::Specifier::Over).unwrap(); }
+                                7 => { stage.define_prim("/Root/B/New").unwrap(); }
+                                8 => stage.set_load_rules(openusd::pcp::LoadRules::all()),
+                                _ => {}
+                            }
+                        };
+                        if optimized {
+                            stage.traverse(PrimPredicate::DEFAULT_PROXIES, &mut visit).unwrap();
+                        } else {
+                            let mut stack = vec![openusd::sdf::Path::abs_root()];
+                            while let Some(path) = stack.pop() {
+                                let prim = stage.prim(&path).unwrap();
+                                if !path.is_abs_root() {
+                                    let active = prim.is_active().unwrap();
+                                    let loaded = prim.is_loaded().unwrap();
+                                    let defined = prim.is_defined().unwrap();
+                                    let abstract_ = prim.is_abstract().unwrap();
+                                    if !(active && loaded && defined && !abstract_) { continue; }
+                                    visit(&path);
+                                }
+                                stack.extend(prim.children().unwrap().into_iter().rev().map(|child| child.path().clone()));
+                            }
+                        }
+                        results.push(visited);
+                    }
+                    assert_eq!(results[0], results[1], "masked={masked}, loaded={initially_loaded}, edit={edit}");
+                    assert_eq!(results[0].first().unwrap().as_str(), "/Root");
+                    if edit == 0 {
+                        assert!(results[0].iter().any(|path| path.as_str() == "/Root/Instance/Child/Leaf"));
+                        assert_eq!(results[0].iter().any(|path| path.as_str() == "/Root/Payload/Child"), initially_loaded);
+                        assert!(!results[0].iter().any(|path| path.as_str().contains("Abstract") || path.as_str().contains("Undefined")));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn abstract_ancestry_matches_field_queries_and_live_edits() {
         use super::*;
         let directory = tempfile::tempdir().unwrap();

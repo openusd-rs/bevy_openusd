@@ -1,6 +1,6 @@
 # USD loading performance plan
 
-Planned against `1dd38c8` on 2026-09-16; reconciled against `6fe49c3` and the
+Planned against `1dd38c8` on 2026-09-16; reconciled against `e0de656` and the
 working tree on 2026-09-17. Status: **P0–P8 in progress; P4 opt-in only**.
 Profiling increments are committed as `a054c56`, `9303920` and `fd79645`.
 The matched first-complete-frame benchmark and ≤5× target remain unverified.
@@ -9,6 +9,38 @@ The matched first-complete-frame benchmark and ≤5× target remain unverified.
 
 Keep implementation incremental. The detailed P0–P8 sections below retain the
 research, measurements, rejected experiments and acceptance requirements.
+
+### Current checkpoint and next bounded increment
+
+- **Implemented, not full acceptance:** parsed-root reuse, retained deferred
+  queues, traversal-local parent status, reduced repeated ancestry queries, and
+  batched property classification. The latest P3 evidence records 763 passing tests,
+  19 ignored, 14 separately run native export checks and an unchanged Oxbo RGBA
+  capture. Logs are under `target/perf/p3-inherited-status/`.
+- **Still unresolved:** matched first-complete-frame measurement and the ≤5×
+  ratio. Moana still times out: the latest 180-second full-open attempt is not a
+  successful load. Keep hidden-mesh deferral opt-in.
+- **Next CPU investigation:** instrument the unfinished update after editor
+  inspection. The latest full-open attempt reaches texture installation at
+  82.039 s and reports a 5.426 s inspection, then reaches the 180-second deadline
+  without an open result. `examples/editor_benchmark.rs` currently prints route
+  totals only after the update returns; add bounded progress attribution around
+  the remaining core projection/preparation work rather than guessing its owner.
+  The guarded parent witness is implemented; do not repeat it as a new experiment.
+- **Property-source investigation:** profile redundant existence,
+  sample-source and spec-stack walks in
+  `vendor/openusd/crates/openusd/src/pcp/index_cache.rs`. Count-only sample queries
+  already exist; do not propose them as a new optimization. Do not repeat the
+  rejected per-node property-path cache without new attribution.
+- **Exit gate for either investigation:** one isolated patch, differential edit and
+  composition checks, Make-based validation, unchanged rendered output, and at
+  least five alternating baseline/candidate runs with matching profiler settings.
+  Retain raw timings and RSS under the 24 GiB/no-swap cap; reject unconvincing
+  changes rather than accumulating speculative caches.
+
+P0 remains the acceptance blocker regardless of CPU progress. The historical
+implementation checkpoints below describe the wider sequence, not an instruction
+to repeat already completed increments.
 
 | Priority | Work | Completion evidence |
 | --- | --- | --- |
@@ -585,6 +617,49 @@ rebuild mesh buffers. Sampled influences, nonuniform scale, morph combinations,
 normal corrections and independent root clocks preserve existing output.
 
 ## P3 — Remove redundant value materialization safely
+
+Traversal-local parent status: `DEFAULT_PROXIES` now carries a population-epoch
+witness from a matching parent to queued children. With unchanged population
+and no authored load rules, each child resolves its own active/specifier opinions
+instead of walking proven ancestry again. Other predicates and load rules retain
+the full queries. Visitor edits, pending changes and lazy-load retries must pass
+the epoch check before reuse. No witness survives the traversal call.
+Patch: `patches/openusd-traversal-parent-status.patch`.
+
+Five alternating baseline/candidate traversal-only Moana pairs, same asset and
+`USD_PROFILE_LOADING=1`, all visited 416,549 prims:
+
+| Mode | Traversal samples (seconds) | Median | Peak RSS range (KiB) |
+| --- | --- | --- | --- |
+| Baseline | 29.621 / 24.646 / 24.535 / 24.417 / 24.493 | 24.535 s | 15,462,476–15,481,368 |
+| Parent status | 22.638 / 22.260 / 22.203 / 22.155 / 22.286 | 22.260 s | 15,478,488–15,480,112 |
+
+This is a **9.3% lower median for the traversal phase**, not an initial-load or
+first-frame result. Runs intentionally terminate after the traversal marker;
+their RSS is not full-load peak memory. Each used a fresh process under a
+24 GiB/no-swap scope; filesystem caches were not flushed. Other host workloads
+were not disabled, and the slower first baseline is retained in the table.
+Raw logs, retained executables and the stop script are under
+`target/perf/p3-inherited-status/`. Earlier wrapper-shell measurements under
+`invalid-wrapper/` are excluded: stopping the wrapper left benchmark children
+running. Those owned processes were terminated; the replacement uses `/bin/bash`
+and verifies no benchmark remains after each sample.
+
+763 Make release workspace/all-target tests pass (19 ignored), with 14 native
+export checks run separately. The new differential test compares an uncached
+walk with the optimized traversal across 36 combinations of masks, initial load
+rules and visitor edits, including ancestor def/class/over changes, deactivation,
+queued siblings, referenced instances, lazy payloads and newly authored children.
+Oxbo capture succeeds and is RGBA byte-identical to
+`target/perf/oxbo-current/original.rgba`; this is regression evidence, not full
+Blender/EEVEE parity.
+
+The separate 180-second full-open attempt still exits 124 without an initial-open
+CSV row. Validation completes at 55.985 s, texture decoding at cumulative
+77.550 s, texture installation at 82.039 s, and the inspector reports 5.426 s.
+Peak RSS reaches 21,344,448 KiB with no swap. This is not OOM or successful Moana
+acceptance; the remaining update is not attributed by the current end-of-update
+route report. Full-load log: `target/perf/p3-inherited-status/moana-full.log`.
 
 Property-classification batching: each prim now classifies its property names
 inside one mask-gated cache query, instead of entering the stage query layer for

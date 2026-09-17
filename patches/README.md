@@ -7,6 +7,14 @@ See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
 ## Traversal ancestry queries
 
+`openusd-traversal-parent-status.patch` carries a population-epoch witness for
+default-matching parents during `DEFAULT_PROXIES` traversal. Under unchanged
+population and empty load rules, children resolve only their local active and
+specifier opinions. Pending changes are settled before checking the witness;
+lazy-load retries recheck it inside the query. Other predicates, load rules and
+invalidated witnesses use the full query path. Bevy compares against an uncached
+walk across visitor edits, masks, classes, references and payload-rule changes.
+
 `openusd-property-classification.patch` classifies a prim's properties within
 one mask-gated cache query. It retains live authored spec-type lookup and
 schema fallback for unauthored composed properties. No classification result

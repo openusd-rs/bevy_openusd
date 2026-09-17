@@ -1814,6 +1814,26 @@ impl IndexCache {
         Ok((defined, abstract_))
     }
 
+    /// Resolves local status below a default-matching parent at `epoch`.
+    pub(crate) fn default_child_status(
+        &mut self,
+        graph: &LayerGraph,
+        path: &Path,
+        epoch: u64,
+    ) -> Result<Option<(bool, bool, bool)>, QueryError> {
+        if self.population_epoch != epoch || !self.load_rules.is_empty() {
+            return Ok(None);
+        }
+        if !self.has_spec(graph, path)? {
+            return Ok(Some((false, false, false)));
+        }
+        let active = self.active_locally(graph, path)?;
+        let specifier = self.resolve_field(graph, path, FieldKey::Specifier.as_str())?
+            .map(sdf::Specifier::try_from).transpose()?;
+        Ok(Some((active, matches!(specifier, Some(sdf::Specifier::Def | sdf::Specifier::Class)),
+            specifier == Some(sdf::Specifier::Class))))
+    }
+
     /// This prim's own composed `active` opinion, defaulting to `true`. The
     /// per-prim read [`Self::is_active`] walks and [`Self::is_populated`] takes
     /// for the prim it is deciding, its ancestors having been decided already.

@@ -632,8 +632,25 @@ concurrent Cargo/rustc build was observed at the recorded checkpoint. This is
 a repeated warm-filesystem CPU result, not cold-disk, GPU first-frame, native
 reference or reveal-latency acceptance. It does not establish the ≤5× target.
 
-Remaining before default enablement: filesystem/dependency reload integration,
-variant/dependency closure cases and reveal latency. Direct application edits
+Native filesystem follow-up: an actual write to a referenced sublayer now has
+an explicit deferred-mesh regression test. Two independently clocked roots retain
+their matching entities/runtime components and remain unprepared through reload;
+revealing one root produces the new geometry while the other stays deferred.
+The test passed with `--features file_watcher`; a filtered invocation without
+that feature runs zero tests and is not evidence. All four native watcher tests
+passed together, including existing missing-root recovery, removed-dependency
+invalidation and layer/texture recovery. The feature-enabled library suite
+passed 575 tests with 28 ignored; the ordinary workspace/all-target suite passed
+746 with 19 ignored. Logs: `target/perf/p4-defer/native-deferred-watcher.log`,
+`native-all-watchers.log`, `watcher-feature-tests.log` and `watcher-build-tests.log`.
+
+```sh
+CARGO_BUILD_JOBS=4 make test CARGO='cargo --offline' \
+  APP_TARGET='--release --workspace --lib --features file_watcher native_file_watcher_ -- --ignored --nocapture'
+```
+
+Remaining before default enablement: variant/dependency closure cases,
+deferred failed-save recovery and reveal latency. Direct application edits
 to Bevy Visibility outside USD are not currently a promotion trigger. Non-Mesh
 geometry remains eager, and promotion is synchronous; bounded asynchronous
 states/cancellation are not implemented by this increment.

@@ -1410,6 +1410,69 @@ def Sphere "Model" (
     #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
     #[test]
     #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_updates_deferred_mesh_dependencies() {
+        use crate::route::residency::{DeferHiddenMeshes, UsdDeferredMesh};
+        let directory = tempfile::tempdir().unwrap();
+        let layer = directory.path().join("mesh.usda");
+        let geometry = |size: u32| format!(r#"#usda 1.0
+def Xform "Hidden" {{
+    token visibility = "invisible"
+    def Mesh "M" {{
+        point3f[] points = [(0,0,0),({size},0,0),(0,{size},0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+        uniform token subdivisionScheme = "none"
+    }}
+}}
+"#);
+        std::fs::write(directory.path().join("root.usda"), "#usda 1.0\n(subLayers = [@mesh.usda@])\n").unwrap();
+        std::fs::write(&layer, geometry(1)).unwrap();
+        let mut app = App::new();
+        app.register_asset_source(bevy::asset::io::AssetSourceId::Default, crate::watcher::file_source(directory.path()));
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: directory.path().to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true), ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_resource::<DeferHiddenMeshes>();
+        app.finish();
+        app.cleanup();
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("root.usda");
+        let roots = [0.0, 10.0].map(|current| app.world_mut()
+            .spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Hidden/M"));
+        let revisions = roots.map(|root| app.world().get::<UsdSceneInstance>(root).unwrap().revision);
+        for entity in entities {
+            assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+            app.world_mut().entity_mut(entity).insert(Name::new("runtime marker"));
+        }
+        std::fs::write(&layer, geometry(7)).unwrap();
+        tick_until(&mut app, |world| roots.iter().zip(revisions).all(|(root, previous)|
+            world.get::<UsdSceneInstance>(*root).is_some_and(|instance| instance.revision != previous)
+                && world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        for (root, entity) in roots.into_iter().zip(entities) {
+            assert_eq!(instance_entity(app.world(), root, "/Hidden/M"), entity);
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime marker");
+            assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+        }
+        let stage = app.world().non_send::<UsdInstances>().stage(roots[0]).unwrap().clone();
+        stage.attribute("/Hidden.visibility").unwrap().set(openusd::sdf::Value::Token("inherited".into())).unwrap();
+        tick_until(&mut app, |world| world.get::<Mesh3d>(entities[0]).is_some());
+        let mesh = app.world().resource::<Assets<Mesh>>()
+            .get(&app.world().get::<Mesh3d>(entities[0]).unwrap().0).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else { panic!("mesh positions missing") };
+        assert!(points.iter().any(|point| point[0] == 7.0));
+        assert!(app.world().get::<Mesh3d>(entities[1]).is_none());
+        assert_eq!(app.world().get::<UsdInstanceTime>(roots[1]).unwrap().current, 10.0);
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
     fn native_file_watcher_invalidates_removed_dependencies() {
         exercise_native_file_watcher(true);
     }

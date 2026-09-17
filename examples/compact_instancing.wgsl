@@ -1,8 +1,13 @@
 #import bevy_pbr::{mesh_functions, forward_io::VertexOutput, view_transformations::position_world_to_clip}
 
 struct Point {
-    transform: mat4x4<f32>,
-    normal: mat4x4<f32>,
+    translation: vec4<f32>,
+    rotation: vec4<f32>,
+    scale: vec4<f32>,
+}
+
+fn rotate(rotation: vec4<f32>, value: vec3<f32>) -> vec3<f32> {
+    return value + 2.0 * cross(rotation.xyz, cross(rotation.xyz, value) + rotation.w * value);
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<storage, read> vertices: array<vec4<f32>>;
@@ -17,9 +22,10 @@ fn vertex(@builtin(vertex_index) index: u32, @builtin(instance_index) root: u32)
     let normal = vertices[offset + 1u];
     let world_from_local = mesh_functions::get_world_from_local(root);
     var out: VertexOutput;
-    out.world_position = world_from_local * point.transform * vec4<f32>(position.xyz, 1.0);
+    let local_position = rotate(point.rotation, position.xyz * point.scale.xyz) + point.translation.xyz;
+    out.world_position = world_from_local * vec4<f32>(local_position, 1.0);
     out.position = position_world_to_clip(out.world_position.xyz);
-    out.world_normal = mesh_functions::mesh_normal_local_to_world((point.normal * vec4<f32>(normal.xyz, 0.0)).xyz, root);
+    out.world_normal = mesh_functions::mesh_normal_local_to_world(rotate(point.rotation, normal.xyz / point.scale.xyz), root);
 #ifdef VERTEX_UVS_A
     out.uv = vec2<f32>(position.w, normal.w);
 #endif

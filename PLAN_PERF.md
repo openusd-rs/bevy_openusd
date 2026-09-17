@@ -1916,6 +1916,54 @@ retain only configurations with an evidenced end-to-end benefit.
 
 ## P6 — Move sharing ahead of decoding and improve cache indexing
 
+### Device-bounded compact batches (2026-09-17)
+
+The rendered experiment now uses 48-byte translation/quaternion/scale records
+instead of two 4×4 matrices (128 bytes). The shader rotates scaled positions and
+inverse-scaled normals. This reduces point-buffer payload by 62.5%; it is not a
+measured GPU execution speedup. The fixture has normalized rotations and positive
+nonzero scales. Zero/negative scale eligibility, shear in prototype hierarchies
+and deformation remain production integration requirements.
+
+Point batches are bounded by the actual render device's storage-binding limit,
+buffer-allocation limit and the u32 virtual-vertex draw limit. An optional fourth
+CLI argument further limits points per batch. Point records are generated one
+batch at a time, without full-scene transform and matrix scratch vectors. Both
+roots share the same immutable point buffers, with separate root materials and
+draws. The final partial batch retains its exact point count.
+
+Runtime evidence in `target/perf/p6-compact-batches/`:
+
+- 128 cubes: capacities 64, 7 and 1 produce 2, 20 and 128 render entities.
+  All three RGBA captures are byte-identical to the expanded reference, including
+  the partial final batch for capacity 7. Total shared point data is 3,072 bytes.
+- 200,000 cubes: capacity 4,093 gives 25 shared buffers and 50 render entities,
+  containing 4,800,000 bytes of point data. Its capture is byte-identical to the
+  preceding matrix-record compact capture. The same one-pixel difference from
+  the expanded reference remains; no new large-batch difference is introduced.
+- 2,000,000 cubes: capacity 65,536 gives 16 shared buffers and 32 render entities,
+  containing 48,000,000 bytes of point data. Capture succeeds and was inspected.
+  This larger case has no expanded reference comparison; it is bounded rendering
+  evidence, not full correctness or USD loading acceptance.
+- Both larger processes complete under the 24 GiB/no-swap cap and 60-second
+  timeout. Single-run process VmHWM is 419,256 KiB for 200,000 cubes and
+  512,176 KiB for 2,000,000 cubes. These are not GPU-memory measurements or
+  controlled end-to-end performance ratios.
+- Make release workspace/all-target validation passes 784 tests, 19 ignored.
+  The new limit test covers sub-record capacity, exact fit, requested caps,
+  independent storage/allocation limits, zero inputs and u32 draw overflow.
+
+Example invocation after the existing Make build:
+
+```sh
+make --eval='compact-batches:; @systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 timeout --kill-after=5s 60s nixVulkan target/release/examples/compact_instancing compact 1000000 target/perf/p6-compact-batches/million.png 65536' compact-batches
+```
+
+The USD route remains unchanged. Indirect drawing, bounds/culling, shadow/prepass,
+motion vectors, picking, independent clock updates and transactional reload are
+still required before production integration. The lower record size and bounded
+buffers close two prerequisites, not P6 or Moana acceptance.
+
 ### Rendered compact point-batch experiment (2026-09-17)
 
 `examples/compact_instancing.rs` and `examples/compact_instancing.wgsl` now

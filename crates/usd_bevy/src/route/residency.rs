@@ -19,6 +19,14 @@ pub struct UsdResidencyBudget(pub std::time::Duration);
 #[derive(Component)]
 pub struct UsdMeshPreparationQueued;
 
+/// Accumulated promotion work and the slowest attempted prim.
+#[derive(Resource, Default)]
+pub struct ResidencyPreparationTiming {
+    pub attempts: usize,
+    pub elapsed: std::time::Duration,
+    pub slowest: Option<(String, std::time::Duration)>,
+}
+
 #[derive(Resource, Default)]
 struct PreparationTurn {
     spent: std::time::Duration,
@@ -108,10 +116,18 @@ fn prepare(world: &mut World, stage: &openusd::usd::Stage, registry: &SchemaRegi
         world.resource_mut::<PreparationTurn>().active = Some(entity);
         let started = std::time::Instant::now();
         if let Ok(path) = openusd::sdf::path(path) { registry.project_prim(stage, &path, world, entity); }
+        let elapsed = started.elapsed();
         let mut turn = world.resource_mut::<PreparationTurn>();
         turn.active = None;
-        turn.spent += started.elapsed();
+        turn.spent += elapsed;
         turn.attempts += 1;
+        if let Some(mut timing) = world.get_resource_mut::<ResidencyPreparationTiming>() {
+            timing.attempts += 1;
+            timing.elapsed += elapsed;
+            if timing.slowest.as_ref().is_none_or(|(_, previous)| elapsed > *previous) {
+                timing.slowest = Some((path.clone(), elapsed));
+            }
+        }
         world.entity_mut(entity).remove::<UsdMeshPreparationQueued>();
     }
 }

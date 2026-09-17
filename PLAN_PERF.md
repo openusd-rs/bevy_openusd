@@ -727,8 +727,8 @@ Diagnostic before/after results (single processes, not controlled acceptance):
 | Preparation update p95 | 45.645 ms | 16.805 ms |
 | Preparation maximum update | 2,232.132 ms | 2,250.883 ms |
 
-The unchanged large maximum confirms that cooperative scheduling still cannot
-bound one heavy prim. The final queue drained 18,932 meshes in 1,507 updates,
+The large maximum did not identify its cause; follow-up attribution below
+locates most of that update outside individual prim preparation. The final queue drained 18,932 meshes in 1,507 updates,
 preserving the previous budgeted mesh/subset/entity payload counts. Eager CPU
 open did not improve in these samples (41.006 vs 42.014 s); the win is redundant
 per-update work, not faster initial projection or a GPU frame-rate measurement.
@@ -740,6 +740,36 @@ its 58.21-second process duration is not first-frame latency. Logs, images and
 test evidence are in `target/perf/p4-skin-updates/`. Engine-generated joints are
 derived from their owning mesh placement and UsdGpuSkin pose; independently
 authoring their GlobalTransform is not a supported pose-edit path.
+
+Slow-update attribution corrects the earlier heavy-prim hypothesis. Optional
+`ResidencyPreparationTiming` retains attempt count, total route-preparation time
+and only the slowest prim (bounded profiling storage). With `USD_PROFILE_ROUTES`,
+the benchmark reports promotion/palette contributions for updates over 100 ms.
+`USD_PROFILE_LOADING` additionally times editor ReloadSources commands.
+
+Caldera's traced update 17 took 2,259.507 ms, but only 10.027 ms was promotion
+and 0.001 ms was palette updating. A 265-file editor reload command in that
+update took 1,199.800 ms. Across the entire queue, the slowest individual prim
+was 43.932 ms at
+`/world/mp_wz_island/mp_wz_island_paths/mp_wz_island_geo/map_vehicle_spawns/script_struct_mp_openjeep_113/veh_s4_mil_lnd_m151/geo/prs_bodyShape`.
+Thus the ~2.25-second maximum is not a single huge mesh. Individual work still
+exceeds the 10 ms soft budget, but splitting it alone will not fix this stall.
+
+Source inspection: `editor/reload.rs::watch` marks every observed file pending
+when it first sees a document. The next stable poll enqueues ReloadSources even
+when nothing changed on disk. `reload_paths` traverses texture requests and
+reads/hashes selected paths; afterward `process_commands` unconditionally builds
+a new editor snapshot. Snapshot time was not separately measured in this trace,
+so do not assign the entire remaining second to it without further evidence.
+Next priority: preserve the load-to-watch race checks while avoiding redundant
+initial source verification and no-op inspector reconstruction. Do not disable
+watching or blindly seed current metadata: supplied root bytes can already be
+stale, and changes during opening must still reload safely.
+
+749 workspace/all-target tests pass (19 ignored). Logs and profiler builds are
+in `target/perf/p4-heavy-prim/`; `reload-trace.log` contains correlated command,
+update and slowest-prim timings. This increment adds attribution, not a fix for
+the initial watcher stall.
 
 Rejected follow-up: a temporary per-promotion `ProjectionMaterials` memo passed
 747 experimental workspace/all-target tests (19 ignored), including shared

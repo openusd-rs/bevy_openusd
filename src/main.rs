@@ -422,6 +422,7 @@ fn outliner_pane(
     accent: MaraColor32,
     visibility: &std::collections::HashMap<String, bool>,
 ) {
+    let status = if status.trim().is_empty() { "Idle" } else { status };
     let lines = lighting::status_lines(status);
     let status_pod = Pod::new(MaraId::new(("usd.outliner", "status")));
     let status_pod = if lines.len() > 1 {

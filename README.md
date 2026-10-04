@@ -24,7 +24,7 @@ AssetServer and a scene from in-memory bytes (`UsdSource::from_memory`):
 make serve-web
 ```
 
-![usd_bevy in the browser](media/web-wasm.png)
+![usd_bevy in Firefox](media/web-firefox.jpg)
 
 ## Used by
 

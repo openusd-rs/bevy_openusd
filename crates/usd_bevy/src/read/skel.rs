@@ -652,6 +652,52 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn eight_influences_skin_on_the_cpu_with_every_joint() {
+        let joints = (0..8).map(|i| format!("\"J{i}\"")).collect::<Vec<_>>().join(", ");
+        let identity = ["((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1))"; 8].join(", ");
+        let translations = (0..8).map(|i| format!("({i}, 0, 0)")).collect::<Vec<_>>().join(", ");
+        let indices = ["0, 1, 2, 3, 4, 5, 6, 7"; 3].join(", ");
+        let weights = ["0.125"; 24].join(", ");
+        let text = format!(r#"#usda 1.0
+def SkelRoot "Root"
+{{
+    def Skeleton "Skel"
+    {{
+        uniform token[] joints = [{joints}]
+        uniform matrix4d[] bindTransforms = [{identity}]
+        uniform matrix4d[] restTransforms = [{identity}]
+        rel skel:animationSource = </Root/Skel/Anim>
+        def SkelAnimation "Anim"
+        {{
+            uniform token[] joints = [{joints}]
+            float3[] translations = [{translations}]
+            quatf[] rotations = [{rotations}]
+            half3[] scales = [{scales}]
+        }}
+    }}
+    def Mesh "Tri" (prepend apiSchemas = ["SkelBindingAPI"])
+    {{
+        rel skel:skeleton = </Root/Skel>
+        int[] primvars:skel:jointIndices = [{indices}] (elementSize = 8 interpolation = "vertex")
+        float[] primvars:skel:jointWeights = [{weights}] (elementSize = 8 interpolation = "vertex")
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }}
+}}
+"#, rotations = ["(1, 0, 0, 0)"; 8].join(", "), scales = ["(1, 1, 1)"; 8].join(", "));
+        let stage = crate::UsdSource::snapshot("eight_influences.usda", text.into_bytes()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Root/Tri").unwrap();
+        let error = super::gpu_skin_sample(&stage, &path, None).err().unwrap().to_string();
+        assert!(error.contains("1–4 influences"), "{error}");
+        let skinned = super::skinned_points_at(&stage, &path, None).unwrap().unwrap();
+        for (point, rest) in skinned.iter().zip([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]) {
+            let expected = [rest[0] + 3.5, rest[1], rest[2]];
+            assert!(point.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-5), "{point:?} != {expected:?}");
+        }
+    }
+
+    #[test]
     fn repeated_gpu_influences_match_uncached_normal_corrections() {
         use bevy::math::{Mat3, Mat4};
         let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_animated.usda");

@@ -11,29 +11,8 @@ Excluded: upstream's large external fixture packs, repository/CI metadata,
 toolchain override, build outputs and dependency lockfile. The containing Bevy
 workspace supplies its toolchain and lockfile. No sibling checkout is required.
 
-Changes from the base source are recorded in these patches in the project root:
-
-- `patches/openusd-empty-index.patch`
-- `patches/openusd-singleton-listops.patch`
-- `patches/openusd-token-vector-fields.patch`
-- `patches/openusd-stage-packaging.patch`
-- `patches/openusd-package-directory.patch`
-- `patches/openusd-prepared-roots.patch`
-- `patches/openusd-shared-asset-bytes.patch`
-- `patches/openusd-traversal-active.patch`
-- `patches/openusd-abstract-ancestry.patch`
-- `patches/openusd-specifier-status.patch`
-- `patches/openusd-property-classification.patch`
-- `patches/openusd-traversal-parent-status.patch`
-- `patches/openusd-shared-path-text.patch`
-- `patches/openusd-reference-diagnostics.patch`
-- `patches/openusd-layer-reanchoring.patch`
-- `patches/openusd-clip-activation-samples.patch`
-- `patches/openusd-nested-package-reading.patch`
-- `patches/openusd-nested-package-export.patch`
-- `patches/openusd-undo-pruning.patch`
-- `patches/openusd-payload-identity.patch`
-- `patches/openusd-reference-custom-data.patch`
+Changes from the base source are the diff between this directory and upstream
+at the base revision; per-change notes are in this repository's git history.
 
 The binary metadata patch includes sublayer StringVector encoding as well as
 token-vector child/order fields and variant-set StringListOp encoding.
@@ -67,8 +46,7 @@ unwinding; a retention-mask length mismatch leaves history unchanged.
 The usd_bevy and usd_macro manifests also use direct relative paths to this
 copy, so external path consumers do not depend on inheriting a root patch table.
 Keep the Git revision declarations: they record the baseline for removing this
-override when the fixes become available upstream. The patches are applied to
-these files already; they are not applied at build time.
+override when the fixes become available upstream.
 
 Use the containing project's `make test-native`, `make test-all`, `make check-all`
 and `make build`. Upstream's own tests additionally require its external fixture

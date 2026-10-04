@@ -226,3 +226,12 @@ coverage checks reference and payload arcs at both depths. Sub-root diagnostics
 are deferred until composition tasks finish, preserving variant-supplied targets.
 Node culling and reference composition are unchanged; broader ancestral and
 relocation combinations still need acceptance coverage.
+
+## Empty string arrays in usdc
+
+`openusd-empty-string-arrays.patch` reads an empty `string[]`, `asset[]` or
+path-expression array as empty. Crate files store empty arrays inline with
+payload 0, which numeric arrays already handled; these three seeked to offset 0
+and decoded the file magic as an element count, panicking on allocation.
+Apple's `chameleon.usdz` authors such arrays; `usdc_empty_string_arrays_read_as_empty`
+covers both the empty and a populated array.

@@ -3024,4 +3024,30 @@ def Scope "Model" (
         let stage = source.open_stage().unwrap();
         assert!(stage.prim("/Model/Box").unwrap().is_valid().unwrap());
     }
+
+    #[test]
+    fn usdc_empty_string_arrays_read_as_empty() {
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/external/chameleon.usdz"
+        );
+        let stage = UsdSource::from_file(file).unwrap().open_stage().unwrap();
+        let looks = "/Root/chameleon_mtl/Looks";
+        let name = "ui:nodegraph:realitykit:node:attributesShowingChildren";
+        let read = |prim: &str| {
+            let path = openusd::sdf::path(&format!("{looks}/{prim}")).unwrap();
+            crate::read::util::read_authored(&stage, &path, name).unwrap()
+        };
+        assert_eq!(
+            read("chameleon_camo_mat/Clamp"),
+            Some(openusd::sdf::Value::StringVec(vec![]))
+        );
+        assert_eq!(
+            read("chameleon_blue_mat/PreviewSurface"),
+            Some(openusd::sdf::Value::StringVec(vec![
+                "Advanced".into(),
+                "inputs:diffuseColor".into()
+            ]))
+        );
+    }
 }

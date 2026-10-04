@@ -217,12 +217,8 @@ mod local {
                         Ok((mut stream, _)) => {
                             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                             let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-                            if workers
-                                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                                    (count < 16).then_some(count + 1)
-                                })
-                                .is_err()
-                            {
+                            if workers.fetch_add(1, Ordering::Relaxed) >= 16 {
+                                workers.fetch_sub(1, Ordering::Relaxed);
                                 let _ = writeln!(
                                     stream,
                                     "{{\"ok\":false,\"error\":\"API connection limit reached\"}}"

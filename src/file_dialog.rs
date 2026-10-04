@@ -1,42 +1,96 @@
-use std::{future::Future, path::{Path, PathBuf}, pin::Pin, sync::Arc, task::{Context, Poll, Wake, Waker}};
 use eframe::egui;
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, Wake, Waker},
+};
 use usd_bevy::editor::{EditorCommand, EditorSnapshot, SaveMode};
 
 const USD_EXTENSIONS: &[&str] = &["usd", "usda", "usdc", "usdz"];
 
 fn save_labels(mode: SaveMode) -> (&'static str, &'static str) {
     match mode {
-        SaveMode::RootLayer => ("Save root layer — extension selects USD format", "scene.usda"),
-        SaveMode::EditLayer => ("Save edit layer — extension selects USD format", "edit-layer.usda"),
-        SaveMode::Flattened => ("Save flattened scene — extension selects USD format", "flattened.usda"),
+        SaveMode::RootLayer => (
+            "Save root layer — extension selects USD format",
+            "scene.usda",
+        ),
+        SaveMode::EditLayer => (
+            "Save edit layer — extension selects USD format",
+            "edit-layer.usda",
+        ),
+        SaveMode::Flattened => (
+            "Save flattened scene — extension selects USD format",
+            "flattened.usda",
+        ),
     }
 }
 
 #[derive(Clone)]
 pub enum Request {
-    Open { document_id: u64, revision: u64 },
-    Save { mode: SaveMode, document_id: u64, edit_layer: String },
+    Open {
+        document_id: u64,
+        revision: u64,
+    },
+    Save {
+        mode: SaveMode,
+        document_id: u64,
+        edit_layer: String,
+    },
 }
 
 impl Request {
     pub fn open(snapshot: &EditorSnapshot) -> Self {
-        Self::Open { document_id: snapshot.document_id, revision: snapshot.revision }
+        Self::Open {
+            document_id: snapshot.document_id,
+            revision: snapshot.revision,
+        }
     }
 
     pub fn save(mode: SaveMode, snapshot: &EditorSnapshot) -> Self {
-        Self::Save { mode, document_id: snapshot.document_id, edit_layer: snapshot.edit_layer.clone() }
+        Self::Save {
+            mode,
+            document_id: snapshot.document_id,
+            edit_layer: snapshot.edit_layer.clone(),
+        }
     }
 
     fn command(self, path: PathBuf) -> Result<EditorCommand, String> {
-        let filename = path.into_os_string().into_string().map_err(|_| "USD paths must be UTF-8".to_owned())?;
+        let filename = path
+            .into_os_string()
+            .into_string()
+            .map_err(|_| "USD paths must be UTF-8".to_owned())?;
         Ok(match self {
-            Self::Open { document_id, revision } => EditorCommand::OpenChecked { filename, document_id, revision },
-            Self::Save { mode, document_id, edit_layer } => {
-                let extension = Path::new(&filename).extension().and_then(|value| value.to_str()).unwrap_or("");
-                if !USD_EXTENSIONS.iter().any(|supported| extension.eq_ignore_ascii_case(supported)) {
+            Self::Open {
+                document_id,
+                revision,
+            } => EditorCommand::OpenChecked {
+                filename,
+                document_id,
+                revision,
+            },
+            Self::Save {
+                mode,
+                document_id,
+                edit_layer,
+            } => {
+                let extension = Path::new(&filename)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("");
+                if !USD_EXTENSIONS
+                    .iter()
+                    .any(|supported| extension.eq_ignore_ascii_case(supported))
+                {
                     return Err("Save filename must end in .usda, .usdc, .usd or .usdz".into());
                 }
-                EditorCommand::SaveChecked { filename, mode, document_id, edit_layer }
+                EditorCommand::SaveChecked {
+                    filename,
+                    mode,
+                    document_id,
+                    edit_layer,
+                }
             }
         })
     }
@@ -45,7 +99,10 @@ impl Request {
 type Selection = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
 
 fn layer_dir(root_layer: &str) -> Option<PathBuf> {
-    std::fs::canonicalize(root_layer).ok()?.parent().map(Path::to_path_buf)
+    std::fs::canonicalize(root_layer)
+        .ok()?
+        .parent()
+        .map(Path::to_path_buf)
 }
 
 async fn select_open<C, P, F>(has_document: bool, confirmation: C, picker: P) -> Option<PathBuf>
@@ -54,14 +111,20 @@ where
     P: FnOnce() -> F,
     F: Future<Output = Option<PathBuf>>,
 {
-    if has_document && !confirmation.await { return None; }
+    if has_document && !confirmation.await {
+        return None;
+    }
     picker().await
 }
 
 struct Repaint(egui::Context);
 impl Wake for Repaint {
-    fn wake(self: Arc<Self>) { self.0.request_repaint(); }
-    fn wake_by_ref(self: &Arc<Self>) { self.0.request_repaint(); }
+    fn wake(self: Arc<Self>) {
+        self.0.request_repaint();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.request_repaint();
+    }
 }
 
 pub struct FileDialogs {
@@ -75,12 +138,21 @@ pub struct FileDialogs {
 
 impl FileDialogs {
     pub fn new(ctx: &egui::Context) -> Self {
-        Self { pending: None, confirmation: None, context: ctx.clone(), waker: Waker::from(Arc::new(Repaint(ctx.clone()))), status: None, last_dir: None }
+        Self {
+            pending: None,
+            confirmation: None,
+            context: ctx.clone(),
+            waker: Waker::from(Arc::new(Repaint(ctx.clone()))),
+            status: None,
+            last_dir: None,
+        }
     }
 
     /// Opens in the last picked folder, else next to `root_layer`.
     pub fn start(&mut self, request: Request, root_layer: &str) {
-        if self.pending.is_some() { return; }
+        if self.pending.is_some() {
+            return;
+        }
         let mut dialog = rfd::AsyncFileDialog::new();
         if let Some(dir) = self.last_dir.clone().or_else(|| layer_dir(root_layer)) {
             dialog = dialog.set_directory(dir);
@@ -88,19 +160,35 @@ impl FileDialogs {
         let future: Selection = match &request {
             Request::Open { document_id, .. } => {
                 let answer = Arc::new(std::sync::Mutex::new(None));
-                if *document_id != 0 { self.confirmation = Some(answer.clone()); }
+                if *document_id != 0 {
+                    self.confirmation = Some(answer.clone());
+                }
                 let confirmation = std::future::poll_fn(move |_| match answer.lock() {
                     Ok(answer) => answer.map_or(Poll::Pending, Poll::Ready),
                     Err(_) => Poll::Ready(false),
                 });
-                Box::pin(select_open(*document_id != 0, confirmation, move || async move {
-                    dialog.add_filter("USD", USD_EXTENSIONS).pick_file().await.map(|file| file.path().to_owned())
-                }))
+                Box::pin(select_open(
+                    *document_id != 0,
+                    confirmation,
+                    move || async move {
+                        dialog
+                            .add_filter("USD", USD_EXTENSIONS)
+                            .pick_file()
+                            .await
+                            .map(|file| file.path().to_owned())
+                    },
+                ))
             }
             Request::Save { mode, .. } => {
                 let (title, filename) = save_labels(*mode);
-                let selection = dialog.set_title(title).set_file_name(filename)
-                    .add_filter("USD ASCII / binary / package (.usda, .usdc, .usd, .usdz)", USD_EXTENSIONS).save_file();
+                let selection = dialog
+                    .set_title(title)
+                    .set_file_name(filename)
+                    .add_filter(
+                        "USD ASCII / binary / package (.usda, .usdc, .usd, .usdz)",
+                        USD_EXTENSIONS,
+                    )
+                    .save_file();
                 Box::pin(async move { selection.await.map(|file| file.path().to_owned()) })
             }
         };
@@ -108,7 +196,9 @@ impl FileDialogs {
     }
 
     fn begin(&mut self, request: Request, future: Selection) {
-        if self.pending.is_some() { return; }
+        if self.pending.is_some() {
+            return;
+        }
         self.pending = Some((request, future));
         self.status = Some("Waiting for file selection".into());
         self.waker.wake_by_ref();
@@ -127,27 +217,42 @@ impl FileDialogs {
                     if ui.button("Choose another document").clicked() { choice = Some(true); }
                 });
             });
-            if choice.is_none() && response.should_close() { choice = Some(false); }
+            if choice.is_none() && response.should_close() {
+                choice = Some(false);
+            }
             if let Some(choice) = choice {
-                if let Ok(mut answer) = answer.lock() { *answer = Some(choice); }
+                if let Ok(mut answer) = answer.lock() {
+                    *answer = Some(choice);
+                }
                 self.confirmation = None;
             }
         }
         let (_, future) = self.pending.as_mut()?;
-        let Poll::Ready(path) = future.as_mut().poll(&mut Context::from_waker(&self.waker)) else { return None };
+        let Poll::Ready(path) = future.as_mut().poll(&mut Context::from_waker(&self.waker)) else {
+            return None;
+        };
         let (request, _) = self.pending.take().unwrap();
         self.status = None;
-        if let Some(dir) = path.as_deref().and_then(Path::parent).filter(|dir| !dir.as_os_str().is_empty()) {
+        if let Some(dir) = path
+            .as_deref()
+            .and_then(Path::parent)
+            .filter(|dir| !dir.as_os_str().is_empty())
+        {
             self.last_dir = Some(dir.to_path_buf());
         }
         match path.map(|path| request.command(path)) {
             Some(Ok(command)) => Some(command),
-            Some(Err(error)) => { self.status = Some(error); None }
+            Some(Err(error)) => {
+                self.status = Some(error);
+                None
+            }
             None => None,
         }
     }
 
-    pub fn status(&self) -> Option<&str> { self.status.as_deref() }
+    pub fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
 }
 
 #[cfg(test)]
@@ -159,89 +264,157 @@ mod tests {
         let context = egui::Context::default();
         let mut dialogs = FileDialogs::new(&context);
         for revision in [7, 8] {
-            dialogs.start(Request::Open { document_id: 42, revision }, "");
-            dialogs.start(Request::Open { document_id: 99, revision: 1 }, "");
-            assert!(matches!(dialogs.pending.as_ref().unwrap().0, Request::Open { document_id: 42, revision: value } if value == revision));
+            dialogs.start(
+                Request::Open {
+                    document_id: 42,
+                    revision,
+                },
+                "",
+            );
+            dialogs.start(
+                Request::Open {
+                    document_id: 99,
+                    revision: 1,
+                },
+                "",
+            );
+            assert!(
+                matches!(dialogs.pending.as_ref().unwrap().0, Request::Open { document_id: 42, revision: value } if value == revision)
+            );
             let _ = context.run_ui(egui::RawInput::default(), |_| {
                 assert!(dialogs.poll().is_none());
             });
             assert!(dialogs.confirmation.is_some());
             let mut input = egui::RawInput::default();
             input.events.push(egui::Event::Key {
-                key: egui::Key::Escape, physical_key: None, pressed: true,
-                repeat: false, modifiers: egui::Modifiers::NONE,
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
             });
-            let _ = context.run_ui(input, |_| { assert!(dialogs.poll().is_none()); });
+            let _ = context.run_ui(input, |_| {
+                assert!(dialogs.poll().is_none());
+            });
             assert!(dialogs.confirmation.is_none());
             assert!(dialogs.pending.is_none());
             assert!(dialogs.status().is_none());
-            let _ = context.run_ui(egui::RawInput::default(), |_| { assert!(dialogs.poll().is_none()); });
+            let _ = context.run_ui(egui::RawInput::default(), |_| {
+                assert!(dialogs.poll().is_none());
+            });
         }
     }
 
     #[test]
     fn open_confirmation_precedes_picker_and_cancellation_emits_no_command() {
         use std::{cell::Cell, rc::Rc};
-        for (document_id, accept, expected) in [(0, false, true), (42, false, false), (42, true, true)] {
+        for (document_id, accept, expected) in
+            [(0, false, true), (42, false, false), (42, true, true)]
+        {
             let calls = Rc::new(Cell::new(0));
             let called = calls.clone();
             let future = select_open(document_id != 0, async move { accept }, move || {
-                called.set(called.get()+1);
+                called.set(called.get() + 1);
                 async { Some(PathBuf::from("replacement.usda")) }
             });
             let mut dialogs = FileDialogs::new(&egui::Context::default());
-            dialogs.begin(Request::Open { document_id, revision: 9 }, Box::pin(future));
+            dialogs.begin(
+                Request::Open {
+                    document_id,
+                    revision: 9,
+                },
+                Box::pin(future),
+            );
             assert_eq!(calls.get(), 0);
             let command = dialogs.poll();
             assert_eq!(command.is_some(), expected);
             assert_eq!(calls.get(), usize::from(expected));
             if let Some(command) = command {
-                assert!(matches!(command, EditorCommand::OpenChecked { document_id: id, revision: 9, .. } if id == document_id));
+                assert!(
+                    matches!(command, EditorCommand::OpenChecked { document_id: id, revision: 9, .. } if id == document_id)
+                );
             }
             assert!(dialogs.poll().is_none());
             assert!(dialogs.status().is_none());
         }
         let mut dialogs = FileDialogs::new(&egui::Context::default());
-        dialogs.begin(Request::Open { document_id: 42, revision: 9 }, Box::pin(select_open(
-            true, std::future::pending(), || async { panic!("picker opened before confirmation") },
-        )));
-        for _ in 0..3 { assert!(dialogs.poll().is_none()); }
+        dialogs.begin(
+            Request::Open {
+                document_id: 42,
+                revision: 9,
+            },
+            Box::pin(select_open(true, std::future::pending(), || async {
+                panic!("picker opened before confirmation")
+            })),
+        );
+        for _ in 0..3 {
+            assert!(dialogs.poll().is_none());
+        }
     }
 
     #[test]
     fn open_selection_retains_document_revision_context() {
-        let snapshot = EditorSnapshot { document_id: 42, revision: 7, ..Default::default() };
-        let command = Request::open(&snapshot).command("selected.usda".into()).unwrap();
-        assert!(matches!(command, EditorCommand::OpenChecked { document_id: 42, revision: 7, filename } if filename == "selected.usda"));
+        let snapshot = EditorSnapshot {
+            document_id: 42,
+            revision: 7,
+            ..Default::default()
+        };
+        let command = Request::open(&snapshot)
+            .command("selected.usda".into())
+            .unwrap();
+        assert!(
+            matches!(command, EditorCommand::OpenChecked { document_id: 42, revision: 7, filename } if filename == "selected.usda")
+        );
     }
 
     #[test]
     fn pending_dialog_does_not_block_or_allow_duplicate_requests() {
         let mut dialogs = FileDialogs::new(&egui::Context::default());
-        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(std::future::pending()));
-        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(PathBuf::from("wrong.usda")) }));
-        for _ in 0..3 { assert!(dialogs.poll().is_none()); }
+        dialogs.begin(
+            Request::open(&EditorSnapshot::default()),
+            Box::pin(std::future::pending()),
+        );
+        dialogs.begin(
+            Request::open(&EditorSnapshot::default()),
+            Box::pin(async { Some(PathBuf::from("wrong.usda")) }),
+        );
+        for _ in 0..3 {
+            assert!(dialogs.poll().is_none());
+        }
         assert_eq!(dialogs.status(), Some("Waiting for file selection"));
     }
 
     #[test]
     fn cancellation_and_completion_are_consumed_once() {
         let mut dialogs = FileDialogs::new(&egui::Context::default());
-        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { None }));
+        dialogs.begin(
+            Request::open(&EditorSnapshot::default()),
+            Box::pin(async { None }),
+        );
         assert!(dialogs.poll().is_none());
         assert!(dialogs.status().is_none());
-        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(PathBuf::from("path with spaces.usda")) }));
-        assert!(matches!(dialogs.poll(), Some(EditorCommand::OpenChecked { filename, document_id: 0, revision: 0 }) if filename == "path with spaces.usda"));
+        dialogs.begin(
+            Request::open(&EditorSnapshot::default()),
+            Box::pin(async { Some(PathBuf::from("path with spaces.usda")) }),
+        );
+        assert!(
+            matches!(dialogs.poll(), Some(EditorCommand::OpenChecked { filename, document_id: 0, revision: 0 }) if filename == "path with spaces.usda")
+        );
         assert!(dialogs.poll().is_none());
         assert!(dialogs.status().is_none());
     }
 
     #[test]
     fn delayed_completion_registers_and_wakes_before_delivering_selection() {
-        use std::sync::{Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
         struct Counter(AtomicUsize);
         impl Wake for Counter {
-            fn wake(self: Arc<Self>) { self.0.fetch_add(1, Ordering::SeqCst); }
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
         }
         let ready = Arc::new(AtomicBool::new(false));
         let registered = Arc::new(Mutex::new(None::<Waker>));
@@ -249,8 +422,12 @@ mod tests {
             let ready = ready.clone();
             let registered = registered.clone();
             std::future::poll_fn(move |context| {
-                if ready.load(Ordering::SeqCst) { Poll::Ready(Some(PathBuf::from("delayed.usda"))) }
-                else { *registered.lock().unwrap() = Some(context.waker().clone()); Poll::Pending }
+                if ready.load(Ordering::SeqCst) {
+                    Poll::Ready(Some(PathBuf::from("delayed.usda")))
+                } else {
+                    *registered.lock().unwrap() = Some(context.waker().clone());
+                    Poll::Pending
+                }
             })
         };
         let mut dialogs = FileDialogs::new(&egui::Context::default());
@@ -262,7 +439,9 @@ mod tests {
         ready.store(true, Ordering::SeqCst);
         registered.lock().unwrap().take().unwrap().wake();
         assert_eq!(counter.0.load(Ordering::SeqCst), 2);
-        assert!(matches!(dialogs.poll(), Some(EditorCommand::OpenChecked { filename, document_id: 0, revision: 0 }) if filename == "delayed.usda"));
+        assert!(
+            matches!(dialogs.poll(), Some(EditorCommand::OpenChecked { filename, document_id: 0, revision: 0 }) if filename == "delayed.usda")
+        );
         assert!(dialogs.poll().is_none());
     }
 
@@ -272,38 +451,77 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let layer = root.join("scene.usda");
         std::fs::write(&layer, "#usda 1.0\n").unwrap();
-        assert_eq!(layer_dir(layer.to_str().unwrap()), Some(std::fs::canonicalize(&root).unwrap()));
+        assert_eq!(
+            layer_dir(layer.to_str().unwrap()),
+            Some(std::fs::canonicalize(&root).unwrap())
+        );
         assert_eq!(layer_dir("anon:0x1234:root.usda"), None);
         std::fs::remove_dir_all(&root).unwrap();
 
         let mut dialogs = FileDialogs::new(&egui::Context::default());
-        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(PathBuf::from("/scenes/robots/arm.usda")) }));
+        dialogs.begin(
+            Request::open(&EditorSnapshot::default()),
+            Box::pin(async { Some(PathBuf::from("/scenes/robots/arm.usda")) }),
+        );
         assert!(dialogs.poll().is_some());
-        assert_eq!(dialogs.last_dir.as_deref(), Some(Path::new("/scenes/robots")));
-        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(PathBuf::from("bare.usda")) }));
+        assert_eq!(
+            dialogs.last_dir.as_deref(),
+            Some(Path::new("/scenes/robots"))
+        );
+        dialogs.begin(
+            Request::open(&EditorSnapshot::default()),
+            Box::pin(async { Some(PathBuf::from("bare.usda")) }),
+        );
         assert!(dialogs.poll().is_some());
-        assert_eq!(dialogs.last_dir.as_deref(), Some(Path::new("/scenes/robots")));
+        assert_eq!(
+            dialogs.last_dir.as_deref(),
+            Some(Path::new("/scenes/robots"))
+        );
     }
 
     #[test]
     fn save_selection_retains_document_and_edit_layer_context() {
-        let snapshot = EditorSnapshot { document_id: 42, edit_layer: "weak.usda".into(), ..Default::default() };
-        let command = Request::save(SaveMode::EditLayer, &snapshot).command("output.usda".into()).unwrap();
-        assert!(matches!(command, EditorCommand::SaveChecked { document_id: 42, edit_layer, mode: SaveMode::EditLayer, .. } if edit_layer == "weak.usda"));
+        let snapshot = EditorSnapshot {
+            document_id: 42,
+            edit_layer: "weak.usda".into(),
+            ..Default::default()
+        };
+        let command = Request::save(SaveMode::EditLayer, &snapshot)
+            .command("output.usda".into())
+            .unwrap();
+        assert!(
+            matches!(command, EditorCommand::SaveChecked { document_id: 42, edit_layer, mode: SaveMode::EditLayer, .. } if edit_layer == "weak.usda")
+        );
     }
 
     #[test]
     fn save_formats_are_explicit_and_keep_the_selected_path() {
-        let snapshot = EditorSnapshot { document_id: 42, edit_layer: "weak.usda".into(), ..Default::default() };
+        let snapshot = EditorSnapshot {
+            document_id: 42,
+            edit_layer: "weak.usda".into(),
+            ..Default::default()
+        };
         for extension in ["usda", "usdc", "usd", "usdz", "USDZ"] {
             let path = format!("path with spaces/scene.{extension}");
-            let command = Request::save(SaveMode::RootLayer, &snapshot).command(path.clone().into()).unwrap();
-            assert!(matches!(command, EditorCommand::SaveChecked { filename, document_id: 42, .. } if filename == path));
+            let command = Request::save(SaveMode::RootLayer, &snapshot)
+                .command(path.clone().into())
+                .unwrap();
+            assert!(
+                matches!(command, EditorCommand::SaveChecked { filename, document_id: 42, .. } if filename == path)
+            );
         }
         for path in ["scene", "scene.", "scene.png"] {
-            assert!(Request::save(SaveMode::RootLayer, &snapshot).command(path.into()).is_err());
+            assert!(
+                Request::save(SaveMode::RootLayer, &snapshot)
+                    .command(path.into())
+                    .is_err()
+            );
         }
-        for mode in [SaveMode::RootLayer, SaveMode::EditLayer, SaveMode::Flattened] {
+        for mode in [
+            SaveMode::RootLayer,
+            SaveMode::EditLayer,
+            SaveMode::Flattened,
+        ] {
             let (title, filename) = save_labels(mode);
             assert!(title.contains("extension selects"));
             assert!(filename.ends_with(".usda"));
@@ -315,7 +533,10 @@ mod tests {
     fn non_utf8_selection_reports_error_instead_of_changing_the_path() {
         use std::os::unix::ffi::OsStringExt;
         let mut dialogs = FileDialogs::new(&egui::Context::default());
-        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(std::ffi::OsString::from_vec(vec![0xff]).into()) }));
+        dialogs.begin(
+            Request::open(&EditorSnapshot::default()),
+            Box::pin(async { Some(std::ffi::OsString::from_vec(vec![0xff]).into()) }),
+        );
         assert!(dialogs.poll().is_none());
         assert_eq!(dialogs.status(), Some("USD paths must be UTF-8"));
     }

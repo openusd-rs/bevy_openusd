@@ -1,8 +1,10 @@
-use std::sync::{Arc, Mutex};
 use bevy::prelude::*;
-use mara::ui::modules::bevy as mara_bevy;
 use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
-use usd_bevy::route::dome_environment::{UsdDomeEnvironmentPlugin, UsdDomeEnvironmentSource, UsdDomeEnvironmentState};
+use mara::ui::modules::bevy as mara_bevy;
+use std::sync::{Arc, Mutex};
+use usd_bevy::route::dome_environment::{
+    UsdDomeEnvironmentPlugin, UsdDomeEnvironmentSource, UsdDomeEnvironmentState,
+};
 
 #[derive(Clone)]
 struct State {
@@ -13,7 +15,14 @@ struct State {
 }
 
 impl Default for State {
-    fn default() -> Self { Self { selected: None, studio: true, domes: Vec::new(), status: "Studio lighting".into() } }
+    fn default() -> Self {
+        Self {
+            selected: None,
+            studio: true,
+            domes: Vec::new(),
+            status: "Studio lighting".into(),
+        }
+    }
 }
 
 #[derive(Resource, Clone, Default)]
@@ -34,38 +43,72 @@ impl LightingBridge {
 struct StudioAmbient(AmbientLight);
 
 pub fn configure(app: &mut App, bridge: LightingBridge) {
-    app.insert_resource(bridge).add_plugins(UsdDomeEnvironmentPlugin).add_systems(Update, apply);
+    app.insert_resource(bridge)
+        .add_plugins(UsdDomeEnvironmentPlugin)
+        .add_systems(Update, apply);
 }
 
 fn apply(world: &mut World) {
     let bridge = world.resource::<LightingBridge>().clone();
-    let Ok(mut state) = bridge.0.lock() else { return };
+    let Ok(mut state) = bridge.0.lock() else {
+        return;
+    };
     let mut domes: Vec<_> = world.query_filtered::<(Entity, &usd_bevy::UsdPrimRef), With<usd_bevy::route::dome::UsdDomeLight>>()
         .iter(world).map(|(entity, prim)| (entity, prim.path.clone())).collect();
     domes.sort_by(|a, b| a.1.cmp(&b.1));
     state.domes = domes.iter().map(|(_, path)| path.clone()).collect();
-    let selected = state.selected.as_ref().and_then(|path| domes.iter().find(|(_, candidate)| candidate == path).map(|(e, _)| *e));
-    let cameras: Vec<_> = world.query_filtered::<Entity, With<mara_bevy::ChaseCamera>>().iter(world).collect();
-    let fallback = selected.is_some_and(|dome| cameras.iter().any(|camera| {
-        world.get::<UsdDomeEnvironmentSource>(*camera).is_some_and(|source| source.dome == dome)
-            && matches!(world.get::<UsdDomeEnvironmentState>(*camera), Some(UsdDomeEnvironmentState::Unavailable(_)))
-    }));
+    let selected = state.selected.as_ref().and_then(|path| {
+        domes
+            .iter()
+            .find(|(_, candidate)| candidate == path)
+            .map(|(e, _)| *e)
+    });
+    let cameras: Vec<_> = world
+        .query_filtered::<Entity, With<mara_bevy::ChaseCamera>>()
+        .iter(world)
+        .collect();
+    let fallback = selected.is_some_and(|dome| {
+        cameras.iter().any(|camera| {
+            world
+                .get::<UsdDomeEnvironmentSource>(*camera)
+                .is_some_and(|source| source.dome == dome)
+                && matches!(
+                    world.get::<UsdDomeEnvironmentState>(*camera),
+                    Some(UsdDomeEnvironmentState::Unavailable(_))
+                )
+        })
+    });
     let studio_active = state.studio || fallback;
-    state.status = if state.selected.is_some() && selected.is_none() { "Selected dome is missing".into() }
-        else if selected.is_some() { "Waiting for dome maps".into() }
-        else if state.studio { "Studio lighting".into() }
-        else { "Studio lights disabled".into() };
+    state.status = if state.selected.is_some() && selected.is_none() {
+        "Selected dome is missing".into()
+    } else if selected.is_some() {
+        "Waiting for dome maps".into()
+    } else if state.studio {
+        "Studio lighting".into()
+    } else {
+        "Studio lights disabled".into()
+    };
     for camera in cameras {
         if world.get::<StudioAmbient>(camera).is_none() {
-            let ambient = world.get::<AmbientLight>(camera).cloned().unwrap_or_default();
+            let ambient = world
+                .get::<AmbientLight>(camera)
+                .cloned()
+                .unwrap_or_default();
             world.entity_mut(camera).insert(StudioAmbient(ambient));
         }
         let mut ambient = world.get::<StudioAmbient>(camera).unwrap().0.clone();
-        if !studio_active { ambient.brightness = 0.0; }
+        if !studio_active {
+            ambient.brightness = 0.0;
+        }
         world.entity_mut(camera).insert(ambient);
         if let Some(dome) = selected {
-            if world.get::<UsdDomeEnvironmentSource>(camera).is_none_or(|source| source.dome != dome) {
-                world.entity_mut(camera).insert(UsdDomeEnvironmentSource::new(dome));
+            if world
+                .get::<UsdDomeEnvironmentSource>(camera)
+                .is_none_or(|source| source.dome != dome)
+            {
+                world
+                    .entity_mut(camera)
+                    .insert(UsdDomeEnvironmentSource::new(dome));
             }
             if let Some(status) = world.get::<UsdDomeEnvironmentState>(camera) {
                 state.status = match status {
@@ -74,40 +117,71 @@ fn apply(world: &mut World) {
                     UsdDomeEnvironmentState::Unavailable(error) => error.clone(),
                 };
             }
-        } else { world.entity_mut(camera).remove::<UsdDomeEnvironmentSource>(); }
+        } else {
+            world
+                .entity_mut(camera)
+                .remove::<UsdDomeEnvironmentSource>();
+        }
     }
-    if fallback { state.status.push_str(" — using studio lighting fallback"); }
-    for (mut light, studio) in world.query::<(&mut DirectionalLight, &super::environment::StudioLight)>().iter_mut(world) {
+    if fallback {
+        state.status.push_str(" — using studio lighting fallback");
+    }
+    for (mut light, studio) in world
+        .query::<(&mut DirectionalLight, &super::environment::StudioLight)>()
+        .iter_mut(world)
+    {
         light.illuminance = if studio_active { studio.0 } else { 0.0 };
     }
 }
 
 pub fn show(body: &mut PaneBody, bridge: &LightingBridge) {
-    let Ok(state) = bridge.0.lock().map(|state| state.clone()) else { return };
+    let Ok(state) = bridge.0.lock().map(|state| state.clone()) else {
+        return;
+    };
     let controls = bridge.clone();
     let studio = state.studio;
     let lines = status_lines(&state.status);
-    let mut pods = vec![Pod::new("lighting.status").with_custom_units(lines.len() + 1, move |ui| {
+    let mut pods = vec![
+        Pod::new("lighting.status").with_custom_units(lines.len() + 1, move |ui| {
             ui.label("Status");
-            for line in lines { ui.label(&line); }
+            for line in lines {
+                ui.label(&line);
+            }
         }),
-        Pod::new("lighting.selection").with_readout("Dome", state.selected.as_deref().unwrap_or("None")),
+        Pod::new("lighting.selection")
+            .with_readout("Dome", state.selected.as_deref().unwrap_or("None")),
         Pod::new("lighting.controls").with_custom_units(3, move |ui| {
-            if ui.button("Use studio only").clicked && let Ok(mut state) = controls.0.lock() {
+            if ui.button("Use studio only").clicked
+                && let Ok(mut state) = controls.0.lock()
+            {
                 state.selected = None;
                 state.studio = true;
             }
-            if ui.button(if studio { "Disable studio lights" } else { "Enable studio lights" }).clicked
-                && let Ok(mut state) = controls.0.lock() { state.studio = !studio; }
-        })];
+            if ui
+                .button(if studio {
+                    "Disable studio lights"
+                } else {
+                    "Enable studio lights"
+                })
+                .clicked
+                && let Ok(mut state) = controls.0.lock()
+            {
+                state.studio = !studio;
+            }
+        }),
+    ];
     for path in state.domes {
         let controls = bridge.clone();
-        pods.push(Pod::new(Id::new(("lighting.dome", &path))).with_custom_units(1, move |ui| {
-            if ui.button(&format!("Use {path}")).clicked && let Ok(mut state) = controls.0.lock() {
-                state.selected = Some(path);
-                state.studio = false;
-            }
-        }));
+        pods.push(
+            Pod::new(Id::new(("lighting.dome", &path))).with_custom_units(1, move |ui| {
+                if ui.button(&format!("Use {path}")).clicked
+                    && let Ok(mut state) = controls.0.lock()
+                {
+                    state.selected = Some(path);
+                    state.studio = false;
+                }
+            }),
+        );
     }
     body.add_normal("lighting.settings", "Viewport lighting", "options", pods);
 }
@@ -119,13 +193,19 @@ pub(crate) fn status_lines(status: &str) -> Vec<String> {
         if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > 40 {
             lines.push(std::mem::take(&mut line));
         }
-        if !line.is_empty() { line.push(' '); }
+        if !line.is_empty() {
+            line.push(' ');
+        }
         for character in word.chars() {
-            if line.chars().count() == 40 { lines.push(std::mem::take(&mut line)); }
+            if line.chars().count() == 40 {
+                lines.push(std::mem::take(&mut line));
+            }
             line.push(character);
         }
     }
-    if !line.is_empty() { lines.push(line); }
+    if !line.is_empty() {
+        lines.push(line);
+    }
     lines
 }
 
@@ -138,33 +218,86 @@ mod tests {
         let mut world = World::new();
         let bridge = LightingBridge::default();
         world.insert_resource(bridge.clone());
-        let dome = world.spawn((usd_bevy::UsdPrimRef::new("/Env"), usd_bevy::route::dome::UsdDomeLight::default())).id();
-        let camera = world.spawn((mara_bevy::ChaseCamera::default(), AmbientLight { brightness: 160.0, ..default() })).id();
-        let studio = world.spawn((DirectionalLight::default(), super::super::environment::StudioLight(7500.0))).id();
-        let authored = world.spawn(DirectionalLight { illuminance: 42.0, ..default() }).id();
+        let dome = world
+            .spawn((
+                usd_bevy::UsdPrimRef::new("/Env"),
+                usd_bevy::route::dome::UsdDomeLight::default(),
+            ))
+            .id();
+        let camera = world
+            .spawn((
+                mara_bevy::ChaseCamera::default(),
+                AmbientLight {
+                    brightness: 160.0,
+                    ..default()
+                },
+            ))
+            .id();
+        let studio = world
+            .spawn((
+                DirectionalLight::default(),
+                super::super::environment::StudioLight(7500.0),
+            ))
+            .id();
+        let authored = world
+            .spawn(DirectionalLight {
+                illuminance: 42.0,
+                ..default()
+            })
+            .id();
         {
             let mut state = bridge.0.lock().unwrap();
             state.selected = Some("/Env".into());
             state.studio = false;
         }
         apply(&mut world);
-        world.entity_mut(camera).insert(UsdDomeEnvironmentState::Unavailable("Filtering unsupported".into()));
+        world
+            .entity_mut(camera)
+            .insert(UsdDomeEnvironmentState::Unavailable(
+                "Filtering unsupported".into(),
+            ));
         apply(&mut world);
         assert_eq!(world.get::<AmbientLight>(camera).unwrap().brightness, 160.0);
-        assert_eq!(world.get::<DirectionalLight>(studio).unwrap().illuminance, 7500.0);
-        assert_eq!(world.get::<DirectionalLight>(authored).unwrap().illuminance, 42.0);
-        assert_eq!(world.get::<UsdDomeEnvironmentSource>(camera).unwrap().dome, dome);
+        assert_eq!(
+            world.get::<DirectionalLight>(studio).unwrap().illuminance,
+            7500.0
+        );
+        assert_eq!(
+            world.get::<DirectionalLight>(authored).unwrap().illuminance,
+            42.0
+        );
+        assert_eq!(
+            world.get::<UsdDomeEnvironmentSource>(camera).unwrap().dome,
+            dome
+        );
         assert!(!bridge.0.lock().unwrap().studio);
-        assert!(bridge.0.lock().unwrap().status.contains("Filtering unsupported — using studio lighting fallback"));
-        world.entity_mut(camera).insert(UsdDomeEnvironmentState::Attached);
+        assert!(
+            bridge
+                .0
+                .lock()
+                .unwrap()
+                .status
+                .contains("Filtering unsupported — using studio lighting fallback")
+        );
+        world
+            .entity_mut(camera)
+            .insert(UsdDomeEnvironmentState::Attached);
         apply(&mut world);
         assert_eq!(world.get::<AmbientLight>(camera).unwrap().brightness, 0.0);
-        assert_eq!(world.get::<DirectionalLight>(studio).unwrap().illuminance, 0.0);
+        assert_eq!(
+            world.get::<DirectionalLight>(studio).unwrap().illuminance,
+            0.0
+        );
         assert_eq!(bridge.0.lock().unwrap().status, "Dome maps attached");
         bridge.0.lock().unwrap().selected = None;
-        world.entity_mut(camera).insert(UsdDomeEnvironmentState::Unavailable("stale".into()));
+        world
+            .entity_mut(camera)
+            .insert(UsdDomeEnvironmentState::Unavailable("stale".into()));
         apply(&mut world);
-        assert_eq!(world.get::<DirectionalLight>(studio).unwrap().illuminance, 0.0);
+        assert_eq!(
+            world.get::<DirectionalLight>(studio).unwrap().illuminance,
+            0.0
+        );
         assert_eq!(bridge.0.lock().unwrap().status, "Studio lights disabled");
     }
 
@@ -176,7 +309,11 @@ mod tests {
         assert!(lines.iter().all(|line| line.chars().count() <= 40));
         let token = "é".repeat(85);
         assert_eq!(status_lines(&token).concat(), token);
-        assert!(status_lines(&token).iter().all(|line| line.chars().count() <= 40));
+        assert!(
+            status_lines(&token)
+                .iter()
+                .all(|line| line.chars().count() <= 40)
+        );
     }
 
     #[test]
@@ -184,17 +321,49 @@ mod tests {
         let mut world = World::new();
         let bridge = LightingBridge::default();
         world.insert_resource(bridge.clone());
-        let camera = world.spawn((mara_bevy::ChaseCamera::default(), AmbientLight { brightness: 160.0, ..default() })).id();
-        let studio = world.spawn((DirectionalLight::default(), super::super::environment::StudioLight(7500.0))).id();
-        let authored = world.spawn(DirectionalLight { illuminance: 42.0, ..default() }).id();
-        let dome = world.spawn((usd_bevy::UsdPrimRef::new("/Env"), usd_bevy::route::dome::UsdDomeLight::default())).id();
+        let camera = world
+            .spawn((
+                mara_bevy::ChaseCamera::default(),
+                AmbientLight {
+                    brightness: 160.0,
+                    ..default()
+                },
+            ))
+            .id();
+        let studio = world
+            .spawn((
+                DirectionalLight::default(),
+                super::super::environment::StudioLight(7500.0),
+            ))
+            .id();
+        let authored = world
+            .spawn(DirectionalLight {
+                illuminance: 42.0,
+                ..default()
+            })
+            .id();
+        let dome = world
+            .spawn((
+                usd_bevy::UsdPrimRef::new("/Env"),
+                usd_bevy::route::dome::UsdDomeLight::default(),
+            ))
+            .id();
         bridge.0.lock().unwrap().selected = Some("/Env".into());
         bridge.0.lock().unwrap().studio = false;
         apply(&mut world);
-        assert_eq!(world.get::<UsdDomeEnvironmentSource>(camera).unwrap().dome, dome);
+        assert_eq!(
+            world.get::<UsdDomeEnvironmentSource>(camera).unwrap().dome,
+            dome
+        );
         assert_eq!(world.get::<AmbientLight>(camera).unwrap().brightness, 0.0);
-        assert_eq!(world.get::<DirectionalLight>(studio).unwrap().illuminance, 0.0);
-        assert_eq!(world.get::<DirectionalLight>(authored).unwrap().illuminance, 42.0);
+        assert_eq!(
+            world.get::<DirectionalLight>(studio).unwrap().illuminance,
+            0.0
+        );
+        assert_eq!(
+            world.get::<DirectionalLight>(authored).unwrap().illuminance,
+            42.0
+        );
         world.despawn(dome);
         apply(&mut world);
         assert!(world.get::<UsdDomeEnvironmentSource>(camera).is_none());
@@ -202,6 +371,9 @@ mod tests {
         *bridge.0.lock().unwrap() = State::default();
         apply(&mut world);
         assert_eq!(world.get::<AmbientLight>(camera).unwrap().brightness, 160.0);
-        assert_eq!(world.get::<DirectionalLight>(studio).unwrap().illuminance, 7500.0);
+        assert_eq!(
+            world.get::<DirectionalLight>(studio).unwrap().illuminance,
+            7500.0
+        );
     }
 }

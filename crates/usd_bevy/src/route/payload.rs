@@ -22,7 +22,8 @@ fn is_unloaded(ctx: &RouteCtx) -> bool {
     // `is_loaded()` short-circuits to `true` when the stage has no load rules
     // (the fully-loaded common case), so this is cheap on ordinary stages.
     ctx.stage
-        .prim(ctx.path.clone()).expect("validated USD path")
+        .prim(ctx.path.clone())
+        .expect("validated USD path")
         .is_loaded()
         .map(|loaded| !loaded)
         .unwrap_or(false)

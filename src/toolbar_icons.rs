@@ -20,8 +20,19 @@ mod tests {
     fn toolbar_icons_resolve_to_distinct_glyphs() {
         let mut glyphs = std::collections::HashSet::new();
         for name in [
-            OUTLINER, PROPERTIES, TIMELINE, LIGHTING, RENDERING, OPEN,
-            SAVE_ROOT, SAVE_LAYER, EXPORT, UNDO, REDO, REFRESH_TEXTURES, FRAME,
+            OUTLINER,
+            PROPERTIES,
+            TIMELINE,
+            LIGHTING,
+            RENDERING,
+            OPEN,
+            SAVE_ROOT,
+            SAVE_LAYER,
+            EXPORT,
+            UNDO,
+            REDO,
+            REFRESH_TEXTURES,
+            FRAME,
         ] {
             let glyph = mara::ui::mara_core::icons::icon_glyph(name)
                 .unwrap_or_else(|| panic!("missing icon: {name}"));

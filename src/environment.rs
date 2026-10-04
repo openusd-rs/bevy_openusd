@@ -11,12 +11,17 @@ pub struct ViewerGrid;
 pub struct StudioLight(pub f32);
 
 pub fn fit_grid(low: Vec3, high: Vec3) -> Option<(f32, f32, f32)> {
-    if !low.is_finite() || !high.is_finite() || low.cmpgt(high).any() { return None; }
+    if !low.is_finite() || !high.is_finite() || low.cmpgt(high).any() {
+        return None;
+    }
     let span = (high - low).max_element().max(0.001);
     let height = low.y - span * 0.001;
     let target_spacing = span / 8.0;
     let decade = 10.0_f32.powf(target_spacing.log10().floor());
-    let step = [1.0, 2.0, 5.0, 10.0].into_iter().find(|step| decade * step >= target_spacing).unwrap_or(10.0);
+    let step = [1.0, 2.0, 5.0, 10.0]
+        .into_iter()
+        .find(|step| decade * step >= target_spacing)
+        .unwrap_or(10.0);
     let scale = (decade * step).recip();
     let fade = (span * 12.0).max(1.0);
     (height.is_finite() && scale.is_finite() && fade.is_finite()).then_some((height, scale, fade))

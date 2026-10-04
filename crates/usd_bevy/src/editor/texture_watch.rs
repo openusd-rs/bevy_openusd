@@ -1,12 +1,12 @@
 //! Native watching of external images in the current editor document.
 
 use super::{EditorBridge, EditorCommand, EditorSession};
+use bevy::platform::time::Instant;
 use bevy::{
     asset::io::{AssetSourceEvent, file::FileWatcher},
     prelude::*,
 };
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
-use bevy::platform::time::Instant;
 
 /// Watches requested external textures and queues document-preserving refreshes.
 /// Requires EditorPlugin. Package entries and USD layers are not watched.
@@ -36,8 +36,14 @@ struct WatchState {
     )>,
 }
 
-fn install_watchers(state: &mut WatchState, status: &mut EditorTextureWatchStatus, now: Instant) -> bool {
-    if state.pending.is_empty() || state.next_attempt.is_some_and(|next| now < next) { return false; }
+fn install_watchers(
+    state: &mut WatchState,
+    status: &mut EditorTextureWatchStatus,
+    now: Instant,
+) -> bool {
+    if state.pending.is_empty() || state.next_attempt.is_some_and(|next| now < next) {
+        return false;
+    }
     let retry = state.next_attempt.is_some();
     let mut recovered = false;
     status.error = None;
@@ -50,13 +56,20 @@ fn install_watchers(state: &mut WatchState, status: &mut EditorTextureWatchStatu
                 #[cfg(unix)]
                 {
                     if identity.is_none() || directory_identity(&parent) != identity {
-                        status.error = Some(format!("texture watcher directory changed during setup: {}", parent.display()));
+                        status.error = Some(format!(
+                            "texture watcher directory changed during setup: {}",
+                            parent.display()
+                        ));
                         state.pending.insert(parent);
                         continue;
                     }
                     state.identities.insert(parent.clone(), identity.unwrap());
                 }
-                status.files += state.paths.iter().filter(|path| path.parent() == Some(parent.as_path())).count();
+                status.files += state
+                    .paths
+                    .iter()
+                    .filter(|path| path.parent() == Some(parent.as_path()))
+                    .count();
                 state.watchers.push((parent, receiver, watcher));
                 recovered |= retry;
             }
@@ -79,17 +92,38 @@ fn directory_identity(path: &std::path::Path) -> Option<(u64, u64)> {
 
 #[cfg(unix)]
 fn rearm_replaced_directories(state: &mut WatchState, now: Instant) -> Option<usize> {
-    if state.next_identity_check.is_some_and(|next| now < next) { return None; }
+    if state.next_identity_check.is_some_and(|next| now < next) {
+        return None;
+    }
     state.next_identity_check = Some(now + Duration::from_secs(1));
-    let replaced: BTreeSet<_> = state.watchers.iter().filter_map(|(parent, _, _)| {
-        (directory_identity(parent).as_ref() != state.identities.get(parent)).then(|| parent.clone())
-    }).collect();
-    if replaced.is_empty() { return None; }
-    state.watchers.retain(|(parent, _, _)| !replaced.contains(parent));
-    for parent in &replaced { state.identities.remove(parent); }
+    let replaced: BTreeSet<_> = state
+        .watchers
+        .iter()
+        .filter_map(|(parent, _, _)| {
+            (directory_identity(parent).as_ref() != state.identities.get(parent))
+                .then(|| parent.clone())
+        })
+        .collect();
+    if replaced.is_empty() {
+        return None;
+    }
+    state
+        .watchers
+        .retain(|(parent, _, _)| !replaced.contains(parent));
+    for parent in &replaced {
+        state.identities.remove(parent);
+    }
     state.pending.extend(replaced);
-    let files = state.paths.iter().filter(|path|
-        state.watchers.iter().any(|(parent, _, _)| path.parent() == Some(parent.as_path()))).count();
+    let files = state
+        .paths
+        .iter()
+        .filter(|path| {
+            state
+                .watchers
+                .iter()
+                .any(|(parent, _, _)| path.parent() == Some(parent.as_path()))
+        })
+        .count();
     state.next_attempt = Some(now);
     Some(files)
 }
@@ -174,7 +208,9 @@ fn watch_textures(
         }
     }
     if changed {
-        if document.is_none() && let Some(pending) = pending_open.as_mut() {
+        if document.is_none()
+            && let Some(pending) = pending_open.as_mut()
+        {
             pending.retry = true;
         } else if let Err(error) = bridge.send(EditorCommand::RefreshTextures) {
             status.error = Some(error.to_string());
@@ -192,25 +228,62 @@ mod tests {
         let current = directory.path().join("current.usda");
         std::fs::write(&current, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, super::super::EditorPlugin));
+        app.add_plugins((
+            MinimalPlugins,
+            crate::live::LiveStagePlugin,
+            super::super::EditorPlugin,
+        ));
         let bridge = app.world().resource::<EditorBridge>().clone();
-        app.insert_resource(super::super::PendingInitialOpen { path: current.to_string_lossy().into_owned(), retry: true });
-        bridge.send(EditorCommand::Open(directory.path().join("absent.usda").to_string_lossy().into_owned())).unwrap();
+        app.insert_resource(super::super::PendingInitialOpen {
+            path: current.to_string_lossy().into_owned(),
+            retry: true,
+        });
+        bridge
+            .send(EditorCommand::Open(
+                directory
+                    .path()
+                    .join("absent.usda")
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+            .unwrap();
         app.update();
         assert!(app.world().get_non_send::<EditorSession>().is_none());
-        assert!(!app.world().contains_resource::<super::super::PendingInitialOpen>());
-        bridge.send(EditorCommand::Open(current.to_string_lossy().into_owned())).unwrap();
-        bridge.send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
-            prim: "/Root".into(), name: "score".into(), type_name: "double".into(), value: openusd::sdf::Value::Double(17.0),
-        })).unwrap();
+        assert!(
+            !app.world()
+                .contains_resource::<super::super::PendingInitialOpen>()
+        );
+        bridge
+            .send(EditorCommand::Open(current.to_string_lossy().into_owned()))
+            .unwrap();
+        bridge
+            .send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
+                prim: "/Root".into(),
+                name: "score".into(),
+                type_name: "double".into(),
+                value: openusd::sdf::Value::Double(17.0),
+            }))
+            .unwrap();
         app.update();
         let id = bridge.view().unwrap().document.document_id;
-        app.insert_resource(super::super::PendingInitialOpen { path: current.to_string_lossy().into_owned(), retry: true });
+        app.insert_resource(super::super::PendingInitialOpen {
+            path: current.to_string_lossy().into_owned(),
+            retry: true,
+        });
         app.update();
         assert_eq!(bridge.view().unwrap().document.document_id, id);
         assert!(bridge.view().unwrap().document.can_undo);
         let session = app.world().get_non_send::<EditorSession>().unwrap();
-        assert_eq!(session.stage().prim("/Root").unwrap().attribute("score").get::<f64>().unwrap(), Some(17.0));
+        assert_eq!(
+            session
+                .stage()
+                .prim("/Root")
+                .unwrap()
+                .attribute("score")
+                .get::<f64>()
+                .unwrap(),
+            Some(17.0)
+        );
     }
 
     #[test]
@@ -220,7 +293,9 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let scene = directory.path().join("scene.usda");
             let texture = directory.path().join("pixel.png");
-            std::fs::write(&scene, r#"#usda 1.0
+            std::fs::write(
+                &scene,
+                r#"#usda 1.0
 def Material "Mat" {
     token outputs:surface.connect = </Mat/Surface.outputs:surface>
     def Shader "Surface" {
@@ -234,53 +309,120 @@ def Material "Mat" {
         float3 outputs:rgb
     }
 }
-"#).unwrap();
-            if corrupt { std::fs::write(&texture, b"invalid png").unwrap(); }
+"#,
+            )
+            .unwrap();
+            if corrupt {
+                std::fs::write(&texture, b"invalid png").unwrap();
+            }
             let mut app = App::new();
-            app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin,
-                super::super::EditorPlugin, EditorTextureWatchPlugin));
+            app.add_plugins((
+                MinimalPlugins,
+                crate::live::LiveStagePlugin,
+                super::super::EditorPlugin,
+                EditorTextureWatchPlugin,
+            ));
             app.insert_resource(Assets::<Image>::default());
             let bridge = app.world().resource::<EditorBridge>().clone();
-            bridge.send(EditorCommand::Open(scene.to_string_lossy().into_owned())).unwrap();
+            bridge
+                .send(EditorCommand::Open(scene.to_string_lossy().into_owned()))
+                .unwrap();
             app.update();
             assert!(bridge.view().unwrap().status.starts_with("Failed:"));
             assert!(app.world().get_non_send::<EditorSession>().is_none());
-            assert!(app.world().contains_resource::<super::super::PendingInitialOpen>());
-            tick_until(&mut app, |world| world.resource::<EditorTextureWatchStatus>().files == 1);
+            assert!(
+                app.world()
+                    .contains_resource::<super::super::PendingInitialOpen>()
+            );
+            tick_until(&mut app, |world| {
+                world.resource::<EditorTextureWatchStatus>().files == 1
+            });
             std::fs::write(&texture, png([255, 0, 255, 255])).unwrap();
-            tick_until(&mut app, |world| world.get_non_send::<EditorSession>().is_some());
+            tick_until(&mut app, |world| {
+                world.get_non_send::<EditorSession>().is_some()
+            });
             assert_eq!(bridge.view().unwrap().status, "Ready");
-            assert!(!app.world().contains_resource::<super::super::PendingInitialOpen>());
+            assert!(
+                !app.world()
+                    .contains_resource::<super::super::PendingInitialOpen>()
+            );
             let textures = app.world().resource::<crate::asset::SnapshotTextures>();
             assert_eq!(textures.0.len(), 1);
-            let image = app.world().resource::<Assets<Image>>().get(textures.0.values().next().unwrap()).unwrap();
+            let image = app
+                .world()
+                .resource::<Assets<Image>>()
+                .get(textures.0.values().next().unwrap())
+                .unwrap();
             assert_eq!(image.data.as_deref(), Some([255, 0, 255, 255].as_slice()));
             let id = bridge.view().unwrap().document.document_id;
-            let watched = app.world().resource::<super::super::EditorTextureRequests>().0.clone();
-            bridge.send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
-                prim: "/Mat".into(), name: "score".into(), type_name: "double".into(), value: openusd::sdf::Value::Double(17.0),
-            })).unwrap();
+            let watched = app
+                .world()
+                .resource::<super::super::EditorTextureRequests>()
+                .0
+                .clone();
+            bridge
+                .send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
+                    prim: "/Mat".into(),
+                    name: "score".into(),
+                    type_name: "double".into(),
+                    value: openusd::sdf::Value::Double(17.0),
+                }))
+                .unwrap();
             app.update();
             let replacement = directory.path().join("replacement.usda");
-            std::fs::write(&replacement, std::fs::read_to_string(&scene).unwrap().replace("@pixel.png@", "@missing.png@")).unwrap();
-            bridge.send(EditorCommand::Open(replacement.to_string_lossy().into_owned())).unwrap();
+            std::fs::write(
+                &replacement,
+                std::fs::read_to_string(&scene)
+                    .unwrap()
+                    .replace("@pixel.png@", "@missing.png@"),
+            )
+            .unwrap();
+            bridge
+                .send(EditorCommand::Open(
+                    replacement.to_string_lossy().into_owned(),
+                ))
+                .unwrap();
             app.update();
             assert!(bridge.view().unwrap().status.starts_with("Failed:"));
             assert_eq!(bridge.view().unwrap().document.document_id, id);
             assert!(bridge.view().unwrap().document.can_undo);
-            assert!(!app.world().contains_resource::<super::super::PendingInitialOpen>());
-            assert_eq!(app.world().resource::<super::super::EditorTextureRequests>().0, watched);
+            assert!(
+                !app.world()
+                    .contains_resource::<super::super::PendingInitialOpen>()
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<super::super::EditorTextureRequests>()
+                    .0,
+                watched
+            );
         }
     }
 
     #[test]
     fn idle_editor_watch_keeps_status_change_tick() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, super::super::EditorPlugin, EditorTextureWatchPlugin));
+        app.add_plugins((
+            MinimalPlugins,
+            super::super::EditorPlugin,
+            EditorTextureWatchPlugin,
+        ));
         app.update();
-        let tick = app.world().get_resource_ref::<EditorTextureWatchStatus>().unwrap().last_changed();
-        for _ in 0..3 { app.update(); }
-        assert_eq!(app.world().get_resource_ref::<EditorTextureWatchStatus>().unwrap().last_changed(), tick);
+        let tick = app
+            .world()
+            .get_resource_ref::<EditorTextureWatchStatus>()
+            .unwrap()
+            .last_changed();
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(
+            app.world()
+                .get_resource_ref::<EditorTextureWatchStatus>()
+                .unwrap()
+                .last_changed(),
+            tick
+        );
     }
 
     #[test]
@@ -303,30 +445,56 @@ def Material "Mat" {
         assert_eq!(state.pending, [missing.clone()].into());
         let retained = state.watchers[0].1.clone();
         std::fs::create_dir(&missing).unwrap();
-        assert!(!install_watchers(&mut state, &mut status, now + Duration::from_millis(999)));
+        assert!(!install_watchers(
+            &mut state,
+            &mut status,
+            now + Duration::from_millis(999)
+        ));
         assert_eq!(status.files, 1);
-        assert!(install_watchers(&mut state, &mut status, now + Duration::from_secs(1)));
+        assert!(install_watchers(
+            &mut state,
+            &mut status,
+            now + Duration::from_secs(1)
+        ));
         assert_eq!(status.files, 2);
         assert!(status.error.is_none());
         assert!(state.pending.is_empty() && state.next_attempt.is_none());
         assert_eq!(state.watchers.len(), 2);
         assert!(retained.same_channel(&state.watchers[0].1));
-        assert!(!install_watchers(&mut state, &mut status, now + Duration::from_secs(2)));
+        assert!(!install_watchers(
+            &mut state,
+            &mut status,
+            now + Duration::from_secs(2)
+        ));
         assert_eq!(status.files, 2);
         #[cfg(unix)]
         {
-            assert_eq!(rearm_replaced_directories(&mut state, now + Duration::from_secs(2)), None);
+            assert_eq!(
+                rearm_replaced_directories(&mut state, now + Duration::from_secs(2)),
+                None
+            );
             std::fs::rename(&missing, directory.path().join("old-missing")).unwrap();
             std::fs::create_dir(&missing).unwrap();
-            assert_eq!(rearm_replaced_directories(&mut state, now + Duration::from_millis(2999)), None);
-            status.files = rearm_replaced_directories(&mut state, now + Duration::from_secs(3)).unwrap();
+            assert_eq!(
+                rearm_replaced_directories(&mut state, now + Duration::from_millis(2999)),
+                None
+            );
+            status.files =
+                rearm_replaced_directories(&mut state, now + Duration::from_secs(3)).unwrap();
             assert_eq!(status.files, 1);
             assert_eq!(state.pending, [missing.clone()].into());
             assert!(retained.same_channel(&state.watchers[0].1));
-            assert!(install_watchers(&mut state, &mut status, now + Duration::from_secs(3)));
+            assert!(install_watchers(
+                &mut state,
+                &mut status,
+                now + Duration::from_secs(3)
+            ));
             assert_eq!(status.files, 2);
             assert!(retained.same_channel(&state.watchers[0].1));
-            assert_eq!(rearm_replaced_directories(&mut state, now + Duration::from_secs(4)), None);
+            assert_eq!(
+                rearm_replaced_directories(&mut state, now + Duration::from_secs(4)),
+                None
+            );
         }
     }
 
@@ -369,7 +537,9 @@ def Material "Mat" {
         let file = images.join("pixel.png");
         std::fs::write(&file, png([255, 0, 0, 255])).unwrap();
         let scene = directory.path().join("scene.usda");
-        std::fs::write(&scene, r#"#usda 1.0
+        std::fs::write(
+            &scene,
+            r#"#usda 1.0
 def Material "Mat" {
     token outputs:surface.connect = </Mat/Surface.outputs:surface>
     def Shader "Surface" {
@@ -383,61 +553,150 @@ def Material "Mat" {
         float3 outputs:rgb
     }
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin,
-            super::super::EditorPlugin, EditorTextureWatchPlugin));
+        app.add_plugins((
+            MinimalPlugins,
+            crate::live::LiveStagePlugin,
+            super::super::EditorPlugin,
+            EditorTextureWatchPlugin,
+        ));
         app.insert_resource(Assets::<Image>::default());
         app.insert_resource(Assets::<Mesh>::default());
         app.insert_resource(Assets::<StandardMaterial>::default());
         let bridge = app.world().resource::<EditorBridge>().clone();
-        bridge.send(EditorCommand::Open(scene.to_string_lossy().into_owned())).unwrap();
+        bridge
+            .send(EditorCommand::Open(scene.to_string_lossy().into_owned()))
+            .unwrap();
         app.update();
         let id = bridge.view().unwrap().document.document_id;
-        let before = app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap();
+        let before = app
+            .world()
+            .non_send::<EditorSession>()
+            .stage()
+            .root_layer()
+            .export_to_string()
+            .unwrap();
         let pixels = |world: &World| {
-            let handle = world.resource::<crate::asset::SnapshotTextures>().0.values().next().unwrap();
-            world.resource::<Assets<Image>>().get(handle).unwrap().data.clone().unwrap()
+            let handle = world
+                .resource::<crate::asset::SnapshotTextures>()
+                .0
+                .values()
+                .next()
+                .unwrap();
+            world
+                .resource::<Assets<Image>>()
+                .get(handle)
+                .unwrap()
+                .data
+                .clone()
+                .unwrap()
         };
         assert_eq!(pixels(app.world()), [255, 0, 0, 255]);
         assert!(app.world().resource::<WatchState>().watchers.is_empty());
         std::fs::remove_file(&file).unwrap();
         std::fs::remove_dir(&images).unwrap();
         app.update();
-        assert!(app.world().resource::<EditorTextureWatchStatus>().error.is_some());
+        assert!(
+            app.world()
+                .resource::<EditorTextureWatchStatus>()
+                .error
+                .is_some()
+        );
         assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 0);
-        bridge.send(EditorCommand::Select(Some("/Mat".into()))).unwrap();
+        bridge
+            .send(EditorCommand::Select(Some("/Mat".into())))
+            .unwrap();
         app.update();
         std::fs::create_dir(&images).unwrap();
         std::fs::write(&file, png([0, 0, 255, 255])).unwrap();
         tick_until(&mut app, |world| pixels(world) == [0, 0, 255, 255]);
         assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 1);
-        assert!(app.world().resource::<EditorTextureWatchStatus>().error.is_none());
+        assert!(
+            app.world()
+                .resource::<EditorTextureWatchStatus>()
+                .error
+                .is_none()
+        );
         let view = bridge.view().unwrap();
         assert_eq!(view.document.document_id, id);
         assert_eq!(view.document.selected.as_deref(), Some("/Mat"));
         assert_eq!(view.status, "Ready");
-        assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), before);
-        bridge.send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
-            prim: "/Mat/Texture".into(), name: "inputs:file".into(), type_name: "asset".into(),
-            value: openusd::sdf::Value::AssetPath(openusd::sdf::AssetPath::new("new-images/later.png")),
-        })).unwrap();
+        assert_eq!(
+            app.world()
+                .non_send::<EditorSession>()
+                .stage()
+                .root_layer()
+                .export_to_string()
+                .unwrap(),
+            before
+        );
+        bridge
+            .send(EditorCommand::Edit(super::super::EditorEdit::Attribute {
+                prim: "/Mat/Texture".into(),
+                name: "inputs:file".into(),
+                type_name: "asset".into(),
+                value: openusd::sdf::Value::AssetPath(openusd::sdf::AssetPath::new(
+                    "new-images/later.png",
+                )),
+            }))
+            .unwrap();
         app.update();
-        assert!(bridge.view().unwrap().status.contains("Texture loading failed"));
+        assert!(
+            bridge
+                .view()
+                .unwrap()
+                .status
+                .contains("Texture loading failed")
+        );
         assert_eq!(pixels(app.world()), [0, 0, 255, 255]);
         let requested = directory.path().join("new-images/later.png");
-        assert!(app.world().resource::<super::super::EditorTextureRequests>().0.contains(requested.to_str().unwrap()), "requests={:?}; status={}", app.world().resource::<super::super::EditorTextureRequests>().0, bridge.view().unwrap().status);
-        let edited = app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap();
+        assert!(
+            app.world()
+                .resource::<super::super::EditorTextureRequests>()
+                .0
+                .contains(requested.to_str().unwrap()),
+            "requests={:?}; status={}",
+            app.world()
+                .resource::<super::super::EditorTextureRequests>()
+                .0,
+            bridge.view().unwrap().status
+        );
+        let edited = app
+            .world()
+            .non_send::<EditorSession>()
+            .stage()
+            .root_layer()
+            .export_to_string()
+            .unwrap();
         app.update();
         assert_eq!(app.world().resource::<EditorTextureWatchStatus>().files, 0);
-        assert!(app.world().resource::<EditorTextureWatchStatus>().error.is_some());
+        assert!(
+            app.world()
+                .resource::<EditorTextureWatchStatus>()
+                .error
+                .is_some()
+        );
         std::fs::create_dir(requested.parent().unwrap()).unwrap();
         std::fs::write(&requested, png([0, 255, 0, 255])).unwrap();
         tick_until(&mut app, |world| pixels(world) == [0, 255, 0, 255]);
         assert_eq!(bridge.view().unwrap().document.document_id, id);
-        assert_eq!(bridge.view().unwrap().document.selected.as_deref(), Some("/Mat"));
+        assert_eq!(
+            bridge.view().unwrap().document.selected.as_deref(),
+            Some("/Mat")
+        );
         assert_eq!(bridge.view().unwrap().status, "Ready");
-        assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), edited);
+        assert_eq!(
+            app.world()
+                .non_send::<EditorSession>()
+                .stage()
+                .root_layer()
+                .export_to_string()
+                .unwrap(),
+            edited
+        );
         std::fs::write(&requested, png([255, 255, 0, 255])).unwrap();
         tick_until(&mut app, |world| pixels(world) == [255, 255, 0, 255]);
         #[cfg(unix)]
@@ -451,7 +710,15 @@ def Material "Mat" {
             std::fs::write(&requested, png([0, 255, 255, 255])).unwrap();
             tick_until(&mut app, |world| pixels(world) == [0, 255, 255, 255]);
             assert_eq!(bridge.view().unwrap().document.document_id, id);
-            assert_eq!(app.world().non_send::<EditorSession>().stage().root_layer().export_to_string().unwrap(), edited);
+            assert_eq!(
+                app.world()
+                    .non_send::<EditorSession>()
+                    .stage()
+                    .root_layer()
+                    .export_to_string()
+                    .unwrap(),
+                edited
+            );
         }
     }
 
@@ -587,7 +854,9 @@ def Material "Mat" {
         std::fs::copy(&scene, &next_scene).unwrap();
         std::fs::write(&next_file, png([255, 255, 0, 255])).unwrap();
         bridge
-            .send(EditorCommand::Open(next_scene.to_string_lossy().into_owned()))
+            .send(EditorCommand::Open(
+                next_scene.to_string_lossy().into_owned(),
+            ))
             .unwrap();
         tick_until(&mut app, |world| {
             world.resource::<WatchState>().paths.contains(&next_file)
@@ -619,14 +888,23 @@ def Material "Mat" {
         let next_id = bridge.view().unwrap().document.document_id;
         bridge
             .send(EditorCommand::Open(
-                next_directory.path().join("missing.usda").to_string_lossy().into_owned(),
+                next_directory
+                    .path()
+                    .join("missing.usda")
+                    .to_string_lossy()
+                    .into_owned(),
             ))
             .unwrap();
         tick_until(&mut app, |_| {
             bridge.view().unwrap().status.starts_with("Failed:")
         });
         assert_eq!(bridge.view().unwrap().document.document_id, next_id);
-        assert!(app.world().resource::<WatchState>().paths.contains(&next_file));
+        assert!(
+            app.world()
+                .resource::<WatchState>()
+                .paths
+                .contains(&next_file)
+        );
         assert_eq!(pixels(app.world()), [255, 255, 0, 255]);
         std::fs::write(&next_file, png([255, 0, 255, 255])).unwrap();
         tick_until(&mut app, |world| pixels(world) == [255, 0, 255, 255]);

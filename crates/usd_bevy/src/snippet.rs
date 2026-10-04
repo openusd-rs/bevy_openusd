@@ -14,7 +14,9 @@ mod sealed {
     macro_rules! scalars {
         ($($ty:ty),*) => { $(impl Scalar for $ty {})* };
     }
-    scalars!(bool, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64);
+    scalars!(
+        bool, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
+    );
     impl<T: Scalar + ?Sized> Scalar for &T {}
 }
 
@@ -23,7 +25,9 @@ pub trait UsdScalar: sealed::Scalar + std::fmt::Display {}
 impl<T: sealed::Scalar + std::fmt::Display + ?Sized> UsdScalar for T {}
 
 #[doc(hidden)]
-pub fn scalar_interpolation(value: &(impl UsdScalar + ?Sized)) -> String { value.to_string() }
+pub fn scalar_interpolation(value: &(impl UsdScalar + ?Sized)) -> String {
+    value.to_string()
+}
 
 /// Escapes text interpolated inside a USD quoted string or identifier.
 pub fn escape_interpolation(value: &(impl std::fmt::Display + ?Sized)) -> String {
@@ -93,20 +97,56 @@ mod tests {
         let text = "\"\n}\ndef Xform \"Injected\" {}\n# \\ ' \t";
         let snippet = crate::usd!("#usda 1.0\ndef Scope \"Safe\" { string text = \"${text}\" }\n");
         let stage = snippet.open_stage().unwrap();
-        assert_eq!(stage.prim("/Safe").unwrap().attribute("text").get::<String>().unwrap(), Some(text.into()));
+        assert_eq!(
+            stage
+                .prim("/Safe")
+                .unwrap()
+                .attribute("text")
+                .get::<String>()
+                .unwrap(),
+            Some(text.into())
+        );
         assert!(!stage.prim("/Injected").unwrap().is_valid().unwrap());
         let single = crate::usd!("#usda 1.0\ndef Scope \"Safe\" { string text = '${text}' }\n");
-        assert_eq!(single.open_stage().unwrap().prim("/Safe").unwrap().attribute("text").get::<String>().unwrap(), Some(text.into()));
+        assert_eq!(
+            single
+                .open_stage()
+                .unwrap()
+                .prim("/Safe")
+                .unwrap()
+                .attribute("text")
+                .get::<String>()
+                .unwrap(),
+            Some(text.into())
+        );
     }
 
     #[test]
     fn macro_scalar_interpolation_retains_numbers_and_booleans() {
         let value = -3.25_f64;
         let enabled = true;
-        let snippet = crate::usd!("#usda 1.0\ndef Scope \"Safe\" { double value = ${value}\n bool enabled = ${enabled}\n }\n");
+        let snippet = crate::usd!(
+            "#usda 1.0\ndef Scope \"Safe\" { double value = ${value}\n bool enabled = ${enabled}\n }\n"
+        );
         let stage = snippet.open_stage().unwrap();
-        assert_eq!(stage.prim("/Safe").unwrap().attribute("value").get::<f64>().unwrap(), Some(value));
-        assert_eq!(stage.prim("/Safe").unwrap().attribute("enabled").get::<bool>().unwrap(), Some(enabled));
+        assert_eq!(
+            stage
+                .prim("/Safe")
+                .unwrap()
+                .attribute("value")
+                .get::<f64>()
+                .unwrap(),
+            Some(value)
+        );
+        assert_eq!(
+            stage
+                .prim("/Safe")
+                .unwrap()
+                .attribute("enabled")
+                .get::<bool>()
+                .unwrap(),
+            Some(enabled)
+        );
     }
 
     #[test]

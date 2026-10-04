@@ -110,7 +110,10 @@ impl LiveStage {
     /// of BSN's `queue_spawn_scene`.
     pub fn load_payload(&self, prim: &str) {
         if let Ok(p) = openusd::sdf::path(prim) {
-            match self.stage.load(p, openusd::usd::LoadPolicy::WithDescendants) {
+            match self
+                .stage
+                .load(p, openusd::usd::LoadPolicy::WithDescendants)
+            {
                 Ok(()) => self.enqueue_resync(prim),
                 Err(error) => warn!("failed to load payload {prim}: {error}"),
             }
@@ -204,8 +207,11 @@ impl PrimEntities {
     }
 
     fn remember_type(&mut self, stage: &Stage, path: &str) {
-        if let Ok(prim) = stage.prim(path) && let Ok(kind) = prim.type_name() {
-            self.projected_types.insert(path.to_owned(), kind.map(|kind| kind.to_string()));
+        if let Ok(prim) = stage.prim(path)
+            && let Ok(kind) = prim.type_name()
+        {
+            self.projected_types
+                .insert(path.to_owned(), kind.map(|kind| kind.to_string()));
         }
     }
 
@@ -248,7 +254,9 @@ struct AppliedPurposes(Option<crate::route::DisplayPurposes>);
 struct SampledTime(Option<f64>);
 
 fn has_time_samples(stage: &Stage, path: &openusd::sdf::Path) -> bool {
-    let Ok(prim) = stage.prim(path.clone()) else { return false };
+    let Ok(prim) = stage.prim(path.clone()) else {
+        return false;
+    };
     prim.authored_attributes()
         .map(|attrs| {
             attrs.iter().any(|a| {
@@ -261,37 +269,73 @@ fn has_time_samples(stage: &Stage, path: &openusd::sdf::Path) -> bool {
 }
 
 fn subsets_are_animated(stage: &Stage, path: &openusd::sdf::Path) -> bool {
-    stage.prim(path.clone()).ok().and_then(|prim| prim.child_names().ok())
-        .is_some_and(|names| names.iter().any(|name| {
-            let Ok(child) = path.append_path(name.as_str()) else { return false };
-            stage.prim(child.clone()).ok().and_then(|prim| prim.type_name().ok().flatten())
-                .is_some_and(|name| name == "GeomSubset")
-                && (has_time_samples(stage, &child)
-                    || crate::read::shade::bound_material_is_time_varying(stage, &child))
-        }))
+    stage
+        .prim(path.clone())
+        .ok()
+        .and_then(|prim| prim.child_names().ok())
+        .is_some_and(|names| {
+            names.iter().any(|name| {
+                let Ok(child) = path.append_path(name.as_str()) else {
+                    return false;
+                };
+                stage
+                    .prim(child.clone())
+                    .ok()
+                    .and_then(|prim| prim.type_name().ok().flatten())
+                    .is_some_and(|name| name == "GeomSubset")
+                    && (has_time_samples(stage, &child)
+                        || crate::read::shade::bound_material_is_time_varying(stage, &child))
+            })
+        })
 }
 
 fn inherited_primvar_is_animated(stage: &Stage, path: &openusd::sdf::Path, name: &str) -> bool {
-    let Ok(owner) = crate::read::geom::inherited_primvar_owner(stage, path, name) else { return false };
-    if owner == *path { return false; }
-    let Ok(prim) = stage.prim(owner) else { return false };
-    [name.to_owned(), format!("{name}:indices")].iter().any(|name|
-        prim.attribute(name.as_str()).time_sample_times().is_ok_and(|times| !times.is_empty()))
+    let Ok(owner) = crate::read::geom::inherited_primvar_owner(stage, path, name) else {
+        return false;
+    };
+    if owner == *path {
+        return false;
+    }
+    let Ok(prim) = stage.prim(owner) else {
+        return false;
+    };
+    [name.to_owned(), format!("{name}:indices")]
+        .iter()
+        .any(|name| {
+            prim.attribute(name.as_str())
+                .time_sample_times()
+                .is_ok_and(|times| !times.is_empty())
+        })
 }
 
 /// Whether a prim, its deformation inputs or its point-instancer prototypes animate.
 pub(crate) fn prim_is_animated(stage: &Stage, path: &openusd::sdf::Path) -> bool {
-    let prototypes = stage.prim(path.clone()).ok().filter(|prim| {
-        prim.type_name().ok().flatten().as_deref() == Some("PointInstancer")
-    }).and_then(|prim| prim.relationship("prototypes").targets().ok())
-        .is_some_and(|targets| targets.iter().any(|target| prototype_is_animated(stage, target)));
+    let prototypes = stage
+        .prim(path.clone())
+        .ok()
+        .filter(|prim| prim.type_name().ok().flatten().as_deref() == Some("PointInstancer"))
+        .and_then(|prim| prim.relationship("prototypes").targets().ok())
+        .is_some_and(|targets| {
+            targets
+                .iter()
+                .any(|target| prototype_is_animated(stage, target))
+        });
     prototypes || prim_inputs_are_animated(stage, path)
 }
 
 fn prim_inputs_are_animated(stage: &Stage, path: &openusd::sdf::Path) -> bool {
-    has_time_samples(stage, path) || subsets_are_animated(stage, path) || crate::read::skel::deformation_is_time_varying(stage, path)
-        || ["primvars:normals", "primvars:displayColor", "primvars:displayOpacity", "primvars:st", "primvars:st0"].iter()
-            .any(|name| inherited_primvar_is_animated(stage, path, name))
+    has_time_samples(stage, path)
+        || subsets_are_animated(stage, path)
+        || crate::read::skel::deformation_is_time_varying(stage, path)
+        || [
+            "primvars:normals",
+            "primvars:displayColor",
+            "primvars:displayOpacity",
+            "primvars:st",
+            "primvars:st0",
+        ]
+        .iter()
+        .any(|name| inherited_primvar_is_animated(stage, path, name))
         || crate::read::shade::bound_material_is_time_varying(stage, path)
 }
 
@@ -308,14 +352,27 @@ impl AnimationDiscovery {
     fn measured(&mut self, index: usize, query: impl FnOnce(&mut Self) -> bool) -> bool {
         let started = self.profile.then(bevy::platform::time::Instant::now);
         let result = query(self);
-        if let Some(started) = started { self.timings[index] += started.elapsed(); }
+        if let Some(started) = started {
+            self.timings[index] += started.elapsed();
+        }
         result
     }
 
     fn report(&self, prims: usize, resets: usize) {
-        if !self.profile { return; }
-        let [instancer, attributes, subsets, deformation, primvars, material] = self.timings.map(|time| time.as_secs_f64()*1000.0);
-        eprintln!("animation_progress prims={prims} resets={resets} instancer_ms={instancer:.3} attributes_ms={attributes:.3} subsets_ms={subsets:.3} deformation_ms={deformation:.3} primvars_ms={primvars:.3} material_ms={material:.3} scope=live-initial-projection includes=per-query-timer-overhead");
+        if !self.profile {
+            return;
+        }
+        let [
+            instancer,
+            attributes,
+            subsets,
+            deformation,
+            primvars,
+            material,
+        ] = self.timings.map(|time| time.as_secs_f64() * 1000.0);
+        eprintln!(
+            "animation_progress prims={prims} resets={resets} instancer_ms={instancer:.3} attributes_ms={attributes:.3} subsets_ms={subsets:.3} deformation_ms={deformation:.3} primvars_ms={primvars:.3} material_ms={material:.3} scope=live-initial-projection includes=per-query-timer-overhead"
+        );
     }
 
     fn has_binding_opinions(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
@@ -323,60 +380,127 @@ impl AnimationDiscovery {
         let mut current = Some(path.clone());
         let mut result = false;
         while let Some(path) = current {
-            if path.is_abs_root() { break; }
-            if let Some(cached) = self.binding_opinions.get(&path) { result = *cached; break; }
-            let names = stage.prim(&path).ok().and_then(|prim| prim.authored_property_names().ok());
-            let local = names.is_none_or(|names| names.iter().any(|name|
-                name.as_str() == "material:binding" || name.as_str().starts_with("material:binding:")));
+            if path.is_abs_root() {
+                break;
+            }
+            if let Some(cached) = self.binding_opinions.get(&path) {
+                result = *cached;
+                break;
+            }
+            let names = stage
+                .prim(&path)
+                .ok()
+                .and_then(|prim| prim.authored_property_names().ok());
+            let local = names.is_none_or(|names| {
+                names.iter().any(|name| {
+                    name.as_str() == "material:binding"
+                        || name.as_str().starts_with("material:binding:")
+                })
+            });
             current = path.parent();
             pending.push(path);
-            if local { result = true; break; }
+            if local {
+                result = true;
+                break;
+            }
         }
-        for path in pending { self.binding_opinions.insert(path, result); }
+        for path in pending {
+            self.binding_opinions.insert(path, result);
+        }
         result
     }
 
     fn material_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
-        if !self.has_binding_opinions(stage, path) { return false; }
-        let Ok(Some(material)) = crate::read::shade::read_material_binding(stage, path) else { return false };
-        *self.materials.entry(material.clone()).or_insert_with(||
-            crate::read::shade::material_is_time_varying(stage, &material))
+        if !self.has_binding_opinions(stage, path) {
+            return false;
+        }
+        let Ok(Some(material)) = crate::read::shade::read_material_binding(stage, path) else {
+            return false;
+        };
+        *self
+            .materials
+            .entry(material.clone())
+            .or_insert_with(|| crate::read::shade::material_is_time_varying(stage, &material))
     }
 
-    fn inherited_primvar_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path, name: &'static str) -> anyhow::Result<bool> {
+    fn inherited_primvar_is_animated(
+        &mut self,
+        stage: &Stage,
+        path: &openusd::sdf::Path,
+        name: &'static str,
+    ) -> anyhow::Result<bool> {
         let info = stage.prim(path)?.attribute(name).resolve_info()?;
-        if info.has_authored_value() && !info.value_is_blocked() { return Ok(false); }
+        if info.has_authored_value() && !info.value_is_blocked() {
+            return Ok(false);
+        }
         let mut current = path.parent();
         let mut pending = Vec::new();
         let mut owner = None;
         while let Some(path) = current {
-            if path.is_abs_root() { break; }
+            if path.is_abs_root() {
+                break;
+            }
             let key = (path.clone(), name);
-            if let Some(cached) = self.primvar_owners.get(&key) { owner = cached.clone(); break; }
+            if let Some(cached) = self.primvar_owners.get(&key) {
+                owner = cached.clone();
+                break;
+            }
             let info = stage.prim(&path)?.attribute(name).resolve_info()?;
-            let constant = info.has_authored_value() && !info.value_is_blocked()
+            let constant = info.has_authored_value()
+                && !info.value_is_blocked()
                 && crate::read::geom::read_primvar_interpolation(stage, &path, name)?
-                    .unwrap_or(crate::read::geom::Interpolation::Constant) == crate::read::geom::Interpolation::Constant;
+                    .unwrap_or(crate::read::geom::Interpolation::Constant)
+                    == crate::read::geom::Interpolation::Constant;
             current = path.parent();
             pending.push(key);
-            if constant { owner = Some(path); break; }
+            if constant {
+                owner = Some(path);
+                break;
+            }
         }
-        for key in pending { self.primvar_owners.insert(key, owner.clone()); }
+        for key in pending {
+            self.primvar_owners.insert(key, owner.clone());
+        }
         let Some(owner) = owner else { return Ok(false) };
         let prim = stage.prim(owner)?;
-        Ok([name.to_owned(), format!("{name}:indices")].iter().any(|name|
-            prim.attribute(name.as_str()).num_time_samples().is_ok_and(|count| count != 0)))
+        Ok([name.to_owned(), format!("{name}:indices")]
+            .iter()
+            .any(|name| {
+                prim.attribute(name.as_str())
+                    .num_time_samples()
+                    .is_ok_and(|count| count != 0)
+            }))
     }
 
     fn prim_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
-        if stage.prim(path).ok().and_then(|prim| prim.type_name().ok().flatten()).as_deref() == Some("PointInstancer") {
+        if stage
+            .prim(path)
+            .ok()
+            .and_then(|prim| prim.type_name().ok().flatten())
+            .as_deref()
+            == Some("PointInstancer")
+        {
             return self.measured(0, |_| prim_is_animated(stage, path));
         }
         self.measured(1, |_| has_time_samples(stage, path))
             || self.measured(2, |_| subsets_are_animated(stage, path))
-            || self.measured(3, |_| crate::read::skel::deformation_is_time_varying(stage, path))
-            || self.measured(4, |this| ["primvars:normals", "primvars:displayColor", "primvars:displayOpacity", "primvars:st", "primvars:st0"].iter()
-                .any(|name| this.inherited_primvar_is_animated(stage, path, name).unwrap_or(false)))
+            || self.measured(3, |_| {
+                crate::read::skel::deformation_is_time_varying(stage, path)
+            })
+            || self.measured(4, |this| {
+                [
+                    "primvars:normals",
+                    "primvars:displayColor",
+                    "primvars:displayOpacity",
+                    "primvars:st",
+                    "primvars:st0",
+                ]
+                .iter()
+                .any(|name| {
+                    this.inherited_primvar_is_animated(stage, path, name)
+                        .unwrap_or(false)
+                })
+            })
             || self.measured(5, |this| this.material_is_animated(stage, path))
     }
 }
@@ -386,10 +510,18 @@ fn prototype_is_animated(stage: &Stage, root: &openusd::sdf::Path) -> bool {
     let mut visited = 0;
     while let Some(path) = pending.pop() {
         visited += 1;
-        if visited > 4096 || prim_inputs_are_animated(stage, &path) { return true; }
-        let Ok(prim) = stage.prim(path.clone()) else { continue };
+        if visited > 4096 || prim_inputs_are_animated(stage, &path) {
+            return true;
+        }
+        let Ok(prim) = stage.prim(path.clone()) else {
+            continue;
+        };
         if let Ok(names) = prim.child_names() {
-            pending.extend(names.iter().filter_map(|name| path.append_path(name.as_str()).ok()));
+            pending.extend(
+                names
+                    .iter()
+                    .filter_map(|name| path.append_path(name.as_str()).ok()),
+            );
         }
     }
     false
@@ -449,7 +581,8 @@ fn traverse_predicate() -> openusd::usd::PrimPredicate {
     openusd::usd::PrimPredicate::new(
         PrimStatus::ACTIVE.union(PrimStatus::DEFINED),
         PrimStatus::ABSTRACT,
-    ).with_instance_proxies(true)
+    )
+    .with_instance_proxies(true)
 }
 
 /// Snapshot the registry out of the world (Arc-cheap `Clone`), falling back to
@@ -468,32 +601,60 @@ fn registry_of(world: &World) -> SchemaRegistry {
 pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
     let stage = &live.stage;
     let registry = registry_of(world);
-    let previous_material_reads = world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
+    let previous_material_reads =
+        world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
     world.insert_non_send(crate::route::material::ProjectionMaterialReads::new(stage));
     let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
     let memory_profiling = profiling && std::env::var_os("USD_PROFILE_MEMORY").is_some();
-    let memory_trace = profiling.then(crate::route::profiling::memory_trace_range).flatten();
+    let memory_trace = profiling
+        .then(crate::route::profiling::memory_trace_range)
+        .flatten();
     let started = profiling.then(bevy::platform::time::Instant::now);
     let mut animation_time = std::time::Duration::ZERO;
     let mut route_time = std::time::Duration::ZERO;
-    let report = |phase: &str, count: usize, path: &str, animation: std::time::Duration,
-                  routes: std::time::Duration, world: &World| {
+    let report = |phase: &str,
+                  count: usize,
+                  path: &str,
+                  animation: std::time::Duration,
+                  routes: std::time::Duration,
+                  world: &World| {
         let Some(started) = started else { return };
-        if memory_profiling { crate::route::profiling::memory_snapshot(world, phase, count); }
-        eprintln!("projection_progress phase={phase} prims={count} elapsed_ms={:.3} animation_ms={:.3} routes_ms={:.3} path={path:?} scope=live-initial-projection",
-            started.elapsed().as_secs_f64()*1000.0, animation.as_secs_f64()*1000.0, routes.as_secs_f64()*1000.0);
+        if memory_profiling {
+            crate::route::profiling::memory_snapshot(world, phase, count);
+        }
+        eprintln!(
+            "projection_progress phase={phase} prims={count} elapsed_ms={:.3} animation_ms={:.3} routes_ms={:.3} path={path:?} scope=live-initial-projection",
+            started.elapsed().as_secs_f64() * 1000.0,
+            animation.as_secs_f64() * 1000.0,
+            routes.as_secs_f64() * 1000.0
+        );
         if let Some(row) = world.get_resource::<crate::route::material::MaterialResolveTimings>() {
-            eprintln!("material_resolve_progress phase={phase} prims={count} requests={} bound={} errors={} cache_hits={} read_cache_hits={} distinct_keys={} keys_capped={} binding_ms={:.3} reading_ms={:.3} preparing_ms={:.3} interning_ms={:.3} scope=world-cumulative overlaps=route-application keys=stage-agnostic-binding-time-sidedness",
-                row.requests, row.bound, row.errors, row.cache_hits, row.read_cache_hits, row.distinct_keys(), row.keys_capped,
-                row.binding.as_secs_f64()*1000.0, row.reading.as_secs_f64()*1000.0,
-                row.preparing.as_secs_f64()*1000.0, row.interning.as_secs_f64()*1000.0);
+            eprintln!(
+                "material_resolve_progress phase={phase} prims={count} requests={} bound={} errors={} cache_hits={} read_cache_hits={} distinct_keys={} keys_capped={} binding_ms={:.3} reading_ms={:.3} preparing_ms={:.3} interning_ms={:.3} scope=world-cumulative overlaps=route-application keys=stage-agnostic-binding-time-sidedness",
+                row.requests,
+                row.bound,
+                row.errors,
+                row.cache_hits,
+                row.read_cache_hits,
+                row.distinct_keys(),
+                row.keys_capped,
+                row.binding.as_secs_f64() * 1000.0,
+                row.reading.as_secs_f64() * 1000.0,
+                row.preparing.as_secs_f64() * 1000.0,
+                row.interning.as_secs_f64() * 1000.0
+            );
         }
         if let Some(timings) = world.get_resource::<crate::route::ProjectionTimings>() {
             let mut rows: Vec<_> = timings.0.iter().collect();
             rows.sort_by_key(|(_, row)| std::cmp::Reverse(row.matching + row.application));
             for (name, row) in rows.into_iter().take(5) {
-                eprintln!("projection_route_progress phase={phase} prims={count} route={name} attempts={} matches={} match_ms={:.3} apply_ms={:.3} scope=world-cumulative-top-five",
-                    row.attempts, row.matches, row.matching.as_secs_f64()*1000.0, row.application.as_secs_f64()*1000.0);
+                eprintln!(
+                    "projection_route_progress phase={phase} prims={count} route={name} attempts={} matches={} match_ms={:.3} apply_ms={:.3} scope=world-cumulative-top-five",
+                    row.attempts,
+                    row.matches,
+                    row.matching.as_secs_f64() * 1000.0,
+                    row.application.as_secs_f64() * 1000.0
+                );
             }
         }
     };
@@ -515,53 +676,94 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     map.insert("/", root);
 
     let mut prim_count = 0usize;
-    let mut discovery = AnimationDiscovery { profile: profiling, ..Default::default() };
+    let mut discovery = AnimationDiscovery {
+        profile: profiling,
+        ..Default::default()
+    };
     let mut discovery_resets = 0;
     let mut composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
     let mut animated: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let traversal = stage.traverse(
-        traverse_predicate(),
-        |path: &openusd::sdf::Path| {
-            // Traversal is pre-order, so the parent prim's entity already exists.
-            let parent = map.entity(parent_path(path.as_str())).unwrap_or(root);
-            let entity = world
-                .spawn((
-                    UsdPrimRef {
-                        path: path.as_str().to_string(),
-                    },
-                    ChildOf(parent),
-                ))
-                .id();
-            map.insert(path.as_str().to_string(), entity);
-            prim_count += 1;
-            let trace_memory = memory_trace.as_ref().is_some_and(|range| range.contains(&prim_count));
-            if trace_memory { crate::route::profiling::memory_event("prim-begin", path, "animation", None); }
-            let sampled = profiling && (prim_count <= 8 || prim_count % 1024 == 0);
-            if sampled { report("prim-start", prim_count, path.as_str(), animation_time, route_time, world); }
-            let animation_started = profiling.then(bevy::platform::time::Instant::now);
-            if discovery.prim_is_animated(stage, path) {
-                animated.insert(path.as_str().to_string());
-            }
-            if let Some(started) = animation_started { animation_time += started.elapsed(); }
-            if trace_memory { crate::route::profiling::memory_event("animation-complete", path, "registry", None); }
-            // Every prim→component mapping goes through the registry.
-            let route_started = profiling.then(bevy::platform::time::Instant::now);
-            registry.project_prim_traced(stage, path, world, entity, trace_memory);
-            if let Some(started) = route_started { route_time += started.elapsed(); }
-            map.remember_type(stage, path.as_str());
-            let current_composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
-            if live.has_changes() || current_composition != composition {
-                discovery_resets += 1;
-                discovery = AnimationDiscovery { profile: profiling, timings: discovery.timings, ..Default::default() };
-                composition = current_composition;
-            }
-            if sampled {
-                report("prim-complete", prim_count, path.as_str(), animation_time, route_time, world);
-                discovery.report(prim_count, discovery_resets);
-            }
+    let traversal = stage.traverse(traverse_predicate(), |path: &openusd::sdf::Path| {
+        // Traversal is pre-order, so the parent prim's entity already exists.
+        let parent = map.entity(parent_path(path.as_str())).unwrap_or(root);
+        let entity = world
+            .spawn((
+                UsdPrimRef {
+                    path: path.as_str().to_string(),
+                },
+                ChildOf(parent),
+            ))
+            .id();
+        map.insert(path.as_str().to_string(), entity);
+        prim_count += 1;
+        let trace_memory = memory_trace
+            .as_ref()
+            .is_some_and(|range| range.contains(&prim_count));
+        if trace_memory {
+            crate::route::profiling::memory_event("prim-begin", path, "animation", None);
+        }
+        let sampled = profiling && (prim_count <= 8 || prim_count % 1024 == 0);
+        if sampled {
+            report(
+                "prim-start",
+                prim_count,
+                path.as_str(),
+                animation_time,
+                route_time,
+                world,
+            );
+        }
+        let animation_started = profiling.then(bevy::platform::time::Instant::now);
+        if discovery.prim_is_animated(stage, path) {
+            animated.insert(path.as_str().to_string());
+        }
+        if let Some(started) = animation_started {
+            animation_time += started.elapsed();
+        }
+        if trace_memory {
+            crate::route::profiling::memory_event("animation-complete", path, "registry", None);
+        }
+        // Every prim→component mapping goes through the registry.
+        let route_started = profiling.then(bevy::platform::time::Instant::now);
+        registry.project_prim_traced(stage, path, world, entity, trace_memory);
+        if let Some(started) = route_started {
+            route_time += started.elapsed();
+        }
+        map.remember_type(stage, path.as_str());
+        let current_composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
+        if live.has_changes() || current_composition != composition {
+            discovery_resets += 1;
+            discovery = AnimationDiscovery {
+                profile: profiling,
+                timings: discovery.timings,
+                ..Default::default()
+            };
+            composition = current_composition;
+        }
+        if sampled {
+            report(
+                "prim-complete",
+                prim_count,
+                path.as_str(),
+                animation_time,
+                route_time,
+                world,
+            );
+            discovery.report(prim_count, discovery_resets);
+        }
+    });
+    report(
+        if traversal.is_ok() {
+            "traversal-complete"
+        } else {
+            "traversal-error"
         },
+        prim_count,
+        "/",
+        animation_time,
+        route_time,
+        world,
     );
-    report(if traversal.is_ok() { "traversal-complete" } else { "traversal-error" }, prim_count, "/", animation_time, route_time, world);
     discovery.report(prim_count, discovery_resets);
     bevy::log::info!(
         target: "usd_bevy::live",
@@ -569,12 +771,21 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         animated.len()
     );
     crate::route::residency::materialize(world, stage, map);
-    report("materialize-complete", prim_count, "/", animation_time, route_time, world);
+    report(
+        "materialize-complete",
+        prim_count,
+        "/",
+        animation_time,
+        route_time,
+        world,
+    );
     world.insert_resource(AnimatedPrims(animated));
     // Projecting authored the initial read; clear so the first sync starts clean.
     let _ = live.drain_changes();
     world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
-    if let Some(previous) = previous_material_reads { world.insert_non_send(previous); }
+    if let Some(previous) = previous_material_reads {
+        world.insert_non_send(previous);
+    }
 }
 
 /// Project `stage` as a **static subtree** parented under `parent` — the asset
@@ -626,7 +837,15 @@ impl ProjectionJob {
         });
         let total = pending.len();
         let materials = Some(crate::route::material::ProjectionMaterials::new(stage));
-        (Self { root, pending, total, materials }, map)
+        (
+            Self {
+                root,
+                pending,
+                total,
+                materials,
+            },
+            map,
+        )
     }
 
     /// Project prims until `budget` is spent; `true` once nothing is left.
@@ -637,9 +856,15 @@ impl ProjectionJob {
         map: &mut PrimEntities,
         budget: std::time::Duration,
     ) -> bool {
-        if self.pending.is_empty() { self.materials = None; return true; }
-        let previous_materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
-        if let Some(materials) = self.materials.take() { world.insert_non_send(materials); }
+        if self.pending.is_empty() {
+            self.materials = None;
+            return true;
+        }
+        let previous_materials =
+            world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+        if let Some(materials) = self.materials.take() {
+            world.insert_non_send(materials);
+        }
         let registry = registry_of(world);
         let started = bevy::platform::time::Instant::now();
         while let Some(path) = self.pending.pop_front() {
@@ -659,10 +884,16 @@ impl ProjectionJob {
                 break;
             }
         }
-        if self.pending.is_empty() { crate::route::residency::materialize(world, stage, map); }
+        if self.pending.is_empty() {
+            crate::route::residency::materialize(world, stage, map);
+        }
         let materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
-        if !self.pending.is_empty() { self.materials = materials; }
-        if let Some(previous) = previous_materials { world.insert_non_send(previous); }
+        if !self.pending.is_empty() {
+            self.materials = materials;
+        }
+        if let Some(previous) = previous_materials {
+            world.insert_non_send(previous);
+        }
         self.pending.is_empty()
     }
 
@@ -673,23 +904,49 @@ impl ProjectionJob {
 }
 
 fn affects_projection_consumers(stage: &Stage, map: &PrimEntities, paths: &[&str]) -> bool {
-    if paths.is_empty() { return false; }
+    if paths.is_empty() {
+        return false;
+    }
     if paths.iter().any(|path| {
         let parent = parent_path(prim_of(path));
-        let mesh_child = map.entity(parent).is_some() && stage.prim(parent).ok()
-            .is_some_and(|prim| prim.type_name().ok().flatten().as_deref() == Some("Mesh")
-                || ["points", "faceVertexCounts", "faceVertexIndices"].iter()
-                    .all(|name| prim.attribute(*name).is_defined().unwrap_or(false)));
-        mesh_child || property_of(path).is_some_and(|property| {
-            property.starts_with("material:binding") || property.starts_with("collection:")
-                || property == "primvars:normals" || property.starts_with("primvars:normals:")
-                || property == "primvars:displayColor" || property.starts_with("primvars:displayColor:")
-                || property == "primvars:displayOpacity" || property.starts_with("primvars:displayOpacity:")
-                || property == "primvars:st" || property.starts_with("primvars:st:")
-                || property == "primvars:st0" || property.starts_with("primvars:st0:")
-        }) || stage.prim(prim_of(path)).ok()
-            .and_then(|prim| prim.type_name().ok().flatten())
-            .is_some_and(|name| matches!(name.as_str(), "Material" | "Shader" | "NodeGraph" | "GeomSubset" | "Skeleton" | "SkelAnimation" | "BlendShape"))
+        let mesh_child = map.entity(parent).is_some()
+            && stage.prim(parent).ok().is_some_and(|prim| {
+                prim.type_name().ok().flatten().as_deref() == Some("Mesh")
+                    || ["points", "faceVertexCounts", "faceVertexIndices"]
+                        .iter()
+                        .all(|name| prim.attribute(*name).is_defined().unwrap_or(false))
+            });
+        mesh_child
+            || property_of(path).is_some_and(|property| {
+                property.starts_with("material:binding")
+                    || property.starts_with("collection:")
+                    || property == "primvars:normals"
+                    || property.starts_with("primvars:normals:")
+                    || property == "primvars:displayColor"
+                    || property.starts_with("primvars:displayColor:")
+                    || property == "primvars:displayOpacity"
+                    || property.starts_with("primvars:displayOpacity:")
+                    || property == "primvars:st"
+                    || property.starts_with("primvars:st:")
+                    || property == "primvars:st0"
+                    || property.starts_with("primvars:st0:")
+            })
+            || stage
+                .prim(prim_of(path))
+                .ok()
+                .and_then(|prim| prim.type_name().ok().flatten())
+                .is_some_and(|name| {
+                    matches!(
+                        name.as_str(),
+                        "Material"
+                            | "Shader"
+                            | "NodeGraph"
+                            | "GeomSubset"
+                            | "Skeleton"
+                            | "SkelAnimation"
+                            | "BlendShape"
+                    )
+                })
     }) {
         return true;
     }
@@ -697,84 +954,177 @@ fn affects_projection_consumers(stage: &Stage, map: &PrimEntities, paths: &[&str
         let Ok(prim) = stage.prim(path) else { continue };
         let in_changed_subtree = paths.iter().any(|changed| {
             let changed = prim_of(changed);
-            changed == "/" || path == changed || path.strip_prefix(changed).is_some_and(|rest| rest.starts_with('/'))
+            changed == "/"
+                || path == changed
+                || path
+                    .strip_prefix(changed)
+                    .is_some_and(|rest| rest.starts_with('/'))
         });
         let prior = map.projected_types.get(path);
-        let shared_prior = prior.and_then(|kind| kind.as_deref()).is_some_and(|kind|
-            matches!(kind, "Material" | "Shader" | "NodeGraph" | "GeomSubset" | "Skeleton" | "SkelAnimation" | "BlendShape"));
-        if in_changed_subtree && (shared_prior || (!prim.is_valid().unwrap_or(false) && prior.is_none())
-            || prim.type_name().ok().flatten().is_some_and(|name|
-                matches!(name.as_str(), "Material" | "Shader" | "NodeGraph" | "GeomSubset" | "Skeleton" | "SkelAnimation" | "BlendShape"))) {
+        let shared_prior = prior.and_then(|kind| kind.as_deref()).is_some_and(|kind| {
+            matches!(
+                kind,
+                "Material"
+                    | "Shader"
+                    | "NodeGraph"
+                    | "GeomSubset"
+                    | "Skeleton"
+                    | "SkelAnimation"
+                    | "BlendShape"
+            )
+        });
+        if in_changed_subtree
+            && (shared_prior
+                || (!prim.is_valid().unwrap_or(false) && prior.is_none())
+                || prim.type_name().ok().flatten().is_some_and(|name| {
+                    matches!(
+                        name.as_str(),
+                        "Material"
+                            | "Shader"
+                            | "NodeGraph"
+                            | "GeomSubset"
+                            | "Skeleton"
+                            | "SkelAnimation"
+                            | "BlendShape"
+                    )
+                }))
+        {
             return true;
         }
         if prim.type_name().ok().flatten().as_deref() != Some("PointInstancer") {
             continue;
         }
-        let Ok(targets) = prim.relationship("prototypes").targets() else { continue };
-        if targets.iter().any(|target| paths.iter().any(|changed| {
-            let changed = prim_of(changed);
-            let target = target.as_str();
-            changed == target || changed.strip_prefix(target).is_some_and(|rest| rest.starts_with('/'))
-                || target.strip_prefix(changed).is_some_and(|rest| rest.starts_with('/'))
-        })) {
+        let Ok(targets) = prim.relationship("prototypes").targets() else {
+            continue;
+        };
+        if targets.iter().any(|target| {
+            paths.iter().any(|changed| {
+                let changed = prim_of(changed);
+                let target = target.as_str();
+                changed == target
+                    || changed
+                        .strip_prefix(target)
+                        .is_some_and(|rest| rest.starts_with('/'))
+                    || target
+                        .strip_prefix(changed)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+        }) {
             return true;
         }
     }
     false
 }
 
-fn material_consumer_scopes(stage: &Stage, map: &PrimEntities, paths: &[&str]) -> anyhow::Result<Vec<String>> {
+fn material_consumer_scopes(
+    stage: &Stage,
+    map: &PrimEntities,
+    paths: &[&str],
+) -> anyhow::Result<Vec<String>> {
     let mut graphs: HashMap<String, Vec<String>> = HashMap::new();
     let mut consumers = Vec::new();
     for (path, _) in map.iter().filter(|(path, _)| *path != "/") {
-        let Some(material) = crate::read::shade::read_material_binding(stage, &openusd::sdf::path(path)?)? else { continue; };
-        let graph = if let Some(graph) = graphs.get(material.as_str()) { graph } else {
+        let Some(material) =
+            crate::read::shade::read_material_binding(stage, &openusd::sdf::path(path)?)?
+        else {
+            continue;
+        };
+        let graph = if let Some(graph) = graphs.get(material.as_str()) {
+            graph
+        } else {
             let mut pending = vec![material.clone()];
             let mut seen = std::collections::HashSet::new();
             while let Some(node) = pending.pop() {
-                if !seen.insert(node.to_string()) { continue; }
-                anyhow::ensure!(seen.len() <= 4096, "material dependency traversal budget exceeded");
+                if !seen.insert(node.to_string()) {
+                    continue;
+                }
+                anyhow::ensure!(
+                    seen.len() <= 4096,
+                    "material dependency traversal budget exceeded"
+                );
                 for attribute in stage.prim(node)?.attributes()? {
-                    pending.extend(attribute.connections()?.into_iter().map(|connection| connection.prim_path()));
+                    pending.extend(
+                        attribute
+                            .connections()?
+                            .into_iter()
+                            .map(|connection| connection.prim_path()),
+                    );
                 }
             }
-            graphs.entry(material.to_string()).or_insert_with(|| seen.into_iter().collect())
+            graphs
+                .entry(material.to_string())
+                .or_insert_with(|| seen.into_iter().collect())
         };
-        if graph.iter().any(|node| paths.iter().any(|changed| {
-            let changed = prim_of(changed);
-            changed == "/" || node == changed || node.strip_prefix(changed).is_some_and(|rest| rest.starts_with('/'))
-        })) {
+        if graph.iter().any(|node| {
+            paths.iter().any(|changed| {
+                let changed = prim_of(changed);
+                changed == "/"
+                    || node == changed
+                    || node
+                        .strip_prefix(changed)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+        }) {
             consumers.push(path.to_string());
-            if stage.prim(path)?.type_name()?.as_deref() == Some("GeomSubset") { consumers.push(parent_path(path).into()); }
+            if stage.prim(path)?.type_name()?.as_deref() == Some("GeomSubset") {
+                consumers.push(parent_path(path).into());
+            }
         }
     }
     Ok(consumers)
 }
 
 fn material_graph_changes_only(stage: &Stage, paths: &[&str]) -> bool {
-    !paths.is_empty() && paths.iter().all(|path| {
-        !property_of(path).is_some_and(|property|
-            property.starts_with("material:binding") || property.starts_with("collection:"))
-            && stage.prim(prim_of(path)).ok().and_then(|prim| prim.type_name().ok().flatten())
+    !paths.is_empty()
+        && paths.iter().all(|path| {
+            !property_of(path).is_some_and(|property| {
+                property.starts_with("material:binding") || property.starts_with("collection:")
+            }) && stage
+                .prim(prim_of(path))
+                .ok()
+                .and_then(|prim| prim.type_name().ok().flatten())
                 .is_some_and(|kind| matches!(kind.as_str(), "Material" | "Shader" | "NodeGraph"))
-    })
+        })
 }
 
-fn expand_instancer_consumers(stage: &Stage, map: &PrimEntities, scopes: &mut Vec<String>) -> anyhow::Result<()> {
+fn expand_instancer_consumers(
+    stage: &Stage,
+    map: &PrimEntities,
+    scopes: &mut Vec<String>,
+) -> anyhow::Result<()> {
     loop {
         let mut added = Vec::new();
         for (path, _) in map.iter() {
-            if scopes.iter().any(|scope| scope == path) { continue; }
+            if scopes.iter().any(|scope| scope == path) {
+                continue;
+            }
             let prim = stage.prim(path)?;
-            if prim.type_name()?.as_deref() != Some("PointInstancer") { continue; }
-            if prim.relationship("prototypes").targets()?.iter().any(|target|
-                scopes.iter().any(|scope| target.as_str() == scope
-                    || target.as_str().strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))
-                    || scope.strip_prefix(target.as_str()).is_some_and(|rest| rest.starts_with('/')))) {
+            if prim.type_name()?.as_deref() != Some("PointInstancer") {
+                continue;
+            }
+            if prim
+                .relationship("prototypes")
+                .targets()?
+                .iter()
+                .any(|target| {
+                    scopes.iter().any(|scope| {
+                        target.as_str() == scope
+                            || target
+                                .as_str()
+                                .strip_prefix(scope)
+                                .is_some_and(|rest| rest.starts_with('/'))
+                            || scope
+                                .strip_prefix(target.as_str())
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+                })
+            {
                 added.push(path.to_owned());
             }
         }
-        if added.is_empty() { return Ok(()); }
+        if added.is_empty() {
+            return Ok(());
+        }
         scopes.extend(added);
     }
 }
@@ -785,7 +1135,9 @@ fn expand_instancer_consumers(stage: &Stage, map: &PrimEntities, scopes: &mut Ve
 /// * Material graph, binding, collection or prototype changes → reconcile consumers.
 /// * Other `changed_info` changes → patch the touched prims in place.
 pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
-    if !live.has_changes() { return; }
+    if !live.has_changes() {
+        return;
+    }
     apply_changes_inner(world, live, map);
     crate::route::residency::materialize(world, &live.stage, map);
 }
@@ -797,14 +1149,19 @@ fn apply_changes_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntiti
     }
     let suppressed = live.take_suppressed();
     for change in &mut changes {
-        change.resynced.retain(|path| {
-            property_of(path).is_none() || !suppressed.contains(prim_of(path))
-        });
+        change
+            .resynced
+            .retain(|path| property_of(path).is_none() || !suppressed.contains(prim_of(path)));
     }
-    let graph_paths: Vec<_> = changes.iter().flat_map(StageChange::paths)
-        .filter(|path| !suppressed.contains(prim_of(path))).map(String::as_str).collect();
+    let graph_paths: Vec<_> = changes
+        .iter()
+        .flat_map(StageChange::paths)
+        .filter(|path| !suppressed.contains(prim_of(path)))
+        .map(String::as_str)
+        .collect();
     if material_graph_changes_only(&live.stage, &graph_paths)
-        && let Ok(mut scopes) = material_consumer_scopes(&live.stage, map, &graph_paths) {
+        && let Ok(mut scopes) = material_consumer_scopes(&live.stage, map, &graph_paths)
+    {
         scopes.extend(graph_paths.iter().map(|path| prim_of(path).to_owned()));
         if expand_instancer_consumers(&live.stage, map, &mut scopes).is_ok() {
             reconcile_scoped(world, live, map, true, Some(&scopes), &[]);
@@ -814,7 +1171,11 @@ fn apply_changes_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntiti
         return;
     }
     if changes.iter().any(|c| !c.resynced.is_empty()) {
-        let paths: Vec<_> = changes.iter().flat_map(StageChange::paths).map(String::as_str).collect();
+        let paths: Vec<_> = changes
+            .iter()
+            .flat_map(StageChange::paths)
+            .map(String::as_str)
+            .collect();
         let consumers = material_consumer_scopes(&live.stage, map, &paths);
         if consumers.is_err() || affects_projection_consumers(&live.stage, map, &paths) {
             reconcile(world, live, map, true);
@@ -825,8 +1186,12 @@ fn apply_changes_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntiti
         }
         return;
     }
-    let changed_paths: Vec<_> = changes.iter().flat_map(|change| change.changed_info.iter())
-        .filter(|path| !suppressed.contains(prim_of(path))).map(String::as_str).collect();
+    let changed_paths: Vec<_> = changes
+        .iter()
+        .flat_map(|change| change.changed_info.iter())
+        .filter(|path| !suppressed.contains(prim_of(path)))
+        .map(String::as_str)
+        .collect();
     if affects_projection_consumers(&live.stage, map, &changed_paths) {
         reconcile(world, live, map, true);
         return;
@@ -861,7 +1226,11 @@ fn apply_changes_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntiti
         if world.contains_resource::<AnimatedPrims>() {
             let animated = prim_is_animated(&live.stage, &p);
             if let Some(mut index) = world.get_resource_mut::<AnimatedPrims>() {
-                if animated { index.0.insert(prim); } else { index.0.remove(&prim); }
+                if animated {
+                    index.0.insert(prim);
+                } else {
+                    index.0.remove(&prim);
+                }
             }
         }
     }
@@ -869,12 +1238,20 @@ fn apply_changes_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntiti
 
 /// Updates the projected prim paths after a successful editor namespace edit.
 pub(crate) fn remap_namespace(world: &mut World, old: &str, new: &str) {
-    let Some(mut map) = world.remove_resource::<PrimEntities>() else { return };
-    let moved: Vec<_> = map.iter().filter_map(|(path, entity)| {
-        let suffix = path.strip_prefix(old)?;
-        (suffix.is_empty() || suffix.starts_with('/')).then(|| (path.to_string(), format!("{new}{suffix}"), entity))
-    }).collect();
-    for (path, _, _) in &moved { map.remove_path(path); }
+    let Some(mut map) = world.remove_resource::<PrimEntities>() else {
+        return;
+    };
+    let moved: Vec<_> = map
+        .iter()
+        .filter_map(|(path, entity)| {
+            let suffix = path.strip_prefix(old)?;
+            (suffix.is_empty() || suffix.starts_with('/'))
+                .then(|| (path.to_string(), format!("{new}{suffix}"), entity))
+        })
+        .collect();
+    for (path, _, _) in &moved {
+        map.remove_path(path);
+    }
     for (_, path, entity) in &moved {
         if let Ok(mut entity_mut) = world.get_entity_mut(*entity) {
             entity_mut.insert(UsdPrimRef::new(path));
@@ -883,20 +1260,33 @@ pub(crate) fn remap_namespace(world: &mut World, old: &str, new: &str) {
     }
     for (_, path, entity) in moved {
         if let Some(parent) = map.entity(parent_path(&path)).or_else(|| map.entity("/")) {
-            if let Ok(mut entity_mut) = world.get_entity_mut(entity) { entity_mut.insert(ChildOf(parent)); }
+            if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+                entity_mut.insert(ChildOf(parent));
+            }
         }
     }
     world.insert_resource(map);
 }
 
 /// Reconciles paths, hierarchy and routed components, optionally rebuilding the live animation index.
-pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool) {
+pub(crate) fn reconcile(
+    world: &mut World,
+    live: &LiveStage,
+    map: &mut PrimEntities,
+    collect_animation: bool,
+) {
     reconcile_scoped(world, live, map, collect_animation, None, &[]);
 }
 
 /// Reconciles only `subtrees` and the prims in `exact`, so entities outside
 /// them keep whatever state the app has given them since projection.
-pub(crate) fn reconcile_opinions(world: &mut World, live: &LiveStage, map: &mut PrimEntities, subtrees: &[String], exact: &[String]) {
+pub(crate) fn reconcile_opinions(
+    world: &mut World,
+    live: &LiveStage,
+    map: &mut PrimEntities,
+    subtrees: &[String],
+    exact: &[String],
+) {
     reconcile_scoped(world, live, map, false, Some(subtrees), exact);
 }
 
@@ -904,9 +1294,18 @@ pub(crate) fn reconcile_opinions(world: &mut World, live: &LiveStage, map: &mut 
 /// prims to patch on their own, or `None` when only a full reconcile is safe.
 /// A switched variant touches the specs either selection authors in the root
 /// layer stack; its set's owner prim is patched alone.
-pub(crate) fn opinion_scopes(before: &Stage, after: &Stage, old: &UsdInstanceOverrides, new: &UsdInstanceOverrides) -> Option<(Vec<String>, Vec<String>)> {
-    let mut sets: Vec<(&str, &str)> = old.variants.iter().chain(&new.variants)
-        .map(|(prim, set, _)| (prim.as_str(), set.as_str())).collect();
+pub(crate) fn opinion_scopes(
+    before: &Stage,
+    after: &Stage,
+    old: &UsdInstanceOverrides,
+    new: &UsdInstanceOverrides,
+) -> Option<(Vec<String>, Vec<String>)> {
+    let mut sets: Vec<(&str, &str)> = old
+        .variants
+        .iter()
+        .chain(&new.variants)
+        .map(|(prim, set, _)| (prim.as_str(), set.as_str()))
+        .collect();
     sets.sort_unstable();
     sets.dedup();
     let mut changes = Vec::new();
@@ -930,13 +1329,23 @@ pub(crate) fn opinion_scopes(before: &Stage, after: &Stage, old: &UsdInstanceOve
 /// Specs a variant switch touches on `stage`, from (owner prim, set, old
 /// selection, new selection); `None` when a set is not authored in the root
 /// layer stack, where only a full reconcile is safe.
-pub(crate) fn variant_scopes(stage: &Stage, changes: &[(String, String, Option<String>, Option<String>)]) -> Option<(Vec<String>, Vec<String>)> {
+pub(crate) fn variant_scopes(
+    stage: &Stage,
+    changes: &[(String, String, Option<String>, Option<String>)],
+) -> Option<(Vec<String>, Vec<String>)> {
     let (mut subtrees, mut exact) = (Vec::new(), Vec::new());
     let layers = stage.layer_stack();
     for (prim, set, was, now) in changes {
         let owner = openusd::sdf::path(prim.as_str()).ok()?;
-        let authored = layers.iter().any(|id| stage.layer(id).is_some_and(|layer|
-            layer.prim(owner.clone()).ok().flatten().is_some_and(|spec| spec.has_field("variantSetNames"))));
+        let authored = layers.iter().any(|id| {
+            stage.layer(id).is_some_and(|layer| {
+                layer
+                    .prim(owner.clone())
+                    .ok()
+                    .flatten()
+                    .is_some_and(|spec| spec.has_field("variantSetNames"))
+            })
+        });
         if !authored {
             return None;
         }
@@ -956,8 +1365,18 @@ pub(crate) fn variant_scopes(stage: &Stage, changes: &[(String, String, Option<S
 /// Children of a variant spec: a `def` scopes its whole subtree, an `over`
 /// scopes itself and is walked for the specs beneath it. Variant specs are
 /// not prim specs, so this reads the layer's raw fields.
-fn collect_variant_specs(data: &dyn openusd::sdf::AbstractData, spec_path: &openusd::sdf::Path, subtrees: &mut Vec<String>, exact: &mut Vec<String>) {
-    let children = match data.try_field(spec_path, "primChildren").ok().flatten().map(|value| value.into_owned()) {
+fn collect_variant_specs(
+    data: &dyn openusd::sdf::AbstractData,
+    spec_path: &openusd::sdf::Path,
+    subtrees: &mut Vec<String>,
+    exact: &mut Vec<String>,
+) {
+    let children = match data
+        .try_field(spec_path, "primChildren")
+        .ok()
+        .flatten()
+        .map(|value| value.into_owned())
+    {
         Some(openusd::sdf::Value::TokenVec(children)) => children,
         _ => return,
     };
@@ -965,9 +1384,21 @@ fn collect_variant_specs(data: &dyn openusd::sdf::AbstractData, spec_path: &open
         let Ok(child_path) = spec_path.append_path(child.as_str()) else {
             continue;
         };
-        let prim = child_path.strip_all_variant_selections().as_str().to_string();
-        let specifier = data.try_field(&child_path, "specifier").ok().flatten().map(|value| value.into_owned());
-        if matches!(specifier, Some(openusd::sdf::Value::Specifier(openusd::sdf::Specifier::Over))) {
+        let prim = child_path
+            .strip_all_variant_selections()
+            .as_str()
+            .to_string();
+        let specifier = data
+            .try_field(&child_path, "specifier")
+            .ok()
+            .flatten()
+            .map(|value| value.into_owned());
+        if matches!(
+            specifier,
+            Some(openusd::sdf::Value::Specifier(
+                openusd::sdf::Specifier::Over
+            ))
+        ) {
             exact.push(prim);
             collect_variant_specs(data, &child_path, subtrees, exact);
         } else {
@@ -976,18 +1407,32 @@ fn collect_variant_specs(data: &dyn openusd::sdf::AbstractData, spec_path: &open
     }
 }
 
-fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool, scopes: Option<&[String]>, exact: &[String]) {
-    let affected = |path: &str| exact.iter().any(|prim| prim == path) || scopes.is_none_or(|scopes| scopes.iter().any(|scope|
-        scope == "/" || path == scope || path.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))));
+fn reconcile_scoped(
+    world: &mut World,
+    live: &LiveStage,
+    map: &mut PrimEntities,
+    collect_animation: bool,
+    scopes: Option<&[String]>,
+    exact: &[String],
+) {
+    let affected = |path: &str| {
+        exact.iter().any(|prim| prim == path)
+            || scopes.is_none_or(|scopes| {
+                scopes.iter().any(|scope| {
+                    scope == "/"
+                        || path == scope
+                        || path
+                            .strip_prefix(scope)
+                            .is_some_and(|rest| rest.starts_with('/'))
+                })
+            })
+    };
     let stage = &live.stage;
     let registry = registry_of(world);
     let mut current: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let traversal = stage.traverse(
-        traverse_predicate(),
-        |p: &openusd::sdf::Path| {
-            current.insert(p.as_str().to_string());
-        },
-    );
+    let traversal = stage.traverse(traverse_predicate(), |p: &openusd::sdf::Path| {
+        current.insert(p.as_str().to_string());
+    });
     if let Err(error) = traversal {
         bevy::log::warn!("USD reconciliation skipped: {error}");
         return;
@@ -1011,8 +1456,17 @@ fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities,
     let root = map.entity("/");
     let mut ordered: Vec<&String> = current.iter().filter(|path| affected(path)).collect();
     ordered.sort_by_key(|p| p.matches('/').count());
-    let mut animated: std::collections::HashSet<String> = world.get_resource::<AnimatedPrims>()
-        .map(|animated| animated.0.iter().filter(|path| !affected(path)).cloned().collect()).unwrap_or_default();
+    let mut animated: std::collections::HashSet<String> = world
+        .get_resource::<AnimatedPrims>()
+        .map(|animated| {
+            animated
+                .0
+                .iter()
+                .filter(|path| !affected(path))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     for path in ordered {
         let Ok(p) = openusd::sdf::path(path) else {
             continue;
@@ -1020,7 +1474,10 @@ fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities,
         if collect_animation && prim_is_animated(stage, &p) {
             animated.insert(path.clone());
         }
-        if let Some(entity) = map.entity(path).filter(|entity| world.get_entity(*entity).is_ok()) {
+        if let Some(entity) = map
+            .entity(path)
+            .filter(|entity| world.get_entity(*entity).is_ok())
+        {
             if let Some(parent) = map.entity(parent_path(path)).or(root) {
                 if world.get::<ChildOf>(entity).map(ChildOf::parent) != Some(parent) {
                     world.entity_mut(entity).insert(ChildOf(parent));
@@ -1030,9 +1487,7 @@ fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities,
         } else {
             map.remove_path(path);
             let parent = map.entity(parent_path(path)).or(root);
-            let mut e = world.spawn(UsdPrimRef {
-                path: path.clone(),
-            });
+            let mut e = world.spawn(UsdPrimRef { path: path.clone() });
             if let Some(parent) = parent {
                 e.insert(ChildOf(parent));
             }
@@ -1043,7 +1498,9 @@ fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities,
         map.remember_type(stage, path);
     }
     // Refresh the animated set for the reconciled prim set.
-    if collect_animation { world.insert_resource(AnimatedPrims(animated)); }
+    if collect_animation {
+        world.insert_resource(AnimatedPrims(animated));
+    }
 }
 
 // ─── Bevy plugin + systems ──────────────────────────────────────────
@@ -1112,7 +1569,9 @@ fn project_on_load_system(world: &mut World) {
         return;
     };
     let mut map = world.remove_resource::<PrimEntities>().unwrap_or_default();
-    let purposes = world.get_resource::<crate::route::DisplayPurposes>().copied();
+    let purposes = world
+        .get_resource::<crate::route::DisplayPurposes>()
+        .copied();
     let time = world.get_resource::<StageTime>().map(|time| time.current);
     project_stage(world, &live, &mut map);
     world.resource_mut::<AppliedPurposes>().0 = purposes;
@@ -1126,8 +1585,12 @@ fn project_on_load_system(world: &mut World) {
 
 fn apply_subdivision_settings_system(world: &mut World) {
     let current = crate::route::subdivision::current_levels(world);
-    if world.resource::<AppliedSubdivision>().0 == current { return; }
-    let Some(live) = world.remove_non_send::<LiveStage>() else { return };
+    if world.resource::<AppliedSubdivision>().0 == current {
+        return;
+    }
+    let Some(live) = world.remove_non_send::<LiveStage>() else {
+        return;
+    };
     let map = world.remove_resource::<PrimEntities>().unwrap_or_default();
     crate::route::subdivision::refresh_geometry(world, &live.stage, &map);
     world.insert_resource(map);
@@ -1137,8 +1600,12 @@ fn apply_subdivision_settings_system(world: &mut World) {
 
 fn apply_curve_settings_system(world: &mut World) {
     let current = crate::route::curves::current_geometry_key(world);
-    if world.resource::<AppliedCurveSteps>().0 == current { return; }
-    let Some(live) = world.remove_non_send::<LiveStage>() else { return };
+    if world.resource::<AppliedCurveSteps>().0 == current {
+        return;
+    }
+    let Some(live) = world.remove_non_send::<LiveStage>() else {
+        return;
+    };
     let map = world.remove_resource::<PrimEntities>().unwrap_or_default();
     crate::route::curves::refresh_geometry(world, &live.stage, &map);
     world.insert_resource(map);
@@ -1158,7 +1625,10 @@ fn resample_animation_system(world: &mut World) {
     if current == last {
         return; // time hasn't moved
     }
-    let animated = world.get_resource::<AnimatedPrims>().cloned().unwrap_or_default();
+    let animated = world
+        .get_resource::<AnimatedPrims>()
+        .cloned()
+        .unwrap_or_default();
     if animated.0.is_empty() {
         // Nothing animated; still record the time so we don't re-check.
         if let Some(mut sampled) = world.get_resource_mut::<SampledTime>() {
@@ -1195,7 +1665,9 @@ fn apply_display_purposes_system(world: &mut World) {
     if world.get_non_send::<LiveStage>().is_none() {
         return;
     }
-    let current = world.get_resource::<crate::route::DisplayPurposes>().copied();
+    let current = world
+        .get_resource::<crate::route::DisplayPurposes>()
+        .copied();
     let last = world.get_resource::<AppliedPurposes>().and_then(|a| a.0);
     if current == last {
         return; // toggle hasn't moved
@@ -1205,8 +1677,7 @@ fn apply_display_purposes_system(world: &mut World) {
     };
     let map = world.remove_resource::<PrimEntities>().unwrap_or_default();
     let registry = registry_of(world);
-    let entries: Vec<(String, Entity)> =
-        map.iter().map(|(p, e)| (p.to_string(), e)).collect();
+    let entries: Vec<(String, Entity)> = map.iter().map(|(p, e)| (p.to_string(), e)).collect();
     for (path, entity) in entries {
         if let Ok(p) = openusd::sdf::path(&path) {
             registry.patch_prim(&live.stage, &p, world, entity, &["purpose"]);
@@ -1284,7 +1755,8 @@ mod tests {
 
     #[test]
     fn cached_animation_discovery_matches_inheritance_and_material_collections() {
-        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
 def Xform "Group" {
     float[] primvars:displayOpacity.timeSamples = {0: [1], 10: [0.5]}
     def Cube "Inherited" {}
@@ -1307,58 +1779,115 @@ def Shader "Shader" {
     float inputs:roughness.timeSamples = {0: 0.2, 10: 0.8}
     token outputs:surface
 }
-"#).open_stage().unwrap();
+"#,
+        )
+        .open_stage()
+        .unwrap();
         let mut discovery = AnimationDiscovery::default();
-        for (path, expected) in [("/Group", true), ("/Group/Inherited", true), ("/Group/Local", false),
-            ("/Group/Local/Child", true), ("/Bindings", false), ("/Bindings/Plain", false), ("/Bindings/Painted", true)] {
+        for (path, expected) in [
+            ("/Group", true),
+            ("/Group/Inherited", true),
+            ("/Group/Local", false),
+            ("/Group/Local/Child", true),
+            ("/Bindings", false),
+            ("/Bindings/Plain", false),
+            ("/Bindings/Painted", true),
+        ] {
             let path = openusd::sdf::path(path).unwrap();
             assert_eq!(prim_is_animated(&stage, &path), expected, "baseline {path}");
-            assert_eq!(discovery.prim_is_animated(&stage, &path), expected, "cached {path}");
+            assert_eq!(
+                discovery.prim_is_animated(&stage, &path),
+                expected,
+                "cached {path}"
+            );
         }
     }
 
     #[test]
     fn initial_projection_records_purpose_and_sample_without_repeating_routes() {
-        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
 def Cube "Box" {
     uniform token purpose = "guide"
     double size.timeSamples = {0: 2, 10: 4}
 }
-"#).open_stage().unwrap();
+"#,
+        )
+        .open_stage()
+        .unwrap();
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), crate::UsdPlugin, LiveStagePlugin));
-        app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            crate::UsdPlugin,
+            LiveStagePlugin,
+        ));
+        app.init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<Image>();
         app.init_resource::<crate::route::ProjectionTimings>();
         app.world_mut().resource_mut::<StageTime>().current = 5.0;
         app.insert_non_send(LiveStage::new(stage));
-        let projections = |world: &World| world.resource::<crate::route::ProjectionTimings>().0
-            .get(std::any::type_name::<crate::route::shapes::ShapesRoute>()).unwrap().matches;
+        let projections = |world: &World| {
+            world
+                .resource::<crate::route::ProjectionTimings>()
+                .0
+                .get(std::any::type_name::<crate::route::shapes::ShapesRoute>())
+                .unwrap()
+                .matches
+        };
         app.update();
-        let entity = app.world().resource::<PrimEntities>().entity("/Box").unwrap();
+        let entity = app
+            .world()
+            .resource::<PrimEntities>()
+            .entity("/Box")
+            .unwrap();
         let half_width = |world: &World| {
-            let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
-            let bevy::mesh::VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!() };
-            points.iter().map(|point| point[0]).fold(f32::NEG_INFINITY, f32::max)
+            let mesh = world
+                .resource::<Assets<Mesh>>()
+                .get(&world.get::<Mesh3d>(entity).unwrap().0)
+                .unwrap();
+            let bevy::mesh::VertexAttributeValues::Float32x3(points) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+            else {
+                panic!()
+            };
+            points
+                .iter()
+                .map(|point| point[0])
+                .fold(f32::NEG_INFINITY, f32::max)
         };
         assert_eq!(projections(app.world()), 1);
         assert_eq!(half_width(app.world()), 1.5);
-        assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
+        assert_eq!(
+            app.world().get::<Visibility>(entity),
+            Some(&Visibility::Hidden)
+        );
         app.update();
         assert_eq!(projections(app.world()), 1);
         app.world_mut().resource_mut::<StageTime>().current = 10.0;
         app.update();
         assert_eq!(projections(app.world()), 2);
         assert_eq!(half_width(app.world()), 2.0);
-        app.world_mut().resource_mut::<crate::route::DisplayPurposes>().guide = true;
+        app.world_mut()
+            .resource_mut::<crate::route::DisplayPurposes>()
+            .guide = true;
         app.update();
         assert_eq!(projections(app.world()), 3);
-        assert_ne!(app.world().get::<Visibility>(entity), Some(&Visibility::Hidden));
-        assert_eq!(app.world().resource::<PrimEntities>().entity("/Box"), Some(entity));
+        assert_ne!(
+            app.world().get::<Visibility>(entity),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            app.world().resource::<PrimEntities>().entity("/Box"),
+            Some(entity)
+        );
     }
 
     #[test]
     fn shader_connection_edits_refresh_live_animation_membership() {
-        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
 def Cube "Box" { rel material:binding = </Mat> }
 def Material "Mat" {
     token outputs:surface.connect = </Mat/Surface.outputs:surface>
@@ -1373,61 +1902,116 @@ def Material "Mat" {
         float outputs:out
     }
 }
-"#).open_stage().unwrap();
+"#,
+        )
+        .open_stage()
+        .unwrap();
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default(), crate::UsdPlugin, LiveStagePlugin));
-        app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            crate::UsdPlugin,
+            LiveStagePlugin,
+        ));
+        app.init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<Image>();
         app.insert_non_send(LiveStage::new(stage.clone()));
         app.update();
-        let entity = app.world().resource::<PrimEntities>().entity("/Box").unwrap();
-        app.world_mut().entity_mut(entity).insert(Name::new("runtime annotation"));
+        let entity = app
+            .world()
+            .resource::<PrimEntities>()
+            .entity("/Box")
+            .unwrap();
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(Name::new("runtime annotation"));
         assert!(!app.world().resource::<AnimatedPrims>().0.contains("/Box"));
         let roughness = |world: &World| {
-            let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
-            world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().perceptual_roughness
+            let handle = &world
+                .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                .unwrap()
+                .0;
+            world
+                .resource::<Assets<StandardMaterial>>()
+                .get(handle)
+                .unwrap()
+                .perceptual_roughness
         };
         assert_eq!(roughness(app.world()), 0.5);
-        let input = stage.prim("/Mat/Surface").unwrap().attribute("inputs:roughness");
-        let input = input.set_connections([openusd::sdf::path("/Mat/Animated.outputs:out").unwrap()]).unwrap();
+        let input = stage
+            .prim("/Mat/Surface")
+            .unwrap()
+            .attribute("inputs:roughness");
+        let input = input
+            .set_connections([openusd::sdf::path("/Mat/Animated.outputs:out").unwrap()])
+            .unwrap();
         app.update();
         assert!(app.world().resource::<AnimatedPrims>().0.contains("/Box"));
         for (current, expected) in [(0.0, 0.2), (10.0, 0.8)] {
             app.world_mut().resource_mut::<StageTime>().current = current;
             app.update();
             assert!((roughness(app.world()) - expected).abs() < 1e-6);
-            assert_eq!(app.world().resource::<PrimEntities>().entity("/Box"), Some(entity));
-            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime annotation");
+            assert_eq!(
+                app.world().resource::<PrimEntities>().entity("/Box"),
+                Some(entity)
+            );
+            assert_eq!(
+                app.world().get::<Name>(entity).unwrap().as_str(),
+                "runtime annotation"
+            );
         }
-        input.set_connections(std::iter::empty::<openusd::sdf::Path>()).unwrap();
+        input
+            .set_connections(std::iter::empty::<openusd::sdf::Path>())
+            .unwrap();
         app.update();
         assert!(!app.world().resource::<AnimatedPrims>().0.contains("/Box"));
         assert_eq!(roughness(app.world()), 0.5);
         app.world_mut().resource_mut::<StageTime>().current = 0.0;
         app.update();
         assert_eq!(roughness(app.world()), 0.5);
-        assert_eq!(app.world().resource::<PrimEntities>().entity("/Box"), Some(entity));
-        assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime annotation");
+        assert_eq!(
+            app.world().resource::<PrimEntities>().entity("/Box"),
+            Some(entity)
+        );
+        assert_eq!(
+            app.world().get::<Name>(entity).unwrap().as_str(),
+            "runtime annotation"
+        );
     }
 
     #[test]
     fn combined_deformation_animation_scan_matches_individual_queries() {
-        for fixture in ["skel_test_simple.usda", "blendshape_test.usda", "point_shapes.usda", "skel_morph_normals.usda"] {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets").join(fixture);
+        for fixture in [
+            "skel_test_simple.usda",
+            "blendshape_test.usda",
+            "point_shapes.usda",
+            "skel_morph_normals.usda",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets")
+                .join(fixture);
             let source = crate::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap();
             let stage = source.open_stage().unwrap();
             let mut pending = stage.prim("/").unwrap().children().unwrap();
             while let Some(prim) = pending.pop() {
                 pending.extend(prim.children().unwrap());
-                assert_eq!(crate::read::skel::deformation_is_time_varying(&stage, prim.path()),
+                assert_eq!(
+                    crate::read::skel::deformation_is_time_varying(&stage, prim.path()),
                     crate::read::skel::skin_is_time_varying(&stage, prim.path())
-                        || crate::read::skel::blend_is_time_varying(&stage, prim.path()), "{fixture}: {}", prim.path());
+                        || crate::read::skel::blend_is_time_varying(&stage, prim.path()),
+                    "{fixture}: {}",
+                    prim.path()
+                );
             }
         }
     }
 
     #[test]
     fn authored_animation_scan_matches_composed_scan_for_proxies_and_edits() {
-        let source = crate::UsdSource::new("animation-scan.usda", br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "animation-scan.usda",
+            br#"#usda 1.0
 def Cube "Static" {}
 def Xform "Template" {
     def Cube "Animated" { double size.timeSamples = {0: 1, 10: 2} }
@@ -1438,17 +2022,36 @@ def Xform "Instance" (
 ) {}
 def Camera "Camera" { float focalLength.timeSamples = {0: 20, 10: 40} }
 def Xform "Custom" { custom float bevy:Speed:value.timeSamples = {0: 1, 10: 3} }
-"#.as_slice()).unwrap();
+"#
+            .as_slice(),
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         let static_prim = stage.prim("/Static").unwrap();
         assert!(static_prim.authored_attributes().unwrap().is_empty());
         assert!(!static_prim.attributes().unwrap().is_empty());
         for edited in [false, true] {
-            if edited { stage.attribute("/Template/Animated.size").unwrap().clear().unwrap(); }
-            for (path, expected) in [("/Static", false), ("/Template/Animated", !edited),
-                ("/Instance/Animated", !edited), ("/Camera", true), ("/Custom", true)] {
+            if edited {
+                stage
+                    .attribute("/Template/Animated.size")
+                    .unwrap()
+                    .clear()
+                    .unwrap();
+            }
+            for (path, expected) in [
+                ("/Static", false),
+                ("/Template/Animated", !edited),
+                ("/Instance/Animated", !edited),
+                ("/Camera", true),
+                ("/Custom", true),
+            ] {
                 let path = openusd::sdf::path(path).unwrap();
-                let old_scan = stage.prim(path.clone()).unwrap().attributes().unwrap().iter()
+                let old_scan = stage
+                    .prim(path.clone())
+                    .unwrap()
+                    .attributes()
+                    .unwrap()
+                    .iter()
                     .any(|attribute| !attribute.time_sample_times().unwrap().is_empty());
                 assert_eq!(has_time_samples(&stage, &path), expected, "{path}");
                 assert_eq!(old_scan, expected, "{path}");
@@ -1458,7 +2061,9 @@ def Xform "Custom" { custom float bevy:Speed:value.timeSamples = {0: 1, 10: 3} }
 
     #[test]
     fn consumer_invalidation_distinguishes_namespace_boundaries() {
-        let source = crate::UsdSource::new("dependencies.usda", &br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "dependencies.usda",
+            &br#"#usda 1.0
 def PointInstancer "PI" { rel prototypes = [</Group/Proto>] }
 def Xform "Group" {
     def Mesh "Proto" {}
@@ -1466,18 +2071,36 @@ def Xform "Group" {
 }
 def Shader "Shader" {}
 def NodeGraph "Graph" {}
-"#[..]).unwrap();
+"#[..],
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         let mut world = World::new();
         let mut map = PrimEntities::default();
         map.insert("/PI", world.spawn_empty().id());
-        for path in ["/Group/Proto.points", "/Group/Proto/Child.points", "/Group.visibility",
-            "/Shader.inputs:roughness", "/Graph.inputs:weight", "/Group.material:binding",
-            "/Group.collection:binding:includes"] {
-            assert!(affects_projection_consumers(&stage, &map, &[path]), "{path}");
+        for path in [
+            "/Group/Proto.points",
+            "/Group/Proto/Child.points",
+            "/Group.visibility",
+            "/Shader.inputs:roughness",
+            "/Graph.inputs:weight",
+            "/Group.material:binding",
+            "/Group.collection:binding:includes",
+        ] {
+            assert!(
+                affects_projection_consumers(&stage, &map, &[path]),
+                "{path}"
+            );
         }
-        for path in ["/Group/PrototypeSibling.points", "/Elsewhere.visibility", "/PI.positions"] {
-            assert!(!affects_projection_consumers(&stage, &map, &[path]), "{path}");
+        for path in [
+            "/Group/PrototypeSibling.points",
+            "/Elsewhere.visibility",
+            "/PI.positions",
+        ] {
+            assert!(
+                !affects_projection_consumers(&stage, &map, &[path]),
+                "{path}"
+            );
         }
         assert!(!affects_projection_consumers(&stage, &map, &[]));
     }
@@ -1487,9 +2110,20 @@ def NodeGraph "Graph" {}
     /// touching the live-session resources.
     #[test]
     fn project_stage_under_parents_a_subtree() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("under.usda").unwrap();
-        stage.define_prim("/Root").unwrap().set_type_name("Xform").unwrap();
-        stage.define_prim("/Root/Child").unwrap().set_type_name("Xform").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("under.usda")
+            .unwrap();
+        stage
+            .define_prim("/Root")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
+        stage
+            .define_prim("/Root/Child")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
 
         let mut world = World::new();
         world.insert_resource(SchemaRegistry::builtin());
@@ -1508,7 +2142,10 @@ def NodeGraph "Graph" {}
         assert_eq!(world.get::<ChildOf>(root).map(|c| c.parent()), Some(sroot));
         assert_eq!(world.get::<ChildOf>(child).map(|c| c.parent()), Some(root));
         // A route ran: the Xform prims carry a Transform.
-        assert!(world.get::<Transform>(root).is_some(), "xform route applied");
+        assert!(
+            world.get::<Transform>(root).is_some(),
+            "xform route applied"
+        );
         // The live-session resource is untouched by the asset path.
         assert!(world.get_resource::<PrimEntities>().is_none());
     }
@@ -1524,7 +2161,10 @@ def NodeGraph "Graph" {}
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/external/Kitchen_set.usdz"
         );
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path).expect("Kitchen_set.usdz should open");
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(path)
+            .expect("Kitchen_set.usdz should open");
         let mut meshes = 0usize;
         let _ = stage.traverse(
             openusd::usd::PrimPredicate::default(),
@@ -1555,7 +2195,8 @@ def NodeGraph "Graph" {}
     /// foundation the whole live-editor reprojection is built on.
     #[test]
     fn sink_records_authored_edits() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry())
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
             .in_memory("live_test.usda")
             .expect("in-memory stage");
         stage
@@ -1594,7 +2235,10 @@ def NodeGraph "Graph" {}
     /// reproject a subtree.
     #[test]
     fn define_and_remove_resync() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("resync.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("resync.usda")
+            .unwrap();
         let live = LiveStage::new(stage);
 
         live.stage.define_prim("/World").unwrap();
@@ -1622,7 +2266,10 @@ def NodeGraph "Graph" {}
     /// `Transform` was reprojected from the edit.
     #[test]
     fn edit_reprojects_transform() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("e2e.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("e2e.usda")
+            .unwrap();
         stage
             .define_prim("/Foo")
             .unwrap()
@@ -1653,7 +2300,8 @@ def NodeGraph "Graph" {}
 
         // Author a new translate; the sink records it; sync reprojects.
         live.stage
-            .attribute("/Foo.xformOp:translate").unwrap()
+            .attribute("/Foo.xformOp:translate")
+            .unwrap()
             .set(Value::Vec3d(openusd::gf::Vec3d::from([2.0, 5.0, 0.0])))
             .unwrap();
         assert!(live.has_changes(), "the edit fired the sink");
@@ -1670,7 +2318,10 @@ def NodeGraph "Graph" {}
     /// entity, a removed prim despawns it.
     #[test]
     fn resync_spawns_and_despawns_entities() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("rs.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("rs.usda")
+            .unwrap();
         stage.define_prim("/World").unwrap();
         let live = LiveStage::new(stage);
         let mut world = World::new();
@@ -1698,7 +2349,10 @@ def NodeGraph "Graph" {}
     /// round-trips through `read_transform`, and fires the sink.
     #[test]
     fn author_transform_roundtrips_and_notifies() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("auth.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("auth.usda")
+            .unwrap();
         stage
             .define_prim("/Foo")
             .unwrap()
@@ -1729,7 +2383,10 @@ def NodeGraph "Graph" {}
     #[test]
     fn transform_undo_redo() {
         use crate::editor::{EditorEdit, EditorSession};
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("undo.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("undo.usda")
+            .unwrap();
         stage
             .define_prim("/Foo")
             .unwrap()
@@ -1740,9 +2397,11 @@ def NodeGraph "Graph" {}
         for x in [1.0, 2.0] {
             hist.edit(EditorEdit::TransformMatrix {
                 prim: "/Foo".into(),
-                matrix: bevy::math::DMat4::from_translation(bevy::math::DVec3::new(x, 0.0, 0.0)).to_cols_array(),
+                matrix: bevy::math::DMat4::from_translation(bevy::math::DVec3::new(x, 0.0, 0.0))
+                    .to_cols_array(),
                 reset: false,
-            }).unwrap();
+            })
+            .unwrap();
         }
         let after = stage.root_layer().export_to_string().unwrap();
         assert_eq!(tx(&stage, "/Foo"), Some(Vec3::new(2.0, 0.0, 0.0)));
@@ -1782,7 +2441,10 @@ def NodeGraph "Graph" {}
     /// edit, run through a real Bevy `Update` schedule.
     #[test]
     fn plugin_projects_and_reprojects() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("app.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("app.usda")
+            .unwrap();
         stage
             .define_prim("/World")
             .unwrap()
@@ -1824,7 +2486,10 @@ def NodeGraph "Graph" {}
     /// reprojects the entity's `Visibility` to `Hidden`.
     #[test]
     fn edit_reprojects_visibility() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("vis.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("vis.usda")
+            .unwrap();
         stage
             .define_prim("/Foo")
             .unwrap()
@@ -1855,7 +2520,9 @@ def NodeGraph "Graph" {}
 
     #[test]
     fn shared_shader_edit_patches_consumers_without_touching_other_materials() {
-        let source = crate::UsdSource::new("material-scopes.usda", br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "material-scopes.usda",
+            br#"#usda 1.0
 def Cube "A" { rel material:binding = </Mat> }
 def Cube "B" { rel material:binding = </Mat> }
 def Cube "Other" { rel material:binding = </OtherMat> }
@@ -1883,7 +2550,10 @@ def Material "OtherMat" {
         token outputs:surface
     }
 }
-"#.as_slice()).unwrap();
+"#
+            .as_slice(),
+        )
+        .unwrap();
         let live = LiveStage::new(source.open_stage().unwrap());
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
@@ -1891,78 +2561,195 @@ def Material "OtherMat" {
         let mut map = PrimEntities::default();
         project_stage(&mut world, &live, &mut map);
         let other = map.entity("/Other").unwrap();
-        let untouched = world.get::<MeshMaterial3d<StandardMaterial>>(other).unwrap().0.clone();
-        let tick = world.entity(other).get_ref::<Transform>().unwrap().last_changed();
+        let untouched = world
+            .get::<MeshMaterial3d<StandardMaterial>>(other)
+            .unwrap()
+            .0
+            .clone();
+        let tick = world
+            .entity(other)
+            .get_ref::<Transform>()
+            .unwrap()
+            .last_changed();
         let unrelated_instances = map.entity("/UnrelatedInstances").unwrap();
-        let instances_tick = world.entity(unrelated_instances).get_ref::<Transform>().unwrap().last_changed();
+        let instances_tick = world
+            .entity(unrelated_instances)
+            .get_ref::<Transform>()
+            .unwrap()
+            .last_changed();
         world.increment_change_tick();
-        crate::authoring::set_attribute(&live.stage, "/Shared", "inputs:diffuseColor", "color3f", Value::Vec3f([0.0, 0.0, 1.0].into())).unwrap();
+        crate::authoring::set_attribute(
+            &live.stage,
+            "/Shared",
+            "inputs:diffuseColor",
+            "color3f",
+            Value::Vec3f([0.0, 0.0, 1.0].into()),
+        )
+        .unwrap();
         apply_changes(&mut world, &live, &mut map);
         for path in ["/A", "/B"] {
-            let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap()).unwrap().0;
-            assert_eq!(world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().base_color.to_linear(), LinearRgba::new(0.0, 0.0, 1.0, 1.0));
+            let handle = &world
+                .get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap())
+                .unwrap()
+                .0;
+            assert_eq!(
+                world
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(handle)
+                    .unwrap()
+                    .base_color
+                    .to_linear(),
+                LinearRgba::new(0.0, 0.0, 1.0, 1.0)
+            );
         }
-        let mut pending: Vec<_> = world.get::<Children>(map.entity("/Instances").unwrap()).unwrap().iter().collect();
+        let mut pending: Vec<_> = world
+            .get::<Children>(map.entity("/Instances").unwrap())
+            .unwrap()
+            .iter()
+            .collect();
         let mut rendered_parts = 0;
         while let Some(instance) = pending.pop() {
-            if let Some(children) = world.get::<Children>(instance) { pending.extend(children.iter()); }
+            if let Some(children) = world.get::<Children>(instance) {
+                pending.extend(children.iter());
+            }
             if let Some(handle) = world.get::<MeshMaterial3d<StandardMaterial>>(instance) {
-                assert_eq!(world.resource::<Assets<StandardMaterial>>().get(&handle.0).unwrap().base_color.to_linear(), LinearRgba::new(0.0, 0.0, 1.0, 1.0));
+                assert_eq!(
+                    world
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&handle.0)
+                        .unwrap()
+                        .base_color
+                        .to_linear(),
+                    LinearRgba::new(0.0, 0.0, 1.0, 1.0)
+                );
                 rendered_parts += 1;
             }
         }
         assert!(rendered_parts > 0);
-        assert_eq!(world.get::<MeshMaterial3d<StandardMaterial>>(other).unwrap().0, untouched);
-        assert_eq!(world.entity(other).get_ref::<Transform>().unwrap().last_changed(), tick);
-        assert_eq!(world.entity(unrelated_instances).get_ref::<Transform>().unwrap().last_changed(), instances_tick);
+        assert_eq!(
+            world
+                .get::<MeshMaterial3d<StandardMaterial>>(other)
+                .unwrap()
+                .0,
+            untouched
+        );
+        assert_eq!(
+            world
+                .entity(other)
+                .get_ref::<Transform>()
+                .unwrap()
+                .last_changed(),
+            tick
+        );
+        assert_eq!(
+            world
+                .entity(unrelated_instances)
+                .get_ref::<Transform>()
+                .unwrap()
+                .last_changed(),
+            instances_tick
+        );
         world.increment_change_tick();
-        crate::authoring::set_attribute(&live.stage, "/Shared", "inputs:roughness", "float", Value::Float(0.25)).unwrap();
+        crate::authoring::set_attribute(
+            &live.stage,
+            "/Shared",
+            "inputs:roughness",
+            "float",
+            Value::Float(0.25),
+        )
+        .unwrap();
         apply_changes(&mut world, &live, &mut map);
-        let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(map.entity("/A").unwrap()).unwrap().0;
-        assert_eq!(world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().perceptual_roughness, 0.25);
-        assert_eq!(world.entity(other).get_ref::<Transform>().unwrap().last_changed(), tick);
+        let handle = &world
+            .get::<MeshMaterial3d<StandardMaterial>>(map.entity("/A").unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(
+            world
+                .resource::<Assets<StandardMaterial>>()
+                .get(handle)
+                .unwrap()
+                .perceptual_roughness,
+            0.25
+        );
+        assert_eq!(
+            world
+                .entity(other)
+                .get_ref::<Transform>()
+                .unwrap()
+                .last_changed(),
+            tick
+        );
     }
 
     #[test]
     fn removed_geometry_subtree_does_not_repatch_unrelated_animation() {
-        let source = crate::UsdSource::new("removed-geometry.usda", br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "removed-geometry.usda",
+            br#"#usda 1.0
 def Xform "Removed" { def Cube "Child" {} }
 def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
-"#.as_slice()).unwrap();
+"#
+            .as_slice(),
+        )
+        .unwrap();
         let live = LiveStage::new(source.open_stage().unwrap());
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<Assets<StandardMaterial>>();
         let mut map = PrimEntities::default();
         project_stage(&mut world, &live, &mut map);
-        let removed = [map.entity("/Removed").unwrap(), map.entity("/Removed/Child").unwrap()];
+        let removed = [
+            map.entity("/Removed").unwrap(),
+            map.entity("/Removed/Child").unwrap(),
+        ];
         let other = map.entity("/Other").unwrap();
-        let tick = world.entity(other).get_ref::<Transform>().unwrap().last_changed();
+        let tick = world
+            .entity(other)
+            .get_ref::<Transform>()
+            .unwrap()
+            .last_changed();
         let mesh = world.get::<Mesh3d>(other).unwrap().0.clone();
         assert!(world.resource::<AnimatedPrims>().0.contains("/Other"));
         world.increment_change_tick();
         live.stage.remove_prim("/Removed").unwrap();
         apply_changes(&mut world, &live, &mut map);
-        for entity in removed { assert!(world.get_entity(entity).is_err()); }
+        for entity in removed {
+            assert!(world.get_entity(entity).is_err());
+        }
         assert!(map.entity("/Removed").is_none());
         assert!(map.entity("/Removed/Child").is_none());
         assert!(!map.projected_types.contains_key("/Removed"));
         assert!(!map.projected_types.contains_key("/Removed/Child"));
         assert_eq!(map.entity("/Other"), Some(other));
-        assert_eq!(world.entity(other).get_ref::<Transform>().unwrap().last_changed(), tick);
+        assert_eq!(
+            world
+                .entity(other)
+                .get_ref::<Transform>()
+                .unwrap()
+                .last_changed(),
+            tick
+        );
         assert_eq!(world.get::<Mesh3d>(other).unwrap().0, mesh);
         assert!(world.resource::<AnimatedPrims>().0.contains("/Other"));
     }
 
     #[test]
     fn removed_shared_schema_retains_dependency_detection() {
-        let source = crate::UsdSource::new("removed-material.usda", b"#usda 1.0\ndef Material \"Shared\" {}\n".as_slice()).unwrap();
+        let source = crate::UsdSource::new(
+            "removed-material.usda",
+            b"#usda 1.0\ndef Material \"Shared\" {}\n".as_slice(),
+        )
+        .unwrap();
         let live = LiveStage::new(source.open_stage().unwrap());
         let mut world = World::new();
         let mut map = PrimEntities::default();
         project_stage(&mut world, &live, &mut map);
         live.stage.remove_prim("/Shared").unwrap();
-        assert!(affects_projection_consumers(&live.stage, &map, &["/Shared"]));
+        assert!(affects_projection_consumers(
+            &live.stage,
+            &map,
+            &["/Shared"]
+        ));
         apply_changes(&mut world, &live, &mut map);
         assert!(!map.projected_types.contains_key("/Shared"));
     }
@@ -1972,7 +2759,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     #[test]
     fn project_real_usda_file() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/two_xforms.usda");
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path).expect("open two_xforms.usda");
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(path)
+            .expect("open two_xforms.usda");
         let live = LiveStage::new(stage);
         let mut world = World::new();
         let mut map = PrimEntities::default();
@@ -1990,7 +2780,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/skel_test_simple.usda"
         );
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path).expect("open skel_test_simple.usda");
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(path)
+            .expect("open skel_test_simple.usda");
         let live = LiveStage::new(stage);
         let mut world = World::new();
         world.insert_resource(Assets::<Mesh>::default());
@@ -2030,7 +2823,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
         #[default]
         Idle,
         Moving(f32),
-        Warp { x: i32, y: i32 },
+        Warp {
+            x: i32,
+            y: i32,
+        },
     }
 
     #[derive(Component, Reflect, Default, Debug, Clone, PartialEq)]
@@ -2063,7 +2859,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// line: an arbitrary gameplay component authored purely in USD.
     #[test]
     fn reflect_route_projects_component() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("reflect.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("reflect.usda")
+            .unwrap();
         stage
             .define_prim("/Enemy")
             .unwrap()
@@ -2092,9 +2891,20 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// sibling `:_0` / `:name` attributes fill its tuple / struct payload.
     #[test]
     fn reflect_route_data_enum_variants() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("enum.usda").unwrap();
-        stage.define_prim("/Mover").unwrap().set_type_name("Xform").unwrap();
-        stage.define_prim("/Warper").unwrap().set_type_name("Xform").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("enum.usda")
+            .unwrap();
+        stage
+            .define_prim("/Mover")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
+        stage
+            .define_prim("/Warper")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
         // Tuple variant `Moving(f32)`.
         stage
             .create_attribute("/Mover.bevy:Motion:state", "token")
@@ -2129,12 +2939,18 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
         project_stage(&mut world, &live, &mut map);
 
         assert_eq!(
-            world.get::<Motion>(map.entity("/Mover").unwrap()).unwrap().state,
+            world
+                .get::<Motion>(map.entity("/Mover").unwrap())
+                .unwrap()
+                .state,
             MotionState::Moving(5.0),
             "tuple-variant payload authored from :_0"
         );
         assert_eq!(
-            world.get::<Motion>(map.entity("/Warper").unwrap()).unwrap().state,
+            world
+                .get::<Motion>(map.entity("/Warper").unwrap())
+                .unwrap()
+                .state,
             MotionState::Warp { x: 3, y: 7 },
             "struct-variant payload authored from :x/:y"
         );
@@ -2145,7 +2961,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// keeps its value.
     #[test]
     fn reflect_route_sparse_patch() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("sparse.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("sparse.usda")
+            .unwrap();
         stage.define_prim("/Enemy").unwrap();
         author_double(&stage, "/Enemy.bevy:Health:current", 50.0);
         author_double(&stage, "/Enemy.bevy:Health:max", 100.0);
@@ -2158,7 +2977,8 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
 
         // Change only `max`.
         live.stage
-            .attribute("/Enemy.bevy:Health:max").unwrap()
+            .attribute("/Enemy.bevy:Health:max")
+            .unwrap()
             .set(Value::Double(250.0))
             .unwrap();
         apply_changes(&mut world, &live, &mut map);
@@ -2177,7 +2997,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// clearing every `bevy:` opinion of a type removes the component.
     #[test]
     fn reflect_route_clear_reverts_and_removes() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("clear.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("clear.usda")
+            .unwrap();
         stage.define_prim("/Enemy").unwrap();
         author_double(&stage, "/Enemy.bevy:Health:current", 50.0);
         author_double(&stage, "/Enemy.bevy:Health:max", 100.0);
@@ -2223,7 +3046,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
             image: Handle<Image>,
         }
 
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("handle.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("handle.usda")
+            .unwrap();
         stage.define_prim("/I").unwrap();
         stage
             .create_attribute("/I.bevy:Icon:image", "asset")
@@ -2247,7 +3073,12 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
         project_stage(app.world_mut(), &live, &mut map);
 
         let e = map.entity("/I").unwrap();
-        let handle = app.world().get::<Icon>(e).expect("Icon component").image.clone();
+        let handle = app
+            .world()
+            .get::<Icon>(e)
+            .expect("Icon component")
+            .image
+            .clone();
         assert!(
             handle.path().is_some(),
             "Handle<Image> field resolved an asset path via the AssetServer"
@@ -2262,7 +3093,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// second component on the same prim projects independently.
     #[test]
     fn reflect_route_multiple_components() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("multi.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("multi.usda")
+            .unwrap();
         stage.define_prim("/Enemy").unwrap();
         author_double(&stage, "/Enemy.bevy:Health:max", 100.0);
         stage
@@ -2311,7 +3145,8 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/reflect_compose_session.usda"
         );
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry())
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
             .session_layer(session)
             .open(root)
             .expect("open root + session");
@@ -2336,7 +3171,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     fn reflect_full_type_path_disambiguates() {
         // e.g. usd_bevy::live::tests::Health → usd_bevy__live__tests__Health
         let tp = std::any::type_name::<Health>().replace("::", "__");
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("fullpath.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("fullpath.usda")
+            .unwrap();
         stage.define_prim("/E").unwrap();
         author_double(&stage, &format!("/E.bevy:{tp}:max"), 50.0);
 
@@ -2358,7 +3196,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// re-applies routes on the survivors.
     #[test]
     fn resync_preserves_reflect_components() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("resync_reflect.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("resync_reflect.usda")
+            .unwrap();
         stage.define_prim("/Enemy").unwrap();
         author_double(&stage, "/Enemy.bevy:Health:max", 100.0);
         let live = LiveStage::new(stage);
@@ -2410,7 +3251,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
             }
         }
 
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("custom.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("custom.usda")
+            .unwrap();
         stage
             .define_prim("/A")
             .unwrap()
@@ -2487,8 +3331,8 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// of the entity we just wrote.
     #[test]
     fn author_back_is_echo_suppressed() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Component, Default)]
         struct Touches(usize);
@@ -2517,7 +3361,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
             }
         }
 
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("echo.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("echo.usda")
+            .unwrap();
         stage.define_prim("/A").unwrap();
         let live = LiveStage::new(stage);
 
@@ -2555,8 +3402,14 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// — replacing the mesh route's grey placeholder.
     #[test]
     fn project_material_binding() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/material_test.usda");
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path).expect("open material_test.usda");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/material_test.usda"
+        );
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(path)
+            .expect("open material_test.usda");
         let live = LiveStage::new(stage);
         let mut world = World::new();
         world.insert_resource(Assets::<Mesh>::default());
@@ -2575,7 +3428,9 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
 
         let c = m.base_color.to_linear();
         assert!(
-            (c.red - 0.8).abs() < 1e-3 && (c.green - 0.1).abs() < 1e-3 && (c.blue - 0.1).abs() < 1e-3,
+            (c.red - 0.8).abs() < 1e-3
+                && (c.green - 0.1).abs() < 1e-3
+                && (c.blue - 0.1).abs() < 1e-3,
             "authored diffuseColor projected to base_color, got {c:?}"
         );
         assert!(
@@ -2597,7 +3452,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     /// Author a prim with an animated `xformOp:translate` (samples at t=0 and
     /// t=10), returning the stage.
     fn animated_translate_stage() -> Stage {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("anim.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("anim.usda")
+            .unwrap();
         stage
             .define_prim("/Mover")
             .unwrap()
@@ -2627,8 +3485,14 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
     #[test]
     fn sparse_sample_edits_refresh_the_live_animation_index() {
         let stage = animated_translate_stage();
-        stage.prim("/Mover").unwrap().attribute("xformOp:translate").clear().unwrap()
-            .set(Value::Vec3d(openusd::gf::Vec3d::from([1.0, 0.0, 0.0]))).unwrap();
+        stage
+            .prim("/Mover")
+            .unwrap()
+            .attribute("xformOp:translate")
+            .clear()
+            .unwrap()
+            .set(Value::Vec3d(openusd::gf::Vec3d::from([1.0, 0.0, 0.0])))
+            .unwrap();
         let live = LiveStage::new(stage);
         let mut world = World::new();
         world.insert_resource(StageTime { current: 0.0 });
@@ -2636,10 +3500,26 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
         project_stage(&mut world, &live, &mut map);
         let mover = map.entity("/Mover").unwrap();
         assert!(world.resource::<AnimatedPrims>().0.is_empty());
-        live.stage.prim("/Mover").unwrap().attribute("xformOp:translate")
-            .set_at(Value::Vec3d(openusd::gf::Vec3d::from([0.0, 0.0, 0.0])), TimeCode::new(0.0)).unwrap()
-            .set_at(Value::Vec3d(openusd::gf::Vec3d::from([10.0, 0.0, 0.0])), TimeCode::new(10.0)).unwrap();
-        assert!(live.queue.borrow().iter().all(|change| change.resynced.is_empty()));
+        live.stage
+            .prim("/Mover")
+            .unwrap()
+            .attribute("xformOp:translate")
+            .set_at(
+                Value::Vec3d(openusd::gf::Vec3d::from([0.0, 0.0, 0.0])),
+                TimeCode::new(0.0),
+            )
+            .unwrap()
+            .set_at(
+                Value::Vec3d(openusd::gf::Vec3d::from([10.0, 0.0, 0.0])),
+                TimeCode::new(10.0),
+            )
+            .unwrap();
+        assert!(
+            live.queue
+                .borrow()
+                .iter()
+                .all(|change| change.resynced.is_empty())
+        );
         apply_changes(&mut world, &live, &mut map);
         assert!(world.resource::<AnimatedPrims>().0.contains("/Mover"));
         world.insert_resource(map);
@@ -2649,9 +3529,20 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
         assert_eq!(world.get::<Transform>(mover).unwrap().translation.x, 5.0);
         let live = world.remove_non_send::<LiveStage>().unwrap();
         let mut map = world.remove_resource::<PrimEntities>().unwrap();
-        live.stage.prim("/Mover").unwrap().attribute("xformOp:translate")
-            .clear_at(TimeCode::new(0.0)).unwrap().clear_at(TimeCode::new(10.0)).unwrap();
-        assert!(live.queue.borrow().iter().all(|change| change.resynced.is_empty()));
+        live.stage
+            .prim("/Mover")
+            .unwrap()
+            .attribute("xformOp:translate")
+            .clear_at(TimeCode::new(0.0))
+            .unwrap()
+            .clear_at(TimeCode::new(10.0))
+            .unwrap();
+        assert!(
+            live.queue
+                .borrow()
+                .iter()
+                .all(|change| change.resynced.is_empty())
+        );
         apply_changes(&mut world, &live, &mut map);
         assert!(world.resource::<AnimatedPrims>().0.is_empty());
         assert_eq!(map.entity("/Mover"), Some(mover));
@@ -2674,7 +3565,10 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
         assert_eq!(world.get::<Transform>(mover).unwrap().translation.x, 5.0);
         world.insert_resource(StageTime { current: 10.0 });
         reconcile(&mut world, &live, &mut map, true);
-        assert_eq!(world.resource::<AnimatedPrims>().0, std::collections::HashSet::from(["/Mover".to_string()]));
+        assert_eq!(
+            world.resource::<AnimatedPrims>().0,
+            std::collections::HashSet::from(["/Mover".to_string()])
+        );
         assert_eq!(world.get::<Transform>(mover).unwrap().translation.x, 10.0);
     }
 
@@ -2730,7 +3624,11 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
         app.world_mut().insert_non_send(live);
 
         app.world_mut().run_schedule(Update); // projects at t=0
-        let mover = app.world().resource::<PrimEntities>().entity("/Mover").unwrap();
+        let mover = app
+            .world()
+            .resource::<PrimEntities>()
+            .entity("/Mover")
+            .unwrap();
         assert_eq!(
             app.world().get::<Transform>(mover).unwrap().translation.x,
             0.0
@@ -2747,36 +3645,112 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
 
     #[test]
     fn point_and_curve_geometry_sample_independent_clocks() {
-        use crate::instance::{UsdInstances, UsdInstanceTime};
-        let source = crate::UsdSource::new("point-curve.usda", include_bytes!("../../../assets/point_curve_animation.usda").as_slice()).unwrap();
+        use crate::instance::{UsdInstanceTime, UsdInstances};
+        let source = crate::UsdSource::new(
+            "point-curve.usda",
+            include_bytes!("../../../assets/point_curve_animation.usda").as_slice(),
+        )
+        .unwrap();
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
-        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
-        let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
-        let roots = [0,1].map(|_| app.world_mut().spawn((crate::UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 })).id());
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source,
+                textures: default(),
+            });
+        let roots = [0, 1].map(|_| {
+            app.world_mut()
+                .spawn((
+                    crate::UsdSceneRoot(handle.clone()),
+                    UsdInstanceTime { current: 0.0 },
+                ))
+                .id()
+        });
         app.update();
-        let entities = roots.map(|root| ["/Points", "/Curve"].map(|path|
-            app.world().get_non_send::<UsdInstances>().unwrap().entity(root, path).unwrap()));
-        let children = entities.map(|pair| pair.map(|entity| app.world_mut().spawn((Name::new("runtime"), ChildOf(entity))).id()));
-        for times in [[0.0,10.0], [5.0,0.0], [10.0,5.0]] {
-            for (root,time) in roots.into_iter().zip(times) {
-                app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = time;
+        let entities = roots.map(|root| {
+            ["/Points", "/Curve"].map(|path| {
+                app.world()
+                    .get_non_send::<UsdInstances>()
+                    .unwrap()
+                    .entity(root, path)
+                    .unwrap()
+            })
+        });
+        let children = entities.map(|pair| {
+            pair.map(|entity| {
+                app.world_mut()
+                    .spawn((Name::new("runtime"), ChildOf(entity)))
+                    .id()
+            })
+        });
+        for times in [[0.0, 10.0], [5.0, 0.0], [10.0, 5.0]] {
+            for (root, time) in roots.into_iter().zip(times) {
+                app.world_mut()
+                    .get_mut::<UsdInstanceTime>(root)
+                    .unwrap()
+                    .current = time;
             }
             app.update();
-            for (index, (root,time)) in roots.into_iter().zip(times).enumerate() {
-                for (kind,path) in ["/Points", "/Curve"].into_iter().enumerate() {
-                    let entity = app.world().get_non_send::<UsdInstances>().unwrap().entity(root, path).unwrap();
+            for (index, (root, time)) in roots.into_iter().zip(times).enumerate() {
+                for (kind, path) in ["/Points", "/Curve"].into_iter().enumerate() {
+                    let entity = app
+                        .world()
+                        .get_non_send::<UsdInstances>()
+                        .unwrap()
+                        .entity(root, path)
+                        .unwrap();
                     assert_eq!(entity, entities[index][kind]);
-                    assert_eq!(app.world().get::<ChildOf>(children[index][kind]).unwrap().parent(), entity);
-                    let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
-                    let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("positions") };
+                    assert_eq!(
+                        app.world()
+                            .get::<ChildOf>(children[index][kind])
+                            .unwrap()
+                            .parent(),
+                        entity
+                    );
+                    let mesh = app
+                        .world()
+                        .resource::<Assets<Mesh>>()
+                        .get(&app.world().get::<Mesh3d>(entity).unwrap().0)
+                        .unwrap();
+                    let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                    else {
+                        panic!("positions")
+                    };
                     assert_eq!(positions.len(), 4);
                     let height = time as f32 / 5.0 + if kind == 0 { 0.5 } else { 0.0 };
-                    assert!(positions.iter().all(|position| (position[1] - height).abs() < 1e-6), "{path} at {time}: {positions:?}");
-                    let material = app.world().resource::<Assets<StandardMaterial>>().get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
+                    assert!(
+                        positions
+                            .iter()
+                            .all(|position| (position[1] - height).abs() < 1e-6),
+                        "{path} at {time}: {positions:?}"
+                    );
+                    let material = app
+                        .world()
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(
+                            &app.world()
+                                .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                                .unwrap()
+                                .0,
+                        )
+                        .unwrap();
                     assert!(material.unlit);
                     if kind == 1 {
-                        let expected = if time < 10.0 { vec![0,1,1,2,2,3] } else { vec![0,1,2,3] };
+                        let expected = if time < 10.0 {
+                            vec![0, 1, 1, 2, 2, 3]
+                        } else {
+                            vec![0, 1, 2, 3]
+                        };
                         assert_eq!(mesh.indices().unwrap().iter().collect::<Vec<_>>(), expected);
                     }
                 }
@@ -2786,7 +3760,7 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
 
     #[test]
     fn inherited_uv_indices_sample_per_root_and_reconcile_parent_edits() {
-        use crate::instance::{UsdInstances, UsdInstanceTime};
+        use crate::instance::{UsdInstanceTime, UsdInstances};
         let fixture = r#"#usda 1.0
 def Xform "Root" {
     texCoord2f[] primvars:st = [(0.25,0.25), (0.75,0.75)] (interpolation = "constant")
@@ -2808,96 +3782,245 @@ def PointInstancer "PI" {
             let fixture = fixture.replace("primvars:st", &format!("primvars:{name}"));
             let source = crate::UsdSource::new("uv.usda", fixture.into_bytes()).unwrap();
             let mut app = App::new();
-            app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
-            app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
-            let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
-            let roots = [0,1].map(|_| app.world_mut().spawn((crate::UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 })).id());
-            let check = |app: &App, root, expected: [f32;2]| {
+            app.add_plugins((
+                MinimalPlugins,
+                bevy::asset::AssetPlugin::default(),
+                crate::UsdPlugin,
+                crate::UsdAssetPlugin,
+            ));
+            app.init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>();
+            let handle = app
+                .world_mut()
+                .resource_mut::<Assets<crate::UsdScene>>()
+                .add(crate::UsdScene {
+                    source,
+                    textures: default(),
+                });
+            let roots = [0, 1].map(|_| {
+                app.world_mut()
+                    .spawn((
+                        crate::UsdSceneRoot(handle.clone()),
+                        UsdInstanceTime { current: 0.0 },
+                    ))
+                    .id()
+            });
+            let check = |app: &App, root, expected: [f32; 2]| {
                 let instances = app.world().get_non_send::<UsdInstances>().unwrap();
                 let mesh = instances.entity(root, "/Root/M").unwrap();
                 let pi = instances.entity(root, "/PI").unwrap();
-                let copy = app.world().get::<Children>(pi).unwrap().iter().find(|entity| app.world().get::<crate::route::instancer::UsdInstance>(*entity).is_some()).unwrap();
-                for entity in [mesh,copy] {
-                    let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
-                    let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) else { panic!("uvs") };
-                    assert!(uvs.iter().all(|uv| *uv == expected), "{name} expected={expected:?} actual={uvs:?}");
+                let copy = app
+                    .world()
+                    .get::<Children>(pi)
+                    .unwrap()
+                    .iter()
+                    .find(|entity| {
+                        app.world()
+                            .get::<crate::route::instancer::UsdInstance>(*entity)
+                            .is_some()
+                    })
+                    .unwrap();
+                for entity in [mesh, copy] {
+                    let mesh = app
+                        .world()
+                        .resource::<Assets<Mesh>>()
+                        .get(&app.world().get::<Mesh3d>(entity).unwrap().0)
+                        .unwrap();
+                    let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
+                        mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+                    else {
+                        panic!("uvs")
+                    };
+                    assert!(
+                        uvs.iter().all(|uv| *uv == expected),
+                        "{name} expected={expected:?} actual={uvs:?}"
+                    );
                 }
                 mesh
             };
-            for times in [[0.0,10.0], [10.0,0.0]] {
-                for (root,time) in roots.into_iter().zip(times) { app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = time; }
+            for times in [[0.0, 10.0], [10.0, 0.0]] {
+                for (root, time) in roots.into_iter().zip(times) {
+                    app.world_mut()
+                        .get_mut::<UsdInstanceTime>(root)
+                        .unwrap()
+                        .current = time;
+                }
                 app.update();
-                for (root,time) in roots.into_iter().zip(times) { check(&app, root, if time == 0.0 { [0.25,0.75] } else { [0.75,0.25] }); }
+                for (root, time) in roots.into_iter().zip(times) {
+                    check(
+                        &app,
+                        root,
+                        if time == 0.0 {
+                            [0.25, 0.75]
+                        } else {
+                            [0.75, 0.25]
+                        },
+                    );
+                }
             }
-            let entity = check(&app, roots[0], [0.75,0.25]);
+            let entity = check(&app, roots[0], [0.75, 0.25]);
             let child = app.world_mut().spawn(ChildOf(entity)).id();
-            let stage = app.world().get_non_send::<UsdInstances>().unwrap().stage(roots[0]).unwrap().clone();
-            stage.attribute(format!("/Root.primvars:{name}:indices")).unwrap().set_at(Value::IntVec(vec![0]), openusd::usd::TimeCode::new(10.0)).unwrap();
+            let stage = app
+                .world()
+                .get_non_send::<UsdInstances>()
+                .unwrap()
+                .stage(roots[0])
+                .unwrap()
+                .clone();
+            stage
+                .attribute(format!("/Root.primvars:{name}:indices"))
+                .unwrap()
+                .set_at(Value::IntVec(vec![0]), openusd::usd::TimeCode::new(10.0))
+                .unwrap();
             app.update();
-            assert_eq!(check(&app, roots[0], [0.25,0.75]), entity);
+            assert_eq!(check(&app, roots[0], [0.25, 0.75]), entity);
             assert_eq!(app.world().get::<ChildOf>(child).unwrap().parent(), entity);
-            let local = stage.create_attribute(format!("/Root/M.primvars:{name}"), "texCoord2f[]").unwrap();
-            local.clone().set(Value::Vec2fVec(vec![openusd::gf::Vec2f::from([0.5,0.5])])).unwrap();
+            let local = stage
+                .create_attribute(format!("/Root/M.primvars:{name}"), "texCoord2f[]")
+                .unwrap();
+            local
+                .clone()
+                .set(Value::Vec2fVec(vec![openusd::gf::Vec2f::from([0.5, 0.5])]))
+                .unwrap();
             app.update();
-            check(&app, roots[0], [0.5,0.5]);
+            check(&app, roots[0], [0.5, 0.5]);
             local.clear().unwrap();
             app.update();
-            check(&app, roots[0], [0.25,0.75]);
+            check(&app, roots[0], [0.25, 0.75]);
         }
     }
 
     #[test]
     fn inherited_display_edits_and_local_overrides_preserve_entities() {
-        let source = crate::UsdSource::new("inherited-display.usda", include_bytes!("../../../assets/inherited_display.usda").as_slice()).unwrap();
+        let source = crate::UsdSource::new(
+            "inherited-display.usda",
+            include_bytes!("../../../assets/inherited_display.usda").as_slice(),
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         let mut app = App::new();
         app.add_plugins(LiveStagePlugin);
-        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
-        app.world_mut().insert_non_send(LiveStage::new(stage.clone()));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        app.world_mut()
+            .insert_non_send(LiveStage::new(stage.clone()));
         app.world_mut().run_schedule(Update);
-        let entity = app.world().resource::<PrimEntities>().entity("/Scene/Mesh").unwrap();
+        let entity = app
+            .world()
+            .resource::<PrimEntities>()
+            .entity("/Scene/Mesh")
+            .unwrap();
         let runtime = app.world_mut().spawn(ChildOf(entity)).id();
-        let check = |app: &App, expected: [f32;4]| {
-            assert_eq!(app.world().resource::<PrimEntities>().entity("/Scene/Mesh"), Some(entity));
-            assert_eq!(app.world().get::<ChildOf>(runtime).unwrap().parent(), entity);
-            let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
-            let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colors") };
-            assert!(colors.iter().all(|color| Vec4::from_array(*color).abs_diff_eq(Vec4::from_array(expected), 1e-5)), "expected={expected:?} actual={colors:?}");
-            let material = app.world().resource::<Assets<StandardMaterial>>().get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
-            assert_eq!(material.alpha_mode, if expected[3] < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque });
-        };
-        check(&app, [0.8,0.2,0.1,0.2]);
+        let check =
+            |app: &App, expected: [f32; 4]| {
+                assert_eq!(
+                    app.world().resource::<PrimEntities>().entity("/Scene/Mesh"),
+                    Some(entity)
+                );
+                assert_eq!(
+                    app.world().get::<ChildOf>(runtime).unwrap().parent(),
+                    entity
+                );
+                let mesh = app
+                    .world()
+                    .resource::<Assets<Mesh>>()
+                    .get(&app.world().get::<Mesh3d>(entity).unwrap().0)
+                    .unwrap();
+                let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+                else {
+                    panic!("colors")
+                };
+                assert!(
+                    colors.iter().all(|color| Vec4::from_array(*color)
+                        .abs_diff_eq(Vec4::from_array(expected), 1e-5)),
+                    "expected={expected:?} actual={colors:?}"
+                );
+                let material = app
+                    .world()
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(
+                        &app.world()
+                            .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                            .unwrap()
+                            .0,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    material.alpha_mode,
+                    if expected[3] < 1.0 {
+                        AlphaMode::Blend
+                    } else {
+                        AlphaMode::Opaque
+                    }
+                );
+            };
+        check(&app, [0.8, 0.2, 0.1, 0.2]);
         app.world_mut().resource_mut::<StageTime>().current = 10.0;
         app.world_mut().run_schedule(Update);
-        check(&app, [0.0,0.2,0.8,1.0]);
-        stage.attribute("/Scene.primvars:displayColor").unwrap().set_at(Value::Vec3fVec(vec![
-            openusd::gf::Vec3f::from([0.0,1.0,0.0]), openusd::gf::Vec3f::from([1.0,1.0,0.0])]), openusd::usd::TimeCode::new(10.0)).unwrap();
-        stage.create_attribute("/Scene.primvars:displayColor:indices", "int[]").unwrap().set(Value::IntVec(vec![1])).unwrap();
+        check(&app, [0.0, 0.2, 0.8, 1.0]);
+        stage
+            .attribute("/Scene.primvars:displayColor")
+            .unwrap()
+            .set_at(
+                Value::Vec3fVec(vec![
+                    openusd::gf::Vec3f::from([0.0, 1.0, 0.0]),
+                    openusd::gf::Vec3f::from([1.0, 1.0, 0.0]),
+                ]),
+                openusd::usd::TimeCode::new(10.0),
+            )
+            .unwrap();
+        stage
+            .create_attribute("/Scene.primvars:displayColor:indices", "int[]")
+            .unwrap()
+            .set(Value::IntVec(vec![1]))
+            .unwrap();
         app.world_mut().run_schedule(Update);
-        check(&app, [1.0,1.0,0.0,1.0]);
-        stage.attribute("/Scene.primvars:displayOpacity").unwrap().set_at(Value::FloatVec(vec![0.25,1.0]), openusd::usd::TimeCode::new(10.0)).unwrap();
-        let opacity_indices = stage.create_attribute("/Scene.primvars:displayOpacity:indices", "int[]").unwrap();
+        check(&app, [1.0, 1.0, 0.0, 1.0]);
+        stage
+            .attribute("/Scene.primvars:displayOpacity")
+            .unwrap()
+            .set_at(
+                Value::FloatVec(vec![0.25, 1.0]),
+                openusd::usd::TimeCode::new(10.0),
+            )
+            .unwrap();
+        let opacity_indices = stage
+            .create_attribute("/Scene.primvars:displayOpacity:indices", "int[]")
+            .unwrap();
         opacity_indices.clone().set(Value::IntVec(vec![0])).unwrap();
         app.world_mut().run_schedule(Update);
-        check(&app, [1.0,1.0,0.0,0.25]);
+        check(&app, [1.0, 1.0, 0.0, 0.25]);
         opacity_indices.set(Value::IntVec(vec![1])).unwrap();
         app.world_mut().run_schedule(Update);
-        check(&app, [1.0,1.0,0.0,1.0]);
-        let local = stage.create_attribute("/Scene/Mesh.primvars:displayColor", "color3f[]").unwrap();
-        local.clone().set(Value::Vec3fVec(vec![openusd::gf::Vec3f::from([0.0,0.0,1.0])])).unwrap();
+        check(&app, [1.0, 1.0, 0.0, 1.0]);
+        let local = stage
+            .create_attribute("/Scene/Mesh.primvars:displayColor", "color3f[]")
+            .unwrap();
+        local
+            .clone()
+            .set(Value::Vec3fVec(vec![openusd::gf::Vec3f::from([
+                0.0, 0.0, 1.0,
+            ])]))
+            .unwrap();
         app.world_mut().run_schedule(Update);
-        check(&app, [0.0,0.0,1.0,1.0]);
+        check(&app, [0.0, 0.0, 1.0, 1.0]);
         local.clear().unwrap();
         app.world_mut().run_schedule(Update);
-        check(&app, [1.0,1.0,0.0,1.0]);
-        stage.attribute("/Scene.primvars:displayColor").unwrap().set_metadata("interpolation", Value::Token("vertex".into())).unwrap();
+        check(&app, [1.0, 1.0, 0.0, 1.0]);
+        stage
+            .attribute("/Scene.primvars:displayColor")
+            .unwrap()
+            .set_metadata("interpolation", Value::Token("vertex".into()))
+            .unwrap();
         app.world_mut().run_schedule(Update);
-        check(&app, [1.0,1.0,1.0,1.0]);
+        check(&app, [1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
     fn inherited_normals_refresh_on_scrub_and_parent_edit() {
-        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
 def Xform "Root" {
     normal3f[] primvars:normals.timeSamples = { 0: [(0,0,1)], 10: [(0,1,0)] }
     def Mesh "M" {
@@ -2907,40 +4030,72 @@ def Xform "Root" {
         uniform token subdivisionScheme = "none"
     }
 }
-"#).open_stage().unwrap();
+"#,
+        )
+        .open_stage()
+        .unwrap();
         let mut app = App::new();
         app.add_plugins(LiveStagePlugin);
         app.world_mut().insert_resource(Assets::<Mesh>::default());
-        app.world_mut().insert_resource(Assets::<StandardMaterial>::default());
-        app.world_mut().insert_non_send(LiveStage::new(stage.clone()));
+        app.world_mut()
+            .insert_resource(Assets::<StandardMaterial>::default());
+        app.world_mut()
+            .insert_non_send(LiveStage::new(stage.clone()));
         app.world_mut().run_schedule(Update);
-        let entity = app.world().resource::<PrimEntities>().entity("/Root/M").unwrap();
+        let entity = app
+            .world()
+            .resource::<PrimEntities>()
+            .entity("/Root/M")
+            .unwrap();
         let runtime_child = app.world_mut().spawn(ChildOf(entity)).id();
         let check = |app: &App, expected: [f32; 3]| {
-            assert_eq!(app.world().resource::<PrimEntities>().entity("/Root/M"), Some(entity));
+            assert_eq!(
+                app.world().resource::<PrimEntities>().entity("/Root/M"),
+                Some(entity)
+            );
             let handle = &app.world().get::<Mesh3d>(entity).unwrap().0;
             let mesh = app.world().resource::<Assets<Mesh>>().get(handle).unwrap();
-            let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
+                mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+            else {
+                panic!("normals")
+            };
             assert_eq!(normals, &[expected; 3]);
-            assert_eq!(app.world().get::<ChildOf>(runtime_child).unwrap().parent(), entity);
+            assert_eq!(
+                app.world().get::<ChildOf>(runtime_child).unwrap().parent(),
+                entity
+            );
         };
-        check(&app, [0.0,0.0,1.0]);
+        check(&app, [0.0, 0.0, 1.0]);
         app.world_mut().resource_mut::<StageTime>().current = 10.0;
         app.world_mut().run_schedule(Update);
-        check(&app, [0.0,1.0,0.0]);
-        stage.attribute("/Root.primvars:normals").unwrap().set_at(
-            Value::Vec3fVec(vec![openusd::gf::Vec3f::from([1.0,0.0,0.0])]), openusd::usd::TimeCode::new(10.0)).unwrap();
+        check(&app, [0.0, 1.0, 0.0]);
+        stage
+            .attribute("/Root.primvars:normals")
+            .unwrap()
+            .set_at(
+                Value::Vec3fVec(vec![openusd::gf::Vec3f::from([1.0, 0.0, 0.0])]),
+                openusd::usd::TimeCode::new(10.0),
+            )
+            .unwrap();
         app.world_mut().run_schedule(Update);
-        check(&app, [1.0,0.0,0.0]);
-        stage.attribute("/Root.primvars:normals").unwrap().block().unwrap();
+        check(&app, [1.0, 0.0, 0.0]);
+        stage
+            .attribute("/Root.primvars:normals")
+            .unwrap()
+            .block()
+            .unwrap();
         app.world_mut().run_schedule(Update);
-        check(&app, [0.0,0.0,1.0]);
+        check(&app, [0.0, 0.0, 1.0]);
     }
 
     /// A static (unanimated) prim is not flagged animated and ignores StageTime.
     #[test]
     fn static_prim_not_animated() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("static.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("static.usda")
+            .unwrap();
         stage
             .define_prim("/Fixed")
             .unwrap()
@@ -2982,7 +4137,10 @@ def Xform "Root" {
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/skel_test_simple.usda"
         );
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path).expect("open skel_test_simple.usda");
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(path)
+            .expect("open skel_test_simple.usda");
         let live = LiveStage::new(stage);
         let mut world = World::new();
         world.insert_resource(Assets::<Mesh>::default());
@@ -3021,7 +4179,10 @@ def Xform "Root" {
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/payload_test.usda"
         );
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path).expect("open payload_test.usda");
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(path)
+            .expect("open payload_test.usda");
         let live = LiveStage::new(stage);
         let mut world = reflect_world(|r| r.register::<Health>());
         let mut map = PrimEntities::default();
@@ -3029,16 +4190,26 @@ def Xform "Root" {
 
         // Payload loads by default → subtree present.
         let root = map.entity("/Root").expect("payload prim projected");
-        let child = map.entity("/Root/Child").expect("payloaded child projected");
+        let child = map
+            .entity("/Root/Child")
+            .expect("payloaded child projected");
         assert_eq!(world.get::<Health>(child).unwrap().max, 42.0);
-        assert!(world.get::<UsdPayloadUnloaded>(root).is_none(), "loaded → no marker");
+        assert!(
+            world.get::<UsdPayloadUnloaded>(root).is_none(),
+            "loaded → no marker"
+        );
 
         // Unload → child despawns, root becomes a placeholder.
         live.unload_payload("/Root");
         assert!(live.has_changes(), "unload fired the change sink");
         apply_changes(&mut world, &live, &mut map);
-        assert!(map.entity("/Root/Child").is_none(), "payloaded subtree despawned");
-        let root = map.entity("/Root").expect("payload prim stays as placeholder");
+        assert!(
+            map.entity("/Root/Child").is_none(),
+            "payloaded subtree despawned"
+        );
+        let root = map
+            .entity("/Root")
+            .expect("payload prim stays as placeholder");
         assert!(
             world.get::<UsdPayloadUnloaded>(root).is_some(),
             "unloaded payload marked"
@@ -3047,10 +4218,14 @@ def Xform "Root" {
         // Load → subtree re-materializes, marker cleared.
         live.load_payload("/Root");
         apply_changes(&mut world, &live, &mut map);
-        let child = map.entity("/Root/Child").expect("payloaded child re-materialized");
+        let child = map
+            .entity("/Root/Child")
+            .expect("payloaded child re-materialized");
         assert_eq!(world.get::<Health>(child).unwrap().max, 42.0);
         assert!(
-            world.get::<UsdPayloadUnloaded>(map.entity("/Root").unwrap()).is_none(),
+            world
+                .get::<UsdPayloadUnloaded>(map.entity("/Root").unwrap())
+                .is_none(),
             "reload cleared the marker"
         );
     }
@@ -3064,7 +4239,10 @@ def Xform "Root" {
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/variant_test.usda"
         );
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path).expect("open variant_test.usda");
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(path)
+            .expect("open variant_test.usda");
         let live = LiveStage::new(stage);
         let mut world = reflect_world(|r| r.register::<Health>());
         let mut map = PrimEntities::default();
@@ -3105,18 +4283,29 @@ def Xform "Root" {
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/variant_test.usda"
         );
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).open(path).unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(path)
+            .unwrap();
         let mut hist = crate::editor::EditorSession::new(stage.clone());
         let prim = openusd::sdf::path("/Prop").unwrap();
-        let sel =
-            |s: &Stage| crate::read::variants::variant_selection(s, &prim, "look");
+        let sel = |s: &Stage| crate::read::variants::variant_selection(s, &prim, "look");
 
-        hist.edit(crate::editor::EditorEdit::Variant { prim: "/Prop".into(), set: "look".into(), selection: "blue".into() }).unwrap();
+        hist.edit(crate::editor::EditorEdit::Variant {
+            prim: "/Prop".into(),
+            set: "look".into(),
+            selection: "blue".into(),
+        })
+        .unwrap();
         assert_eq!(sel(&stage).as_deref(), Some("blue"));
         assert!(hist.undo().unwrap());
         assert_eq!(sel(&stage).as_deref(), Some("red"), "undo → prior variant");
         assert!(hist.redo().unwrap());
-        assert_eq!(sel(&stage).as_deref(), Some("blue"), "redo → switched variant");
+        assert_eq!(
+            sel(&stage).as_deref(),
+            Some("blue"),
+            "redo → switched variant"
+        );
     }
 
     #[test]

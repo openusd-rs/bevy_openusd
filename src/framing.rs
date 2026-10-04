@@ -1,50 +1,82 @@
+use crate::environment::ViewerGrid;
 use bevy::camera::primitives::Aabb;
+use bevy::dev_tools::infinite_grid::InfiniteGridSettings;
 use bevy::prelude::*;
 use mara::ui::modules::bevy as mara_bevy;
 use usd_bevy::live::PrimEntities;
-use bevy::dev_tools::infinite_grid::InfiniteGridSettings;
-use crate::environment::ViewerGrid;
 
 #[derive(Resource, Clone, Default)]
 pub struct FrameRequest(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 impl FrameRequest {
-    pub fn request(&self) { self.0.store(true, std::sync::atomic::Ordering::Relaxed); }
+    pub fn request(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 pub fn configure(app: &mut App) {
-    app.init_resource::<FrameRequest>().add_systems(Last, frame_opened_document);
+    app.init_resource::<FrameRequest>()
+        .add_systems(Last, frame_opened_document);
 }
 
 fn frame_opened_document(
     prims: Res<PrimEntities>,
-    meshes: Query<(Entity, &Mesh3d, Option<&Aabb>, &GlobalTransform, &InheritedVisibility,
-        Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&bevy::mesh::morph::MeshMorphWeights>)>,
+    meshes: Query<(
+        Entity,
+        &Mesh3d,
+        Option<&Aabb>,
+        &GlobalTransform,
+        &InheritedVisibility,
+        Option<&bevy::mesh::skinning::SkinnedMesh>,
+        Option<&bevy::mesh::morph::MeshMorphWeights>,
+    )>,
     mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
     parents: Query<&ChildOf>,
-    mut cameras: Query<(&mut mara_bevy::ChaseCamera, &mut Transform, &mut Projection), (With<Camera3d>, Without<ViewerGrid>)>,
-    mut grids: Query<(&mut Transform, &mut InfiniteGridSettings), (With<ViewerGrid>, Without<Camera3d>)>,
+    mut cameras: Query<
+        (&mut mara_bevy::ChaseCamera, &mut Transform, &mut Projection),
+        (With<Camera3d>, Without<ViewerGrid>),
+    >,
+    mut grids: Query<
+        (&mut Transform, &mut InfiniteGridSettings),
+        (With<ViewerGrid>, Without<Camera3d>),
+    >,
     mut framed: Local<Option<Entity>>,
     request: Res<FrameRequest>,
 ) {
     let requested = request.0.swap(false, std::sync::atomic::Ordering::Relaxed);
-    let Some(root) = prims.entity("/") else { return };
-    if *framed == Some(root) && !requested { return; }
+    let Some(root) = prims.entity("/") else {
+        return;
+    };
+    if *framed == Some(root) && !requested {
+        return;
+    }
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
     for (entity, mesh, bounds, transform, visibility, skin, morph) in &meshes {
-        if !belongs_to_document(entity, root, &parents) { continue; }
-        if !visibility.get() { continue; }
+        if !belongs_to_document(entity, root, &parents) {
+            continue;
+        }
+        if !visibility.get() {
+            continue;
+        }
         if let Some((min, max)) = mesh_bounds.get(mesh, transform, bounds, skin, morph) {
             low = low.min(min);
             high = high.max(max);
         }
     }
-    if !low.is_finite() || !high.is_finite() { return; }
+    if !low.is_finite() || !high.is_finite() {
+        return;
+    }
     let mut applied = false;
     for (mut rig, mut transform, mut projection) in &mut cameras {
-        let Projection::Perspective(perspective) = &mut *projection else { continue };
-        let Some((focus, radius, distance)) = fit(low, high, perspective.fov, perspective.aspect_ratio) else { continue };
+        let Projection::Perspective(perspective) = &mut *projection else {
+            continue;
+        };
+        let Some((focus, radius, distance)) =
+            fit(low, high, perspective.fov, perspective.aspect_ratio)
+        else {
+            continue;
+        };
         rig.focus = focus;
         rig.min_distance = (radius * 0.01).max(0.0001);
         rig.max_distance = (distance * 1000.0).max(rig.max_distance);
@@ -68,16 +100,29 @@ fn frame_opened_document(
 
 fn belongs_to_document(mut entity: Entity, root: Entity, parents: &Query<&ChildOf>) -> bool {
     for _ in 0..256 {
-        if entity == root { return true; }
-        let Ok(parent) = parents.get(entity) else { return false };
+        if entity == root {
+            return true;
+        }
+        let Ok(parent) = parents.get(entity) else {
+            return false;
+        };
         entity = parent.parent();
     }
     false
 }
 
 fn fit(low: Vec3, high: Vec3, fov: f32, aspect: f32) -> Option<(Vec3, f32, f32)> {
-    if !low.is_finite() || !high.is_finite() || !fov.is_finite() || !aspect.is_finite()
-        || aspect <= 0.0 || fov <= 0.0 || fov >= std::f32::consts::PI || low.cmpgt(high).any() { return None; }
+    if !low.is_finite()
+        || !high.is_finite()
+        || !fov.is_finite()
+        || !aspect.is_finite()
+        || aspect <= 0.0
+        || fov <= 0.0
+        || fov >= std::f32::consts::PI
+        || low.cmpgt(high).any()
+    {
+        return None;
+    }
     let focus = low * 0.5 + high * 0.5;
     let radius = ((high - low).length() * 0.5).max(0.001);
     let half_angle = (fov * 0.5).min(((fov * 0.5).tan() * aspect).atan());
@@ -95,26 +140,72 @@ mod tests {
         app.init_resource::<PrimEntities>();
         configure(&mut app);
         let root = app.world_mut().spawn_empty().id();
-        app.world_mut().resource_mut::<PrimEntities>().insert("/", root);
-        let mut spawn_mesh = |visible, x| app.world_mut().spawn((Mesh3d::default(),
-            Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE),
-            GlobalTransform::from_translation(Vec3::new(x, 0.0, 0.0)), visible, ChildOf(root))).id();
+        app.world_mut()
+            .resource_mut::<PrimEntities>()
+            .insert("/", root);
+        let mut spawn_mesh = |visible, x| {
+            app.world_mut()
+                .spawn((
+                    Mesh3d::default(),
+                    Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE),
+                    GlobalTransform::from_translation(Vec3::new(x, 0.0, 0.0)),
+                    visible,
+                    ChildOf(root),
+                ))
+                .id()
+        };
         spawn_mesh(InheritedVisibility::VISIBLE, 0.0);
         let hidden = spawn_mesh(InheritedVisibility::HIDDEN, 10.0);
-        let camera = app.world_mut().spawn((Camera3d::default(), mara_bevy::ChaseCamera::default(),
-            Transform::default(), Projection::Perspective(PerspectiveProjection::default()))).id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                mara_bevy::ChaseCamera::default(),
+                Transform::default(),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
         app.update();
-        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().focus, Vec3::ZERO);
-        app.world_mut().entity_mut(hidden).insert(InheritedVisibility::VISIBLE);
+        assert_eq!(
+            app.world()
+                .get::<mara_bevy::ChaseCamera>(camera)
+                .unwrap()
+                .focus,
+            Vec3::ZERO
+        );
+        app.world_mut()
+            .entity_mut(hidden)
+            .insert(InheritedVisibility::VISIBLE);
         app.update();
-        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().focus, Vec3::ZERO);
+        assert_eq!(
+            app.world()
+                .get::<mara_bevy::ChaseCamera>(camera)
+                .unwrap()
+                .focus,
+            Vec3::ZERO
+        );
         let request = app.world().resource::<FrameRequest>().clone();
         request.request();
         app.update();
-        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().focus, Vec3::new(5.0, 0.0, 0.0));
-        app.world_mut().get_mut::<mara_bevy::ChaseCamera>(camera).unwrap().distance = 123.0;
+        assert_eq!(
+            app.world()
+                .get::<mara_bevy::ChaseCamera>(camera)
+                .unwrap()
+                .focus,
+            Vec3::new(5.0, 0.0, 0.0)
+        );
+        app.world_mut()
+            .get_mut::<mara_bevy::ChaseCamera>(camera)
+            .unwrap()
+            .distance = 123.0;
         app.update();
-        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().distance, 123.0);
+        assert_eq!(
+            app.world()
+                .get::<mara_bevy::ChaseCamera>(camera)
+                .unwrap()
+                .distance,
+            123.0
+        );
     }
 
     #[test]
@@ -124,21 +215,62 @@ mod tests {
         configure(&mut app);
         let root = app.world_mut().spawn_empty().id();
         let prim = app.world_mut().spawn(ChildOf(root)).id();
-        app.world_mut().resource_mut::<PrimEntities>().insert("/", root);
-        app.world_mut().resource_mut::<PrimEntities>().insert("/Mesh", prim);
-        let child = app.world_mut().spawn((Mesh3d::default(), ChildOf(prim),
-            Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE),
-            GlobalTransform::from_translation(Vec3::new(0.0, -5.0, 0.0)), InheritedVisibility::VISIBLE)).id();
-        app.world_mut().spawn((Mesh3d::default(), Aabb::from_min_max(Vec3::splat(-1000.0), Vec3::splat(1000.0)),
-            GlobalTransform::default(), InheritedVisibility::VISIBLE));
-        let grid = app.world_mut().spawn((ViewerGrid, Transform::default(), InfiniteGridSettings::default())).id();
-        let camera = app.world_mut().spawn((Camera3d::default(), mara_bevy::ChaseCamera::default(),
-            Transform::default(), Projection::Perspective(PerspectiveProjection::default()))).id();
+        app.world_mut()
+            .resource_mut::<PrimEntities>()
+            .insert("/", root);
+        app.world_mut()
+            .resource_mut::<PrimEntities>()
+            .insert("/Mesh", prim);
+        let child = app
+            .world_mut()
+            .spawn((
+                Mesh3d::default(),
+                ChildOf(prim),
+                Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE),
+                GlobalTransform::from_translation(Vec3::new(0.0, -5.0, 0.0)),
+                InheritedVisibility::VISIBLE,
+            ))
+            .id();
+        app.world_mut().spawn((
+            Mesh3d::default(),
+            Aabb::from_min_max(Vec3::splat(-1000.0), Vec3::splat(1000.0)),
+            GlobalTransform::default(),
+            InheritedVisibility::VISIBLE,
+        ));
+        let grid = app
+            .world_mut()
+            .spawn((
+                ViewerGrid,
+                Transform::default(),
+                InfiniteGridSettings::default(),
+            ))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                mara_bevy::ChaseCamera::default(),
+                Transform::default(),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
         app.update();
-        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().focus, Vec3::new(0.0, -5.0, 0.0));
+        assert_eq!(
+            app.world()
+                .get::<mara_bevy::ChaseCamera>(camera)
+                .unwrap()
+                .focus,
+            Vec3::new(0.0, -5.0, 0.0)
+        );
         let floor = app.world().get::<Transform>(grid).unwrap().translation.y;
         assert!(floor < -6.0 && floor > -6.01);
-        assert_eq!(app.world().get::<GlobalTransform>(child).unwrap().translation(), Vec3::new(0.0, -5.0, 0.0));
+        assert_eq!(
+            app.world()
+                .get::<GlobalTransform>(child)
+                .unwrap()
+                .translation(),
+            Vec3::new(0.0, -5.0, 0.0)
+        );
     }
 
     #[test]
@@ -147,24 +279,66 @@ mod tests {
         app.init_resource::<PrimEntities>();
         configure(&mut app);
         let root = app.world_mut().spawn_empty().id();
-        let mesh = app.world_mut().spawn((Mesh3d::default(),
-            Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE),
-            GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 0.0)),
-            InheritedVisibility::VISIBLE, ChildOf(root))).id();
-        app.world_mut().resource_mut::<PrimEntities>().insert("/", root);
-        app.world_mut().resource_mut::<PrimEntities>().insert("/Mesh", mesh);
-        let camera = app.world_mut().spawn((Camera3d::default(), mara_bevy::ChaseCamera::default(),
-            Transform::default(), Projection::Perspective(PerspectiveProjection::default()))).id();
+        let mesh = app
+            .world_mut()
+            .spawn((
+                Mesh3d::default(),
+                Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE),
+                GlobalTransform::from_translation(Vec3::new(20.0, 0.0, 0.0)),
+                InheritedVisibility::VISIBLE,
+                ChildOf(root),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<PrimEntities>()
+            .insert("/", root);
+        app.world_mut()
+            .resource_mut::<PrimEntities>()
+            .insert("/Mesh", mesh);
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                mara_bevy::ChaseCamera::default(),
+                Transform::default(),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
         app.update();
-        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().focus, Vec3::new(20.0, 0.0, 0.0));
-        app.world_mut().get_mut::<mara_bevy::ChaseCamera>(camera).unwrap().distance = 123.0;
+        assert_eq!(
+            app.world()
+                .get::<mara_bevy::ChaseCamera>(camera)
+                .unwrap()
+                .focus,
+            Vec3::new(20.0, 0.0, 0.0)
+        );
+        app.world_mut()
+            .get_mut::<mara_bevy::ChaseCamera>(camera)
+            .unwrap()
+            .distance = 123.0;
         app.update();
-        assert_eq!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().distance, 123.0);
+        assert_eq!(
+            app.world()
+                .get::<mara_bevy::ChaseCamera>(camera)
+                .unwrap()
+                .distance,
+            123.0
+        );
         let replacement = app.world_mut().spawn_empty().id();
-        app.world_mut().entity_mut(mesh).insert(ChildOf(replacement));
-        app.world_mut().resource_mut::<PrimEntities>().insert("/", replacement);
+        app.world_mut()
+            .entity_mut(mesh)
+            .insert(ChildOf(replacement));
+        app.world_mut()
+            .resource_mut::<PrimEntities>()
+            .insert("/", replacement);
         app.update();
-        assert_ne!(app.world().get::<mara_bevy::ChaseCamera>(camera).unwrap().distance, 123.0);
+        assert_ne!(
+            app.world()
+                .get::<mara_bevy::ChaseCamera>(camera)
+                .unwrap()
+                .distance,
+            123.0
+        );
     }
 
     #[test]
@@ -182,11 +356,19 @@ mod tests {
     #[test]
     fn world_bounds_include_rotation_scale_and_translation() {
         let bounds = Aabb::from_min_max(Vec3::splat(-1.0), Vec3::ONE);
-        let transform = GlobalTransform::from(Transform::from_xyz(10.0, 0.0, 0.0)
-            .with_scale(Vec3::new(2.0, 1.0, 3.0)).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)));
+        let transform = GlobalTransform::from(
+            Transform::from_xyz(10.0, 0.0, 0.0)
+                .with_scale(Vec3::new(2.0, 1.0, 3.0))
+                .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+        );
         let mut world = World::new();
-        let mut state = bevy::ecs::system::SystemState::<usd_bevy::mesh::bounds::MeshBounds>::new(&mut world);
-        let (low, high) = state.get(&world).unwrap().get(&Mesh3d::default(), &transform, Some(&bounds), None, None).unwrap();
+        let mut state =
+            bevy::ecs::system::SystemState::<usd_bevy::mesh::bounds::MeshBounds>::new(&mut world);
+        let (low, high) = state
+            .get(&world)
+            .unwrap()
+            .get(&Mesh3d::default(), &transform, Some(&bounds), None, None)
+            .unwrap();
         assert!(low.abs_diff_eq(Vec3::new(7.0, -1.0, -2.0), 0.0001));
         assert!(high.abs_diff_eq(Vec3::new(13.0, 1.0, 2.0), 0.0001));
     }

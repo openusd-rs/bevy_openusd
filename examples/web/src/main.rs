@@ -12,19 +12,40 @@ use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot, UsdSceneState,
 
 /// The flagship showcase and every file it composes, keyed by relative path.
 const SHOWCASE: [(&str, &[u8]); 6] = [
-    ("flagship_showcase.usda", include_bytes!("../../../assets/flagship_showcase.usda")),
-    ("animation_showcase.usda", include_bytes!("../../../assets/animation_showcase.usda")),
-    ("morph_animation.usda", include_bytes!("../../../assets/morph_animation.usda")),
-    ("blendshape_test.usda", include_bytes!("../../../assets/blendshape_test.usda")),
-    ("skel_test_simple.usda", include_bytes!("../../../assets/skel_test_simple.usda")),
-    ("dome_directional.hdr", include_bytes!("../../../assets/dome_directional.hdr")),
+    (
+        "flagship_showcase.usda",
+        include_bytes!("../../../assets/flagship_showcase.usda"),
+    ),
+    (
+        "animation_showcase.usda",
+        include_bytes!("../../../assets/animation_showcase.usda"),
+    ),
+    (
+        "morph_animation.usda",
+        include_bytes!("../../../assets/morph_animation.usda"),
+    ),
+    (
+        "blendshape_test.usda",
+        include_bytes!("../../../assets/blendshape_test.usda"),
+    ),
+    (
+        "skel_test_simple.usda",
+        include_bytes!("../../../assets/skel_test_simple.usda"),
+    ),
+    (
+        "dome_directional.hdr",
+        include_bytes!("../../../assets/dome_directional.hdr"),
+    ),
 ];
 
 fn main() {
     App::new()
         .add_plugins(
             DefaultPlugins
-                .set(AssetPlugin { meta_check: AssetMetaCheck::Never, ..default() })
+                .set(AssetPlugin {
+                    meta_check: AssetMetaCheck::Never,
+                    ..default()
+                })
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "usd_bevy web".into(),
@@ -89,10 +110,18 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         Transform::default(),
-        Orbit { yaw: 0.0, pitch: -0.45, distance: 14.0, focus: Vec3::new(0.0, 1.0, 0.0) },
+        Orbit {
+            yaw: 0.0,
+            pitch: -0.45,
+            distance: 14.0,
+            focus: Vec3::new(0.0, 1.0, 0.0),
+        },
     ));
     commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, ..default() },
+        DirectionalLight {
+            shadow_maps_enabled: true,
+            ..default()
+        },
         Transform::from_xyz(4.0, 10.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
@@ -108,7 +137,10 @@ fn setup(
         .and_then(|source| UsdScene::from_source(source, &mut images));
     match scene {
         Ok(scene) => {
-            commands.spawn((UsdSceneRoot(scenes.add(scene)), Transform::from_xyz(4.0, 0.0, 0.0).with_scale(Vec3::splat(0.5))));
+            commands.spawn((
+                UsdSceneRoot(scenes.add(scene)),
+                Transform::from_xyz(4.0, 0.0, 0.0).with_scale(Vec3::splat(0.5)),
+            ));
         }
         Err(error) => error!("in-memory showcase: {error}"),
     }

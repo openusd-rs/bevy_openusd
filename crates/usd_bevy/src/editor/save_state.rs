@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use openusd::usd::Stage;
+use std::collections::BTreeMap;
 
 fn content_hash(stage: &Stage, id: &str) -> Option<blake3::Hash> {
     let layer = stage.layer(id)?;
@@ -7,7 +7,10 @@ fn content_hash(stage: &Stage, id: &str) -> Option<blake3::Hash> {
     let mut hash = blake3::Hasher::new();
     for path in data.spec_paths() {
         hash_part(&mut hash, path.as_str().as_bytes());
-        hash_part(&mut hash, format!("{:?}", data.spec_type(&path)?).as_bytes());
+        hash_part(
+            &mut hash,
+            format!("{:?}", data.spec_type(&path)?).as_bytes(),
+        );
         let mut fields = data.list_fields(&path)?;
         fields.sort_unstable();
         hash.update(&(fields.len() as u64).to_le_bytes());
@@ -19,7 +22,12 @@ fn content_hash(stage: &Stage, id: &str) -> Option<blake3::Hash> {
             if let Some(bytes) = numeric_array_bytes(&value) {
                 hash_part(&mut hash, bytes);
             } else {
-                hash_part(&mut hash, openusd::usda::TextWriter::value_to_string(&value).ok()?.as_bytes());
+                hash_part(
+                    &mut hash,
+                    openusd::usda::TextWriter::value_to_string(&value)
+                        .ok()?
+                        .as_bytes(),
+                );
             }
         }
     }
@@ -39,10 +47,34 @@ fn numeric_array_bytes(value: &openusd::sdf::Value) -> Option<&[u8]> {
             _ => None,
         } };
     }
-    arrays!(UcharVec, IntVec, UintVec, Int64Vec, Uint64Vec, HalfVec, FloatVec, DoubleVec,
-        Vec2hVec, Vec2fVec, Vec2dVec, Vec2iVec, Vec3hVec, Vec3fVec, Vec3dVec, Vec3iVec,
-        Vec4hVec, Vec4fVec, Vec4dVec, Vec4iVec, QuathVec, QuatfVec, QuatdVec,
-        Matrix2dVec, Matrix3dVec, Matrix4dVec)
+    arrays!(
+        UcharVec,
+        IntVec,
+        UintVec,
+        Int64Vec,
+        Uint64Vec,
+        HalfVec,
+        FloatVec,
+        DoubleVec,
+        Vec2hVec,
+        Vec2fVec,
+        Vec2dVec,
+        Vec2iVec,
+        Vec3hVec,
+        Vec3fVec,
+        Vec3dVec,
+        Vec3iVec,
+        Vec4hVec,
+        Vec4fVec,
+        Vec4dVec,
+        Vec4iVec,
+        QuathVec,
+        QuatfVec,
+        QuatdVec,
+        Matrix2dVec,
+        Matrix3dVec,
+        Matrix4dVec
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +108,12 @@ impl SaveState {
         let _ = self.states(stage, revisions, 0);
     }
 
-    pub fn states(&mut self, stage: &Stage, revisions: &BTreeMap<String, u64>, structure: u64) -> BTreeMap<String, LayerSaveState> {
+    pub fn states(
+        &mut self,
+        stage: &Stage,
+        revisions: &BTreeMap<String, u64>,
+        structure: u64,
+    ) -> BTreeMap<String, LayerSaveState> {
         if self.structure != structure || structure == u64::MAX {
             self.cache.clear();
             self.structure = structure;
@@ -88,9 +125,16 @@ impl SaveState {
             if current.0 != revision || revision == u64::MAX {
                 *current = (revision, content_hash(stage, &id));
             }
-            if self.loaded_document && revision == 0 && !self.baselines.contains_key(&id)
-                && stage.layer(&id).is_some_and(|layer| layer.resolved_path().is_some()) {
-                if let Some(hash) = current.1 { self.baselines.insert(id.clone(), hash); }
+            if self.loaded_document
+                && revision == 0
+                && !self.baselines.contains_key(&id)
+                && stage
+                    .layer(&id)
+                    .is_some_and(|layer| layer.resolved_path().is_some())
+            {
+                if let Some(hash) = current.1 {
+                    self.baselines.insert(id.clone(), hash);
+                }
             }
             let state = match (self.baselines.get(&id), current.1) {
                 (Some(baseline), Some(hash)) if *baseline == hash => LayerSaveState::Clean,
@@ -107,9 +151,18 @@ impl SaveState {
 
     pub fn saved_to_source(&mut self, stage: &Stage, id: &str, filename: &str) {
         let Some(layer) = stage.layer(id) else { return };
-        let Some(source) = layer.resolved_path() else { return };
-        let (Ok(source), Ok(destination)) = (std::fs::canonicalize(source), std::fs::canonicalize(filename)) else { return };
-        if source != destination { return; }
+        let Some(source) = layer.resolved_path() else {
+            return;
+        };
+        let (Ok(source), Ok(destination)) = (
+            std::fs::canonicalize(source),
+            std::fs::canonicalize(filename),
+        ) else {
+            return;
+        };
+        if source != destination {
+            return;
+        }
         if let Some(hash) = content_hash(stage, id) {
             self.baselines.insert(id.to_string(), hash);
             self.cache.remove(id);

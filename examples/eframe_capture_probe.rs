@@ -1,5 +1,8 @@
-use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
 use eframe::egui;
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 struct Probe {
     output: Option<PathBuf>,
@@ -20,7 +23,9 @@ impl mara::window::WindowApp for MaraProbe {
             context: ctx.__internal_egui_ctx().clone(),
             probe: Probe {
                 output: std::env::var_os("USD_HOST_PROBE_SCREENSHOT").map(PathBuf::from),
-                started: Instant::now(), requested: false, announced: false,
+                started: Instant::now(),
+                requested: false,
+                announced: false,
                 delay: capture_delay().expect("validated capture delay"),
             },
         }
@@ -65,14 +70,22 @@ fn write_capture(path: &Path, image: &egui::ColorImage) -> Result<(), Box<dyn st
     }
     let mut bytes = Vec::new();
     {
-        let mut encoder = png::Encoder::new(&mut bytes, u32::try_from(width)?, u32::try_from(height)?);
+        let mut encoder =
+            png::Encoder::new(&mut bytes, u32::try_from(width)?, u32::try_from(height)?);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        let pixels: Vec<_> = image.pixels.iter().flat_map(|pixel| pixel.to_array()).collect();
+        let pixels: Vec<_> = image
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_array())
+            .collect();
         encoder.write_header()?.write_image_data(&pixels)?;
     }
     use std::io::Write;
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
     file.write_all(&bytes)?;
     Ok(())
 }
@@ -86,26 +99,49 @@ impl eframe::App for Probe {
 impl Probe {
     fn paint(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect();
-        for (index, color) in [egui::Color32::from_rgb(180,40,40),
-            egui::Color32::from_rgb(40,150,60), egui::Color32::from_rgb(40,70,180)].into_iter().enumerate() {
+        for (index, color) in [
+            egui::Color32::from_rgb(180, 40, 40),
+            egui::Color32::from_rgb(40, 150, 60),
+            egui::Color32::from_rgb(40, 70, 180),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let left = rect.left() + rect.width() * index as f32 / 3.0;
-            ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(left, rect.top()),
-                egui::vec2(rect.width() / 3.0, rect.height())), 0, color);
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(left, rect.top()),
+                    egui::vec2(rect.width() / 3.0, rect.height()),
+                ),
+                0,
+                color,
+            );
         }
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
-            "Host GPU readback - no Bevy / USD", egui::FontId::proportional(32.0), egui::Color32::WHITE);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Host GPU readback - no Bevy / USD",
+            egui::FontId::proportional(32.0),
+            egui::Color32::WHITE,
+        );
         for event in ui.input(|input| input.events.clone()) {
             if let egui::Event::Screenshot { image, .. } = event {
                 if let Some(path) = self.output.take() {
                     match write_capture(&path, &image) {
-                        Ok(()) => eprintln!("HOST_READBACK_OK {} {}x{}", path.display(), image.size[0], image.size[1]),
+                        Ok(()) => eprintln!(
+                            "HOST_READBACK_OK {} {}x{}",
+                            path.display(),
+                            image.size[0],
+                            image.size[1]
+                        ),
                         Err(error) => eprintln!("HOST_READBACK_ERROR {error}"),
                     }
                 }
             }
         }
         if self.output.is_some() && !self.requested && self.started.elapsed() >= self.delay {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             self.requested = true;
             eprintln!("HOST_READBACK_REQUESTED");
         }
@@ -113,7 +149,8 @@ impl Probe {
             self.output = None;
             eprintln!("HOST_READBACK_ERROR screenshot callback timed out");
         }
-        ui.ctx().request_repaint_after(Duration::from_secs_f64(1.0 / 60.0));
+        ui.ctx()
+            .request_repaint_after(Duration::from_secs_f64(1.0 / 60.0));
         if !self.announced {
             eprintln!("USD_VIEWER_UI_UPDATED");
             self.announced = true;
@@ -130,7 +167,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let present_mode = present_mode(mode.ok().as_deref())?;
     let output = std::env::var_os("USD_HOST_PROBE_SCREENSHOT").map(PathBuf::from);
     if let Some(path) = &output {
-        if path.extension().is_none_or(|extension| extension != "png") || std::fs::symlink_metadata(path).is_ok() {
+        if path.extension().is_none_or(|extension| extension != "png")
+            || std::fs::symlink_metadata(path).is_ok()
+        {
             return Err("USD_HOST_PROBE_SCREENSHOT must be a new .png path".into());
         }
     }
@@ -143,13 +182,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok("eframe") | Err(std::env::VarError::NotPresent) => {}
         _ => return Err("USD_HOST_PROBE_RUNNER must be mara or eframe".into()),
     }
-    eprintln!("EFRAME_CAPTURE_PROBE no Mara runner, no Bevy app, no USD stage, present_mode={present_mode:?}");
-    eframe::run_native("eframe capture probe", eframe::NativeOptions {
-        renderer: eframe::Renderer::Wgpu,
-        wgpu_options: egui_wgpu::WgpuConfiguration { present_mode, ..Default::default() },
-        viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 920.0]).with_decorations(false),
-        ..Default::default()
-    }, Box::new(move |_| Ok(Box::new(Probe { output, started: Instant::now(), requested: false, announced: false, delay }))))?;
+    eprintln!(
+        "EFRAME_CAPTURE_PROBE no Mara runner, no Bevy app, no USD stage, present_mode={present_mode:?}"
+    );
+    eframe::run_native(
+        "eframe capture probe",
+        eframe::NativeOptions {
+            renderer: eframe::Renderer::Wgpu,
+            wgpu_options: egui_wgpu::WgpuConfiguration {
+                present_mode,
+                ..Default::default()
+            },
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1440.0, 920.0])
+                .with_decorations(false),
+            ..Default::default()
+        },
+        Box::new(move |_| {
+            Ok(Box::new(Probe {
+                output,
+                started: Instant::now(),
+                requested: false,
+                announced: false,
+                delay,
+            }))
+        }),
+    )?;
     Ok(())
 }
 
@@ -164,21 +222,41 @@ fn readback_request_waits_for_delay_and_is_single_use() {
         delay: Duration::from_secs(60),
     };
     let capture_count = |output: egui::FullOutput| {
-        output.viewport_output[&egui::ViewportId::ROOT].commands.iter()
-            .filter(|command| matches!(command, egui::ViewportCommand::Screenshot(_))).count()
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .filter(|command| matches!(command, egui::ViewportCommand::Screenshot(_)))
+            .count()
     };
-    assert_eq!(capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))), 0);
+    assert_eq!(
+        capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))),
+        0
+    );
     probe.delay = Duration::ZERO;
-    assert_eq!(capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))), 1);
-    assert_eq!(capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))), 0);
+    assert_eq!(
+        capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))),
+        1
+    );
+    assert_eq!(
+        capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))),
+        0
+    );
 }
 
 #[test]
 fn wgpu_present_mode_is_explicit() {
     assert_eq!(present_mode(None), Ok(wgpu::PresentMode::AutoNoVsync));
-    assert_eq!(present_mode(Some("auto-no-vsync")), Ok(wgpu::PresentMode::AutoNoVsync));
-    assert_eq!(present_mode(Some("auto-vsync")), Ok(wgpu::PresentMode::AutoVsync));
-    for invalid in ["", "false", "fifo", "AutoVsync"] { assert!(present_mode(Some(invalid)).is_err()); }
+    assert_eq!(
+        present_mode(Some("auto-no-vsync")),
+        Ok(wgpu::PresentMode::AutoNoVsync)
+    );
+    assert_eq!(
+        present_mode(Some("auto-vsync")),
+        Ok(wgpu::PresentMode::AutoVsync)
+    );
+    for invalid in ["", "false", "fifo", "AutoVsync"] {
+        assert!(present_mode(Some(invalid)).is_err());
+    }
 }
 
 #[test]
@@ -188,11 +266,16 @@ fn host_readback_writes_rgba_and_preserves_existing_output() {
     let image = egui::ColorImage::new([2, 1], vec![egui::Color32::RED, egui::Color32::BLUE]);
     write_capture(&path, &image).unwrap();
     let bytes = std::fs::read(&path).unwrap();
-    let mut reader = png::Decoder::new(std::io::Cursor::new(&bytes)).read_info().unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&bytes))
+        .read_info()
+        .unwrap();
     let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
     let info = reader.next_frame(&mut pixels).unwrap();
-    assert_eq!((info.width, info.height, info.color_type), (2, 1, png::ColorType::Rgba));
-    assert_eq!(pixels, [255,0,0,255,0,0,255,255]);
+    assert_eq!(
+        (info.width, info.height, info.color_type),
+        (2, 1, png::ColorType::Rgba)
+    );
+    assert_eq!(pixels, [255, 0, 0, 255, 0, 0, 255, 255]);
     assert!(write_capture(&path, &image).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }

@@ -17,22 +17,64 @@ pub struct MaterialRoute;
 #[derive(Component, Debug)]
 pub struct UsdMaterialWarning(pub String);
 
-pub(crate) fn warn_geometry_inputs(mesh: &Mesh, material: &StandardMaterial, warnings: &mut Vec<String>) {
+pub(crate) fn warn_geometry_inputs(
+    mesh: &Mesh,
+    material: &StandardMaterial,
+    warnings: &mut Vec<String>,
+) {
     for (channel, attribute, label) in [
         (bevy::mesh::UvChannel::Uv0, Mesh::ATTRIBUTE_UV_0, "UV0"),
         (bevy::mesh::UvChannel::Uv1, Mesh::ATTRIBUTE_UV_1, "UV1"),
     ] {
-        if mesh.attribute(attribute).is_some() { continue; }
+        if mesh.attribute(attribute).is_some() {
+            continue;
+        }
         let textures = [
-            ("base color", material.base_color_texture.is_some(), &material.base_color_channel),
-            ("emissive", material.emissive_texture.is_some(), &material.emissive_channel),
-            ("metallic/roughness", material.metallic_roughness_texture.is_some(), &material.metallic_roughness_channel),
-            ("normal", material.normal_map_texture.is_some(), &material.normal_map_channel),
-            ("occlusion", material.occlusion_texture.is_some(), &material.occlusion_channel),
-            ("clearcoat", material.clearcoat_texture.is_some(), &material.clearcoat_channel),
-            ("clearcoat roughness", material.clearcoat_roughness_texture.is_some(), &material.clearcoat_roughness_channel),
-        ].into_iter().filter_map(|(name, present, requested)| (present && requested == &channel).then_some(name)).collect::<Vec<_>>();
-        if !textures.is_empty() { warnings.push(format!("mesh has no {label} coordinates requested by {} textures", textures.join(", "))); }
+            (
+                "base color",
+                material.base_color_texture.is_some(),
+                &material.base_color_channel,
+            ),
+            (
+                "emissive",
+                material.emissive_texture.is_some(),
+                &material.emissive_channel,
+            ),
+            (
+                "metallic/roughness",
+                material.metallic_roughness_texture.is_some(),
+                &material.metallic_roughness_channel,
+            ),
+            (
+                "normal",
+                material.normal_map_texture.is_some(),
+                &material.normal_map_channel,
+            ),
+            (
+                "occlusion",
+                material.occlusion_texture.is_some(),
+                &material.occlusion_channel,
+            ),
+            (
+                "clearcoat",
+                material.clearcoat_texture.is_some(),
+                &material.clearcoat_channel,
+            ),
+            (
+                "clearcoat roughness",
+                material.clearcoat_roughness_texture.is_some(),
+                &material.clearcoat_roughness_channel,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, present, requested)| (present && requested == &channel).then_some(name))
+        .collect::<Vec<_>>();
+        if !textures.is_empty() {
+            warnings.push(format!(
+                "mesh has no {label} coordinates requested by {} textures",
+                textures.join(", ")
+            ));
+        }
     }
     if material.normal_map_texture.is_some() && mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none() {
         warnings.push("normal mapping is ignored because the mesh has no tangent frame; provide nondegenerate UVs".into());
@@ -40,35 +82,68 @@ pub(crate) fn warn_geometry_inputs(mesh: &Mesh, material: &StandardMaterial, war
 }
 
 fn double_sided(ctx: &RouteCtx) -> bool {
-    ctx.stage.prim(ctx.path.clone()).ok()
-        .and_then(|prim| prim.attribute("doubleSided").get::<bool>().ok().flatten()).unwrap_or(false)
+    ctx.stage
+        .prim(ctx.path.clone())
+        .ok()
+        .and_then(|prim| prim.attribute("doubleSided").get::<bool>().ok().flatten())
+        .unwrap_or(false)
 }
 
 pub(crate) fn apply_sidedness(ctx: &RouteCtx, material: &mut StandardMaterial) {
     let double_sided = double_sided(ctx);
     material.double_sided = double_sided;
-    material.cull_mode = if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) };
+    material.cull_mode = if double_sided {
+        None
+    } else {
+        Some(bevy::render::render_resource::Face::Back)
+    };
 }
 
 pub(crate) fn default_material(ctx: &RouteCtx) -> StandardMaterial {
-    let opacity = crate::read::geom::read_primvar_float(ctx.stage, ctx.path, "primvars:displayOpacity", ctx.time).ok().flatten();
+    let opacity = crate::read::geom::read_primvar_float(
+        ctx.stage,
+        ctx.path,
+        "primvars:displayOpacity",
+        ctx.time,
+    )
+    .ok()
+    .flatten();
     default_material_with_opacity(ctx, opacity.as_ref())
 }
 
-pub(crate) fn default_material_with_opacity(ctx: &RouteCtx, opacity: Option<&crate::read::geom::MeshPrimvar<f32>>) -> StandardMaterial {
+pub(crate) fn default_material_with_opacity(
+    ctx: &RouteCtx,
+    opacity: Option<&crate::read::geom::MeshPrimvar<f32>>,
+) -> StandardMaterial {
     let mut material = StandardMaterial::default();
     apply_sidedness(ctx, &mut material);
     if let Some(opacity) = opacity {
         let translucent = |value: &f32| value.is_finite() && *value < 1.0;
-        let blend = if opacity.indices.is_empty() { opacity.values.iter().any(translucent) }
-            else { opacity.indices.iter().filter_map(|index| usize::try_from(*index).ok().and_then(|index| opacity.values.get(index))).any(translucent) };
-        if blend { material.alpha_mode = AlphaMode::Blend; }
+        let blend = if opacity.indices.is_empty() {
+            opacity.values.iter().any(translucent)
+        } else {
+            opacity
+                .indices
+                .iter()
+                .filter_map(|index| {
+                    usize::try_from(*index)
+                        .ok()
+                        .and_then(|index| opacity.values.get(index))
+                })
+                .any(translucent)
+        };
+        if blend {
+            material.alpha_mode = AlphaMode::Blend;
+        }
     }
     material
 }
 
 /// The prim's decoded preview material, if it has a binding that resolves.
-fn material_at(ctx: &RouteCtx, binding: &openusd::sdf::Path) -> anyhow::Result<ReadPreviewMaterial> {
+fn material_at(
+    ctx: &RouteCtx,
+    binding: &openusd::sdf::Path,
+) -> anyhow::Result<ReadPreviewMaterial> {
     read_preview_material_at(ctx.stage, binding, ctx.time)?
         .ok_or_else(|| anyhow::anyhow!("unsupported material surface at {binding}"))
 }
@@ -79,12 +154,18 @@ fn material_at(ctx: &RouteCtx, binding: &openusd::sdf::Path) -> anyhow::Result<R
 /// Non-send because it pins the stage it belongs to.
 pub(crate) struct ProjectionMaterials {
     stage: openusd::usd::Stage,
-    resolved: std::collections::HashMap<(String, Option<u64>, bool), (Handle<StandardMaterial>, Vec<String>)>,
+    resolved: std::collections::HashMap<
+        (String, Option<u64>, bool),
+        (Handle<StandardMaterial>, Vec<String>),
+    >,
 }
 
 impl ProjectionMaterials {
     pub(crate) fn new(stage: &openusd::usd::Stage) -> Self {
-        Self { stage: stage.clone(), resolved: Default::default() }
+        Self {
+            stage: stage.clone(),
+            resolved: Default::default(),
+        }
     }
 }
 
@@ -102,20 +183,48 @@ impl ProjectionMaterialReads {
     pub(crate) fn new(stage: &openusd::usd::Stage) -> Self {
         let dirty = std::rc::Rc::new(std::cell::Cell::new(false));
         let changed = dirty.clone();
-        let sink = stage.add_sink(move |_: &openusd::usd::Stage, _: &openusd::usd::CommittedChange<'_>| changed.set(true));
-        Self { stage: stage.clone(), sink, dirty, values: Default::default(), order: Default::default() }
+        let sink = stage.add_sink(
+            move |_: &openusd::usd::Stage, _: &openusd::usd::CommittedChange<'_>| changed.set(true),
+        );
+        Self {
+            stage: stage.clone(),
+            sink,
+            dirty,
+            values: Default::default(),
+            order: Default::default(),
+        }
     }
 
-    fn get(&mut self, binding: &openusd::sdf::Path, time: Option<f64>) -> Option<ReadPreviewMaterial> {
-        if self.dirty.replace(false) { self.values.clear(); self.order.clear(); }
-        self.values.get(&(binding.clone(), time.map(f64::to_bits))).cloned()
+    fn get(
+        &mut self,
+        binding: &openusd::sdf::Path,
+        time: Option<f64>,
+    ) -> Option<ReadPreviewMaterial> {
+        if self.dirty.replace(false) {
+            self.values.clear();
+            self.order.clear();
+        }
+        self.values
+            .get(&(binding.clone(), time.map(f64::to_bits)))
+            .cloned()
     }
 
-    fn insert(&mut self, binding: &openusd::sdf::Path, time: Option<f64>, read: &ReadPreviewMaterial) {
-        if self.dirty.get() { return; }
+    fn insert(
+        &mut self,
+        binding: &openusd::sdf::Path,
+        time: Option<f64>,
+        read: &ReadPreviewMaterial,
+    ) {
+        if self.dirty.get() {
+            return;
+        }
         let key = (binding.clone(), time.map(f64::to_bits));
         if !self.values.contains_key(&key) {
-            if self.values.len() == Self::CAPACITY && let Some(oldest) = self.order.pop_front() { self.values.remove(&oldest); }
+            if self.values.len() == Self::CAPACITY
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.values.remove(&oldest);
+            }
             self.order.push_back(key.clone());
         }
         self.values.insert(key, read.clone());
@@ -123,7 +232,9 @@ impl ProjectionMaterialReads {
 }
 
 impl Drop for ProjectionMaterialReads {
-    fn drop(&mut self) { self.stage.remove_sink(self.sink); }
+    fn drop(&mut self) {
+        self.stage.remove_sink(self.sink);
+    }
 }
 
 /// Opt-in material resolution costs and bounded binding-key observations.
@@ -143,20 +254,32 @@ pub struct MaterialResolveTimings {
 }
 
 impl MaterialResolveTimings {
-    pub fn distinct_keys(&self) -> usize { self.keys.len() }
+    pub fn distinct_keys(&self) -> usize {
+        self.keys.len()
+    }
 
     fn observe(&mut self, key: &(String, Option<u64>, bool)) {
-        if self.keys.len() < 65_536 { self.keys.insert(key.clone()); }
-        else if !self.keys.contains(key) { self.keys_capped = true; }
+        if self.keys.len() < 65_536 {
+            self.keys.insert(key.clone());
+        } else if !self.keys.contains(key) {
+            self.keys_capped = true;
+        }
     }
 }
 
 fn memo_key(ctx: &RouteCtx, binding: &openusd::sdf::Path) -> (String, Option<u64>, bool) {
-    (binding.to_string(), ctx.time.map(f64::to_bits), double_sided(ctx))
+    (
+        binding.to_string(),
+        ctx.time.map(f64::to_bits),
+        double_sided(ctx),
+    )
 }
 
 fn warn_material(world: &mut World, entity: Entity, ctx: &RouteCtx, message: String) {
-    if world.get::<UsdMaterialWarning>(entity).is_none_or(|old| old.0 != message) {
+    if world
+        .get::<UsdMaterialWarning>(entity)
+        .is_none_or(|old| old.0 != message)
+    {
         bevy::log::warn!("{}: {message}", ctx.prim_str());
     }
     world.entity_mut(entity).insert(UsdMaterialWarning(message));
@@ -182,8 +305,14 @@ fn to_standard_material(
     if let Some(r) = read.roughness {
         m.perceptual_roughness = r;
     }
-    if let Some(coat) = read.clearcoat { m.clearcoat = coat; }
-    if read.clearcoat.is_some() || read.clearcoat_roughness.is_some() || read.clearcoat_texture.is_some() || read.clearcoat_roughness_texture.is_some() {
+    if let Some(coat) = read.clearcoat {
+        m.clearcoat = coat;
+    }
+    if read.clearcoat.is_some()
+        || read.clearcoat_roughness.is_some()
+        || read.clearcoat_texture.is_some()
+        || read.clearcoat_roughness_texture.is_some()
+    {
         m.clearcoat_perceptual_roughness = read.clearcoat_roughness.unwrap_or(0.01);
     }
     if let Some(mtl) = read.metallic {
@@ -197,7 +326,8 @@ fn to_standard_material(
     }
     // Convert the USD UV transform through the mesh's V-flipped coordinate basis.
     if let Some(uv) = &read.uv_transform {
-        let flip = bevy::math::Affine2::from_scale_angle_translation(Vec2::new(1.0, -1.0), 0.0, Vec2::Y);
+        let flip =
+            bevy::math::Affine2::from_scale_angle_translation(Vec2::new(1.0, -1.0), 0.0, Vec2::Y);
         m.uv_transform = flip * *uv * flip;
     }
     let texture = |path: &Option<String>, srgb: bool| -> Option<Handle<Image>> {
@@ -231,20 +361,28 @@ pub(crate) fn resolve_material(
         timing.errors += u64::from(binding.is_err());
         timing.binding += started.elapsed();
     }
-    let Some(binding) = binding? else { return Ok(None) };
+    let Some(binding) = binding? else {
+        return Ok(None);
+    };
     let key = memo_key(ctx, &binding);
-    if profiling { world.resource_mut::<MaterialResolveTimings>().observe(&key); }
+    if profiling {
+        world.resource_mut::<MaterialResolveTimings>().observe(&key);
+    }
     if let Some(memo) = world.get_non_send::<ProjectionMaterials>()
         && memo.stage.ptr_eq(ctx.stage)
         && let Some(resolved) = memo.resolved.get(&key)
     {
         let resolved = resolved.clone();
-        if profiling { world.resource_mut::<MaterialResolveTimings>().cache_hits += 1; }
+        if profiling {
+            world.resource_mut::<MaterialResolveTimings>().cache_hits += 1;
+        }
         return Ok(Some(resolved));
     }
     let started = profiling.then(bevy::platform::time::Instant::now);
-    let cached = world.get_non_send_mut::<ProjectionMaterialReads>()
-        .filter(|memo| memo.stage.ptr_eq(ctx.stage)).and_then(|mut memo| memo.get(&binding, ctx.time));
+    let cached = world
+        .get_non_send_mut::<ProjectionMaterialReads>()
+        .filter(|memo| memo.stage.ptr_eq(ctx.stage))
+        .and_then(|mut memo| memo.get(&binding, ctx.time));
     let read_cached = cached.is_some();
     let read = cached.map(Ok).unwrap_or_else(|| material_at(ctx, &binding));
     if let Some(started) = started {
@@ -254,8 +392,12 @@ pub(crate) fn resolve_material(
         timing.read_cache_hits += u64::from(read_cached);
     }
     let read = read?;
-    if !read_cached && let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterialReads>()
-        && memo.stage.ptr_eq(ctx.stage) { memo.insert(&binding, ctx.time, &read); }
+    if !read_cached
+        && let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterialReads>()
+        && memo.stage.ptr_eq(ctx.stage)
+    {
+        memo.insert(&binding, ctx.time, &read);
+    }
     let started = profiling.then(bevy::platform::time::Instant::now);
     let assets = world.get_resource::<AssetServer>().cloned();
     let textures = world.get_resource::<crate::asset::SnapshotTextures>();
@@ -265,9 +407,13 @@ pub(crate) fn resolve_material(
     for semantic in ["diffuse", "emissive", "normal"] {
         match super::color_texture::transformed(world, &read, semantic) {
             Ok(Some(handle)) => {
-                if semantic == "diffuse" { material.base_color_texture = Some(handle); }
-                else if semantic == "normal" { material.normal_map_texture = Some(handle); }
-                else { material.emissive_texture = Some(handle); }
+                if semantic == "diffuse" {
+                    material.base_color_texture = Some(handle);
+                } else if semantic == "normal" {
+                    material.normal_map_texture = Some(handle);
+                } else {
+                    material.emissive_texture = Some(handle);
+                }
             }
             Ok(None) => {}
             Err(error) => warnings.push(error.to_string()),
@@ -283,8 +429,12 @@ pub(crate) fn resolve_material(
     match super::texture_pack::metallic_roughness(world, &read) {
         Ok(packed) => {
             if packed.is_some() {
-                if read.metallic_texture.is_some() { material.metallic = read.metallic.unwrap_or(1.0); }
-                if read.roughness_texture.is_some() { material.perceptual_roughness = read.roughness.unwrap_or(1.0); }
+                if read.metallic_texture.is_some() {
+                    material.metallic = read.metallic.unwrap_or(1.0);
+                }
+                if read.roughness_texture.is_some() {
+                    material.perceptual_roughness = read.roughness.unwrap_or(1.0);
+                }
             }
             material.metallic_roughness_texture = packed;
         }
@@ -310,33 +460,50 @@ pub(crate) fn resolve_material(
             Err(error) => warnings.push(error.to_string()),
         }
     }
-    if let Some(started) = started { world.resource_mut::<MaterialResolveTimings>().preparing += started.elapsed(); }
+    if let Some(started) = started {
+        world.resource_mut::<MaterialResolveTimings>().preparing += started.elapsed();
+    }
     let started = profiling.then(bevy::platform::time::Instant::now);
     let handle = super::cache::intern_material(world, material);
-    if let Some(started) = started { world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed(); }
+    if let Some(started) = started {
+        world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed();
+    }
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
         && memo.stage.ptr_eq(ctx.stage)
     {
-        memo.resolved.insert(key, (handle.clone(), warnings.clone()));
+        memo.resolved
+            .insert(key, (handle.clone(), warnings.clone()));
     }
     Ok(Some((handle, warnings)))
 }
 
 impl PrimRoute for MaterialRoute {
-    fn matches(&self, _: &RouteCtx) -> bool { true }
+    fn matches(&self, _: &RouteCtx) -> bool {
+        true
+    }
 
     fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        if world.get::<Mesh3d>(entity).is_none() || world.get_resource::<Assets<StandardMaterial>>().is_none() {
+        if world.get::<Mesh3d>(entity).is_none()
+            || world.get_resource::<Assets<StandardMaterial>>().is_none()
+        {
             return;
         }
         let (handle, mut warnings) = match resolve_material(ctx, world) {
             Ok(Some(material)) => material,
-            Ok(None) => { world.entity_mut(entity).remove::<UsdMaterialWarning>(); return; }
-            Err(error) => { warn_material(world, entity, ctx, error.to_string()); return; }
+            Ok(None) => {
+                world.entity_mut(entity).remove::<UsdMaterialWarning>();
+                return;
+            }
+            Err(error) => {
+                warn_material(world, entity, ctx, error.to_string());
+                return;
+            }
         };
-        if let Some(mesh) = world.get::<Mesh3d>(entity)
+        if let Some(mesh) = world
+            .get::<Mesh3d>(entity)
             .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
-            && let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&handle) {
+            && let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&handle)
+        {
             warn_geometry_inputs(mesh, material, &mut warnings);
         }
         if warnings.is_empty() {
@@ -356,7 +523,8 @@ impl PrimRoute for MaterialRoute {
 #[cfg(test)]
 mod tests {
     fn read_cache_stage() -> openusd::usd::Stage {
-        crate::snippet::UsdSnippet::new(r#"#usda 1.0
+        crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
 def Material "Mat" {
     token outputs:surface.connect = </Mat/Shader.outputs:surface>
     def Shader "Shader" {
@@ -375,13 +543,25 @@ def Material "Mat" {
 def Cube "A" { rel material:binding = </Mat> bool doubleSided = false }
 def Cube "B" { rel material:binding = </Mat> bool doubleSided = true }
 def Cube "C" { rel material:binding = </Mat> }
-"#).open_stage().unwrap()
+"#,
+        )
+        .open_stage()
+        .unwrap()
     }
 
-    fn resolved_sample(stage: &openusd::usd::Stage, world: &mut World, path: &str, time: Option<f64>) -> anyhow::Result<StandardMaterial> {
+    fn resolved_sample(
+        stage: &openusd::usd::Stage,
+        world: &mut World,
+        path: &str,
+        time: Option<f64>,
+    ) -> anyhow::Result<StandardMaterial> {
         let path = openusd::sdf::path(path)?;
         let (handle, _) = resolve_material(&RouteCtx::at(stage, &path, time), world)?.unwrap();
-        Ok(world.resource::<Assets<StandardMaterial>>().get(&handle).unwrap().clone())
+        Ok(world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&handle)
+            .unwrap()
+            .clone())
     }
 
     #[test]
@@ -393,36 +573,96 @@ def Cube "C" { rel material:binding = </Mat> }
         world.init_resource::<Assets<Image>>();
         world.init_resource::<MaterialResolveTimings>();
         world.insert_non_send(ProjectionMaterialReads::new(&stage));
-        let read = read_preview_material_at(&stage, &openusd::sdf::path("/Mat").unwrap(), None).unwrap().unwrap();
-        let texture_key = (read.diffuse_texture.clone().unwrap(), read.texture_srgb("diffuse"));
+        let read = read_preview_material_at(&stage, &openusd::sdf::path("/Mat").unwrap(), None)
+            .unwrap()
+            .unwrap();
+        let texture_key = (
+            read.diffuse_texture.clone().unwrap(),
+            read.texture_srgb("diffuse"),
+        );
         let first = world.resource_mut::<Assets<Image>>().add(Image::default());
         let second = world.resource_mut::<Assets<Image>>().add(Image::default());
-        world.insert_resource(crate::asset::SnapshotTextures([(texture_key.clone(), first.clone())].into()));
+        world.insert_resource(crate::asset::SnapshotTextures(
+            [(texture_key.clone(), first.clone())].into(),
+        ));
         let a = resolved_sample(&stage, &mut world, "/A", None).unwrap();
-        world.resource_mut::<crate::asset::SnapshotTextures>().0.insert(texture_key, second.clone());
+        world
+            .resource_mut::<crate::asset::SnapshotTextures>()
+            .0
+            .insert(texture_key, second.clone());
         let b = resolved_sample(&stage, &mut world, "/B", None).unwrap();
         assert_eq!(a.base_color_texture, Some(first));
         assert_eq!(b.base_color_texture, Some(second));
         assert!(!a.double_sided && b.double_sided);
-        assert_eq!(world.resource::<MaterialResolveTimings>().read_cache_hits, 1);
-        assert_eq!(resolved_sample(&stage, &mut world, "/A", Some(0.0)).unwrap().perceptual_roughness, 0.2);
-        assert_eq!(resolved_sample(&stage, &mut world, "/A", Some(10.0)).unwrap().perceptual_roughness, 0.8);
-        stage.prim("/Mat/Shader").unwrap().attribute("inputs:roughness").set(0.6_f32).unwrap();
-        assert_eq!(resolved_sample(&stage, &mut world, "/A", None).unwrap().perceptual_roughness, 0.6);
-        assert_eq!(resolved_sample(&other, &mut world, "/A", None).unwrap().perceptual_roughness, 0.3);
-        stage.prim("/Mat/Shader").unwrap().attribute("info:id").set(openusd::tf::Token::from("Unsupported")).unwrap();
+        assert_eq!(
+            world.resource::<MaterialResolveTimings>().read_cache_hits,
+            1
+        );
+        assert_eq!(
+            resolved_sample(&stage, &mut world, "/A", Some(0.0))
+                .unwrap()
+                .perceptual_roughness,
+            0.2
+        );
+        assert_eq!(
+            resolved_sample(&stage, &mut world, "/A", Some(10.0))
+                .unwrap()
+                .perceptual_roughness,
+            0.8
+        );
+        stage
+            .prim("/Mat/Shader")
+            .unwrap()
+            .attribute("inputs:roughness")
+            .set(0.6_f32)
+            .unwrap();
+        assert_eq!(
+            resolved_sample(&stage, &mut world, "/A", None)
+                .unwrap()
+                .perceptual_roughness,
+            0.6
+        );
+        assert_eq!(
+            resolved_sample(&other, &mut world, "/A", None)
+                .unwrap()
+                .perceptual_roughness,
+            0.3
+        );
+        stage
+            .prim("/Mat/Shader")
+            .unwrap()
+            .attribute("info:id")
+            .set(openusd::tf::Token::from("Unsupported"))
+            .unwrap();
         assert!(resolved_sample(&stage, &mut world, "/A", None).is_err());
-        stage.prim("/Mat/Shader").unwrap().attribute("info:id").set(openusd::tf::Token::from("UsdPreviewSurface")).unwrap();
-        assert_eq!(resolved_sample(&stage, &mut world, "/A", None).unwrap().perceptual_roughness, 0.6);
+        stage
+            .prim("/Mat/Shader")
+            .unwrap()
+            .attribute("info:id")
+            .set(openusd::tf::Token::from("UsdPreviewSurface"))
+            .unwrap();
+        assert_eq!(
+            resolved_sample(&stage, &mut world, "/A", None)
+                .unwrap()
+                .perceptual_roughness,
+            0.6
+        );
     }
 
     #[test]
     fn live_material_reads_invalidate_during_projection_and_restore_scope() {
         struct Edit;
         impl PrimRoute for Edit {
-            fn matches(&self, ctx: &RouteCtx) -> bool { ctx.path.as_str() == "/A" }
+            fn matches(&self, ctx: &RouteCtx) -> bool {
+                ctx.path.as_str() == "/A"
+            }
             fn project(&self, ctx: &RouteCtx, _: &mut World, _: Entity) {
-                ctx.stage.prim("/Mat/Shader").unwrap().attribute("inputs:roughness").set(0.7_f32).unwrap();
+                ctx.stage
+                    .prim("/Mat/Shader")
+                    .unwrap()
+                    .attribute("inputs:roughness")
+                    .set(0.7_f32)
+                    .unwrap();
             }
         }
         let stage = read_cache_stage();
@@ -438,15 +678,30 @@ def Cube "C" { rel material:binding = </Mat> }
         let live = crate::live::LiveStage::new(stage);
         let mut map = crate::live::PrimEntities::default();
         crate::live::project_stage(&mut world, &live, &mut map);
-        assert!(world.non_send::<ProjectionMaterialReads>().stage.ptr_eq(&surrounding));
+        assert!(
+            world
+                .non_send::<ProjectionMaterialReads>()
+                .stage
+                .ptr_eq(&surrounding)
+        );
         let roughness = |path| {
-            let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap()).unwrap().0;
-            world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().perceptual_roughness
+            let handle = &world
+                .get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap())
+                .unwrap()
+                .0;
+            world
+                .resource::<Assets<StandardMaterial>>()
+                .get(handle)
+                .unwrap()
+                .perceptual_roughness
         };
         assert_eq!(roughness("/A"), 0.3);
         assert_eq!(roughness("/B"), 0.7);
         assert_eq!(roughness("/C"), 0.7);
-        assert_eq!(world.resource::<MaterialResolveTimings>().read_cache_hits, 1);
+        assert_eq!(
+            world.resource::<MaterialResolveTimings>().read_cache_hits,
+            1
+        );
         world.remove_non_send::<ProjectionMaterialReads>();
         let mut map = crate::live::PrimEntities::default();
         crate::live::project_stage(&mut world, &live, &mut map);
@@ -458,11 +713,18 @@ def Cube "C" { rel material:binding = </Mat> }
         let stage = read_cache_stage();
         let mut memo = ProjectionMaterialReads::new(&stage);
         for index in 0..=ProjectionMaterialReads::CAPACITY {
-            memo.insert(&openusd::sdf::path(format!("/M{index}")).unwrap(), None, &ReadPreviewMaterial::default());
+            memo.insert(
+                &openusd::sdf::path(format!("/M{index}")).unwrap(),
+                None,
+                &ReadPreviewMaterial::default(),
+            );
         }
         assert_eq!(memo.values.len(), ProjectionMaterialReads::CAPACITY);
         assert_eq!(memo.order.len(), ProjectionMaterialReads::CAPACITY);
-        assert!(memo.get(&openusd::sdf::path("/M0").unwrap(), None).is_none());
+        assert!(
+            memo.get(&openusd::sdf::path("/M0").unwrap(), None)
+                .is_none()
+        );
         let dirty = memo.dirty.clone();
         drop(memo);
         stage.define_prim("/Later").unwrap();
@@ -472,7 +734,9 @@ def Cube "C" { rel material:binding = </Mat> }
     #[test]
     fn interleaved_projection_jobs_retain_separate_material_memos() {
         use crate::live::ProjectionJob;
-        let stage = || crate::snippet::UsdSnippet::new(r#"#usda 1.0
+        let stage = || {
+            crate::snippet::UsdSnippet::new(
+                r#"#usda 1.0
 def Material "Mat" {
     token outputs:surface.connect = </Mat/Shader.outputs:surface>
     def Shader "Shader" {
@@ -483,7 +747,11 @@ def Material "Mat" {
 }
 def Cube "A" { rel material:binding = </Mat> }
 def Cube "B" { rel material:binding = </Mat> }
-"#).open_stage().unwrap();
+"#,
+            )
+            .open_stage()
+            .unwrap()
+        };
         let first = stage();
         let second = stage();
         let surrounding = stage();
@@ -496,15 +764,32 @@ def Cube "B" { rel material:binding = </Mat> }
         let b = world.spawn_empty().id();
         let (mut one, mut map_one) = ProjectionJob::begin(&mut world, &first, a);
         let (mut two, mut map_two) = ProjectionJob::begin(&mut world, &second, b);
-        assert!(world.non_send::<ProjectionMaterials>().stage.ptr_eq(&surrounding));
+        assert!(
+            world
+                .non_send::<ProjectionMaterials>()
+                .stage
+                .ptr_eq(&surrounding)
+        );
         for _ in 0..16 {
             let done_one = one.step(&mut world, &first, &mut map_one, std::time::Duration::ZERO);
             let done_two = two.step(&mut world, &second, &mut map_two, std::time::Duration::ZERO);
-            assert!(world.non_send::<ProjectionMaterials>().stage.ptr_eq(&surrounding));
-            if done_one && done_two { break; }
+            assert!(
+                world
+                    .non_send::<ProjectionMaterials>()
+                    .stage
+                    .ptr_eq(&surrounding)
+            );
+            if done_one && done_two {
+                break;
+            }
         }
-        let material = |map: &crate::live::PrimEntities, path|
-            world.get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap()).unwrap().0.id();
+        let material = |map: &crate::live::PrimEntities, path| {
+            world
+                .get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap())
+                .unwrap()
+                .0
+                .id()
+        };
         assert_eq!(material(&map_one, "/A"), material(&map_one, "/B"));
         assert_eq!(material(&map_two, "/A"), material(&map_two, "/B"));
         assert_ne!(material(&map_one, "/A"), material(&map_two, "/A"));
@@ -515,7 +800,10 @@ def Cube "B" { rel material:binding = </Mat> }
 
     #[test]
     fn texture_coordinate_diagnostics_follow_requested_channels() {
-        let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+        let mut mesh = Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        );
         let mut material = StandardMaterial::default();
         let mut warnings = Vec::new();
         warn_geometry_inputs(&mesh, &material, &mut warnings);
@@ -526,13 +814,21 @@ def Cube "B" { rel material:binding = </Mat> }
         material.metallic_roughness_texture = Some(Handle::default());
         material.occlusion_texture = Some(Handle::default());
         warn_geometry_inputs(&mesh, &material, &mut warnings);
-        assert_eq!(warnings, ["mesh has no UV0 coordinates requested by base color, metallic/roughness, occlusion textures",
-            "mesh has no UV1 coordinates requested by emissive textures"]);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.,0.];3]);
+        assert_eq!(
+            warnings,
+            [
+                "mesh has no UV0 coordinates requested by base color, metallic/roughness, occlusion textures",
+                "mesh has no UV1 coordinates requested by emissive textures"
+            ]
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0., 0.]; 3]);
         warnings.clear();
         warn_geometry_inputs(&mesh, &material, &mut warnings);
-        assert_eq!(warnings, ["mesh has no UV1 coordinates requested by emissive textures"]);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.,0.];3]);
+        assert_eq!(
+            warnings,
+            ["mesh has no UV1 coordinates requested by emissive textures"]
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0., 0.]; 3]);
         warnings.clear();
         warn_geometry_inputs(&mesh, &material, &mut warnings);
         assert!(warnings.is_empty());
@@ -541,8 +837,13 @@ def Cube "B" { rel material:binding = </Mat> }
     #[test]
     fn normal_tangent_diagnostics_cover_mesh_subsets_and_prototypes() {
         for uv in [false, true] {
-            let coords = if uv { "texCoord2f[] primvars:st = [(0,0),(1,0),(0,1)] (interpolation = \"vertex\")" } else { "" };
-            let mesh = format!(r#"
+            let coords = if uv {
+                "texCoord2f[] primvars:st = [(0,0),(1,0),(0,1)] (interpolation = \"vertex\")"
+            } else {
+                ""
+            };
+            let mesh = format!(
+                r#"
     uniform token subdivisionScheme = "none"
     point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]
     int[] faceVertexCounts = [3]
@@ -555,8 +856,10 @@ def Cube "B" { rel material:binding = </Mat> }
         int[] indices = [0]
         rel material:binding = </Mat>
     }}
-"#);
-            let text = format!(r#"#usda 1.0
+"#
+            );
+            let text = format!(
+                r#"#usda 1.0
 def Mesh "Plain" {{ {mesh} }}
 def Mesh "Proto" {{ {mesh} }}
 def BasisCurves "Curve" {{
@@ -579,72 +882,186 @@ def Material "Mat" {{
         token outputs:surface
     }}
 }}
-"#);
+"#
+            );
             let mut app = App::new();
-            app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
-            app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>().init_resource::<Assets<Image>>();
-            app.insert_resource(super::super::curves::UsdCurveSettings::default().with_surface_sides(Some(8)).unwrap());
+            app.add_plugins((
+                MinimalPlugins,
+                bevy::asset::AssetPlugin::default(),
+                crate::UsdPlugin,
+                crate::UsdAssetPlugin,
+            ));
+            app.init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>()
+                .init_resource::<Assets<Image>>();
+            app.insert_resource(
+                super::super::curves::UsdCurveSettings::default()
+                    .with_surface_sides(Some(8))
+                    .unwrap(),
+            );
             let source = crate::UsdSource::snapshot("normal.usda", text.as_bytes()).unwrap();
-            let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
+            let handle = app
+                .world_mut()
+                .resource_mut::<Assets<crate::UsdScene>>()
+                .add(crate::UsdScene {
+                    source,
+                    textures: default(),
+                });
             app.world_mut().spawn(crate::UsdSceneRoot(handle));
             app.update();
             let mut count = 0;
-            let mut query = app.world_mut().query::<(&Mesh3d, &MeshMaterial3d<StandardMaterial>, Option<&UsdMaterialWarning>)>();
+            let mut query = app.world_mut().query::<(
+                &Mesh3d,
+                &MeshMaterial3d<StandardMaterial>,
+                Option<&UsdMaterialWarning>,
+            )>();
             for (mesh, material, warning) in query.iter(app.world()) {
-                if app.world().resource::<Assets<StandardMaterial>>().get(&material.0).unwrap().normal_map_texture.is_none() { continue; }
+                if app
+                    .world()
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(&material.0)
+                    .unwrap()
+                    .normal_map_texture
+                    .is_none()
+                {
+                    continue;
+                }
                 count += 1;
                 let mesh = app.world().resource::<Assets<Mesh>>().get(&mesh.0).unwrap();
-                assert_eq!(warning.is_some_and(|warning| warning.0.contains("no tangent frame")), mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
-                assert_eq!(warning.is_some_and(|warning| warning.0.contains("no UV0 coordinates")), mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_none());
+                assert_eq!(
+                    warning.is_some_and(|warning| warning.0.contains("no tangent frame")),
+                    mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none()
+                );
+                assert_eq!(
+                    warning.is_some_and(|warning| warning.0.contains("no UV0 coordinates")),
+                    mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_none()
+                );
             }
-            assert!(count >= 5, "expected ordinary, subset, curve and instanced material entities, got {count}");
+            assert!(
+                count >= 5,
+                "expected ordinary, subset, curve and instanced material entities, got {count}"
+            );
         }
     }
 
     #[test]
     fn fallback_opacity_tracks_independent_mesh_shape_and_prototype_clocks() {
         use crate::instance::{UsdInstanceTime, UsdInstances};
-        for (inherited, bytes) in [(false, include_bytes!("../../../../assets/display_opacity.usda").as_slice()),
-            (true, include_bytes!("../../../../assets/inherited_display.usda").as_slice())] {
-        let source = crate::UsdSource::new("opacity.usda", bytes).unwrap();
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
-        app.init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>();
-        let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
-        let roots = [0,1].map(|_| app.world_mut().spawn((crate::UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 })).id());
-        for times in [[0.0,10.0], [10.0,0.0], [5.0,10.0]] {
-            for (root,time) in roots.into_iter().zip(times) { app.world_mut().get_mut::<UsdInstanceTime>(root).unwrap().current = time; }
-            app.update();
-            for (root,time) in roots.into_iter().zip(times) {
-                let instances = app.world().get_non_send::<UsdInstances>().unwrap();
-                let cube = instances.entity(root, "/Scene/Cube").unwrap();
-                let mesh = instances.entity(root, "/Scene/Mesh").unwrap();
-                let pi = instances.entity(root, "/Scene/PI").unwrap();
-                let copy = app.world().get::<Children>(pi).unwrap().iter().find(|entity|
-                    app.world().get::<super::super::instancer::UsdInstance>(*entity).is_some()).unwrap();
-                let prototype = app.world().get::<Children>(copy).unwrap().iter().find(|entity|
-                    app.world().get::<Mesh3d>(*entity).is_some()).unwrap();
-                for entity in [cube,mesh,prototype] {
-                    let material = app.world().resource::<Assets<StandardMaterial>>().get(&app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0).unwrap();
-                    assert_eq!(material.alpha_mode, if time == 10.0 { AlphaMode::Opaque } else { AlphaMode::Blend });
-                    assert_eq!(material.base_color.alpha(), 1.0);
-                    let mesh = app.world().resource::<Assets<Mesh>>().get(&app.world().get::<Mesh3d>(entity).unwrap().0).unwrap();
-                    let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colors") };
-                    let alpha = 0.2 + time as f32 * 0.08;
-                    assert!(colors.iter().all(|color| (color[3]-alpha).abs() < 1e-5));
-                    let fraction = if inherited { time as f32 / 10.0 } else { 0.0 };
-                    let expected = Vec3::new(0.8*(1.0-fraction),0.2,0.1+0.7*fraction);
-                    assert!(colors.iter().all(|color| Vec3::new(color[0],color[1],color[2]).abs_diff_eq(expected, 1e-5)));
+        for (inherited, bytes) in [
+            (
+                false,
+                include_bytes!("../../../../assets/display_opacity.usda").as_slice(),
+            ),
+            (
+                true,
+                include_bytes!("../../../../assets/inherited_display.usda").as_slice(),
+            ),
+        ] {
+            let source = crate::UsdSource::new("opacity.usda", bytes).unwrap();
+            let mut app = App::new();
+            app.add_plugins((
+                MinimalPlugins,
+                bevy::asset::AssetPlugin::default(),
+                crate::UsdPlugin,
+                crate::UsdAssetPlugin,
+            ));
+            app.init_resource::<Assets<Mesh>>()
+                .init_resource::<Assets<StandardMaterial>>();
+            let handle = app
+                .world_mut()
+                .resource_mut::<Assets<crate::UsdScene>>()
+                .add(crate::UsdScene {
+                    source,
+                    textures: default(),
+                });
+            let roots = [0, 1].map(|_| {
+                app.world_mut()
+                    .spawn((
+                        crate::UsdSceneRoot(handle.clone()),
+                        UsdInstanceTime { current: 0.0 },
+                    ))
+                    .id()
+            });
+            for times in [[0.0, 10.0], [10.0, 0.0], [5.0, 10.0]] {
+                for (root, time) in roots.into_iter().zip(times) {
+                    app.world_mut()
+                        .get_mut::<UsdInstanceTime>(root)
+                        .unwrap()
+                        .current = time;
+                }
+                app.update();
+                for (root, time) in roots.into_iter().zip(times) {
+                    let instances = app.world().get_non_send::<UsdInstances>().unwrap();
+                    let cube = instances.entity(root, "/Scene/Cube").unwrap();
+                    let mesh = instances.entity(root, "/Scene/Mesh").unwrap();
+                    let pi = instances.entity(root, "/Scene/PI").unwrap();
+                    let copy = app
+                        .world()
+                        .get::<Children>(pi)
+                        .unwrap()
+                        .iter()
+                        .find(|entity| {
+                            app.world()
+                                .get::<super::super::instancer::UsdInstance>(*entity)
+                                .is_some()
+                        })
+                        .unwrap();
+                    let prototype = app
+                        .world()
+                        .get::<Children>(copy)
+                        .unwrap()
+                        .iter()
+                        .find(|entity| app.world().get::<Mesh3d>(*entity).is_some())
+                        .unwrap();
+                    for entity in [cube, mesh, prototype] {
+                        let material = app
+                            .world()
+                            .resource::<Assets<StandardMaterial>>()
+                            .get(
+                                &app.world()
+                                    .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                                    .unwrap()
+                                    .0,
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            material.alpha_mode,
+                            if time == 10.0 {
+                                AlphaMode::Opaque
+                            } else {
+                                AlphaMode::Blend
+                            }
+                        );
+                        assert_eq!(material.base_color.alpha(), 1.0);
+                        let mesh = app
+                            .world()
+                            .resource::<Assets<Mesh>>()
+                            .get(&app.world().get::<Mesh3d>(entity).unwrap().0)
+                            .unwrap();
+                        let Some(bevy::mesh::VertexAttributeValues::Float32x4(colors)) =
+                            mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+                        else {
+                            panic!("colors")
+                        };
+                        let alpha = 0.2 + time as f32 * 0.08;
+                        assert!(colors.iter().all(|color| (color[3] - alpha).abs() < 1e-5));
+                        let fraction = if inherited { time as f32 / 10.0 } else { 0.0 };
+                        let expected = Vec3::new(0.8 * (1.0 - fraction), 0.2, 0.1 + 0.7 * fraction);
+                        assert!(colors.iter().all(|color| {
+                            Vec3::new(color[0], color[1], color[2]).abs_diff_eq(expected, 1e-5)
+                        }));
+                    }
                 }
             }
-        }
         }
     }
 
     #[test]
     fn shader_dependencies_sample_materials_for_independent_roots() {
         use crate::instance::{UsdInstanceTime, UsdInstances};
-        let source = crate::UsdSource::new("animated-material.usda", &br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "animated-material.usda",
+            &br#"#usda 1.0
 def Mesh "Mesh" {
     point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
     int[] faceVertexCounts = [3]
@@ -676,37 +1093,90 @@ def Shader "External" {
     float inputs:in2 = 0.5
     float outputs:out
 }
-"#[..]).unwrap();
+"#[..],
+        )
+        .unwrap();
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<StandardMaterial>>();
-        let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
-        let first = app.world_mut().spawn((crate::UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 })).id();
-        let second = app.world_mut().spawn((crate::UsdSceneRoot(handle), UsdInstanceTime { current: 10.0 })).id();
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source,
+                textures: default(),
+            });
+        let first = app
+            .world_mut()
+            .spawn((
+                crate::UsdSceneRoot(handle.clone()),
+                UsdInstanceTime { current: 0.0 },
+            ))
+            .id();
+        let second = app
+            .world_mut()
+            .spawn((
+                crate::UsdSceneRoot(handle),
+                UsdInstanceTime { current: 10.0 },
+            ))
+            .id();
         app.update();
         let entities = |world: &World, root| {
             let instances = world.get_non_send::<UsdInstances>().unwrap();
             let mesh = instances.entity(root, "/Mesh").unwrap();
             let pi = instances.entity(root, "/PI").unwrap();
-            let child = world.get::<Children>(pi).unwrap().iter().find(|child| world.get::<crate::route::instancer::UsdInstance>(*child).is_some()).unwrap();
+            let child = world
+                .get::<Children>(pi)
+                .unwrap()
+                .iter()
+                .find(|child| {
+                    world
+                        .get::<crate::route::instancer::UsdInstance>(*child)
+                        .is_some()
+                })
+                .unwrap();
             [mesh, child]
         };
         let a = entities(app.world(), first);
         let b = entities(app.world(), second);
         let check = |world: &World, entities: [Entity; 2], t: f32| {
             for entity in entities {
-                let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0;
-                let material = world.resource::<Assets<StandardMaterial>>().get(handle).unwrap();
-                assert_eq!(material.base_color, Color::linear_rgba(1.0-t, 0.0, t, 0.25+0.75*t));
-                assert!((material.perceptual_roughness - (0.2+0.6*t)).abs() < 1e-6);
+                let handle = &world
+                    .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                    .unwrap()
+                    .0;
+                let material = world
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(handle)
+                    .unwrap();
+                assert_eq!(
+                    material.base_color,
+                    Color::linear_rgba(1.0 - t, 0.0, t, 0.25 + 0.75 * t)
+                );
+                assert!((material.perceptual_roughness - (0.2 + 0.6 * t)).abs() < 1e-6);
                 assert_eq!(material.uv_transform.translation, Vec2::ZERO);
-                assert_eq!(material.alpha_mode, if t < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque });
+                assert_eq!(
+                    material.alpha_mode,
+                    if t < 1.0 {
+                        AlphaMode::Blend
+                    } else {
+                        AlphaMode::Opaque
+                    }
+                );
             }
         };
         check(app.world(), a, 0.0);
         check(app.world(), b, 1.0);
-        app.world_mut().get_mut::<UsdInstanceTime>(first).unwrap().current = 5.0;
+        app.world_mut()
+            .get_mut::<UsdInstanceTime>(first)
+            .unwrap()
+            .current = 5.0;
         app.update();
         assert_eq!(entities(app.world(), first), a);
         assert_eq!(entities(app.world(), second), b);
@@ -716,7 +1186,13 @@ def Shader "External" {
 
     #[test]
     fn dispatch_skips_non_geometry_and_reports_material_failures() {
-        let stage = crate::UsdSource::new("dispatch.usda", &b"#usda 1.0\ndef Xform \"Root\" { rel material:binding = </Missing> }\n"[..]).unwrap().open_stage().unwrap();
+        let stage = crate::UsdSource::new(
+            "dispatch.usda",
+            &b"#usda 1.0\ndef Xform \"Root\" { rel material:binding = </Missing> }\n"[..],
+        )
+        .unwrap()
+        .open_stage()
+        .unwrap();
         let path = openusd::sdf::path("/Root").unwrap();
         let ctx = RouteCtx::new(&stage, &path);
         let mut world = World::new();
@@ -727,15 +1203,24 @@ def Shader "External" {
         assert!(world.resource::<Assets<StandardMaterial>>().is_empty());
         world.entity_mut(entity).insert(Mesh3d::default());
         MaterialRoute.project(&ctx, &mut world, entity);
-        assert!(world.get::<UsdMaterialWarning>(entity).unwrap().0.contains("unsupported material surface"));
-        crate::authoring::set_relationship_targets(&stage, "/Root", "material:binding", &[]).unwrap();
+        assert!(
+            world
+                .get::<UsdMaterialWarning>(entity)
+                .unwrap()
+                .0
+                .contains("unsupported material surface")
+        );
+        crate::authoring::set_relationship_targets(&stage, "/Root", "material:binding", &[])
+            .unwrap();
         MaterialRoute.project(&ctx, &mut world, entity);
         assert!(world.get::<UsdMaterialWarning>(entity).is_none());
     }
 
     #[test]
     fn inherited_materials_keep_per_prim_sidedness_when_shared() {
-        let source = crate::UsdSource::new("sided.usda", &br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "sided.usda",
+            &br#"#usda 1.0
 def Xform "Group" {
     rel material:binding = </Mat>
     def Plane "A" {}
@@ -749,15 +1234,25 @@ def Material "Mat" {
         token outputs:surface
     }
 }
-"#[..]).unwrap();
+"#[..],
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         let mut world = World::new();
         world.insert_resource(Assets::<StandardMaterial>::default());
         world.init_resource::<super::super::cache::MaterialCache>();
         let a = world.spawn(Mesh3d::default()).id();
         let b = world.spawn(Mesh3d::default()).id();
-        MaterialRoute.project(&RouteCtx::new(&stage, &openusd::sdf::path("/Group/A").unwrap()), &mut world, a);
-        MaterialRoute.project(&RouteCtx::new(&stage, &openusd::sdf::path("/Group/B").unwrap()), &mut world, b);
+        MaterialRoute.project(
+            &RouteCtx::new(&stage, &openusd::sdf::path("/Group/A").unwrap()),
+            &mut world,
+            a,
+        );
+        MaterialRoute.project(
+            &RouteCtx::new(&stage, &openusd::sdf::path("/Group/B").unwrap()),
+            &mut world,
+            b,
+        );
         let a = &world.get::<MeshMaterial3d<StandardMaterial>>(a).unwrap().0;
         let b = &world.get::<MeshMaterial3d<StandardMaterial>>(b).unwrap().0;
         assert_ne!(a, b);
@@ -765,30 +1260,59 @@ def Material "Mat" {
         assert!(assets.get(a).unwrap().double_sided);
         assert!(assets.get(a).unwrap().cull_mode.is_none());
         assert!(!assets.get(b).unwrap().double_sided);
-        assert_eq!(assets.get(b).unwrap().cull_mode, Some(bevy::render::render_resource::Face::Back));
+        assert_eq!(
+            assets.get(b).unwrap().cull_mode,
+            Some(bevy::render::render_resource::Face::Back)
+        );
     }
 
     #[test]
     fn uv_transforms_preserve_usd_coordinates_after_v_flip() {
-        for (scale, rotation_deg, translation) in [([1.0,1.0], 0.0_f32, [0.0,0.0]),
-            ([1.0,1.0], 0.0, [0.0,0.5]), ([0.5,1.5], 90.0, [0.75,0.25]), ([-1.5,0.75], 37.0, [-0.2,0.6])] {
-            let uv = bevy::math::Affine2::from_scale_angle_translation(scale.into(), rotation_deg.to_radians(), translation.into());
-            let read = ReadPreviewMaterial { uv_transform: Some(uv), ..default() };
+        for (scale, rotation_deg, translation) in [
+            ([1.0, 1.0], 0.0_f32, [0.0, 0.0]),
+            ([1.0, 1.0], 0.0, [0.0, 0.5]),
+            ([0.5, 1.5], 90.0, [0.75, 0.25]),
+            ([-1.5, 0.75], 37.0, [-0.2, 0.6]),
+        ] {
+            let uv = bevy::math::Affine2::from_scale_angle_translation(
+                scale.into(),
+                rotation_deg.to_radians(),
+                translation.into(),
+            );
+            let read = ReadPreviewMaterial {
+                uv_transform: Some(uv),
+                ..default()
+            };
             let material = to_standard_material(&read, None, None);
             let (sin, cos) = rotation_deg.to_radians().sin_cos();
-            for st in [Vec2::ZERO, Vec2::ONE, Vec2::new(0.25, 0.75), Vec2::new(-0.5, 1.25)] {
+            for st in [
+                Vec2::ZERO,
+                Vec2::ONE,
+                Vec2::new(0.25, 0.75),
+                Vec2::new(-0.5, 1.25),
+            ] {
                 let scaled = st * Vec2::from(scale);
-                let transformed = Vec2::new(cos * scaled.x - sin * scaled.y, sin * scaled.x + cos * scaled.y) + Vec2::from(translation);
+                let transformed = Vec2::new(
+                    cos * scaled.x - sin * scaled.y,
+                    sin * scaled.x + cos * scaled.y,
+                ) + Vec2::from(translation);
                 let expected = Vec2::new(transformed.x, 1.0 - transformed.y);
-                let actual = material.uv_transform.transform_point2(Vec2::new(st.x, 1.0 - st.y));
-                assert!(actual.abs_diff_eq(expected, 1e-6), "{actual:?} != {expected:?}");
+                let actual = material
+                    .uv_transform
+                    .transform_point2(Vec2::new(st.x, 1.0 - st.y));
+                assert!(
+                    actual.abs_diff_eq(expected, 1e-6),
+                    "{actual:?} != {expected:?}"
+                );
             }
         }
     }
 
     #[test]
     fn preview_clearcoat_samples_map_to_bevy_and_keep_usd_roughness_default() {
-        let source = crate::UsdSource::snapshot("coat.usda", br#"#usda 1.0
+        let source = crate::UsdSource::snapshot(
+            "coat.usda",
+            br#"#usda 1.0
 def Material "Mat" {
     float inputs:coat.timeSamples = { 0: 0.2, 10: 0.8 }
     token outputs:surface.connect = </Mat/Surface.outputs:surface>
@@ -799,18 +1323,36 @@ def Material "Mat" {
         token outputs:surface
     }
 }
-"#.as_slice()).unwrap();
+"#
+            .as_slice(),
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         for (time, expected) in [(0., 0.2), (5., 0.5), (10., 0.8)] {
-            let read = crate::read::shade::read_preview_material_at(&stage,
-                &openusd::sdf::path("/Mat").unwrap(), Some(time)).unwrap().unwrap();
+            let read = crate::read::shade::read_preview_material_at(
+                &stage,
+                &openusd::sdf::path("/Mat").unwrap(),
+                Some(time),
+            )
+            .unwrap()
+            .unwrap();
             let material = to_standard_material(&read, None, None);
             assert!((material.clearcoat - expected).abs() < 1e-6);
             assert_eq!(material.clearcoat_perceptual_roughness, 0.15);
         }
-        let material = to_standard_material(&ReadPreviewMaterial { clearcoat: Some(0.5), ..default() }, None, None);
+        let material = to_standard_material(
+            &ReadPreviewMaterial {
+                clearcoat: Some(0.5),
+                ..default()
+            },
+            None,
+            None,
+        );
         assert_eq!(material.clearcoat_perceptual_roughness, 0.01);
-        assert_eq!(to_standard_material(&ReadPreviewMaterial::default(), None, None).clearcoat, 0.0);
+        assert_eq!(
+            to_standard_material(&ReadPreviewMaterial::default(), None, None).clearcoat,
+            0.0
+        );
     }
 
     #[test]
@@ -839,18 +1381,31 @@ def Material "Mat" {
         let mut images = Assets::<Image>::default();
         let handle = images.add(Image::default());
         let mut textures = crate::asset::SnapshotTextures::default();
-        textures.0.insert(("emission.png".into(), true), handle.clone());
-        let mut read = ReadPreviewMaterial { emissive_texture: Some("emission.png".into()), ..default() };
+        textures
+            .0
+            .insert(("emission.png".into(), true), handle.clone());
+        let mut read = ReadPreviewMaterial {
+            emissive_texture: Some("emission.png".into()),
+            ..default()
+        };
         let material = to_standard_material(&read, None, Some(&textures));
         assert_eq!(material.emissive_texture, Some(handle));
         assert_eq!(material.emissive, LinearRgba::WHITE);
-        assert_eq!(to_standard_material(&read, None, None).emissive, LinearRgba::BLACK);
+        assert_eq!(
+            to_standard_material(&read, None, None).emissive,
+            LinearRgba::BLACK
+        );
         for color in [[0.0; 3], [0.25, 0.5, 2.0]] {
             read.emissive_color = Some(color);
-            assert_eq!(to_standard_material(&read, None, Some(&textures)).emissive,
-                LinearRgba::rgb(color[0], color[1], color[2]));
+            assert_eq!(
+                to_standard_material(&read, None, Some(&textures)).emissive,
+                LinearRgba::rgb(color[0], color[1], color[2])
+            );
         }
-        assert_eq!(to_standard_material(&ReadPreviewMaterial::default(), None, None).emissive, LinearRgba::BLACK);
+        assert_eq!(
+            to_standard_material(&ReadPreviewMaterial::default(), None, None).emissive,
+            LinearRgba::BLACK
+        );
     }
 
     #[test]
@@ -873,10 +1428,24 @@ def Material "Mat" {
 
     #[test]
     fn opacity_threshold_uses_alpha_mask() {
-        let read = ReadPreviewMaterial { opacity: Some(0.25), opacity_texture: Some("alpha.png".into()), opacity_threshold: Some(0.5), ..Default::default() };
-        assert_eq!(to_standard_material(&read, None, None).alpha_mode, AlphaMode::Mask(0.5));
-        let read = ReadPreviewMaterial { opacity_threshold: None, ..read };
-        assert_eq!(to_standard_material(&read, None, None).alpha_mode, AlphaMode::Blend);
+        let read = ReadPreviewMaterial {
+            opacity: Some(0.25),
+            opacity_texture: Some("alpha.png".into()),
+            opacity_threshold: Some(0.5),
+            ..Default::default()
+        };
+        assert_eq!(
+            to_standard_material(&read, None, None).alpha_mode,
+            AlphaMode::Mask(0.5)
+        );
+        let read = ReadPreviewMaterial {
+            opacity_threshold: None,
+            ..read
+        };
+        assert_eq!(
+            to_standard_material(&read, None, None).alpha_mode,
+            AlphaMode::Blend
+        );
     }
 
     #[test]

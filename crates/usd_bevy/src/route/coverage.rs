@@ -9,8 +9,8 @@
 //! without re-walking the stage.
 
 use bevy::prelude::*;
-use openusd_schemas::render::SettingsSchema;
 use openusd_schemas::proc::GenerativeProceduralSchema;
+use openusd_schemas::render::SettingsSchema;
 use openusd_schemas::ui::BackdropSchema;
 
 use openusd::sdf::Value;
@@ -75,11 +75,12 @@ impl PrimRoute for RenderSettingsRoute {
             return;
         };
         let marker = UsdRenderSettings {
-            included_purposes: token_vec(
-                rs.included_purposes_attr().get::<Value>().ok().flatten(),
-            ),
+            included_purposes: token_vec(rs.included_purposes_attr().get::<Value>().ok().flatten()),
             color_space: token_string(
-                rs.rendering_color_space_attr().get::<Value>().ok().flatten(),
+                rs.rendering_color_space_attr()
+                    .get::<Value>()
+                    .ok()
+                    .flatten(),
             ),
         };
         if let Ok(mut e) = world.get_entity_mut(entity) {
@@ -142,12 +143,19 @@ mod tests {
 
     #[test]
     fn metadata_routes_remove_stale_markers_on_type_changes() {
-        use crate::live::{LiveStage, PrimEntities, project_stage, apply_changes};
+        use crate::live::{LiveStage, PrimEntities, apply_changes, project_stage};
         use crate::route::audio::{UsdSpatialAudio, UsdVolume};
         #[derive(Component)]
         struct RuntimeOnly;
-        let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("markers.usda").unwrap();
-        stage.define_prim("/Prim").unwrap().set_type_name("SpatialAudio").unwrap();
+        let stage = openusd::usd::Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("markers.usda")
+            .unwrap();
+        stage
+            .define_prim("/Prim")
+            .unwrap()
+            .set_type_name("SpatialAudio")
+            .unwrap();
         let live = LiveStage::new(stage);
         let mut world = World::new();
         let mut map = PrimEntities::default();
@@ -156,15 +164,39 @@ mod tests {
         world.entity_mut(entity).insert(RuntimeOnly);
         let child = world.spawn((RuntimeOnly, ChildOf(entity))).id();
         assert!(world.get::<UsdSpatialAudio>(entity).is_some());
-        for kind in ["Volume", "RenderSettings", "GenerativeProcedural", "Backdrop", "Xform", "SpatialAudio", "Xform"] {
-            live.stage.prim("/Prim").unwrap().set_type_name(kind).unwrap();
+        for kind in [
+            "Volume",
+            "RenderSettings",
+            "GenerativeProcedural",
+            "Backdrop",
+            "Xform",
+            "SpatialAudio",
+            "Xform",
+        ] {
+            live.stage
+                .prim("/Prim")
+                .unwrap()
+                .set_type_name(kind)
+                .unwrap();
             apply_changes(&mut world, &live, &mut map);
             assert_eq!(map.entity("/Prim"), Some(entity));
-            assert_eq!(world.get::<UsdSpatialAudio>(entity).is_some(), kind == "SpatialAudio");
+            assert_eq!(
+                world.get::<UsdSpatialAudio>(entity).is_some(),
+                kind == "SpatialAudio"
+            );
             assert_eq!(world.get::<UsdVolume>(entity).is_some(), kind == "Volume");
-            assert_eq!(world.get::<UsdRenderSettings>(entity).is_some(), kind == "RenderSettings");
-            assert_eq!(world.get::<UsdProcedural>(entity).is_some(), kind == "GenerativeProcedural");
-            assert_eq!(world.get::<UsdBackdrop>(entity).is_some(), kind == "Backdrop");
+            assert_eq!(
+                world.get::<UsdRenderSettings>(entity).is_some(),
+                kind == "RenderSettings"
+            );
+            assert_eq!(
+                world.get::<UsdProcedural>(entity).is_some(),
+                kind == "GenerativeProcedural"
+            );
+            assert_eq!(
+                world.get::<UsdBackdrop>(entity).is_some(),
+                kind == "Backdrop"
+            );
             assert!(world.get::<RuntimeOnly>(entity).is_some());
             assert!(world.get::<RuntimeOnly>(child).is_some());
         }
@@ -175,7 +207,10 @@ mod tests {
 
     #[test]
     fn render_proc_ui_project_markers() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("cov.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("cov.usda")
+            .unwrap();
         RenderSettings::define(&stage, "/Render/Settings").unwrap();
         stage
             .define_prim("/Render")

@@ -1,5 +1,9 @@
-use std::{cell::{Cell, RefCell}, collections::BTreeMap, rc::Rc};
 use openusd::usd::{CommittedChange, Stage, StageSink, StageSinkId};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+};
 
 #[derive(Clone, Default)]
 struct Changes(Rc<RefCell<BTreeMap<String, u64>>>, Rc<Cell<u64>>);
@@ -29,7 +33,11 @@ impl LayerChanges {
     pub fn new(stage: &Stage) -> Self {
         let changes = Changes::default();
         let sink = stage.add_sink(changes.clone());
-        Self { stage: stage.clone(), sink, changes }
+        Self {
+            stage: stage.clone(),
+            sink,
+            changes,
+        }
     }
 
     pub fn revisions(&self) -> BTreeMap<String, u64> {
@@ -37,11 +45,15 @@ impl LayerChanges {
         self.changes.0.borrow().clone()
     }
 
-    pub fn structural_revision(&self) -> u64 { self.changes.1.get() }
+    pub fn structural_revision(&self) -> u64 {
+        self.changes.1.get()
+    }
 }
 
 impl Drop for LayerChanges {
-    fn drop(&mut self) { self.stage.remove_sink(self.sink); }
+    fn drop(&mut self) {
+        self.stage.remove_sink(self.sink);
+    }
 }
 
 #[cfg(test)]

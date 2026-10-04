@@ -2,8 +2,8 @@
 //! openusd's `Prim`/`Attribute`/`Relationship` handles. The live projection
 //! (`crate::live`) reads geometry/transforms/visibility through these.
 
-pub mod geom;
 pub mod curves;
+pub mod geom;
 pub mod shade;
 pub mod skel;
 pub mod subdivision;

@@ -12,7 +12,10 @@ mod propagation;
 
 /// Exact linear transform and USD inheritance reset applied after Bevy propagation.
 #[derive(Component, Clone, Debug)]
-pub struct UsdTransformOverride { residual: Mat4, reset: bool }
+pub struct UsdTransformOverride {
+    residual: Mat4,
+    reset: bool,
+}
 
 /// Invalid authored transform that left the last projected pose unchanged.
 #[derive(Component, Clone, Debug)]
@@ -20,9 +23,13 @@ pub struct UsdTransformError(pub String);
 
 /// Updates USD affine globals before camera frusta and GPU joint palettes.
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum UsdTransformSystems { Propagate }
+pub enum UsdTransformSystems {
+    Propagate,
+}
 
-pub(crate) fn configure(app: &mut App) { propagation::configure(app); }
+pub(crate) fn configure(app: &mut App) {
+    propagation::configure(app);
+}
 
 /// Maps an `xformOp` stack to [`Transform`]. Applies to every prim — an
 /// unauthored transform reads as identity, matching USD's Xformable fallback.

@@ -12,9 +12,9 @@ use bevy::prelude::*;
 use openusd_schemas::media::SpatialAudioSchema;
 
 use openusd::sdf::Value;
+use openusd::usd::Stage;
 use openusd_schemas::media::SpatialAudio;
 use openusd_schemas::vol::{Field3DAsset, FieldAsset, OpenVDBAsset, Volume};
-use openusd::usd::Stage;
 
 use super::{PrimRoute, RouteCtx};
 
@@ -98,9 +98,7 @@ impl PrimRoute for SpatialAudioRoute {
             file: path_string(audio.file_path_attr().get::<Value>().ok().flatten())
                 .unwrap_or_default(),
             aural_mode: token_string(audio.aural_mode_attr().get::<Value>().ok().flatten()),
-            playback_mode: token_string(
-                audio.playback_mode_attr().get::<Value>().ok().flatten(),
-            ),
+            playback_mode: token_string(audio.playback_mode_attr().get::<Value>().ok().flatten()),
             gain: audio.gain_attr().get::<f64>().ok().flatten().unwrap_or(1.0),
         };
         if let Ok(mut e) = world.get_entity_mut(entity) {
@@ -168,17 +166,24 @@ fn field_asset_data<F: FieldAsset>(f: &F) -> (String, Option<String>, Option<i32
 
 #[cfg(test)]
 mod tests {
-    use openusd_schemas::vol::VolumeFieldAsset;
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
     use openusd::sdf;
     use openusd::usd::Stage;
+    use openusd_schemas::vol::VolumeFieldAsset;
 
     #[test]
     fn spatial_audio_projects_marker() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("audio.usda").unwrap();
-        stage.define_prim("/World").unwrap().set_type_name("Xform").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("audio.usda")
+            .unwrap();
+        stage
+            .define_prim("/World")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
         let audio = SpatialAudio::define(&stage, "/World/Ambient").unwrap();
         audio
             .create_file_path_attr()
@@ -201,8 +206,15 @@ mod tests {
 
     #[test]
     fn volume_resolves_field_assets() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("vol.usda").unwrap();
-        stage.define_prim("/World").unwrap().set_type_name("Xform").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("vol.usda")
+            .unwrap();
+        stage
+            .define_prim("/World")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
         // The field target is a real OpenVDBAsset with a file + grid name.
         let field = OpenVDBAsset::define(&stage, "/World/density").unwrap();
         field
@@ -232,6 +244,10 @@ mod tests {
         assert_eq!(f.binding, "density");
         assert_eq!(f.prim, "/World/density");
         assert_eq!(f.file, "./smoke.vdb", "resolved through to the .vdb file");
-        assert_eq!(f.grid.as_deref(), Some("density"), "grid name from fieldName");
+        assert_eq!(
+            f.grid.as_deref(),
+            Some("density"),
+            "grid name from fieldName"
+        );
     }
 }

@@ -37,9 +37,7 @@ use bevy::prelude::*;
 use bevy::reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
 use bevy::reflect::structs::DynamicStruct;
 use bevy::reflect::tuple::DynamicTuple;
-use bevy::reflect::{
-    GetPath, PartialReflect, ReflectRef, TypeInfo, std_traits::ReflectDefault,
-};
+use bevy::reflect::{GetPath, PartialReflect, ReflectRef, TypeInfo, std_traits::ReflectDefault};
 use openusd::sdf::Value;
 
 use super::{PrimRoute, RouteCtx};
@@ -90,10 +88,7 @@ fn parse_attr(name: &str) -> Option<(String, String)> {
     let rest = name.strip_prefix(NS)?;
     let mut segs = rest.split(':');
     let ty = segs.next().filter(|s| !s.is_empty())?.to_string();
-    let field: Vec<String> = segs
-        .filter(|s| !s.is_empty())
-        .map(decode_index)
-        .collect();
+    let field: Vec<String> = segs.filter(|s| !s.is_empty()).map(decode_index).collect();
     if field.is_empty() {
         return Some((ty, String::new()));
     }
@@ -131,7 +126,10 @@ pub(crate) fn resolve<'a>(
 /// each as `(reflect_field_path, composed_value_or_none)`. `None` value means
 /// no layer currently authors an opinion (a cleared field).
 fn collect(ctx: &RouteCtx) -> Groups {
-    let prim = ctx.stage.prim(ctx.path.clone()).expect("validated USD path");
+    let prim = ctx
+        .stage
+        .prim(ctx.path.clone())
+        .expect("validated USD path");
     let Ok(names) = prim.property_names() else {
         return Vec::new();
     };
@@ -441,11 +439,7 @@ fn synthesize_default(type_path: &str) -> Option<Box<dyn PartialReflect>> {
 /// fields fall through to the normal coercion (which won't match, and warns).
 /// Path resolution is currently Bevy-asset-root-relative; layer-relative
 /// resolution is the openusd-blocked part.
-fn try_set_handle(
-    field: &mut dyn PartialReflect,
-    v: &Value,
-    assets: Option<&AssetServer>,
-) -> bool {
+fn try_set_handle(field: &mut dyn PartialReflect, v: &Value, assets: Option<&AssetServer>) -> bool {
     let Some(server) = assets else {
         return false;
     };
@@ -494,7 +488,11 @@ fn as_integer(v: &Value) -> Option<i128> {
         Value::Bool(x) => i128::from(*x),
         Value::Float(_) | Value::Double(_) | Value::Half(_) => {
             let n = as_f64(v)?;
-            if !n.is_finite() || n.fract() != 0.0 || n < i128::MIN as f64 || n >= -(i128::MIN as f64) {
+            if !n.is_finite()
+                || n.fract() != 0.0
+                || n < i128::MIN as f64
+                || n >= -(i128::MIN as f64)
+            {
                 return None;
             }
             n as i128
@@ -517,7 +515,6 @@ fn as_vec(v: &Value) -> Option<[f32; 4]> {
         _ => return None,
     })
 }
-
 
 /// Per-entity bookkeeping: the `(short_type, field_paths)` the reflect route
 /// has authored onto this entity. A later reconcile uses it to revert exactly
@@ -548,9 +545,13 @@ impl ReflectRoute {
 
         // Cheap exit: a prim with no effective `bevy:` opinion that the route
         // never touched (the overwhelmingly common case on a large stage).
-        let nothing_now = now.iter().all(|(_, fs)| fs.iter().all(|(_, v)| v.is_none()));
+        let nothing_now = now
+            .iter()
+            .all(|(_, fs)| fs.iter().all(|(_, v)| v.is_none()));
         if nothing_now && prev.0.is_empty() {
-            if let Ok(mut ent) = world.get_entity_mut(entity) { ent.remove::<UsdReflectIssues>(); }
+            if let Ok(mut ent) = world.get_entity_mut(entity) {
+                ent.remove::<UsdReflectIssues>();
+            }
             return;
         }
 
@@ -559,10 +560,20 @@ impl ReflectRoute {
         // instead of panicking on a bare `World`.
         let Some(app_registry) = world.get_resource::<AppTypeRegistry>().cloned() else {
             if let Ok(mut ent) = world.get_entity_mut(entity) {
-                let issues: Vec<_> = now.iter().filter(|(_, fields)| fields.iter().any(|(_, value)| value.is_some()))
-                    .map(|(ty, _)| ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::MissingRegistry }).collect();
-                if issues.is_empty() { ent.remove::<UsdReflectIssues>(); }
-                else { ent.insert(UsdReflectIssues(issues)); }
+                let issues: Vec<_> = now
+                    .iter()
+                    .filter(|(_, fields)| fields.iter().any(|(_, value)| value.is_some()))
+                    .map(|(ty, _)| ReflectIssue {
+                        type_segment: ty.clone(),
+                        field: None,
+                        kind: ReflectIssueKind::MissingRegistry,
+                    })
+                    .collect();
+                if issues.is_empty() {
+                    ent.remove::<UsdReflectIssues>();
+                } else {
+                    ent.insert(UsdReflectIssues(issues));
+                }
             }
             if !nothing_now {
                 bevy::log::warn!(
@@ -574,14 +585,20 @@ impl ReflectRoute {
             return;
         };
         let registry = app_registry.read();
-        let canonical = |ty: &str| resolve(&registry, ty)
-            .map_or_else(|| ty.to_string(), |registration| registration.type_info().type_path().to_string());
+        let canonical = |ty: &str| {
+            resolve(&registry, ty).map_or_else(
+                || ty.to_string(),
+                |registration| registration.type_info().type_path().to_string(),
+            )
+        };
         let mut grouped: Groups = Vec::new();
         for (ty, fields) in now {
             let ty = canonical(&ty);
             if let Some((_, existing)) = grouped.iter_mut().find(|(name, _)| *name == ty) {
                 existing.extend(fields);
-            } else { grouped.push((ty, fields)); }
+            } else {
+                grouped.push((ty, fields));
+            }
         }
         now = grouped;
         let mut previous: Record = Vec::new();
@@ -589,7 +606,9 @@ impl ReflectRoute {
             let ty = canonical(&ty);
             if let Some((_, existing)) = previous.iter_mut().find(|(name, _)| *name == ty) {
                 existing.extend(fields);
-            } else { previous.push((ty, fields)); }
+            } else {
+                previous.push((ty, fields));
+            }
         }
         prev.0 = previous;
         // Read the AssetServer (if any) before borrowing the entity, so
@@ -612,13 +631,22 @@ impl ReflectRoute {
                 continue;
             }
             let mut seen = std::collections::HashSet::new();
-            let conflicts: Vec<_> = effective.iter().filter(|(field, _)| !seen.insert(field.as_str()))
-                .map(|(field, _)| (*field).clone()).collect();
+            let conflicts: Vec<_> = effective
+                .iter()
+                .filter(|(field, _)| !seen.insert(field.as_str()))
+                .map(|(field, _)| (*field).clone())
+                .collect();
             if !conflicts.is_empty() {
                 for field in conflicts {
-                    issues.push(ReflectIssue { type_segment: ty.clone(), field: Some(field), kind: ReflectIssueKind::ConflictingAliases });
+                    issues.push(ReflectIssue {
+                        type_segment: ty.clone(),
+                        field: Some(field),
+                        kind: ReflectIssueKind::ConflictingAliases,
+                    });
                 }
-                if let Some(record) = prev.0.iter().find(|(name, _)| name == ty) { new_record.push(record.clone()); }
+                if let Some(record) = prev.0.iter().find(|(name, _)| name == ty) {
+                    new_record.push(record.clone());
+                }
                 continue;
             }
             if let Some((_, presence)) = effective.iter().find(|(field, _)| field.is_empty()) {
@@ -626,8 +654,14 @@ impl ReflectRoute {
                     Value::Bool(false) => continue,
                     Value::Bool(true) => (),
                     _ => {
-                        issues.push(ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::UnsupportedValue });
-                        if let Some(record) = prev.0.iter().find(|(name, _)| name == ty) { new_record.push(record.clone()); }
+                        issues.push(ReflectIssue {
+                            type_segment: ty.clone(),
+                            field: None,
+                            kind: ReflectIssueKind::UnsupportedValue,
+                        });
+                        if let Some(record) = prev.0.iter().find(|(name, _)| name == ty) {
+                            new_record.push(record.clone());
+                        }
                         continue;
                     }
                 }
@@ -636,7 +670,11 @@ impl ReflectRoute {
             // lands before its payload fields (`state.0`) that descend into it.
             effective.sort_by(|a, b| a.0.cmp(b.0));
             let Some(registration) = resolve(&registry, ty) else {
-                issues.push(ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::UnregisteredType });
+                issues.push(ReflectIssue {
+                    type_segment: ty.clone(),
+                    field: None,
+                    kind: ReflectIssueKind::UnregisteredType,
+                });
                 bevy::log::warn!(
                     target: "usd_bevy::route::reflect",
                     "bevy:{ty}: not in the type registry — skipping (register the type + #[reflect(Component)])"
@@ -644,7 +682,11 @@ impl ReflectRoute {
                 continue;
             };
             let Some(reflect_component) = registration.data::<ReflectComponent>() else {
-                issues.push(ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::MissingComponentReflection });
+                issues.push(ReflectIssue {
+                    type_segment: ty.clone(),
+                    field: None,
+                    kind: ReflectIssueKind::MissingComponentReflection,
+                });
                 bevy::log::warn!(
                     target: "usd_bevy::route::reflect",
                     "bevy:{ty}: registered but missing ReflectComponent (add #[reflect(Component)])"
@@ -655,7 +697,11 @@ impl ReflectRoute {
             // Ensure the component exists, constructing a default when absent.
             if reflect_component.reflect(&ent).is_none() {
                 let Some(default) = registration.data::<ReflectDefault>() else {
-                    issues.push(ReflectIssue { type_segment: ty.clone(), field: None, kind: ReflectIssueKind::MissingDefault });
+                    issues.push(ReflectIssue {
+                        type_segment: ty.clone(),
+                        field: None,
+                        kind: ReflectIssueKind::MissingDefault,
+                    });
                     bevy::log::warn!(
                         target: "usd_bevy::route::reflect",
                         "bevy:{ty}: no ReflectDefault and not present — cannot construct (add #[reflect(Default)])"
@@ -670,14 +716,21 @@ impl ReflectRoute {
             // Set each authored field.
             let mut field_names: Vec<String> = Vec::new();
             for (field_path, v) in &effective {
-                if field_path.is_empty() { field_names.push(String::new()); continue; }
+                if field_path.is_empty() {
+                    field_names.push(String::new());
+                    continue;
+                }
                 let path = format!(".{field_path}");
                 if let Some(mut comp) = reflect_component.reflect_mut(&mut ent) {
                     match comp.reflect_path_mut(path.as_str()) {
                         Ok(target) => {
                             if !try_set_handle(target, v, assets.as_ref()) && !set_field(target, v)
                             {
-                                issues.push(ReflectIssue { type_segment: ty.clone(), field: Some((*field_path).clone()), kind: ReflectIssueKind::UnsupportedValue });
+                                issues.push(ReflectIssue {
+                                    type_segment: ty.clone(),
+                                    field: Some((*field_path).clone()),
+                                    kind: ReflectIssueKind::UnsupportedValue,
+                                });
                                 bevy::log::warn!(
                                     target: "usd_bevy::route::reflect",
                                     "bevy:{ty}:{field_path}: unsupported value/type pairing — skipped"
@@ -685,7 +738,11 @@ impl ReflectRoute {
                             }
                         }
                         Err(e) => {
-                            issues.push(ReflectIssue { type_segment: ty.clone(), field: Some((*field_path).clone()), kind: ReflectIssueKind::UnknownField });
+                            issues.push(ReflectIssue {
+                                type_segment: ty.clone(),
+                                field: Some((*field_path).clone()),
+                                kind: ReflectIssueKind::UnknownField,
+                            });
                             bevy::log::warn!(
                             target: "usd_bevy::route::reflect",
                             "bevy:{ty}:{field_path}: no such field ({e})"
@@ -734,8 +791,11 @@ impl ReflectRoute {
         }
 
         ent.insert(ReflectAuthored(new_record));
-        if issues.is_empty() { ent.remove::<UsdReflectIssues>(); }
-        else { ent.insert(UsdReflectIssues(issues)); }
+        if issues.is_empty() {
+            ent.remove::<UsdReflectIssues>();
+        } else {
+            ent.insert(UsdReflectIssues(issues));
+        }
     }
 }
 
@@ -783,7 +843,11 @@ mod tests {
             "nested tuple index then struct field"
         );
         // Not reflect-routed.
-        assert_eq!(parse_attr("bevy:Health"), s("Health", ""), "component presence");
+        assert_eq!(
+            parse_attr("bevy:Health"),
+            s("Health", ""),
+            "component presence"
+        );
         assert_eq!(parse_attr("bevy:"), None, "no type or field");
         assert_eq!(parse_attr("xformOp:translate"), None, "not bevy-namespaced");
         assert_eq!(parse_attr("visibility"), None);
@@ -821,9 +885,15 @@ mod tests {
         let mut signed = 7i32;
         let mut unsigned = 7u32;
         let mut optional = Some(7i32);
-        for value in [Value::Int64(i64::MAX), Value::Uint64(u64::MAX),
-            Value::Double(f64::NAN), Value::Double(f64::INFINITY), Value::Double(1.5),
-            Value::Double(2.0_f64.powi(127)), Value::Double(-2.0_f64.powi(127))] {
+        for value in [
+            Value::Int64(i64::MAX),
+            Value::Uint64(u64::MAX),
+            Value::Double(f64::NAN),
+            Value::Double(f64::INFINITY),
+            Value::Double(1.5),
+            Value::Double(2.0_f64.powi(127)),
+            Value::Double(-2.0_f64.powi(127)),
+        ] {
             assert!(!set_field(&mut signed, &value));
             assert!(!set_field(&mut unsigned, &value));
             assert!(!set_field(&mut optional, &value));
@@ -833,9 +903,15 @@ mod tests {
         let mut wide_unsigned = 9u64;
         let mut size = 9usize;
         assert!(!set_field(&mut wide_signed, &Value::Uint64(u64::MAX)));
-        assert!(!set_field(&mut wide_signed, &Value::Double(2.0_f64.powi(63))));
+        assert!(!set_field(
+            &mut wide_signed,
+            &Value::Double(2.0_f64.powi(63))
+        ));
         assert!(!set_field(&mut wide_unsigned, &Value::Int(-1)));
-        assert!(!set_field(&mut wide_unsigned, &Value::Double(2.0_f64.powi(64))));
+        assert!(!set_field(
+            &mut wide_unsigned,
+            &Value::Double(2.0_f64.powi(64))
+        ));
         assert!(!set_field(&mut size, &Value::Int(-1)));
         assert_eq!((wide_signed, wide_unsigned, size), (9, 9, 9));
         assert!(set_field(&mut wide_signed, &Value::Int64(i64::MIN)));
@@ -855,11 +931,17 @@ mod tests {
         assert_eq!(v2, Vec2::new(1.0, 2.0));
 
         let mut v3 = Vec3::ZERO;
-        assert!(set_field(&mut v3, &Value::Vec3d(openusd::gf::Vec3d::from([1.0, 2.0, 3.0]))));
+        assert!(set_field(
+            &mut v3,
+            &Value::Vec3d(openusd::gf::Vec3d::from([1.0, 2.0, 3.0]))
+        ));
         assert_eq!(v3, Vec3::new(1.0, 2.0, 3.0), "double-precision vec coerces");
 
         let mut v4 = Vec4::ZERO;
-        assert!(set_field(&mut v4, &Value::Vec4f([1.0, 2.0, 3.0, 4.0].into())));
+        assert!(set_field(
+            &mut v4,
+            &Value::Vec4f([1.0, 2.0, 3.0, 4.0].into())
+        ));
         assert_eq!(v4, Vec4::new(1.0, 2.0, 3.0, 4.0));
 
         // gf Quatf fields are (w, x, y, z); as_vec must map to bevy xyzw.

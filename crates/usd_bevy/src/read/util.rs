@@ -12,7 +12,11 @@ use openusd::usd::Stage;
 
 /// Raw composed `default` value of attribute `name` on `prim`.
 fn attr_default(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
-    Ok(stage.prim(prim.clone()).expect("validated USD path").attribute(name).get::<Value>()?)
+    Ok(stage
+        .prim(prim.clone())
+        .expect("validated USD path")
+        .attribute(name)
+        .get::<Value>()?)
 }
 
 /// The composed value of attribute `name` on `prim` when some layer authored
@@ -21,11 +25,14 @@ fn attr_default(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option
 /// are placeholders, not values a backend can simulate.
 pub fn read_authored(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
     use openusd::usd::ResolveInfoSource;
-    let attr = stage.prim(prim.clone()).expect("validated USD path").attribute(name);
+    let attr = stage
+        .prim(prim.clone())
+        .expect("validated USD path")
+        .attribute(name);
     Ok(match attr.resolve_info()?.source() {
-        ResolveInfoSource::Default | ResolveInfoSource::TimeSamples | ResolveInfoSource::ValueClips => {
-            attr.get::<Value>()?
-        }
+        ResolveInfoSource::Default
+        | ResolveInfoSource::TimeSamples
+        | ResolveInfoSource::ValueClips => attr.get::<Value>()?,
         _ => None,
     })
 }
@@ -87,12 +94,23 @@ pub fn read_token_or_string(
 }
 
 /// A composed `token` or `string` scalar at a USD time code.
-pub fn read_token_or_string_at(stage: &Stage, prim: &Path, name: &str, time: Option<f64>) -> anyhow::Result<Option<String>> {
-    Ok(match stage.prim(prim)?.attribute(name).get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
-        Some(Value::Token(s)) => Some(s.as_str().to_string()),
-        Some(Value::String(s)) => Some(s),
-        _ => None,
-    })
+pub fn read_token_or_string_at(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+    time: Option<f64>,
+) -> anyhow::Result<Option<String>> {
+    Ok(
+        match stage
+            .prim(prim)?
+            .attribute(name)
+            .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?
+        {
+            Some(Value::Token(s)) => Some(s.as_str().to_string()),
+            Some(Value::String(s)) => Some(s),
+            _ => None,
+        },
+    )
 }
 
 /// An `asset`, `string`, or `token` scalar (asset path or plain text).
@@ -241,7 +259,8 @@ pub fn read_int_metadata(
 ) -> anyhow::Result<Option<i32>> {
     Ok(
         match stage
-            .prim(prim.clone()).expect("validated USD path")
+            .prim(prim.clone())
+            .expect("validated USD path")
             .attribute(attr)
             .get_metadata::<Value>(key)?
         {
@@ -259,7 +278,8 @@ pub fn read_time_samples(
     name: &str,
 ) -> anyhow::Result<Vec<(f64, Value)>> {
     Ok(stage
-        .prim(prim.clone()).expect("validated USD path")
+        .prim(prim.clone())
+        .expect("validated USD path")
         .attribute(name)
         .time_samples()?
         .unwrap_or_default())
@@ -267,7 +287,11 @@ pub fn read_time_samples(
 
 /// Composed relationship target paths (as strings), in authored order.
 pub fn read_rel_targets(stage: &Stage, prim: &Path, rel_name: &str) -> anyhow::Result<Vec<String>> {
-    let targets = stage.prim(prim.clone()).expect("validated USD path").relationship(rel_name).targets()?;
+    let targets = stage
+        .prim(prim.clone())
+        .expect("validated USD path")
+        .relationship(rel_name)
+        .targets()?;
     Ok(targets
         .into_iter()
         .map(|p| p.as_str().to_string())
@@ -290,7 +314,11 @@ pub fn connections_at(stage: &Stage, attr_path: &Path) -> anyhow::Result<Vec<Pat
     let Some((prim, name)) = attr_path.split_property() else {
         return Ok(Vec::new());
     };
-    Ok(stage.prim(prim).expect("validated USD path").attribute(name).connections()?)
+    Ok(stage
+        .prim(prim)
+        .expect("validated USD path")
+        .attribute(name)
+        .connections()?)
 }
 
 /// Composed relationship target paths at property path `rel_path`.
@@ -298,7 +326,11 @@ pub fn targets_at(stage: &Stage, rel_path: &Path) -> anyhow::Result<Vec<Path>> {
     let Some((prim, name)) = rel_path.split_property() else {
         return Ok(Vec::new());
     };
-    Ok(stage.prim(prim).expect("validated USD path").relationship(name).targets()?)
+    Ok(stage
+        .prim(prim)
+        .expect("validated USD path")
+        .relationship(name)
+        .targets()?)
 }
 
 /// Raw composed `default` value of the attribute at property path `attr_path`.
@@ -306,5 +338,9 @@ pub fn default_at(stage: &Stage, attr_path: &Path) -> anyhow::Result<Option<Valu
     let Some((prim, name)) = attr_path.split_property() else {
         return Ok(None);
     };
-    Ok(stage.prim(prim).expect("validated USD path").attribute(name).get::<Value>()?)
+    Ok(stage
+        .prim(prim)
+        .expect("validated USD path")
+        .attribute(name)
+        .get::<Value>()?)
 }

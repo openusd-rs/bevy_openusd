@@ -1,11 +1,15 @@
-use std::sync::{Arc, Mutex};
 use bevy::prelude::*;
-use bevy::render::{RenderApp, RenderStartup, mesh::allocator::MeshAllocatorSettings, renderer::RenderDevice};
 use bevy::render::error_handler::{RenderError, RenderErrorHandler, RenderErrorPolicy};
+use bevy::render::{
+    RenderApp, RenderStartup, mesh::allocator::MeshAllocatorSettings, renderer::RenderDevice,
+};
 use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
 use mara::ui::modules::bevy as mara_bevy;
-use usd_bevy::route::subdivision::{UsdSubdivisionApplied, UsdSubdivisionError, UsdSubdivisionSettings};
-use usd_bevy::route::curves::{UsdCurveSettings, UsdCurveError};
+use std::sync::{Arc, Mutex};
+use usd_bevy::route::curves::{UsdCurveError, UsdCurveSettings};
+use usd_bevy::route::subdivision::{
+    UsdSubdivisionApplied, UsdSubdivisionError, UsdSubdivisionSettings,
+};
 
 pub fn oit_from_env() -> Result<bool, Box<dyn std::error::Error>> {
     match std::env::var("USD_VIEWER_OIT") {
@@ -40,12 +44,21 @@ fn set_transparency(camera: &mut EntityWorldMut, enabled: bool) {
         let previous_fxaa = camera.get::<bevy::anti_alias::fxaa::Fxaa>().cloned();
         let mut fxaa = previous_fxaa.clone().unwrap_or_default();
         fxaa.enabled = true;
-        camera.insert((Oit::default(), Msaa::Off, PreviousMsaa(previous), fxaa, PreviousFxaa(previous_fxaa)));
+        camera.insert((
+            Oit::default(),
+            Msaa::Off,
+            PreviousMsaa(previous),
+            fxaa,
+            PreviousFxaa(previous_fxaa),
+        ));
     } else if !enabled && let Some(previous) = camera.take::<PreviousMsaa>() {
         camera.remove::<Oit>().insert(previous.0);
         if let Some(previous) = camera.take::<PreviousFxaa>() {
-            if let Some(fxaa) = previous.0 { camera.insert(fxaa); }
-            else { camera.remove::<bevy::anti_alias::fxaa::Fxaa>(); }
+            if let Some(fxaa) = previous.0 {
+                camera.insert(fxaa);
+            } else {
+                camera.remove::<bevy::anti_alias::fxaa::Fxaa>();
+            }
         }
     }
 }
@@ -74,13 +87,18 @@ pub struct RenderSettingsBridge(Arc<Mutex<State>>);
 
 impl RenderSettingsBridge {
     pub fn renderer_error(&self) -> Option<String> {
-        self.0.lock().ok().and_then(|state| state.renderer_error.clone())
+        self.0
+            .lock()
+            .ok()
+            .and_then(|state| state.renderer_error.clone())
     }
 }
 
 pub fn configure(app: &mut App, bridge: RenderSettingsBridge) {
-    app.insert_resource(bridge).insert_resource(RenderErrorHandler(stop_rendering))
-        .add_systems(PreUpdate, apply).add_systems(Last, (guard_transparency_buffers, publish).chain());
+    app.insert_resource(bridge)
+        .insert_resource(RenderErrorHandler(stop_rendering))
+        .add_systems(PreUpdate, apply)
+        .add_systems(Last, (guard_transparency_buffers, publish).chain());
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app.add_systems(RenderStartup, limit_mesh_slabs);
     }
@@ -93,8 +111,13 @@ fn stop_rendering(error: &RenderError, main: &mut World, _: &mut World) -> Rende
     {
         let mut characters = error.description.chars();
         let mut description: String = characters.by_ref().take(2048).collect();
-        if characters.next().is_some() { description.push('…'); }
-        state.renderer_error = Some(format!("Renderer stopped ({:?}). Save edits before restarting the viewer.\n{description}", error.ty));
+        if characters.next().is_some() {
+            description.push('…');
+        }
+        state.renderer_error = Some(format!(
+            "Renderer stopped ({:?}). Save edits before restarting the viewer.\n{description}",
+            error.ty
+        ));
     }
     RenderErrorPolicy::StopRendering
 }
@@ -112,43 +135,79 @@ fn bound_mesh_slabs(settings: &mut MeshAllocatorSettings, device_limit: u64) {
 
 fn apply(world: &mut World) {
     let bridge = world.resource::<RenderSettingsBridge>().clone();
-    let Some((level, steps, sides, oit)) = bridge.0.lock().ok().map(|mut state| (
-        state.requested.take(), state.requested_curve_steps.take(), state.requested_curve_surface_sides.take(),
-        state.requested_oit.take(),
-    )) else { return };
+    let Some((level, steps, sides, oit)) = bridge.0.lock().ok().map(|mut state| {
+        (
+            state.requested.take(),
+            state.requested_curve_steps.take(),
+            state.requested_curve_surface_sides.take(),
+            state.requested_oit.take(),
+        )
+    }) else {
+        return;
+    };
     if let Some(enabled) = oit {
-        if let Ok(mut state) = bridge.0.lock() { state.transparency_error = None; }
-        let cameras = world.query_filtered::<Entity, (With<Camera3d>, With<mara_bevy::ChaseCamera>)>()
-            .iter(world).collect::<Vec<_>>();
-        for camera in cameras { set_transparency(&mut world.entity_mut(camera), enabled); }
+        if let Ok(mut state) = bridge.0.lock() {
+            state.transparency_error = None;
+        }
+        let cameras = world
+            .query_filtered::<Entity, (With<Camera3d>, With<mara_bevy::ChaseCamera>)>()
+            .iter(world)
+            .collect::<Vec<_>>();
+        for camera in cameras {
+            set_transparency(&mut world.entity_mut(camera), enabled);
+        }
     }
     if let Some(level) = level {
-        if level == 0 { world.remove_resource::<UsdSubdivisionSettings>(); }
-        else if let Ok(settings) = UsdSubdivisionSettings::new(level) { world.insert_resource(settings); }
+        if level == 0 {
+            world.remove_resource::<UsdSubdivisionSettings>();
+        } else if let Ok(settings) = UsdSubdivisionSettings::new(level) {
+            world.insert_resource(settings);
+        }
     }
-    if let Some(steps) = steps && let Ok(settings) = UsdCurveSettings::new(steps) {
-        let sides = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().surface_sides();
+    if let Some(steps) = steps
+        && let Ok(settings) = UsdCurveSettings::new(steps)
+    {
+        let sides = world
+            .get_resource::<UsdCurveSettings>()
+            .copied()
+            .unwrap_or_default()
+            .surface_sides();
         world.insert_resource(settings.with_surface_sides(sides).unwrap());
     }
     if let Some(sides) = sides {
-        let current = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default();
-        if let Ok(settings) = current.with_surface_sides(sides) { world.insert_resource(settings); }
+        let current = world
+            .get_resource::<UsdCurveSettings>()
+            .copied()
+            .unwrap_or_default();
+        if let Ok(settings) = current.with_surface_sides(sides) {
+            world.insert_resource(settings);
+        }
     }
 }
 
 fn oit_buffer_requirement(size: UVec2, average: f32) -> Option<u64> {
     let pixels = u64::from(size.x) * u64::from(size.y);
-    if pixels > u64::from(u32::MAX) || !average.is_finite() || average < 0.0 { return None; }
+    if pixels > u64::from(u32::MAX) || !average.is_finite() || average < 0.0 {
+        return None;
+    }
     let nodes = ((pixels as f32 * average) as f64).ceil();
-    if nodes > f64::from(u32::MAX) { return None; }
-    Some((nodes as u64 * std::mem::size_of::<bevy::core_pipeline::oit::OitFragmentNode>() as u64)
-        .max(pixels * 4))
+    if nodes > f64::from(u32::MAX) {
+        return None;
+    }
+    Some(
+        (nodes as u64 * std::mem::size_of::<bevy::core_pipeline::oit::OitFragmentNode>() as u64)
+            .max(pixels * 4),
+    )
 }
 
 fn guard_transparency_buffers(world: &mut World) {
-    let Some(device) = world.get_resource::<RenderDevice>() else { return };
+    let Some(device) = world.get_resource::<RenderDevice>() else {
+        return;
+    };
     let limits = device.limits();
-    let limit = limits.max_buffer_size.min(u64::from(limits.max_storage_buffer_binding_size));
+    let limit = limits
+        .max_buffer_size
+        .min(u64::from(limits.max_storage_buffer_binding_size));
     enforce_transparency_budget(world, limit);
 }
 
@@ -157,30 +216,66 @@ fn enforce_transparency_budget(world: &mut World, limit: u64) {
     let mut size = UVec2::ZERO;
     let mut average = 0.0f32;
     for (camera, settings) in world.query::<(&Camera, &Oit)>().iter(world) {
-        if !camera.is_active { continue; }
+        if !camera.is_active {
+            continue;
+        }
         if let Some(target) = camera.physical_target_size() {
             size = size.max(target);
             average = average.max(settings.fragments_per_pixel_average);
         }
     }
-    if oit_buffer_requirement(size, average).is_some_and(|bytes| bytes <= limit) { return; }
-    let owned = world.query_filtered::<Entity, (With<Camera>, With<PreviousMsaa>, With<Oit>)>()
-        .iter(world).collect::<Vec<_>>();
-    if owned.is_empty() { return; }
-    for entity in owned { set_transparency(&mut world.entity_mut(entity), false); }
-    let error = format!("OIT disabled: {}x{} target exceeds the {} MiB buffer limit", size.x, size.y, limit / (1024 * 1024));
+    if oit_buffer_requirement(size, average).is_some_and(|bytes| bytes <= limit) {
+        return;
+    }
+    let owned = world
+        .query_filtered::<Entity, (With<Camera>, With<PreviousMsaa>, With<Oit>)>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    if owned.is_empty() {
+        return;
+    }
+    for entity in owned {
+        set_transparency(&mut world.entity_mut(entity), false);
+    }
+    let error = format!(
+        "OIT disabled: {}x{} target exceeds the {} MiB buffer limit",
+        size.x,
+        size.y,
+        limit / (1024 * 1024)
+    );
     warn!("{error}");
-    if let Ok(mut state) = world.resource::<RenderSettingsBridge>().0.lock() { state.transparency_error = Some(error); }
+    if let Ok(mut state) = world.resource::<RenderSettingsBridge>().0.lock() {
+        state.transparency_error = Some(error);
+    }
 }
 
 fn publish(world: &mut World) {
     let bridge = world.resource::<RenderSettingsBridge>().clone();
-    let Ok(mut state) = bridge.0.lock() else { return };
-    state.oit = world.query_filtered::<Entity, (With<Camera3d>, With<mara_bevy::ChaseCamera>, With<bevy::core_pipeline::oit::OrderIndependentTransparencySettings>)>()
-        .iter(world).next().is_some();
-    state.level = world.get_resource::<UsdSubdivisionSettings>().map_or(0, |settings| settings.levels());
-    state.curve_steps = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().cubic_steps();
-    state.curve_surface_sides = world.get_resource::<UsdCurveSettings>().copied().unwrap_or_default().surface_sides();
+    let Ok(mut state) = bridge.0.lock() else {
+        return;
+    };
+    state.oit = world
+        .query_filtered::<Entity, (
+            With<Camera3d>,
+            With<mara_bevy::ChaseCamera>,
+            With<bevy::core_pipeline::oit::OrderIndependentTransparencySettings>,
+        )>()
+        .iter(world)
+        .next()
+        .is_some();
+    state.level = world
+        .get_resource::<UsdSubdivisionSettings>()
+        .map_or(0, |settings| settings.levels());
+    state.curve_steps = world
+        .get_resource::<UsdCurveSettings>()
+        .copied()
+        .unwrap_or_default()
+        .cubic_steps();
+    state.curve_surface_sides = world
+        .get_resource::<UsdCurveSettings>()
+        .copied()
+        .unwrap_or_default()
+        .surface_sides();
     state.refined = world.query::<&UsdSubdivisionApplied>().iter(world).count();
     let mut meshes = std::collections::HashSet::new();
     let mut materials = std::collections::HashSet::new();
@@ -192,97 +287,197 @@ fn publish(world: &mut World) {
     }
     state.unique_meshes = meshes.len();
     state.standard_materials = materials.len();
-    state.errors = world.query::<(&usd_bevy::UsdPrimRef, &UsdSubdivisionError)>().iter(world)
-        .map(|(prim, error)| format!("{}: {}", prim.path, error.0)).collect();
-    state.errors.extend(world.query::<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>().iter(world)
-        .map(|(prim, error)| format!("{}: {}", prim.path, error.0)));
-    state.errors.extend(world.query::<(&usd_bevy::UsdPrimRef, &UsdCurveError)>().iter(world)
-        .map(|(prim, error)| format!("{}: {}", prim.path, error.0)));
+    state.errors = world
+        .query::<(&usd_bevy::UsdPrimRef, &UsdSubdivisionError)>()
+        .iter(world)
+        .map(|(prim, error)| format!("{}: {}", prim.path, error.0))
+        .collect();
+    state.errors.extend(
+        world
+            .query::<(
+                &usd_bevy::UsdPrimRef,
+                &usd_bevy::route::instancer::UsdInstancerWarning,
+            )>()
+            .iter(world)
+            .map(|(prim, error)| format!("{}: {}", prim.path, error.0)),
+    );
+    state.errors.extend(
+        world
+            .query::<(&usd_bevy::UsdPrimRef, &UsdCurveError)>()
+            .iter(world)
+            .map(|(prim, error)| format!("{}: {}", prim.path, error.0)),
+    );
     state.errors.sort();
     state.errors.dedup();
 }
 
 pub fn show(body: &mut PaneBody, bridge: &RenderSettingsBridge) {
-    let Ok(state) = bridge.0.lock().map(|state| state.clone()) else { return };
+    let Ok(state) = bridge.0.lock().map(|state| state.clone()) else {
+        return;
+    };
     let transparency_bridge = bridge.clone();
-    let transparency_error_lines = state.transparency_error.as_deref()
-        .map(super::lighting::status_lines).unwrap_or_default();
-    body.add_normal("rendering.transparency", "Transparency", "options", vec![
-        Pod::new("rendering.transparency.controls").with_custom_units(4 + transparency_error_lines.len(), move |ui| {
-            ui.label(if state.oit { "Order-independent alpha: on" } else { "Order-independent alpha: off" });
-            ui.label("Experimental; extra GPU memory");
-            ui.label("FXAA replaces MSAA while enabled");
-            if ui.button(if state.oit { "Disable OIT" } else { "Enable OIT" }).clicked
-                && let Ok(mut state) = transparency_bridge.0.lock() { state.requested_oit = Some(!state.oit); }
-            for line in &transparency_error_lines { ui.label(line); }
-        }),
-    ]);
+    let transparency_error_lines = state
+        .transparency_error
+        .as_deref()
+        .map(super::lighting::status_lines)
+        .unwrap_or_default();
+    body.add_normal(
+        "rendering.transparency",
+        "Transparency",
+        "options",
+        vec![
+            Pod::new("rendering.transparency.controls").with_custom_units(
+                4 + transparency_error_lines.len(),
+                move |ui| {
+                    ui.label(if state.oit {
+                        "Order-independent alpha: on"
+                    } else {
+                        "Order-independent alpha: off"
+                    });
+                    ui.label("Experimental; extra GPU memory");
+                    ui.label("FXAA replaces MSAA while enabled");
+                    if ui
+                        .button(if state.oit {
+                            "Disable OIT"
+                        } else {
+                            "Enable OIT"
+                        })
+                        .clicked
+                        && let Ok(mut state) = transparency_bridge.0.lock()
+                    {
+                        state.requested_oit = Some(!state.oit);
+                    }
+                    for line in &transparency_error_lines {
+                        ui.label(line);
+                    }
+                },
+            ),
+        ],
+    );
     if let Some(error) = &state.renderer_error {
         let lines = super::lighting::status_lines(error);
-        body.add_normal("rendering.failure", "Renderer stopped", "options", vec![
-            Pod::new("rendering.failure.message").with_custom_units(lines.len(), move |ui| {
-                for line in lines { ui.label(&line); }
-            }),
-        ]);
+        body.add_normal(
+            "rendering.failure",
+            "Renderer stopped",
+            "options",
+            vec![
+                Pod::new("rendering.failure.message").with_custom_units(lines.len(), move |ui| {
+                    for line in lines {
+                        ui.label(&line);
+                    }
+                }),
+            ],
+        );
     }
-    let current = if state.level == 0 { "Control cage".into() } else { format!("Subdivision level {}", state.level) };
-    let mut pods = vec![Pod::new("rendering.status").with_custom_units(4, move |ui| {
-        ui.label(&current);
-        ui.label(&format!("Refined mesh prims: {}", state.refined));
-        ui.label("Finite CPU refinement, not limit surfaces");
-        ui.label("Higher levels can exceed geometry budgets");
-    })];
-    for level in 0..=6 {
-        let bridge = bridge.clone();
-        pods.push(Pod::new(Id::new(("rendering.level", level))).with_custom_units(1, move |ui| {
-            let label = if level == 0 { "Use control cage".into() } else { format!("Use subdivision level {level}") };
-            if ui.button(&label).clicked && let Ok(mut state) = bridge.0.lock() { state.requested = Some(level); }
-        }));
-    }
-    body.add_normal("rendering.subdivision", "Subdivision", "options", pods);
-    let mut curve_pods = vec![
-        Pod::new("rendering.curves.status").with_custom_units(2, move |ui| {
-            ui.label(&format!("Samples per segment: {}", state.curve_steps));
-            ui.label(&match state.curve_surface_sides {
-                Some(sides) => format!("Width surfaces; {sides} tube sides"),
-                None => "Fixed sampling; one-pixel lines".into(),
-            });
+    let current = if state.level == 0 {
+        "Control cage".into()
+    } else {
+        format!("Subdivision level {}", state.level)
+    };
+    let mut pods = vec![
+        Pod::new("rendering.status").with_custom_units(4, move |ui| {
+            ui.label(&current);
+            ui.label(&format!("Refined mesh prims: {}", state.refined));
+            ui.label("Finite CPU refinement, not limit surfaces");
+            ui.label("Higher levels can exceed geometry budgets");
         }),
     ];
+    for level in 0..=6 {
+        let bridge = bridge.clone();
+        pods.push(
+            Pod::new(Id::new(("rendering.level", level))).with_custom_units(1, move |ui| {
+                let label = if level == 0 {
+                    "Use control cage".into()
+                } else {
+                    format!("Use subdivision level {level}")
+                };
+                if ui.button(&label).clicked
+                    && let Ok(mut state) = bridge.0.lock()
+                {
+                    state.requested = Some(level);
+                }
+            }),
+        );
+    }
+    body.add_normal("rendering.subdivision", "Subdivision", "options", pods);
+    let mut curve_pods =
+        vec![
+            Pod::new("rendering.curves.status").with_custom_units(2, move |ui| {
+                ui.label(&format!("Samples per segment: {}", state.curve_steps));
+                ui.label(&match state.curve_surface_sides {
+                    Some(sides) => format!("Width surfaces; {sides} tube sides"),
+                    None => "Fixed sampling; one-pixel lines".into(),
+                });
+            }),
+        ];
     for steps in [1, 8, 32, 64] {
         let bridge = bridge.clone();
-        curve_pods.push(Pod::new(Id::new(("rendering.curves.steps", steps))).with_custom_units(1, move |ui| {
-            if ui.button(&format!("Samples: {steps}")).clicked && let Ok(mut state) = bridge.0.lock() {
-                state.requested_curve_steps = Some(steps);
-            }
-        }));
+        curve_pods.push(
+            Pod::new(Id::new(("rendering.curves.steps", steps))).with_custom_units(1, move |ui| {
+                if ui.button(&format!("Samples: {steps}")).clicked
+                    && let Ok(mut state) = bridge.0.lock()
+                {
+                    state.requested_curve_steps = Some(steps);
+                }
+            }),
+        );
     }
     for sides in [None, Some(8), Some(16), Some(32)] {
         let bridge = bridge.clone();
-        curve_pods.push(Pod::new(Id::new(("rendering.curves.surface", sides))).with_custom_units(1, move |ui| {
-            let label = match sides { None => "Use lines".into(), Some(sides) => format!("Width surfaces: {sides} sides") };
-            if ui.button(&label).clicked && let Ok(mut state) = bridge.0.lock() {
-                state.requested_curve_surface_sides = Some(sides);
-            }
-        }));
+        curve_pods.push(
+            Pod::new(Id::new(("rendering.curves.surface", sides))).with_custom_units(
+                1,
+                move |ui| {
+                    let label = match sides {
+                        None => "Use lines".into(),
+                        Some(sides) => format!("Width surfaces: {sides} sides"),
+                    };
+                    if ui.button(&label).clicked
+                        && let Ok(mut state) = bridge.0.lock()
+                    {
+                        state.requested_curve_surface_sides = Some(sides);
+                    }
+                },
+            ),
+        );
     }
     body.add_normal("rendering.curves", "Curves", "options", curve_pods);
-    body.add_normal("rendering.scene", "Scene assets", "options", vec![
-        Pod::new("rendering.scene.counts").with_custom_units(5, move |ui| {
-            ui.label(&format!("USD mesh entities: {}", state.mesh_entities));
-            ui.label(&format!("Referenced mesh handles: {}", state.unique_meshes));
-            ui.label(&format!("Standard material handles: {}", state.standard_materials));
-            ui.label("Includes hidden USD mesh entities");
-            ui.label("Handle counts, not GPU memory usage");
-        }),
-    ]);
-    if state.errors.is_empty() { return; }
-    let errors = state.errors.into_iter().enumerate().map(|(index, error)| {
-        let lines = super::lighting::status_lines(&error);
-        Pod::new(Id::new(("rendering.error", index))).with_custom_units(lines.len(), move |ui| {
-            for line in lines { ui.label(&line); }
+    body.add_normal(
+        "rendering.scene",
+        "Scene assets",
+        "options",
+        vec![
+            Pod::new("rendering.scene.counts").with_custom_units(5, move |ui| {
+                ui.label(&format!("USD mesh entities: {}", state.mesh_entities));
+                ui.label(&format!("Referenced mesh handles: {}", state.unique_meshes));
+                ui.label(&format!(
+                    "Standard material handles: {}",
+                    state.standard_materials
+                ));
+                ui.label("Includes hidden USD mesh entities");
+                ui.label("Handle counts, not GPU memory usage");
+            }),
+        ],
+    );
+    if state.errors.is_empty() {
+        return;
+    }
+    let errors = state
+        .errors
+        .into_iter()
+        .enumerate()
+        .map(|(index, error)| {
+            let lines = super::lighting::status_lines(&error);
+            Pod::new(Id::new(("rendering.error", index))).with_custom_units(
+                lines.len(),
+                move |ui| {
+                    for line in lines {
+                        ui.label(&line);
+                    }
+                },
+            )
         })
-    }).collect();
+        .collect();
     body.add_normal("rendering.errors", "Projection errors", "options", errors);
 }
 
@@ -296,29 +491,57 @@ mod tests {
         world.insert_resource(bridge.clone());
         let mut camera = Camera::default();
         camera.computed.target_info = Some(bevy::camera::RenderTargetInfo {
-            physical_size: UVec2::new(1280,720), ..default()
+            physical_size: UVec2::new(1280, 720),
+            ..default()
         });
         let id = world.spawn((camera, Msaa::Sample8)).id();
         super::set_transparency(&mut world.entity_mut(id), true);
         super::enforce_transparency_budget(&mut world, 128 * 1024 * 1024);
         assert!(world.get::<Oit>(id).is_some());
-        world.get_mut::<Camera>(id).unwrap().computed.target_info.as_mut().unwrap().physical_size = UVec2::new(3840,2160);
+        world
+            .get_mut::<Camera>(id)
+            .unwrap()
+            .computed
+            .target_info
+            .as_mut()
+            .unwrap()
+            .physical_size = UVec2::new(3840, 2160);
         super::enforce_transparency_budget(&mut world, 128 * 1024 * 1024);
         assert!(world.get::<Oit>(id).is_none());
         assert_eq!(*world.get::<Msaa>(id).unwrap(), Msaa::Sample8);
         assert!(world.get::<bevy::anti_alias::fxaa::Fxaa>(id).is_none());
-        assert!(bridge.0.lock().unwrap().transparency_error.as_ref().unwrap().contains("3840x2160"));
+        assert!(
+            bridge
+                .0
+                .lock()
+                .unwrap()
+                .transparency_error
+                .as_ref()
+                .unwrap()
+                .contains("3840x2160")
+        );
     }
 
     #[test]
     fn oit_buffer_budget_covers_large_targets_and_overflow() {
-        assert_eq!(super::oit_buffer_requirement(UVec2::new(1280,720), 4.0), Some(44_236_800));
-        assert_eq!(super::oit_buffer_requirement(UVec2::new(3840,2160), 4.0), Some(398_131_200));
-        assert!(super::oit_buffer_requirement(UVec2::new(3840,2160), 4.0).unwrap() > 128 * 1024 * 1024);
-        assert_eq!(super::oit_buffer_requirement(UVec2::new(1280,720), 0.0), Some(3_686_400));
+        assert_eq!(
+            super::oit_buffer_requirement(UVec2::new(1280, 720), 4.0),
+            Some(44_236_800)
+        );
+        assert_eq!(
+            super::oit_buffer_requirement(UVec2::new(3840, 2160), 4.0),
+            Some(398_131_200)
+        );
+        assert!(
+            super::oit_buffer_requirement(UVec2::new(3840, 2160), 4.0).unwrap() > 128 * 1024 * 1024
+        );
+        assert_eq!(
+            super::oit_buffer_requirement(UVec2::new(1280, 720), 0.0),
+            Some(3_686_400)
+        );
         assert_eq!(super::oit_buffer_requirement(UVec2::ZERO, 4.0), Some(0));
         for average in [f32::NAN, f32::INFINITY, -1.0, f32::MAX] {
-            assert!(super::oit_buffer_requirement(UVec2::new(1280,720), average).is_none());
+            assert!(super::oit_buffer_requirement(UVec2::new(1280, 720), average).is_none());
         }
         assert!(super::oit_buffer_requirement(UVec2::splat(u32::MAX), 4.0).is_none());
     }
@@ -326,11 +549,19 @@ mod tests {
     #[test]
     fn transparency_restores_existing_or_absent_fxaa() {
         use bevy::anti_alias::fxaa::{Fxaa, Sensitivity};
-        for existing in [None, Some(Fxaa { enabled: false, edge_threshold: Sensitivity::Extreme,
-            edge_threshold_min: Sensitivity::Low })] {
+        for existing in [
+            None,
+            Some(Fxaa {
+                enabled: false,
+                edge_threshold: Sensitivity::Extreme,
+                edge_threshold_min: Sensitivity::Low,
+            }),
+        ] {
             let mut world = World::new();
             let mut camera = world.spawn(Camera3d::default());
-            if let Some(fxaa) = &existing { camera.insert(fxaa.clone()); }
+            if let Some(fxaa) = &existing {
+                camera.insert(fxaa.clone());
+            }
             for _ in 0..2 {
                 super::set_transparency(&mut camera, true);
                 super::set_transparency(&mut camera, true);
@@ -354,14 +585,27 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         let bridge = RenderSettingsBridge::default();
         configure(&mut app, bridge.clone());
-        let camera = app.world_mut().spawn((Camera3d::default(), mara_bevy::ChaseCamera::default(), Msaa::Sample8)).id();
-        let unrelated = app.world_mut().spawn((Camera3d::default(), Msaa::Sample2)).id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera3d::default(),
+                mara_bevy::ChaseCamera::default(),
+                Msaa::Sample8,
+            ))
+            .id();
+        let unrelated = app
+            .world_mut()
+            .spawn((Camera3d::default(), Msaa::Sample2))
+            .id();
         for enabled in [true, true, false, false, true, false] {
             bridge.0.lock().unwrap().requested_oit = Some(enabled);
             app.update();
             assert_eq!(bridge.0.lock().unwrap().oit, enabled);
             assert_eq!(app.world().get::<Oit>(camera).is_some(), enabled);
-            assert_eq!(*app.world().get::<Msaa>(camera).unwrap(), if enabled { Msaa::Off } else { Msaa::Sample8 });
+            assert_eq!(
+                *app.world().get::<Msaa>(camera).unwrap(),
+                if enabled { Msaa::Off } else { Msaa::Sample8 }
+            );
             assert!(app.world().get::<Oit>(unrelated).is_none());
             assert_eq!(*app.world().get::<Msaa>(unrelated).unwrap(), Msaa::Sample2);
         }
@@ -386,8 +630,16 @@ mod tests {
             let mut commands = Commands::new(&mut queue, &world);
             super::configure_transparency(&mut commands.entity(entity), enabled);
             queue.apply(&mut world);
-            assert_eq!(world.get::<bevy::core_pipeline::oit::OrderIndependentTransparencySettings>(entity).is_some(), enabled);
-            assert_eq!(*world.get::<Msaa>(entity).unwrap(), if enabled { Msaa::Off } else { Msaa::Sample4 });
+            assert_eq!(
+                world
+                    .get::<bevy::core_pipeline::oit::OrderIndependentTransparencySettings>(entity)
+                    .is_some(),
+                enabled
+            );
+            assert_eq!(
+                *world.get::<Msaa>(entity).unwrap(),
+                if enabled { Msaa::Off } else { Msaa::Sample4 }
+            );
         }
     }
     use super::*;
@@ -404,18 +656,49 @@ mod tests {
         let mut materials = Assets::<StandardMaterial>::default();
         let material = materials.add(StandardMaterial::default());
         let other_material = materials.add(StandardMaterial::default());
-        let first = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/First"), Mesh3d(shared.clone()), MeshMaterial3d(material.clone()))).id();
-        let second = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/Second"), Mesh3d(shared), MeshMaterial3d(material), Visibility::Hidden)).id();
-        let third = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/Third"), Mesh3d(distinct.clone()))).id();
-        app.world_mut().spawn((Mesh3d(distinct), MeshMaterial3d(other_material.clone())));
-        app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/NoMesh"), MeshMaterial3d(other_material.clone())));
+        let first = app
+            .world_mut()
+            .spawn((
+                usd_bevy::UsdPrimRef::new("/First"),
+                Mesh3d(shared.clone()),
+                MeshMaterial3d(material.clone()),
+            ))
+            .id();
+        let second = app
+            .world_mut()
+            .spawn((
+                usd_bevy::UsdPrimRef::new("/Second"),
+                Mesh3d(shared),
+                MeshMaterial3d(material),
+                Visibility::Hidden,
+            ))
+            .id();
+        let third = app
+            .world_mut()
+            .spawn((
+                usd_bevy::UsdPrimRef::new("/Third"),
+                Mesh3d(distinct.clone()),
+            ))
+            .id();
+        app.world_mut()
+            .spawn((Mesh3d(distinct), MeshMaterial3d(other_material.clone())));
+        app.world_mut().spawn((
+            usd_bevy::UsdPrimRef::new("/NoMesh"),
+            MeshMaterial3d(other_material.clone()),
+        ));
         app.update();
         let counts = || {
             let state = bridge.0.lock().unwrap();
-            (state.mesh_entities, state.unique_meshes, state.standard_materials)
+            (
+                state.mesh_entities,
+                state.unique_meshes,
+                state.standard_materials,
+            )
         };
         assert_eq!(counts(), (3, 2, 1));
-        app.world_mut().entity_mut(third).insert(MeshMaterial3d(other_material));
+        app.world_mut()
+            .entity_mut(third)
+            .insert(MeshMaterial3d(other_material));
         app.update();
         assert_eq!(counts(), (3, 2, 2));
         app.world_mut().despawn(first);
@@ -433,29 +716,54 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         let bridge = RenderSettingsBridge::default();
         configure(&mut app, bridge.clone());
-        let entity = app.world_mut().spawn(Name::new("unsaved document entity")).id();
+        let entity = app
+            .world_mut()
+            .spawn(Name::new("unsaved document entity"))
+            .id();
         let mut render = World::new();
         let error = RenderError {
             ty: bevy::render::error_handler::ErrorType::Validation,
-            description: "mesh buffer exceeds device limit".into(), source: None,
+            description: "mesh buffer exceeds device limit".into(),
+            source: None,
         };
         let handler = app.world().resource::<RenderErrorHandler>().0;
-        assert!(matches!(handler(&error, app.world_mut(), &mut render), RenderErrorPolicy::StopRendering));
+        assert!(matches!(
+            handler(&error, app.world_mut(), &mut render),
+            RenderErrorPolicy::StopRendering
+        ));
         let first = bridge.renderer_error().unwrap();
         assert!(first.contains("Validation") && first.contains("mesh buffer exceeds device limit"));
         assert!(first.contains("Save edits before restarting"));
-        let subsequent = RenderError { description: "later symptom".into(), ..error };
-        assert!(matches!(handler(&subsequent, app.world_mut(), &mut render), RenderErrorPolicy::StopRendering));
+        let subsequent = RenderError {
+            description: "later symptom".into(),
+            ..error
+        };
+        assert!(matches!(
+            handler(&subsequent, app.world_mut(), &mut render),
+            RenderErrorPolicy::StopRendering
+        ));
         app.update();
         assert_eq!(bridge.renderer_error().as_deref(), Some(first.as_str()));
-        assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "unsaved document entity");
+        assert_eq!(
+            app.world().get::<Name>(entity).unwrap().as_str(),
+            "unsaved document entity"
+        );
         assert!(app.world().resource::<Messages<AppExit>>().is_empty());
-        assert!(matches!(stop_rendering(&subsequent, &mut World::new(), &mut render), RenderErrorPolicy::StopRendering));
+        assert!(matches!(
+            stop_rendering(&subsequent, &mut World::new(), &mut render),
+            RenderErrorPolicy::StopRendering
+        ));
         let mut main = World::new();
         let bridge = RenderSettingsBridge::default();
         main.insert_resource(bridge.clone());
-        let long = RenderError { description: "é".repeat(4096), ..subsequent };
-        assert!(matches!(stop_rendering(&long, &mut main, &mut render), RenderErrorPolicy::StopRendering));
+        let long = RenderError {
+            description: "é".repeat(4096),
+            ..subsequent
+        };
+        assert!(matches!(
+            stop_rendering(&long, &mut main, &mut render),
+            RenderErrorPolicy::StopRendering
+        ));
         let message = bridge.renderer_error().unwrap();
         assert_eq!(message.matches('é').count(), 2048);
         assert!(message.ends_with('…'));
@@ -503,7 +811,10 @@ mod tests {
         }
         bridge.0.lock().unwrap().requested_curve_surface_sides = Some(Some(2));
         app.update();
-        assert_eq!(app.world().resource::<UsdCurveSettings>().surface_sides(), Some(32));
+        assert_eq!(
+            app.world().resource::<UsdCurveSettings>().surface_sides(),
+            Some(32)
+        );
         app.world_mut().insert_resource(UsdCurveSettings::default());
         app.update();
         assert_eq!(bridge.0.lock().unwrap().curve_surface_sides, None);
@@ -515,17 +826,34 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         let bridge = RenderSettingsBridge::default();
         configure(&mut app, bridge.clone());
-        app.insert_resource(UsdCurveSettings::new(32).unwrap().with_surface_sides(Some(12)).unwrap());
+        app.insert_resource(
+            UsdCurveSettings::new(32)
+                .unwrap()
+                .with_surface_sides(Some(12))
+                .unwrap(),
+        );
         app.update();
         assert_eq!(bridge.0.lock().unwrap().curve_steps, 32);
         bridge.0.lock().unwrap().requested_curve_steps = Some(1);
         app.update();
         assert_eq!(app.world().resource::<UsdCurveSettings>().cubic_steps(), 1);
-        assert_eq!(app.world().resource::<UsdCurveSettings>().surface_sides(), Some(12));
+        assert_eq!(
+            app.world().resource::<UsdCurveSettings>().surface_sides(),
+            Some(12)
+        );
         assert_eq!(bridge.0.lock().unwrap().curve_steps, 1);
-        let prim = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/Curve"), UsdCurveError("curve budget exceeded".into()))).id();
+        let prim = app
+            .world_mut()
+            .spawn((
+                usd_bevy::UsdPrimRef::new("/Curve"),
+                UsdCurveError("curve budget exceeded".into()),
+            ))
+            .id();
         app.update();
-        assert_eq!(bridge.0.lock().unwrap().errors, ["/Curve: curve budget exceeded"]);
+        assert_eq!(
+            bridge.0.lock().unwrap().errors,
+            ["/Curve: curve budget exceeded"]
+        );
         bridge.0.lock().unwrap().requested_curve_steps = Some(64);
         app.world_mut().entity_mut(prim).remove::<UsdCurveError>();
         app.update();
@@ -541,12 +869,21 @@ mod tests {
         let bridge = RenderSettingsBridge::default();
         configure(&mut app, bridge.clone());
         app.insert_resource(UsdSubdivisionSettings::new(2).unwrap());
-        let prim = app.world_mut().spawn((usd_bevy::UsdPrimRef::new("/M"), UsdSubdivisionError("unsupported rule".into()))).id();
+        let prim = app
+            .world_mut()
+            .spawn((
+                usd_bevy::UsdPrimRef::new("/M"),
+                UsdSubdivisionError("unsupported rule".into()),
+            ))
+            .id();
         app.update();
         assert_eq!(bridge.0.lock().unwrap().level, 2);
         assert_eq!(bridge.0.lock().unwrap().errors, ["/M: unsupported rule"]);
         bridge.0.lock().unwrap().requested = Some(1);
-        app.world_mut().entity_mut(prim).remove::<UsdSubdivisionError>().insert(UsdSubdivisionApplied { levels: 1 });
+        app.world_mut()
+            .entity_mut(prim)
+            .remove::<UsdSubdivisionError>()
+            .insert(UsdSubdivisionApplied { levels: 1 });
         app.update();
         assert_eq!(bridge.0.lock().unwrap().level, 1);
         assert_eq!(bridge.0.lock().unwrap().refined, 1);

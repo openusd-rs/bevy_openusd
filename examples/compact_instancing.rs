@@ -2,21 +2,38 @@
 
 use bevy::{
     app::{AppExit, ScheduleRunnerPlugin},
-    camera::{RenderTarget, primitives::{Aabb, MeshAabb}},
+    camera::{
+        RenderTarget,
+        primitives::{Aabb, MeshAabb},
+    },
     core_pipeline::core_3d::Opaque3d,
-    ecs::{query::ROQueryItem, system::{lifetimeless::SRes, SystemParamItem}},
+    ecs::{
+        query::ROQueryItem,
+        system::{SystemParamItem, lifetimeless::SRes},
+    },
     mesh::{MeshVertexBufferLayoutRef, VertexAttributeValues},
-    pbr::{DrawMaterial, DrawMesh, ExtendedMaterial, MaterialExtension, MaterialExtensionKey,
+    pbr::{
+        DrawMaterial, DrawMesh, ExtendedMaterial, MaterialExtension, MaterialExtensionKey,
         MaterialExtensionPipeline, PbrPlugin, SetMaterialBindGroup, SetMeshBindGroup,
-        SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup},
+        SetMeshViewBindGroup, SetMeshViewBindingArrayBindGroup,
+    },
     prelude::*,
-    render::{Extract, ExtractSchedule, RenderApp, batching::NoAutomaticBatching,
-        render_phase::{DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
-            RenderCommandResult, RenderCommandState, SetItemPipeline, TrackedRenderPass},
-        render_resource::{AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureFormat, TextureUsages},
+    render::{
+        Extract, ExtractSchedule, RenderApp,
+        batching::NoAutomaticBatching,
+        render_phase::{
+            DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand, RenderCommandResult,
+            RenderCommandState, SetItemPipeline, TrackedRenderPass,
+        },
+        render_resource::{
+            AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+            TextureFormat, TextureUsages,
+        },
         renderer::RenderDevice,
-        storage::ShaderBuffer, sync_world::MainEntity,
-        view::screenshot::{Screenshot, ScreenshotCaptured}},
+        storage::ShaderBuffer,
+        sync_world::MainEntity,
+        view::screenshot::{Screenshot, ScreenshotCaptured},
+    },
     shader::ShaderRef,
 };
 use std::collections::HashMap;
@@ -34,11 +51,20 @@ struct Pulling {
 }
 
 impl MaterialExtension for Pulling {
-    fn vertex_shader() -> ShaderRef { SHADER.into() }
-    fn enable_prepass() -> bool { false }
-    fn enable_shadows() -> bool { false }
-    fn specialize(_: &MaterialExtensionPipeline, descriptor: &mut RenderPipelineDescriptor,
-        _: &MeshVertexBufferLayoutRef, _: MaterialExtensionKey<Self>,
+    fn vertex_shader() -> ShaderRef {
+        SHADER.into()
+    }
+    fn enable_prepass() -> bool {
+        false
+    }
+    fn enable_shadows() -> bool {
+        false
+    }
+    fn specialize(
+        _: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _: &MeshVertexBufferLayoutRef,
+        _: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         descriptor.vertex.buffers[0].attributes.clear();
         descriptor.vertex.buffers[0].array_stride = 0;
@@ -55,8 +81,11 @@ struct Point {
 
 impl From<Transform> for Point {
     fn from(transform: Transform) -> Self {
-        Self { translation: transform.translation.extend(0.0), rotation: Vec4::from_array(transform.rotation.to_array()),
-            scale: transform.scale.extend(0.0) }
+        Self {
+            translation: transform.translation.extend(0.0),
+            rotation: Vec4::from_array(transform.rotation.to_array()),
+            scale: transform.scale.extend(0.0),
+        }
     }
 }
 
@@ -66,14 +95,22 @@ fn batch_bounds(prototype: Aabb, points: &[Point]) -> Option<Aabb> {
         let matrix = Mat3::from_quat(rotation) * Mat3::from_diagonal(point.scale.truncate());
         let center = matrix * Vec3::from(prototype.center) + point.translation.truncate();
         let half = matrix.x_axis.abs() * prototype.half_extents.x
-            + matrix.y_axis.abs() * prototype.half_extents.y + matrix.z_axis.abs() * prototype.half_extents.z;
+            + matrix.y_axis.abs() * prototype.half_extents.y
+            + matrix.z_axis.abs() * prototype.half_extents.z;
         let padding = (center.abs() + half + Vec3::ONE) * 1e-5;
         [center - half - padding, center + half + padding]
     }))
 }
 
-fn batch_capacity(storage_limit: u64, buffer_limit: u64, vertices_per_point: u32, requested: usize) -> Option<usize> {
-    if vertices_per_point == 0 { return None; }
+fn batch_capacity(
+    storage_limit: u64,
+    buffer_limit: u64,
+    vertices_per_point: u32,
+    requested: usize,
+) -> Option<usize> {
+    if vertices_per_point == 0 {
+        return None;
+    }
     let by_bytes = storage_limit.min(buffer_limit) / Point::min_size().get();
     let by_draw = u32::MAX / vertices_per_point;
     let count = by_bytes.min(u64::from(by_draw)).min(requested as u64);
@@ -84,7 +121,11 @@ fn point_transform(index: usize, count: usize) -> Transform {
     let width = (count as f32).sqrt().ceil() as usize;
     let spacing = 3.2 / width as f32;
     Transform {
-        translation: Vec3::new((index % width) as f32 * spacing - 1.6, 0.0, (index / width) as f32 * spacing - 1.6),
+        translation: Vec3::new(
+            (index % width) as f32 * spacing - 1.6,
+            0.0,
+            (index / width) as f32 * spacing - 1.6,
+        ),
         rotation: Quat::from_rotation_y((index % 7) as f32 * 0.17),
         scale: Vec3::new(1.0, 0.6 + (index % 3) as f32 * 0.25, 0.8) * (spacing / 0.4),
     }
@@ -96,9 +137,14 @@ struct VirtualVertices(u32);
 #[derive(Resource, Default)]
 struct VirtualCounts(HashMap<MainEntity, u32>);
 
-fn extract_counts(mut counts: ResMut<VirtualCounts>, query: Extract<Query<(Entity, &VirtualVertices)>>) {
+fn extract_counts(
+    mut counts: ResMut<VirtualCounts>,
+    query: Extract<Query<(Entity, &VirtualVertices)>>,
+) {
     counts.0.clear();
-    counts.0.extend(query.iter().map(|(entity, count)| (entity.into(), count.0)));
+    counts
+        .0
+        .extend(query.iter().map(|(entity, count)| (entity.into(), count.0)));
 }
 
 struct DrawVirtualMesh;
@@ -108,146 +154,333 @@ impl<P: PhaseItem> RenderCommand<P> for DrawVirtualMesh {
     type ViewQuery = <DrawMesh as RenderCommand<P>>::ViewQuery;
     type ItemQuery = ();
 
-    fn render<'w>(item: &P, view: ROQueryItem<'w, '_, Self::ViewQuery>, entity: Option<()>,
-        (original, counts): SystemParamItem<'w, '_, Self::Param>, pass: &mut TrackedRenderPass<'w>,
+    fn render<'w>(
+        item: &P,
+        view: ROQueryItem<'w, '_, Self::ViewQuery>,
+        entity: Option<()>,
+        (original, counts): SystemParamItem<'w, '_, Self::Param>,
+        pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let Some(&count) = counts.0.get(&item.main_entity()) else {
             return DrawMesh::render(item, view, entity, original, pass);
         };
-        if !matches!(item.extra_index(), PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_)) {
+        if !matches!(
+            item.extra_index(),
+            PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_)
+        ) {
             return RenderCommandResult::Failure("compact experiment requires direct draws");
         }
         if item.batch_range().len() != 1 {
             return RenderCommandResult::Failure("compact experiment requires one root per draw");
         }
-        let Some(mesh) = original.1.into_inner().mesh_asset_id(item.main_entity()) else { return RenderCommandResult::Skip; };
-        let Some(slice) = original.4.into_inner().mesh_vertex_slice(&mesh) else { return RenderCommandResult::Skip; };
+        let Some(mesh) = original.1.into_inner().mesh_asset_id(item.main_entity()) else {
+            return RenderCommandResult::Skip;
+        };
+        let Some(slice) = original.4.into_inner().mesh_vertex_slice(&mesh) else {
+            return RenderCommandResult::Skip;
+        };
         pass.set_vertex_buffer(0, slice.buffer.slice(..));
         pass.draw(0..count, item.batch_range().clone());
         RenderCommandResult::Success
     }
 }
 
-type DrawPulling = (SetItemPipeline, SetMeshViewBindGroup<0>, SetMeshViewBindingArrayBindGroup<1>,
-    SetMeshBindGroup<2>, SetMaterialBindGroup<3>, DrawVirtualMesh);
+type DrawPulling = (
+    SetItemPipeline,
+    SetMeshViewBindGroup<0>,
+    SetMeshViewBindingArrayBindGroup<1>,
+    SetMeshBindGroup<2>,
+    SetMaterialBindGroup<3>,
+    DrawVirtualMesh,
+);
 
 #[derive(Resource)]
-struct Options { expanded: bool, count: usize, output: String, batch_limit: usize, edge_view: bool, cull_check: bool }
+struct Options {
+    expanded: bool,
+    count: usize,
+    output: String,
+    batch_limit: usize,
+    edge_view: bool,
+    cull_check: bool,
+}
 
 #[derive(Component)]
 struct RootPose(Transform);
 
 #[derive(Resource)]
-struct BatchReport { render_entities: usize, batches: usize, point_bytes: usize }
+struct BatchReport {
+    render_entities: usize,
+    batches: usize,
+    point_bytes: usize,
+}
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    assert!((3..=4).contains(&args.len()) && matches!(args[0].as_str(), "compact" | "expanded"),
-        "usage: compact_instancing compact|expanded POINTS_PER_ROOT OUTPUT.png [POINTS_PER_BATCH]");
+    assert!(
+        (3..=4).contains(&args.len()) && matches!(args[0].as_str(), "compact" | "expanded"),
+        "usage: compact_instancing compact|expanded POINTS_PER_ROOT OUTPUT.png [POINTS_PER_BATCH]"
+    );
     let count: usize = args[1].parse().expect("point count");
-    assert!((1..=1_000_000).contains(&count), "point count must be 1..1000000");
+    assert!(
+        (1..=1_000_000).contains(&count),
+        "point count must be 1..1000000"
+    );
     let mut app = App::new();
-    let batch_limit = args.get(3).map_or(usize::MAX, |value| value.parse().expect("batch limit"));
+    let batch_limit = args
+        .get(3)
+        .map_or(usize::MAX, |value| value.parse().expect("batch limit"));
     assert!(batch_limit > 0, "batch limit must be nonzero");
     let edge_view = match std::env::var("USD_COMPACT_VIEW").as_deref() {
-        Err(_) | Ok("overview") => false, Ok("edge") => true, _ => panic!("USD_COMPACT_VIEW must be overview or edge"),
+        Err(_) | Ok("overview") => false,
+        Ok("edge") => true,
+        _ => panic!("USD_COMPACT_VIEW must be overview or edge"),
     };
-    app.insert_resource(Options { expanded: args[0] == "expanded", count, output: args[2].clone(), batch_limit,
-        edge_view, cull_check: std::env::var_os("USD_COMPACT_CULL_CHECK").is_some() });
-    app.add_plugins(DefaultPlugins.set(PbrPlugin { use_gpu_instance_buffer_builder: false, ..default() })
-        .set(bevy::render::RenderPlugin { synchronous_pipeline_compilation: true, ..default() })
-        .set(WindowPlugin { primary_window: None, exit_condition: bevy::window::ExitCondition::DontExit, ..default() })
-        .disable::<bevy::winit::WinitPlugin>());
-    app.add_plugins(ScheduleRunnerPlugin::run_loop(std::time::Duration::from_secs_f64(1.0 / 60.0)));
+    app.insert_resource(Options {
+        expanded: args[0] == "expanded",
+        count,
+        output: args[2].clone(),
+        batch_limit,
+        edge_view,
+        cull_check: std::env::var_os("USD_COMPACT_CULL_CHECK").is_some(),
+    });
+    app.add_plugins(
+        DefaultPlugins
+            .set(PbrPlugin {
+                use_gpu_instance_buffer_builder: false,
+                ..default()
+            })
+            .set(bevy::render::RenderPlugin {
+                synchronous_pipeline_compilation: true,
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<bevy::winit::WinitPlugin>(),
+    );
+    app.add_plugins(ScheduleRunnerPlugin::run_loop(
+        std::time::Duration::from_secs_f64(1.0 / 60.0),
+    ));
     app.add_plugins(MaterialPlugin::<ExtendedMaterial<StandardMaterial, Pulling>>::default());
-    app.world_mut().resource_mut::<Assets<Shader>>().insert(SHADER.id(),
-        Shader::from_wgsl(include_str!("compact_instancing.wgsl"), "compact_instancing.wgsl")).unwrap();
+    app.world_mut()
+        .resource_mut::<Assets<Shader>>()
+        .insert(
+            SHADER.id(),
+            Shader::from_wgsl(
+                include_str!("compact_instancing.wgsl"),
+                "compact_instancing.wgsl",
+            ),
+        )
+        .unwrap();
     let render = app.sub_app_mut(RenderApp);
-    use bevy::render::batching::gpu_preprocessing::{GpuPreprocessingSupport, GpuPreprocessingMode};
-    render.add_systems(bevy::render::RenderStartup,
-        (|mut support: ResMut<GpuPreprocessingSupport>| support.max_supported_mode = GpuPreprocessingMode::None)
-            .after(bevy::render::init_gpu_resource::<GpuPreprocessingSupport>));
-    render.init_resource::<VirtualCounts>().add_systems(ExtractSchedule, extract_counts);
+    use bevy::render::batching::gpu_preprocessing::{
+        GpuPreprocessingMode, GpuPreprocessingSupport,
+    };
+    render.add_systems(
+        bevy::render::RenderStartup,
+        (|mut support: ResMut<GpuPreprocessingSupport>| {
+            support.max_supported_mode = GpuPreprocessingMode::None
+        })
+        .after(bevy::render::init_gpu_resource::<GpuPreprocessingSupport>),
+    );
+    render
+        .init_resource::<VirtualCounts>()
+        .add_systems(ExtractSchedule, extract_counts);
     let state = RenderCommandState::<Opaque3d, DrawPulling>::new(render.world_mut());
-    render.world().resource::<DrawFunctions<Opaque3d>>().write().add_with::<DrawMaterial, _>(state);
-    app.add_systems(Startup, setup).add_systems(Update, capture).run();
+    render
+        .world()
+        .resource::<DrawFunctions<Opaque3d>>()
+        .write()
+        .add_with::<DrawMaterial, _>(state);
+    app.add_systems(Startup, setup)
+        .add_systems(Update, capture)
+        .run();
 }
 
-fn setup(mut commands: Commands, options: Res<Options>, mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>, mut pulling: ResMut<Assets<ExtendedMaterial<StandardMaterial, Pulling>>>,
-    mut buffers: ResMut<Assets<ShaderBuffer>>, mut images: ResMut<Assets<Image>>, device: Res<RenderDevice>,
+fn setup(
+    mut commands: Commands,
+    options: Res<Options>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut pulling: ResMut<Assets<ExtendedMaterial<StandardMaterial, Pulling>>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
+    mut images: ResMut<Assets<Image>>,
+    device: Res<RenderDevice>,
 ) {
     let mut prototype = Mesh::from(Cuboid::new(0.28, 0.4, 0.22));
     prototype.duplicate_vertices();
-    let VertexAttributeValues::Float32x3(positions) = prototype.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!("positions") };
-    let VertexAttributeValues::Float32x3(normals) = prototype.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap() else { panic!("normals") };
-    let VertexAttributeValues::Float32x2(uvs) = prototype.attribute(Mesh::ATTRIBUTE_UV_0).unwrap() else { panic!("uvs") };
+    let VertexAttributeValues::Float32x3(positions) =
+        prototype.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+    else {
+        panic!("positions")
+    };
+    let VertexAttributeValues::Float32x3(normals) =
+        prototype.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap()
+    else {
+        panic!("normals")
+    };
+    let VertexAttributeValues::Float32x2(uvs) = prototype.attribute(Mesh::ATTRIBUTE_UV_0).unwrap()
+    else {
+        panic!("uvs")
+    };
     let vertices_per_point = positions.len() as u32;
-    let packed: Vec<Vec4> = positions.iter().zip(normals).zip(uvs).flat_map(|((p, n), uv)|
-        [Vec3::from(*p).extend(uv[0]), Vec3::from(*n).extend(uv[1])]).collect();
+    let packed: Vec<Vec4> = positions
+        .iter()
+        .zip(normals)
+        .zip(uvs)
+        .flat_map(|((p, n), uv)| [Vec3::from(*p).extend(uv[0]), Vec3::from(*n).extend(uv[1])])
+        .collect();
     let vertices = buffers.add(ShaderBuffer::from(packed));
     let prototype_bounds = prototype.compute_aabb().unwrap();
     let prototype = meshes.add(prototype);
     let limits = device.limits();
-    let capacity = batch_capacity(u64::from(limits.max_storage_buffer_binding_size), limits.max_buffer_size,
-        vertices_per_point, options.batch_limit).expect("device cannot fit a point batch");
-    let batches: Vec<_> = if options.expanded { Vec::new() } else {
-        (0..options.count).step_by(capacity).map(|start| {
-            let end = start.saturating_add(capacity).min(options.count);
-            let points: Vec<Point> = (start..end).map(|index| point_transform(index, options.count).into()).collect();
-            let bounds = batch_bounds(prototype_bounds, &points).expect("nonempty point batch");
-            (buffers.add(ShaderBuffer::from(points)), end - start, bounds)
-        }).collect()
+    let capacity = batch_capacity(
+        u64::from(limits.max_storage_buffer_binding_size),
+        limits.max_buffer_size,
+        vertices_per_point,
+        options.batch_limit,
+    )
+    .expect("device cannot fit a point batch");
+    let batches: Vec<_> = if options.expanded {
+        Vec::new()
+    } else {
+        (0..options.count)
+            .step_by(capacity)
+            .map(|start| {
+                let end = start.saturating_add(capacity).min(options.count);
+                let points: Vec<Point> = (start..end)
+                    .map(|index| point_transform(index, options.count).into())
+                    .collect();
+                let bounds = batch_bounds(prototype_bounds, &points).expect("nonempty point batch");
+                (buffers.add(ShaderBuffer::from(points)), end - start, bounds)
+            })
+            .collect()
     };
-    for (root_index, color) in [Color::srgb(0.9, 0.12, 0.08), Color::srgb(0.08, 0.2, 0.9)].into_iter().enumerate() {
-        let root = Transform::from_xyz(if root_index == 0 { -2.0 } else { 2.0 }, root_index as f32 * 0.3, 0.0)
-            .with_rotation(Quat::from_rotation_y(root_index as f32 * 0.3));
-        let base = StandardMaterial { base_color: color, perceptual_roughness: 0.7, ..default() };
+    for (root_index, color) in [Color::srgb(0.9, 0.12, 0.08), Color::srgb(0.08, 0.2, 0.9)]
+        .into_iter()
+        .enumerate()
+    {
+        let root = Transform::from_xyz(
+            if root_index == 0 { -2.0 } else { 2.0 },
+            root_index as f32 * 0.3,
+            0.0,
+        )
+        .with_rotation(Quat::from_rotation_y(root_index as f32 * 0.3));
+        let base = StandardMaterial {
+            base_color: color,
+            perceptual_roughness: 0.7,
+            ..default()
+        };
         if options.expanded {
-            let parent = commands.spawn((root, RootPose(root), Visibility::default())).id();
+            let parent = commands
+                .spawn((root, RootPose(root), Visibility::default()))
+                .id();
             let material = materials.add(base);
             for index in 0..options.count {
-                commands.spawn((Mesh3d(prototype.clone()), MeshMaterial3d(material.clone()), point_transform(index, options.count), ChildOf(parent)));
+                commands.spawn((
+                    Mesh3d(prototype.clone()),
+                    MeshMaterial3d(material.clone()),
+                    point_transform(index, options.count),
+                    ChildOf(parent),
+                ));
             }
         } else {
             for (points, count, bounds) in &batches {
-                let material = pulling.add(ExtendedMaterial { base: base.clone(), extension: Pulling {
-                    vertices: vertices.clone(), points: points.clone(), vertices_per_point,
-                } });
-                commands.spawn((Mesh3d(prototype.clone()), MeshMaterial3d(material), root, RootPose(root), *bounds,
+                let material = pulling.add(ExtendedMaterial {
+                    base: base.clone(),
+                    extension: Pulling {
+                        vertices: vertices.clone(),
+                        points: points.clone(),
+                        vertices_per_point,
+                    },
+                });
+                commands.spawn((
+                    Mesh3d(prototype.clone()),
+                    MeshMaterial3d(material),
+                    root,
+                    RootPose(root),
+                    *bounds,
                     VirtualVertices(vertices_per_point.checked_mul(*count as u32).unwrap()),
-                    NoAutomaticBatching));
+                    NoAutomaticBatching,
+                ));
             }
         }
     }
-    commands.spawn((DirectionalLight { illuminance: 15_000.0, shadow_maps_enabled: false, ..default() },
-        Transform::from_xyz(3.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y)));
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 15_000.0,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(3.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
     let mut image = Image::new_target_texture(800, 600, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let (camera, projection) = if options.edge_view {
-        (Transform::from_xyz(3.4, 3.0, 4.0).looking_at(Vec3::new(3.4, 0.3, 0.0), Vec3::Y),
-            PerspectiveProjection { fov: 0.35, ..default() })
+        (
+            Transform::from_xyz(3.4, 3.0, 4.0).looking_at(Vec3::new(3.4, 0.3, 0.0), Vec3::Y),
+            PerspectiveProjection {
+                fov: 0.35,
+                ..default()
+            },
+        )
     } else {
-        (Transform::from_xyz(7.0, 8.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y), PerspectiveProjection::default())
+        (
+            Transform::from_xyz(7.0, 8.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
+            PerspectiveProjection::default(),
+        )
     };
-    commands.spawn((Camera3d::default(), RenderTarget::from(images.add(image)), camera, Projection::Perspective(projection), Msaa::Off));
-    let render_entities = if options.expanded { options.count * 2 } else { batches.len() * 2 };
-    commands.insert_resource(BatchReport { render_entities, batches: batches.len(),
-        point_bytes: if options.expanded { 0 } else { options.count * Point::min_size().get() as usize } });
-    println!("COMPACT_EXPERIMENT mode={} roots=2 points={} render_entities={} batch_capacity={capacity} scope=forward-pbr-direct excludes=usd,shadows,prepass,indirect,picking,reload",
-        if options.expanded { "expanded" } else { "compact" }, options.count * 2,
-        render_entities);
+    commands.spawn((
+        Camera3d::default(),
+        RenderTarget::from(images.add(image)),
+        camera,
+        Projection::Perspective(projection),
+        Msaa::Off,
+    ));
+    let render_entities = if options.expanded {
+        options.count * 2
+    } else {
+        batches.len() * 2
+    };
+    commands.insert_resource(BatchReport {
+        render_entities,
+        batches: batches.len(),
+        point_bytes: if options.expanded {
+            0
+        } else {
+            options.count * Point::min_size().get() as usize
+        },
+    });
+    println!(
+        "COMPACT_EXPERIMENT mode={} roots=2 points={} render_entities={} batch_capacity={capacity} scope=forward-pbr-direct excludes=usd,shadows,prepass,indirect,picking,reload",
+        if options.expanded {
+            "expanded"
+        } else {
+            "compact"
+        },
+        options.count * 2,
+        render_entities
+    );
 }
 
-fn capture(mut commands: Commands, mut frames: Local<u32>, camera: Query<&RenderTarget, With<Camera3d>>,
-    options: Res<Options>, mut roots: Query<(&mut Transform, &RootPose)>, visible: Query<&ViewVisibility, With<Mesh3d>>,
+fn capture(
+    mut commands: Commands,
+    mut frames: Local<u32>,
+    camera: Query<&RenderTarget, With<Camera3d>>,
+    options: Res<Options>,
+    mut roots: Query<(&mut Transform, &RootPose)>,
+    visible: Query<&ViewVisibility, With<Mesh3d>>,
 ) {
     *frames += 1;
     if options.cull_check {
         if matches!(*frames, 40 | 80) {
             for (mut transform, original) in &mut roots {
                 *transform = original.0;
-                if *frames == 40 { transform.translation.x += 10_000.0; }
+                if *frames == 40 {
+                    transform.translation.x += 10_000.0;
+                }
             }
         }
         if *frames == 70 {
@@ -256,7 +489,9 @@ fn capture(mut commands: Commands, mut frames: Local<u32>, camera: Query<&Render
             println!("COMPACT_CULL_CHECK offscreen_visible={visible}");
         }
     }
-    if *frames != 120 { return; }
+    if *frames != 120 {
+        return;
+    }
     let visible = visible.iter().filter(|visibility| visibility.get()).count();
     assert!(visible > 0, "visible point batches must survive culling");
     println!("COMPACT_VISIBLE restored_visible={visible}");
@@ -288,18 +523,26 @@ mod tests {
     fn batch_bounds_enclose_transformed_prototype_corners() {
         let prototype = Aabb::from_min_max(Vec3::new(-0.2, -0.4, 0.5), Vec3::new(0.7, 0.6, 1.2));
         assert!(batch_bounds(prototype, &[]).is_none());
-        let transforms = [Transform::IDENTITY,
-            Transform::from_xyz(-12.0, 3.0, 7.0).with_rotation(Quat::from_euler(EulerRot::XYZ, 0.3, 0.8, -0.5))
-                .with_scale(Vec3::new(-2.0, 0.3, 4.0))];
+        let transforms = [
+            Transform::IDENTITY,
+            Transform::from_xyz(-12.0, 3.0, 7.0)
+                .with_rotation(Quat::from_euler(EulerRot::XYZ, 0.3, 0.8, -0.5))
+                .with_scale(Vec3::new(-2.0, 0.3, 4.0)),
+        ];
         let points: Vec<Point> = transforms.iter().copied().map(Point::from).collect();
         let bounds = batch_bounds(prototype, &points).unwrap();
         for transform in transforms {
-            for x in [-1.0, 1.0] { for y in [-1.0, 1.0] { for z in [-1.0, 1.0] {
-                let corner = Vec3::from(prototype.center) + Vec3::from(prototype.half_extents) * Vec3::new(x, y, z);
-                let world = transform.transform_point(corner);
-                assert!(world.cmpge(Vec3::from(bounds.min())).all());
-                assert!(world.cmple(Vec3::from(bounds.max())).all());
-            } } }
+            for x in [-1.0, 1.0] {
+                for y in [-1.0, 1.0] {
+                    for z in [-1.0, 1.0] {
+                        let corner = Vec3::from(prototype.center)
+                            + Vec3::from(prototype.half_extents) * Vec3::new(x, y, z);
+                        let world = transform.transform_point(corner);
+                        assert!(world.cmpge(Vec3::from(bounds.min())).all());
+                        assert!(world.cmple(Vec3::from(bounds.max())).all());
+                    }
+                }
+            }
         }
     }
 
@@ -314,7 +557,13 @@ mod tests {
         assert_eq!(batch_capacity(480, 480, 36, 7), Some(7));
         assert_eq!(batch_capacity(480, 480, 36, 0), None);
         assert_eq!(batch_capacity(480, 480, 0, 7), None);
-        assert_eq!(batch_capacity(u64::MAX, u64::MAX, u32::MAX, usize::MAX), Some(1));
-        assert_eq!(batch_capacity(u64::MAX, u64::MAX, 36, usize::MAX), Some((u32::MAX / 36) as usize));
+        assert_eq!(
+            batch_capacity(u64::MAX, u64::MAX, u32::MAX, usize::MAX),
+            Some(1)
+        );
+        assert_eq!(
+            batch_capacity(u64::MAX, u64::MAX, 36, usize::MAX),
+            Some((u32::MAX / 36) as usize)
+        );
     }
 }

@@ -1,26 +1,59 @@
-use std::path::Path;
 use bevy::{prelude::*, render::render_resource::TextureFormat};
+use std::path::Path;
 
 fn write_fixture(directory: &Path) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir(directory)?;
     let mut image = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
     image.data = Some(vec![128, 218, 218, 255]);
-    image.try_into_dynamic()?.save(directory.join("normal.png"))?;
+    image
+        .try_into_dynamic()?
+        .save(directory.join("normal.png"))?;
     let mut image = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
     image.data = Some(vec![255; 4]);
-    image.try_into_dynamic()?.save(directory.join("white.png"))?;
+    image
+        .try_into_dynamic()?
+        .save(directory.join("white.png"))?;
     let normal = Vec3::new(1.0, 181.0, 181.0).normalize();
-    for variant in ["mapped", "reference", "opposite", "scaled_mapped", "scaled_reference", "scaled_opposite"] {
+    for variant in [
+        "mapped",
+        "reference",
+        "opposite",
+        "scaled_mapped",
+        "scaled_reference",
+        "scaled_opposite",
+    ] {
         let scaled = variant.starts_with("scaled_");
         let reference = !variant.ends_with("mapped");
-        let normal = if scaled { Vec3::new(0.0, 0.5, 0.5).normalize() } else { normal };
-        let normal = if variant.ends_with("opposite") { normal * Vec3::new(1.0, -1.0, 1.0) } else { normal };
-        let (file, scale, bias) = if scaled { ("white.png", "0,0.5,0.5,1", "0,0,0,0") }
-            else { ("normal.png", "2,2,2,1", "-1,-1,-1,0") };
-        let normals = if reference { format!("normal3f[] normals = [({},{},{})] (interpolation = \"constant\")", normal.x, normal.y, normal.z) }
-            else { "normal3f[] normals = [(0,0,1)] (interpolation = \"constant\")".into() };
-        let connection = if reference { "" } else { "normal3f inputs:normal.connect = </Material/Texture.outputs:rgb>" };
-        let text = format!(r#"#usda 1.0
+        let normal = if scaled {
+            Vec3::new(0.0, 0.5, 0.5).normalize()
+        } else {
+            normal
+        };
+        let normal = if variant.ends_with("opposite") {
+            normal * Vec3::new(1.0, -1.0, 1.0)
+        } else {
+            normal
+        };
+        let (file, scale, bias) = if scaled {
+            ("white.png", "0,0.5,0.5,1", "0,0,0,0")
+        } else {
+            ("normal.png", "2,2,2,1", "-1,-1,-1,0")
+        };
+        let normals = if reference {
+            format!(
+                "normal3f[] normals = [({},{},{})] (interpolation = \"constant\")",
+                normal.x, normal.y, normal.z
+            )
+        } else {
+            "normal3f[] normals = [(0,0,1)] (interpolation = \"constant\")".into()
+        };
+        let connection = if reference {
+            ""
+        } else {
+            "normal3f inputs:normal.connect = </Material/Texture.outputs:rgb>"
+        };
+        let text = format!(
+            r#"#usda 1.0
 ( upAxis = "Y" )
 def Mesh "Quad" {{
     uniform token subdivisionScheme = "none"
@@ -49,7 +82,8 @@ def Material "Material" {{
         float3 outputs:rgb
     }}
 }}
-"#);
+"#
+        );
         std::fs::write(directory.join(format!("{variant}.usda")), text)?;
     }
     let mapped = std::fs::read_to_string(directory.join("scaled_mapped.usda"))?
@@ -62,20 +96,33 @@ def Material "Material" {{
         &format!("normal3f[] normals (interpolation = \"constant\")\n normal3f[] normals.timeSamples = {{0: [(0,{},{})], 10: [(0,{},{})]}}", normal.y, normal.z, -normal.y, normal.z));
     std::fs::write(directory.join("interface_animated.usda"), mapped)?;
     std::fs::write(directory.join("animated_reference.usda"), reference)?;
-    let constant = std::fs::read_to_string(directory.join("scaled_mapped.usda"))?
-        .replace("normal3f inputs:normal.connect = </Material/Texture.outputs:rgb>", "normal3f inputs:normal = (0,0.5,0.5)");
-    std::fs::write(directory.join("constant.usda"), &constant)?;
-    std::fs::write(directory.join("constant_no_uv.usda"), constant.replace(
-        "texCoord2f[] primvars:st = [(0,0), (1,0), (1,1), (0,1)] (interpolation = \"vertex\")", ""))?;
-    std::fs::write(directory.join("constant_animated.usda"), constant.replace(
+    let constant = std::fs::read_to_string(directory.join("scaled_mapped.usda"))?.replace(
+        "normal3f inputs:normal.connect = </Material/Texture.outputs:rgb>",
         "normal3f inputs:normal = (0,0.5,0.5)",
-        "normal3f inputs:normal.timeSamples = {0: (0,0.5,0.5), 10: (0,-0.5,0.5)}"))?;
+    );
+    std::fs::write(directory.join("constant.usda"), &constant)?;
+    std::fs::write(
+        directory.join("constant_no_uv.usda"),
+        constant.replace(
+            "texCoord2f[] primvars:st = [(0,0), (1,0), (1,1), (0,1)] (interpolation = \"vertex\")",
+            "",
+        ),
+    )?;
+    std::fs::write(
+        directory.join("constant_animated.usda"),
+        constant.replace(
+            "normal3f inputs:normal = (0,0.5,0.5)",
+            "normal3f inputs:normal.timeSamples = {0: (0,0.5,0.5), 10: (0,-0.5,0.5)}",
+        ),
+    )?;
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() != 1 { return Err("usage: normal_fixture NEW_DIRECTORY".into()); }
+    if args.len() != 1 {
+        return Err("usage: normal_fixture NEW_DIRECTORY".into());
+    }
     write_fixture(Path::new(&args[0]))
 }
 
@@ -86,22 +133,49 @@ fn fixture_uses_linear_normal_data_and_refuses_overwrite() {
     write_fixture(&directory).unwrap();
     assert!(write_fixture(&directory).is_err());
     let path = directory.join("mapped.usda");
-    let stage = usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap();
-    let material = usd_bevy::read::shade::read_preview_material_at(&stage, &openusd::sdf::path("/Material").unwrap(), None).unwrap().unwrap();
+    let stage = usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap())
+        .unwrap()
+        .open_stage()
+        .unwrap();
+    let material = usd_bevy::read::shade::read_preview_material_at(
+        &stage,
+        &openusd::sdf::path("/Material").unwrap(),
+        None,
+    )
+    .unwrap()
+    .unwrap();
     assert!(!material.texture_srgb("normal"));
-    assert_eq!(material.normal_texture_transform, Some([[2.0; 3], [-1.0; 3]]));
+    assert_eq!(
+        material.normal_texture_transform,
+        Some([[2.0; 3], [-1.0; 3]])
+    );
     assert!(material.normal_texture.unwrap().ends_with("normal.png"));
-    let read = usd_bevy::read::geom::read_mesh_at(&stage, &openusd::sdf::path("/Quad").unwrap(), None).unwrap().unwrap();
+    let read =
+        usd_bevy::read::geom::read_mesh_at(&stage, &openusd::sdf::path("/Quad").unwrap(), None)
+            .unwrap()
+            .unwrap();
     let mesh = usd_bevy::mesh::mesh_from_usd(&read);
-    let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
-    let Some(bevy::mesh::VertexAttributeValues::Float32x4(tangents)) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT) else { panic!("tangents") };
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
+        mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+    else {
+        panic!("normals")
+    };
+    let Some(bevy::mesh::VertexAttributeValues::Float32x4(tangents)) =
+        mesh.attribute(Mesh::ATTRIBUTE_TANGENT)
+    else {
+        panic!("tangents")
+    };
     let sample = Vec3::new(1.0, 181.0, 181.0).normalize();
     for (normal, tangent) in normals.iter().zip(tangents) {
         let n = Vec3::from(*normal);
         let t = Vec4::from(*tangent);
-        let world = (t.truncate() * sample.x + t.w * n.cross(t.truncate()) * sample.y + n * sample.z).normalize();
+        let world =
+            (t.truncate() * sample.x + t.w * n.cross(t.truncate()) * sample.y + n * sample.z)
+                .normalize();
         assert!(world.abs_diff_eq(sample, 1e-6));
-        let flipped = (t.truncate() * sample.x - t.w * n.cross(t.truncate()) * sample.y + n * sample.z).normalize();
+        let flipped = (t.truncate() * sample.x - t.w * n.cross(t.truncate()) * sample.y
+            + n * sample.z)
+            .normalize();
         assert!((world - flipped).length() > 1.0);
     }
 }
@@ -116,12 +190,24 @@ fn signed_transform_is_limited_to_preview_surface_texture_normals() {
         .replace("def Shader \"Texture\"", "def Shader \"Normal\" { uniform token info:id = \"ND_normalmap\"\n float3 inputs:in.connect = </Material/Texture.outputs:rgb>\n float3 outputs:out\n }\n def Shader \"Texture\"");
     for (text, expected) in [
         (text.clone(), Some([[0.0, 0.5, 0.5], [0.0; 3]])),
-        (text.replace("UsdPreviewSurface", "ND_standard_surface_surfaceshader"), None),
+        (
+            text.replace("UsdPreviewSurface", "ND_standard_surface_surfaceshader"),
+            None,
+        ),
         (text.replace("UsdUVTexture", "ND_image_color3"), None),
         (wrapper, None),
     ] {
-        let stage = usd_bevy::UsdSource::snapshot("normal.usda", text.as_bytes()).unwrap().open_stage().unwrap();
-        let read = usd_bevy::read::shade::read_preview_material_at(&stage, &openusd::sdf::path("/Material").unwrap(), None).unwrap().unwrap();
+        let stage = usd_bevy::UsdSource::snapshot("normal.usda", text.as_bytes())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let read = usd_bevy::read::shade::read_preview_material_at(
+            &stage,
+            &openusd::sdf::path("/Material").unwrap(),
+            None,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(read.normal_texture_transform, expected);
     }
 }
@@ -133,20 +219,54 @@ fn animated_normal_interfaces_match_geometry_directions() {
     write_fixture(&directory).unwrap();
     let open = |name: &str| {
         let path = directory.join(name);
-        usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap()).unwrap().open_stage().unwrap()
+        usd_bevy::UsdSource::new(&path, std::fs::read(&path).unwrap())
+            .unwrap()
+            .open_stage()
+            .unwrap()
     };
     let mapped = open("interface_animated.usda");
     let reference = open("animated_reference.usda");
     let constant = open("constant_animated.usda");
     for (time, y) in [(0.0, 0.5), (5.0, 0.0), (10.0, -0.5), (0.0, 0.5)] {
-        let read = usd_bevy::read::shade::read_preview_material_at(&mapped, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
-        assert_eq!(read.normal_texture_transform, Some([[0.0, y, 0.5], [0.0; 3]]));
-        let read = usd_bevy::read::shade::read_preview_material_at(&constant, &openusd::sdf::path("/Material").unwrap(), Some(time)).unwrap().unwrap();
+        let read = usd_bevy::read::shade::read_preview_material_at(
+            &mapped,
+            &openusd::sdf::path("/Material").unwrap(),
+            Some(time),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            read.normal_texture_transform,
+            Some([[0.0, y, 0.5], [0.0; 3]])
+        );
+        let read = usd_bevy::read::shade::read_preview_material_at(
+            &constant,
+            &openusd::sdf::path("/Material").unwrap(),
+            Some(time),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(read.normal, Some([0.0, y, 0.5]));
         assert!(read.normal_texture.is_none());
-        let read = usd_bevy::read::geom::read_mesh_at(&reference, &openusd::sdf::path("/Quad").unwrap(), Some(time)).unwrap().unwrap();
+        let read = usd_bevy::read::geom::read_mesh_at(
+            &reference,
+            &openusd::sdf::path("/Quad").unwrap(),
+            Some(time),
+        )
+        .unwrap()
+        .unwrap();
         let mesh = usd_bevy::mesh::mesh_from_usd(&read);
-        let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
-        for normal in normals { assert!(Vec3::from(*normal).normalize().abs_diff_eq(Vec3::new(0.0, y, 0.5).normalize(), 1e-6)); }
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
+            mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+        else {
+            panic!("normals")
+        };
+        for normal in normals {
+            assert!(
+                Vec3::from(*normal)
+                    .normalize()
+                    .abs_diff_eq(Vec3::new(0.0, y, 0.5).normalize(), 1e-6)
+            );
+        }
     }
 }

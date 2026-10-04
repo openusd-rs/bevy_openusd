@@ -14,9 +14,9 @@ use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, Meshable, PrimitiveTopology, VertexAttributeValues};
 
-pub(crate) mod compact;
-pub mod bounds;
 pub(crate) mod affine;
+pub mod bounds;
+pub(crate) mod compact;
 
 /// Convert a `crate::read::geom::ReadMesh` into a Bevy mesh.
 ///
@@ -34,11 +34,12 @@ fn expands_vertices(read: &ReadMesh) -> bool {
     let non_indexed = |interp: Interpolation| {
         matches!(interp, Interpolation::FaceVarying | Interpolation::Uniform)
     };
-    uses_flat_normals(read) || read
-        .normals
-        .as_ref()
-        .map(|p| non_indexed(p.interpolation))
-        .unwrap_or(false)
+    uses_flat_normals(read)
+        || read
+            .normals
+            .as_ref()
+            .map(|p| non_indexed(p.interpolation))
+            .unwrap_or(false)
         || read
             .uvs
             .as_ref()
@@ -57,61 +58,116 @@ fn expands_vertices(read: &ReadMesh) -> bool {
 }
 
 pub(crate) fn uses_flat_normals(read: &ReadMesh) -> bool {
-    read.normals.is_none() && matches!(read.subdivision_scheme,
-        crate::read::geom::SubdivScheme::None | crate::read::geom::SubdivScheme::Bilinear)
+    read.normals.is_none()
+        && matches!(
+            read.subdivision_scheme,
+            crate::read::geom::SubdivScheme::None | crate::read::geom::SubdivScheme::Bilinear
+        )
 }
 
 fn corner_points(read: &ReadMesh) -> Vec<usize> {
-    let count: usize = read.face_vertex_counts.iter().map(|count| (*count).max(0) as usize).sum();
-    (0..count).map(|corner| {
-        let raw = read.face_vertex_indices.get(corner).copied().unwrap_or(0);
-        (raw.max(0) as usize).min(read.points.len().saturating_sub(1))
-    }).collect()
+    let count: usize = read
+        .face_vertex_counts
+        .iter()
+        .map(|count| (*count).max(0) as usize)
+        .sum();
+    (0..count)
+        .map(|corner| {
+            let raw = read.face_vertex_indices.get(corner).copied().unwrap_or(0);
+            (raw.max(0) as usize).min(read.points.len().saturating_sub(1))
+        })
+        .collect()
 }
 
 fn flat_corner_indices(read: &ReadMesh, subset: Option<&[i32]>) -> Vec<u32> {
-    let positions: Vec<_> = corner_points(read).into_iter()
-        .map(|point| triangulation_points(read).get(point).copied().unwrap_or([0.0; 3])).collect();
+    let positions: Vec<_> = corner_points(read)
+        .into_iter()
+        .map(|point| {
+            triangulation_points(read)
+                .get(point)
+                .copied()
+                .unwrap_or([0.0; 3])
+        })
+        .collect();
     let corners: Vec<_> = (0..positions.len()).map(|corner| corner as i32).collect();
     triangulate_mesh(read, &positions, &corners, subset)
 }
 
-fn triangulate_mesh(read: &ReadMesh, positions: &[[f32; 3]], indices: &[i32], subset: Option<&[i32]>) -> Vec<u32> {
+fn triangulate_mesh(
+    read: &ReadMesh,
+    positions: &[[f32; 3]],
+    indices: &[i32],
+    subset: Option<&[i32]>,
+) -> Vec<u32> {
     if read.hole_indices.is_empty() {
-        return triangulate_polygon(positions, &read.face_vertex_counts, indices, read.orientation, subset);
+        return triangulate_polygon(
+            positions,
+            &read.face_vertex_counts,
+            indices,
+            read.orientation,
+            subset,
+        );
     }
     let holes: std::collections::HashSet<_> = read.hole_indices.iter().copied().collect();
     let faces: Vec<_> = match subset {
-        Some(faces) => faces.iter().copied().filter(|face| !holes.contains(face)).collect(),
-        None => (0..read.face_vertex_counts.len() as i32).filter(|face| !holes.contains(face)).collect(),
+        Some(faces) => faces
+            .iter()
+            .copied()
+            .filter(|face| !holes.contains(face))
+            .collect(),
+        None => (0..read.face_vertex_counts.len() as i32)
+            .filter(|face| !holes.contains(face))
+            .collect(),
     };
-    triangulate_polygon(positions, &read.face_vertex_counts, indices, read.orientation, Some(&faces))
+    triangulate_polygon(
+        positions,
+        &read.face_vertex_counts,
+        indices,
+        read.orientation,
+        Some(&faces),
+    )
 }
 
 fn triangulation_points(read: &ReadMesh) -> &[[f32; 3]] {
-    read.triangulation_points.as_deref().filter(|points| points.len() == read.points.len())
+    read.triangulation_points
+        .as_deref()
+        .filter(|points| points.len() == read.points.len())
         .unwrap_or(&read.points)
 }
 
 /// Source USD point index for each emitted render vertex, including seam copies.
 pub fn vertex_point_indices(read: &ReadMesh) -> Vec<usize> {
-    if !expands_vertices(read) { return (0..read.points.len()).collect(); }
+    if !expands_vertices(read) {
+        return (0..read.points.len()).collect();
+    }
     let points = corner_points(read);
     if uses_flat_normals(read) {
-        flat_corner_indices(read, None).into_iter().map(|corner| points[corner as usize]).collect()
-    } else { points }
+        flat_corner_indices(read, None)
+            .into_iter()
+            .map(|corner| points[corner as usize])
+            .collect()
+    } else {
+        points
+    }
 }
 
 /// Indices for selected faces in the full mesh's render-vertex layout.
 #[cfg(test)]
 pub(crate) fn mesh_indices_for_faces(read: &ReadMesh, faces: &[i32]) -> Indices {
-    if faces.is_empty() { return Indices::U32(Vec::new()); }
+    if faces.is_empty() {
+        return Indices::U32(Vec::new());
+    }
     let indices = if uses_flat_normals(read) {
         select_flat_indices(read, &flat_corner_indices(read, None), Some(faces))
     } else if expands_vertices(read) {
         flat_corner_indices(read, Some(faces))
     } else {
-        triangulate_mesh(read, triangulation_points(read), &read.face_vertex_indices, Some(faces))
+        triangulate_mesh(
+            read,
+            triangulation_points(read),
+            &read.face_vertex_indices,
+            Some(faces),
+        )
     };
     Indices::U32(indices)
 }
@@ -127,19 +183,51 @@ impl MeshFaceIndices {
         let flat = uses_flat_normals(read);
         let expanded = expands_vertices(read);
         let positions: std::borrow::Cow<'_, [[f32; 3]]> = if expanded {
-            corner_points(read).into_iter().map(|point|
-                triangulation_points(read).get(point).copied().unwrap_or([0.0; 3])).collect::<Vec<_>>().into()
-        } else { triangulation_points(read).into() };
+            corner_points(read)
+                .into_iter()
+                .map(|point| {
+                    triangulation_points(read)
+                        .get(point)
+                        .copied()
+                        .unwrap_or([0.0; 3])
+                })
+                .collect::<Vec<_>>()
+                .into()
+        } else {
+            triangulation_points(read).into()
+        };
         let corners: std::borrow::Cow<'_, [i32]> = if expanded {
-            (0..positions.len()).map(|corner| corner as i32).collect::<Vec<_>>().into()
-        } else { read.face_vertex_indices.as_slice().into() };
+            (0..positions.len())
+                .map(|corner| corner as i32)
+                .collect::<Vec<_>>()
+                .into()
+        } else {
+            read.face_vertex_indices.as_slice().into()
+        };
         let holes: std::collections::HashSet<_> = read.hole_indices.iter().copied().collect();
-        let faces: Vec<_> = (0..read.face_vertex_counts.len() as i32).filter(|face| !holes.contains(face)).collect();
+        let faces: Vec<_> = (0..read.face_vertex_counts.len() as i32)
+            .filter(|face| !holes.contains(face))
+            .collect();
         let mut ranges = vec![0..0; read.face_vertex_counts.len()];
-        let mut indices = triangulate_polygon_with_ranges(&positions, &read.face_vertex_counts, &corners,
-            read.orientation, Some(&faces), |face, range| ranges[face] = range);
-        if flat { indices.iter_mut().enumerate().for_each(|(index, value)| *value = index as u32); }
-        Self { indices, ranges, flat }
+        let mut indices = triangulate_polygon_with_ranges(
+            &positions,
+            &read.face_vertex_counts,
+            &corners,
+            read.orientation,
+            Some(&faces),
+            |face, range| ranges[face] = range,
+        );
+        if flat {
+            indices
+                .iter_mut()
+                .enumerate()
+                .for_each(|(index, value)| *value = index as u32);
+        }
+        Self {
+            indices,
+            ranges,
+            flat,
+        }
     }
 
     pub(crate) fn for_faces(&self, faces: &[i32]) -> Indices {
@@ -149,21 +237,40 @@ impl MeshFaceIndices {
             ordered.sort_unstable();
             ordered.dedup();
             ordered.as_slice()
-        } else { faces };
-        Indices::U32(faces.iter().filter_map(|face| usize::try_from(*face).ok().and_then(|face| self.ranges.get(face)))
-            .flat_map(|range| self.indices[range.clone()].iter().copied()).collect())
+        } else {
+            faces
+        };
+        Indices::U32(
+            faces
+                .iter()
+                .filter_map(|face| {
+                    usize::try_from(*face)
+                        .ok()
+                        .and_then(|face| self.ranges.get(face))
+                })
+                .flat_map(|range| self.indices[range.clone()].iter().copied())
+                .collect(),
+        )
     }
 }
 
 fn select_flat_indices(read: &ReadMesh, triangles: &[u32], subset: Option<&[i32]>) -> Vec<u32> {
     let selected = subset.map(|faces| {
-        flat_corner_indices(read, Some(faces)).chunks_exact(3)
+        flat_corner_indices(read, Some(faces))
+            .chunks_exact(3)
             .map(|triangle| [triangle[0], triangle[1], triangle[2]])
             .collect::<std::collections::HashSet<_>>()
     });
-    triangles.chunks_exact(3).enumerate().filter(|(_, triangle)| {
-        selected.as_ref().is_none_or(|selected| selected.contains(&[triangle[0], triangle[1], triangle[2]]))
-    }).flat_map(|(index, _)| (index as u32 * 3)..(index as u32 * 3 + 3)).collect()
+    triangles
+        .chunks_exact(3)
+        .enumerate()
+        .filter(|(_, triangle)| {
+            selected
+                .as_ref()
+                .is_none_or(|selected| selected.contains(&[triangle[0], triangle[1], triangle[2]]))
+        })
+        .flat_map(|(index, _)| (index as u32 * 3)..(index as u32 * 3 + 3))
+        .collect()
 }
 
 /// Builds all faces or the supplied face subset, retaining the vertex layout.
@@ -229,13 +336,19 @@ fn build_indexed(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
     let positions = read.points.clone();
 
     // Preserve authored normals; generate angle-weighted normals otherwise.
-    let normals = read.normals.as_ref().and_then(|p| match p.interpolation {
-        Interpolation::Vertex | Interpolation::Varying => {
-            Some(expand_vertex_primvar(p, positions.len(), [0.0, 1.0, 0.0]))
-        }
-        Interpolation::Constant if !p.values.is_empty() => Some(vec![corner_normal(read, 0, 0, 0); positions.len()]),
-        _ => None,
-    }).or_else(|| Some(compute_point_smooth_normals(read)));
+    let normals = read
+        .normals
+        .as_ref()
+        .and_then(|p| match p.interpolation {
+            Interpolation::Vertex | Interpolation::Varying => {
+                Some(expand_vertex_primvar(p, positions.len(), [0.0, 1.0, 0.0]))
+            }
+            Interpolation::Constant if !p.values.is_empty() => {
+                Some(vec![corner_normal(read, 0, 0, 0); positions.len()])
+            }
+            _ => None,
+        })
+        .or_else(|| Some(compute_point_smooth_normals(read)));
 
     let uvs = read
         .uvs
@@ -249,7 +362,11 @@ fn build_indexed(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
         })
         .unwrap_or_else(|| vec![[0.0, 0.0]; positions.len()]);
 
-    let colors = build_vertex_colors(read.display_color.as_ref(), read.display_opacity.as_ref(), positions.len());
+    let colors = build_vertex_colors(
+        read.display_color.as_ref(),
+        read.display_opacity.as_ref(),
+        positions.len(),
+    );
 
     let indices = triangulate_mesh(
         read,
@@ -261,7 +378,11 @@ fn build_indexed(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
 }
 
 /// Expand constant, vertex or varying display primvars into vertex RGBA.
-pub(crate) fn build_vertex_colors(display_color: Option<&MeshPrimvar<[f32; 3]>>, display_opacity: Option<&MeshPrimvar<f32>>, vertex_count: usize) -> Option<Vec<[f32; 4]>> {
+pub(crate) fn build_vertex_colors(
+    display_color: Option<&MeshPrimvar<[f32; 3]>>,
+    display_opacity: Option<&MeshPrimvar<f32>>,
+    vertex_count: usize,
+) -> Option<Vec<[f32; 4]>> {
     if display_color.is_none() && display_opacity.is_none() {
         return None;
     }
@@ -269,7 +390,7 @@ pub(crate) fn build_vertex_colors(display_color: Option<&MeshPrimvar<[f32; 3]>>,
     if let Some(dc) = display_color {
         let rgbs = match dc.interpolation {
             Interpolation::Constant if !dc.values.is_empty() => {
-                vec![sample_primvar_3(dc, 0, 0, 0, [1.0;3]); vertex_count]
+                vec![sample_primvar_3(dc, 0, 0, 0, [1.0; 3]); vertex_count]
             }
             // Single-value primvar — broadcast regardless of which
             // interpolation token was authored. Pixar's Kitchen_set
@@ -299,7 +420,9 @@ pub(crate) fn build_vertex_colors(display_color: Option<&MeshPrimvar<[f32; 3]>>,
             // Single-value primvar — broadcast regardless of declared
             // interpolation (see `display_color` arm above for the
             // Pixar Kitchen_set rationale).
-            _ if dop.values.len() == 1 && dop.indices.is_empty() => vec![dop.values[0]; vertex_count],
+            _ if dop.values.len() == 1 && dop.indices.is_empty() => {
+                vec![dop.values[0]; vertex_count]
+            }
             Interpolation::Vertex | Interpolation::Varying => {
                 expand_vertex_primvar(dop, vertex_count, 1.0)
             }
@@ -315,7 +438,11 @@ pub(crate) fn build_vertex_colors(display_color: Option<&MeshPrimvar<[f32; 3]>>,
 /// Build the fully-expanded form: one vertex per face corner so `faceVarying`
 /// primvars (cube uvs, seams) can be represented.
 fn build_expanded(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
-    let corner_count: usize = read.face_vertex_counts.iter().map(|c| (*c).max(0) as usize).sum();
+    let corner_count: usize = read
+        .face_vertex_counts
+        .iter()
+        .map(|c| (*c).max(0) as usize)
+        .sum();
     let mut positions = Vec::with_capacity(corner_count);
     let mut uvs_out: Vec<[f32; 2]> = Vec::with_capacity(corner_count);
 
@@ -326,17 +453,32 @@ fn build_expanded(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
     // Smooth fallback normals are computed before corner expansion.
     let smooth_per_point: Option<Vec<[f32; 3]>> =
         (!want_normals && !uses_flat_normals(read)).then(|| compute_point_smooth_normals(read));
-    let mut normals_out: Vec<[f32; 3]> = Vec::with_capacity(if want_normals || smooth_per_point.is_some() { corner_count } else { 0 });
-    let mut colors_out: Vec<[f32; 4]> = Vec::with_capacity(if want_colors { corner_count } else { 0 });
+    let mut normals_out: Vec<[f32; 3]> =
+        Vec::with_capacity(if want_normals || smooth_per_point.is_some() {
+            corner_count
+        } else {
+            0
+        });
+    let mut colors_out: Vec<[f32; 4]> =
+        Vec::with_capacity(if want_colors { corner_count } else { 0 });
 
     let mut corner_ix: usize = 0;
     for (face_ix, face_verts) in read.face_vertex_counts.iter().enumerate() {
         for k in 0..((*face_verts).max(0) as usize) {
             // Tolerate malformed indices: a missing corner reads as 0, and an
             // index past the point buffer clamps to the last point (never OOB).
-            let raw = read.face_vertex_indices.get(corner_ix + k).copied().unwrap_or(0);
+            let raw = read
+                .face_vertex_indices
+                .get(corner_ix + k)
+                .copied()
+                .unwrap_or(0);
             let point_ix = (raw.max(0) as usize).min(read.points.len().saturating_sub(1));
-            positions.push(read.points.get(point_ix).copied().unwrap_or([0.0, 0.0, 0.0]));
+            positions.push(
+                read.points
+                    .get(point_ix)
+                    .copied()
+                    .unwrap_or([0.0, 0.0, 0.0]),
+            );
             if want_normals {
                 normals_out.push(corner_normal(read, face_ix, corner_ix + k, point_ix));
             } else if let Some(ref ns) = smooth_per_point {
@@ -368,9 +510,20 @@ fn build_expanded(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
             running += 1;
         }
     }
-    let indices = if read.triangulation_points.as_ref().is_some_and(|points| points.len() == read.points.len()) {
-        let reference_positions: Vec<_> = corner_points(read).into_iter()
-            .map(|point| triangulation_points(read).get(point).copied().unwrap_or([0.0; 3])).collect();
+    let indices = if read
+        .triangulation_points
+        .as_ref()
+        .is_some_and(|points| points.len() == read.points.len())
+    {
+        let reference_positions: Vec<_> = corner_points(read)
+            .into_iter()
+            .map(|point| {
+                triangulation_points(read)
+                    .get(point)
+                    .copied()
+                    .unwrap_or([0.0; 3])
+            })
+            .collect();
         triangulate_mesh(read, &reference_positions, &sequential, face_subset)
     } else {
         triangulate_mesh(read, &positions, &sequential, face_subset)
@@ -391,25 +544,43 @@ fn build_expanded(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
 pub(crate) fn compute_point_smooth_normals(read: &ReadMesh) -> Vec<[f32; 3]> {
     use bevy::math::DVec3;
     let mut accum = vec![DVec3::ZERO; read.points.len()];
-    let triangles = triangulate_mesh(read, triangulation_points(read), &read.face_vertex_indices, None);
+    let triangles = triangulate_mesh(
+        read,
+        triangulation_points(read),
+        &read.face_vertex_indices,
+        None,
+    );
     for triangle in triangles.chunks_exact(3) {
-        let indices = [triangle[0] as usize, triangle[1] as usize, triangle[2] as usize];
+        let indices = [
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        ];
         let points = indices.map(|index| DVec3::from_array(read.points[index].map(f64::from)));
         let normal = (points[1] - points[0]).cross(points[2] - points[0]);
-        let Some(normal) = normal.try_normalize() else { continue };
+        let Some(normal) = normal.try_normalize() else {
+            continue;
+        };
         for corner in 0..3 {
             let a = points[(corner + 1) % 3] - points[corner];
             let b = points[(corner + 2) % 3] - points[corner];
             let angle = a.cross(b).length().atan2(a.dot(b));
-            if angle.is_finite() { accum[indices[corner]] += normal * angle; }
+            if angle.is_finite() {
+                accum[indices[corner]] += normal * angle;
+            }
         }
     }
-    accum.into_iter().map(|normal| normal.normalize_or_zero().as_vec3().to_array()).collect()
+    accum
+        .into_iter()
+        .map(|normal| normal.normalize_or_zero().as_vec3().to_array())
+        .collect()
 }
 
 /// Per-corner normals for validated topology, averaged only within smooth fans.
 pub(crate) fn crease_corner_normals(
-    read: &ReadMesh, hard_edges: &std::collections::BTreeSet<[usize; 2]>, hard_corners: &std::collections::BTreeSet<usize>,
+    read: &ReadMesh,
+    hard_edges: &std::collections::BTreeSet<[usize; 2]>,
+    hard_corners: &std::collections::BTreeSet<usize>,
 ) -> MeshPrimvar<[f32; 3]> {
     use bevy::math::DVec3;
     fn root(parents: &mut [usize], mut index: usize) -> usize {
@@ -427,14 +598,22 @@ pub(crate) fn crease_corner_normals(
         let count = count as usize;
         for i in 0..count {
             let corners = [offset + i, offset + (i + 1) % count];
-            let [a,b] = corners.map(|corner| points[corner]);
+            let [a, b] = corners.map(|corner| points[corner]);
             let key = [a.min(b), a.max(b)];
-            if hard_edges.contains(&key) { continue; }
+            if hard_edges.contains(&key) {
+                continue;
+            }
             if let Some(previous) = edges.insert(key, corners) {
                 for corner in corners {
                     let point = points[corner];
-                    if hard_corners.contains(&point) { continue; }
-                    let other = if points[previous[0]] == point { previous[0] } else { previous[1] };
+                    if hard_corners.contains(&point) {
+                        continue;
+                    }
+                    let other = if points[previous[0]] == point {
+                        previous[0]
+                    } else {
+                        previous[1]
+                    };
                     let a = root(&mut parents, corner);
                     let b = root(&mut parents, other);
                     parents[a] = b;
@@ -445,18 +624,41 @@ pub(crate) fn crease_corner_normals(
     }
     let mut sums = vec![DVec3::ZERO; points.len()];
     for triangle in flat_corner_indices(read, None).chunks_exact(3) {
-        let corners = [triangle[0] as usize, triangle[1] as usize, triangle[2] as usize];
-        let positions = corners.map(|corner| DVec3::from_array(read.points[points[corner]].map(f64::from)));
-        let Some(normal) = (positions[1] - positions[0]).cross(positions[2] - positions[0]).try_normalize() else { continue };
+        let corners = [
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        ];
+        let positions =
+            corners.map(|corner| DVec3::from_array(read.points[points[corner]].map(f64::from)));
+        let Some(normal) = (positions[1] - positions[0])
+            .cross(positions[2] - positions[0])
+            .try_normalize()
+        else {
+            continue;
+        };
         for i in 0..3 {
             let a = positions[(i + 1) % 3] - positions[i];
             let b = positions[(i + 2) % 3] - positions[i];
             let angle = a.cross(b).length().atan2(a.dot(b));
-            if angle.is_finite() { sums[root(&mut parents, corners[i])] += normal * angle; }
+            if angle.is_finite() {
+                sums[root(&mut parents, corners[i])] += normal * angle;
+            }
         }
     }
-    let values = (0..points.len()).map(|corner| sums[root(&mut parents, corner)].normalize_or_zero().as_vec3().to_array()).collect();
-    MeshPrimvar { values, interpolation: Interpolation::FaceVarying, indices: Vec::new() }
+    let values = (0..points.len())
+        .map(|corner| {
+            sums[root(&mut parents, corner)]
+                .normalize_or_zero()
+                .as_vec3()
+                .to_array()
+        })
+        .collect();
+    MeshPrimvar {
+        values,
+        interpolation: Interpolation::FaceVarying,
+        indices: Vec::new(),
+    }
 }
 
 fn build_flat(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
@@ -467,10 +669,14 @@ fn build_flat(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
     let mut output_uvs = Vec::with_capacity(triangles.len());
     let mut output_colors = colors.as_ref().map(|_| Vec::with_capacity(triangles.len()));
     for triangle in triangles.chunks_exact(3) {
-        let [a,b,c] = [triangle[0], triangle[1], triangle[2]];
+        let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
         let point = |index: u32| Vec3::from_array(positions[index as usize]).as_dvec3();
-        let normal = (point(b) - point(a)).cross(point(c) - point(a))
-            .try_normalize().map(|normal| normal.as_vec3()).unwrap_or(Vec3::Y).to_array();
+        let normal = (point(b) - point(a))
+            .cross(point(c) - point(a))
+            .try_normalize()
+            .map(|normal| normal.as_vec3())
+            .unwrap_or(Vec3::Y)
+            .to_array();
         for &corner in triangle {
             output_positions.push(positions[corner as usize]);
             output_normals.push(normal);
@@ -480,14 +686,24 @@ fn build_flat(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
             }
         }
     }
-    (output_positions, Some(output_normals), output_uvs, output_colors, output_indices)
+    (
+        output_positions,
+        Some(output_normals),
+        output_uvs,
+        output_colors,
+        output_indices,
+    )
 }
 
 fn corner_normal(read: &ReadMesh, face: usize, corner: usize, point: usize) -> [f32; 3] {
     let p = read.normals.as_ref().unwrap();
     if p.interpolation == Interpolation::Constant {
         let index = p.indices.first().copied().unwrap_or(0);
-        return usize::try_from(index).ok().and_then(|index| p.values.get(index)).copied().unwrap_or([0.0, 1.0, 0.0]);
+        return usize::try_from(index)
+            .ok()
+            .and_then(|index| p.values.get(index))
+            .copied()
+            .unwrap_or([0.0, 1.0, 0.0]);
     }
     sample_primvar_3(p, face, corner, point, [0.0, 1.0, 0.0])
 }
@@ -575,7 +791,7 @@ fn corner_uv(read: &ReadMesh, face: usize, corner: usize, point: usize) -> [f32;
         Interpolation::Constant => {
             let index = p.indices.first().copied().unwrap_or(0) as usize;
             p.values.get(index).copied().unwrap_or(fallback)
-        },
+        }
         Interpolation::Uniform => {
             let ix = if !p.indices.is_empty() {
                 *p.indices.get(face).unwrap_or(&0) as usize
@@ -660,12 +876,23 @@ fn triangulate_polygon(
     orientation: Orientation,
     face_subset: Option<&[i32]>,
 ) -> Vec<u32> {
-    triangulate_polygon_with_ranges(positions, counts, indices, orientation, face_subset, |_, _| {})
+    triangulate_polygon_with_ranges(
+        positions,
+        counts,
+        indices,
+        orientation,
+        face_subset,
+        |_, _| {},
+    )
 }
 
 fn triangulate_polygon_with_ranges(
-    positions: &[[f32; 3]], counts: &[i32], indices: &[i32], orientation: Orientation,
-    face_subset: Option<&[i32]>, mut record: impl FnMut(usize, std::ops::Range<usize>),
+    positions: &[[f32; 3]],
+    counts: &[i32],
+    indices: &[i32],
+    orientation: Orientation,
+    face_subset: Option<&[i32]>,
+    mut record: impl FnMut(usize, std::ops::Range<usize>),
 ) -> Vec<u32> {
     // No vertices → no triangles. Emitting indices into an empty buffer would
     // later panic Bevy's normal/tangent generation.
@@ -1016,28 +1243,45 @@ mod hardening_tests {
     fn crease_normals_split_only_sharp_fans_and_preserve_subset_mapping() {
         use std::collections::BTreeSet;
         for scale in [1e-20_f32, 1.0, 1e20] {
-            let mut read = mesh(vec![[0.0,0.0,0.0],[scale,0.0,0.0],[0.0,scale,0.0],[0.0,0.0,scale]], vec![3,3], vec![0,1,2,1,0,3]);
+            let mut read = mesh(
+                vec![
+                    [0.0, 0.0, 0.0],
+                    [scale, 0.0, 0.0],
+                    [0.0, scale, 0.0],
+                    [0.0, 0.0, scale],
+                ],
+                vec![3, 3],
+                vec![0, 1, 2, 1, 0, 3],
+            );
             let smooth = crease_corner_normals(&read, &BTreeSet::new(), &BTreeSet::new());
             assert_eq!(smooth.values[0], smooth.values[4]);
             assert!((smooth.values[0][1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
             let corner = crease_corner_normals(&read, &BTreeSet::new(), &BTreeSet::from([0]));
-            assert_eq!(corner.values[0], [0.0,0.0,1.0]);
-            assert_eq!(corner.values[4], [0.0,1.0,0.0]);
+            assert_eq!(corner.values[0], [0.0, 0.0, 1.0]);
+            assert_eq!(corner.values[4], [0.0, 1.0, 0.0]);
             assert_eq!(corner.values[1], corner.values[3]);
-            let sharp = crease_corner_normals(&read, &BTreeSet::from([[0,1]]), &BTreeSet::new());
-            assert_eq!(&sharp.values[..3], &[[0.0,0.0,1.0];3]);
-            assert_eq!(&sharp.values[3..], &[[0.0,1.0,0.0];3]);
+            let sharp = crease_corner_normals(&read, &BTreeSet::from([[0, 1]]), &BTreeSet::new());
+            assert_eq!(&sharp.values[..3], &[[0.0, 0.0, 1.0]; 3]);
+            assert_eq!(&sharp.values[3..], &[[0.0, 1.0, 0.0]; 3]);
             read.normals = Some(sharp);
             let converted = mesh_from_usd_subset(&read, Some(&[1]));
-            assert_eq!(vertex_point_indices(&read), [0,1,2,1,0,3]);
-            let Some(VertexAttributeValues::Float32x3(normals)) = converted.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
-            for index in converted.indices().unwrap().iter() { assert_eq!(normals[index], [0.0,1.0,0.0]); }
+            assert_eq!(vertex_point_indices(&read), [0, 1, 2, 1, 0, 3]);
+            let Some(VertexAttributeValues::Float32x3(normals)) =
+                converted.attribute(Mesh::ATTRIBUTE_NORMAL)
+            else {
+                panic!("normals")
+            };
+            for index in converted.indices().unwrap().iter() {
+                assert_eq!(normals[index], [0.0, 1.0, 0.0]);
+            }
         }
     }
 
     #[test]
     fn sampled_holes_preserve_source_primvars_and_subset_vertex_layouts() {
-        let source = crate::UsdSource::new("sampled-holes.usda", br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "sampled-holes.usda",
+            br#"#usda 1.0
 def Mesh "M" {
     point3f[] points = [(0,0,0),(1,0,0),(0,1,0),(2,0,0),(3,0,0),(2,1,0)]
     int[] faceVertexCounts = [3,3]
@@ -1047,33 +1291,63 @@ def Mesh "M" {
     texCoord2f[] primvars:st = [(0,0),(1,1)] ( interpolation = "faceVarying" )
     int[] primvars:st:indices = [1,1,1,0,0,0]
 }
-"#.as_slice()).unwrap();
+"#
+            .as_slice(),
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         let path = openusd::sdf::path("/M").unwrap();
-        for scheme in [SubdivScheme::None, SubdivScheme::Bilinear, SubdivScheme::CatmullClark] {
+        for scheme in [
+            SubdivScheme::None,
+            SubdivScheme::Bilinear,
+            SubdivScheme::CatmullClark,
+        ] {
             for time in [0.0, 10.0, 20.0] {
-                let mut read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+                let mut read = crate::read::geom::read_mesh_at(&stage, &path, Some(time))
+                    .unwrap()
+                    .unwrap();
                 read.subdivision_scheme = scheme;
                 let full = mesh_from_usd(&read);
-                assert_eq!(full.indices().unwrap().len(), if time == 20.0 { 0 } else { 3 });
+                assert_eq!(
+                    full.indices().unwrap().len(),
+                    if time == 20.0 { 0 } else { 3 }
+                );
                 assert_eq!(vertex_point_indices(&read).len(), full.count_vertices());
-                for face in [0,1] {
+                for face in [0, 1] {
                     let subset = mesh_from_usd_subset(&read, Some(&[face]));
                     assert_eq!(subset.count_vertices(), full.count_vertices());
                     let hidden = read.hole_indices.contains(&face);
                     assert_eq!(subset.indices().unwrap().len(), if hidden { 0 } else { 3 });
                     if !hidden {
-                        let VertexAttributeValues::Float32x4(colors) = subset.attribute(Mesh::ATTRIBUTE_COLOR).unwrap() else { panic!("colors") };
-                        let VertexAttributeValues::Float32x2(uvs) = subset.attribute(Mesh::ATTRIBUTE_UV_0).unwrap() else { panic!("uvs") };
+                        let VertexAttributeValues::Float32x4(colors) =
+                            subset.attribute(Mesh::ATTRIBUTE_COLOR).unwrap()
+                        else {
+                            panic!("colors")
+                        };
+                        let VertexAttributeValues::Float32x2(uvs) =
+                            subset.attribute(Mesh::ATTRIBUTE_UV_0).unwrap()
+                        else {
+                            panic!("uvs")
+                        };
                         for index in subset.indices().unwrap().iter() {
-                            assert_eq!(colors[index], if face == 0 { [1.0,0.0,0.0,1.0] } else { [0.0,0.0,1.0,1.0] });
-                            assert_eq!(uvs[index], if face == 0 { [1.0,0.0] } else { [0.0,1.0] });
+                            assert_eq!(
+                                colors[index],
+                                if face == 0 {
+                                    [1.0, 0.0, 0.0, 1.0]
+                                } else {
+                                    [0.0, 0.0, 1.0, 1.0]
+                                }
+                            );
+                            assert_eq!(uvs[index], if face == 0 { [1.0, 0.0] } else { [0.0, 1.0] });
                         }
                     }
                 }
                 read.display_color = None;
                 read.uvs = None;
-                assert_eq!(mesh_from_usd(&read).indices().unwrap().len(), if time == 20.0 { 0 } else { 3 });
+                assert_eq!(
+                    mesh_from_usd(&read).indices().unwrap().len(),
+                    if time == 20.0 { 0 } else { 3 }
+                );
             }
         }
     }
@@ -1081,18 +1355,32 @@ def Mesh "M" {
     #[test]
     fn generated_normals_are_scale_independent_across_vertex_layouts() {
         for scale in [1e-20_f32, 1e-5, 0.01, 1.0, 1e20] {
-            let mut read = mesh(vec![[0.0,0.0,0.0], [scale,0.0,0.0], [0.0,scale,0.0]], vec![3], vec![0,1,2]);
+            let mut read = mesh(
+                vec![[0.0, 0.0, 0.0], [scale, 0.0, 0.0], [0.0, scale, 0.0]],
+                vec![3],
+                vec![0, 1, 2],
+            );
             read.subdivision_scheme = SubdivScheme::CatmullClark;
             for orientation in [Orientation::RightHanded, Orientation::LeftHanded] {
                 read.orientation = orientation;
-                let expected = if orientation == Orientation::RightHanded { [0.0,0.0,1.0] } else { [0.0,0.0,-1.0] };
+                let expected = if orientation == Orientation::RightHanded {
+                    [0.0, 0.0, 1.0]
+                } else {
+                    [0.0, 0.0, -1.0]
+                };
                 for expanded in [false, true] {
                     read.display_color = expanded.then(|| MeshPrimvar {
-                        values: vec![[1.0;3]], interpolation: Interpolation::Uniform, indices: vec![],
+                        values: vec![[1.0; 3]],
+                        interpolation: Interpolation::Uniform,
+                        indices: vec![],
                     });
                     let output = mesh_from_usd(&read);
-                    let Some(VertexAttributeValues::Float32x3(normals)) = output.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
-                    assert_eq!(normals, &[expected;3], "scale={scale} expanded={expanded}");
+                    let Some(VertexAttributeValues::Float32x3(normals)) =
+                        output.attribute(Mesh::ATTRIBUTE_NORMAL)
+                    else {
+                        panic!("normals")
+                    };
+                    assert_eq!(normals, &[expected; 3], "scale={scale} expanded={expanded}");
                 }
             }
         }
@@ -1101,29 +1389,60 @@ def Mesh "M" {
     #[test]
     fn constant_uv_indices_apply_to_flat_and_indexed_meshes() {
         use bevy::math::Vec2;
-        let mut read = mesh(vec![[0.0,0.0,0.0], [1.0,0.0,0.0], [0.0,1.0,0.0]], vec![3], vec![0,1,2]);
-        read.uvs = Some(MeshPrimvar { values: vec![[0.1,0.2], [0.7,0.8]], interpolation: Interpolation::Constant, indices: vec![1] });
+        let mut read = mesh(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![3],
+            vec![0, 1, 2],
+        );
+        read.uvs = Some(MeshPrimvar {
+            values: vec![[0.1, 0.2], [0.7, 0.8]],
+            interpolation: Interpolation::Constant,
+            indices: vec![1],
+        });
         for scheme in [SubdivScheme::None, SubdivScheme::CatmullClark] {
             read.subdivision_scheme = scheme;
             for subset in [None, Some([0].as_slice())] {
                 let mesh = mesh_from_usd_subset(&read, subset);
-                let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) else { panic!("uvs") };
-                assert!(uvs.iter().all(|uv| Vec2::from_array(*uv).abs_diff_eq(Vec2::new(0.7,0.2), 1e-5)));
+                let Some(VertexAttributeValues::Float32x2(uvs)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+                else {
+                    panic!("uvs")
+                };
+                assert!(
+                    uvs.iter()
+                        .all(|uv| Vec2::from_array(*uv).abs_diff_eq(Vec2::new(0.7, 0.2), 1e-5))
+                );
             }
         }
     }
 
     #[test]
     fn constant_display_indices_apply_to_flat_and_indexed_meshes() {
-        let mut read = mesh(vec![[0.0,0.0,0.0], [1.0,0.0,0.0], [0.0,1.0,0.0]], vec![3], vec![0,1,2]);
-        read.display_color = Some(MeshPrimvar { values: vec![[1.0,0.0,0.0], [0.0,1.0,0.0]], interpolation: Interpolation::Constant, indices: vec![1] });
-        read.display_opacity = Some(MeshPrimvar { values: vec![1.0,0.25], interpolation: Interpolation::Constant, indices: vec![1] });
+        let mut read = mesh(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![3],
+            vec![0, 1, 2],
+        );
+        read.display_color = Some(MeshPrimvar {
+            values: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            interpolation: Interpolation::Constant,
+            indices: vec![1],
+        });
+        read.display_opacity = Some(MeshPrimvar {
+            values: vec![1.0, 0.25],
+            interpolation: Interpolation::Constant,
+            indices: vec![1],
+        });
         for scheme in [SubdivScheme::None, SubdivScheme::CatmullClark] {
             read.subdivision_scheme = scheme;
             for subset in [None, Some([0].as_slice())] {
                 let mesh = mesh_from_usd_subset(&read, subset);
-                let Some(VertexAttributeValues::Float32x4(colors)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("colors") };
-                assert!(colors.iter().all(|color| *color == [0.0,1.0,0.0,0.25]));
+                let Some(VertexAttributeValues::Float32x4(colors)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+                else {
+                    panic!("colors")
+                };
+                assert!(colors.iter().all(|color| *color == [0.0, 1.0, 0.0, 0.25]));
             }
         }
     }
@@ -1131,16 +1450,31 @@ def Mesh "M" {
     #[test]
     fn flat_normals_are_scale_independent_for_subsets_and_winding() {
         for scale in [1e-30_f32, 1e-20, 1e-5, 1.0, 1e20, 1e30] {
-            let mut read = mesh(vec![[0.0,0.0,0.0], [scale,0.0,0.0], [0.0,scale,0.0]], vec![3], vec![0,1,2]);
+            let mut read = mesh(
+                vec![[0.0, 0.0, 0.0], [scale, 0.0, 0.0], [0.0, scale, 0.0]],
+                vec![3],
+                vec![0, 1, 2],
+            );
             for scheme in [SubdivScheme::None, SubdivScheme::Bilinear] {
                 read.subdivision_scheme = scheme;
                 for orientation in [Orientation::RightHanded, Orientation::LeftHanded] {
                     read.orientation = orientation;
-                    let expected = if orientation == Orientation::RightHanded { [0.0,0.0,1.0] } else { [0.0,0.0,-1.0] };
+                    let expected = if orientation == Orientation::RightHanded {
+                        [0.0, 0.0, 1.0]
+                    } else {
+                        [0.0, 0.0, -1.0]
+                    };
                     for subset in [None, Some([0].as_slice())] {
                         let output = mesh_from_usd_subset(&read, subset);
-                        let Some(VertexAttributeValues::Float32x3(normals)) = output.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
-                        assert_eq!(normals, &[expected;3], "scale={scale} scheme={scheme:?} subset={subset:?}");
+                        let Some(VertexAttributeValues::Float32x3(normals)) =
+                            output.attribute(Mesh::ATTRIBUTE_NORMAL)
+                        else {
+                            panic!("normals")
+                        };
+                        assert_eq!(
+                            normals, &[expected; 3],
+                            "scale={scale} scheme={scheme:?} subset={subset:?}"
+                        );
                         assert_eq!(output.indices().unwrap().len(), 3);
                         assert_eq!(vertex_point_indices(&read).len(), 3);
                     }
@@ -1151,45 +1485,104 @@ def Mesh "M" {
 
     #[test]
     fn tangents_require_authored_uvs() {
-        let mut read = mesh(vec![[0.0,0.0,0.0], [1.0,0.0,0.0], [0.0,1.0,0.0]], vec![3], vec![0,1,2]);
-        assert!(mesh_from_usd(&read).attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
-        read.uvs = Some(MeshPrimvar { values: vec![[0.0,0.0], [1.0,0.0], [0.0,1.0]],
-            indices: vec![], interpolation: Interpolation::Vertex });
-        assert!(mesh_from_usd(&read).attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
+        let mut read = mesh(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![3],
+            vec![0, 1, 2],
+        );
+        assert!(
+            mesh_from_usd(&read)
+                .attribute(Mesh::ATTRIBUTE_TANGENT)
+                .is_none()
+        );
+        read.uvs = Some(MeshPrimvar {
+            values: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            indices: vec![],
+            interpolation: Interpolation::Vertex,
+        });
+        assert!(
+            mesh_from_usd(&read)
+                .attribute(Mesh::ATTRIBUTE_TANGENT)
+                .is_some()
+        );
     }
 
     #[test]
     fn face_indices_match_full_subset_builders_across_vertex_layouts() {
         let base = mesh(
-            vec![[0.0,0.0,0.0], [2.0,0.0,0.0], [1.0,0.5,0.0], [2.0,2.0,0.0], [0.0,2.0,0.0], [0.0,0.0,1.0]],
-            vec![5,3], vec![0,1,2,3,4,0,5,1],
+            vec![
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [1.0, 0.5, 0.0],
+                [2.0, 2.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            vec![5, 3],
+            vec![0, 1, 2, 3, 4, 0, 5, 1],
         );
         for layout in 0..6 {
             let mut read = base.clone();
-            read.subdivision_scheme = if layout == 0 { SubdivScheme::None } else { SubdivScheme::CatmullClark };
+            read.subdivision_scheme = if layout == 0 {
+                SubdivScheme::None
+            } else {
+                SubdivScheme::CatmullClark
+            };
             match layout {
-                2 => read.normals = Some(MeshPrimvar { values: vec![[0.0,0.0,1.0]; 6], indices: vec![], interpolation: Interpolation::Vertex }),
-                3 => read.uvs = Some(MeshPrimvar { values: vec![[0.0,0.0]; 8], indices: vec![], interpolation: Interpolation::FaceVarying }),
-                4 => read.display_color = Some(MeshPrimvar { values: vec![[1.0,0.0,0.0]; 2], indices: vec![], interpolation: Interpolation::Uniform }),
-                5 => read.normals = Some(MeshPrimvar { values: vec![[0.0,0.0,1.0]; 8], indices: vec![], interpolation: Interpolation::FaceVarying }),
+                2 => {
+                    read.normals = Some(MeshPrimvar {
+                        values: vec![[0.0, 0.0, 1.0]; 6],
+                        indices: vec![],
+                        interpolation: Interpolation::Vertex,
+                    })
+                }
+                3 => {
+                    read.uvs = Some(MeshPrimvar {
+                        values: vec![[0.0, 0.0]; 8],
+                        indices: vec![],
+                        interpolation: Interpolation::FaceVarying,
+                    })
+                }
+                4 => {
+                    read.display_color = Some(MeshPrimvar {
+                        values: vec![[1.0, 0.0, 0.0]; 2],
+                        indices: vec![],
+                        interpolation: Interpolation::Uniform,
+                    })
+                }
+                5 => {
+                    read.normals = Some(MeshPrimvar {
+                        values: vec![[0.0, 0.0, 1.0]; 8],
+                        indices: vec![],
+                        interpolation: Interpolation::FaceVarying,
+                    })
+                }
                 _ => {}
             }
             for orientation in [Orientation::LeftHanded, Orientation::RightHanded] {
                 read.orientation = orientation;
                 for holes in [vec![], vec![0], vec![1]] {
                     read.hole_indices = holes;
-                    for faces in [&[][..], &[0], &[1], &[1,0], &[0,0], &[-1,8]] {
+                    for faces in [&[][..], &[0], &[1], &[1, 0], &[0, 0], &[-1, 8]] {
                         for deformed in [false, true] {
                             let mut sampled = read.clone();
                             if deformed {
                                 sampled.triangulation_points = Some(sampled.points.clone());
-                                sampled.points[2] = [0.5,1.5,0.8];
+                                sampled.points[2] = [0.5, 1.5, 0.8];
                             }
                             let expected = mesh_from_usd_subset(&sampled, Some(faces));
                             let indices = mesh_indices_for_faces(&sampled, faces);
                             assert_eq!(MeshFaceIndices::new(&sampled).for_faces(faces), indices);
-                            assert_eq!(Some(&indices), expected.indices(), "layout={layout} orientation={orientation:?} faces={faces:?} deformed={deformed}");
-                            assert!(indices.iter().all(|index| index < expected.count_vertices()));
+                            assert_eq!(
+                                Some(&indices),
+                                expected.indices(),
+                                "layout={layout} orientation={orientation:?} faces={faces:?} deformed={deformed}"
+                            );
+                            assert!(
+                                indices
+                                    .iter()
+                                    .all(|index| index < expected.count_vertices())
+                            );
                         }
                     }
                 }
@@ -1207,7 +1600,10 @@ def Mesh "M" {
                     read.hole_indices = vec![3];
                     let mapping = MeshFaceIndices::new(&read);
                     for faces in [&[][..], &[5, 4, 3, 2, 1, 0], &[4, 4], &[-1, 99]] {
-                        assert_eq!(mapping.for_faces(faces), mesh_indices_for_faces(&read, faces));
+                        assert_eq!(
+                            mapping.for_faces(faces),
+                            mesh_indices_for_faces(&read, faces)
+                        );
                     }
                 }
             }
@@ -1218,18 +1614,33 @@ def Mesh "M" {
     fn borrowed_triangulation_positions_match_explicit_reference_expansion() {
         for scheme in [SubdivScheme::None, SubdivScheme::CatmullClark] {
             for orientation in [Orientation::LeftHanded, Orientation::RightHanded] {
-                let mut read = mesh(vec![[0.0,0.0,0.0], [2.0,0.0,0.0], [1.0,0.5,0.0],
-                    [2.0,2.0,0.0], [0.0,2.0,0.0]], vec![5,3], vec![0,1,2,3,4,0,-1,99]);
+                let mut read = mesh(
+                    vec![
+                        [0.0, 0.0, 0.0],
+                        [2.0, 0.0, 0.0],
+                        [1.0, 0.5, 0.0],
+                        [2.0, 2.0, 0.0],
+                        [0.0, 2.0, 0.0],
+                    ],
+                    vec![5, 3],
+                    vec![0, 1, 2, 3, 4, 0, -1, 99],
+                );
                 read.subdivision_scheme = scheme;
                 read.orientation = orientation;
                 read.hole_indices = vec![1];
                 let mut explicit = read.clone();
                 explicit.triangulation_points = Some(read.points.clone());
-                for faces in [None, Some(&[0][..]), Some(&[1,0][..])] {
-                    assert_eq!(build_expanded(&read, faces), build_expanded(&explicit, faces));
+                for faces in [None, Some(&[0][..]), Some(&[1, 0][..])] {
+                    assert_eq!(
+                        build_expanded(&read, faces),
+                        build_expanded(&explicit, faces)
+                    );
                     let mut invalid_reference = read.clone();
                     invalid_reference.triangulation_points = Some(vec![]);
-                    assert_eq!(build_expanded(&invalid_reference, faces), build_expanded(&explicit, faces));
+                    assert_eq!(
+                        build_expanded(&invalid_reference, faces),
+                        build_expanded(&explicit, faces)
+                    );
                 }
             }
         }
@@ -1237,19 +1648,35 @@ def Mesh "M" {
 
     #[test]
     fn deformed_flat_faces_keep_reference_diagonals_and_subset_layout() {
-        let stage = openusd::usd::Stage::builder().schema_registry(openusd_schemas::schema_registry())
-            .open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_test_simple.usda")).unwrap();
+        let stage = openusd::usd::Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../assets/skel_test_simple.usda"
+            ))
+            .unwrap();
         let path = openusd::sdf::path("/Test/Bar").unwrap();
-        let reference = crate::read::geom::read_mesh_at(&stage, &path, Some(30.0)).unwrap().unwrap();
+        let reference = crate::read::geom::read_mesh_at(&stage, &path, Some(30.0))
+            .unwrap()
+            .unwrap();
         let mapping = vertex_point_indices(&reference);
-        let mut deformed = crate::route::skel::deformed_mesh(&crate::route::RouteCtx::at(&stage, &path, Some(30.0)))
-            .unwrap().unwrap();
+        let mut deformed = crate::route::skel::deformed_mesh(&crate::route::RouteCtx::at(
+            &stage,
+            &path,
+            Some(30.0),
+        ))
+        .unwrap()
+        .unwrap();
         assert_eq!(vertex_point_indices(&deformed), mapping);
         for face in 0..reference.face_vertex_counts.len() {
             let rest_subset = mesh_from_usd_subset(&reference, Some(&[face as i32]));
             let subset = mesh_from_usd_subset(&deformed, Some(&[face as i32]));
             assert_eq!(subset.indices(), rest_subset.indices());
-            let VertexAttributeValues::Float32x3(positions) = subset.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!("positions") };
+            let VertexAttributeValues::Float32x3(positions) =
+                subset.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+            else {
+                panic!("positions")
+            };
             for (vertex, &point) in mapping.iter().enumerate() {
                 assert_eq!(positions[vertex], deformed.points[point]);
             }
@@ -1261,10 +1688,21 @@ def Mesh "M" {
     #[test]
     fn polygonal_missing_normals_are_flat_with_stable_subset_vertex_maps() {
         let mut read = mesh(
-            vec![[0.0,0.0,0.0], [1.0,0.0,0.0], [1.0,1.0,0.0], [0.0,1.0,0.0], [0.0,0.0,1.0]],
-            vec![4,3], vec![0,1,2,3,0,4,1],
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            vec![4, 3],
+            vec![0, 1, 2, 3, 0, 4, 1],
         );
-        read.uvs = Some(MeshPrimvar { values: vec![[0.0,0.25]; 7], indices: vec![], interpolation: Interpolation::FaceVarying });
+        read.uvs = Some(MeshPrimvar {
+            values: vec![[0.0, 0.25]; 7],
+            indices: vec![],
+            interpolation: Interpolation::FaceVarying,
+        });
         for scheme in [SubdivScheme::None, SubdivScheme::Bilinear] {
             read.subdivision_scheme = scheme;
             for orientation in [Orientation::RightHanded, Orientation::LeftHanded] {
@@ -1272,35 +1710,66 @@ def Mesh "M" {
                 let mapping = vertex_point_indices(&read);
                 assert_eq!(mapping.len(), 9);
                 let full = mesh_from_usd(&read);
-                let VertexAttributeValues::Float32x3(positions) = full.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!("positions") };
-                let VertexAttributeValues::Float32x3(normals) = full.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap() else { panic!("normals") };
-                for (vertex, &point) in mapping.iter().enumerate() { assert_eq!(positions[vertex], read.points[point]); }
+                let VertexAttributeValues::Float32x3(positions) =
+                    full.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+                else {
+                    panic!("positions")
+                };
+                let VertexAttributeValues::Float32x3(normals) =
+                    full.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap()
+                else {
+                    panic!("normals")
+                };
+                for (vertex, &point) in mapping.iter().enumerate() {
+                    assert_eq!(positions[vertex], read.points[point]);
+                }
                 for (triangle, ns) in positions.chunks_exact(3).zip(normals.chunks_exact(3)) {
-                    let normal = (Vec3::from_array(triangle[1])-Vec3::from_array(triangle[0]))
-                        .cross(Vec3::from_array(triangle[2])-Vec3::from_array(triangle[0])).normalize();
-                    for n in ns { assert!(normal.distance(Vec3::from_array(*n)) < 1e-6); }
+                    let normal = (Vec3::from_array(triangle[1]) - Vec3::from_array(triangle[0]))
+                        .cross(Vec3::from_array(triangle[2]) - Vec3::from_array(triangle[0]))
+                        .normalize();
+                    for n in ns {
+                        assert!(normal.distance(Vec3::from_array(*n)) < 1e-6);
+                    }
                 }
                 assert_ne!(normals[0], normals[6]);
                 let subset = mesh_from_usd_subset(&read, Some(&[1]));
-                assert_eq!(subset.attribute(Mesh::ATTRIBUTE_POSITION), full.attribute(Mesh::ATTRIBUTE_POSITION));
-                assert_eq!(subset.attribute(Mesh::ATTRIBUTE_NORMAL), full.attribute(Mesh::ATTRIBUTE_NORMAL));
-                assert_eq!(subset.indices().unwrap().iter().collect::<Vec<_>>(), vec![6,7,8]);
+                assert_eq!(
+                    subset.attribute(Mesh::ATTRIBUTE_POSITION),
+                    full.attribute(Mesh::ATTRIBUTE_POSITION)
+                );
+                assert_eq!(
+                    subset.attribute(Mesh::ATTRIBUTE_NORMAL),
+                    full.attribute(Mesh::ATTRIBUTE_NORMAL)
+                );
+                assert_eq!(
+                    subset.indices().unwrap().iter().collect::<Vec<_>>(),
+                    vec![6, 7, 8]
+                );
                 assert_consistent(&subset);
             }
         }
         read.subdivision_scheme = SubdivScheme::CatmullClark;
         assert_eq!(vertex_point_indices(&read).len(), 7);
         read.subdivision_scheme = SubdivScheme::None;
-        read.normals = Some(MeshPrimvar { values: vec![[0.0,1.0,0.0]], indices: vec![], interpolation: Interpolation::Constant });
+        read.normals = Some(MeshPrimvar {
+            values: vec![[0.0, 1.0, 0.0]],
+            indices: vec![],
+            interpolation: Interpolation::Constant,
+        });
         assert_eq!(vertex_point_indices(&read).len(), 7);
         let authored = mesh_from_usd(&read);
-        let VertexAttributeValues::Float32x3(normals) = authored.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap() else { panic!("normals") };
-        assert!(normals.iter().all(|normal| *normal == [0.0,1.0,0.0]));
+        let VertexAttributeValues::Float32x3(normals) =
+            authored.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap()
+        else {
+            panic!("normals")
+        };
+        assert!(normals.iter().all(|normal| *normal == [0.0, 1.0, 0.0]));
     }
 
     #[test]
     fn indexed_sampled_normal_primvar_overrides_normals() {
-        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
 def Mesh "M" {
     point3f[] points = [(0,0,0), (1,0,0), (0,1,0), (0,0,1)]
     int[] faceVertexCounts = [3,3]
@@ -1317,18 +1786,25 @@ def Mesh "M" {
         10: [1,1,1,0,0,0],
     }
 }
-"#).open_stage().unwrap();
+"#,
+        )
+        .open_stage()
+        .unwrap();
         let path = openusd::sdf::Path::new("/M").unwrap();
         for (time, first, second) in [
-            (0.0, [0.0,0.0,1.0], [0.0,1.0,0.0]),
-            (2.5, [0.0,0.0,0.5], [0.0,0.5,0.0]),
-            (10.0, [0.0,-1.0,0.0], [0.0,0.0,-1.0]),
+            (0.0, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+            (2.5, [0.0, 0.0, 0.5], [0.0, 0.5, 0.0]),
+            (10.0, [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]),
         ] {
-            let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
-            assert_eq!(vertex_point_indices(&read), [0,1,2,0,3,1]);
+            let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time))
+                .unwrap()
+                .unwrap();
+            assert_eq!(vertex_point_indices(&read), [0, 1, 2, 0, 3, 1]);
             for subset in [None, Some(&[1][..])] {
                 let mesh = mesh_from_usd_subset(&read, subset);
-                let Some(VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else {
+                let Some(VertexAttributeValues::Float32x3(normals)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+                else {
                     panic!("normal attribute missing");
                 };
                 assert_eq!(normals, &[first, first, first, second, second, second]);
@@ -1340,10 +1816,15 @@ def Mesh "M" {
     #[test]
     fn normal_primvar_defaults_to_constant_and_absence_uses_normals() {
         for (primvar, expected, interpolation) in [
-            ("normal3f[] primvars:normals = [(0,1,0)]", [0.0,1.0,0.0], Interpolation::Constant),
-            ("", [1.0,0.0,0.0], Interpolation::Vertex),
+            (
+                "normal3f[] primvars:normals = [(0,1,0)]",
+                [0.0, 1.0, 0.0],
+                Interpolation::Constant,
+            ),
+            ("", [1.0, 0.0, 0.0], Interpolation::Vertex),
         ] {
-            let stage = crate::snippet::UsdSnippet::new(format!(r#"#usda 1.0
+            let stage = crate::snippet::UsdSnippet::new(format!(
+                r#"#usda 1.0
 def Mesh "M" {{
     point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
     int[] faceVertexCounts = [3]
@@ -1351,11 +1832,19 @@ def Mesh "M" {{
     normal3f[] normals = [(1,0,0), (1,0,0), (1,0,0)]
     {primvar}
 }}
-"#)).open_stage().unwrap();
-            let read = crate::read::geom::read_mesh(&stage, &openusd::sdf::Path::new("/M").unwrap()).unwrap().unwrap();
+"#
+            ))
+            .open_stage()
+            .unwrap();
+            let read =
+                crate::read::geom::read_mesh(&stage, &openusd::sdf::Path::new("/M").unwrap())
+                    .unwrap()
+                    .unwrap();
             assert_eq!(read.normals.as_ref().unwrap().interpolation, interpolation);
             let mesh = mesh_from_usd(&read);
-            let Some(VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else {
+            let Some(VertexAttributeValues::Float32x3(normals)) =
+                mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+            else {
                 panic!("normal attribute missing");
             };
             assert_eq!(normals, &[expected; 3]);
@@ -1368,11 +1857,24 @@ def Mesh "M" {{
             ("", "", [0.0, 1.0, 0.0]),
             ("normal3f[] primvars:normals", "", [0.0, 1.0, 0.0]),
             ("normal3f[] primvars:normals = None", "", [0.0, 1.0, 0.0]),
-            ("normal3f[] primvars:normals = [(1,0,0)] (interpolation = \"vertex\")", "", [0.0, 1.0, 0.0]),
-            ("normal3f[] primvars:normals = [(1,0,0)]", "", [1.0, 0.0, 0.0]),
-            ("", "normal3f[] primvars:normals = [(0,0,-1)]", [0.0, 0.0, -1.0]),
+            (
+                "normal3f[] primvars:normals = [(1,0,0)] (interpolation = \"vertex\")",
+                "",
+                [0.0, 1.0, 0.0],
+            ),
+            (
+                "normal3f[] primvars:normals = [(1,0,0)]",
+                "",
+                [1.0, 0.0, 0.0],
+            ),
+            (
+                "",
+                "normal3f[] primvars:normals = [(0,0,-1)]",
+                [0.0, 0.0, -1.0],
+            ),
         ] {
-            let stage = crate::snippet::UsdSnippet::new(format!(r#"#usda 1.0
+            let stage = crate::snippet::UsdSnippet::new(format!(
+                r#"#usda 1.0
 def Xform "Root" {{
     normal3f[] primvars:normals.timeSamples = {{ 0: [(0,0,1),(0,1,0)], 10: [(0,0,-1),(0,-1,0)] }}
     int[] primvars:normals:indices.timeSamples = {{ 0: [1], 10: [0] }}
@@ -1388,14 +1890,30 @@ def Xform "Root" {{
         }}
     }}
 }}
-"#)).open_stage().unwrap();
+"#
+            ))
+            .open_stage()
+            .unwrap();
             let path = openusd::sdf::Path::new("/Root/Group/M").unwrap();
             for time in [0.0, 10.0] {
-                let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+                let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time))
+                    .unwrap()
+                    .unwrap();
                 let mesh = mesh_from_usd(&read);
-                let Some(VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("normals") };
+                let Some(VertexAttributeValues::Float32x3(normals)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+                else {
+                    panic!("normals")
+                };
                 let inherited = expected == [0.0, 1.0, 0.0];
-                assert_eq!(normals, &[if inherited && time == 10.0 { [0.0,0.0,-1.0] } else { expected }; 3]);
+                assert_eq!(
+                    normals,
+                    &[if inherited && time == 10.0 {
+                        [0.0, 0.0, -1.0]
+                    } else {
+                        expected
+                    }; 3]
+                );
                 assert_eq!(crate::live::prim_is_animated(&stage, &path), inherited);
             }
         }

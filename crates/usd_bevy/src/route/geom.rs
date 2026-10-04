@@ -5,9 +5,7 @@
 use bevy::prelude::*;
 
 use super::{DisplayPurposes, PrimRoute, RouteCtx};
-use crate::read::geom::{
-    VisibilityState, read_effective_purpose, read_visibility_at,
-};
+use crate::read::geom::{VisibilityState, read_effective_purpose, read_visibility_at};
 
 /// The prim's effective (inherited) USD `purpose`: `"default"`, `"render"`,
 /// `"proxy"`, or `"guide"`. Carried so gameplay/UI can query or re-filter it.
@@ -27,8 +25,8 @@ pub struct VisibilityRoute;
 /// Combined visibility + effective purpose for `entity`'s prim, honoring the
 /// world's [`DisplayPurposes`] (defaults when the resource is absent).
 fn resolve(ctx: &RouteCtx, world: &World) -> (Visibility, String) {
-    let purpose = read_effective_purpose(ctx.stage, ctx.path)
-        .unwrap_or_else(|_| "default".to_string());
+    let purpose =
+        read_effective_purpose(ctx.stage, ctx.path).unwrap_or_else(|_| "default".to_string());
     let purposes = world
         .get_resource::<DisplayPurposes>()
         .copied()
@@ -63,9 +61,8 @@ impl PrimRoute for VisibilityRoute {
     }
 
     fn patch(&self, ctx: &RouteCtx, world: &mut World, entity: Entity, changed: &[&str]) {
-        let touches = changed.is_empty()
-            || changed.contains(&"visibility")
-            || changed.contains(&"purpose");
+        let touches =
+            changed.is_empty() || changed.contains(&"visibility") || changed.contains(&"purpose");
         if !touches {
             return;
         }
@@ -80,12 +77,25 @@ impl PrimRoute for VisibilityRoute {
 pub struct MeshRoute;
 
 #[derive(Component, PartialEq, Eq)]
-pub(crate) enum GeometryOwner { Mesh, Shape, Points, Curves }
+pub(crate) enum GeometryOwner {
+    Mesh,
+    Shape,
+    Points,
+    Curves,
+}
 
 pub(crate) fn clear_geometry(world: &mut World, entity: Entity, owner: GeometryOwner) {
-    if world.get::<GeometryOwner>(entity) != Some(&owner) { return; }
+    if world.get::<GeometryOwner>(entity) != Some(&owner) {
+        return;
+    }
     super::gpu_skin::clear(world, entity);
-    world.entity_mut(entity).remove::<(Mesh3d, MeshMaterial3d<StandardMaterial>, GeometryOwner, bevy::camera::primitives::Aabb, super::material::UsdMaterialWarning)>();
+    world.entity_mut(entity).remove::<(
+        Mesh3d,
+        MeshMaterial3d<StandardMaterial>,
+        GeometryOwner,
+        bevy::camera::primitives::Aabb,
+        super::material::UsdMaterialWarning,
+    )>();
 }
 
 impl MeshRoute {
@@ -114,7 +124,11 @@ impl MeshRoute {
         let mesh_handle = super::cache::intern_assembled_mesh(world, read);
         let material = super::cache::intern_material(world, super::material::default_material(ctx));
         if let Ok(mut e) = world.get_entity_mut(entity) {
-            e.insert((Mesh3d(mesh_handle), MeshMaterial3d(material), GeometryOwner::Mesh));
+            e.insert((
+                Mesh3d(mesh_handle),
+                MeshMaterial3d(material),
+                GeometryOwner::Mesh,
+            ));
             return true;
         }
         false
@@ -153,33 +167,69 @@ def PointInstancer "PI" {
 "#[..]).unwrap();
         let stage = source.open_stage().unwrap();
         let path = openusd::sdf::path("/Mesh").unwrap();
-        assert!(crate::read::geom::read_mesh(&stage, &path).unwrap().is_none());
+        assert!(
+            crate::read::geom::read_mesh(&stage, &path)
+                .unwrap()
+                .is_none()
+        );
         let middle = read_mesh_at(&stage, &path, Some(5.0)).unwrap().unwrap();
         assert_eq!(middle.points[1], [2.0, 0.0, 0.0]);
         assert_eq!(middle.face_vertex_counts, vec![3]);
         assert_eq!(middle.normals.unwrap().values[0], [0.0, 0.5, 0.5]);
         let uv = middle.uvs.unwrap();
         assert_eq!(uv.values[1], [0.75, 0.0]);
-        assert_eq!(uv.indices, vec![0,1,2]);
-        assert_eq!(middle.display_color.unwrap().values[0], [0.5,0.0,0.5]);
+        assert_eq!(uv.indices, vec![0, 1, 2]);
+        assert_eq!(middle.display_color.unwrap().values[0], [0.5, 0.0, 0.5]);
         assert_eq!(middle.display_opacity.unwrap().values, vec![0.75]);
-        assert_eq!(middle.extent.unwrap()[1], [2.0,2.0,0.0]);
+        assert_eq!(middle.extent.unwrap()[1], [2.0, 2.0, 0.0]);
         let end = read_mesh_at(&stage, &path, Some(10.0)).unwrap().unwrap();
-        assert_eq!(end.face_vertex_indices, vec![0,1,2,2,1,0]);
-        assert_eq!(end.uvs.unwrap().indices, vec![2,1,0]);
+        assert_eq!(end.face_vertex_indices, vec![0, 1, 2, 2, 1, 0]);
+        assert_eq!(end.uvs.unwrap().indices, vec![2, 1, 0]);
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<StandardMaterial>>();
-        let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
-        let first = app.world_mut().spawn((crate::UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 })).id();
-        let second = app.world_mut().spawn((crate::UsdSceneRoot(handle), UsdInstanceTime { current: 10.0 })).id();
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source,
+                textures: default(),
+            });
+        let first = app
+            .world_mut()
+            .spawn((
+                crate::UsdSceneRoot(handle.clone()),
+                UsdInstanceTime { current: 0.0 },
+            ))
+            .id();
+        let second = app
+            .world_mut()
+            .spawn((
+                crate::UsdSceneRoot(handle),
+                UsdInstanceTime { current: 10.0 },
+            ))
+            .id();
         app.update();
         let entities = |world: &World, root| {
             let instances = world.get_non_send::<UsdInstances>().unwrap();
             let mesh = instances.entity(root, "/Mesh").unwrap();
             let parent = instances.entity(root, "/PI").unwrap();
-            let child = world.get::<Children>(parent).unwrap().iter().find(|child| world.get::<crate::route::instancer::UsdInstance>(*child).is_some()).unwrap();
+            let child = world
+                .get::<Children>(parent)
+                .unwrap()
+                .iter()
+                .find(|child| {
+                    world
+                        .get::<crate::route::instancer::UsdInstance>(*child)
+                        .is_some()
+                })
+                .unwrap();
             [mesh, child]
         };
         let first_entities = entities(app.world(), first);
@@ -187,29 +237,59 @@ def PointInstancer "PI" {
         let extent = |world: &World, entity| {
             let mesh = &world.get::<Mesh3d>(entity).unwrap().0;
             let mesh = world.resource::<Assets<Mesh>>().get(mesh).unwrap();
-            let bevy::mesh::VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!("positions") };
-            (points.iter().map(|point| point[0]).fold(0.0_f32, f32::max), mesh.indices().map_or(mesh.count_vertices(), |indices| indices.len()))
+            let bevy::mesh::VertexAttributeValues::Float32x3(points) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap()
+            else {
+                panic!("positions")
+            };
+            (
+                points.iter().map(|point| point[0]).fold(0.0_f32, f32::max),
+                mesh.indices()
+                    .map_or(mesh.count_vertices(), |indices| indices.len()),
+            )
         };
-        for entity in first_entities { assert_eq!(extent(app.world(), entity), (1.0, 3)); }
-        for entity in second_entities { assert_eq!(extent(app.world(), entity), (3.0, 6)); }
-        app.world_mut().get_mut::<UsdInstanceTime>(first).unwrap().current = 5.0;
+        for entity in first_entities {
+            assert_eq!(extent(app.world(), entity), (1.0, 3));
+        }
+        for entity in second_entities {
+            assert_eq!(extent(app.world(), entity), (3.0, 6));
+        }
+        app.world_mut()
+            .get_mut::<UsdInstanceTime>(first)
+            .unwrap()
+            .current = 5.0;
         app.update();
         assert_eq!(entities(app.world(), first), first_entities);
         assert_eq!(entities(app.world(), second), second_entities);
-        for entity in first_entities { assert_eq!(extent(app.world(), entity), (2.0, 3)); }
-        for entity in second_entities { assert_eq!(extent(app.world(), entity), (3.0, 6)); }
-        app.world_mut().get_mut::<UsdInstanceTime>(first).unwrap().current = 20.0;
+        for entity in first_entities {
+            assert_eq!(extent(app.world(), entity), (2.0, 3));
+        }
+        for entity in second_entities {
+            assert_eq!(extent(app.world(), entity), (3.0, 6));
+        }
+        app.world_mut()
+            .get_mut::<UsdInstanceTime>(first)
+            .unwrap()
+            .current = 20.0;
         app.update();
         assert_eq!(entities(app.world(), first), first_entities);
-        for entity in first_entities { assert_eq!(extent(app.world(), entity), (3.0, 3)); }
-        for entity in second_entities { assert_eq!(extent(app.world(), entity), (3.0, 6)); }
+        for entity in first_entities {
+            assert_eq!(extent(app.world(), entity), (3.0, 3));
+        }
+        for entity in second_entities {
+            assert_eq!(extent(app.world(), entity), (3.0, 6));
+        }
     }
 
     #[test]
     fn changed_geometry_types_remove_only_owned_render_components() {
         #[derive(Component)]
         struct RuntimeOnly;
-        let stage = crate::UsdSource::new("cleanup.usda", &b"#usda 1.0\ndef Cube \"Shape\" {}\n"[..]).unwrap().open_stage().unwrap();
+        let stage =
+            crate::UsdSource::new("cleanup.usda", &b"#usda 1.0\ndef Cube \"Shape\" {}\n"[..])
+                .unwrap()
+                .open_stage()
+                .unwrap();
         let live = crate::live::LiveStage::new(stage);
         let mut world = World::new();
         world.insert_resource(Assets::<Mesh>::default());
@@ -220,14 +300,26 @@ def PointInstancer "PI" {
         world.entity_mut(entity).insert(RuntimeOnly);
         let child = world.spawn((RuntimeOnly, ChildOf(entity))).id();
         assert!(world.get::<Mesh3d>(entity).is_some());
-        live.stage.prim("/Shape").unwrap().set_type_name("Xform").unwrap();
+        live.stage
+            .prim("/Shape")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert_eq!(map.entity("/Shape"), Some(entity));
         assert!(world.get::<Mesh3d>(entity).is_none());
-        assert!(world.get::<MeshMaterial3d<StandardMaterial>>(entity).is_none());
+        assert!(
+            world
+                .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                .is_none()
+        );
         assert!(world.get::<RuntimeOnly>(entity).is_some());
         assert!(world.get::<RuntimeOnly>(child).is_some());
-        live.stage.prim("/Shape").unwrap().set_type_name("Sphere").unwrap();
+        live.stage
+            .prim("/Shape")
+            .unwrap()
+            .set_type_name("Sphere")
+            .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert!(world.get::<Mesh3d>(entity).is_some());
         let unrelated = world.spawn(Mesh3d::default()).id();
@@ -238,7 +330,9 @@ def PointInstancer "PI" {
 
     #[test]
     fn metadata_matching_preserves_untyped_and_custom_geometry() {
-        let source = crate::UsdSource::new("matching.usda", &br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "matching.usda",
+            &br#"#usda 1.0
 def "Untyped" {
     point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
     int[] faceVertexCounts = [3]
@@ -253,7 +347,9 @@ def Xform "Relationship" {
     int[] faceVertexCounts = [3]
     int[] faceVertexIndices = [0,1,2]
 }
-"#[..]).unwrap();
+"#[..],
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         let mut world = World::new();
         world.insert_resource(Assets::<Mesh>::default());
@@ -264,7 +360,10 @@ def Xform "Relationship" {
             assert!(MeshRoute.matches(&ctx));
             let entity = world.spawn_empty().id();
             MeshRoute.project(&ctx, &mut world, entity);
-            let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
+            let mesh = world
+                .resource::<Assets<Mesh>>()
+                .get(&world.get::<Mesh3d>(entity).unwrap().0)
+                .unwrap();
             assert_eq!(mesh.count_vertices(), 3);
         }
         for name in ["Empty", "Relationship"] {
@@ -279,9 +378,14 @@ impl PrimRoute for MeshRoute {
         clear_geometry(world, entity, GeometryOwner::Mesh);
     }
     fn matches(&self, ctx: &RouteCtx) -> bool {
-        if matches!(ctx.type_name.as_deref(), Some("Mesh")) { return true; }
-        let Ok(prim) = ctx.stage.prim(ctx.path.clone()) else { return false };
-        ["points", "faceVertexCounts", "faceVertexIndices"].into_iter()
+        if matches!(ctx.type_name.as_deref(), Some("Mesh")) {
+            return true;
+        }
+        let Ok(prim) = ctx.stage.prim(ctx.path.clone()) else {
+            return false;
+        };
+        ["points", "faceVertexCounts", "faceVertexIndices"]
+            .into_iter()
             .all(|name| prim.attribute(name).is_defined().unwrap_or(false))
     }
 
@@ -301,9 +405,16 @@ mod purpose_tests {
     use openusd::usd::Stage;
 
     fn purpose_stage() -> Stage {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("purpose.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("purpose.usda")
+            .unwrap();
         let def = |path: &str, purpose: Option<&str>| {
-            stage.define_prim(path).unwrap().set_type_name("Xform").unwrap();
+            stage
+                .define_prim(path)
+                .unwrap()
+                .set_type_name("Xform")
+                .unwrap();
             if let Some(p) = purpose {
                 stage
                     .create_attribute(format!("{path}.purpose").as_str(), "token")
@@ -317,13 +428,21 @@ mod purpose_tests {
         def("/Render", Some("render"));
         def("/Guide", Some("guide"));
         // A Scope authored `proxy` — its child inherits proxy (pruning).
-        stage.define_prim("/Grp").unwrap().set_type_name("Scope").unwrap();
+        stage
+            .define_prim("/Grp")
+            .unwrap()
+            .set_type_name("Scope")
+            .unwrap();
         stage
             .create_attribute("/Grp.purpose", "token")
             .unwrap()
             .set(openusd::sdf::Value::Token("proxy".into()))
             .unwrap();
-        stage.define_prim("/Grp/Child").unwrap().set_type_name("Xform").unwrap();
+        stage
+            .define_prim("/Grp/Child")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
         stage
     }
 
@@ -346,7 +465,10 @@ mod purpose_tests {
         assert!(hidden(&world, &map, "/Render"), "render hidden by default");
         assert!(hidden(&world, &map, "/Guide"), "guide hidden by default");
         // Inherited: child of a proxy Scope resolves to proxy → shown.
-        assert!(!hidden(&world, &map, "/Grp/Child"), "inherits proxy → shown");
+        assert!(
+            !hidden(&world, &map, "/Grp/Child"),
+            "inherits proxy → shown"
+        );
         // The effective purpose is carried on the entity.
         let child = map.entity("/Grp/Child").unwrap();
         assert_eq!(world.get::<UsdPurpose>(child).unwrap().0, "proxy");
@@ -366,8 +488,14 @@ mod purpose_tests {
         let mut map = PrimEntities::default();
         project_stage(&mut world, &live, &mut map);
 
-        assert!(!hidden(&world, &map, "/Render"), "render shown when toggled on");
-        assert!(hidden(&world, &map, "/Proxy"), "proxy hidden when toggled off");
+        assert!(
+            !hidden(&world, &map, "/Render"),
+            "render shown when toggled on"
+        );
+        assert!(
+            hidden(&world, &map, "/Proxy"),
+            "proxy hidden when toggled off"
+        );
         assert!(!hidden(&world, &map, "/Plain"), "default always shown");
     }
 }

@@ -7,27 +7,27 @@
 use bevy::camera::RenderTarget;
 use bevy::prelude::*;
 
-mod environment;
-mod curve_quality;
-mod lighting;
-mod inspector;
+mod camera_plan;
 mod capture;
 mod capture_metadata;
-mod perf_render;
+mod capture_tools;
+mod close_confirmation;
+mod control;
+mod curve_quality;
+mod environment;
+mod file_dialog;
 mod framing;
+mod host_capture;
+mod inspector;
+mod lighting;
+mod payload_editor;
+mod perf_render;
+mod render_settings;
 mod timeline;
-mod ui_replay;
+mod toolbar_icons;
 mod ui_diagnostics;
 mod ui_frame_pacing;
-mod render_settings;
-mod file_dialog;
-mod close_confirmation;
-mod host_capture;
-mod camera_plan;
-mod capture_tools;
-mod control;
-mod toolbar_icons;
-mod payload_editor;
+mod ui_replay;
 
 use mara::host::{MaraHostCtx, RibbonRail};
 use mara::ui::mara_core;
@@ -43,15 +43,17 @@ use mara_core::widget::{TreeBody, TreeIconKind, TreeIconSlot};
 use mara_core::{RibbonAvoidance, WorkspaceStack};
 
 use usd_bevy::UsdPlugin;
-use usd_bevy::live::LiveStagePlugin;
 use usd_bevy::editor::{EditorBridge, EditorCommand, EditorPlugin, SaveMode};
+use usd_bevy::live::LiveStagePlugin;
 
 /// Everything (trace + panics + backtraces) is mirrored here so a hard crash
 /// is still recoverable after the window dies.
 const LOG_FILE: &str = "/tmp/usdview.log";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if control::run_cli()? { return Ok(()); }
+    if control::run_cli()? {
+        return Ok(());
+    }
     curve_quality::from_env()?;
     capture::CaptureConfig::from_env()?;
     host_capture::from_env()?;
@@ -197,15 +199,21 @@ struct UsdApp {
 impl WindowApp for UsdApp {
     fn new(ctx: CreationContext<'_>) -> Self {
         ui_replay::install(ctx.__internal_egui_ctx()).expect("invalid USD_UI_REPLAY script");
-        ui_diagnostics::install(ctx.__internal_egui_ctx()).expect("invalid USD_UI_DIAGNOSTICS setting");
+        ui_diagnostics::install(ctx.__internal_egui_ctx())
+            .expect("invalid USD_UI_DIAGNOSTICS setting");
         // Initial file: `USD_FILE` env var, else argv[1], else none.
         let path = std::env::var("USD_FILE")
             .ok()
             .or_else(|| std::env::args().nth(1));
         let editor = EditorBridge::default();
-        let close_confirmation = close_confirmation::install(ctx.__internal_egui_ctx(), editor.clone());
-        if let Some(path) = path { send(&editor, EditorCommand::Open(path)); }
-        if let Ok(path) = std::env::var("USD_VIEWER_SELECT") { send(&editor, EditorCommand::Select(Some(path))); }
+        let close_confirmation =
+            close_confirmation::install(ctx.__internal_egui_ctx(), editor.clone());
+        if let Some(path) = path {
+            send(&editor, EditorCommand::Open(path));
+        }
+        if let Ok(path) = std::env::var("USD_VIEWER_SELECT") {
+            send(&editor, EditorCommand::Select(Some(path)));
+        }
         let bridge = editor.clone();
         let lighting = lighting::LightingBridge::from_env();
         let lighting_bridge = lighting.clone();
@@ -217,9 +225,15 @@ impl WindowApp for UsdApp {
         let camera_plan_bridge = camera_plan.clone();
         let capture_tools = capture_tools::CaptureTools::default();
         let capture_bridge = capture_tools.bridge.clone();
-        let control = match control::Server::start(capture_tools.clone(), ctx.__internal_egui_ctx().clone()) {
+        let control = match control::Server::start(
+            capture_tools.clone(),
+            ctx.__internal_egui_ctx().clone(),
+        ) {
             Ok(server) => Some(server),
-            Err(error) => { error!("Viewer control API unavailable: {error}"); None }
+            Err(error) => {
+                error!("Viewer control API unavailable: {error}");
+                None
+            }
         };
         let bevy_view = mara_bevy::MaraBevyViewport::with_render_state_and_content(
             ctx.gpu(),
@@ -274,7 +288,9 @@ impl WindowApp for UsdApp {
             capture_tools,
             ..
         } = self;
-        if let Some(command) = file_dialogs.poll() { send(editor, command); }
+        if let Some(command) = file_dialogs.poll() {
+            send(editor, command);
+        }
         // Apply the mara theme every frame (without this the panes/ribbons
         // render with raw-egui defaults).
         mara_core::style::set_theme(mara_core::style::theme_pro(Mode::Dark));
@@ -290,12 +306,26 @@ impl WindowApp for UsdApp {
 
         // Panes + ribbon rail. Mara owns the pane/ribbon wiring,
         // open-state, pane-id publication, and paint ordering.
-        let view = match editor.view() { Ok(view) => view, Err(error) => { error!("{error}"); return; } };
-        bevy_view.set_continuous_rendering(view.timeline.playing || camera_plan.playing() || capture_tools.busy());
+        let view = match editor.view() {
+            Ok(view) => view,
+            Err(error) => {
+                error!("{error}");
+                return;
+            }
+        };
+        bevy_view.set_continuous_rendering(
+            view.timeline.playing || camera_plan.playing() || capture_tools.busy(),
+        );
         let renderer_error = rendering.renderer_error();
-        let prims: Vec<_> = view.document.prims.iter().map(|path| PrimRow {
-            path: path.clone(), name: path.rsplit('/').next().unwrap_or(path).to_string(),
-        }).collect();
+        let prims: Vec<_> = view
+            .document
+            .prims
+            .iter()
+            .map(|path| PrimRow {
+                path: path.clone(),
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            })
+            .collect();
         let rail = RibbonRail::view_left(RIBBON_LEFT, "usdview.ribbons")
             .default_open(match std::env::var("USD_VIEWER_PANE").as_deref() {
                 Ok("lighting") => PANE_LIGHTING,
@@ -310,7 +340,18 @@ impl WindowApp for UsdApp {
                 "Outliner",
                 PaneAnchor::LeftRail(RailZone::Start),
                 |body| {
-                    outliner_pane(body, &prims, editor, view.document.selected.as_deref(), renderer_error.as_deref().or(file_dialogs.status()).unwrap_or(&view.status), accent, &view.document.visibility);
+                    outliner_pane(
+                        body,
+                        &prims,
+                        editor,
+                        view.document.selected.as_deref(),
+                        renderer_error
+                            .as_deref()
+                            .or(file_dialogs.status())
+                            .unwrap_or(&view.status),
+                        accent,
+                        &view.document.visibility,
+                    );
                 },
             )
             .pane(
@@ -322,15 +363,33 @@ impl WindowApp for UsdApp {
                     inspector::show(body, &view.document, editor, drafts, view.timeline.current);
                 },
             )
-            .pane(PANE_TIMELINE, toolbar_icons::TIMELINE, "Timeline", PaneAnchor::LeftRail(RailZone::Middle), |body| {
-                timeline::show(body, &view.timeline, editor, timeline_draft);
-            })
-            .pane(PANE_LIGHTING, toolbar_icons::LIGHTING, "Lighting", PaneAnchor::LeftRail(RailZone::Middle), |body| {
-                lighting::show(body, lighting);
-            })
-            .pane(PANE_RENDERING, toolbar_icons::RENDERING, "Rendering", PaneAnchor::LeftRail(RailZone::Middle), |body| {
-                render_settings::show(body, rendering);
-            })
+            .pane(
+                PANE_TIMELINE,
+                toolbar_icons::TIMELINE,
+                "Timeline",
+                PaneAnchor::LeftRail(RailZone::Middle),
+                |body| {
+                    timeline::show(body, &view.timeline, editor, timeline_draft);
+                },
+            )
+            .pane(
+                PANE_LIGHTING,
+                toolbar_icons::LIGHTING,
+                "Lighting",
+                PaneAnchor::LeftRail(RailZone::Middle),
+                |body| {
+                    lighting::show(body, lighting);
+                },
+            )
+            .pane(
+                PANE_RENDERING,
+                toolbar_icons::RENDERING,
+                "Rendering",
+                PaneAnchor::LeftRail(RailZone::Middle),
+                |body| {
+                    render_settings::show(body, rendering);
+                },
+            )
             .action(
                 ACTION_OPEN,
                 toolbar_icons::OPEN,
@@ -343,25 +402,70 @@ impl WindowApp for UsdApp {
                 "Save root layer as…",
                 ribbon_action(ACTION_SAVE),
             )
-            .action(ACTION_SAVE_LAYER, toolbar_icons::SAVE_LAYER, "Save edit layer as…", ribbon_action(ACTION_SAVE_LAYER))
-            .action(ACTION_FLATTEN, toolbar_icons::EXPORT, "Export flattened…", ribbon_action(ACTION_FLATTEN))
-            .action(ACTION_UNDO, toolbar_icons::UNDO, "Undo", ribbon_action(ACTION_UNDO))
-            .action(ACTION_REDO, toolbar_icons::REDO, "Redo", ribbon_action(ACTION_REDO))
-            .action(ACTION_REFRESH_TEXTURES, toolbar_icons::REFRESH_TEXTURES, "Refresh textures", ribbon_action(ACTION_REFRESH_TEXTURES))
-            .action(ACTION_FRAME, toolbar_icons::FRAME, "Frame visible scene", ribbon_action(ACTION_FRAME));
+            .action(
+                ACTION_SAVE_LAYER,
+                toolbar_icons::SAVE_LAYER,
+                "Save edit layer as…",
+                ribbon_action(ACTION_SAVE_LAYER),
+            )
+            .action(
+                ACTION_FLATTEN,
+                toolbar_icons::EXPORT,
+                "Export flattened…",
+                ribbon_action(ACTION_FLATTEN),
+            )
+            .action(
+                ACTION_UNDO,
+                toolbar_icons::UNDO,
+                "Undo",
+                ribbon_action(ACTION_UNDO),
+            )
+            .action(
+                ACTION_REDO,
+                toolbar_icons::REDO,
+                "Redo",
+                ribbon_action(ACTION_REDO),
+            )
+            .action(
+                ACTION_REFRESH_TEXTURES,
+                toolbar_icons::REFRESH_TEXTURES,
+                "Refresh textures",
+                ribbon_action(ACTION_REFRESH_TEXTURES),
+            )
+            .action(
+                ACTION_FRAME,
+                toolbar_icons::FRAME,
+                "Frame visible scene",
+                ribbon_action(ACTION_FRAME),
+            );
         for click in host.show_ribbon_rail(rail, accent) {
-            if click.action == ribbon_action(ACTION_FRAME) { framing.request(); }
-            if click.action == ribbon_action(ACTION_SAVE) || click.action == ribbon_action(ACTION_SAVE_LAYER)
-                || click.action == ribbon_action(ACTION_FLATTEN) {
-                let mode = if click.action == ribbon_action(ACTION_SAVE_LAYER) { SaveMode::EditLayer }
-                    else if click.action == ribbon_action(ACTION_FLATTEN) { SaveMode::Flattened } else { SaveMode::RootLayer };
-                file_dialogs.start(file_dialog::Request::save(mode, &view.document), &view.document.root_layer);
+            if click.action == ribbon_action(ACTION_FRAME) {
+                framing.request();
+            }
+            if click.action == ribbon_action(ACTION_SAVE)
+                || click.action == ribbon_action(ACTION_SAVE_LAYER)
+                || click.action == ribbon_action(ACTION_FLATTEN)
+            {
+                let mode = if click.action == ribbon_action(ACTION_SAVE_LAYER) {
+                    SaveMode::EditLayer
+                } else if click.action == ribbon_action(ACTION_FLATTEN) {
+                    SaveMode::Flattened
+                } else {
+                    SaveMode::RootLayer
+                };
+                file_dialogs.start(
+                    file_dialog::Request::save(mode, &view.document),
+                    &view.document.root_layer,
+                );
             } else if click.action == ribbon_action(ACTION_UNDO) {
                 send(editor, EditorCommand::Undo);
             } else if click.action == ribbon_action(ACTION_REDO) {
                 send(editor, EditorCommand::Redo);
             } else if click.action == ribbon_action(ACTION_OPEN) {
-                file_dialogs.start(file_dialog::Request::open(&view.document), &view.document.root_layer);
+                file_dialogs.start(
+                    file_dialog::Request::open(&view.document),
+                    &view.document.root_layer,
+                );
             } else if click.action == ribbon_action(ACTION_REFRESH_TEXTURES) {
                 send(editor, EditorCommand::RefreshTextures);
             }
@@ -370,13 +474,17 @@ impl WindowApp for UsdApp {
             eprintln!("USD_VIEWER_UI_UPDATED");
             *capture_handshake = false;
         }
-        if let Some(capture) = &mut self.host_capture { capture.update(host.__internal_egui()); }
+        if let Some(capture) = &mut self.host_capture {
+            capture.update(host.__internal_egui());
+        }
         self.capture_tools.update(host.__internal_egui());
     }
 }
 
 fn send(editor: &EditorBridge, command: EditorCommand) {
-    if let Err(error) = editor.send(command) { error!("{error}"); }
+    if let Err(error) = editor.send(command) {
+        error!("{error}");
+    }
 }
 
 /// A node in the prim hierarchy (built from the flat traversal list).
@@ -422,20 +530,23 @@ fn outliner_pane(
     accent: MaraColor32,
     visibility: &std::collections::HashMap<String, bool>,
 ) {
-    let status = if status.trim().is_empty() { "Idle" } else { status };
+    let status = if status.trim().is_empty() {
+        "Idle"
+    } else {
+        status
+    };
     let lines = lighting::status_lines(status);
     let status_pod = Pod::new(MaraId::new(("usd.outliner", "status")));
     let status_pod = if lines.len() > 1 {
         status_pod.with_custom_units(lines.len(), move |ui| {
-            for line in lines { ui.label(&line); }
+            for line in lines {
+                ui.label(&line);
+            }
         })
-    } else { status_pod.with_readout("state", status) };
-    body.add_normal(
-        "usd.status",
-        "Status",
-        "list",
-        vec![status_pod],
-    );
+    } else {
+        status_pod.with_readout("state", status)
+    };
+    body.add_normal("usd.status", "Status", "list", vec![status_pod]);
 
     let tree_root = MaraId::new(("usd.outliner", "tree_root"));
     let sel = selected.unwrap_or_default().to_string();
@@ -459,7 +570,17 @@ fn outliner_pane(
                 .with_separator(SeparatorStyle::Line)
                 .fill()
                 .with_tree(7, move |tree| {
-                    usd_tree(tree, tree_root, accent, &filter, &nodes, &roots, &tree_selected, &editor, &visibility)
+                    usd_tree(
+                        tree,
+                        tree_root,
+                        accent,
+                        &filter,
+                        &nodes,
+                        &roots,
+                        &tree_selected,
+                        &editor,
+                        &visibility,
+                    )
                 }),
             Pod::new(MaraId::new(("usd.outliner", "scene", 2usize))).with_readout(
                 "selected",
@@ -528,8 +649,8 @@ fn walk_usd_tree(
     let mut expanded = tree.persisted_bool(exp_key).unwrap_or(true);
     let previous_eye = visibility.get(&node.path).copied().unwrap_or(true);
     let mut eye_on = previous_eye;
-    let mut slots =
-        [TreeIconSlot::new(TreeIconKind::Eye, &mut eye_on).with_tooltip("Toggle local visibility; animated values use the current time")];
+    let mut slots = [TreeIconSlot::new(TreeIconKind::Eye, &mut eye_on)
+        .with_tooltip("Toggle local visibility; animated values use the current time")];
     let resp = tree.row(
         i,
         depth,
@@ -545,7 +666,13 @@ fn walk_usd_tree(
     }
     tree.set_persisted_bool(exp_key, expanded);
     if eye_on != previous_eye {
-        send(editor, EditorCommand::Visibility { prim: node.path.clone(), visible: eye_on });
+        send(
+            editor,
+            EditorCommand::Visibility {
+                prim: node.path.clone(),
+                visible: eye_on,
+            },
+        );
     }
     if is_branch && expanded {
         for &c in &node.children {
@@ -580,7 +707,6 @@ fn usd_tree_passes(nodes: &[UsdNode], i: usize, filter: &str) -> bool {
         .any(|&c| usd_tree_passes(nodes, c, filter))
 }
 
-
 // ─── Embedded Bevy viewport (the USD scene) ─────────────────────────
 
 fn configure_usd_app(app: &mut App, editor: EditorBridge) {
@@ -592,22 +718,24 @@ fn configure_usd_app(app: &mut App, editor: EditorBridge) {
         EditorPlugin,
         environment::ViewerEnvironmentPlugin,
     ))
-        .init_resource::<mara_bevy::BevyViewportInput>()
-        .insert_resource(mara_bevy::GroundGrid {
-            visible: false,
-            ..default()
-        })
-        .add_systems(
-            Startup,
-            setup_camera.after(mara_bevy::BevyViewportSet::SetupTarget),
-        )
-        .add_systems(Update, mara_bevy::apply_viewport_camera_input_system);
+    .init_resource::<mara_bevy::BevyViewportInput>()
+    .insert_resource(mara_bevy::GroundGrid {
+        visible: false,
+        ..default()
+    })
+    .add_systems(
+        Startup,
+        setup_camera.after(mara_bevy::BevyViewportSet::SetupTarget),
+    )
+    .add_systems(Update, mara_bevy::apply_viewport_camera_input_system);
     #[cfg(not(target_arch = "wasm32"))]
     {
         app.insert_resource(usd_bevy::editor::reload::EditorReloadSettings {
-            enabled: hot_reload_enabled(std::env::var("USD_HOT_RELOAD").ok().as_deref()).unwrap_or(false),
+            enabled: hot_reload_enabled(std::env::var("USD_HOT_RELOAD").ok().as_deref())
+                .unwrap_or(false),
             ..default()
-        }).add_systems(Update, report_hot_reload);
+        })
+        .add_systems(Update, report_hot_reload);
     }
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
@@ -615,8 +743,14 @@ fn configure_usd_app(app: &mut App, editor: EditorBridge) {
     capture::configure(app);
     perf_render::configure(app);
     if let Ok(levels) = std::env::var("USD_SUBDIVISION_LEVELS") {
-        app.insert_resource(usd_bevy::route::subdivision::UsdSubdivisionSettings::new(
-            levels.parse().expect("USD_SUBDIVISION_LEVELS must be an integer")).expect("invalid subdivision levels"));
+        app.insert_resource(
+            usd_bevy::route::subdivision::UsdSubdivisionSettings::new(
+                levels
+                    .parse()
+                    .expect("USD_SUBDIVISION_LEVELS must be an integer"),
+            )
+            .expect("invalid subdivision levels"),
+        );
     }
     framing::configure(app);
 }
@@ -638,7 +772,10 @@ fn setup_camera(
         },
         chase,
     ));
-    render_settings::configure_transparency(&mut camera, render_settings::oit_from_env().expect("invalid transparency configuration"));
+    render_settings::configure_transparency(
+        &mut camera,
+        render_settings::oit_from_env().expect("invalid transparency configuration"),
+    );
     if let Some(render_target) = render_target {
         camera.insert(RenderTarget::from(render_target.0.clone()));
     }

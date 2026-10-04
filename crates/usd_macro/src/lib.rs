@@ -44,7 +44,9 @@ impl Context {
     fn literal(&mut self, text: &str) {
         for c in text.chars() {
             if self.comment {
-                if c == '\n' { self.comment = false; }
+                if c == '\n' {
+                    self.comment = false;
+                }
             } else if self.escaped {
                 self.escaped = false;
             } else if c == '\\' && self.delimiter.is_some() {
@@ -62,7 +64,9 @@ impl Context {
         }
     }
 
-    fn quoted(&self) -> bool { matches!(self.delimiter, Some('\'' | '"')) }
+    fn quoted(&self) -> bool {
+        matches!(self.delimiter, Some('\'' | '"'))
+    }
 }
 
 /// Split a template into literal / `${expr}` parts. Interpolation does not

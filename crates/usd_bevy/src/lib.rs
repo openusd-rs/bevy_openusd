@@ -16,22 +16,25 @@ pub mod instance;
 pub mod live;
 pub mod mesh;
 mod persistence;
-pub mod subdivision;
-mod subdivision_normals;
 pub mod prim_ref;
 pub mod read;
 pub mod reload;
 pub mod route;
 pub mod snippet;
 pub mod source;
+pub mod subdivision;
+mod subdivision_normals;
 pub mod sync;
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
 pub mod watcher;
 
-pub use asset::{UsdAssetLoader, UsdAssetPlugin, UsdProjectionBudget, UsdScene, UsdSceneInstance, UsdSceneRoot, UsdSceneState};
-pub use source::UsdSource;
+pub use asset::{
+    UsdAssetLoader, UsdAssetPlugin, UsdProjectionBudget, UsdScene, UsdSceneInstance, UsdSceneRoot,
+    UsdSceneState,
+};
 pub use prim_ref::UsdPrimRef;
 pub use route::{DisplayPurposes, PrimRoute, RouteCtx, SchemaRegistry};
+pub use source::UsdSource;
 /// The inline-USD macro (see [`snippet::UsdSnippet`]).
 pub use usd_macro::usd;
 

@@ -19,18 +19,31 @@ fn prune(cache: Option<ResMut<GeneratedImages>>, images: Option<Res<Assets<Image
 fn same_layout(a: &Image, b: &Image) -> bool {
     a.texture_descriptor == b.texture_descriptor
         && a.texture_view_descriptor == b.texture_view_descriptor
-        && a.sampler == b.sampler && a.data_order == b.data_order
-        && a.asset_usage == b.asset_usage && a.copy_on_resize == b.copy_on_resize
+        && a.sampler == b.sampler
+        && a.data_order == b.data_order
+        && a.asset_usage == b.asset_usage
+        && a.copy_on_resize == b.copy_on_resize
 }
 
-fn equivalent(a: &Image, b: &Image) -> bool { same_layout(a, b) && a.data == b.data }
+fn equivalent(a: &Image, b: &Image) -> bool {
+    same_layout(a, b) && a.data == b.data
+}
 
-pub(super) fn reuse_if(world: &mut World, id: AssetId<Image>, template: &Image,
-    pixels_match: impl FnOnce(&[u8]) -> bool) -> Option<Handle<Image>>
-{
-    let matches = world.resource::<Assets<Image>>().get(id).is_some_and(|image|
-        same_layout(image, template) && image.data.as_deref().is_some_and(pixels_match));
-    if !matches { return None; }
+pub(super) fn reuse_if(
+    world: &mut World,
+    id: AssetId<Image>,
+    template: &Image,
+    pixels_match: impl FnOnce(&[u8]) -> bool,
+) -> Option<Handle<Image>> {
+    let matches = world
+        .resource::<Assets<Image>>()
+        .get(id)
+        .is_some_and(|image| {
+            same_layout(image, template) && image.data.as_deref().is_some_and(pixels_match)
+        });
+    if !matches {
+        return None;
+    }
     world.resource_mut::<Assets<Image>>().get_strong_handle(id)
 }
 
@@ -42,8 +55,13 @@ pub(super) fn intern(world: &mut World, image: Image) -> Handle<Image> {
 fn intern_hashed(world: &mut World, image: Image, hash: blake3::Hash) -> Handle<Image> {
     let candidate = world.get_resource::<GeneratedImages>().and_then(|cache| {
         let images = world.resource::<Assets<Image>>();
-        cache.0.iter().find_map(|(key, id)| (*key == hash
-            && images.get(*id).is_some_and(|existing| equivalent(existing, &image))).then_some(*id))
+        cache.0.iter().find_map(|(key, id)| {
+            (*key == hash
+                && images
+                    .get(*id)
+                    .is_some_and(|existing| equivalent(existing, &image)))
+            .then_some(*id)
+        })
     });
     if let Some(id) = candidate {
         if let Some(handle) = world.resource_mut::<Assets<Image>>().get_strong_handle(id) {
@@ -53,7 +71,9 @@ fn intern_hashed(world: &mut World, image: Image, hash: blake3::Hash) -> Handle<
     let handle = world.resource_mut::<Assets<Image>>().add(image);
     world.init_resource::<GeneratedImages>();
     let mut cache = world.resource_mut::<GeneratedImages>();
-    if cache.0.len() == MAX_ENTRIES { cache.0.pop_front(); }
+    if cache.0.len() == MAX_ENTRIES {
+        cache.0.pop_front();
+    }
     cache.0.push_back((hash, handle.id()));
     handle
 }
@@ -64,9 +84,17 @@ mod tests {
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
     fn image(width: u32) -> Image {
-        Image::new(Extent3d { width, height: 1, depth_or_array_layers: 1 },
-            TextureDimension::D2, vec![255; width as usize * 4], TextureFormat::Rgba8Unorm,
-            bevy::asset::RenderAssetUsages::default())
+        Image::new(
+            Extent3d {
+                width,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![255; width as usize * 4],
+            TextureFormat::Rgba8Unorm,
+            bevy::asset::RenderAssetUsages::default(),
+        )
     }
 
     fn world() -> World {
@@ -93,7 +121,13 @@ mod tests {
         let a = intern_hashed(&mut world, image(1), hash);
         let b = intern_hashed(&mut world, image(2), hash);
         assert_ne!(a.id(), b.id());
-        world.resource_mut::<Assets<Image>>().get_mut(&a).unwrap().data.as_mut().unwrap()[0] = 0;
+        world
+            .resource_mut::<Assets<Image>>()
+            .get_mut(&a)
+            .unwrap()
+            .data
+            .as_mut()
+            .unwrap()[0] = 0;
         let c = intern_hashed(&mut world, image(1), hash);
         assert_ne!(a.id(), c.id());
         assert_eq!(intern_hashed(&mut world, image(2), hash).id(), b.id());
@@ -117,16 +151,21 @@ mod tests {
     #[test]
     fn generated_index_does_not_keep_unowned_images_alive() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<Image>();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>();
         configure(&mut app);
         let a = intern(app.world_mut(), image(1));
         let b = intern(app.world_mut(), image(1));
         let id = a.id();
         drop(a);
-        for _ in 0..3 { app.update(); }
+        for _ in 0..3 {
+            app.update();
+        }
         assert!(app.world().resource::<Assets<Image>>().contains(id));
         drop(b);
-        for _ in 0..3 { app.update(); }
+        for _ in 0..3 {
+            app.update();
+        }
         assert!(!app.world().resource::<Assets<Image>>().contains(id));
         assert!(app.world().resource::<GeneratedImages>().0.is_empty());
     }
@@ -134,11 +173,13 @@ mod tests {
     #[test]
     fn generated_index_is_bounded() {
         let mut world = world();
-        let handles: Vec<_> = (0..MAX_ENTRIES + 10).map(|value| {
-            let mut image = image(1);
-            image.data = Some((value as u32).to_le_bytes().to_vec());
-            intern(&mut world, image)
-        }).collect();
+        let handles: Vec<_> = (0..MAX_ENTRIES + 10)
+            .map(|value| {
+                let mut image = image(1);
+                image.data = Some((value as u32).to_le_bytes().to_vec());
+                intern(&mut world, image)
+            })
+            .collect();
         assert_eq!(world.resource::<GeneratedImages>().0.len(), MAX_ENTRIES);
         assert!(world.resource::<Assets<Image>>().contains(handles[0].id()));
     }

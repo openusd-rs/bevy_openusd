@@ -13,16 +13,16 @@
 //! faithfully; absolute brightness is a best-effort default the app can tune.
 
 use bevy::prelude::*;
-use openusd_schemas::lux::SphereLightSchema;
+use openusd_schemas::lux::CylinderLightSchema;
 use openusd_schemas::lux::DiskLightSchema;
 use openusd_schemas::lux::RectLightSchema;
-use openusd_schemas::lux::CylinderLightSchema;
+use openusd_schemas::lux::SphereLightSchema;
 use std::f32::consts::PI;
 
+use openusd::sdf::Value;
 use openusd_schemas::lux::{
     CylinderLight, DiskLight, DistantLight, LightAPI, RectLight, ShapingAPI, SphereLight,
 };
-use openusd::sdf::Value;
 
 use super::{PrimRoute, RouteCtx};
 
@@ -54,13 +54,19 @@ struct LuxInputs {
 }
 
 fn sampled_scalar(attribute: openusd::usd::Attribute, time: Option<f64>) -> Option<f32> {
-    attribute.get_at::<f32>(time.map(openusd::usd::TimeCode::new)).ok().flatten()
+    attribute
+        .get_at::<f32>(time.map(openusd::usd::TimeCode::new))
+        .ok()
+        .flatten()
 }
 
 /// Sample common UsdLux color, intensity and exposure inputs.
 fn common_inputs<L: openusd::usd::SchemaBase>(light: &L, time: Option<f64>) -> (Color, f32) {
     let light = LightAPI::new(light.prim().clone());
-    let color = match light.color_attr().get_at::<Value>(time.map(openusd::usd::TimeCode::new)) {
+    let color = match light
+        .color_attr()
+        .get_at::<Value>(time.map(openusd::usd::TimeCode::new))
+    {
         Ok(Some(Value::Vec3f(c))) => Color::linear_rgb(c.x, c.y, c.z),
         Ok(Some(Value::Vec3d(c))) => Color::linear_rgb(c.x as f32, c.y as f32, c.z as f32),
         _ => Color::WHITE,
@@ -71,7 +77,9 @@ fn common_inputs<L: openusd::usd::SchemaBase>(light: &L, time: Option<f64>) -> (
 }
 
 fn cone_angle(ctx: &RouteCtx) -> Option<f32> {
-    let shaping = ShapingAPI::get(ctx.stage, ctx.path.clone()).ok().flatten()?;
+    let shaping = ShapingAPI::get(ctx.stage, ctx.path.clone())
+        .ok()
+        .flatten()?;
     sampled_scalar(shaping.shaping_cone_angle_attr(), ctx.time)
 }
 
@@ -79,15 +87,27 @@ fn cone_angle(ctx: &RouteCtx) -> Option<f32> {
 pub struct LightRoute;
 
 #[derive(Component)]
-enum LightOwner { Directional, Point, Spot }
+enum LightOwner {
+    Directional,
+    Point,
+    Spot,
+}
 
 fn clear_light(world: &mut World, entity: Entity) {
-    let Some(owner) = world.entity_mut(entity).take::<LightOwner>() else { return };
+    let Some(owner) = world.entity_mut(entity).take::<LightOwner>() else {
+        return;
+    };
     let mut entity = world.entity_mut(entity);
     match owner {
-        LightOwner::Directional => { entity.remove::<DirectionalLight>(); }
-        LightOwner::Point => { entity.remove::<PointLight>(); }
-        LightOwner::Spot => { entity.remove::<SpotLight>(); }
+        LightOwner::Directional => {
+            entity.remove::<DirectionalLight>();
+        }
+        LightOwner::Point => {
+            entity.remove::<PointLight>();
+        }
+        LightOwner::Spot => {
+            entity.remove::<SpotLight>();
+        }
     }
     entity.remove::<UsdAreaLight>();
 }
@@ -147,7 +167,10 @@ impl PrimRoute for LightRoute {
                             c,
                             i,
                             Some(w.max(h) * 0.5),
-                            Some(UsdAreaLight::Rect { width: w, height: h }),
+                            Some(UsdAreaLight::Rect {
+                                width: w,
+                                height: h,
+                            }),
                         )
                     } else if let Ok(Some(l)) = CylinderLight::get(ctx.stage, ctx.path.clone()) {
                         let (c, i) = common_inputs(&l, ctx.time);
@@ -233,20 +256,51 @@ mod tests {
     #[test]
     fn sampled_lights_update_inputs_dimensions_and_cones() {
         use openusd::usd::TimeCode;
-        for kind in ["DistantLight", "SphereLight", "DiskLight", "RectLight", "CylinderLight"] {
-            let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("sampled-light.usda").unwrap();
-            stage.define_prim("/Light").unwrap().set_type_name(kind).unwrap();
-            for name in ["inputs:intensity", "inputs:radius", "inputs:width", "inputs:height", "inputs:length"] {
-                stage.create_attribute(format!("/Light.{name}"), "float").unwrap()
-                    .set_at(Value::Float(1.0), TimeCode::new(0.0)).unwrap()
-                    .set_at(Value::Float(3.0), TimeCode::new(10.0)).unwrap();
+        for kind in [
+            "DistantLight",
+            "SphereLight",
+            "DiskLight",
+            "RectLight",
+            "CylinderLight",
+        ] {
+            let stage = Stage::builder()
+                .schema_registry(openusd_schemas::schema_registry())
+                .in_memory("sampled-light.usda")
+                .unwrap();
+            stage
+                .define_prim("/Light")
+                .unwrap()
+                .set_type_name(kind)
+                .unwrap();
+            for name in [
+                "inputs:intensity",
+                "inputs:radius",
+                "inputs:width",
+                "inputs:height",
+                "inputs:length",
+            ] {
+                stage
+                    .create_attribute(format!("/Light.{name}"), "float")
+                    .unwrap()
+                    .set_at(Value::Float(1.0), TimeCode::new(0.0))
+                    .unwrap()
+                    .set_at(Value::Float(3.0), TimeCode::new(10.0))
+                    .unwrap();
             }
-            stage.create_attribute("/Light.inputs:exposure", "float").unwrap()
-                .set_at(Value::Float(0.0), TimeCode::new(0.0)).unwrap()
-                .set_at(Value::Float(2.0), TimeCode::new(10.0)).unwrap();
-            stage.create_attribute("/Light.inputs:color", "color3f").unwrap()
-                .set_at(Value::Vec3f([1.0,0.0,0.0].into()), TimeCode::new(0.0)).unwrap()
-                .set_at(Value::Vec3f([0.0,0.0,1.0].into()), TimeCode::new(10.0)).unwrap();
+            stage
+                .create_attribute("/Light.inputs:exposure", "float")
+                .unwrap()
+                .set_at(Value::Float(0.0), TimeCode::new(0.0))
+                .unwrap()
+                .set_at(Value::Float(2.0), TimeCode::new(10.0))
+                .unwrap();
+            stage
+                .create_attribute("/Light.inputs:color", "color3f")
+                .unwrap()
+                .set_at(Value::Vec3f([1.0, 0.0, 0.0].into()), TimeCode::new(0.0))
+                .unwrap()
+                .set_at(Value::Vec3f([0.0, 0.0, 1.0].into()), TimeCode::new(10.0))
+                .unwrap();
             let path = openusd::sdf::path("/Light").unwrap();
             let mut world = light_world();
             let entity = world.spawn_empty().id();
@@ -261,12 +315,36 @@ mod tests {
                 assert_eq!(light.color, color);
                 assert_eq!(light.intensity, 4.0 * POINT_LUMEN_SCALE);
                 assert_eq!(light.radius, if kind == "RectLight" { 1.0 } else { 2.0 });
-                if kind == "RectLight" { assert_eq!(world.get::<UsdAreaLight>(entity), Some(&UsdAreaLight::Rect { width: 2.0, height: 2.0 })); }
-                if kind == "CylinderLight" { assert_eq!(world.get::<UsdAreaLight>(entity), Some(&UsdAreaLight::Cylinder { length: 2.0, radius: 2.0 })); }
-                stage.prim(path.clone()).unwrap().add_applied_schema("ShapingAPI").unwrap();
-                stage.create_attribute("/Light.inputs:shaping:cone:angle", "float").unwrap()
-                    .set_at(Value::Float(20.0), TimeCode::new(0.0)).unwrap()
-                    .set_at(Value::Float(60.0), TimeCode::new(10.0)).unwrap();
+                if kind == "RectLight" {
+                    assert_eq!(
+                        world.get::<UsdAreaLight>(entity),
+                        Some(&UsdAreaLight::Rect {
+                            width: 2.0,
+                            height: 2.0
+                        })
+                    );
+                }
+                if kind == "CylinderLight" {
+                    assert_eq!(
+                        world.get::<UsdAreaLight>(entity),
+                        Some(&UsdAreaLight::Cylinder {
+                            length: 2.0,
+                            radius: 2.0
+                        })
+                    );
+                }
+                stage
+                    .prim(path.clone())
+                    .unwrap()
+                    .add_applied_schema("ShapingAPI")
+                    .unwrap();
+                stage
+                    .create_attribute("/Light.inputs:shaping:cone:angle", "float")
+                    .unwrap()
+                    .set_at(Value::Float(20.0), TimeCode::new(0.0))
+                    .unwrap()
+                    .set_at(Value::Float(60.0), TimeCode::new(10.0))
+                    .unwrap();
                 LightRoute.project(&RouteCtx::at(&stage, &path, Some(5.0)), &mut world, entity);
                 assert!(world.get::<PointLight>(entity).is_none());
                 let light = world.get::<SpotLight>(entity).unwrap();
@@ -279,34 +357,89 @@ mod tests {
     #[test]
     fn independent_clocks_sample_light_intensity() {
         use crate::instance::{UsdInstanceTime, UsdInstances};
-        let source = crate::UsdSource::new("light-clocks.usda", &br#"#usda 1.0
+        let source = crate::UsdSource::new(
+            "light-clocks.usda",
+            &br#"#usda 1.0
 def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
-"#[..]).unwrap();
+"#[..],
+        )
+        .unwrap();
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), crate::UsdPlugin, crate::UsdAssetPlugin));
-        let handle = app.world_mut().resource_mut::<Assets<crate::UsdScene>>().add(crate::UsdScene { source, textures: default() });
-        let first = app.world_mut().spawn((crate::UsdSceneRoot(handle.clone()), UsdInstanceTime { current: 0.0 })).id();
-        let second = app.world_mut().spawn((crate::UsdSceneRoot(handle), UsdInstanceTime { current: 10.0 })).id();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source,
+                textures: default(),
+            });
+        let first = app
+            .world_mut()
+            .spawn((
+                crate::UsdSceneRoot(handle.clone()),
+                UsdInstanceTime { current: 0.0 },
+            ))
+            .id();
+        let second = app
+            .world_mut()
+            .spawn((
+                crate::UsdSceneRoot(handle),
+                UsdInstanceTime { current: 10.0 },
+            ))
+            .id();
         app.update();
-        let light_for = |world: &World, root| world.get_non_send::<UsdInstances>().unwrap().entity(root, "/Sun").unwrap();
+        let light_for = |world: &World, root| {
+            world
+                .get_non_send::<UsdInstances>()
+                .unwrap()
+                .entity(root, "/Sun")
+                .unwrap()
+        };
         let a = light_for(app.world(), first);
         let b = light_for(app.world(), second);
-        assert_eq!(app.world().get::<DirectionalLight>(a).unwrap().illuminance, DISTANT_LUX_SCALE);
-        assert_eq!(app.world().get::<DirectionalLight>(b).unwrap().illuminance, 3.0 * DISTANT_LUX_SCALE);
-        app.world_mut().get_mut::<UsdInstanceTime>(first).unwrap().current = 5.0;
+        assert_eq!(
+            app.world().get::<DirectionalLight>(a).unwrap().illuminance,
+            DISTANT_LUX_SCALE
+        );
+        assert_eq!(
+            app.world().get::<DirectionalLight>(b).unwrap().illuminance,
+            3.0 * DISTANT_LUX_SCALE
+        );
+        app.world_mut()
+            .get_mut::<UsdInstanceTime>(first)
+            .unwrap()
+            .current = 5.0;
         app.update();
         assert_eq!(light_for(app.world(), first), a);
         assert_eq!(light_for(app.world(), second), b);
-        assert_eq!(app.world().get::<DirectionalLight>(a).unwrap().illuminance, 2.0 * DISTANT_LUX_SCALE);
-        assert_eq!(app.world().get::<DirectionalLight>(b).unwrap().illuminance, 3.0 * DISTANT_LUX_SCALE);
+        assert_eq!(
+            app.world().get::<DirectionalLight>(a).unwrap().illuminance,
+            2.0 * DISTANT_LUX_SCALE
+        );
+        assert_eq!(
+            app.world().get::<DirectionalLight>(b).unwrap().illuminance,
+            3.0 * DISTANT_LUX_SCALE
+        );
     }
 
     #[test]
     fn light_and_camera_type_changes_clean_only_owned_components() {
         #[derive(Component)]
         struct RuntimeOnly;
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("light-lifecycle.usda").unwrap();
-        stage.define_prim("/Prim").unwrap().set_type_name("RectLight").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("light-lifecycle.usda")
+            .unwrap();
+        stage
+            .define_prim("/Prim")
+            .unwrap()
+            .set_type_name("RectLight")
+            .unwrap();
         let live = LiveStage::new(stage);
         let mut world = light_world();
         let mut map = PrimEntities::default();
@@ -317,38 +450,79 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
         assert!(world.get::<PointLight>(entity).is_some());
         assert!(world.get::<UsdAreaLight>(entity).is_some());
         for kind in ["DistantLight", "Camera", "Xform", "SphereLight", "Xform"] {
-            live.stage.prim("/Prim").unwrap().set_type_name(kind).unwrap();
+            live.stage
+                .prim("/Prim")
+                .unwrap()
+                .set_type_name(kind)
+                .unwrap();
             crate::live::apply_changes(&mut world, &live, &mut map);
             assert_eq!(map.entity("/Prim"), Some(entity));
-            assert_eq!(world.get::<DirectionalLight>(entity).is_some(), kind == "DistantLight");
-            assert_eq!(world.get::<PointLight>(entity).is_some(), kind == "SphereLight");
+            assert_eq!(
+                world.get::<DirectionalLight>(entity).is_some(),
+                kind == "DistantLight"
+            );
+            assert_eq!(
+                world.get::<PointLight>(entity).is_some(),
+                kind == "SphereLight"
+            );
             assert_eq!(world.get::<Projection>(entity).is_some(), kind == "Camera");
-            assert_eq!(world.get::<crate::route::camera::UsdCamera>(entity).is_some(), kind == "Camera");
+            assert_eq!(
+                world
+                    .get::<crate::route::camera::UsdCamera>(entity)
+                    .is_some(),
+                kind == "Camera"
+            );
             assert!(world.get::<SpotLight>(entity).is_none());
             assert!(world.get::<UsdAreaLight>(entity).is_none());
             assert!(world.get::<RuntimeOnly>(entity).is_some());
             assert!(world.get::<RuntimeOnly>(child).is_some());
         }
-        live.stage.prim("/Prim").unwrap().set_type_name("SphereLight").unwrap()
-            .add_applied_schema("ShapingAPI").unwrap();
-        crate::authoring::set_attribute(&live.stage, "/Prim", "inputs:shaping:cone:angle", "float", Value::Float(30.0)).unwrap();
+        live.stage
+            .prim("/Prim")
+            .unwrap()
+            .set_type_name("SphereLight")
+            .unwrap()
+            .add_applied_schema("ShapingAPI")
+            .unwrap();
+        crate::authoring::set_attribute(
+            &live.stage,
+            "/Prim",
+            "inputs:shaping:cone:angle",
+            "float",
+            Value::Float(30.0),
+        )
+        .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert!(world.get::<SpotLight>(entity).is_some());
         assert!(world.get::<PointLight>(entity).is_none());
-        live.stage.prim("/Prim").unwrap().set_type_name("Xform").unwrap();
+        live.stage
+            .prim("/Prim")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert!(world.get::<SpotLight>(entity).is_none());
-        world.entity_mut(entity).insert((PointLight::default(), Projection::default()));
+        world
+            .entity_mut(entity)
+            .insert((PointLight::default(), Projection::default()));
         let path = openusd::sdf::path("/Prim").unwrap();
         let registry = SchemaRegistry::builtin();
         registry.project_prim(&live.stage, &path, &mut world, entity);
         assert!(world.get::<PointLight>(entity).is_some());
         assert!(world.get::<Projection>(entity).is_some());
-        live.stage.prim("/Prim").unwrap().set_type_name("DistantLight").unwrap();
+        live.stage
+            .prim("/Prim")
+            .unwrap()
+            .set_type_name("DistantLight")
+            .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert!(world.get::<DirectionalLight>(entity).is_some());
         assert!(world.get::<PointLight>(entity).is_some());
-        live.stage.prim("/Prim").unwrap().set_type_name("Xform").unwrap();
+        live.stage
+            .prim("/Prim")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert!(world.get::<DirectionalLight>(entity).is_none());
         assert!(world.get::<PointLight>(entity).is_some());
@@ -357,7 +531,10 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
 
     #[test]
     fn distant_light_projects_directional() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("lux.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("lux.usda")
+            .unwrap();
         stage
             .define_prim("/Sun")
             .unwrap()
@@ -386,7 +563,10 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
 
     #[test]
     fn sphere_light_projects_point_and_spot() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("lux2.usda").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("lux2.usda")
+            .unwrap();
         stage
             .define_prim("/Bulb")
             .unwrap()
@@ -430,8 +610,15 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
 
     #[test]
     fn rect_and_cylinder_lights_project_point_plus_area_marker() {
-        let stage = Stage::builder().schema_registry(openusd_schemas::schema_registry()).in_memory("area.usda").unwrap();
-        stage.define_prim("/Rect").unwrap().set_type_name("RectLight").unwrap();
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("area.usda")
+            .unwrap();
+        stage
+            .define_prim("/Rect")
+            .unwrap()
+            .set_type_name("RectLight")
+            .unwrap();
         stage
             .create_attribute("/Rect.inputs:width", "float")
             .unwrap()
@@ -442,7 +629,11 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
             .unwrap()
             .set(Value::Float(2.0))
             .unwrap();
-        stage.define_prim("/Rod").unwrap().set_type_name("CylinderLight").unwrap();
+        stage
+            .define_prim("/Rod")
+            .unwrap()
+            .set_type_name("CylinderLight")
+            .unwrap();
         stage
             .create_attribute("/Rod.inputs:length", "float")
             .unwrap()
@@ -460,18 +651,30 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
         project_stage(&mut world, &live, &mut map);
 
         let rect = map.entity("/Rect").unwrap();
-        assert!(world.get::<PointLight>(rect).is_some(), "rect → point approx");
+        assert!(
+            world.get::<PointLight>(rect).is_some(),
+            "rect → point approx"
+        );
         assert_eq!(
             world.get::<UsdAreaLight>(rect).copied(),
-            Some(UsdAreaLight::Rect { width: 4.0, height: 2.0 }),
+            Some(UsdAreaLight::Rect {
+                width: 4.0,
+                height: 2.0
+            }),
             "rect dimensions carried on the marker"
         );
 
         let rod = map.entity("/Rod").unwrap();
-        assert!(world.get::<PointLight>(rod).is_some(), "cylinder → point approx");
+        assert!(
+            world.get::<PointLight>(rod).is_some(),
+            "cylinder → point approx"
+        );
         assert_eq!(
             world.get::<UsdAreaLight>(rod).copied(),
-            Some(UsdAreaLight::Cylinder { length: 6.0, radius: 0.25 }),
+            Some(UsdAreaLight::Cylinder {
+                length: 6.0,
+                radius: 0.25
+            }),
             "cylinder dimensions carried on the marker"
         );
     }

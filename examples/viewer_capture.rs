@@ -1,15 +1,28 @@
 //! Fixed-camera offscreen viewer capture with GPU readback and explicit exit status.
 
-use std::{path::PathBuf, time::{Duration, Instant}};
-use bevy::{app::{AppExit, ScheduleRunnerPlugin}, camera::RenderTarget, prelude::*};
-use bevy::render::{render_resource::{TextureFormat, TextureUsages}, view::screenshot::{Screenshot, ScreenshotCaptured}};
-use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot};
+use bevy::render::{
+    render_resource::{TextureFormat, TextureUsages},
+    view::screenshot::{Screenshot, ScreenshotCaptured},
+};
+use bevy::{
+    app::{AppExit, ScheduleRunnerPlugin},
+    camera::RenderTarget,
+    prelude::*,
+};
 use bevy::{camera::Exposure, core_pipeline::tonemapping::Tonemapping};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot};
 
 #[derive(Resource, Clone, Default)]
 struct PipelineProgress(std::sync::Arc<std::sync::Mutex<Option<(usize, Vec<String>)>>>);
 
-fn pipeline_progress(cache: Res<bevy::render::render_resource::PipelineCache>, progress: Res<PipelineProgress>) {
+fn pipeline_progress(
+    cache: Res<bevy::render::render_resource::PipelineCache>,
+    progress: Res<PipelineProgress>,
+) {
     use bevy::render::render_resource::CachedPipelineState;
     let mut waiting = 0;
     let mut errors = Vec::new();
@@ -23,12 +36,12 @@ fn pipeline_progress(cache: Res<bevy::render::render_resource::PipelineCache>, p
     *progress.0.lock().unwrap() = Some((waiting, errors));
 }
 
-#[path = "../src/environment.rs"]
-mod environment;
-#[path = "../src/curve_quality.rs"]
-mod curve_quality;
 #[path = "../src/capture_metadata.rs"]
 mod capture_metadata;
+#[path = "../src/curve_quality.rs"]
+mod curve_quality;
+#[path = "../src/environment.rs"]
+mod environment;
 #[path = "support/gpu_timing.rs"]
 mod gpu_timing;
 
@@ -97,11 +110,17 @@ impl CaptureRenderer {
 }
 
 impl Capture {
-    fn set_camera_response(&mut self, ev100: Option<&str>, tonemapping: Option<&str>) -> Result<(), String> {
+    fn set_camera_response(
+        &mut self,
+        ev100: Option<&str>,
+        tonemapping: Option<&str>,
+    ) -> Result<(), String> {
         let exposure = match ev100 {
             None => Exposure::default(),
             Some(value) => {
-                let ev100 = value.parse::<f32>().map_err(|_| "USD_CAPTURE_EV100 must be a finite number in -20..30")?;
+                let ev100 = value
+                    .parse::<f32>()
+                    .map_err(|_| "USD_CAPTURE_EV100 must be a finite number in -20..30")?;
                 if !ev100.is_finite() || !(-20.0..=30.0).contains(&ev100) {
                     return Err("USD_CAPTURE_EV100 must be a finite number in -20..30".into());
                 }
@@ -125,25 +144,63 @@ impl Capture {
         let mut eye = Vec3::new(6.0, 4.0, 8.0);
         let mut focus = Vec3::new(0.0, 1.0, 0.0);
         if args.len() == 9 {
-            let values = args[3..].iter().map(|arg| arg.parse::<f32>().map_err(|_| "invalid camera coordinate"))
+            let values = args[3..]
+                .iter()
+                .map(|arg| arg.parse::<f32>().map_err(|_| "invalid camera coordinate"))
                 .collect::<Result<Vec<_>, _>>()?;
             eye = Vec3::new(values[0], values[1], values[2]);
             focus = Vec3::new(values[3], values[4], values[5]);
         }
-        if !time.is_finite() || !eye.is_finite() || !focus.is_finite() || !(focus-eye).is_finite()
-            || (focus-eye).cross(Vec3::Y).length_squared() < 1e-8 {
-            return Err("time/camera must be finite and view direction must not be parallel to up".into());
+        if !time.is_finite()
+            || !eye.is_finite()
+            || !focus.is_finite()
+            || !(focus - eye).is_finite()
+            || (focus - eye).cross(Vec3::Y).length_squared() < 1e-8
+        {
+            return Err(
+                "time/camera must be finite and view direction must not be parallel to up".into(),
+            );
         }
         let output = PathBuf::from(&args[1]);
-        if output.extension().and_then(|ext| ext.to_str()) != Some("png") { return Err("output must end in .png".into()); }
-        Ok(Self { camera_path: None, camera_ready: false, renderer: CaptureRenderer::Forward, msaa: Msaa::Sample4, exposure: Exposure::default(), tonemapping: Tonemapping::default(), shadow_maps: true, subdivision_levels: None, curve_steps: 8, curve_surface_sides: None, asset: PathBuf::from(&args[0]), output, time, eye, focus,
-            instance_times: vec![time], instance_spacing: 2.5, swap_clocks: false, clocks_swapped: false,
-            started: Instant::now(), timeout: Duration::from_secs(60), ready_frames: 0, requested: false, mesh_report: String::new() })
+        if output.extension().and_then(|ext| ext.to_str()) != Some("png") {
+            return Err("output must end in .png".into());
+        }
+        Ok(Self {
+            camera_path: None,
+            camera_ready: false,
+            renderer: CaptureRenderer::Forward,
+            msaa: Msaa::Sample4,
+            exposure: Exposure::default(),
+            tonemapping: Tonemapping::default(),
+            shadow_maps: true,
+            subdivision_levels: None,
+            curve_steps: 8,
+            curve_surface_sides: None,
+            asset: PathBuf::from(&args[0]),
+            output,
+            time,
+            eye,
+            focus,
+            instance_times: vec![time],
+            instance_spacing: 2.5,
+            swap_clocks: false,
+            clocks_swapped: false,
+            started: Instant::now(),
+            timeout: Duration::from_secs(60),
+            ready_frames: 0,
+            requested: false,
+            mesh_report: String::new(),
+        })
     }
 
     fn set_instance_times(&mut self, value: &str) -> Result<(), String> {
-        let times = value.split(',').map(|part| part.trim().parse::<f64>()
-            .map_err(|_| "USD_CAPTURE_INSTANCE_TIMES requires comma-separated time codes".to_owned()))
+        let times = value
+            .split(',')
+            .map(|part| {
+                part.trim().parse::<f64>().map_err(|_| {
+                    "USD_CAPTURE_INSTANCE_TIMES requires comma-separated time codes".to_owned()
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         if times.len() > 16 || times.iter().any(|time| !time.is_finite()) {
             return Err("USD_CAPTURE_INSTANCE_TIMES requires 1 to 16 finite time codes".into());
@@ -153,16 +210,24 @@ impl Capture {
     }
 
     fn set_timeout(&mut self, value: &str) -> Result<(), String> {
-        let seconds = value.parse::<u64>().ok().filter(|seconds| (1..=600).contains(seconds))
+        let seconds = value
+            .parse::<u64>()
+            .ok()
+            .filter(|seconds| (1..=600).contains(seconds))
             .ok_or("USD_CAPTURE_TIMEOUT_SECS must be 1..600")?;
         self.timeout = Duration::from_secs(seconds);
         Ok(())
     }
 
     fn set_instance_spacing(&mut self, value: &str) -> Result<(), String> {
-        let spacing = value.parse::<f32>().map_err(|_| "invalid USD_CAPTURE_INSTANCE_SPACING")?;
+        let spacing = value
+            .parse::<f32>()
+            .map_err(|_| "invalid USD_CAPTURE_INSTANCE_SPACING")?;
         if !spacing.is_finite() || spacing <= 0.0 || !(spacing * 16.0).is_finite() {
-            return Err("USD_CAPTURE_INSTANCE_SPACING must be positive, finite and safe for 16 instances".into());
+            return Err(
+                "USD_CAPTURE_INSTANCE_SPACING must be positive, finite and safe for 16 instances"
+                    .into(),
+            );
         }
         self.instance_spacing = spacing;
         Ok(())
@@ -175,10 +240,16 @@ struct CaptureCamera;
 #[derive(Component)]
 struct CaptureInstance(usize);
 
-fn reverse_capture_clocks(mut capture: ResMut<Capture>,
-    mut roots: Query<(&CaptureInstance, &mut usd_bevy::instance::UsdInstanceTime)>) {
-    if !capture.swap_clocks || capture.clocks_swapped || capture.ready_frames < 30 { return; }
-    if roots.iter().count() != capture.instance_times.len() { return; }
+fn reverse_capture_clocks(
+    mut capture: ResMut<Capture>,
+    mut roots: Query<(&CaptureInstance, &mut usd_bevy::instance::UsdInstanceTime)>,
+) {
+    if !capture.swap_clocks || capture.clocks_swapped || capture.ready_frames < 30 {
+        return;
+    }
+    if roots.iter().count() != capture.instance_times.len() {
+        return;
+    }
     capture.instance_times.reverse();
     for (instance, mut time) in &mut roots {
         time.current = capture.instance_times[instance.0];
@@ -196,80 +267,143 @@ fn main() -> AppExit {
     };
     let timing = match timing {
         Ok(timing) => timing,
-        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
     };
     let timing_enabled = timing.enabled();
     let curve_settings = match curve_quality::from_env() {
         Ok(settings) => settings,
-        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
     };
     let mut capture = match Capture::parse(&std::env::args().skip(1).collect::<Vec<_>>()) {
         Ok(capture) => capture,
-        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
     };
-    capture.renderer = match CaptureRenderer::parse(&std::env::var("USD_CAPTURE_RENDERER").unwrap_or_else(|_| "forward".into())) {
+    capture.renderer = match CaptureRenderer::parse(
+        &std::env::var("USD_CAPTURE_RENDERER").unwrap_or_else(|_| "forward".into()),
+    ) {
         Ok(renderer) => renderer,
-        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
     };
     let msaa = match std::env::var("USD_CAPTURE_MSAA") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
-        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
     };
     capture.msaa = match capture.renderer.msaa(msaa.as_deref()) {
         Ok(msaa) => msaa,
-        Err(error) => { eprintln!("{error}"); return AppExit::error(); }
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
     };
-    let response = ["USD_CAPTURE_EV100", "USD_CAPTURE_TONEMAPPING"].map(|key| match std::env::var(key) {
-        Ok(value) => Ok(Some(value)),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(error) => Err(error),
-    });
+    let response =
+        ["USD_CAPTURE_EV100", "USD_CAPTURE_TONEMAPPING"].map(|key| match std::env::var(key) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(error) => Err(error),
+        });
     let [ev100, tonemapping] = response;
     match (ev100, tonemapping) {
-        (Ok(ev100), Ok(tonemapping)) => if let Err(error) = capture.set_camera_response(ev100.as_deref(), tonemapping.as_deref()) {
-            eprintln!("{error}"); return AppExit::error();
-        },
-        (Err(error), _) | (_, Err(error)) => { eprintln!("{error}"); return AppExit::error(); }
+        (Ok(ev100), Ok(tonemapping)) => {
+            if let Err(error) =
+                capture.set_camera_response(ev100.as_deref(), tonemapping.as_deref())
+            {
+                eprintln!("{error}");
+                return AppExit::error();
+            }
+        }
+        (Err(error), _) | (_, Err(error)) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
     }
     match std::env::var("USD_CAPTURE_TIMEOUT_SECS") {
-        Ok(value) => if let Err(error) = capture.set_timeout(&value) {
-            eprintln!("{error}"); return AppExit::error();
-        },
-        Err(std::env::VarError::NotPresent) => {},
-        Err(error) => { eprintln!("{error}"); return AppExit::error(); },
+        Ok(value) => {
+            if let Err(error) = capture.set_timeout(&value) {
+                eprintln!("{error}");
+                return AppExit::error();
+            }
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
     }
     capture.asset = match capture.asset.canonicalize() {
         Ok(path) => path,
-        Err(error) => { eprintln!("asset: {error}"); return AppExit::error(); }
+        Err(error) => {
+            eprintln!("asset: {error}");
+            return AppExit::error();
+        }
     };
     capture.camera_path = std::env::var("USD_CAPTURE_CAMERA").ok();
     if let Ok(times) = std::env::var("USD_CAPTURE_INSTANCE_TIMES") {
         if let Err(error) = capture.set_instance_times(&times) {
-            eprintln!("{error}"); return AppExit::error();
+            eprintln!("{error}");
+            return AppExit::error();
         }
     }
     match std::env::var("USD_CAPTURE_INSTANCE_SPACING") {
-        Ok(value) => if let Err(error) = capture.set_instance_spacing(&value) {
-            eprintln!("{error}"); return AppExit::error();
-        },
-        Err(std::env::VarError::NotPresent) => {},
-        Err(error) => { eprintln!("USD_CAPTURE_INSTANCE_SPACING: {error}"); return AppExit::error(); },
+        Ok(value) => {
+            if let Err(error) = capture.set_instance_spacing(&value) {
+                eprintln!("{error}");
+                return AppExit::error();
+            }
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(error) => {
+            eprintln!("USD_CAPTURE_INSTANCE_SPACING: {error}");
+            return AppExit::error();
+        }
     }
     if capture.instance_times.len() > 1 && capture.camera_path.is_some() {
-        eprintln!("multi-instance capture requires a fixed camera"); return AppExit::error();
+        eprintln!("multi-instance capture requires a fixed camera");
+        return AppExit::error();
     }
-    capture.swap_clocks = match std::env::var("USD_CAPTURE_SWAP_CLOCKS").as_deref().unwrap_or("0") {
+    capture.swap_clocks = match std::env::var("USD_CAPTURE_SWAP_CLOCKS")
+        .as_deref()
+        .unwrap_or("0")
+    {
         "0" => false,
         "1" if capture.instance_times.len() > 1 => true,
-        _ => { eprintln!("USD_CAPTURE_SWAP_CLOCKS must be 0, or 1 with multiple instances"); return AppExit::error(); }
+        _ => {
+            eprintln!("USD_CAPTURE_SWAP_CLOCKS must be 0, or 1 with multiple instances");
+            return AppExit::error();
+        }
     };
-    capture.shadow_maps = match std::env::var("USD_CAPTURE_SHADOWS").as_deref().unwrap_or("scene") {
+    capture.shadow_maps = match std::env::var("USD_CAPTURE_SHADOWS")
+        .as_deref()
+        .unwrap_or("scene")
+    {
         "scene" => true,
         "off" => false,
-        _ => { eprintln!("USD_CAPTURE_SHADOWS must be scene or off"); return AppExit::error(); }
+        _ => {
+            eprintln!("USD_CAPTURE_SHADOWS must be scene or off");
+            return AppExit::error();
+        }
     };
-    let asset_dir = capture.asset.parent().unwrap().to_string_lossy().into_owned();
+    let asset_dir = capture
+        .asset
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let mut app = App::new();
     app.insert_resource(timing);
     capture.curve_steps = curve_settings.cubic_steps();
@@ -280,72 +414,158 @@ fn main() -> AppExit {
     }
     let progress = PipelineProgress::default();
     app.insert_resource(progress.clone());
-    app.insert_resource(capture).add_plugins(DefaultPlugins
-        .set(bevy::render::RenderPlugin { synchronous_pipeline_compilation: true, ..default() })
-        .set(AssetPlugin { file_path: asset_dir, ..default() })
-        .set(WindowPlugin { primary_window: None, exit_condition: bevy::window::ExitCondition::DontExit, ..default() })
-        .disable::<bevy::winit::WinitPlugin>())
-        .add_plugins((ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 60.0)),
-            UsdPlugin, UsdAssetPlugin, environment::ViewerEnvironmentPlugin))
+    app.insert_resource(capture)
+        .add_plugins(
+            DefaultPlugins
+                .set(bevy::render::RenderPlugin {
+                    synchronous_pipeline_compilation: true,
+                    ..default()
+                })
+                .set(AssetPlugin {
+                    file_path: asset_dir,
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                })
+                .disable::<bevy::winit::WinitPlugin>(),
+        )
+        .add_plugins((
+            ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 60.0)),
+            UsdPlugin,
+            UsdAssetPlugin,
+            environment::ViewerEnvironmentPlugin,
+        ))
         .insert_resource(usd_bevy::UsdProjectionBudget(Duration::MAX))
         .add_systems(Startup, setup)
-        .add_systems(Update, (select_authored_camera, reverse_capture_clocks).chain())
+        .add_systems(
+            Update,
+            (select_authored_camera, reverse_capture_clocks).chain(),
+        )
         .add_systems(PostUpdate, configure_shadow_maps)
         .add_systems(Last, (fit_capture_grid, capture_frame).chain());
     if std::env::var_os("USD_CAPTURE_DOME").is_some() {
         app.add_plugins(usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin)
             .add_systems(Update, select_dome);
     }
-    if std::env::var_os("USD_PROFILE_SOURCES").is_some() { app.init_resource::<usd_bevy::asset::UsdSceneTimings>(); }
-    if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() { app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>(); }
-    if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() { app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>(); }
-    if timing_enabled { app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin); }
-    app.sub_app_mut(bevy::render::RenderApp).insert_resource(progress)
-        .add_systems(bevy::render::Render, pipeline_progress.after(bevy::render::RenderSystems::Render));
+    if std::env::var_os("USD_PROFILE_SOURCES").is_some() {
+        app.init_resource::<usd_bevy::asset::UsdSceneTimings>();
+    }
+    if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() {
+        app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>();
+    }
+    if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
+        app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>();
+    }
+    if timing_enabled {
+        app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+    }
+    app.sub_app_mut(bevy::render::RenderApp)
+        .insert_resource(progress)
+        .add_systems(
+            bevy::render::Render,
+            pipeline_progress.after(bevy::render::RenderSystems::Render),
+        );
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
     if let Ok(levels) = std::env::var("USD_SUBDIVISION_LEVELS") {
         let settings = usd_bevy::route::subdivision::UsdSubdivisionSettings::new(
-            levels.parse().expect("USD_SUBDIVISION_LEVELS must be an integer")).expect("invalid subdivision levels");
+            levels
+                .parse()
+                .expect("USD_SUBDIVISION_LEVELS must be an integer"),
+        )
+        .expect("invalid subdivision levels");
         app.world_mut().resource_mut::<Capture>().subdivision_levels = Some(settings.levels());
         app.insert_resource(settings);
     }
     app.run()
 }
 
-fn configure_shadow_maps(capture: Res<Capture>, mut directional: Query<&mut DirectionalLight>,
-    mut points: Query<&mut PointLight>, mut spots: Query<&mut SpotLight>) {
-    if capture.shadow_maps { return; }
-    for mut light in &mut directional { light.shadow_maps_enabled = false; }
-    for mut light in &mut points { light.shadow_maps_enabled = false; }
-    for mut light in &mut spots { light.shadow_maps_enabled = false; }
-}
-
-fn select_dome(mut commands: Commands,
-    domes: Query<(Entity, &usd_bevy::UsdPrimRef), With<usd_bevy::route::dome::UsdDomeLight>>,
-    cameras: Query<Entity, (With<CaptureCamera>, Without<usd_bevy::route::dome_environment::UsdDomeEnvironmentSource>)>,
-    mut lights: Query<&mut DirectionalLight>) {
-    let Ok(path) = std::env::var("USD_CAPTURE_DOME") else { return };
-    let Some((dome, _)) = domes.iter().find(|(_, prim)| prim.path == path) else { return };
-    for camera in &cameras {
-        commands.entity(camera).insert((usd_bevy::route::dome_environment::UsdDomeEnvironmentSource::new(dome),
-            AmbientLight { brightness: 0.0, ..default() }));
+fn configure_shadow_maps(
+    capture: Res<Capture>,
+    mut directional: Query<&mut DirectionalLight>,
+    mut points: Query<&mut PointLight>,
+    mut spots: Query<&mut SpotLight>,
+) {
+    if capture.shadow_maps {
+        return;
     }
-    for mut light in &mut lights { light.illuminance = 0.0; }
+    for mut light in &mut directional {
+        light.shadow_maps_enabled = false;
+    }
+    for mut light in &mut points {
+        light.shadow_maps_enabled = false;
+    }
+    for mut light in &mut spots {
+        light.shadow_maps_enabled = false;
+    }
 }
 
-fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<AssetServer>, capture: Res<Capture>) {
+fn select_dome(
+    mut commands: Commands,
+    domes: Query<(Entity, &usd_bevy::UsdPrimRef), With<usd_bevy::route::dome::UsdDomeLight>>,
+    cameras: Query<
+        Entity,
+        (
+            With<CaptureCamera>,
+            Without<usd_bevy::route::dome_environment::UsdDomeEnvironmentSource>,
+        ),
+    >,
+    mut lights: Query<&mut DirectionalLight>,
+) {
+    let Ok(path) = std::env::var("USD_CAPTURE_DOME") else {
+        return;
+    };
+    let Some((dome, _)) = domes.iter().find(|(_, prim)| prim.path == path) else {
+        return;
+    };
+    for camera in &cameras {
+        commands.entity(camera).insert((
+            usd_bevy::route::dome_environment::UsdDomeEnvironmentSource::new(dome),
+            AmbientLight {
+                brightness: 0.0,
+                ..default()
+            },
+        ));
+    }
+    for mut light in &mut lights {
+        light.illuminance = 0.0;
+    }
+}
+
+fn setup(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    server: Res<AssetServer>,
+    capture: Res<Capture>,
+) {
     let mut image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
-    let mut camera = commands.spawn((Camera3d::default(), CaptureCamera, capture.msaa, capture.exposure, capture.tonemapping, RenderTarget::from(target),
+    let mut camera = commands.spawn((
+        Camera3d::default(),
+        CaptureCamera,
+        capture.msaa,
+        capture.exposure,
+        capture.tonemapping,
+        RenderTarget::from(target),
         Transform::from_translation(capture.eye).looking_at(capture.focus, Vec3::Y),
-        AmbientLight { color: Color::srgb(0.78,0.85,1.0), brightness: 160.0, ..default() }));
+        AmbientLight {
+            color: Color::srgb(0.78, 0.85, 1.0),
+            brightness: 160.0,
+            ..default()
+        },
+    ));
     if capture.renderer != CaptureRenderer::Forward {
-        camera.insert((bevy::core_pipeline::prepass::DepthPrepass,
+        camera.insert((
+            bevy::core_pipeline::prepass::DepthPrepass,
             bevy::core_pipeline::prepass::NormalPrepass,
-            bevy::core_pipeline::prepass::MotionVectorPrepass, Msaa::Off));
+            bevy::core_pipeline::prepass::MotionVectorPrepass,
+            Msaa::Off,
+        ));
     }
     if capture.renderer == CaptureRenderer::Deferred {
         camera.insert(bevy::core_pipeline::prepass::DeferredPrepass);
@@ -353,11 +573,23 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
     if capture.renderer == CaptureRenderer::Oit {
         camera.insert(bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default());
     }
-    let scene: Handle<UsdScene> = server.load(capture.asset.file_name().unwrap().to_string_lossy().into_owned());
+    let scene: Handle<UsdScene> = server.load(
+        capture
+            .asset
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    );
     for (index, current) in capture.instance_times.iter().copied().enumerate() {
-        let x = (index as f32 - (capture.instance_times.len() - 1) as f32 * 0.5) * capture.instance_spacing;
-        commands.spawn((UsdSceneRoot(scene.clone()), CaptureInstance(index), usd_bevy::instance::UsdInstanceTime { current },
-            Transform::from_xyz(x, 0.0, 0.0)));
+        let x = (index as f32 - (capture.instance_times.len() - 1) as f32 * 0.5)
+            * capture.instance_spacing;
+        commands.spawn((
+            UsdSceneRoot(scene.clone()),
+            CaptureInstance(index),
+            usd_bevy::instance::UsdInstanceTime { current },
+            Transform::from_xyz(x, 0.0, 0.0),
+        ));
     }
 }
 
@@ -365,26 +597,54 @@ fn fit_capture_grid(
     capture: Res<Capture>,
     states: Query<&usd_bevy::asset::UsdSceneState, With<CaptureInstance>>,
     mut fitted: Local<Option<Vec<u64>>>,
-    meshes: Query<(&Mesh3d, Option<&bevy::camera::primitives::Aabb>, &GlobalTransform, &InheritedVisibility,
-        Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&bevy::mesh::morph::MeshMorphWeights>)>,
+    meshes: Query<(
+        &Mesh3d,
+        Option<&bevy::camera::primitives::Aabb>,
+        &GlobalTransform,
+        &InheritedVisibility,
+        Option<&bevy::mesh::skinning::SkinnedMesh>,
+        Option<&bevy::mesh::morph::MeshMorphWeights>,
+    )>,
     mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
-    mut grids: Query<(&mut Transform, &mut bevy::dev_tools::infinite_grid::InfiniteGridSettings), With<environment::ViewerGrid>>,
+    mut grids: Query<
+        (
+            &mut Transform,
+            &mut bevy::dev_tools::infinite_grid::InfiniteGridSettings,
+        ),
+        With<environment::ViewerGrid>,
+    >,
 ) {
-    if capture.requested { return; }
+    if capture.requested {
+        return;
+    }
     if states.iter().count() != capture.instance_times.len()
-        || states.iter().any(|state| !matches!(state, usd_bevy::asset::UsdSceneState::Ready)) {
+        || states
+            .iter()
+            .any(|state| !matches!(state, usd_bevy::asset::UsdSceneState::Ready))
+    {
         *fitted = None;
         return;
     }
-    let clocks: Vec<_> = capture.instance_times.iter().map(|time| time.to_bits()).collect();
-    if capture.ready_frames == 0 { return; }
-    if fitted.as_ref() == Some(&clocks) { return; }
+    let clocks: Vec<_> = capture
+        .instance_times
+        .iter()
+        .map(|time| time.to_bits())
+        .collect();
+    if capture.ready_frames == 0 {
+        return;
+    }
+    if fitted.as_ref() == Some(&clocks) {
+        return;
+    }
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
     for (mesh, bounds, transform, visibility, skin, morph) in &meshes {
-        if !visibility.get() { continue; }
+        if !visibility.get() {
+            continue;
+        }
         if let Some((min, max)) = mesh_bounds.get(mesh, transform, bounds, skin, morph) {
-            low = low.min(min); high = high.max(max);
+            low = low.min(min);
+            high = high.max(max);
         }
     }
     if let Some((height, scale, fade)) = environment::fit_grid(low, high) {
@@ -397,11 +657,23 @@ fn fit_capture_grid(
     }
 }
 
-fn select_authored_camera(mut capture: ResMut<Capture>,
-    sources: Query<(&usd_bevy::UsdPrimRef, &GlobalTransform, &Projection), (With<usd_bevy::route::camera::UsdCamera>, Without<CaptureCamera>)>,
-    mut targets: Query<(&mut Transform, &mut Projection), With<CaptureCamera>>) {
-    let Some(path) = &capture.camera_path else { capture.camera_ready = true; return };
-    let Some((_, transform, projection)) = sources.iter().find(|(prim, _, _)| &prim.path == path) else {
+fn select_authored_camera(
+    mut capture: ResMut<Capture>,
+    sources: Query<
+        (&usd_bevy::UsdPrimRef, &GlobalTransform, &Projection),
+        (
+            With<usd_bevy::route::camera::UsdCamera>,
+            Without<CaptureCamera>,
+        ),
+    >,
+    mut targets: Query<(&mut Transform, &mut Projection), With<CaptureCamera>>,
+) {
+    let Some(path) = &capture.camera_path else {
+        capture.camera_ready = true;
+        return;
+    };
+    let Some((_, transform, projection)) = sources.iter().find(|(prim, _, _)| &prim.path == path)
+    else {
         capture.camera_ready = false;
         capture.ready_frames = 0;
         return;
@@ -413,49 +685,105 @@ fn select_authored_camera(mut capture: ResMut<Capture>,
     capture.camera_ready = true;
 }
 
-fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
-    timing: (Res<bevy::diagnostic::DiagnosticsStore>, ResMut<gpu_timing::GpuTiming>, Res<PipelineProgress>, Res<Assets<Mesh>>, Query<(&Mesh3d, &InheritedVisibility)>),
+fn capture_frame(
+    mut commands: Commands,
+    mut capture: ResMut<Capture>,
+    timing: (
+        Res<bevy::diagnostic::DiagnosticsStore>,
+        ResMut<gpu_timing::GpuTiming>,
+        Res<PipelineProgress>,
+        Res<Assets<Mesh>>,
+        Query<(&Mesh3d, &InheritedVisibility)>,
+    ),
     states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
-    meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>, Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>), With<Mesh3d>>,
+    meshes: Query<
+        (
+            Entity,
+            &InheritedVisibility,
+            Option<&bevy::mesh::skinning::SkinnedMesh>,
+            Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>,
+            Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>,
+            Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>,
+        ),
+        With<Mesh3d>,
+    >,
     camera: Query<(&RenderTarget, &GlobalTransform, &Camera), With<CaptureCamera>>,
-    environments: Query<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState, With<CaptureCamera>>,
+    environments: Query<
+        &usd_bevy::route::dome_environment::UsdDomeEnvironmentState,
+        With<CaptureCamera>,
+    >,
     environment_lights: Query<&bevy::light::EnvironmentMapLight, With<CaptureCamera>>,
     generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
     dome_diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
     studio_lights: Query<&environment::StudioLight>,
-    deformation_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::skel::UsdDeformationError)>,
-    subdivision_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::subdivision::UsdSubdivisionError)>,
-    instancer_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>,
-    geometry_errors: Query<(&usd_bevy::UsdPrimRef, Option<&usd_bevy::route::shapes::UsdShapeError>, Option<&usd_bevy::route::curves::UsdCurveError>, Option<&usd_bevy::route::xform::UsdTransformError>)>,
-    mut exit: MessageWriter<AppExit>) {
+    deformation_errors: Query<(
+        &usd_bevy::UsdPrimRef,
+        &usd_bevy::route::skel::UsdDeformationError,
+    )>,
+    subdivision_errors: Query<(
+        &usd_bevy::UsdPrimRef,
+        &usd_bevy::route::subdivision::UsdSubdivisionError,
+    )>,
+    instancer_errors: Query<(
+        &usd_bevy::UsdPrimRef,
+        &usd_bevy::route::instancer::UsdInstancerWarning,
+    )>,
+    geometry_errors: Query<(
+        &usd_bevy::UsdPrimRef,
+        Option<&usd_bevy::route::shapes::UsdShapeError>,
+        Option<&usd_bevy::route::curves::UsdCurveError>,
+        Option<&usd_bevy::route::xform::UsdTransformError>,
+    )>,
+    mut exit: MessageWriter<AppExit>,
+) {
     let (diagnostics, mut timing, progress, mesh_assets, mesh_references) = timing;
     if capture.started.elapsed() > capture.timeout {
-        eprintln!("capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}", capture.camera_path, capture.camera_ready, progress.0.lock().unwrap());
+        eprintln!(
+            "capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}",
+            capture.camera_path,
+            capture.camera_ready,
+            progress.0.lock().unwrap()
+        );
         exit.write(AppExit::error());
         return;
     }
     for state in &states {
         match state {
             usd_bevy::asset::UsdSceneState::Failed(error) => {
-                eprintln!("capture failed: {error}"); exit.write(AppExit::error()); return;
+                eprintln!("capture failed: {error}");
+                exit.write(AppExit::error());
+                return;
             }
             usd_bevy::asset::UsdSceneState::Ready => (),
             _ => return,
         }
     }
-    if states.iter().count() != capture.instance_times.len() || capture.requested { return; }
-    if !capture.camera_ready { return; }
-    if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, _, _, transform)| transform.map(|error| (prim, error))) {
+    if states.iter().count() != capture.instance_times.len() || capture.requested {
+        return;
+    }
+    if !capture.camera_ready {
+        return;
+    }
+    if let Some((prim, error)) = geometry_errors
+        .iter()
+        .find_map(|(prim, _, _, transform)| transform.map(|error| (prim, error)))
+    {
         eprintln!("capture failed: transform {}: {}", prim.path, error.0);
         exit.write(AppExit::error());
         return;
     }
-    if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, _, curve, _)| curve.map(|error| (prim, error))) {
+    if let Some((prim, error)) = geometry_errors
+        .iter()
+        .find_map(|(prim, _, curve, _)| curve.map(|error| (prim, error)))
+    {
         eprintln!("capture failed: curve {}: {}", prim.path, error.0);
         exit.write(AppExit::error());
         return;
     }
-    if let Some((prim, error)) = geometry_errors.iter().find_map(|(prim, shape, _, _)| shape.map(|error| (prim, error))) {
+    if let Some((prim, error)) = geometry_errors
+        .iter()
+        .find_map(|(prim, shape, _, _)| shape.map(|error| (prim, error)))
+    {
         eprintln!("capture failed: shape {}: {}", prim.path, error.0);
         exit.write(AppExit::error());
         return;
@@ -480,51 +808,126 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
         match environments.single() {
             Ok(UsdDomeEnvironmentState::Attached) => (),
             Ok(UsdDomeEnvironmentState::Unavailable(error)) => {
-                eprintln!("capture failed: dome environment: {error}"); exit.write(AppExit::error()); return;
+                eprintln!("capture failed: dome environment: {error}");
+                exit.write(AppExit::error());
+                return;
             }
-            _ => { capture.ready_frames = 0; return; }
+            _ => {
+                capture.ready_frames = 0;
+                return;
+            }
         }
-        if !generators.is_empty() || dome_diagnostics.as_ref().is_none_or(|d| d.recorded_generations == 0) {
+        if !generators.is_empty()
+            || dome_diagnostics
+                .as_ref()
+                .is_none_or(|d| d.recorded_generations == 0)
+        {
             capture.ready_frames = 0;
             return;
         }
     }
-    if !progress.0.lock().unwrap().as_ref().is_some_and(|(waiting, errors)| *waiting == 0 && errors.is_empty()) {
+    if !progress
+        .0
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(waiting, errors)| *waiting == 0 && errors.is_empty())
+    {
         capture.ready_frames = 0;
         return;
     }
     capture.ready_frames += 1;
-    if capture.ready_frames < 60 { return; }
-    if !timing.collect(&diagnostics) { return; }
-    let Ok((target, camera_transform, camera)) = camera.single() else { return };
-    let visible = meshes.iter().filter(|(_, visibility, _, _, _, _)| visibility.get()).count();
-    let gpu = meshes.iter().filter(|(_, visibility, skin, _, _, _)| visibility.get() && skin.is_some()).count();
-    let morph = meshes.iter().filter(|(_, visibility, _, _, morph, _)| visibility.get() && morph.is_some()).count();
-    let flat_handles: Vec<_> = meshes.iter().filter(|(_, visibility, _, _, _, _)| visibility.get())
-        .filter_map(|(_, _, _, _, _, material)| material.map(|material| material.0.id())).collect();
+    if capture.ready_frames < 60 {
+        return;
+    }
+    if !timing.collect(&diagnostics) {
+        return;
+    }
+    let Ok((target, camera_transform, camera)) = camera.single() else {
+        return;
+    };
+    let visible = meshes
+        .iter()
+        .filter(|(_, visibility, _, _, _, _)| visibility.get())
+        .count();
+    let gpu = meshes
+        .iter()
+        .filter(|(_, visibility, skin, _, _, _)| visibility.get() && skin.is_some())
+        .count();
+    let morph = meshes
+        .iter()
+        .filter(|(_, visibility, _, _, morph, _)| visibility.get() && morph.is_some())
+        .count();
+    let flat_handles: Vec<_> = meshes
+        .iter()
+        .filter(|(_, visibility, _, _, _, _)| visibility.get())
+        .filter_map(|(_, _, _, _, _, material)| material.map(|material| material.0.id()))
+        .collect();
     let flat_unique: std::collections::HashSet<_> = flat_handles.iter().copied().collect();
-    capture.mesh_report = format!("hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n");
+    capture.mesh_report = format!(
+        "hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n"
+    );
     capture.mesh_report.push_str(&timing.report());
-    capture.mesh_report.push_str(&capture_metadata::mesh_residency_report(&mesh_assets,
-        mesh_references.iter().map(|(mesh, visibility)| (mesh.0.id(), visibility.get()))));
-    capture.mesh_report.push_str(&capture_metadata::camera_report(camera_transform, camera.clip_from_view()));
-    capture.mesh_report.push_str(&format!("hierarchy_visible_flat_material_entities={}\nhierarchy_visible_unique_flat_materials={}\n", flat_handles.len(), flat_unique.len()));
-    capture.mesh_report.push_str(&format!("studio_baseline_lux={:?}\n", studio_lights.iter().map(|light| light.0).collect::<Vec<_>>()));
+    capture
+        .mesh_report
+        .push_str(&capture_metadata::mesh_residency_report(
+            &mesh_assets,
+            mesh_references
+                .iter()
+                .map(|(mesh, visibility)| (mesh.0.id(), visibility.get())),
+        ));
+    capture
+        .mesh_report
+        .push_str(&capture_metadata::camera_report(
+            camera_transform,
+            camera.clip_from_view(),
+        ));
+    capture.mesh_report.push_str(&format!(
+        "hierarchy_visible_flat_material_entities={}\nhierarchy_visible_unique_flat_materials={}\n",
+        flat_handles.len(),
+        flat_unique.len()
+    ));
+    capture.mesh_report.push_str(&format!(
+        "studio_baseline_lux={:?}\n",
+        studio_lights
+            .iter()
+            .map(|light| light.0)
+            .collect::<Vec<_>>()
+    ));
     if let Ok(dome) = std::env::var("USD_CAPTURE_DOME") {
         capture.mesh_report.push_str(&format!("dome={dome}\ndome_maps_attached=true\ndirectional_lights_disabled=true\ncamera_ambient_disabled=true\n"));
         if let Ok(light) = environment_lights.single() {
-            capture.mesh_report.push_str(&format!("dome_intensity={}\ndome_rotation={:?}\n", light.intensity, light.rotation));
+            capture.mesh_report.push_str(&format!(
+                "dome_intensity={}\ndome_rotation={:?}\n",
+                light.intensity, light.rotation
+            ));
         }
-        capture.mesh_report.push_str(&capture_metadata::environment_report(environment_lights.single().ok(),
-            environments.single().ok(), dome_diagnostics.as_ref().map_or(0, |d| d.recorded_generations),
-            generators.iter().count(), "capture-ready-system"));
+        capture
+            .mesh_report
+            .push_str(&capture_metadata::environment_report(
+                environment_lights.single().ok(),
+                environments.single().ok(),
+                dome_diagnostics
+                    .as_ref()
+                    .map_or(0, |d| d.recorded_generations),
+                generators.iter().count(),
+                "capture-ready-system",
+            ));
     }
     for (entity, visibility, _, fallback, _, _) in &meshes {
-        if visibility.get() && let Some(fallback) = fallback {
-            capture.mesh_report.push_str(&format!("cpu_fallback[{entity:?}]={}\n", fallback.0));
+        if visibility.get()
+            && let Some(fallback) = fallback
+        {
+            capture
+                .mesh_report
+                .push_str(&format!("cpu_fallback[{entity:?}]={}\n", fallback.0));
         }
     }
-    let shadows = if capture.shadow_maps { "shadow_maps=scene\n" } else { "shadow_maps=off\n" };
+    let shadows = if capture.shadow_maps {
+        "shadow_maps=scene\n"
+    } else {
+        "shadow_maps=off\n"
+    };
     capture.mesh_report.push_str(shadows);
     capture.requested = true;
     commands.spawn(Screenshot(target.clone())).observe(
@@ -550,23 +953,68 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
 }
 
 fn save(image: &Image, capture: &Capture) -> Result<(), String> {
-    let dynamic = image.clone().try_into_dynamic().map_err(|error| format!("readback format: {error}"))?;
+    let dynamic = image
+        .clone()
+        .try_into_dynamic()
+        .map_err(|error| format!("readback format: {error}"))?;
     let rgba = dynamic.to_rgba8();
-    if rgba.dimensions() != (1280,720) { return Err(format!("unexpected readback dimensions: {:?}", rgba.dimensions())); }
+    if rgba.dimensions() != (1280, 720) {
+        return Err(format!(
+            "unexpected readback dimensions: {:?}",
+            rgba.dimensions()
+        ));
+    }
     let temporary = capture.output.with_extension("partial.png");
-    dynamic.to_rgb8().save(&temporary).map_err(|error| format!("PNG write {output}: {error}", output = temporary.display()))?;
-    std::fs::write(capture.output.with_extension("rgba"), rgba.as_raw()).map_err(|error| format!("RGBA write: {error}"))?;
-    let report = format!("asset={asset}\ntime={time}\nrequested_eye={eye:?}\nrequested_target={target:?}\nwidth=1280\nheight=720\nformat=rgba8-srgb\nrow_bytes=5120\nbytes={bytes}\nready_frames={frames}\ncpu_skinning={cpu}\n",
-        asset = capture.asset.display(), time = capture.time, eye = capture.eye, target = capture.focus,
-        bytes = rgba.len(), frames = capture.ready_frames, cpu = std::env::var_os("USD_CPU_SKINNING").is_some());
-    let report = report + &format!("capture_timeout_secs={}\n", capture.timeout.as_secs())
-        + &format!("instance_times={:?}\ninstance_spacing={}\n", capture.instance_times, capture.instance_spacing)
-        + &format!("clocks_reversed_after_ready_frames={}\n", if capture.clocks_swapped { 30 } else { 0 })
-        + &format!("camera_source={}\n", capture.camera_path.as_deref().unwrap_or("fixed-arguments")) + &format!("renderer={:?}\nsubdivision_levels={}\n",
-        capture.renderer, capture.subdivision_levels.unwrap_or(0)) + &format!("msaa={:?}\n", capture.msaa) + &format!("curve_steps={}\ncurve_surface_sides={:?}\n", capture.curve_steps, capture.curve_surface_sides) + &capture.mesh_report;
-    let report = report + &format!("exposure_ev100={}\ntonemapping={:?}\n", capture.exposure.ev100, capture.tonemapping);
-    std::fs::write(capture.output.with_extension("capture.txt"), report).map_err(|error| format!("metadata write: {error}"))?;
-    std::fs::rename(&temporary, &capture.output).map_err(|error| format!("PNG publish: {error}"))?;
+    dynamic
+        .to_rgb8()
+        .save(&temporary)
+        .map_err(|error| format!("PNG write {output}: {error}", output = temporary.display()))?;
+    std::fs::write(capture.output.with_extension("rgba"), rgba.as_raw())
+        .map_err(|error| format!("RGBA write: {error}"))?;
+    let report = format!(
+        "asset={asset}\ntime={time}\nrequested_eye={eye:?}\nrequested_target={target:?}\nwidth=1280\nheight=720\nformat=rgba8-srgb\nrow_bytes=5120\nbytes={bytes}\nready_frames={frames}\ncpu_skinning={cpu}\n",
+        asset = capture.asset.display(),
+        time = capture.time,
+        eye = capture.eye,
+        target = capture.focus,
+        bytes = rgba.len(),
+        frames = capture.ready_frames,
+        cpu = std::env::var_os("USD_CPU_SKINNING").is_some()
+    );
+    let report = report
+        + &format!("capture_timeout_secs={}\n", capture.timeout.as_secs())
+        + &format!(
+            "instance_times={:?}\ninstance_spacing={}\n",
+            capture.instance_times, capture.instance_spacing
+        )
+        + &format!(
+            "clocks_reversed_after_ready_frames={}\n",
+            if capture.clocks_swapped { 30 } else { 0 }
+        )
+        + &format!(
+            "camera_source={}\n",
+            capture.camera_path.as_deref().unwrap_or("fixed-arguments")
+        )
+        + &format!(
+            "renderer={:?}\nsubdivision_levels={}\n",
+            capture.renderer,
+            capture.subdivision_levels.unwrap_or(0)
+        )
+        + &format!("msaa={:?}\n", capture.msaa)
+        + &format!(
+            "curve_steps={}\ncurve_surface_sides={:?}\n",
+            capture.curve_steps, capture.curve_surface_sides
+        )
+        + &capture.mesh_report;
+    let report = report
+        + &format!(
+            "exposure_ev100={}\ntonemapping={:?}\n",
+            capture.exposure.ev100, capture.tonemapping
+        );
+    std::fs::write(capture.output.with_extension("capture.txt"), report)
+        .map_err(|error| format!("metadata write: {error}"))?;
+    std::fs::rename(&temporary, &capture.output)
+        .map_err(|error| format!("PNG publish: {error}"))?;
     Ok(())
 }
 
@@ -576,13 +1024,19 @@ mod tests {
     fn camera_response_defaults_bounds_and_atomic_failure() {
         use super::*;
         let dir = tempfile::tempdir().unwrap();
-        let mut capture = Capture::parse(&["assets/dome_reference.usda".into(),
-            dir.path().join("new.png").display().to_string(), "0".into()]).unwrap();
+        let mut capture = Capture::parse(&[
+            "assets/dome_reference.usda".into(),
+            dir.path().join("new.png").display().to_string(),
+            "0".into(),
+        ])
+        .unwrap();
         capture.set_camera_response(None, None).unwrap();
         assert_eq!(capture.exposure.ev100, Exposure::default().ev100);
         assert_eq!(capture.tonemapping, Tonemapping::default());
         for value in ["-20", "0", "30", "-0.2630344"] {
-            capture.set_camera_response(Some(value), Some("none")).unwrap();
+            capture
+                .set_camera_response(Some(value), Some("none"))
+                .unwrap();
             assert_eq!(capture.exposure.ev100, value.parse::<f32>().unwrap());
             assert_eq!(capture.tonemapping, Tonemapping::None);
         }
@@ -591,7 +1045,11 @@ mod tests {
             assert!(capture.set_camera_response(Some(value), None).is_err());
             assert_eq!(capture.exposure.ev100, previous);
         }
-        assert!(capture.set_camera_response(Some("5"), Some("unknown")).is_err());
+        assert!(
+            capture
+                .set_camera_response(Some("5"), Some("unknown"))
+                .is_err()
+        );
         assert_eq!(capture.exposure.ev100, previous);
         assert_eq!(capture.tonemapping, Tonemapping::None);
     }
@@ -600,14 +1058,28 @@ mod tests {
     fn capture_msaa_defaults_overrides_and_incompatible_modes() {
         use super::*;
         assert_eq!(CaptureRenderer::Forward.msaa(None).unwrap(), Msaa::Sample4);
-        for (value, expected) in [("off", Msaa::Off), ("1", Msaa::Off),
-            ("2", Msaa::Sample2), ("4", Msaa::Sample4), ("8", Msaa::Sample8)] {
-            assert_eq!(CaptureRenderer::Forward.msaa(Some(value)).unwrap(), expected);
+        for (value, expected) in [
+            ("off", Msaa::Off),
+            ("1", Msaa::Off),
+            ("2", Msaa::Sample2),
+            ("4", Msaa::Sample4),
+            ("8", Msaa::Sample8),
+        ] {
+            assert_eq!(
+                CaptureRenderer::Forward.msaa(Some(value)).unwrap(),
+                expected
+            );
         }
-        for renderer in [CaptureRenderer::Prepass, CaptureRenderer::Deferred, CaptureRenderer::Oit] {
+        for renderer in [
+            CaptureRenderer::Prepass,
+            CaptureRenderer::Deferred,
+            CaptureRenderer::Oit,
+        ] {
             assert_eq!(renderer.msaa(None).unwrap(), Msaa::Off);
             assert_eq!(renderer.msaa(Some("off")).unwrap(), Msaa::Off);
-            for value in ["2", "4", "8"] { assert!(renderer.msaa(Some(value)).is_err()); }
+            for value in ["2", "4", "8"] {
+                assert!(renderer.msaa(Some(value)).is_err());
+            }
         }
         for value in ["", "0", "3", "16", "NaN"] {
             assert!(CaptureRenderer::Forward.msaa(Some(value)).is_err());
@@ -622,20 +1094,48 @@ mod tests {
         capture.swap_clocks = true;
         capture.ready_frames = 29;
         let mut app = App::new();
-        app.insert_resource(capture).add_systems(Update, reverse_capture_clocks);
-        let first = app.world_mut().spawn((CaptureInstance(0), usd_bevy::instance::UsdInstanceTime { current: 0.0 })).id();
-        let second = app.world_mut().spawn((CaptureInstance(1), usd_bevy::instance::UsdInstanceTime { current: 10.0 })).id();
+        app.insert_resource(capture)
+            .add_systems(Update, reverse_capture_clocks);
+        let first = app
+            .world_mut()
+            .spawn((
+                CaptureInstance(0),
+                usd_bevy::instance::UsdInstanceTime { current: 0.0 },
+            ))
+            .id();
+        let second = app
+            .world_mut()
+            .spawn((
+                CaptureInstance(1),
+                usd_bevy::instance::UsdInstanceTime { current: 10.0 },
+            ))
+            .id();
         app.update();
         assert!(!app.world().resource::<Capture>().clocks_swapped);
         app.world_mut().resource_mut::<Capture>().ready_frames = 30;
         app.update();
-        assert_eq!(app.world().get::<usd_bevy::instance::UsdInstanceTime>(first).unwrap().current, 10.0);
-        assert_eq!(app.world().get::<usd_bevy::instance::UsdInstanceTime>(second).unwrap().current, 0.0);
+        assert_eq!(
+            app.world()
+                .get::<usd_bevy::instance::UsdInstanceTime>(first)
+                .unwrap()
+                .current,
+            10.0
+        );
+        assert_eq!(
+            app.world()
+                .get::<usd_bevy::instance::UsdInstanceTime>(second)
+                .unwrap()
+                .current,
+            0.0
+        );
         assert_eq!(app.world().resource::<Capture>().ready_frames, 0);
         assert!(app.world().resource::<Capture>().clocks_swapped);
         app.world_mut().resource_mut::<Capture>().ready_frames = 60;
         app.update();
-        assert_eq!(app.world().resource::<Capture>().instance_times, [10.0, 0.0]);
+        assert_eq!(
+            app.world().resource::<Capture>().instance_times,
+            [10.0, 0.0]
+        );
     }
 
     use super::*;
@@ -647,28 +1147,70 @@ mod tests {
         capture.ready_frames = 1;
         app.insert_resource(capture);
         app.add_systems(Update, fit_capture_grid);
-        let root = app.world_mut().spawn((CaptureInstance(0), usd_bevy::asset::UsdSceneState::Loading)).id();
-        let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(Mesh::from(Cuboid::default()));
-        let mesh = app.world_mut().spawn((Mesh3d(handle), GlobalTransform::from_translation(Vec3::Y * 5.0), InheritedVisibility::VISIBLE)).id();
-        let grid = app.world_mut().spawn((environment::ViewerGrid, Transform::default(), bevy::dev_tools::infinite_grid::InfiniteGridSettings::default())).id();
+        let root = app
+            .world_mut()
+            .spawn((CaptureInstance(0), usd_bevy::asset::UsdSceneState::Loading))
+            .id();
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::from(Cuboid::default()));
+        let mesh = app
+            .world_mut()
+            .spawn((
+                Mesh3d(handle),
+                GlobalTransform::from_translation(Vec3::Y * 5.0),
+                InheritedVisibility::VISIBLE,
+            ))
+            .id();
+        let grid = app
+            .world_mut()
+            .spawn((
+                environment::ViewerGrid,
+                Transform::default(),
+                bevy::dev_tools::infinite_grid::InfiniteGridSettings::default(),
+            ))
+            .id();
         app.update();
-        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, 0.0);
-        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Ready);
+        assert_eq!(
+            app.world().get::<Transform>(grid).unwrap().translation.y,
+            0.0
+        );
+        app.world_mut()
+            .entity_mut(root)
+            .insert(usd_bevy::asset::UsdSceneState::Ready);
         app.update();
         let first = app.world().get::<Transform>(grid).unwrap().translation.y;
         assert_ne!(first, 0.0);
-        app.world_mut().entity_mut(mesh).insert(GlobalTransform::from_translation(Vec3::Y * 10.0));
+        app.world_mut()
+            .entity_mut(mesh)
+            .insert(GlobalTransform::from_translation(Vec3::Y * 10.0));
         app.update();
-        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
+        assert_eq!(
+            app.world().get::<Transform>(grid).unwrap().translation.y,
+            first
+        );
         app.world_mut().resource_mut::<Capture>().instance_times[0] = 1.0;
         app.update();
-        assert_ne!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
-        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Loading);
+        assert_ne!(
+            app.world().get::<Transform>(grid).unwrap().translation.y,
+            first
+        );
+        app.world_mut()
+            .entity_mut(root)
+            .insert(usd_bevy::asset::UsdSceneState::Loading);
         app.update();
-        app.world_mut().entity_mut(mesh).insert(GlobalTransform::from_translation(Vec3::Y * 5.0));
-        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Ready);
+        app.world_mut()
+            .entity_mut(mesh)
+            .insert(GlobalTransform::from_translation(Vec3::Y * 5.0));
+        app.world_mut()
+            .entity_mut(root)
+            .insert(usd_bevy::asset::UsdSceneState::Ready);
         app.update();
-        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
+        assert_eq!(
+            app.world().get::<Transform>(grid).unwrap().translation.y,
+            first
+        );
     }
 
     #[test]
@@ -692,8 +1234,14 @@ mod tests {
             assert!(capture.set_instance_times(invalid).is_err());
             assert_eq!(capture.instance_times, [0.0, 10.0, -2.5]);
         }
-        assert!(capture.set_instance_times(&vec!["0"; 17].join(",")).is_err());
-        capture.set_instance_times(&vec!["0"; 16].join(",")).unwrap();
+        assert!(
+            capture
+                .set_instance_times(&vec!["0"; 17].join(","))
+                .is_err()
+        );
+        capture
+            .set_instance_times(&vec!["0"; 16].join(","))
+            .unwrap();
         assert_eq!(capture.instance_times.len(), 16);
     }
     #[test]
@@ -702,48 +1250,139 @@ mod tests {
         capture.camera_path = Some("/Camera".into());
         capture.ready_frames = 5;
         let mut app = App::new();
-        app.insert_resource(capture).add_systems(Update, select_authored_camera);
-        let target = app.world_mut().spawn((CaptureCamera, Transform::default(), Projection::default())).id();
+        app.insert_resource(capture)
+            .add_systems(Update, select_authored_camera);
+        let target = app
+            .world_mut()
+            .spawn((CaptureCamera, Transform::default(), Projection::default()))
+            .id();
         app.world_mut().run_schedule(Update);
         assert!(!app.world().resource::<Capture>().camera_ready);
         assert_eq!(app.world().resource::<Capture>().ready_frames, 0);
-        app.world_mut().spawn((usd_bevy::UsdPrimRef { path: "/Camera".into() }, usd_bevy::route::camera::UsdCamera,
-            GlobalTransform::from_translation(Vec3::new(1.0,2.0,3.0)), Projection::custom(usd_bevy::route::camera::UsdPerspectiveProjection {
-                perspective: default(), aperture_offset_over_focal: Vec2::new(0.2,0.1),
-            })));
+        app.world_mut().spawn((
+            usd_bevy::UsdPrimRef {
+                path: "/Camera".into(),
+            },
+            usd_bevy::route::camera::UsdCamera,
+            GlobalTransform::from_translation(Vec3::new(1.0, 2.0, 3.0)),
+            Projection::custom(usd_bevy::route::camera::UsdPerspectiveProjection {
+                perspective: default(),
+                aperture_offset_over_focal: Vec2::new(0.2, 0.1),
+            }),
+        ));
         app.world_mut().run_schedule(Update);
         assert!(app.world().resource::<Capture>().camera_ready);
-        assert_eq!(app.world().get::<Transform>(target).unwrap().translation, Vec3::new(1.0,2.0,3.0));
-        assert!(matches!(app.world().get::<Projection>(target), Some(Projection::Custom(_))));
+        assert_eq!(
+            app.world().get::<Transform>(target).unwrap().translation,
+            Vec3::new(1.0, 2.0, 3.0)
+        );
+        assert!(matches!(
+            app.world().get::<Projection>(target),
+            Some(Projection::Custom(_))
+        ));
     }
 
     #[test]
     fn shadow_diagnostic_preserves_scene_defaults_and_disables_all_light_types() {
         let capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();
         let mut app = App::new();
-        app.insert_resource(capture).add_systems(Update, configure_shadow_maps);
-        let directional = app.world_mut().spawn(DirectionalLight { shadow_maps_enabled: true, ..default() }).id();
-        let point = app.world_mut().spawn(PointLight { shadow_maps_enabled: true, ..default() }).id();
-        let spot = app.world_mut().spawn(SpotLight { shadow_maps_enabled: true, ..default() }).id();
-        let disabled = app.world_mut().spawn(DirectionalLight { shadow_maps_enabled: false, ..default() }).id();
+        app.insert_resource(capture)
+            .add_systems(Update, configure_shadow_maps);
+        let directional = app
+            .world_mut()
+            .spawn(DirectionalLight {
+                shadow_maps_enabled: true,
+                ..default()
+            })
+            .id();
+        let point = app
+            .world_mut()
+            .spawn(PointLight {
+                shadow_maps_enabled: true,
+                ..default()
+            })
+            .id();
+        let spot = app
+            .world_mut()
+            .spawn(SpotLight {
+                shadow_maps_enabled: true,
+                ..default()
+            })
+            .id();
+        let disabled = app
+            .world_mut()
+            .spawn(DirectionalLight {
+                shadow_maps_enabled: false,
+                ..default()
+            })
+            .id();
         app.world_mut().run_schedule(Update);
-        assert!(app.world().get::<DirectionalLight>(directional).unwrap().shadow_maps_enabled);
-        assert!(app.world().get::<PointLight>(point).unwrap().shadow_maps_enabled);
-        assert!(app.world().get::<SpotLight>(spot).unwrap().shadow_maps_enabled);
-        assert!(!app.world().get::<DirectionalLight>(disabled).unwrap().shadow_maps_enabled);
+        assert!(
+            app.world()
+                .get::<DirectionalLight>(directional)
+                .unwrap()
+                .shadow_maps_enabled
+        );
+        assert!(
+            app.world()
+                .get::<PointLight>(point)
+                .unwrap()
+                .shadow_maps_enabled
+        );
+        assert!(
+            app.world()
+                .get::<SpotLight>(spot)
+                .unwrap()
+                .shadow_maps_enabled
+        );
+        assert!(
+            !app.world()
+                .get::<DirectionalLight>(disabled)
+                .unwrap()
+                .shadow_maps_enabled
+        );
         app.world_mut().resource_mut::<Capture>().shadow_maps = false;
         app.world_mut().run_schedule(Update);
-        assert!(!app.world().get::<DirectionalLight>(directional).unwrap().shadow_maps_enabled);
-        assert!(!app.world().get::<PointLight>(point).unwrap().shadow_maps_enabled);
-        assert!(!app.world().get::<SpotLight>(spot).unwrap().shadow_maps_enabled);
-        assert!(!app.world().get::<DirectionalLight>(disabled).unwrap().shadow_maps_enabled);
+        assert!(
+            !app.world()
+                .get::<DirectionalLight>(directional)
+                .unwrap()
+                .shadow_maps_enabled
+        );
+        assert!(
+            !app.world()
+                .get::<PointLight>(point)
+                .unwrap()
+                .shadow_maps_enabled
+        );
+        assert!(
+            !app.world()
+                .get::<SpotLight>(spot)
+                .unwrap()
+                .shadow_maps_enabled
+        );
+        assert!(
+            !app.world()
+                .get::<DirectionalLight>(disabled)
+                .unwrap()
+                .shadow_maps_enabled
+        );
     }
 
     #[test]
     fn renderer_selection_is_explicit() {
-        assert_eq!(CaptureRenderer::parse("forward").unwrap(), CaptureRenderer::Forward);
-        assert_eq!(CaptureRenderer::parse("prepass").unwrap(), CaptureRenderer::Prepass);
-        assert_eq!(CaptureRenderer::parse("deferred").unwrap(), CaptureRenderer::Deferred);
+        assert_eq!(
+            CaptureRenderer::parse("forward").unwrap(),
+            CaptureRenderer::Forward
+        );
+        assert_eq!(
+            CaptureRenderer::parse("prepass").unwrap(),
+            CaptureRenderer::Prepass
+        );
+        assert_eq!(
+            CaptureRenderer::parse("deferred").unwrap(),
+            CaptureRenderer::Deferred
+        );
         assert_eq!(CaptureRenderer::parse("oit").unwrap(), CaptureRenderer::Oit);
         assert!(CaptureRenderer::parse("typo").is_err());
     }
@@ -751,8 +1390,12 @@ mod tests {
     #[test]
     fn capture_timeout_is_bounded_and_defaults_to_sixty_seconds() {
         let dir = tempfile::tempdir().unwrap();
-        let mut capture = Capture::parse(&["assets/transparency_order.usda".into(),
-            dir.path().join("new.png").display().to_string(), "0".into()]).unwrap();
+        let mut capture = Capture::parse(&[
+            "assets/transparency_order.usda".into(),
+            dir.path().join("new.png").display().to_string(),
+            "0".into(),
+        ])
+        .unwrap();
         assert_eq!(capture.timeout, Duration::from_secs(60));
         for value in ["", "0", "601", "-1", "NaN", "18446744073709551616"] {
             assert!(capture.set_timeout(value).is_err());
@@ -765,16 +1408,31 @@ mod tests {
     }
     #[test]
     fn readback_records_subdivision_and_tight_rgba() {
-        let directory = std::env::temp_dir().join(format!("usd-capture-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let directory = std::env::temp_dir().join(format!(
+            "usd-capture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir(&directory).unwrap();
         let output = directory.join("frame.png");
-        let mut capture = Capture::parse(&["a.usda".into(), output.to_string_lossy().into_owned(), "3".into()]).unwrap();
+        let mut capture = Capture::parse(&[
+            "a.usda".into(),
+            output.to_string_lossy().into_owned(),
+            "3".into(),
+        ])
+        .unwrap();
         let image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
         for levels in [None, Some(2)] {
             capture.subdivision_levels = levels;
             capture.curve_steps = if levels.is_some() { 32 } else { 8 };
-            capture.msaa = if levels.is_some() { Msaa::Off } else { Msaa::Sample4 };
+            capture.msaa = if levels.is_some() {
+                Msaa::Off
+            } else {
+                Msaa::Sample4
+            };
             save(&image, &capture).unwrap();
             let report = std::fs::read_to_string(output.with_extension("capture.txt")).unwrap();
             assert!(report.contains(&format!("subdivision_levels={}\n", levels.unwrap_or(0))));
@@ -784,7 +1442,12 @@ mod tests {
             assert!(report.contains(&format!("tonemapping={:?}\n", capture.tonemapping)));
             assert!(report.contains("requested_eye=Vec3(6.0, 4.0, 8.0)\n"));
             assert!(!report.contains("\neye="));
-            assert_eq!(std::fs::metadata(output.with_extension("rgba")).unwrap().len(), 1280 * 720 * 4);
+            assert_eq!(
+                std::fs::metadata(output.with_extension("rgba"))
+                    .unwrap()
+                    .len(),
+                1280 * 720 * 4
+            );
             assert!(output.is_file());
             assert!(!output.with_extension("partial.png").exists());
         }
@@ -792,16 +1455,37 @@ mod tests {
     }
     #[test]
     fn invalid_dimensions_and_write_failures_are_errors() {
-        let capture = Capture::parse(&["a.usda".into(), "/nonexistent-usd-capture-dir/a.png".into(), "0".into()]).unwrap();
+        let capture = Capture::parse(&[
+            "a.usda".into(),
+            "/nonexistent-usd-capture-dir/a.png".into(),
+            "0".into(),
+        ])
+        .unwrap();
         let wrong_size = Image::new_target_texture(1, 1, TextureFormat::Rgba8UnormSrgb, None);
-        assert!(save(&wrong_size, &capture).unwrap_err().contains("dimensions"));
+        assert!(
+            save(&wrong_size, &capture)
+                .unwrap_err()
+                .contains("dimensions")
+        );
         let image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
         assert!(save(&image, &capture).unwrap_err().contains("PNG write"));
     }
     #[test]
     fn rejects_invalid_camera_and_time() {
-        for args in ["a.usda a.png NaN", "a.usda a.png 0 0 1 0 0 0 0", "a.usda a.jpg 0"] {
-            assert!(Capture::parse(&args.split_whitespace().map(str::to_owned).collect::<Vec<_>>()).is_err());
+        for args in [
+            "a.usda a.png NaN",
+            "a.usda a.png 0 0 1 0 0 0 0",
+            "a.usda a.jpg 0",
+        ] {
+            assert!(
+                Capture::parse(
+                    &args
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                )
+                .is_err()
+            );
         }
         assert!(Capture::parse(&["a.usda".into(), "a.png".into(), "30".into()]).is_ok());
     }

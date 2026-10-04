@@ -1,0 +1,53 @@
+diff --git a/crates/openusd/src/usdc/reader.rs b/crates/openusd/src/usdc/reader.rs
+index 40ab1ee..366843d 100644
+--- a/crates/openusd/src/usdc/reader.rs
++++ b/crates/openusd/src/usdc/reader.rs
+@@ -800,6 +800,15 @@ impl<R: io::Read + io::Seek> CrateFile<R> {
+         })
+     }
+ 
++    /// Reads a string-table array value; empty arrays are stored inline with payload 0.
++    fn read_string_array(&mut self, value: ValueRep) -> Result<Vec<String>, ReadError> {
++        if value.payload() == 0 {
++            return Ok(Vec::new());
++        }
++        self.set_position(value.payload())?;
++        self.read_string_vec()
++    }
++
+     fn read_token_vec(&mut self) -> Result<Vec<String>, ReadError> {
+         self.read_indexed_vec(|file, index| Ok(indexed(&file.tokens, index, "token")?.clone()))
+     }
+@@ -1030,10 +1039,7 @@ impl<R: io::Read + io::Seek> CrateFile<R> {
+                 sdf::Value::StringVec(self.read_string_vec()?)
+             }
+ 
+-            Type::String if value.is_array() => {
+-                self.set_position(value.payload())?;
+-                sdf::Value::StringVec(self.read_string_vec()?)
+-            }
++            Type::String if value.is_array() => sdf::Value::StringVec(self.read_string_array(value)?),
+ 
+             Type::String => {
+                 corrupt!(!value.is_array());
+@@ -1045,8 +1051,7 @@ impl<R: io::Read + io::Seek> CrateFile<R> {
+                 // Asset arrays (`asset[]`, e.g. value-clip `assetPaths`) are
+                 // stored like string arrays — string-table indices, not direct
+                 // token indices.
+-                self.set_position(value.payload())?;
+-                sdf::Value::AssetPathVec(self.read_string_vec()?.into_iter().map(Into::into).collect())
++                sdf::Value::AssetPathVec(self.read_string_array(value)?.into_iter().map(Into::into).collect())
+             }
+             Type::AssetPath => sdf::Value::AssetPath(self.read_asset_path(value)?.into()),
+ 
+@@ -1449,9 +1454,8 @@ impl<R: io::Read + io::Seek> CrateFile<R> {
+             Type::PathExpression if value.is_array() => {
+                 // Path-expression arrays are stored like string arrays
+                 // (string-table indices), each entry parsed into an expression.
+-                self.set_position(value.payload())?;
+                 sdf::Value::PathExpressionVec(
+-                    self.read_string_vec()?
++                    self.read_string_array(value)?
+                         .iter()
+                         .map(|text| sdf::PathExpression::parse(text))
+                         .collect(),

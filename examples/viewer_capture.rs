@@ -450,6 +450,10 @@ fn main() -> AppExit {
         app.add_plugins(usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin)
             .add_systems(Update, select_dome);
     }
+    if std::env::var_os("USD_CAPTURE_SKELETON").is_some() {
+        app.add_plugins(usd_bevy::skeleton_overlay::UsdSkeletonOverlayPlugin)
+            .insert_resource(usd_bevy::skeleton_overlay::UsdSkeletonOverlay { visible: true });
+    }
     if std::env::var_os("USD_PROFILE_SOURCES").is_some() {
         app.init_resource::<usd_bevy::asset::UsdSceneTimings>();
     }

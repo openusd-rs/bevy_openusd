@@ -37,6 +37,7 @@ pub struct UsdSource {
     bytes: Arc<[u8]>,
     identity: u64,
     files: Arc<BTreeMap<String, Arc<[u8]>>>,
+    absent: Arc<BTreeSet<String>>,
     filesystem: bool,
     validated_default: Arc<Mutex<Option<u64>>>,
     default_textures: Arc<Mutex<Option<(u64, Arc<BTreeSet<(String, bool)>>)>>>,
@@ -81,6 +82,7 @@ impl UsdSource {
             bytes: bytes.into(),
             identity: NEXT_SOURCE.fetch_add(1, Ordering::Relaxed),
             files: Arc::default(),
+            absent: Arc::default(),
             filesystem: true,
             validated_default: Arc::default(),
             default_textures: Arc::default(),
@@ -544,6 +546,12 @@ impl UsdSource {
         self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Records a dependency that cannot be read, so composition stops requesting it.
+    pub(crate) fn mark_absent(&mut self, identifier: String) {
+        Arc::make_mut(&mut self.absent).insert(identifier);
+        self.identity = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn replace_file_bytes(&mut self, identifier: String, bytes: impl Into<Arc<[u8]>>) {
         if identifier == self.identifier {
             self.bytes = bytes.into();
@@ -909,6 +917,9 @@ impl Resolver for SourceResolver {
             } else {
                 dependency
             };
+            if self.source.absent.contains(&request) {
+                return None;
+            }
             self.requests
                 .lock()
                 .expect("dependency requests")
@@ -3023,5 +3034,31 @@ def Scope "Model" (
         let source = UsdSource::new("virtual-package.usdz", bytes).unwrap();
         let stage = source.open_stage().unwrap();
         assert!(stage.prim("/Model/Box").unwrap().is_valid().unwrap());
+    }
+
+    #[test]
+    fn usdc_empty_string_arrays_read_as_empty() {
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/external/chameleon.usdz"
+        );
+        let stage = UsdSource::from_file(file).unwrap().open_stage().unwrap();
+        let looks = "/Root/chameleon_mtl/Looks";
+        let name = "ui:nodegraph:realitykit:node:attributesShowingChildren";
+        let read = |prim: &str| {
+            let path = openusd::sdf::path(&format!("{looks}/{prim}")).unwrap();
+            crate::read::util::read_authored(&stage, &path, name).unwrap()
+        };
+        assert_eq!(
+            read("chameleon_camo_mat/Clamp"),
+            Some(openusd::sdf::Value::StringVec(vec![]))
+        );
+        assert_eq!(
+            read("chameleon_blue_mat/PreviewSurface"),
+            Some(openusd::sdf::Value::StringVec(vec![
+                "Advanced".into(),
+                "inputs:diffuseColor".into()
+            ]))
+        );
     }
 }

@@ -1,0 +1,16 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+    startTimeCode = 0
+    endTimeCode = 288
+    timeCodesPerSecond = 60
+    doc = "The eating cow from cow_test.usd without its Omniverse environment light."
+)
+
+def Xform "World" (
+    prepend references = @cow_test.usd@</World>
+)
+{
+}

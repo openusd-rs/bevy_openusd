@@ -1,14 +1,47 @@
 # bevy_openusd
 
-A live [OpenUSD](https://openusd.org) editor on [Bevy](https://bevy.org).
-`crates/usd_bevy` is the library, `usdview` is the viewer.
+[OpenUSD](https://openusd.org) as a native scene format for [Bevy](https://bevy.org) 0.19.
+`usd_bevy` is the library: it loads and composes USD stages, keeps them live, and
+writes edits back with undo/redo and save. `usdview` is the editor built on it.
+
+## Use it in Bevy
+
+```toml
+[dependencies]
+bevy = "0.19"
+usd_bevy = { git = "https://github.com/openusd-rs/bevy_openusd" }
+
+[patch.crates-io]
+bevy_asset = { git = "https://github.com/openusd-rs/bevy_openusd" }
+```
+
+```rust
+use bevy::prelude::*;
+use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdSceneRoot};
+
+fn main() {
+    App::new()
+        .add_plugins((DefaultPlugins, UsdPlugin, UsdAssetPlugin))
+        .add_systems(Startup, setup)
+        .run();
+}
+
+fn setup(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.spawn(UsdSceneRoot(assets.load("scene.usdz")));
+    commands.spawn((Camera3d::default(), Transform::from_xyz(0.0, 3.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y)));
+    commands.spawn(DirectionalLight::default());
+}
+```
+
+The `bevy_asset` patch keeps loads of one source in order, so an older snapshot
+never lands after a newer one.
+
+## usdview
 
 ![Kitchen set](media/kitchen.png)
 
 | ![Tractor](media/tractor.png) | ![Franka Panda](media/franka.png) |
 | --- | --- |
-
-## Run
 
 ```sh
 direnv allow

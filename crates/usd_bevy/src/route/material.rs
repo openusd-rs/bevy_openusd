@@ -222,7 +222,7 @@ pub(crate) fn resolve_material(
     world: &mut World,
 ) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>)>> {
     let profiling = world.contains_resource::<MaterialResolveTimings>();
-    let started = profiling.then(std::time::Instant::now);
+    let started = profiling.then(bevy::platform::time::Instant::now);
     let binding = read_material_binding(ctx.stage, ctx.path);
     if let Some(started) = started {
         let mut timing = world.resource_mut::<MaterialResolveTimings>();
@@ -242,7 +242,7 @@ pub(crate) fn resolve_material(
         if profiling { world.resource_mut::<MaterialResolveTimings>().cache_hits += 1; }
         return Ok(Some(resolved));
     }
-    let started = profiling.then(std::time::Instant::now);
+    let started = profiling.then(bevy::platform::time::Instant::now);
     let cached = world.get_non_send_mut::<ProjectionMaterialReads>()
         .filter(|memo| memo.stage.ptr_eq(ctx.stage)).and_then(|mut memo| memo.get(&binding, ctx.time));
     let read_cached = cached.is_some();
@@ -256,7 +256,7 @@ pub(crate) fn resolve_material(
     let read = read?;
     if !read_cached && let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterialReads>()
         && memo.stage.ptr_eq(ctx.stage) { memo.insert(&binding, ctx.time, &read); }
-    let started = profiling.then(std::time::Instant::now);
+    let started = profiling.then(bevy::platform::time::Instant::now);
     let assets = world.get_resource::<AssetServer>().cloned();
     let textures = world.get_resource::<crate::asset::SnapshotTextures>();
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
@@ -311,7 +311,7 @@ pub(crate) fn resolve_material(
         }
     }
     if let Some(started) = started { world.resource_mut::<MaterialResolveTimings>().preparing += started.elapsed(); }
-    let started = profiling.then(std::time::Instant::now);
+    let started = profiling.then(bevy::platform::time::Instant::now);
     let handle = super::cache::intern_material(world, material);
     if let Some(started) = started { world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed(); }
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()

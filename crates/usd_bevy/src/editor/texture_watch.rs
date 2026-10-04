@@ -5,7 +5,8 @@ use bevy::{
     asset::io::{AssetSourceEvent, file::FileWatcher},
     prelude::*,
 };
-use std::{collections::BTreeSet, path::PathBuf, time::{Duration, Instant}};
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use bevy::platform::time::Instant;
 
 /// Watches requested external textures and queues document-preserving refreshes.
 /// Requires EditorPlugin. Package entries and USD layers are not watched.
@@ -345,14 +346,14 @@ def Material "Mat" {
     }
 
     fn tick_until(app: &mut App, condition: impl Fn(&World) -> bool) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = bevy::platform::time::Instant::now() + Duration::from_secs(10);
         loop {
             app.update();
             if condition(app.world()) {
                 return;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                bevy::platform::time::Instant::now() < deadline,
                 "editor watch timed out"
             );
             std::thread::sleep(Duration::from_millis(2));
@@ -541,8 +542,8 @@ def Material "Mat" {
             .unwrap()
             .last_changed();
         std::fs::write(directory.path().join("unrelated.txt"), "unrelated change").unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while std::time::Instant::now() < deadline {
+        let deadline = bevy::platform::time::Instant::now() + Duration::from_secs(1);
+        while bevy::platform::time::Instant::now() < deadline {
             app.update();
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -602,8 +603,8 @@ def Material "Mat" {
             .unwrap()
             .last_changed();
         std::fs::remove_file(&file).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while std::time::Instant::now() < deadline {
+        let deadline = bevy::platform::time::Instant::now() + Duration::from_secs(1);
+        while bevy::platform::time::Instant::now() < deadline {
             app.update();
             std::thread::sleep(Duration::from_millis(2));
         }

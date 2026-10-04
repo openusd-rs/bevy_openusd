@@ -137,7 +137,7 @@ fn prepare(world: &mut World, stage: &openusd::usd::Stage, registry: &SchemaRegi
         pending.pop_front();
         let path = map.path(entity).unwrap();
         world.resource_mut::<PreparationTurn>().active = Some(entity);
-        let started = std::time::Instant::now();
+        let started = bevy::platform::time::Instant::now();
         if let Ok(path) = openusd::sdf::path(path) { registry.project_prim(stage, &path, world, entity); }
         let elapsed = started.elapsed();
         let mut turn = world.resource_mut::<PreparationTurn>();

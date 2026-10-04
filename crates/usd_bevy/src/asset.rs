@@ -72,10 +72,58 @@ pub struct UsdSceneTimings {
 
 fn timed<T>(enabled: bool, elapsed: &mut std::time::Duration, operation: impl FnOnce() -> T) -> T {
     if !enabled { return operation(); }
-    let start = std::time::Instant::now();
+    let start = bevy::platform::time::Instant::now();
     let result = operation();
     *elapsed += start.elapsed();
     result
+}
+
+impl UsdScene {
+    /// A scene from a self-contained source, with its textures decoded into
+    /// `images`. Fails naming the first gap when a layer or texture is missing.
+    pub fn from_source(source: UsdSource, images: &mut Assets<Image>) -> std::io::Result<Self> {
+        let (stage, missing) = source.probe_stage();
+        if let Some(identifier) = missing.into_iter().next() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("missing USD dependency: {identifier}"),
+            ));
+        }
+        let stage = stage.map_err(std::io::Error::other)?;
+        let textures = decode_textures(&source, &stage, |_, image| images.add(image))?;
+        Ok(Self { source, textures })
+    }
+}
+
+/// Decodes every texture the stage requests from the source's bytes.
+fn decode_textures(
+    source: &UsdSource,
+    stage: &openusd::usd::Stage,
+    mut add: impl FnMut(usize, Image) -> Handle<Image>,
+) -> std::io::Result<bevy::platform::collections::HashMap<(String, bool), Handle<Image>>> {
+    let mut textures = bevy::platform::collections::HashMap::default();
+    let requests = source.texture_requests(stage, true).map_err(std::io::Error::other)?;
+    for (index, (path, srgb)) in requests.iter().cloned().enumerate() {
+        let bytes = source.read_asset(&path)?;
+        let inner = openusd::ar::split_package_relative_path_inner(&path)
+            .map(|(_, inner)| inner)
+            .unwrap_or_else(|| path.clone());
+        let extension = Path::new(&inner)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .ok_or_else(|| std::io::Error::other(format!("texture has no extension: {path}")))?;
+        let image = Image::from_buffer(
+            &bytes,
+            bevy::image::ImageType::Extension(extension),
+            bevy::image::CompressedImageFormats::NONE,
+            srgb,
+            bevy::image::ImageSampler::default(),
+            bevy::asset::RenderAssetUsages::default(),
+        )
+        .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
+        textures.insert((path, srgb), add(index, image));
+    }
+    Ok(textures)
 }
 
 /// Reads a source snapshot and its discovered dependencies through Bevy.
@@ -95,9 +143,9 @@ impl AssetLoader for UsdAssetLoader {
     ) -> Result<UsdScene, std::io::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let root = std::env::current_dir()?.join("__bevy_usd_assets__");
+        let root = crate::source::absolute(Path::new("__bevy_usd_assets__"))?;
         let path = load_context.path().path().to_path_buf();
-        if path.is_absolute() {
+        if crate::source::rooted(&path) {
             return Err(std::io::Error::other(
                 "USD asset paths must be source-relative",
             ));
@@ -114,34 +162,9 @@ impl AssetLoader for UsdAssetLoader {
                 let (result, missing) = source.probe_stage();
                 if missing.is_empty() {
                     let stage = result.map_err(std::io::Error::other)?;
-                    let mut textures = bevy::platform::collections::HashMap::default();
-                    for (index, (path, srgb)) in source.texture_requests(&stage, true)
-                        .map_err(std::io::Error::other)?
-                        .iter().cloned()
-                        .enumerate()
-                    {
-                        let bytes = source.read_asset(&path)?;
-                        let inner = openusd::ar::split_package_relative_path_inner(&path)
-                            .map(|(_, inner)| inner)
-                            .unwrap_or_else(|| path.clone());
-                        let extension = Path::new(&inner)
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            .ok_or_else(|| {
-                                std::io::Error::other(format!("texture has no extension: {path}"))
-                            })?;
-                        let image = Image::from_buffer(
-                            &bytes,
-                            bevy::image::ImageType::Extension(extension),
-                            bevy::image::CompressedImageFormats::NONE,
-                            srgb,
-                            bevy::image::ImageSampler::default(),
-                            bevy::asset::RenderAssetUsages::default(),
-                        )
-                        .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
-                        let handle = load_context.add_labeled_asset(format!("texture_{index}"), image);
-                        textures.insert((path, srgb), handle);
-                    }
+                    let textures = decode_textures(&source, &stage, |index, image| {
+                        load_context.add_labeled_asset(format!("texture_{index}"), image)
+                    })?;
                     return Ok(UsdScene { source, textures });
                 }
                 missing
@@ -535,7 +558,7 @@ fn continue_projections(world: &mut World, instances: &mut UsdInstances, budget:
         let start = roots.partition_point(|root| *root <= previous);
         if start < roots.len() { roots.rotate_left(start); }
     }
-    let started = std::time::Instant::now();
+    let started = bevy::platform::time::Instant::now();
     for (index, root) in roots.into_iter().enumerate() {
         let remaining = budget.saturating_sub(started.elapsed());
         if index != 0 && remaining.is_zero() { break; }
@@ -550,7 +573,7 @@ fn continue_projections(world: &mut World, instances: &mut UsdInstances, budget:
         let previous_textures = world.remove_resource::<SnapshotTextures>();
         world.insert_resource(StageTime { current });
         world.insert_resource(runtime.textures.clone());
-        let profiled = world.contains_resource::<UsdSceneTimings>().then(std::time::Instant::now);
+        let profiled = world.contains_resource::<UsdSceneTimings>().then(bevy::platform::time::Instant::now);
         let done = job.step(world, &runtime.live.stage, &mut runtime.map, remaining);
         if let Some(started) = profiled {
             world.resource_mut::<UsdSceneTimings>().projection += started.elapsed();
@@ -1302,13 +1325,13 @@ def Xform "Model" (
 
     #[track_caller]
     fn tick_until(app: &mut App, condition: impl Fn(&World) -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = bevy::platform::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             app.update();
             if condition(app.world()) {
                 return;
             }
-            if std::time::Instant::now() >= deadline {
+            if bevy::platform::time::Instant::now() >= deadline {
                 let world = app.world_mut();
                 let mut query = world.query::<(Entity, &UsdSceneRoot, Option<&UsdSceneState>, Option<&UsdSceneInstance>)>();
                 let states = query.iter(world).map(|(entity, root, state, instance)| {
@@ -1905,6 +1928,30 @@ def Material "Mat" {
     }
 }
 "#;
+
+    #[test]
+    fn memory_sources_report_gaps_and_decode_textures_without_disk() {
+        let root = "models/textured.usda";
+        let partial = UsdSource::from_memory(root, [(root, TEXTURED.as_bytes().to_vec())]).unwrap();
+        assert_eq!(partial.missing_dependencies(), ["textures/pixel.png"]);
+        let mut images = Assets::<Image>::default();
+        let error = UsdScene::from_source(partial, &mut images).unwrap_err();
+        assert!(error.to_string().contains("textures/pixel.png"), "{error}");
+
+        let files = [(root, TEXTURED.as_bytes().to_vec()), ("textures/pixel.png", pixel_png([255, 0, 0, 255]))];
+        let source = UsdSource::from_memory(root, files).unwrap();
+        assert!(source.missing_dependencies().is_empty());
+        let scene = UsdScene::from_source(source, &mut images).unwrap();
+        assert_eq!(scene.textures.len(), 2);
+        for handle in scene.textures.values() {
+            assert_eq!(images.get(handle).unwrap().data.as_deref().unwrap(), &[255, 0, 0, 255]);
+        }
+
+        let layer = b"#usda 1.0\n".as_slice();
+        assert!(UsdSource::from_memory("../escape.usda", [("../escape.usda", layer)]).is_err());
+        assert!(UsdSource::from_memory("/abs.usda", [("/abs.usda", layer)]).is_err());
+        assert!(UsdSource::from_memory("absent.usda", [("other.usda", layer)]).is_err());
+    }
 
     #[test]
     fn sampled_texture_color_spaces_follow_independent_clocks() {

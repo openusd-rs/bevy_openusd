@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/usd_bevy", "crates/usd_macro"]
+members = ["crates/usd_bevy", "crates/usd_macro", "examples/web"]
 exclude = ["xtra", "vendor/openusd", "vendor/bevy_asset", "vendor/bevy_pbr"]
 
 [profile.dev.package.openusd]

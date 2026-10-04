@@ -75,13 +75,13 @@ fn directory_identity(path: &Path) -> Option<(u64, u64)> {
 #[cfg(unix)]
 fn rearming_events(root: PathBuf, input: async_channel::Sender<AssetSourceEvent>, events: async_channel::Receiver<AssetSourceEvent>,
     output: async_channel::Sender<AssetSourceEvent>, requested: Arc<RequestedPaths>, mut watcher: Option<FileWatcher>, mut identity: Option<(u64, u64)>) {
-    let mut next_check = std::time::Instant::now();
+    let mut next_check = bevy::platform::time::Instant::now();
     let invalidate_all = || {
         let paths = requested.0.lock().unwrap_or_else(|error| error.into_inner()).clone();
         paths.into_iter().all(|path| output.try_send(AssetSourceEvent::ModifiedAsset(path)).is_ok())
     };
     while !events.is_closed() && !output.is_closed() {
-        let now = std::time::Instant::now();
+        let now = bevy::platform::time::Instant::now();
         if now >= next_check {
             next_check = now + Duration::from_secs(1);
             if watcher.is_some() && directory_identity(&root) != identity {

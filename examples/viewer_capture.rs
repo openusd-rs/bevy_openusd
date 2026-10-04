@@ -287,6 +287,7 @@ fn main() -> AppExit {
         .disable::<bevy::winit::WinitPlugin>())
         .add_plugins((ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 60.0)),
             UsdPlugin, UsdAssetPlugin, environment::ViewerEnvironmentPlugin))
+        .insert_resource(usd_bevy::UsdProjectionBudget(Duration::MAX))
         .add_systems(Startup, setup)
         .add_systems(Update, (select_authored_camera, reverse_capture_clocks).chain())
         .add_systems(PostUpdate, configure_shadow_maps)
@@ -295,6 +296,9 @@ fn main() -> AppExit {
         app.add_plugins(usd_bevy::route::dome_environment::UsdDomeEnvironmentPlugin)
             .add_systems(Update, select_dome);
     }
+    if std::env::var_os("USD_PROFILE_SOURCES").is_some() { app.init_resource::<usd_bevy::asset::UsdSceneTimings>(); }
+    if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() { app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>(); }
+    if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() { app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>(); }
     if timing_enabled { app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin); }
     app.sub_app_mut(bevy::render::RenderApp).insert_resource(progress)
         .add_systems(bevy::render::Render, pipeline_progress.after(bevy::render::RenderSystems::Render));
@@ -359,12 +363,22 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, server: Res<
 
 fn fit_capture_grid(
     capture: Res<Capture>,
+    states: Query<&usd_bevy::asset::UsdSceneState, With<CaptureInstance>>,
+    mut fitted: Local<Option<Vec<u64>>>,
     meshes: Query<(&Mesh3d, Option<&bevy::camera::primitives::Aabb>, &GlobalTransform, &InheritedVisibility,
         Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&bevy::mesh::morph::MeshMorphWeights>)>,
     mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
     mut grids: Query<(&mut Transform, &mut bevy::dev_tools::infinite_grid::InfiniteGridSettings), With<environment::ViewerGrid>>,
 ) {
     if capture.requested { return; }
+    if states.iter().count() != capture.instance_times.len()
+        || states.iter().any(|state| !matches!(state, usd_bevy::asset::UsdSceneState::Ready)) {
+        *fitted = None;
+        return;
+    }
+    let clocks: Vec<_> = capture.instance_times.iter().map(|time| time.to_bits()).collect();
+    if capture.ready_frames == 0 { return; }
+    if fitted.as_ref() == Some(&clocks) { return; }
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
     for (mesh, bounds, transform, visibility, skin, morph) in &meshes {
@@ -379,6 +393,7 @@ fn fit_capture_grid(
             settings.scale = scale;
             settings.fadeout_distance = fade;
         }
+        *fitted = Some(clocks);
     }
 }
 
@@ -399,7 +414,7 @@ fn select_authored_camera(mut capture: ResMut<Capture>,
 }
 
 fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
-    timing: (Res<bevy::diagnostic::DiagnosticsStore>, ResMut<gpu_timing::GpuTiming>, Res<PipelineProgress>),
+    timing: (Res<bevy::diagnostic::DiagnosticsStore>, ResMut<gpu_timing::GpuTiming>, Res<PipelineProgress>, Res<Assets<Mesh>>, Query<(&Mesh3d, &InheritedVisibility)>),
     states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
     meshes: Query<(Entity, &InheritedVisibility, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>, Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>, Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>), With<Mesh3d>>,
     camera: Query<(&RenderTarget, &GlobalTransform, &Camera), With<CaptureCamera>>,
@@ -413,7 +428,7 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     instancer_errors: Query<(&usd_bevy::UsdPrimRef, &usd_bevy::route::instancer::UsdInstancerWarning)>,
     geometry_errors: Query<(&usd_bevy::UsdPrimRef, Option<&usd_bevy::route::shapes::UsdShapeError>, Option<&usd_bevy::route::curves::UsdCurveError>, Option<&usd_bevy::route::xform::UsdTransformError>)>,
     mut exit: MessageWriter<AppExit>) {
-    let (diagnostics, mut timing, progress) = timing;
+    let (diagnostics, mut timing, progress, mesh_assets, mesh_references) = timing;
     if capture.started.elapsed() > capture.timeout {
         eprintln!("capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}", capture.camera_path, capture.camera_ready, progress.0.lock().unwrap());
         exit.write(AppExit::error());
@@ -490,6 +505,8 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     let flat_unique: std::collections::HashSet<_> = flat_handles.iter().copied().collect();
     capture.mesh_report = format!("hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n");
     capture.mesh_report.push_str(&timing.report());
+    capture.mesh_report.push_str(&capture_metadata::mesh_residency_report(&mesh_assets,
+        mesh_references.iter().map(|(mesh, visibility)| (mesh.0.id(), visibility.get()))));
     capture.mesh_report.push_str(&capture_metadata::camera_report(camera_transform, camera.clip_from_view()));
     capture.mesh_report.push_str(&format!("hierarchy_visible_flat_material_entities={}\nhierarchy_visible_unique_flat_materials={}\n", flat_handles.len(), flat_unique.len()));
     capture.mesh_report.push_str(&format!("studio_baseline_lux={:?}\n", studio_lights.iter().map(|light| light.0).collect::<Vec<_>>()));
@@ -511,7 +528,20 @@ fn capture_frame(mut commands: Commands, mut capture: ResMut<Capture>,
     capture.mesh_report.push_str(shadows);
     capture.requested = true;
     commands.spawn(Screenshot(target.clone())).observe(
-        |event: On<ScreenshotCaptured>, capture: Res<Capture>, mut exit: MessageWriter<AppExit>| {
+        |event: On<ScreenshotCaptured>, capture: Res<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>,
+         visibility: Option<Res<usd_bevy::route::ProjectionVisibilityTimings>>, mut exit: MessageWriter<AppExit>| {
+            if let Some(timings) = visibility {
+                for ((route, hidden), row) in &timings.0 {
+                    let hierarchy = match hidden { Some(true) => "hidden", Some(false) => "visible", None => "unknown" };
+                    eprintln!("route_visibility_profile phase=capture route={route} hierarchy={hierarchy} matches={} apply_ms={:.3}",
+                        row.matches, row.application.as_secs_f64()*1000.0);
+                }
+            }
+            if let Some(timings) = timings {
+                eprintln!("capture_source_profile attempts={} failures={} validation_reuses={} open_ms={:.3} validation_ms={:.3} projection_ms={:.3}",
+                    timings.attempts, timings.failures, timings.validation_reuses, timings.open.as_secs_f64()*1000.0,
+                    timings.validation.as_secs_f64()*1000.0, timings.projection.as_secs_f64()*1000.0);
+            }
             match save(&event.image, &capture) {
                 Ok(()) => { println!("CAPTURE_OK {output}", output = capture.output.display()); exit.write(AppExit::Success); }
                 Err(error) => { eprintln!("CAPTURE_FAILED {error}"); exit.write(AppExit::error()); }
@@ -609,6 +639,38 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn grid_fit_waits_for_scene_and_repeats_only_for_new_clocks_or_loading() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>();
+        let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();
+        capture.ready_frames = 1;
+        app.insert_resource(capture);
+        app.add_systems(Update, fit_capture_grid);
+        let root = app.world_mut().spawn((CaptureInstance(0), usd_bevy::asset::UsdSceneState::Loading)).id();
+        let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(Mesh::from(Cuboid::default()));
+        let mesh = app.world_mut().spawn((Mesh3d(handle), GlobalTransform::from_translation(Vec3::Y * 5.0), InheritedVisibility::VISIBLE)).id();
+        let grid = app.world_mut().spawn((environment::ViewerGrid, Transform::default(), bevy::dev_tools::infinite_grid::InfiniteGridSettings::default())).id();
+        app.update();
+        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, 0.0);
+        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Ready);
+        app.update();
+        let first = app.world().get::<Transform>(grid).unwrap().translation.y;
+        assert_ne!(first, 0.0);
+        app.world_mut().entity_mut(mesh).insert(GlobalTransform::from_translation(Vec3::Y * 10.0));
+        app.update();
+        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
+        app.world_mut().resource_mut::<Capture>().instance_times[0] = 1.0;
+        app.update();
+        assert_ne!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
+        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Loading);
+        app.update();
+        app.world_mut().entity_mut(mesh).insert(GlobalTransform::from_translation(Vec3::Y * 5.0));
+        app.world_mut().entity_mut(root).insert(usd_bevy::asset::UsdSceneState::Ready);
+        app.update();
+        assert_eq!(app.world().get::<Transform>(grid).unwrap().translation.y, first);
+    }
+
     #[test]
     fn instance_spacing_is_finite_positive_and_atomic() {
         let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();

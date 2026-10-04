@@ -13,6 +13,7 @@ mod lighting;
 mod inspector;
 mod capture;
 mod capture_metadata;
+mod perf_render;
 mod framing;
 mod timeline;
 mod ui_replay;
@@ -22,6 +23,9 @@ mod render_settings;
 mod file_dialog;
 mod close_confirmation;
 mod host_capture;
+mod camera_plan;
+mod capture_tools;
+mod control;
 mod toolbar_icons;
 mod payload_editor;
 
@@ -47,6 +51,7 @@ use usd_bevy::editor::{EditorBridge, EditorCommand, EditorPlugin, SaveMode};
 const LOG_FILE: &str = "/tmp/usdview.log";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if control::run_cli()? { return Ok(()); }
     curve_quality::from_env()?;
     capture::CaptureConfig::from_env()?;
     host_capture::from_env()?;
@@ -184,6 +189,9 @@ struct UsdApp {
     capture_handshake: bool,
     close_confirmation: close_confirmation::CloseConfirmation,
     host_capture: Option<host_capture::Capture>,
+    camera_plan: camera_plan::CameraPlan,
+    capture_tools: capture_tools::CaptureTools,
+    _control: Option<control::Server>,
 }
 
 impl WindowApp for UsdApp {
@@ -205,6 +213,14 @@ impl WindowApp for UsdApp {
         let rendering_bridge = rendering.clone();
         let framing = framing::FrameRequest::default();
         let framing_bridge = framing.clone();
+        let camera_plan = camera_plan::CameraPlan::default();
+        let camera_plan_bridge = camera_plan.clone();
+        let capture_tools = capture_tools::CaptureTools::default();
+        let capture_bridge = capture_tools.bridge.clone();
+        let control = match control::Server::start(capture_tools.clone(), ctx.__internal_egui_ctx().clone()) {
+            Ok(server) => Some(server),
+            Err(error) => { error!("Viewer control API unavailable: {error}"); None }
+        };
         let bevy_view = mara_bevy::MaraBevyViewport::with_render_state_and_content(
             ctx.__internal_render_state(),
             move |app: &mut App| {
@@ -212,6 +228,8 @@ impl WindowApp for UsdApp {
                 app.insert_resource(framing_bridge.clone());
                 lighting::configure(app, lighting_bridge.clone());
                 render_settings::configure(app, rendering_bridge.clone());
+                camera_plan::configure(app, camera_plan_bridge.clone());
+                capture_tools::configure(app, capture_bridge.clone());
             },
         );
 
@@ -233,6 +251,9 @@ impl WindowApp for UsdApp {
             capture_handshake,
             close_confirmation,
             host_capture: host_capture::from_env().expect("invalid host capture configuration"),
+            camera_plan,
+            capture_tools,
+            _control: control,
         }
     }
 
@@ -249,6 +270,8 @@ impl WindowApp for UsdApp {
             framing,
             file_dialogs,
             capture_handshake,
+            camera_plan,
+            capture_tools,
             ..
         } = self;
         if let Some(command) = file_dialogs.poll() { send(editor, command); }
@@ -268,7 +291,7 @@ impl WindowApp for UsdApp {
         // Panes + ribbon rail. Mara owns the pane/ribbon wiring,
         // open-state, pane-id publication, and paint ordering.
         let view = match editor.view() { Ok(view) => view, Err(error) => { error!("{error}"); return; } };
-        bevy_view.set_continuous_rendering(view.timeline.playing);
+        bevy_view.set_continuous_rendering(view.timeline.playing || camera_plan.playing() || capture_tools.busy());
         let renderer_error = rendering.renderer_error();
         let prims: Vec<_> = view.document.prims.iter().map(|path| PrimRow {
             path: path.clone(), name: path.rsplit('/').next().unwrap_or(path).to_string(),
@@ -332,13 +355,13 @@ impl WindowApp for UsdApp {
                 || click.action == ribbon_action(ACTION_FLATTEN) {
                 let mode = if click.action == ribbon_action(ACTION_SAVE_LAYER) { SaveMode::EditLayer }
                     else if click.action == ribbon_action(ACTION_FLATTEN) { SaveMode::Flattened } else { SaveMode::RootLayer };
-                file_dialogs.start(file_dialog::Request::save(mode, &view.document));
+                file_dialogs.start(file_dialog::Request::save(mode, &view.document), &view.document.root_layer);
             } else if click.action == ribbon_action(ACTION_UNDO) {
                 send(editor, EditorCommand::Undo);
             } else if click.action == ribbon_action(ACTION_REDO) {
                 send(editor, EditorCommand::Redo);
             } else if click.action == ribbon_action(ACTION_OPEN) {
-                file_dialogs.start(file_dialog::Request::open(&view.document));
+                file_dialogs.start(file_dialog::Request::open(&view.document), &view.document.root_layer);
             } else if click.action == ribbon_action(ACTION_REFRESH_TEXTURES) {
                 send(editor, EditorCommand::RefreshTextures);
             }
@@ -348,6 +371,7 @@ impl WindowApp for UsdApp {
             *capture_handshake = false;
         }
         if let Some(capture) = &mut self.host_capture { capture.update(host.__internal_egui()); }
+        self.capture_tools.update(host.__internal_egui());
     }
 }
 
@@ -398,6 +422,7 @@ fn outliner_pane(
     accent: MaraColor32,
     visibility: &std::collections::HashMap<String, bool>,
 ) {
+    let status = if status.trim().is_empty() { "Idle" } else { status };
     let lines = lighting::status_lines(status);
     let status_pod = Pod::new(MaraId::new(("usd.outliner", "status")));
     let status_pod = if lines.len() > 1 {
@@ -588,6 +613,7 @@ fn configure_usd_app(app: &mut App, editor: EditorBridge) {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
     capture::configure(app);
+    perf_render::configure(app);
     if let Ok(levels) = std::env::var("USD_SUBDIVISION_LEVELS") {
         app.insert_resource(usd_bevy::route::subdivision::UsdSubdivisionSettings::new(
             levels.parse().expect("USD_SUBDIVISION_LEVELS must be an integer")).expect("invalid subdivision levels"));

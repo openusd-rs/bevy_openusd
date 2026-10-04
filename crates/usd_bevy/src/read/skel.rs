@@ -28,7 +28,7 @@ pub fn is_skinned(stage: &Stage, prim: &Path) -> bool {
 fn influences_are_time_varying(stage: &Stage, path: &Path) -> bool {
     stage.prim(path.clone()).is_ok_and(|prim| {
         ["primvars:skel:jointIndices", "primvars:skel:jointWeights"].iter().any(|name|
-            prim.attribute(*name).time_sample_times().is_ok_and(|times| !times.is_empty()))
+            prim.attribute(*name).num_time_samples().is_ok_and(|count| count != 0))
     })
 }
 
@@ -78,6 +78,10 @@ pub struct MorphSample {
 /// Expands sparse shapes and inbetweens into reusable linear morph channels.
 pub fn morph_sample(stage: &Stage, path: &Path, time: Option<f64>) -> anyhow::Result<MorphSample> {
     let mesh = super::geom::read_mesh_at(stage, path, time)?.ok_or_else(|| anyhow::anyhow!("missing morph mesh"))?;
+    morph_sample_with_mesh(stage, path, time, &mesh)
+}
+
+pub(crate) fn morph_sample_with_mesh(stage: &Stage, path: &Path, time: Option<f64>, mesh: &super::geom::ReadMesh) -> anyhow::Result<MorphSample> {
     let binding = binding_of(stage, path).ok_or_else(|| anyhow::anyhow!("missing morph binding"))?;
     let skeleton = binding.skeleton.clone().ok_or_else(|| anyhow::anyhow!("missing morph skeleton"))?;
     let animation = animation_source(stage, &skeleton, &binding).ok_or_else(|| anyhow::anyhow!("missing morph animation"))?;
@@ -191,8 +195,8 @@ fn dense_morph_offsets(offsets: &[gf::Vec3f], indices: &[i32], count: usize) -> 
     Ok(dense)
 }
 
+#[cfg(test)]
 pub(crate) fn skin_normals(stage: &Stage, path: &Path, time: Option<f64>, normals: &mut super::geom::MeshPrimvar<[f32; 3]>, source_points: &[usize], point_count: usize) -> anyhow::Result<()> {
-    use bevy::math::{Mat4, Vec3};
     let binding = binding_of(stage, path).ok_or_else(|| anyhow::anyhow!("missing normal skin binding"))?;
     let skeleton_path = binding.skeleton.clone().ok_or_else(|| anyhow::anyhow!("missing normal skeleton"))?;
     let skeleton = Skeleton::get(stage, skeleton_path.clone())?.ok_or_else(|| anyhow::anyhow!("invalid normal skeleton"))?;
@@ -201,34 +205,55 @@ pub(crate) fn skin_normals(stage: &Stage, path: &Path, time: Option<f64>, normal
     let resolver = SkeletonResolver::from_skeleton(&skeleton)?;
     let locals = sample_joint_locals(stage, &skeleton_path, &binding, &joints, &resolver, time)?;
     let transforms = resolver.compute_skinning_transforms_from_local(&locals, gf::Matrix4d::IDENTITY);
-    let transforms: Vec<_> = skin.remap_skinning_xforms(&transforms).iter().map(|matrix|
-        Mat4::from_cols_array(&(skin.geom_bind_transform() * *matrix).0.map(|value| value as f32))).collect();
+    let transforms = skin.remap_skinning_xforms(&transforms);
     let (indices, weights) = sampled_influences(stage, path, time)?;
-    let stride = skin.num_influences_per_component();
-    let count = if skin.is_rigidly_deformed() { 1 } else { point_count };
-    anyhow::ensure!(source_points.len() == normals.values.len() && source_points.iter().all(|point| *point < point_count), "invalid normal point map");
-    anyhow::ensure!(count.checked_mul(stride) == Some(indices.len()) && indices.len() == weights.len(), "invalid normal influence count");
-    anyhow::ensure!(indices.iter().all(|index| *index >= 0 && (*index as usize) < transforms.len())
-        && weights.iter().all(|weight| weight.is_finite() && *weight >= 0.0), "invalid normal influences");
-    let mut normal_palette = vec![None; transforms.len()];
-    for (&point, normal) in source_points.iter().zip(&mut normals.values) {
-        let start = if skin.is_rigidly_deformed() { 0 } else { point * stride };
-        let normal_matrix = if skin.is_rigidly_deformed() {
-            let matrix = (start..start+stride).fold(Mat4::ZERO, |matrix, slot|
-                matrix + transforms[indices[slot] as usize] * weights[slot]);
-            normal_skin_matrix(matrix)?
-        } else {
-            let mut result = bevy::math::Mat3::ZERO;
-            for slot in start..start+stride {
-                if weights[slot] != 0.0 { result += cached_normal_skin_matrix(&transforms, &mut normal_palette, indices[slot] as usize)? * weights[slot]; }
-            }
-            result
-        };
-        let result = (normal_matrix * Vec3::from(*normal)).try_normalize()
-            .ok_or_else(|| anyhow::anyhow!("invalid skinned normal"))?;
-        *normal = result.to_array();
+    SkinNormalSample { skin, transforms, indices, weights }.apply(normals, source_points, point_count)
+}
+
+pub(crate) struct SkinNormalSample {
+    skin: SkinningResolver,
+    transforms: Vec<gf::Matrix4d>,
+    indices: Vec<i32>,
+    weights: Vec<f32>,
+}
+
+impl SkinNormalSample {
+    pub(crate) fn apply(&self, normals: &mut super::geom::MeshPrimvar<[f32; 3]>, source_points: &[usize], point_count: usize) -> anyhow::Result<()> {
+        use bevy::math::{Mat4, Vec3};
+        let Self { skin, transforms, indices, weights } = self;
+        let transforms: Vec<_> = transforms.iter().map(|matrix|
+            Mat4::from_cols_array(&(skin.geom_bind_transform() * *matrix).0.map(|value| value as f32))).collect();
+        let stride = skin.num_influences_per_component();
+        let count = if skin.is_rigidly_deformed() { 1 } else { point_count };
+        anyhow::ensure!(source_points.len() == normals.values.len() && source_points.iter().all(|point| *point < point_count), "invalid normal point map");
+        anyhow::ensure!(count.checked_mul(stride) == Some(indices.len()) && indices.len() == weights.len(), "invalid normal influence count");
+        anyhow::ensure!(indices.iter().all(|index| *index >= 0 && (*index as usize) < transforms.len())
+            && weights.iter().all(|weight| weight.is_finite() && *weight >= 0.0), "invalid normal influences");
+        let mut normal_palette = vec![None; transforms.len()];
+        let mut rigid_normal = None;
+        for (&point, normal) in source_points.iter().zip(&mut normals.values) {
+            let start = if skin.is_rigidly_deformed() { 0 } else { point * stride };
+            let normal_matrix = if skin.is_rigidly_deformed() {
+                if let Some(matrix) = rigid_normal { matrix } else {
+                    let matrix = (start..start+stride).fold(Mat4::ZERO, |matrix, slot|
+                        matrix + transforms[indices[slot] as usize] * weights[slot]);
+                    let matrix = normal_skin_matrix(matrix)?;
+                    rigid_normal = Some(matrix);
+                    matrix
+                }
+            } else {
+                let mut result = bevy::math::Mat3::ZERO;
+                for slot in start..start+stride {
+                    if weights[slot] != 0.0 { result += cached_normal_skin_matrix(&transforms, &mut normal_palette, indices[slot] as usize)? * weights[slot]; }
+                }
+                result
+            };
+            let result = (normal_matrix * Vec3::from(*normal)).try_normalize()
+                .ok_or_else(|| anyhow::anyhow!("invalid skinned normal"))?;
+            *normal = result.to_array();
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn normal_skin_matrix(matrix: bevy::math::Mat4) -> anyhow::Result<bevy::math::Mat3> {
@@ -254,7 +279,7 @@ fn cached_normal_skin_matrix(matrices: &[bevy::math::Mat4], cache: &mut [Option<
 /// Weights come from the bound `SkelAnimation`, mapped to the mesh's blend
 /// shapes *by name* (the animation's `blendShapes` order need not match the
 /// mesh's). Inbetween shapes are resolved via [`resolve_blend_shape_offsets`].
-fn blend_shape_deform(
+pub(crate) fn blend_shape_deform(
     stage: &Stage,
     mesh_path: &Path,
     rest: &[[f32; 3]],
@@ -450,6 +475,23 @@ pub fn skinned_points_at(
     mesh_path: &Path,
     time: Option<f64>,
 ) -> anyhow::Result<Option<Vec<[f32; 3]>>> {
+    skinned_points_with_mesh(stage, mesh_path, time, None)
+}
+
+pub(crate) fn skinned_points_with_mesh(
+    stage: &Stage, mesh_path: &Path, time: Option<f64>, mesh: Option<&super::geom::ReadMesh>,
+) -> anyhow::Result<Option<Vec<[f32; 3]>>> {
+    Ok(cpu_skin_sample(stage, mesh_path, time, mesh)?.map(|sample| sample.points))
+}
+
+pub(crate) struct CpuSkinSample {
+    pub points: Vec<[f32; 3]>,
+    pub normals: SkinNormalSample,
+}
+
+pub(crate) fn cpu_skin_sample(
+    stage: &Stage, mesh_path: &Path, time: Option<f64>, mesh: Option<&super::geom::ReadMesh>,
+) -> anyhow::Result<Option<CpuSkinSample>> {
     let Some(binding) = binding_of(stage, mesh_path) else {
         return Ok(None);
     };
@@ -486,15 +528,23 @@ pub fn skinned_points_at(
     let skel_xforms =
         resolver.compute_skinning_transforms_from_local(&locals, gf::Matrix4d::IDENTITY);
 
-    let Some(mesh) = super::geom::read_mesh_at(stage, mesh_path, time)? else {
-        return Ok(None);
+    let decoded;
+    let mesh = match mesh {
+        Some(mesh) => mesh,
+        None => {
+            decoded = super::geom::read_mesh_at(stage, mesh_path, time)?;
+            let Some(mesh) = decoded.as_ref() else { return Ok(None) };
+            mesh
+        }
     };
     // Canonical UsdSkel order: morph blend shapes first, then skin the result.
-    let rest = blend_shape_deform(stage, mesh_path, &mesh.points, time).unwrap_or(mesh.points);
+    let morphed = blend_shape_deform(stage, mesh_path, &mesh.points, time);
+    let rest = morphed.as_deref().unwrap_or(&mesh.points);
     let pts: Vec<gf::Vec3f> = rest.iter().map(|p| gf::Vec3f::from(*p)).collect();
     let components = if skinning.is_rigidly_deformed() { 1 } else { pts.len() };
     let expected = components.checked_mul(skinning.num_influences_per_component());
-    let joint_count = skinning.remap_skinning_xforms(&skel_xforms).len();
+    let transforms = skinning.remap_skinning_xforms(&skel_xforms);
+    let joint_count = transforms.len();
     if expected != Some(indices.len()) || indices.len() != weights.len()
         || indices.iter().any(|&i| i < 0 || i as usize >= joint_count)
         || weights.iter().any(|weight| !weight.is_finite() || *weight < 0.0)
@@ -502,7 +552,6 @@ pub fn skinned_points_at(
         log::warn!("usd_bevy::skel: {}: invalid influences; showing un-skinned mesh", mesh_path.as_str());
         return Ok(None);
     }
-    let transforms = skinning.remap_skinning_xforms(&skel_xforms);
     let deformed = if skinning.is_rigidly_deformed() {
         let transform = openusd_schemas::skel::skinning::rigid_skinning_transform(&indices, &weights,
             skinning.num_influences_per_component(), skinning.geom_bind_transform(), &transforms);
@@ -511,7 +560,10 @@ pub fn skinned_points_at(
         openusd_schemas::skel::skinning::skin_points_lbs(&pts, &indices, &weights,
             skinning.num_influences_per_component(), skinning.geom_bind_transform(), &transforms)
     };
-    Ok(Some(deformed.into_iter().map(|v| [v.x, v.y, v.z]).collect()))
+    Ok(Some(CpuSkinSample {
+        points: deformed.into_iter().map(|v| [v.x, v.y, v.z]).collect(),
+        normals: SkinNormalSample { skin: skinning, transforms, indices, weights },
+    }))
 }
 
 /// Four-lane influences and mesh-local matrices for Bevy GPU skinning.
@@ -523,6 +575,13 @@ pub struct GpuSkinSample {
 }
 
 pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> anyhow::Result<GpuSkinSample> {
+    let mesh = super::geom::read_mesh_at(stage, mesh_path, time)?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
+    gpu_skin_sample_with_mesh(stage, mesh_path, time, &mesh)
+}
+
+pub(crate) fn gpu_skin_sample_with_mesh(
+    stage: &Stage, mesh_path: &Path, time: Option<f64>, mesh: &super::geom::ReadMesh,
+) -> anyhow::Result<GpuSkinSample> {
     let binding = binding_of(stage, mesh_path).ok_or_else(|| anyhow::anyhow!("missing skin binding"))?;
     let skeleton_path = binding.skeleton.clone().ok_or_else(|| anyhow::anyhow!("missing skeleton"))?;
     let skeleton = Skeleton::get(stage, skeleton_path.clone())?.ok_or_else(|| anyhow::anyhow!("invalid skeleton"))?;
@@ -541,7 +600,6 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
     }).collect();
     anyhow::ensure!(!matrices.is_empty() && matrices.len() <= 256, "GPU joint palette must contain 1–256 joints");
     anyhow::ensure!(matrices.iter().all(|matrix| matrix.is_finite()), "nonfinite skinning matrix");
-    let mesh = super::geom::read_mesh_at(stage, mesh_path, time)?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     let (indices, weights) = sampled_influences(stage, mesh_path, time)?;
     let components = if skin.is_rigidly_deformed() { 1 } else { mesh.points.len() };
     anyhow::ensure!(components.checked_mul(stride) == Some(indices.len()) && indices.len() == weights.len(), "invalid influence count");
@@ -551,10 +609,18 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
     let mut packed_weights = Vec::with_capacity(mesh.points.len());
     let mut normal_corrections = Vec::with_capacity(mesh.points.len());
     let mut normal_palette = vec![None; matrices.len()];
+    let flat = crate::mesh::uses_flat_normals(mesh);
+    let mut previous: Option<(&[i32], &[f32], bevy::math::Mat3)> = None;
     for (indices, weights) in indices.chunks_exact(stride).zip(weights.chunks_exact(stride)) {
         anyhow::ensure!((weights.iter().sum::<f32>() - 1.0).abs() <= 1e-5, "GPU skinning requires normalized weights");
         let mut correction = bevy::math::Mat3::IDENTITY;
-        if !crate::mesh::uses_flat_normals(&mesh) {
+        let repeated = if flat { None } else {
+            previous.filter(|(old_indices, old_weights, _)| *old_indices == indices
+                && old_weights.iter().zip(weights).all(|(a, b)| a.to_bits() == b.to_bits()))
+        };
+        if let Some((_, _, cached)) = repeated {
+            correction = cached;
+        } else if !flat {
             let blended = indices.iter().zip(weights).fold(bevy::math::Mat4::ZERO,
                 |matrix, (&index, &weight)| matrix + matrices[index as usize] * weight);
             normal_skin_matrix(blended)?;
@@ -567,6 +633,7 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
                 anyhow::ensure!(correction.is_finite(), "nonfinite normal correction");
             }
         }
+        previous = Some((indices, weights, correction));
         normal_corrections.push(correction);
         let mut packed_i = [0; 4];
         let mut packed_w = [0.0; 4];
@@ -584,6 +651,65 @@ pub fn gpu_skin_sample(stage: &Stage, mesh_path: &Path, time: Option<f64>) -> an
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repeated_gpu_influences_match_uncached_normal_corrections() {
+        use bevy::math::{Mat3, Mat4};
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/skel_morph_blended_animated.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        for weights in [[0.5; 8], [1.0,0.0,1.0,0.0,0.25,0.75,0.25,0.75],
+            [1.0,0.0,0.25,0.75,1.0,0.0,0.25,0.75]] {
+            stage.attribute("/Test/Face.primvars:skel:jointWeights").unwrap()
+                .set(openusd::sdf::Value::FloatVec(weights.to_vec())).unwrap();
+            for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+                let sample = gpu_skin_sample(&stage, &path, Some(time)).unwrap();
+                for point in 0..sample.indices.len() {
+                    let mut blended = Mat4::ZERO;
+                    let mut native = Mat3::ZERO;
+                    for slot in 0..2 {
+                        let matrix = sample.matrices[sample.indices[point][slot] as usize];
+                        let weight = sample.weights[point][slot];
+                        blended += matrix * weight;
+                        if weight != 0.0 { native += normal_skin_matrix(matrix).unwrap() * weight; }
+                    }
+                    let expected = Mat3::from_mat4(blended).transpose() * native;
+                    assert_eq!(sample.normal_corrections[point], expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_geometry_deformation_matches_standalone_readers() {
+        for (file, prim) in [("skel_influences.usda", "/Test/Bar"),
+            ("skel_constant_influences.usda", "/Test/Bar"),
+            ("skel_morph_blended_animated.usda", "/Test/Face")] {
+            let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets").join(file);
+            let stage = crate::UsdSource::new(file.to_str().unwrap(), std::fs::read(&file).unwrap()).unwrap().open_stage().unwrap();
+            let path = openusd::sdf::path(prim).unwrap();
+            for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
+                let read = super::super::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
+                assert_eq!(super::skinned_points_with_mesh(&stage, &path, Some(time), Some(&read)).unwrap(),
+                    super::skinned_points_at(&stage, &path, Some(time)).unwrap());
+                let sample = super::cpu_skin_sample(&stage, &path, Some(time), Some(&read)).unwrap().unwrap();
+                let mut normals = super::super::geom::MeshPrimvar { values: vec![[0.0, 1.0, 0.0]; read.points.len()],
+                    indices: Vec::new(), interpolation: super::super::geom::Interpolation::Vertex };
+                let mut expected = normals.clone();
+                let mapping: Vec<_> = (0..read.points.len()).collect();
+                sample.normals.apply(&mut normals, &mapping, read.points.len()).unwrap();
+                super::skin_normals(&stage, &path, Some(time), &mut expected, &mapping, read.points.len()).unwrap();
+                assert_eq!(normals.values, expected.values);
+                if super::has_blend_shapes(&stage, &path) {
+                    let borrowed = super::morph_sample_with_mesh(&stage, &path, Some(time), &read).unwrap();
+                    let standalone = super::morph_sample(&stage, &path, Some(time)).unwrap();
+                    assert_eq!(borrowed.targets, standalone.targets);
+                    assert_eq!(borrowed.normal_targets, standalone.normal_targets);
+                    assert_eq!(borrowed.weights, standalone.weights);
+                }
+            }
+        }
+    }
+
     #[test]
     fn normal_palette_is_lazy_and_sample_local() {
         use bevy::math::{Mat3, Mat4, Vec3};

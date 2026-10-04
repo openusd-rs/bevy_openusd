@@ -32,14 +32,14 @@ pub(crate) fn set_weights(world: &mut World, entity: Entity, weights: Vec<f32>) 
 }
 
 pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyhow::Result<()> {
-    let read = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)?.ok_or_else(|| anyhow::anyhow!("missing morph mesh"))?;
-    let mut mesh = crate::mesh::assemble_mesh(&read, None, false);
-    let weights = prepare(ctx, &read, &mut mesh, true)?;
+    let read = ctx.read_mesh()?.ok_or_else(|| anyhow::anyhow!("missing morph mesh"))?;
+    let mut mesh = crate::mesh::assemble_mesh(read, None, false);
+    let weights = prepare(ctx, read, &mut mesh, true)?;
     let handle = super::cache::intern_mesh(world, mesh);
     set_weights(world, entity, weights);
     world.entity_mut(entity).insert(Mesh3d(handle))
         .remove::<super::gpu_skin::UsdCpuSkinFallback>();
-    if crate::mesh::uses_flat_normals(&read) { super::flat_material::attach(world, entity); }
+    if crate::mesh::uses_flat_normals(read) { super::flat_material::attach(world, entity); }
     else { super::flat_material::clear(world, entity); }
     Ok(())
 }
@@ -48,7 +48,7 @@ pub(crate) fn prepare(ctx: &RouteCtx, read: &crate::read::geom::ReadMesh, mesh: 
     let authored = read.normals.is_some();
     anyhow::ensure!(crate::mesh::uses_flat_normals(&read) || authored,
         "GPU morph normal mode is unsupported");
-    let sample = crate::read::skel::morph_sample(ctx.stage, ctx.path, ctx.time)?;
+    let sample = crate::read::skel::morph_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
     anyhow::ensure!(!sample.targets.is_empty() && sample.targets.len() <= MAX_MORPH_WEIGHTS, "unsupported morph target count");
     let mapping = crate::mesh::vertex_point_indices(&read);
     anyhow::ensure!(!mapping.is_empty() && mapping.len() == mesh.count_vertices(), "invalid morph vertex mapping");

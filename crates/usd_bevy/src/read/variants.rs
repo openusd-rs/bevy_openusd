@@ -21,6 +21,15 @@ pub fn variant_set_names(stage: &Stage, prim: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The variants `set` offers on `prim`, strongest site first.
+pub fn variant_options(stage: &Stage, prim: &Path, set: &str) -> Vec<String> {
+    stage
+        .prim(prim.clone())
+        .ok()
+        .and_then(|prim| prim.variant_sets().variant_names(set).ok())
+        .unwrap_or_default()
+}
+
 /// The current selection for `set` on `prim`, if any.
 pub fn variant_selection(stage: &Stage, prim: &Path, set: &str) -> Option<String> {
     variant_selections(stage, prim)
@@ -28,4 +37,38 @@ pub fn variant_selection(stage: &Stage, prim: &Path, set: &str) -> Option<String
         .into_iter()
         .find(|(s, _)| s == set)
         .map(|(_, sel)| sel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VARIANTS: &str = r#"#usda 1.0
+def Xform "Tractor" (
+    variants = { string wheels = "wide" }
+    prepend variantSets = "wheels"
+)
+{
+    variantSet "wheels" = {
+        "narrow" { }
+        "wide" { }
+    }
+}
+"#;
+
+    #[test]
+    fn variant_options_list_every_authored_variant() {
+        let stage = crate::UsdSource::new("variants.usda", VARIANTS.as_bytes())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let prim = openusd::sdf::path("/Tractor").unwrap();
+        assert_eq!(variant_set_names(&stage, &prim), vec!["wheels".to_string()]);
+        assert_eq!(variant_selection(&stage, &prim, "wheels").as_deref(), Some("wide"));
+        assert_eq!(
+            variant_options(&stage, &prim, "wheels"),
+            vec!["narrow".to_string(), "wide".to_string()]
+        );
+        assert!(variant_options(&stage, &prim, "colour").is_empty());
+    }
 }

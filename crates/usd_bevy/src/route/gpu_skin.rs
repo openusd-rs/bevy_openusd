@@ -13,6 +13,13 @@ pub struct UsdGpuSkin {
     pub joints: Vec<Entity>,
 }
 
+#[derive(Resource, Default)]
+pub struct GpuSkinUpdateTiming {
+    pub updates: usize,
+    pub joints: usize,
+    pub elapsed: std::time::Duration,
+}
+
 #[derive(Component, Debug)]
 pub struct UsdCpuSkinFallback(pub String);
 
@@ -33,13 +40,27 @@ impl Plugin for UsdGpuSkinningPlugin {
     }
 }
 
-fn update_joint_globals(world: &mut World) {
-    let updates: Vec<_> = world.query::<(&GlobalTransform, &UsdGpuSkin)>().iter(world)
+fn update_joint_globals(
+    mut queries: ParamSet<(
+        Query<(&GlobalTransform, &UsdGpuSkin), Or<(Changed<GlobalTransform>, Changed<UsdGpuSkin>)>>,
+        Query<&mut GlobalTransform>,
+    )>,
+    timing: Option<ResMut<GpuSkinUpdateTiming>>,
+) {
+    let started = timing.as_ref().map(|_| std::time::Instant::now());
+    let updates: Vec<_> = queries.p0().iter()
         .flat_map(|(transform, skin)| skin.joints.iter().zip(&skin.matrices)
             .map(move |(&joint, matrix)| (joint, GlobalTransform::from(transform.to_matrix() * *matrix))))
         .collect();
+    let count = updates.len();
+    let mut globals = queries.p1();
     for (joint, transform) in updates {
-        if let Some(mut global) = world.get_mut::<GlobalTransform>(joint) { *global = transform; }
+        if let Ok(mut global) = globals.get_mut(joint) { global.set_if_neq(transform); }
+    }
+    if let (Some(started), Some(mut timing)) = (started, timing) {
+        timing.updates += 1;
+        timing.joints += count;
+        timing.elapsed += started.elapsed();
     }
 }
 
@@ -53,17 +74,18 @@ pub(crate) fn clear(world: &mut World, entity: Entity) {
     world.entity_mut(entity).remove::<SkinnedMesh>();
 }
 
-pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyhow::Result<()> {
-    let read = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
+pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity, has_morphs: bool) -> anyhow::Result<()> {
+    let read = ctx.read_mesh()?.ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
-    let sample = crate::read::skel::gpu_skin_sample(ctx.stage, ctx.path, ctx.time)?;
+    let sample = crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
     let skinned_tangents = read.uvs.is_some() && sample.normal_corrections.iter().any(|matrix| *matrix != Mat3::IDENTITY);
-    let has_morphs = crate::read::skel::has_blend_shapes(ctx.stage, ctx.path);
-    let mut mesh = crate::mesh::assemble_mesh(&read, None, !skinned_tangents && !has_morphs);
+    let mut mesh = if !skinned_tangents && !has_morphs {
+        super::cache::assemble_cached_mesh(world, read)
+    } else { crate::mesh::assemble_mesh(read, None, false) };
     let morph_weights = if has_morphs {
-        Some(super::gpu_morph::prepare(ctx, &read, &mut mesh, !skinned_tangents)?)
+        Some(super::gpu_morph::prepare(ctx, read, &mut mesh, !skinned_tangents)?)
     } else { None };
-    let source_points = crate::mesh::vertex_point_indices(&read);
+    let source_points = crate::mesh::vertex_point_indices(read);
     anyhow::ensure!(source_points.len() == mesh.count_vertices(), "skin vertex map does not match render mesh");
     correct_normals(&mut mesh, &source_points, &sample.normal_corrections, morph_weights.as_deref().unwrap_or(&[]))?;
     if skinned_tangents {
@@ -92,7 +114,7 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     if let Some(weights) = morph_weights { super::gpu_morph::set_weights(world, entity, weights); }
     world.entity_mut(entity).insert(Mesh3d(handle))
         .remove::<UsdCpuSkinFallback>();
-    if crate::mesh::uses_flat_normals(&read) { super::flat_material::attach(world, entity); }
+    if crate::mesh::uses_flat_normals(read) { super::flat_material::attach(world, entity); }
     else { super::flat_material::clear(world, entity); }
     Ok(())
 }
@@ -149,6 +171,29 @@ fn correct_tangents(ctx: &RouteCtx, mesh: &mut Mesh, mapping: &[usize], skin: &c
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joint_globals_only_resample_changed_placement_or_pose() {
+        let mut app = App::new();
+        app.init_resource::<GpuSkinUpdateTiming>().add_systems(Update, update_joint_globals);
+        let joint = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+        let mesh = app.world_mut().spawn((GlobalTransform::from_translation(Vec3::X),
+            UsdGpuSkin { joints: vec![joint], matrices: vec![Mat4::from_translation(Vec3::Y)] })).id();
+        app.update();
+        assert_eq!(app.world().get::<GlobalTransform>(joint).unwrap().translation(), Vec3::X + Vec3::Y);
+        assert_eq!(app.world().resource::<GpuSkinUpdateTiming>().joints, 1);
+        app.update();
+        assert_eq!(app.world().resource::<GpuSkinUpdateTiming>().joints, 1);
+        app.world_mut().entity_mut(mesh).insert(GlobalTransform::from_translation(Vec3::Z));
+        app.update();
+        assert_eq!(app.world().get::<GlobalTransform>(joint).unwrap().translation(), Vec3::Z + Vec3::Y);
+        app.world_mut().get_mut::<UsdGpuSkin>(mesh).unwrap().matrices[0] = Mat4::IDENTITY;
+        app.update();
+        assert_eq!(app.world().get::<GlobalTransform>(joint).unwrap().translation(), Vec3::Z);
+        assert_eq!(app.world().resource::<GpuSkinUpdateTiming>().joints, 3);
+        app.update();
+        assert_eq!(app.world().resource::<GpuSkinUpdateTiming>().joints, 3);
+    }
 
     #[test]
     fn corrected_normals_validate_the_active_morph_result() {
@@ -280,7 +325,7 @@ mod tests {
             let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time)).unwrap().unwrap();
             assert!((read.points[0][0] - rest[0][0] - time as f32 / 15.0).abs() < 1e-6);
             let cpu = crate::read::skel::skinned_points_at(&stage, &path, Some(time)).unwrap().unwrap();
-            attach(&RouteCtx::at(&stage, &path, Some(time)), &mut world, entity).unwrap();
+            attach(&RouteCtx::at(&stage, &path, Some(time)), &mut world, entity, crate::read::skel::has_blend_shapes(&stage, &path)).unwrap();
             let skin = world.get::<UsdGpuSkin>(entity).unwrap();
             let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
             let bevy::mesh::VertexAttributeValues::Float32x3(points) = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() else { panic!("positions") };
@@ -309,6 +354,44 @@ mod tests {
     }
 
     #[test]
+    fn cached_skin_tangents_match_direct_generation_after_uv_edits() {
+        use openusd::sdf::Value;
+        let stage = stage();
+        let path = openusd::sdf::path("/Test/Bar").unwrap();
+        let corners = crate::read::geom::read_mesh(&stage, &path).unwrap().unwrap().face_vertex_indices.len();
+        let uv = stage.create_attribute("/Test/Bar.primvars:st", "texCoord2f[]").unwrap()
+            .set_metadata("interpolation", Value::Token("faceVarying".into())).unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<SkinnedMeshInverseBindposes>>();
+        let entity = world.spawn_empty().id();
+        let mut previous = Vec::new();
+        for rotated in [false, true] {
+            let values = (0..corners).map(|corner| {
+                let [u, v] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][corner % 4];
+                if rotated { [v, 1.0 - u].into() } else { [u, v].into() }
+            }).collect();
+            uv.clone().set(Value::Vec2fVec(values)).unwrap();
+            let read = crate::read::geom::read_mesh_at(&stage, &path, Some(0.0)).unwrap().unwrap();
+            let direct = crate::mesh::assemble_mesh(&read, None, true);
+            let expected = direct.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().get_bytes().to_vec();
+            if rotated { assert_ne!(expected, previous); }
+            let mut retained = 0;
+            for warm in [false, true] {
+                attach(&RouteCtx::at(&stage, &path, Some(0.0)), &mut world, entity, crate::read::skel::has_blend_shapes(&stage, &path)).unwrap();
+                let handle = &world.get::<Mesh3d>(entity).unwrap().0;
+                let mesh = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+                assert_eq!(mesh.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().get_bytes(), expected);
+                let bytes = world.resource::<super::super::cache::MeshTangentCache>().retained_payload_bytes();
+                assert!(bytes > 0);
+                if warm { assert_eq!(bytes, retained); }
+                retained = bytes;
+            }
+            previous = expected;
+        }
+    }
+
+    #[test]
     fn seam_vertices_keep_their_point_influences() {
         use openusd::sdf::Value;
         let stage = stage();
@@ -325,7 +408,7 @@ mod tests {
         world.insert_resource(Assets::<Mesh>::default());
         world.insert_resource(Assets::<SkinnedMeshInverseBindposes>::default());
         let entity = world.spawn_empty().id();
-        attach(&RouteCtx::at(&stage, &path, Some(30.0)), &mut world, entity).unwrap();
+        attach(&RouteCtx::at(&stage, &path, Some(30.0)), &mut world, entity, crate::read::skel::has_blend_shapes(&stage, &path)).unwrap();
         let skin = world.get::<UsdGpuSkin>(entity).unwrap();
         let mesh = world.resource::<Assets<Mesh>>().get(&world.get::<Mesh3d>(entity).unwrap().0).unwrap();
         let mapping = crate::mesh::vertex_point_indices(&read);
@@ -406,7 +489,8 @@ mod tests {
         assert_eq!(world.get::<UsdGpuSkin>(entity).unwrap().joints, joints);
         let placement = Mat4::from_translation(Vec3::new(10.0, 2.0, 3.0));
         world.entity_mut(entity).insert(GlobalTransform::from(placement));
-        update_joint_globals(&mut world);
+        use bevy::ecs::system::RunSystemOnce;
+        world.run_system_once(update_joint_globals).unwrap();
         let skin = world.get::<UsdGpuSkin>(entity).unwrap();
         for (&joint, matrix) in joints.iter().zip(&skin.matrices) {
             assert!(world.get::<GlobalTransform>(joint).unwrap().to_matrix().abs_diff_eq(placement * *matrix, 1e-5));

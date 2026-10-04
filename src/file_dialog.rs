@@ -44,6 +44,10 @@ impl Request {
 
 type Selection = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
 
+fn layer_dir(root_layer: &str) -> Option<PathBuf> {
+    std::fs::canonicalize(root_layer).ok()?.parent().map(Path::to_path_buf)
+}
+
 async fn select_open<C, P, F>(has_document: bool, confirmation: C, picker: P) -> Option<PathBuf>
 where
     C: Future<Output = bool>,
@@ -66,16 +70,21 @@ pub struct FileDialogs {
     context: egui::Context,
     waker: Waker,
     status: Option<String>,
+    last_dir: Option<PathBuf>,
 }
 
 impl FileDialogs {
     pub fn new(ctx: &egui::Context) -> Self {
-        Self { pending: None, confirmation: None, context: ctx.clone(), waker: Waker::from(Arc::new(Repaint(ctx.clone()))), status: None }
+        Self { pending: None, confirmation: None, context: ctx.clone(), waker: Waker::from(Arc::new(Repaint(ctx.clone()))), status: None, last_dir: None }
     }
 
-    pub fn start(&mut self, request: Request) {
+    /// Opens in the last picked folder, else next to `root_layer`.
+    pub fn start(&mut self, request: Request, root_layer: &str) {
         if self.pending.is_some() { return; }
-        let dialog = rfd::AsyncFileDialog::new();
+        let mut dialog = rfd::AsyncFileDialog::new();
+        if let Some(dir) = self.last_dir.clone().or_else(|| layer_dir(root_layer)) {
+            dialog = dialog.set_directory(dir);
+        }
         let future: Selection = match &request {
             Request::Open { document_id, .. } => {
                 let answer = Arc::new(std::sync::Mutex::new(None));
@@ -128,6 +137,9 @@ impl FileDialogs {
         let Poll::Ready(path) = future.as_mut().poll(&mut Context::from_waker(&self.waker)) else { return None };
         let (request, _) = self.pending.take().unwrap();
         self.status = None;
+        if let Some(dir) = path.as_deref().and_then(Path::parent).filter(|dir| !dir.as_os_str().is_empty()) {
+            self.last_dir = Some(dir.to_path_buf());
+        }
         match path.map(|path| request.command(path)) {
             Some(Ok(command)) => Some(command),
             Some(Err(error)) => { self.status = Some(error); None }
@@ -147,8 +159,8 @@ mod tests {
         let context = egui::Context::default();
         let mut dialogs = FileDialogs::new(&context);
         for revision in [7, 8] {
-            dialogs.start(Request::Open { document_id: 42, revision });
-            dialogs.start(Request::Open { document_id: 99, revision: 1 });
+            dialogs.start(Request::Open { document_id: 42, revision }, "");
+            dialogs.start(Request::Open { document_id: 99, revision: 1 }, "");
             assert!(matches!(dialogs.pending.as_ref().unwrap().0, Request::Open { document_id: 42, revision: value } if value == revision));
             let _ = context.run_ui(egui::RawInput::default(), |_| {
                 assert!(dialogs.poll().is_none());
@@ -252,6 +264,25 @@ mod tests {
         assert_eq!(counter.0.load(Ordering::SeqCst), 2);
         assert!(matches!(dialogs.poll(), Some(EditorCommand::OpenChecked { filename, document_id: 0, revision: 0 }) if filename == "delayed.usda"));
         assert!(dialogs.poll().is_none());
+    }
+
+    #[test]
+    fn selection_remembers_its_folder_and_root_layer_is_the_fallback() {
+        let root = std::env::temp_dir().join(format!("usdview-dialog-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let layer = root.join("scene.usda");
+        std::fs::write(&layer, "#usda 1.0\n").unwrap();
+        assert_eq!(layer_dir(layer.to_str().unwrap()), Some(std::fs::canonicalize(&root).unwrap()));
+        assert_eq!(layer_dir("anon:0x1234:root.usda"), None);
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let mut dialogs = FileDialogs::new(&egui::Context::default());
+        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(PathBuf::from("/scenes/robots/arm.usda")) }));
+        assert!(dialogs.poll().is_some());
+        assert_eq!(dialogs.last_dir.as_deref(), Some(Path::new("/scenes/robots")));
+        dialogs.begin(Request::open(&EditorSnapshot::default()), Box::pin(async { Some(PathBuf::from("bare.usda")) }));
+        assert!(dialogs.poll().is_some());
+        assert_eq!(dialogs.last_dir.as_deref(), Some(Path::new("/scenes/robots")));
     }
 
     #[test]

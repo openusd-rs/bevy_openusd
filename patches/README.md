@@ -5,6 +5,66 @@ uses that repository-local copy for all three OpenUSD packages. The Git revision
 declarations record its upstream baseline; Cargo.lock records path packages.
 See `vendor/openusd/VENDORED.md` for provenance and removal instructions.
 
+## Shared source snapshots
+
+`openusd-shared-asset-bytes.patch` adds an optional immutable byte snapshot to
+`ar::Asset` and a shared-byte decode method to `FileFormat`. Existing assets
+default to ordinary reads and existing formats default to a copy. USDC retains
+the shared buffer with normal validation; `.usd` dispatch selects by content.
+The Bevy source resolver exposes its immutable snapshots through this seam.
+Filesystem assets still copy their bytes instead of lazily observing disk edits.
+
+## Traversal ancestry queries
+
+`openusd-shared-path-text.patch` stores private `SdfPath` text in `Arc<String>`.
+Clones share immutable text; derived paths allocate their own text. Equality,
+ordering, hashing, validation and string serialization retain value semantics.
+This is not a global interner or a composition-result cache. Owned-string
+construction retains the String buffer in shared immutable storage.
+
+`openusd-traversal-parent-status.patch` carries a population-epoch witness for
+default-matching parents during `DEFAULT_PROXIES` traversal. Under unchanged
+population and empty load rules, children resolve only their local active and
+specifier opinions. Pending changes are settled before checking the witness;
+lazy-load retries recheck it inside the query. Other predicates, load rules and
+invalidated witnesses use the full query path. Bevy compares against an uncached
+walk across visitor edits, masks, classes, references and payload-rule changes.
+
+`openusd-property-classification.patch` classifies a prim's properties within
+one mask-gated cache query. It retains live authored spec-type lookup and
+schema fallback for unauthored composed properties. No classification result
+is cached across calls. Bevy checks schema-only attributes, relationships,
+population masks and property edits inherited by instances.
+
+`openusd-specifier-status.patch` computes defined and abstract state in one
+ancestor-specifier walk when both bits are requested. Individual-bit queries
+keep their existing paths. The combined walk stops only when both answers are
+settled and retains no state across queries. The Bevy ancestry regression also
+compares combined status with individual queries before and after edits.
+
+`openusd-abstract-ancestry.patch` resolves abstract ancestry through one
+mask-gated composition-cache query, matching the existing defined-state query
+structure. It preserves composed specifier resolution and holds no result cache
+across edits. Bevy checks it against individual ancestor field queries for
+classes, undefined/missing prims, instance proxies, population masks and live
+class-to-def edits.
+
+`openusd-traversal-active.patch` reuses the active result when a prim-status
+query also requests loaded state. Load-rule and payload checks are unchanged;
+loaded-only queries still evaluate active state themselves. Nothing is cached
+across prims, callbacks or stage edits. The Bevy regression compares loaded-only
+and active-plus-loaded traversals with direct queries after activation and
+payload load-rule changes.
+
+## Prepared stage roots
+
+`openusd-prepared-roots.patch` passes parsed root and session-root data from
+expression-variable inspection into initial layer-stack collection. The data
+is consumed by that open operation; the registry retains no cross-open cache.
+Canonical identifiers and resolved paths travel with each parsed layer.
+Bevy's counted-resolver regression covers root/session reads, variable
+precedence, muted sessions, fresh reopen and independent stage edits.
+
 ## Empty prim-index paths
 
 `openusd-empty-index.patch` leaves the empty path uncached in `ensure_index`.

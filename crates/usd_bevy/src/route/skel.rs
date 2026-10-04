@@ -10,7 +10,7 @@
 use bevy::prelude::*;
 
 use super::{PrimRoute, RouteCtx};
-use crate::read::skel::{blend_shaped_points_at, has_blend_shapes, is_skinned, skinned_points_at};
+use crate::read::skel::{has_blend_shapes, is_skinned};
 
 /// Replaces a skinned / blend-shaped mesh's geometry with its deformed points.
 pub struct SkinRoute;
@@ -23,20 +23,27 @@ pub struct UsdDeformationError(pub String);
 pub(crate) struct CpuSubsetGeometry(pub crate::read::geom::ReadMesh);
 
 pub(crate) fn deformed_mesh(ctx: &RouteCtx) -> anyhow::Result<Option<crate::read::geom::ReadMesh>> {
-    let points = if is_skinned(ctx.stage, ctx.path) {
-        skinned_points_at(ctx.stage, ctx.path, ctx.time)?
+    deformed_mesh_with_kinds(ctx, is_skinned(ctx.stage, ctx.path), has_blend_shapes(ctx.stage, ctx.path))
+}
+
+fn deformed_mesh_with_kinds(ctx: &RouteCtx, skinned: bool, blended: bool) -> anyhow::Result<Option<crate::read::geom::ReadMesh>> {
+    let Some(source) = ctx.read_mesh()? else { return Ok(None) };
+    let sample = if skinned {
+        crate::read::skel::cpu_skin_sample(ctx.stage, ctx.path, ctx.time, Some(source))?
+            .map(|sample| (sample.points, Some(sample.normals)))
     } else {
-        blend_shaped_points_at(ctx.stage, ctx.path, ctx.time)?
+        crate::read::skel::blend_shape_deform(ctx.stage, ctx.path, &source.points, ctx.time)
+            .map(|points| (points, None))
     };
-    let Some(points) = points else { return Ok(None) };
-    let Some(mut read) = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)? else { return Ok(None) };
+    let Some((points, skin_normals)) = sample else { return Ok(None) };
+    let mut read = source.clone();
     read.triangulation_points = Some(std::mem::replace(&mut read.points, points));
     read.normals = if read.normals.is_some() {
-        let sample = if has_blend_shapes(ctx.stage, ctx.path) {
-            crate::read::skel::morph_sample(ctx.stage, ctx.path, ctx.time)?
+        let sample = if blended {
+            crate::read::skel::morph_sample_with_mesh(ctx.stage, ctx.path, ctx.time, source)?
         } else { crate::read::skel::MorphSample { targets: Vec::new(), normal_targets: Vec::new(), weights: Vec::new() } };
         let (mut normals, points) = crate::read::skel::morph_normals(&read, &sample)?;
-        if is_skinned(ctx.stage, ctx.path) { crate::read::skel::skin_normals(ctx.stage, ctx.path, ctx.time, &mut normals, &points, read.points.len())?; }
+        if let Some(skin) = skin_normals { skin.apply(&mut normals, &points, read.points.len())?; }
         Some(normals)
     } else { None };
     Ok(Some(read))
@@ -105,7 +112,9 @@ impl PrimRoute for SkinRoute {
             return;
         }
         if super::subdivision::enabled(ctx, world) { return; }
-        if !is_skinned(ctx.stage, ctx.path) && !has_blend_shapes(ctx.stage, ctx.path) {
+        let skinned = is_skinned(ctx.stage, ctx.path);
+        let blended = has_blend_shapes(ctx.stage, ctx.path);
+        if !skinned && !blended {
             super::gpu_morph::clear(world, entity);
             if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
                 super::gpu_skin::clear(world, entity);
@@ -114,12 +123,12 @@ impl PrimRoute for SkinRoute {
             return;
         }
         if world.contains_resource::<super::gpu_skin::GpuSkinningEnabled>() {
-            let result = if !is_skinned(ctx.stage, ctx.path) && has_blend_shapes(ctx.stage, ctx.path) {
+            let result = if !skinned && blended {
                 if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() { super::gpu_skin::clear(world, entity); }
                 super::gpu_morph::attach(ctx, world, entity)
             } else {
-                if !has_blend_shapes(ctx.stage, ctx.path) { super::gpu_morph::clear(world, entity); }
-                super::gpu_skin::attach(ctx, world, entity)
+                if !blended { super::gpu_morph::clear(world, entity); }
+                super::gpu_skin::attach(ctx, world, entity, blended)
             };
             match result {
                 Ok(()) => return,
@@ -132,7 +141,7 @@ impl PrimRoute for SkinRoute {
             super::gpu_skin::clear(world, entity);
         }
         super::gpu_morph::clear(world, entity);
-        let read = match deformed_mesh(ctx) {
+        let read = match deformed_mesh_with_kinds(ctx, skinned, blended) {
             Ok(Some(read)) => read,
             result => {
                 let error = result.err().map_or_else(|| "deformation produced no mesh".into(), |error| error.to_string());

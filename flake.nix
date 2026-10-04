@@ -32,22 +32,32 @@
           };
         };
 
-        nvidiaVersion = let v = builtins.getEnv "NVIDIA_VERSION";
-        in if v != "" then v
-           else throw "bevy_mara: NVIDIA_VERSION is unset — is direnv loaded and is the NVIDIA driver running?";
+        nvidiaVersion = builtins.getEnv "NVIDIA_VERSION";
+        hasNvidia = nvidiaVersion != "";
 
-        nixglPkgs = import "${nixgl}/default.nix" {
-          inherit pkgs nvidiaVersion;
+        nixglPkgs = import "${nixgl}/default.nix" ({
+          inherit pkgs;
+        } // pkgs.lib.optionalAttrs hasNvidia {
+          inherit nvidiaVersion;
           nvidiaHash = null;
-        };
+        });
+
+        nixGLTarget =
+          if hasNvidia
+          then "${nixglPkgs.nixGLNvidia}/bin/nixGLNvidia-${nvidiaVersion}"
+          else "${nixglPkgs.nixGLIntel}/bin/nixGLIntel";
+        nixVulkanTarget =
+          if hasNvidia
+          then "${nixglPkgs.nixVulkanNvidia}/bin/nixVulkanNvidia-${nvidiaVersion}"
+          else "${nixglPkgs.nixVulkanIntel}/bin/nixVulkanIntel";
 
         nixGLAlias = pkgs.runCommand "nixGL" { } ''
           mkdir -p $out/bin
-          ln -s ${nixglPkgs.nixGLNvidia}/bin/nixGLNvidia-${nvidiaVersion} $out/bin/nixGL
+          ln -s ${nixGLTarget} $out/bin/nixGL
         '';
         nixVulkanAlias = pkgs.runCommand "nixVulkan" { } ''
           mkdir -p $out/bin
-          ln -s ${nixglPkgs.nixVulkanNvidia}/bin/nixVulkanNvidia-${nvidiaVersion} $out/bin/nixVulkan
+          ln -s ${nixVulkanTarget} $out/bin/nixVulkan
         '';
 
         bevyLibs = with pkgs; [
@@ -79,10 +89,11 @@
 
             nixGLAlias
             nixVulkanAlias
-            nixglPkgs.nixGLNvidia
-            nixglPkgs.nixVulkanNvidia
             nixglPkgs.nixGLIntel
             nixglPkgs.nixVulkanIntel
+          ] ++ pkgs.lib.optionals hasNvidia [
+            nixglPkgs.nixGLNvidia
+            nixglPkgs.nixVulkanNvidia
           ] ++ bevyLibs;
 
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";

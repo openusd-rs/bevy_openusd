@@ -118,7 +118,7 @@ mod tests {
             Quat::from_rotation_y(0.7), Vec3::new(4.0,-2.0,8.0));
         for time in [0.0,15.0,30.0,45.0,60.0] {
             let ctx = crate::route::RouteCtx::at(&stage, &path, Some(time));
-            crate::route::gpu_skin::attach(&ctx, &mut world, entity).unwrap();
+            crate::route::gpu_skin::attach(&ctx, &mut world, entity, crate::read::skel::has_blend_shapes(ctx.stage, ctx.path)).unwrap();
             let handle = world.get::<Mesh3d>(entity).unwrap();
             let mesh = world.resource::<Assets<Mesh>>().get(&handle.0).unwrap();
             let skin = world.get::<crate::route::gpu_skin::UsdGpuSkin>(entity).unwrap();

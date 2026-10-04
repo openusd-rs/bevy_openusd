@@ -1,0 +1,33 @@
+diff --git a/crates/openusd/src/usd/prim.rs b/crates/openusd/src/usd/prim.rs
+index 81244d0..92b61c2 100644
+--- a/crates/openusd/src/usd/prim.rs
++++ b/crates/openusd/src/usd/prim.rs
+@@ -694,7 +694,11 @@ impl Prim {
+     /// or above it (per the stage's runtime load rules) is excluded. Mirrors
+     /// C++ `UsdPrim::IsLoaded`.
+     pub fn is_loaded(&self) -> Result<bool> {
+-        if !self.is_active()? {
++        self.is_loaded_with_active(self.is_active()?)
++    }
++
++    pub(crate) fn is_loaded_with_active(&self, active: bool) -> Result<bool> {
++        if !active {
+             return Ok(false);
+         }
+         // No rule anywhere means every path resolves loaded (`LoadRules`'
+diff --git a/crates/openusd/src/usd/stage.rs b/crates/openusd/src/usd/stage.rs
+index 4b4e6bd..7c93a4f 100644
+--- a/crates/openusd/src/usd/stage.rs
++++ b/crates/openusd/src/usd/stage.rs
+@@ -2986,7 +2986,10 @@ impl Stage {
+             status.set(PrimStatus::ACTIVE, prim.is_active()?);
+         }
+         if mask.contains(PrimStatus::LOADED) {
+-            status.set(PrimStatus::LOADED, prim.is_loaded()?);
++            let loaded = if mask.contains(PrimStatus::ACTIVE) {
++                prim.is_loaded_with_active(status.contains(PrimStatus::ACTIVE))?
++            } else { prim.is_loaded()? };
++            status.set(PrimStatus::LOADED, loaded);
+         }
+         if mask.contains(PrimStatus::DEFINED) {
+             status.set(PrimStatus::DEFINED, prim.is_defined()?);

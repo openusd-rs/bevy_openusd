@@ -39,9 +39,13 @@ pub(crate) fn warn_geometry_inputs(mesh: &Mesh, material: &StandardMaterial, war
     }
 }
 
+fn double_sided(ctx: &RouteCtx) -> bool {
+    ctx.stage.prim(ctx.path.clone()).ok()
+        .and_then(|prim| prim.attribute("doubleSided").get::<bool>().ok().flatten()).unwrap_or(false)
+}
+
 pub(crate) fn apply_sidedness(ctx: &RouteCtx, material: &mut StandardMaterial) {
-    let double_sided = ctx.stage.prim(ctx.path.clone()).ok()
-        .and_then(|prim| prim.attribute("doubleSided").get::<bool>().ok().flatten()).unwrap_or(false);
+    let double_sided = double_sided(ctx);
     material.double_sided = double_sided;
     material.cull_mode = if double_sided { None } else { Some(bevy::render::render_resource::Face::Back) };
 }
@@ -64,11 +68,91 @@ pub(crate) fn default_material_with_opacity(ctx: &RouteCtx, opacity: Option<&cra
 }
 
 /// The prim's decoded preview material, if it has a binding that resolves.
-fn material_of(ctx: &RouteCtx) -> anyhow::Result<Option<ReadPreviewMaterial>> {
-    let Some(binding) = read_material_binding(ctx.stage, ctx.path)? else { return Ok(None) };
-    let read = read_preview_material_at(ctx.stage, &binding, ctx.time)?
-        .ok_or_else(|| anyhow::anyhow!("unsupported material surface at {binding}"))?;
-    Ok(Some(read))
+fn material_at(ctx: &RouteCtx, binding: &openusd::sdf::Path) -> anyhow::Result<ReadPreviewMaterial> {
+    read_preview_material_at(ctx.stage, binding, ctx.time)?
+        .ok_or_else(|| anyhow::anyhow!("unsupported material surface at {binding}"))
+}
+
+/// Materials resolved while one projection job runs. The gprims of a stage
+/// mostly share a few materials, and resolving one packs its textures, so
+/// the job keeps each (binding, time, sidedness) result until it finishes.
+/// Non-send because it pins the stage it belongs to.
+pub(crate) struct ProjectionMaterials {
+    stage: openusd::usd::Stage,
+    resolved: std::collections::HashMap<(String, Option<u64>, bool), (Handle<StandardMaterial>, Vec<String>)>,
+}
+
+impl ProjectionMaterials {
+    pub(crate) fn new(stage: &openusd::usd::Stage) -> Self {
+        Self { stage: stage.clone(), resolved: Default::default() }
+    }
+}
+
+pub(crate) struct ProjectionMaterialReads {
+    stage: openusd::usd::Stage,
+    sink: openusd::usd::StageSinkId,
+    dirty: std::rc::Rc<std::cell::Cell<bool>>,
+    values: std::collections::HashMap<(openusd::sdf::Path, Option<u64>), ReadPreviewMaterial>,
+    order: std::collections::VecDeque<(openusd::sdf::Path, Option<u64>)>,
+}
+
+impl ProjectionMaterialReads {
+    const CAPACITY: usize = 4096;
+
+    pub(crate) fn new(stage: &openusd::usd::Stage) -> Self {
+        let dirty = std::rc::Rc::new(std::cell::Cell::new(false));
+        let changed = dirty.clone();
+        let sink = stage.add_sink(move |_: &openusd::usd::Stage, _: &openusd::usd::CommittedChange<'_>| changed.set(true));
+        Self { stage: stage.clone(), sink, dirty, values: Default::default(), order: Default::default() }
+    }
+
+    fn get(&mut self, binding: &openusd::sdf::Path, time: Option<f64>) -> Option<ReadPreviewMaterial> {
+        if self.dirty.replace(false) { self.values.clear(); self.order.clear(); }
+        self.values.get(&(binding.clone(), time.map(f64::to_bits))).cloned()
+    }
+
+    fn insert(&mut self, binding: &openusd::sdf::Path, time: Option<f64>, read: &ReadPreviewMaterial) {
+        if self.dirty.get() { return; }
+        let key = (binding.clone(), time.map(f64::to_bits));
+        if !self.values.contains_key(&key) {
+            if self.values.len() == Self::CAPACITY && let Some(oldest) = self.order.pop_front() { self.values.remove(&oldest); }
+            self.order.push_back(key.clone());
+        }
+        self.values.insert(key, read.clone());
+    }
+}
+
+impl Drop for ProjectionMaterialReads {
+    fn drop(&mut self) { self.stage.remove_sink(self.sink); }
+}
+
+/// Opt-in material resolution costs and bounded binding-key observations.
+#[derive(Resource, Default)]
+pub struct MaterialResolveTimings {
+    pub requests: u64,
+    pub bound: u64,
+    pub errors: u64,
+    pub cache_hits: u64,
+    pub read_cache_hits: u64,
+    pub binding: std::time::Duration,
+    pub reading: std::time::Duration,
+    pub preparing: std::time::Duration,
+    pub interning: std::time::Duration,
+    keys: std::collections::HashSet<(String, Option<u64>, bool)>,
+    pub keys_capped: bool,
+}
+
+impl MaterialResolveTimings {
+    pub fn distinct_keys(&self) -> usize { self.keys.len() }
+
+    fn observe(&mut self, key: &(String, Option<u64>, bool)) {
+        if self.keys.len() < 65_536 { self.keys.insert(key.clone()); }
+        else if !self.keys.contains(key) { self.keys_capped = true; }
+    }
+}
+
+fn memo_key(ctx: &RouteCtx, binding: &openusd::sdf::Path) -> (String, Option<u64>, bool) {
+    (binding.to_string(), ctx.time.map(f64::to_bits), double_sided(ctx))
 }
 
 fn warn_material(world: &mut World, entity: Entity, ctx: &RouteCtx, message: String) {
@@ -137,7 +221,42 @@ pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
 ) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>)>> {
-    let Some(read) = material_of(ctx)? else { return Ok(None) };
+    let profiling = world.contains_resource::<MaterialResolveTimings>();
+    let started = profiling.then(std::time::Instant::now);
+    let binding = read_material_binding(ctx.stage, ctx.path);
+    if let Some(started) = started {
+        let mut timing = world.resource_mut::<MaterialResolveTimings>();
+        timing.requests += 1;
+        timing.bound += u64::from(matches!(&binding, Ok(Some(_))));
+        timing.errors += u64::from(binding.is_err());
+        timing.binding += started.elapsed();
+    }
+    let Some(binding) = binding? else { return Ok(None) };
+    let key = memo_key(ctx, &binding);
+    if profiling { world.resource_mut::<MaterialResolveTimings>().observe(&key); }
+    if let Some(memo) = world.get_non_send::<ProjectionMaterials>()
+        && memo.stage.ptr_eq(ctx.stage)
+        && let Some(resolved) = memo.resolved.get(&key)
+    {
+        let resolved = resolved.clone();
+        if profiling { world.resource_mut::<MaterialResolveTimings>().cache_hits += 1; }
+        return Ok(Some(resolved));
+    }
+    let started = profiling.then(std::time::Instant::now);
+    let cached = world.get_non_send_mut::<ProjectionMaterialReads>()
+        .filter(|memo| memo.stage.ptr_eq(ctx.stage)).and_then(|mut memo| memo.get(&binding, ctx.time));
+    let read_cached = cached.is_some();
+    let read = cached.map(Ok).unwrap_or_else(|| material_at(ctx, &binding));
+    if let Some(started) = started {
+        let mut timing = world.resource_mut::<MaterialResolveTimings>();
+        timing.reading += started.elapsed();
+        timing.errors += u64::from(read.is_err());
+        timing.read_cache_hits += u64::from(read_cached);
+    }
+    let read = read?;
+    if !read_cached && let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterialReads>()
+        && memo.stage.ptr_eq(ctx.stage) { memo.insert(&binding, ctx.time, &read); }
+    let started = profiling.then(std::time::Instant::now);
     let assets = world.get_resource::<AssetServer>().cloned();
     let textures = world.get_resource::<crate::asset::SnapshotTextures>();
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
@@ -191,7 +310,15 @@ pub(crate) fn resolve_material(
             Err(error) => warnings.push(error.to_string()),
         }
     }
+    if let Some(started) = started { world.resource_mut::<MaterialResolveTimings>().preparing += started.elapsed(); }
+    let started = profiling.then(std::time::Instant::now);
     let handle = super::cache::intern_material(world, material);
+    if let Some(started) = started { world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed(); }
+    if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
+        && memo.stage.ptr_eq(ctx.stage)
+    {
+        memo.resolved.insert(key, (handle.clone(), warnings.clone()));
+    }
     Ok(Some((handle, warnings)))
 }
 
@@ -228,6 +355,162 @@ impl PrimRoute for MaterialRoute {
 
 #[cfg(test)]
 mod tests {
+    fn read_cache_stage() -> openusd::usd::Stage {
+        crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        float inputs:roughness = 0.3
+        float inputs:roughness.timeSamples = { 0: 0.2, 10: 0.8 }
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @albedo.png@
+        float3 outputs:rgb
+    }
+}
+def Cube "A" { rel material:binding = </Mat> bool doubleSided = false }
+def Cube "B" { rel material:binding = </Mat> bool doubleSided = true }
+def Cube "C" { rel material:binding = </Mat> }
+"#).open_stage().unwrap()
+    }
+
+    fn resolved_sample(stage: &openusd::usd::Stage, world: &mut World, path: &str, time: Option<f64>) -> anyhow::Result<StandardMaterial> {
+        let path = openusd::sdf::path(path)?;
+        let (handle, _) = resolve_material(&RouteCtx::at(stage, &path, time), world)?.unwrap();
+        Ok(world.resource::<Assets<StandardMaterial>>().get(&handle).unwrap().clone())
+    }
+
+    #[test]
+    fn material_read_cache_tracks_edits_time_and_texture_handles() {
+        let stage = read_cache_stage();
+        let other = read_cache_stage();
+        let mut world = World::new();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<MaterialResolveTimings>();
+        world.insert_non_send(ProjectionMaterialReads::new(&stage));
+        let read = read_preview_material_at(&stage, &openusd::sdf::path("/Mat").unwrap(), None).unwrap().unwrap();
+        let texture_key = (read.diffuse_texture.clone().unwrap(), read.texture_srgb("diffuse"));
+        let first = world.resource_mut::<Assets<Image>>().add(Image::default());
+        let second = world.resource_mut::<Assets<Image>>().add(Image::default());
+        world.insert_resource(crate::asset::SnapshotTextures([(texture_key.clone(), first.clone())].into()));
+        let a = resolved_sample(&stage, &mut world, "/A", None).unwrap();
+        world.resource_mut::<crate::asset::SnapshotTextures>().0.insert(texture_key, second.clone());
+        let b = resolved_sample(&stage, &mut world, "/B", None).unwrap();
+        assert_eq!(a.base_color_texture, Some(first));
+        assert_eq!(b.base_color_texture, Some(second));
+        assert!(!a.double_sided && b.double_sided);
+        assert_eq!(world.resource::<MaterialResolveTimings>().read_cache_hits, 1);
+        assert_eq!(resolved_sample(&stage, &mut world, "/A", Some(0.0)).unwrap().perceptual_roughness, 0.2);
+        assert_eq!(resolved_sample(&stage, &mut world, "/A", Some(10.0)).unwrap().perceptual_roughness, 0.8);
+        stage.prim("/Mat/Shader").unwrap().attribute("inputs:roughness").set(0.6_f32).unwrap();
+        assert_eq!(resolved_sample(&stage, &mut world, "/A", None).unwrap().perceptual_roughness, 0.6);
+        assert_eq!(resolved_sample(&other, &mut world, "/A", None).unwrap().perceptual_roughness, 0.3);
+        stage.prim("/Mat/Shader").unwrap().attribute("info:id").set(openusd::tf::Token::from("Unsupported")).unwrap();
+        assert!(resolved_sample(&stage, &mut world, "/A", None).is_err());
+        stage.prim("/Mat/Shader").unwrap().attribute("info:id").set(openusd::tf::Token::from("UsdPreviewSurface")).unwrap();
+        assert_eq!(resolved_sample(&stage, &mut world, "/A", None).unwrap().perceptual_roughness, 0.6);
+    }
+
+    #[test]
+    fn live_material_reads_invalidate_during_projection_and_restore_scope() {
+        struct Edit;
+        impl PrimRoute for Edit {
+            fn matches(&self, ctx: &RouteCtx) -> bool { ctx.path.as_str() == "/A" }
+            fn project(&self, ctx: &RouteCtx, _: &mut World, _: Entity) {
+                ctx.stage.prim("/Mat/Shader").unwrap().attribute("inputs:roughness").set(0.7_f32).unwrap();
+            }
+        }
+        let stage = read_cache_stage();
+        let surrounding = read_cache_stage();
+        let mut registry = super::super::SchemaRegistry::builtin();
+        registry.register(Edit);
+        let mut world = World::new();
+        world.insert_resource(registry);
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<MaterialResolveTimings>();
+        world.insert_non_send(ProjectionMaterialReads::new(&surrounding));
+        let live = crate::live::LiveStage::new(stage);
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        assert!(world.non_send::<ProjectionMaterialReads>().stage.ptr_eq(&surrounding));
+        let roughness = |path| {
+            let handle = &world.get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap()).unwrap().0;
+            world.resource::<Assets<StandardMaterial>>().get(handle).unwrap().perceptual_roughness
+        };
+        assert_eq!(roughness("/A"), 0.3);
+        assert_eq!(roughness("/B"), 0.7);
+        assert_eq!(roughness("/C"), 0.7);
+        assert_eq!(world.resource::<MaterialResolveTimings>().read_cache_hits, 1);
+        world.remove_non_send::<ProjectionMaterialReads>();
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        assert!(world.get_non_send::<ProjectionMaterialReads>().is_none());
+    }
+
+    #[test]
+    fn material_read_cache_is_bounded_and_detaches_sink() {
+        let stage = read_cache_stage();
+        let mut memo = ProjectionMaterialReads::new(&stage);
+        for index in 0..=ProjectionMaterialReads::CAPACITY {
+            memo.insert(&openusd::sdf::path(format!("/M{index}")).unwrap(), None, &ReadPreviewMaterial::default());
+        }
+        assert_eq!(memo.values.len(), ProjectionMaterialReads::CAPACITY);
+        assert_eq!(memo.order.len(), ProjectionMaterialReads::CAPACITY);
+        assert!(memo.get(&openusd::sdf::path("/M0").unwrap(), None).is_none());
+        let dirty = memo.dirty.clone();
+        drop(memo);
+        stage.define_prim("/Later").unwrap();
+        assert!(!dirty.get());
+    }
+
+    #[test]
+    fn interleaved_projection_jobs_retain_separate_material_memos() {
+        use crate::live::ProjectionJob;
+        let stage = || crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (1, 0, 0)
+        token outputs:surface
+    }
+}
+def Cube "A" { rel material:binding = </Mat> }
+def Cube "B" { rel material:binding = </Mat> }
+"#).open_stage().unwrap();
+        let first = stage();
+        let second = stage();
+        let surrounding = stage();
+        let mut world = World::new();
+        world.insert_resource(crate::route::SchemaRegistry::builtin());
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.insert_non_send(ProjectionMaterials::new(&surrounding));
+        let a = world.spawn_empty().id();
+        let b = world.spawn_empty().id();
+        let (mut one, mut map_one) = ProjectionJob::begin(&mut world, &first, a);
+        let (mut two, mut map_two) = ProjectionJob::begin(&mut world, &second, b);
+        assert!(world.non_send::<ProjectionMaterials>().stage.ptr_eq(&surrounding));
+        for _ in 0..16 {
+            let done_one = one.step(&mut world, &first, &mut map_one, std::time::Duration::ZERO);
+            let done_two = two.step(&mut world, &second, &mut map_two, std::time::Duration::ZERO);
+            assert!(world.non_send::<ProjectionMaterials>().stage.ptr_eq(&surrounding));
+            if done_one && done_two { break; }
+        }
+        let material = |map: &crate::live::PrimEntities, path|
+            world.get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap()).unwrap().0.id();
+        assert_eq!(material(&map_one, "/A"), material(&map_one, "/B"));
+        assert_eq!(material(&map_two, "/A"), material(&map_two, "/B"));
+        assert_ne!(material(&map_one, "/A"), material(&map_two, "/A"));
+        assert!(!world.contains_resource::<super::super::cache::MaterialCache>());
+    }
+
     use super::*;
 
     #[test]

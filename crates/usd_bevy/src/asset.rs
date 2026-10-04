@@ -14,9 +14,9 @@ use bevy::asset::io::Reader;
 use bevy::asset::{Asset, AssetId, AssetLoader, AssetPath, LoadContext, LoadState};
 use bevy::prelude::*;
 
-use crate::live::project_stage_under;
+use crate::live::ProjectionJob;
 use crate::instance::{InstanceRuntime, UsdInstanceOverrides, UsdInstanceTime, UsdInstances, UsdPlayback};
-use crate::live::{AnimatedPrims, LiveStage, reconcile, stage_up_axis};
+use crate::live::{AnimatedPrims, LiveStage, opinion_scopes, reconcile, reconcile_opinions, stage_up_axis, variant_scopes};
 use crate::route::StageTime;
 use crate::{SchemaRegistry, UsdSource};
 
@@ -62,9 +62,11 @@ pub enum UsdSceneState {
 pub struct UsdSceneTimings {
     pub attempts: usize,
     pub failures: usize,
+    pub validation_reuses: usize,
     pub open: std::time::Duration,
     pub overrides: std::time::Duration,
     pub validation: std::time::Duration,
+    pub textures: std::time::Duration,
     pub projection: std::time::Duration,
 }
 
@@ -106,40 +108,44 @@ impl AssetLoader for UsdAssetLoader {
             return Err(std::io::Error::other("USD root escapes asset source"));
         }
         for _ in 0..128 {
-            let (result, missing) = source.probe();
-            if missing.is_empty() {
-                result.map_err(std::io::Error::other)?;
-                let mut textures = bevy::platform::collections::HashMap::default();
-                for (index, (path, srgb)) in source
-                    .texture_requests()
-                    .map_err(std::io::Error::other)?
-                    .into_iter()
-                    .enumerate()
-                {
-                    let bytes = source.read_asset(&path)?;
-                    let inner = openusd::ar::split_package_relative_path_inner(&path)
-                        .map(|(_, inner)| inner)
-                        .unwrap_or_else(|| path.clone());
-                    let extension = Path::new(&inner)
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .ok_or_else(|| {
-                            std::io::Error::other(format!("texture has no extension: {path}"))
-                        })?;
-                    let image = Image::from_buffer(
-                        &bytes,
-                        bevy::image::ImageType::Extension(extension),
-                        bevy::image::CompressedImageFormats::NONE,
-                        srgb,
-                        bevy::image::ImageSampler::default(),
-                        bevy::asset::RenderAssetUsages::default(),
-                    )
-                    .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
-                    let handle = load_context.add_labeled_asset(format!("texture_{index}"), image);
-                    textures.insert((path, srgb), handle);
+            // The stage is `Rc`-based, so it is dropped inside this block
+            // before the dependency reads below await.
+            let missing = {
+                let (result, missing) = source.probe_stage();
+                if missing.is_empty() {
+                    let stage = result.map_err(std::io::Error::other)?;
+                    let mut textures = bevy::platform::collections::HashMap::default();
+                    for (index, (path, srgb)) in source.texture_requests(&stage, true)
+                        .map_err(std::io::Error::other)?
+                        .iter().cloned()
+                        .enumerate()
+                    {
+                        let bytes = source.read_asset(&path)?;
+                        let inner = openusd::ar::split_package_relative_path_inner(&path)
+                            .map(|(_, inner)| inner)
+                            .unwrap_or_else(|| path.clone());
+                        let extension = Path::new(&inner)
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .ok_or_else(|| {
+                                std::io::Error::other(format!("texture has no extension: {path}"))
+                            })?;
+                        let image = Image::from_buffer(
+                            &bytes,
+                            bevy::image::ImageType::Extension(extension),
+                            bevy::image::CompressedImageFormats::NONE,
+                            srgb,
+                            bevy::image::ImageSampler::default(),
+                            bevy::asset::RenderAssetUsages::default(),
+                        )
+                        .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
+                        let handle = load_context.add_labeled_asset(format!("texture_{index}"), image);
+                        textures.insert((path, srgb), handle);
+                    }
+                    return Ok(UsdScene { source, textures });
                 }
-                return Ok(UsdScene { source, textures });
-            }
+                missing
+            };
             for identifier in missing {
                 if openusd::ar::is_package_relative_path(&identifier) {
                     return Err(std::io::Error::other(format!(
@@ -175,12 +181,31 @@ impl AssetLoader for UsdAssetLoader {
 /// installs one too if it's missing, so it also works standalone.
 pub struct UsdAssetPlugin;
 
+/// Main-thread time one frame may spend projecting scene roots. A stage
+/// larger than that is spread over frames and its root stays
+/// [`UsdSceneState::Loading`] until the last prim is in. `Duration::MAX`
+/// projects everything at once. Finite budgets are shared across loading roots;
+/// a single prim's synchronous routes may exceed the budget.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct UsdProjectionBudget(pub std::time::Duration);
+
+#[derive(Resource, Default)]
+struct ProjectionTurn(Option<Entity>);
+
+impl Default for UsdProjectionBudget {
+    fn default() -> Self {
+        Self(std::time::Duration::from_millis(10))
+    }
+}
+
 impl Plugin for UsdAssetPlugin {
     fn build(&self, app: &mut App) {
+        crate::route::residency::configure(app);
         if !app.world().contains_resource::<Assets<Image>>() {
             app.init_asset::<Image>();
         }
         app.init_asset::<UsdScene>()
+            .init_resource::<UsdProjectionBudget>()
             .init_resource::<crate::route::cache::ProjectionCache>()
             .register_asset_loader(UsdAssetLoader)
             .add_systems(Update, spawn_usd_scenes);
@@ -194,6 +219,9 @@ impl Plugin for UsdAssetPlugin {
 /// spawned yet. Exclusive (`&mut World`) because projection spawns a hierarchy
 /// and runs the routes, which need `&mut World`.
 fn spawn_usd_scenes(world: &mut World) {
+    let budget = world
+        .get_resource::<UsdProjectionBudget>()
+        .map_or(std::time::Duration::MAX, |b| b.0);
     let mut instances = world.remove_non_send::<UsdInstances>().unwrap_or_default();
     instances.roots.retain(|root, _| world.get::<UsdSceneRoot>(*root).is_some());
     let orphaned: Vec<_> = world
@@ -226,7 +254,7 @@ fn spawn_usd_scenes(world: &mut World) {
             continue;
         }
         // Skip until the asset has actually loaded.
-        let Some((source, textures)) = world
+        let Some((source, mut textures)) = world
             .resource::<Assets<UsdScene>>()
             .get(&handle)
             .map(|s| (s.source.clone(), s.textures.clone()))
@@ -247,11 +275,40 @@ fn spawn_usd_scenes(world: &mut World) {
         {
             continue;
         }
+        // A variant switch on a live instance of an unchanged source is set on
+        // its open stage: no reparse or revalidation, and the decoded textures
+        // and material memo stay warm.
+        if let Some(old) = previous.as_ref()
+            && old.asset == handle.id()
+            && old.revision == source.revision()
+            && old.overrides.attributes == overrides.attributes
+            && old.overrides.variants.iter().all(|(prim, set, _)| {
+                overrides.variants.iter().any(|(p, s, _)| p == prim && s == set)
+            })
+            && let Some(runtime) = instances.roots.get_mut(&entity)
+                .filter(|runtime| runtime.asset == handle.id() && runtime.job.is_none())
+        {
+            let current = world.get::<UsdInstanceTime>(entity).map_or(0.0, |time| time.current);
+            switch_variants_in_place(world, runtime, &source, &overrides, current);
+            let subtree = old.subtree;
+            world.entity_mut(entity).insert((
+                UsdSceneInstance { asset: handle.id(), revision: source.revision(), subtree, overrides },
+                UsdSceneState::Ready,
+            ));
+            continue;
+        }
         let profiled = world.contains_resource::<UsdSceneTimings>();
         let mut timing = UsdSceneTimings { attempts: 1, ..default() };
+        let default_composition = overrides.variants.is_empty() && overrides.attributes.is_empty();
         let opened = timed(profiled, &mut timing.open, || source.open_stage()).map_err(anyhow::Error::from).and_then(|stage| {
             timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
-            timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
+            if default_composition && source.has_default_validation() {
+                timing.validation_reuses += 1;
+            } else {
+                timed(profiled, &mut timing.validation, || UsdSource::validate_composition(&stage))?;
+                if default_composition { source.record_default_validation(); }
+            }
+            timed(profiled, &mut timing.textures, || decode_missing_textures(world, &stage, &source, &mut textures, default_composition))?;
             Ok(stage)
         });
         timing.failures = usize::from(opened.is_err());
@@ -271,17 +328,31 @@ fn spawn_usd_scenes(world: &mut World) {
                 world.insert_resource(StageTime { current });
                 world.insert_resource(SnapshotTextures(textures.clone()));
                 let live = LiveStage::new(stage);
+                let mut job = None;
                 let map = timed(profiled, &mut timing.projection, || {
                     if let Some(mut runtime) = retained {
-                        reconcile(world, &live, &mut runtime.map, false);
+                        // A changed variant or attribute opinion on an unchanged
+                        // source only reconciles what that opinion authors.
+                        let scopes = previous.as_ref()
+                            .filter(|old| old.revision == source.revision())
+                            .and_then(|old| opinion_scopes(&runtime.live.stage, &live.stage, &old.overrides, &overrides));
+                        match scopes {
+                            Some((subtrees, exact)) => reconcile_opinions(world, &live, &mut runtime.map, &subtrees, &exact),
+                            None => reconcile(world, &live, &mut runtime.map, false),
+                        }
                         if let Some(root) = runtime.map.entity("/") {
                             world.entity_mut(root).insert(Transform::from_rotation(stage_up_axis(&live.stage)));
                         }
                         runtime.map
                     } else {
-                        project_stage_under(world, &live.stage, entity)
+                        let (mut started, mut map) = ProjectionJob::begin(world, &live.stage, entity);
+                        if budget != std::time::Duration::MAX || !started.step(world, &live.stage, &mut map, budget) {
+                            job = Some(started);
+                        }
+                        map
                     }
                 });
+                let state = if job.is_none() { UsdSceneState::Ready } else { UsdSceneState::Loading };
                 world.remove_resource::<SnapshotTextures>();
                 world.remove_resource::<StageTime>();
                 world.remove_resource::<AnimatedPrims>();
@@ -297,12 +368,17 @@ fn spawn_usd_scenes(world: &mut World) {
                         subtree: map.entity("/"),
                         overrides,
                     },
-                    UsdSceneState::Ready,
+                    state,
                 ));
                 instances.roots.insert(entity, InstanceRuntime {
                     asset: handle.id(), live, map, textures: SnapshotTextures(textures), sampled: current,
+                    purposes: world.get_resource::<crate::route::DisplayPurposes>().copied().unwrap_or_default(),
+                    defer_hidden: crate::route::residency::enabled(world),
                     subdivision_levels: crate::route::subdivision::current_levels(world),
                     curve_steps: crate::route::curves::current_geometry_key(world),
+                    job,
+                    parked: default(),
+                    materials: None,
                 });
             }
             Err(error) => {
@@ -323,11 +399,175 @@ fn spawn_usd_scenes(world: &mut World) {
             total.open += timing.open;
             total.overrides += timing.overrides;
             total.validation += timing.validation;
+            total.validation_reuses += timing.validation_reuses;
+            total.textures += timing.textures;
             total.projection += timing.projection;
         }
     }
+    continue_projections(world, &mut instances, budget);
     crate::instance::tick(world, &mut instances);
     world.insert_non_send(instances);
+}
+
+/// A scene added straight to `Assets<UsdScene>` skips the loader, so any
+/// texture the stage asks for that the map lacks is decoded here from the
+/// source bytes instead.
+/// Sets `overrides`' variant selections on a live instance's own stage and
+/// reconciles what the switched variants author.
+fn switch_variants_in_place(
+    world: &mut World,
+    runtime: &mut InstanceRuntime,
+    source: &UsdSource,
+    overrides: &UsdInstanceOverrides,
+    current: f64,
+) {
+    let mut changes = Vec::new();
+    for (prim, set, selection) in &overrides.variants {
+        let Ok(owner) = openusd::sdf::path(prim.as_str()) else {
+            continue;
+        };
+        let was = crate::read::variants::variant_selection(&runtime.live.stage, &owner, set);
+        if was.as_deref() == Some(selection.as_str()) {
+            continue;
+        }
+        if let Err(error) = crate::authoring::set_variant(&runtime.live.stage, prim, set, selection) {
+            bevy::log::warn!("variant {set} = {selection} on {prim}: {error}");
+            continue;
+        }
+        changes.push((prim.clone(), set.clone(), was, Some(selection.clone())));
+    }
+    // This switch is reconciled here; the live-edit pass must not redo it.
+    let _ = runtime.live.drain_changes();
+    if let Err(error) = decode_missing_textures(world, &runtime.live.stage, source, &mut runtime.textures.0, false) {
+        bevy::log::warn!("textures after a variant switch: {error}");
+    }
+    let previous_time = world.remove_resource::<StageTime>();
+    let previous_animated = world.remove_resource::<AnimatedPrims>();
+    let previous_textures = world.remove_resource::<SnapshotTextures>();
+    world.insert_resource(StageTime { current });
+    world.insert_resource(runtime.textures.clone());
+    let scopes = variant_scopes(&runtime.live.stage, &changes);
+    if let Some((subtrees, exact)) = &scopes {
+        park_assets(world, runtime, subtrees, exact);
+    }
+    // Resolved materials outlive the switch: the stage stays the same one.
+    let other_memo = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+    let memo = runtime.materials.take()
+        .unwrap_or_else(|| crate::route::material::ProjectionMaterials::new(&runtime.live.stage));
+    world.insert_non_send(memo);
+    match scopes {
+        Some((subtrees, exact)) => reconcile_opinions(world, &runtime.live, &mut runtime.map, &subtrees, &exact),
+        None => reconcile(world, &runtime.live, &mut runtime.map, false),
+    }
+    runtime.materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+    if let Some(memo) = other_memo {
+        world.insert_non_send(memo);
+    }
+    world.remove_resource::<SnapshotTextures>();
+    world.remove_resource::<StageTime>();
+    world.remove_resource::<AnimatedPrims>();
+    if let Some(previous) = previous_time { world.insert_resource(previous); }
+    if let Some(previous) = previous_animated { world.insert_resource(previous); }
+    if let Some(previous) = previous_textures { world.insert_resource(previous); }
+}
+
+/// Keeps the mesh and material handles of the prims a switch may despawn, and
+/// of their material-subset children, so the caches still hold them when the
+/// variant is switched back on.
+fn park_assets(world: &World, runtime: &mut InstanceRuntime, subtrees: &[String], exact: &[String]) {
+    let scoped = |path: &str| exact.iter().any(|prim| prim == path)
+        || subtrees.iter().any(|scope| path == scope
+            || path.strip_prefix(scope.as_str()).is_some_and(|rest| rest.starts_with('/')));
+    let mut entities: Vec<Entity> = runtime.map.iter()
+        .filter(|(path, _)| scoped(path))
+        .map(|(_, entity)| entity)
+        .collect();
+    let subsets: Vec<Entity> = entities.iter()
+        .filter_map(|entity| world.get::<Children>(*entity))
+        .flat_map(|children| children.iter())
+        .filter(|child| world.get::<crate::UsdPrimRef>(*child).is_none())
+        .collect();
+    entities.extend(subsets);
+    for entity in entities {
+        if let Some(mesh) = world.get::<Mesh3d>(entity) {
+            runtime.parked.entry(mesh.0.id().untyped()).or_insert_with(|| mesh.0.clone().untyped());
+        }
+        if let Some(material) = world.get::<MeshMaterial3d<StandardMaterial>>(entity) {
+            runtime.parked.entry(material.0.id().untyped()).or_insert_with(|| material.0.clone().untyped());
+        }
+    }
+}
+
+fn decode_missing_textures(
+    world: &mut World,
+    stage: &openusd::usd::Stage,
+    source: &UsdSource,
+    textures: &mut bevy::platform::collections::HashMap<(String, bool), Handle<Image>>,
+    default_composition: bool,
+) -> anyhow::Result<()> {
+    let requests = source.texture_requests(stage, default_composition).map_err(anyhow::Error::msg)?;
+    let missing: Vec<_> = requests.iter().filter(|key| !textures.contains_key(*key)).cloned().collect();
+    if missing.is_empty() { return Ok(()); }
+    anyhow::ensure!(world.contains_resource::<Assets<Image>>(), "image assets are unavailable");
+    for (path, srgb) in missing {
+        let bytes = source.read_asset(&path)
+            .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
+        let inner = openusd::ar::split_package_relative_path_inner(&path)
+            .map(|(_, inner)| inner).unwrap_or_else(|| path.clone());
+        let extension = Path::new(&inner).extension().and_then(|extension| extension.to_str())
+            .ok_or_else(|| anyhow::anyhow!("texture has no extension: {path}"))?;
+        let image = Image::from_buffer(&bytes, bevy::image::ImageType::Extension(extension),
+            bevy::image::CompressedImageFormats::NONE, srgb, bevy::image::ImageSampler::default(),
+            bevy::asset::RenderAssetUsages::default())
+            .map_err(|error| anyhow::anyhow!("cannot decode texture {path}: {error}"))?;
+        let handle = world.resource_mut::<Assets<Image>>().add(image);
+        textures.insert((path, srgb), handle);
+    }
+    Ok(())
+}
+
+/// Spend this frame's budget on the roots whose projection is still running;
+/// a root whose last prim lands becomes `Ready`.
+fn continue_projections(world: &mut World, instances: &mut UsdInstances, budget: std::time::Duration) {
+    let mut roots: Vec<_> = instances.roots.iter().filter_map(|(&root, runtime)| runtime.job.is_some().then_some(root)).collect();
+    roots.sort_unstable();
+    if let Some(previous) = world.get_resource::<ProjectionTurn>().and_then(|turn| turn.0) {
+        let start = roots.partition_point(|root| *root <= previous);
+        if start < roots.len() { roots.rotate_left(start); }
+    }
+    let started = std::time::Instant::now();
+    for (index, root) in roots.into_iter().enumerate() {
+        let remaining = budget.saturating_sub(started.elapsed());
+        if index != 0 && remaining.is_zero() { break; }
+        world.insert_resource(ProjectionTurn(Some(root)));
+        let runtime = instances.roots.get_mut(&root).unwrap();
+        let Some(job) = runtime.job.as_mut() else {
+            continue;
+        };
+        let current = runtime.sampled;
+        let previous_time = world.remove_resource::<StageTime>();
+        let previous_animated = world.remove_resource::<AnimatedPrims>();
+        let previous_textures = world.remove_resource::<SnapshotTextures>();
+        world.insert_resource(StageTime { current });
+        world.insert_resource(runtime.textures.clone());
+        let profiled = world.contains_resource::<UsdSceneTimings>().then(std::time::Instant::now);
+        let done = job.step(world, &runtime.live.stage, &mut runtime.map, remaining);
+        if let Some(started) = profiled {
+            world.resource_mut::<UsdSceneTimings>().projection += started.elapsed();
+        }
+        world.remove_resource::<SnapshotTextures>();
+        world.remove_resource::<StageTime>();
+        world.remove_resource::<AnimatedPrims>();
+        if let Some(previous) = previous_time { world.insert_resource(previous); }
+        if let Some(previous) = previous_animated { world.insert_resource(previous); }
+        if let Some(previous) = previous_textures { world.insert_resource(previous); }
+        if done {
+            runtime.job = None;
+            if let Ok(mut e) = world.get_entity_mut(root) {
+                e.insert(UsdSceneState::Ready);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +599,109 @@ def Xform "Old" {}
 
     fn instance_entity(world: &World, root: Entity, path: &str) -> Entity {
         world.non_send::<UsdInstances>().entity(root, path).unwrap()
+    }
+
+    #[test]
+    fn edits_during_sliced_loading_reach_the_completed_scene() {
+        let (mut world, handle) = instance_world();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::ZERO));
+        let root = world.spawn(UsdSceneRoot(handle)).id();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Loading));
+        let (path, entity) = world.non_send::<UsdInstances>().roots[&root].map.iter()
+            .find(|(path, _)| *path != "/").map(|(path, entity)| (path.to_owned(), entity)).unwrap();
+        let stage = world.non_send::<UsdInstances>().stage(root).unwrap().clone();
+        stage.create_attribute(openusd::sdf::path(&format!("{path}.xformOp:translate")).unwrap(), "double3").unwrap()
+            .set_at(openusd::sdf::Value::Vec3d([7.0, 0.0, 0.0].into()), openusd::usd::TimeCode::new(0.0)).unwrap();
+        stage.create_attribute(openusd::sdf::path(&format!("{path}.xformOpOrder")).unwrap(), "token[]").unwrap()
+            .set(openusd::sdf::Value::TokenVec(vec!["xformOp:translate".into()])).unwrap();
+        for _ in 0..8 { spawn_usd_scenes(&mut world); }
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        assert_eq!(instance_entity(&world, root, &path), entity);
+        assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 7.0);
+        assert!(!world.non_send::<UsdInstances>().roots[&root].live.has_changes());
+    }
+
+    #[test]
+    fn loading_clock_roundtrip_does_not_publish_mixed_sample_times() {
+        let (mut world, handle) = instance_world();
+        let mut text = String::from("#usda 1.0\n");
+        for name in ["A", "B", "C"] {
+            text.push_str(&format!(r#"def Xform "{name}" {{
+                double3 xformOp:translate.timeSamples = {{ 0: (0,0,0), 10: (10,0,0) }}
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+            }}
+"#));
+        }
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::snapshot("loading-clock.usda", text.into_bytes()).unwrap();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::ZERO));
+        let root = world.spawn((UsdSceneRoot(handle), UsdInstanceTime { current: 0.0 })).id();
+        for time in [0.0, 10.0, 0.0] {
+            world.get_mut::<UsdInstanceTime>(root).unwrap().current = time;
+            spawn_usd_scenes(&mut world);
+        }
+        assert_eq!(world.get::<UsdSceneState>(root), Some(&UsdSceneState::Ready));
+        for path in ["/A", "/B", "/C"] {
+            let entity = instance_entity(&world, root, path);
+            assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 0.0, "{path}");
+        }
+        world.get_mut::<UsdInstanceTime>(root).unwrap().current = 10.0;
+        spawn_usd_scenes(&mut world);
+        for path in ["/A", "/B", "/C"] {
+            let entity = instance_entity(&world, root, path);
+            assert_eq!(world.get::<Transform>(entity).unwrap().translation.x, 10.0, "{path}");
+        }
+    }
+
+    #[test]
+    fn finite_projection_budget_is_shared_and_rotates_roots() {
+        let (mut world, handle) = instance_world();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::ZERO));
+        let roots: Vec<_> = (0..3).map(|_| world.spawn(UsdSceneRoot(handle.clone())).id()).collect();
+        for frame in 1..=3 {
+            spawn_usd_scenes(&mut world);
+            let instances = world.non_send::<UsdInstances>();
+            let progress: Vec<_> = roots.iter().map(|root|
+                instances.roots[root].job.as_ref().unwrap().progress().0).collect();
+            assert_eq!(progress.iter().sum::<usize>(), frame);
+            assert!(progress.iter().all(|&count| count <= 1));
+        }
+        world.despawn(roots[0]);
+        for _ in 0..8 { spawn_usd_scenes(&mut world); }
+        assert_eq!(world.non_send::<UsdInstances>().len(), 2);
+        for root in &roots[1..] {
+            assert_eq!(world.get::<UsdSceneState>(*root), Some(&UsdSceneState::Ready));
+            assert!(world.non_send::<UsdInstances>().entity(*root, "/Old").is_some());
+        }
+        let late = world.spawn(UsdSceneRoot(handle)).id();
+        world.insert_resource(UsdProjectionBudget(std::time::Duration::MAX));
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(late), Some(&UsdSceneState::Ready));
+    }
+
+    #[test]
+    fn snapshot_validation_is_reused_only_without_overrides() {
+        let (mut world, handle) = instance_world();
+        let source = UsdSource::snapshot("instances.usda", ANIMATED.as_bytes()).unwrap();
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source = source.clone();
+        world.init_resource::<UsdSceneTimings>();
+        let first = world.spawn(UsdSceneRoot(handle.clone())).id();
+        let second = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(first), Some(&UsdSceneState::Ready));
+        assert_eq!(world.get::<UsdSceneState>(second), Some(&UsdSceneState::Ready));
+        assert_eq!(world.resource::<UsdSceneTimings>().attempts, 2);
+        assert_eq!(world.resource::<UsdSceneTimings>().validation_reuses, 1);
+        assert!(source.has_default_validation());
+        let overridden = world.spawn((UsdSceneRoot(handle), UsdInstanceOverrides {
+            attributes: vec![crate::instance::UsdAttributeOverride { prim: "/Old".into(), name: "visibility".into(),
+                type_name: "token".into(), value: openusd::sdf::Value::Token("invisible".into()) }], ..default()
+        })).id();
+        spawn_usd_scenes(&mut world);
+        assert_eq!(world.get::<UsdSceneState>(overridden), Some(&UsdSceneState::Ready));
+        assert_eq!(world.resource::<UsdSceneTimings>().attempts, 3);
+        assert_eq!(world.resource::<UsdSceneTimings>().validation_reuses, 1);
     }
 
     #[test]
@@ -611,6 +954,121 @@ def Xform "Model" (
         assert!(world.get_entity(variant_b).is_err());
         assert!(world.non_send::<UsdInstances>().entity(b, "/Model/A").is_some());
         assert_ne!(world.get::<Visibility>(model_b), Some(&Visibility::Hidden));
+    }
+
+    #[test]
+    fn variant_switches_leave_untouched_prims_alone() {
+        let (mut world, handle) = instance_world();
+        let source = r#"#usda 1.0
+def Xform "Model" (
+    variants = { string tool = "none" }
+    prepend variantSets = "tool"
+) {
+    def Xform "Body" {}
+    def Xform "Arm" {}
+    variantSet "tool" = {
+        "none" {}
+        "loader" {
+            def Xform "Loader" {}
+            over "Arm" { token visibility = "invisible" }
+        }
+    }
+}
+"#;
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", source.as_bytes()).unwrap();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let body = instance_entity(&world, root, "/Model/Body");
+        let arm = instance_entity(&world, root, "/Model/Arm");
+        // The app moved the body after projection; a tool swap must keep it.
+        world.get_mut::<Transform>(body).unwrap().translation.x = 5.0;
+        let tool = |selection: &str| UsdInstanceOverrides {
+            variants: vec![("/Model".into(), "tool".into(), selection.into())],
+            ..default()
+        };
+        world.entity_mut(root).insert(tool("loader"));
+        spawn_usd_scenes(&mut world);
+        let loader = instance_entity(&world, root, "/Model/Loader");
+        assert_eq!(instance_entity(&world, root, "/Model/Body"), body);
+        assert_eq!(world.get::<Transform>(body).unwrap().translation.x, 5.0);
+        assert_eq!(world.get::<Visibility>(arm), Some(&Visibility::Hidden));
+        world.entity_mut(root).insert(tool("none"));
+        spawn_usd_scenes(&mut world);
+        assert!(world.get_entity(loader).is_err());
+        assert_eq!(world.get::<Transform>(body).unwrap().translation.x, 5.0);
+        assert_ne!(world.get::<Visibility>(arm), Some(&Visibility::Hidden));
+    }
+
+    #[test]
+    fn variant_switches_keep_the_open_stage() {
+        let (mut world, handle) = instance_world();
+        let source = r#"#usda 1.0
+def Xform "Model" (
+    variants = { string tool = "none" }
+    prepend variantSets = "tool"
+) {
+    variantSet "tool" = {
+        "none" {}
+        "loader" { def Xform "Loader" {} }
+    }
+}
+"#;
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", source.as_bytes()).unwrap();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let before = world.non_send::<UsdInstances>().stage(root).unwrap().clone();
+        world.entity_mut(root).insert(UsdInstanceOverrides {
+            variants: vec![("/Model".into(), "tool".into(), "loader".into())],
+            ..default()
+        });
+        spawn_usd_scenes(&mut world);
+        assert!(world.non_send::<UsdInstances>().stage(root).unwrap().ptr_eq(&before));
+        instance_entity(&world, root, "/Model/Loader");
+    }
+
+    #[test]
+    fn switched_off_variants_keep_their_meshes() {
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut world, handle) = instance_world();
+        world.init_resource::<crate::route::cache::ProjectionCache>();
+        let source = r#"#usda 1.0
+def Xform "Model" (
+    variants = { string tool = "none" }
+    prepend variantSets = "tool"
+) {
+    variantSet "tool" = {
+        "none" {}
+        "loader" {
+            def Mesh "Loader" {
+                point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+                int[] faceVertexCounts = [3]
+                int[] faceVertexIndices = [0, 1, 2]
+            }
+        }
+    }
+}
+"#;
+        world.resource_mut::<Assets<UsdScene>>().get_mut(&handle).unwrap().source =
+            UsdSource::new("instances.usda", source.as_bytes()).unwrap();
+        let root = world.spawn(UsdSceneRoot(handle.clone())).id();
+        spawn_usd_scenes(&mut world);
+        let tool = |selection: &str| UsdInstanceOverrides {
+            variants: vec![("/Model".into(), "tool".into(), selection.into())],
+            ..default()
+        };
+        world.entity_mut(root).insert(tool("loader"));
+        spawn_usd_scenes(&mut world);
+        let loader = instance_entity(&world, root, "/Model/Loader");
+        let mesh = world.get::<Mesh3d>(loader).unwrap().0.id();
+        world.entity_mut(root).insert(tool("none"));
+        spawn_usd_scenes(&mut world);
+        world.run_system_once(crate::route::cache::prune_mesh_cache).unwrap();
+        world.entity_mut(root).insert(tool("loader"));
+        spawn_usd_scenes(&mut world);
+        let loader = instance_entity(&world, root, "/Model/Loader");
+        assert_eq!(world.get::<Mesh3d>(loader).unwrap().0.id(), mesh);
     }
 
     #[test]
@@ -948,6 +1406,69 @@ def Sphere "Model" (
     #[ignore = "requires native filesystem events"]
     fn native_file_watcher_reloads_layers_textures_and_recovers() {
         exercise_native_file_watcher(false);
+    }
+
+    #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires native filesystem events"]
+    fn native_file_watcher_updates_deferred_mesh_dependencies() {
+        use crate::route::residency::{DeferHiddenMeshes, UsdDeferredMesh};
+        let directory = tempfile::tempdir().unwrap();
+        let layer = directory.path().join("mesh.usda");
+        let geometry = |size: u32| format!(r#"#usda 1.0
+def Xform "Hidden" {{
+    token visibility = "invisible"
+    def Mesh "M" {{
+        point3f[] points = [(0,0,0),({size},0,0),(0,{size},0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+        uniform token subdivisionScheme = "none"
+    }}
+}}
+"#);
+        std::fs::write(directory.path().join("root.usda"), "#usda 1.0\n(subLayers = [@mesh.usda@])\n").unwrap();
+        std::fs::write(&layer, geometry(1)).unwrap();
+        let mut app = App::new();
+        app.register_asset_source(bevy::asset::io::AssetSourceId::Default, crate::watcher::file_source(directory.path()));
+        app.add_plugins((MinimalPlugins, AssetPlugin {
+            file_path: directory.path().to_string_lossy().into_owned(),
+            watch_for_changes_override: Some(true), ..default()
+        }, UsdAssetPlugin));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_resource::<DeferHiddenMeshes>();
+        app.finish();
+        app.cleanup();
+        let handle: Handle<UsdScene> = app.world().resource::<AssetServer>().load("root.usda");
+        let roots = [0.0, 10.0].map(|current| app.world_mut()
+            .spawn((UsdSceneRoot(handle.clone()), UsdInstanceTime { current })).id());
+        tick_until(&mut app, |world| roots.iter().all(|root|
+            world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        let entities = roots.map(|root| instance_entity(app.world(), root, "/Hidden/M"));
+        let revisions = roots.map(|root| app.world().get::<UsdSceneInstance>(root).unwrap().revision);
+        for entity in entities {
+            assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+            app.world_mut().entity_mut(entity).insert(Name::new("runtime marker"));
+        }
+        std::fs::write(&layer, geometry(7)).unwrap();
+        tick_until(&mut app, |world| roots.iter().zip(revisions).all(|(root, previous)|
+            world.get::<UsdSceneInstance>(*root).is_some_and(|instance| instance.revision != previous)
+                && world.get::<UsdSceneState>(*root) == Some(&UsdSceneState::Ready)));
+        for (root, entity) in roots.into_iter().zip(entities) {
+            assert_eq!(instance_entity(app.world(), root, "/Hidden/M"), entity);
+            assert_eq!(app.world().get::<Name>(entity).unwrap().as_str(), "runtime marker");
+            assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+            assert!(app.world().get::<Mesh3d>(entity).is_none());
+        }
+        let stage = app.world().non_send::<UsdInstances>().stage(roots[0]).unwrap().clone();
+        stage.attribute("/Hidden.visibility").unwrap().set(openusd::sdf::Value::Token("inherited".into())).unwrap();
+        tick_until(&mut app, |world| world.get::<Mesh3d>(entities[0]).is_some());
+        let mesh = app.world().resource::<Assets<Mesh>>()
+            .get(&app.world().get::<Mesh3d>(entities[0]).unwrap().0).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+            else { panic!("mesh positions missing") };
+        assert!(points.iter().any(|point| point[0] == 7.0));
+        assert!(app.world().get::<Mesh3d>(entities[1]).is_none());
+        assert_eq!(app.world().get::<UsdInstanceTime>(roots[1]).unwrap().current, 10.0);
     }
 
     #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]

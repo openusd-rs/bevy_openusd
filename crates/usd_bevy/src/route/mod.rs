@@ -33,7 +33,9 @@ pub mod flat_material;
 pub mod native;
 pub mod light;
 pub mod points;
+pub(crate) mod profiling;
 pub mod material;
+pub mod meta;
 mod texture_pack;
 mod color_texture;
 mod generated_image;
@@ -49,6 +51,7 @@ pub mod reflect;
 pub mod shapes;
 pub mod skel;
 pub mod subset;
+pub mod residency;
 pub mod subdivision;
 pub mod xform;
 
@@ -112,7 +115,7 @@ impl DisplayPurposes {
 
 /// What a [`PrimRoute`] needs to read the stage for one prim. Built once per
 /// prim per projection/patch and shared across every route, so the composed
-/// `typeName` is read a single time.
+/// `typeName` and mesh geometry are read once within that projection.
 pub struct RouteCtx<'a> {
     /// The live stage (source of truth).
     pub stage: &'a Stage,
@@ -122,6 +125,9 @@ pub struct RouteCtx<'a> {
     pub type_name: Option<String>,
     /// The time code to resolve animated attributes at (`None` = default time).
     pub time: Option<f64>,
+    decoded_mesh: std::cell::OnceCell<anyhow::Result<Option<crate::read::geom::ReadMesh>>>,
+    read_timing: std::cell::Cell<Option<MeshReadTiming>>,
+    trace_memory: bool,
 }
 
 impl<'a> RouteCtx<'a> {
@@ -143,6 +149,9 @@ impl<'a> RouteCtx<'a> {
             path,
             type_name,
             time,
+            decoded_mesh: Default::default(),
+            read_timing: Default::default(),
+            trace_memory: false,
         }
     }
 
@@ -150,6 +159,58 @@ impl<'a> RouteCtx<'a> {
     pub fn prim_str(&self) -> &str {
         self.path.as_str()
     }
+
+    pub(crate) fn read_mesh(&self) -> anyhow::Result<Option<&crate::read::geom::ReadMesh>> {
+        if let Some(mut timing) = self.read_timing.get() {
+            timing.requests += 1;
+            self.read_timing.set(Some(timing));
+        }
+        self.decoded_mesh.get_or_init(|| {
+            if self.trace_memory { profiling::memory_event("mesh-decode-begin", self.path, "read_mesh", None); }
+            let started = self.read_timing.get().map(|_| std::time::Instant::now());
+            let result = crate::read::geom::read_mesh_at(self.stage, self.path, self.time);
+            if self.trace_memory {
+                profiling::memory_event("mesh-decode-returned", self.path, "read_mesh", result.as_ref().ok().and_then(Option::as_ref).map(cache::read_mesh_bytes));
+            }
+            if let Some(started) = started {
+                let mut timing = self.read_timing.get().unwrap();
+                timing.elapsed += started.elapsed();
+                timing.decodes += 1;
+                match &result {
+                    Ok(Some(read)) => timing.array_bytes += cache::read_mesh_bytes(read) as u64,
+                    Ok(None) => timing.missing += 1,
+                    Err(_) => timing.errors += 1,
+                }
+                self.read_timing.set(Some(timing));
+            }
+            result
+        })
+            .as_ref().map(Option::as_ref).map_err(|error| anyhow::anyhow!("{error:#}"))
+    }
+
+    fn report_read_timing(&self, world: &mut World) {
+        if let Some(timing) = self.read_timing.get()
+            && let Some(mut total) = world.get_resource_mut::<MeshReadTiming>() {
+            total.requests += timing.requests;
+            total.decodes += timing.decodes;
+            total.missing += timing.missing;
+            total.errors += timing.errors;
+            total.array_bytes += timing.array_bytes;
+            total.elapsed += timing.elapsed;
+        }
+    }
+}
+
+/// Opt-in mesh reads through registry contexts; elapsed time overlaps route timings.
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct MeshReadTiming {
+    pub requests: u64,
+    pub decodes: u64,
+    pub missing: u64,
+    pub errors: u64,
+    /// Returned geometry array payload, excluding subset data and allocator overhead.
+    pub array_bytes: u64,
+    pub elapsed: std::time::Duration,
 }
 
 /// One prim-schema → component mapping. Object-safe so routes can be boxed and
@@ -195,6 +256,7 @@ pub trait PrimRoute: Send + Sync + 'static {
 #[derive(Resource, Clone, Default)]
 pub struct SchemaRegistry {
     routes: Vec<Arc<dyn PrimRoute>>,
+    builtin_only: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -208,6 +270,26 @@ pub struct RouteTiming {
 /// Opt-in cumulative CPU timings for route matching and application.
 #[derive(Resource, Debug, Default)]
 pub struct ProjectionTimings(pub std::collections::BTreeMap<&'static str, RouteTiming>);
+
+/// Route costs by hierarchy visibility at entry; excludes camera/frustum visibility.
+#[derive(Resource, Default)]
+pub struct ProjectionVisibilityTimings(pub std::collections::BTreeMap<(&'static str, Option<bool>), RouteTiming>);
+
+fn hierarchy_hidden(world: &World, mut entity: Entity) -> Option<bool> {
+    use bevy::prelude::{ChildOf, Visibility};
+    for _ in 0..128 {
+        let current = world.get_entity(entity).ok()?;
+        match current.get::<Visibility>() {
+            Some(Visibility::Hidden) => return Some(true),
+            Some(Visibility::Visible) => return Some(false),
+            None => return Some(false),
+            Some(Visibility::Inherited) => (),
+        }
+        let Some(parent) = current.get::<ChildOf>() else { return Some(false); };
+        entity = parent.parent();
+    }
+    None
+}
 
 impl SchemaRegistry {
     /// An empty registry.
@@ -239,6 +321,8 @@ impl SchemaRegistry {
         r.register(instancer::PointInstancerRoute);
         // Physics schemas → marker components for an app's physics backend.
         r.register(physics::PhysicsRoute);
+        // Prim metadata (kind, displayName) → labels for tree views.
+        r.register(meta::MetaRoute);
         // Media/volume schemas → data markers for an app's audio/volume backend.
         r.register(audio::SpatialAudioRoute);
         r.register(audio::VolumeRoute);
@@ -250,12 +334,14 @@ impl SchemaRegistry {
         r.register(payload::PayloadRoute);
         r.register(native::NativeInstanceRoute);
         r.register(reflect::ReflectRoute);
+        r.builtin_only = true;
         r
     }
 
     /// Append a route. This is the analog of "make a component available in
     /// `bsn!`": apps register routes for their own schemas/components.
     pub fn register<R: PrimRoute>(&mut self, route: R) {
+        self.builtin_only = false;
         self.routes.push(Arc::new(route));
     }
 
@@ -272,10 +358,15 @@ impl SchemaRegistry {
     /// Run every matching route's [`project`](PrimRoute::project) on `entity`,
     /// resolving animated attributes at the world's [`StageTime`] (if any).
     pub fn project_prim(&self, stage: &Stage, path: &Path, world: &mut World, entity: Entity) {
-        let ctx = RouteCtx::at(stage, path, time_of(world));
-        for route in &self.routes {
-            run_route(route.as_ref(), &ctx, world, entity, None);
-        }
+        self.project_prim_traced(stage, path, world, entity, false);
+    }
+
+    pub(crate) fn project_prim_traced(&self, stage: &Stage, path: &Path, world: &mut World, entity: Entity, trace: bool) {
+        let mut ctx = RouteCtx::at(stage, path, time_of(world));
+        ctx.trace_memory = trace;
+        if world.contains_resource::<MeshReadTiming>() { ctx.read_timing.set(Some(MeshReadTiming::default())); }
+        self.apply_routes(&ctx, world, entity, None);
+        ctx.report_read_timing(world);
     }
 
     /// Run every matching route's [`patch`](PrimRoute::patch) on `entity`,
@@ -289,14 +380,37 @@ impl SchemaRegistry {
         changed: &[&str],
     ) {
         let ctx = RouteCtx::at(stage, path, time_of(world));
+        if world.contains_resource::<MeshReadTiming>() { ctx.read_timing.set(Some(MeshReadTiming::default())); }
+        self.apply_routes(&ctx, world, entity, Some(changed));
+        ctx.report_read_timing(world);
+    }
+
+    fn apply_routes(&self, ctx: &RouteCtx, world: &mut World, entity: Entity, changed: Option<&[&str]>) {
+        let mut deferred = false;
+        let mut full = world.get::<residency::UsdDeferredMesh>(entity).is_some();
         for route in &self.routes {
-            run_route(route.as_ref(), &ctx, world, entity, Some(changed));
+            if self.builtin_only && route.name() == geom::MeshRoute.name() {
+                deferred = residency::should_defer(ctx, world, entity);
+                if deferred {
+                    world.entity_mut(entity).insert(residency::UsdDeferredMesh);
+                    full = false;
+                } else if full {
+                    world.entity_mut(entity).remove::<residency::UsdDeferredMesh>();
+                }
+            }
+            if deferred && residency::geometry_route(route.name()) { continue; }
+            if ctx.trace_memory { profiling::memory_event("route-begin", ctx.path, route.name(), None); }
+            run_route(route.as_ref(), ctx, world, entity, if full { None } else { changed });
+            if ctx.trace_memory { profiling::memory_event("route-complete", ctx.path, route.name(), None); }
+        }
+        if !self.builtin_only && full && let Ok(mut entity) = world.get_entity_mut(entity) {
+            entity.remove::<residency::UsdDeferredMesh>();
         }
     }
 }
 
 fn run_route(route: &dyn PrimRoute, ctx: &RouteCtx, world: &mut World, entity: Entity, changed: Option<&[&str]>) {
-    let timed = world.contains_resource::<ProjectionTimings>();
+    let timed = world.contains_resource::<ProjectionTimings>() || world.contains_resource::<ProjectionVisibilityTimings>();
     if !timed {
         if route.matches(ctx) {
             if let Some(changed) = changed { route.patch(ctx, world, entity, changed); }
@@ -307,6 +421,8 @@ fn run_route(route: &dyn PrimRoute, ctx: &RouteCtx, world: &mut World, entity: E
     let start = std::time::Instant::now();
     let matched = route.matches(ctx);
     let matching = start.elapsed();
+    let hidden = (matched && world.contains_resource::<ProjectionVisibilityTimings>())
+        .then(|| hierarchy_hidden(world, entity));
     let start = std::time::Instant::now();
     if matched {
         if let Some(changed) = changed { route.patch(ctx, world, entity, changed); }
@@ -320,6 +436,13 @@ fn run_route(route: &dyn PrimRoute, ctx: &RouteCtx, world: &mut World, entity: E
         entry.matching += matching;
         entry.application += application;
     }
+    if let Some(hidden) = hidden && let Some(mut timings) = world.get_resource_mut::<ProjectionVisibilityTimings>() {
+        let entry = timings.0.entry((route.name(), hidden)).or_default();
+        entry.attempts += 1;
+        entry.matches += 1;
+        entry.matching += matching;
+        entry.application += application;
+    }
 }
 
 /// The current [`StageTime`] in `world`, if the resource is present.
@@ -330,6 +453,59 @@ fn time_of(world: &World) -> Option<f64> {
 #[cfg(test)]
 mod timing_tests {
     use super::*;
+
+    #[test]
+    fn hierarchy_profiling_handles_inheritance_overrides_and_depth_limits() {
+        use bevy::prelude::{ChildOf, Visibility};
+        let mut world = World::new();
+        let parent = world.spawn(Visibility::Hidden).id();
+        let child = world.spawn((Visibility::Inherited, ChildOf(parent))).id();
+        assert_eq!(hierarchy_hidden(&world, child), Some(true));
+        world.entity_mut(child).insert(Visibility::Visible);
+        assert_eq!(hierarchy_hidden(&world, child), Some(false));
+        world.entity_mut(child).insert(Visibility::Inherited);
+        world.entity_mut(parent).insert(Visibility::Inherited);
+        assert_eq!(hierarchy_hidden(&world, child), Some(false));
+        world.entity_mut(parent).insert(Visibility::Hidden);
+        let gap = world.spawn(ChildOf(parent)).id();
+        let leaf = world.spawn((Visibility::Inherited, ChildOf(gap))).id();
+        assert_eq!(hierarchy_hidden(&world, leaf), Some(false));
+        let mut deep = child;
+        for _ in 0..128 { deep = world.spawn((Visibility::Inherited, ChildOf(deep))).id(); }
+        assert_eq!(hierarchy_hidden(&world, deep), None);
+        world.despawn(deep);
+        assert_eq!(hierarchy_hidden(&world, deep), None);
+    }
+
+    struct ReadsMesh;
+    impl PrimRoute for ReadsMesh {
+        fn matches(&self, ctx: &RouteCtx) -> bool { ctx.read_mesh().unwrap().is_some() }
+        fn project(&self, ctx: &RouteCtx, _: &mut World, _: Entity) {
+            assert!(ctx.read_mesh().unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn mesh_read_timing_counts_shared_reads_once_per_context() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/material_subsets.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Panels").unwrap();
+        let read = crate::read::geom::read_mesh(&stage, &path).unwrap().unwrap();
+        let mut registry = SchemaRegistry::new();
+        registry.register(ReadsMesh);
+        registry.register(ReadsMesh);
+        let mut world = World::new();
+        let entity = world.spawn_empty().id();
+        registry.project_prim(&stage, &path, &mut world, entity);
+        assert!(!world.contains_resource::<MeshReadTiming>());
+        world.init_resource::<MeshReadTiming>();
+        registry.project_prim(&stage, &path, &mut world, entity);
+        registry.patch_prim(&stage, &path, &mut world, entity, &["points"]);
+        registry.project_prim(&stage, &openusd::sdf::path("/").unwrap(), &mut world, entity);
+        let reads = world.resource::<MeshReadTiming>();
+        assert_eq!((reads.requests, reads.decodes, reads.missing, reads.errors), (10, 3, 1, 0));
+        assert_eq!(reads.array_bytes, 2 * cache::read_mesh_bytes(&read) as u64);
+    }
 
     struct Matches;
     impl PrimRoute for Matches {
@@ -354,8 +530,14 @@ mod timing_tests {
         registry.project_prim(&stage, &path, &mut world, entity);
         assert!(!world.contains_resource::<ProjectionTimings>());
         world.init_resource::<ProjectionTimings>();
+        world.init_resource::<ProjectionVisibilityTimings>();
         registry.project_prim(&stage, &path, &mut world, entity);
+        world.entity_mut(entity).insert(bevy::prelude::Visibility::Hidden);
         registry.patch_prim(&stage, &path, &mut world, entity, &["visibility"]);
+        let visibility = &world.resource::<ProjectionVisibilityTimings>().0;
+        assert_eq!(visibility[&(Matches.name(), Some(false))].matches, 1);
+        assert_eq!(visibility[&(Matches.name(), Some(true))].matches, 1);
+        assert_eq!(visibility.len(), 2);
         let timings = world.resource::<ProjectionTimings>();
         let matched = &timings.0[Matches.name()];
         assert_eq!((matched.attempts, matched.matches), (2, 2));

@@ -694,7 +694,11 @@ impl Prim {
     /// or above it (per the stage's runtime load rules) is excluded. Mirrors
     /// C++ `UsdPrim::IsLoaded`.
     pub fn is_loaded(&self) -> Result<bool> {
-        if !self.is_active()? {
+        self.is_loaded_with_active(self.is_active()?)
+    }
+
+    pub(crate) fn is_loaded_with_active(&self, active: bool) -> Result<bool> {
+        if !active {
             return Ok(false);
         }
         // No rule anywhere means every path resolves loaded (`LoadRules`'
@@ -739,15 +743,7 @@ impl Prim {
     /// `true` if the prim or any ancestor resolves to `class`. Mirrors C++
     /// `UsdPrim::IsAbstract`.
     pub fn is_abstract(&self) -> Result<bool> {
-        if self.path == sdf::Path::abs_root() || !self.stage.has_spec(&self.path)? {
-            return Ok(false);
-        }
-        for path in self.path.ancestors_below_root() {
-            if self.stage.field::<sdf::Specifier>(&path, sdf::FieldKey::Specifier)? == Some(sdf::Specifier::Class) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(self.stage.masked(&self.path, |g, cache| cache.is_abstract(g, &self.path))?)
     }
 
     /// `true` if the prim index contains at least one composition arc.
@@ -1055,23 +1051,20 @@ impl Prim {
         let info = self.prim_type_info()?;
         let definition = info.prim_definition();
 
-        let mut paths = Vec::new();
-        for name in names {
-            let path = self.property_path(&name);
-            let spec_type = match (self.stage.spec_type(&path)?, source) {
-                (Some(spec_type), _) => Some(spec_type),
-                // A property the prim only inherits from its schema has no
-                // composed spec, so its kind comes from the declaration.
-                (None, PropertySource::Composed) => definition.property(&name).map(|property| property.spec_type()),
-                // Nothing a schema declares is authored, so a name with no
-                // composed spec belongs to neither kind.
-                (None, PropertySource::Authored) => None,
-            };
-            if spec_type == Some(ty) {
-                paths.push(path);
+        Ok(self.stage.masked(&self.path, |graph, cache| {
+            let mut paths = Vec::new();
+            for name in &names {
+                let path = self.property_path(name);
+                let authored = if path.is_empty() { None } else { cache.spec_type(graph, &path)? };
+                let spec_type = match (authored, source) {
+                    (Some(spec_type), _) => Some(spec_type),
+                    (None, PropertySource::Composed) => definition.property(name).map(|property| property.spec_type()),
+                    (None, PropertySource::Authored) => None,
+                };
+                if spec_type == Some(ty) { paths.push(path); }
             }
-        }
-        Ok(paths)
+            Ok(paths)
+        })?)
     }
 
     /// Property path for `name` under this prim. An invalid name yields the
@@ -1207,6 +1200,63 @@ impl VariantSets {
     /// selection sites that actually contribute to the prim.
     pub fn get_all_variant_selections(&self) -> Result<Vec<(String, String)>> {
         Ok(self.stage.with_cache(|g, c| c.variant_selections(g, &self.prim))?)
+    }
+
+    /// The names of every variant set authored on any spec contributing to
+    /// the prim, strongest site first, without duplicates. Mirrors C++
+    /// `UsdVariantSets::GetNames`.
+    pub fn names(&self) -> Result<Vec<String>> {
+        let mut names: Vec<String> = Vec::new();
+        for site in self.stage.prim(self.prim.clone())?.prim_stack()? {
+            let Some(layer) = self.stage.layer(&site.layer) else {
+                continue;
+            };
+            let Ok(Some(spec)) = layer.prim(site.path.clone()) else {
+                continue;
+            };
+            if let Ok(Some(sdf::Value::TokenVec(sets))) =
+                spec.field(sdf::ChildrenKey::VariantSetChildren.as_str())
+            {
+                for set in sets {
+                    let set = String::from(set);
+                    if !names.contains(&set) {
+                        names.push(set);
+                    }
+                }
+            }
+        }
+        Ok(names)
+    }
+
+    /// The variants authored for `set` on any spec contributing to the
+    /// prim, strongest site first, without duplicates. Mirrors C++
+    /// `UsdVariantSet::GetVariantNames`.
+    pub fn variant_names(&self, set: &str) -> Result<Vec<String>> {
+        let mut names: Vec<String> = Vec::new();
+        for site in self.stage.prim(self.prim.clone())?.prim_stack()? {
+            let Some(layer) = self.stage.layer(&site.layer) else {
+                continue;
+            };
+            let Ok(set_path) = site.path.append_variant_selection(set, "") else {
+                continue;
+            };
+            // A variant set spec is not a prim spec; read its field raw.
+            let Ok(Some(field)) = layer
+                .data()
+                .try_field(&set_path, sdf::ChildrenKey::VariantChildren.as_str())
+            else {
+                continue;
+            };
+            if let sdf::Value::TokenVec(variants) = field.into_owned() {
+                for variant in variants {
+                    let variant = String::from(variant);
+                    if !names.contains(&variant) {
+                        names.push(variant);
+                    }
+                }
+            }
+        }
+        Ok(names)
     }
 }
 

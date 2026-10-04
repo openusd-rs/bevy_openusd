@@ -119,6 +119,25 @@ impl UsdInstances {
         self.roots.get(&root)?.map.entity(path)
     }
 
+    /// The prim path of an entity projected under `root`.
+    pub fn path(&self, root: Entity, entity: Entity) -> Option<&str> {
+        self.roots.get(&root)?.map.path(entity)
+    }
+
+    /// Every `(prim path, entity)` projected under `root`, the stage root
+    /// `/` included.
+    pub fn prims(&self, root: Entity) -> impl Iterator<Item = (&str, Entity)> {
+        self.roots
+            .get(&root)
+            .into_iter()
+            .flat_map(|runtime| runtime.map.iter())
+    }
+
+    /// The scene roots with a projected stage.
+    pub fn roots(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.roots.keys().copied()
+    }
+
     pub fn len(&self) -> usize {
         self.roots.len()
     }
@@ -134,8 +153,17 @@ pub(crate) struct InstanceRuntime {
     pub map: PrimEntities,
     pub textures: SnapshotTextures,
     pub sampled: f64,
+    pub purposes: crate::route::DisplayPurposes,
+    pub defer_hidden: bool,
+    /// The projection still running for this root, spread over frames.
+    pub job: Option<crate::live::ProjectionJob>,
     pub subdivision_levels: Option<u32>,
     pub curve_steps: (usize, Option<usize>),
+    /// Mesh and material handles of prims a variant switch turned off, kept
+    /// so switching back finds them interned instead of uploading again.
+    pub parked: bevy::platform::collections::HashMap<bevy::asset::UntypedAssetId, bevy::asset::UntypedHandle>,
+    /// Material memo for variant switches on this runtime's own stage.
+    pub materials: Option<crate::route::material::ProjectionMaterials>,
 }
 
 #[cfg(test)]
@@ -270,11 +298,26 @@ def PointInstancer "PI" {{
     }
 }
 
+#[derive(Resource, Default)]
+struct ResidencyTurn(Option<Entity>);
+
 pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
     let delta = world.get_resource::<Time>().map_or(0.0, Time::delta_secs_f64);
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     let curve_steps = crate::route::curves::current_geometry_key(world);
-    for (&root, runtime) in &mut instances.roots {
+    let mut roots: Vec<_> = instances.roots.keys().copied().collect();
+    roots.sort_unstable();
+    if let Some(last) = world.get_resource::<ResidencyTurn>().and_then(|turn| turn.0) {
+        let start = roots.partition_point(|root| *root <= last);
+        roots.rotate_left(start);
+    }
+    for root in roots {
+        let runtime = instances.roots.get_mut(&root).unwrap();
+        // A stage still projecting is not synced or animated yet.
+        if runtime.job.is_some() {
+            continue;
+        }
+        let attempts = crate::route::residency::attempts(world);
         let mut current = world.get::<UsdInstanceTime>(root).map_or(0.0, |time| time.current);
         if let Some(mut playback) = world.get_mut::<UsdPlayback>(root) {
             current = playback.advance(current, delta, &runtime.live.stage);
@@ -287,7 +330,23 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
         let old_textures = world.remove_resource::<SnapshotTextures>();
         world.insert_resource(StageTime { current });
         world.insert_resource(runtime.textures.clone());
+        let defer_hidden = crate::route::residency::enabled(world);
+        if defer_hidden != runtime.defer_hidden {
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
+            runtime.defer_hidden = defer_hidden;
+        }
         apply_changes(world, &runtime.live, &mut runtime.map);
+        let purposes = world.get_resource::<crate::route::DisplayPurposes>().copied().unwrap_or_default();
+        if purposes != runtime.purposes {
+            let registry = world.resource::<SchemaRegistry>().clone();
+            for (path, entity) in runtime.map.iter() {
+                if let Ok(path) = openusd::sdf::path(path) {
+                    registry.patch_prim(&runtime.live.stage, &path, world, entity, &["purpose"]);
+                }
+            }
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
+            runtime.purposes = purposes;
+        }
         if subdivision_levels != runtime.subdivision_levels {
             crate::route::subdivision::refresh_geometry(world, &runtime.live.stage, &runtime.map);
             runtime.subdivision_levels = subdivision_levels;
@@ -305,7 +364,10 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
                 }
             }
             runtime.sampled = current;
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
         }
+        crate::route::residency::resume(world, &runtime.live.stage, &runtime.map);
+        if crate::route::residency::attempts(world) != attempts { world.insert_resource(ResidencyTurn(Some(root))); }
         world.remove_resource::<StageTime>();
         world.remove_resource::<AnimatedPrims>();
         world.remove_resource::<SnapshotTextures>();

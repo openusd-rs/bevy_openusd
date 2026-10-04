@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use super::{DisplayPurposes, PrimRoute, RouteCtx};
 use crate::read::geom::{
-    VisibilityState, read_effective_purpose, read_mesh_at, read_visibility_at,
+    VisibilityState, read_effective_purpose, read_visibility_at,
 };
 
 /// The prim's effective (inherited) USD `purpose`: `"default"`, `"render"`,
@@ -91,7 +91,7 @@ pub(crate) fn clear_geometry(world: &mut World, entity: Entity, owner: GeometryO
 impl MeshRoute {
     /// Bake + attach; returns whether a `Mesh3d` was inserted.
     fn attach(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) -> bool {
-        let Ok(Some(read)) = read_mesh_at(ctx.stage, ctx.path, ctx.time) else {
+        let Ok(Some(read)) = ctx.read_mesh() else {
             clear_geometry(world, entity, GeometryOwner::Mesh);
             return false;
         };
@@ -111,9 +111,7 @@ impl MeshRoute {
             ctx.prim_str(),
             read.points.len()
         );
-        let mut mesh = crate::mesh::assemble_mesh(&read, None, false);
-        if read.uvs.is_some() { super::cache::generate_cached_tangents(world, &mut mesh); }
-        let mesh_handle = super::cache::intern_mesh(world, mesh);
+        let mesh_handle = super::cache::intern_assembled_mesh(world, read);
         let material = super::cache::intern_material(world, super::material::default_material(ctx));
         if let Ok(mut e) = world.get_entity_mut(entity) {
             e.insert((Mesh3d(mesh_handle), MeshMaterial3d(material), GeometryOwner::Mesh));
@@ -126,6 +124,7 @@ impl MeshRoute {
 #[cfg(test)]
 mod mesh_matching_tests {
     use super::*;
+    use crate::read::geom::read_mesh_at;
 
     #[test]
     fn sampled_mesh_geometry_and_primvars_follow_independent_roots() {

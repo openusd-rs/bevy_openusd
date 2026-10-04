@@ -47,7 +47,7 @@ enum Prototype { Mesh(ProtoHandles), Hierarchy(Vec<PrototypePart>) }
 
 #[derive(Clone)]
 struct PrototypePart {
-    path: String,
+    path: std::sync::Arc<str>,
     parent: Option<String>,
     transform: Transform,
     visibility: Visibility,
@@ -59,7 +59,7 @@ struct PrototypePart {
 pub struct UsdPrototypePart(pub String);
 
 #[derive(Component, Default)]
-struct PrototypeEntities(HashMap<String, Entity>);
+struct PrototypeEntities(HashMap<std::sync::Arc<str>, Entity>);
 
 /// Marker on entities spawned for a PointInstancer instance.
 #[derive(Component, Debug, Clone, Copy, Default)]
@@ -109,6 +109,14 @@ fn instance_transform(read: &ReadPointInstancer, i: usize) -> Transform {
     xf
 }
 
+fn valid_instance_ids(ids: Option<&[i64]>, count: usize) -> bool {
+    let Some(ids) = ids else { return true };
+    if ids.len() != count { return false; }
+    if ids.windows(2).all(|pair| pair[0] < pair[1]) { return true; }
+    let mut unique = bevy::platform::collections::HashSet::with_capacity(ids.len());
+    ids.iter().all(|id| unique.insert(*id))
+}
+
 impl PointInstancerRoute {
     /// Despawn instance children this route spawned on a previous project, so a
     /// reproject doesn't stack duplicate batches.
@@ -151,24 +159,33 @@ impl PrimRoute for PointInstancerRoute {
             world.entity_mut(entity).insert(UsdInstancerWarning(error));
             return;
         }
+        if ctx.trace_memory {
+            eprintln!("point_instancer_memory path={:?} phase=arrays-read instances={} prototypes={} positions_bytes={} orientations_bytes={} scales_bytes={} indices_bytes={}", ctx.path,
+                read.positions.len(), read.prototypes.len(), std::mem::size_of_val(read.positions.as_slice()),
+                std::mem::size_of_val(read.orientations.as_slice()), std::mem::size_of_val(read.scales.as_slice()), std::mem::size_of_val(read.proto_indices.as_slice()));
+            super::profiling::memory_event("instancer-arrays-read", ctx.path, self.name(), None);
+        }
         let ids = ctx.stage.prim(ctx.path.clone()).ok()
             .and_then(|prim| {
                 let attribute = prim.attribute("ids");
                 ctx.time.map_or_else(|| attribute.get::<Value>(), |time| attribute.get_at::<Value>(openusd::usd::TimeCode::new(time))).ok().flatten()
             });
         let ids = match ids {
-            Some(Value::Int64Vec(ids)) => ids,
-            Some(Value::IntVec(ids)) => ids.into_iter().map(i64::from).collect(),
-            None => (0..read.positions.len()).map(|index| index as i64).collect(),
+            Some(Value::Int64Vec(ids)) => Some(ids),
+            Some(Value::IntVec(ids)) => Some(ids.into_iter().map(i64::from).collect()),
+            None => None,
             _ => {
                 world.entity_mut(entity).insert(UsdInstancerWarning("invalid instance IDs".into()));
                 return;
             }
         };
-        let unique: bevy::platform::collections::HashSet<_> = ids.iter().copied().collect();
-        if ids.len() != read.positions.len() || unique.len() != ids.len() {
+        if !valid_instance_ids(ids.as_deref(), read.positions.len()) {
             world.entity_mut(entity).insert(UsdInstancerWarning("instance IDs must be unique and match positions".into()));
             return;
+        }
+        if ctx.trace_memory {
+            eprintln!("point_instancer_memory path={:?} phase=ids-validated authored_ids={}", ctx.path, ids.is_some());
+            super::profiling::memory_event("instancer-ids-validated", ctx.path, self.name(), None);
         }
         let invisible = match masked_ids(ctx) {
             Ok(ids) => ids,
@@ -191,7 +208,12 @@ impl PrimRoute for PointInstancerRoute {
         let mut proto_cache: HashMap<usize, Option<Prototype>> =
             HashMap::default();
 
+        if ctx.trace_memory {
+            super::profiling::memory_event("instancer-spawn-begin", ctx.path, self.name(), None);
+            super::profiling::ecs_snapshot(world, "instancer-spawn-begin");
+        }
         for i in 0..read.positions.len() {
+            let id = ids.as_ref().map_or(i as i64, |ids| ids[i]);
             let xf = instance_transform(&read, i);
             let proto_idx = read.proto_indices[i] as usize;
 
@@ -199,19 +221,19 @@ impl PrimRoute for PointInstancerRoute {
                 proto_cache
                     .entry(proto_idx)
                     .or_insert_with(|| bake_prototype(ctx, world, &read, proto_idx))
-                    .clone()
+                    .as_ref()
             } else {
                 None
             };
 
-            let child = existing.remove(&ids[i]).unwrap_or_else(|| world.spawn_empty().id());
+            let child = existing.remove(&id).unwrap_or_else(|| world.spawn_empty().id());
             let mut e = world.entity_mut(child);
-            let visibility = if invisible.contains(&ids[i]) { Visibility::Hidden } else { Visibility::default() };
-            e.insert((UsdInstance, UsdInstanceId(ids[i]), xf, visibility, ChildOf(entity)));
+            let visibility = if invisible.contains(&id) { Visibility::Hidden } else { Visibility::default() };
+            e.insert((UsdInstance, UsdInstanceId(id), xf, visibility, ChildOf(entity)));
             match handles {
                 Some(Prototype::Hierarchy(parts)) => {
                     apply_handles(ctx, world, child, None);
-                    apply_hierarchy(ctx, world, child, &parts);
+                    apply_hierarchy(ctx, world, child, parts);
                 }
                 Some(Prototype::Mesh(handles)) => {
                     clear_hierarchy(world, child);
@@ -225,6 +247,11 @@ impl PrimRoute for PointInstancerRoute {
                     }
                     apply_handles(ctx, world, child, None);
                 }
+            }
+            if ctx.trace_memory && (i == 0 || (i+1) % 100_000 == 0) {
+                eprintln!("point_instancer_memory path={:?} phase=spawn-progress completed={} total={} allocated_entity_indices={}", ctx.path, i+1, read.positions.len(), world.entities().len());
+                super::profiling::memory_event("instancer-spawn-progress", ctx.path, self.name(), None);
+                super::profiling::ecs_snapshot(world, "instancer-spawn-progress");
             }
         }
         for child in existing.into_values() { world.despawn(child); }
@@ -338,14 +365,14 @@ fn clear_hierarchy(world: &mut World, entity: Entity) {
     }
 }
 
-fn apply_handles(ctx: &RouteCtx, world: &mut World, entity: Entity, handles: Option<ProtoHandles>) {
+fn apply_handles(ctx: &RouteCtx, world: &mut World, entity: Entity, handles: Option<&ProtoHandles>) {
     let mut e = world.entity_mut(entity);
     e.remove::<bevy::camera::primitives::Aabb>();
     if let Some((mesh, material, warnings, subsets)) = handles {
-        e.insert((Mesh3d(mesh), MeshMaterial3d(material)));
+        e.insert((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
         if warnings.is_empty() { e.remove::<super::material::UsdMaterialWarning>(); }
         else { e.insert(super::material::UsdMaterialWarning(warnings.join("; "))); }
-        super::subset::apply(world, entity, &subsets);
+        super::subset::apply(world, entity, subsets);
     } else {
         e.remove::<(Mesh3d, MeshMaterial3d<StandardMaterial>, super::material::UsdMaterialWarning)>();
         super::subset::SubsetRoute.remove(ctx, world, entity);
@@ -358,9 +385,9 @@ fn apply_hierarchy(ctx: &RouteCtx, world: &mut World, instance: Entity, parts: &
     for part in parts {
         let entity = previous.remove(&part.path).filter(|entity| world.get_entity(*entity).is_ok())
             .unwrap_or_else(|| world.spawn_empty().id());
-        let parent = part.parent.as_ref().and_then(|path| next.get(path)).copied().unwrap_or(instance);
-        world.entity_mut(entity).insert((UsdPrototypePart(part.path.clone()), part.transform, part.visibility, ChildOf(parent)));
-        apply_handles(ctx, world, entity, part.handles.clone());
+        let parent = part.parent.as_ref().and_then(|path| next.get(path.as_str())).copied().unwrap_or(instance);
+        world.entity_mut(entity).insert((UsdPrototypePart(part.path.to_string()), part.transform, part.visibility, ChildOf(parent)));
+        apply_handles(ctx, world, entity, part.handles.as_ref());
         next.insert(part.path.clone(), entity);
     }
     for entity in previous.into_values() {
@@ -409,13 +436,24 @@ fn bake_mesh(ctx: &RouteCtx, world: &mut World, proto_path: &openusd::sdf::Path,
     if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
         super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
     }
-    let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh, &material);
     let mesh_handle = super::cache::intern_mesh(world, mesh);
+    let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh_handle, &material)?;
     Some((mesh_handle, material, warnings, subsets))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn instance_id_validation_preserves_implicit_and_explicit_identity() {
+        assert!(super::valid_instance_ids(None, 10_000_000));
+        for ids in [&[][..], &[-5, 0, 10], &[10, -5, 0]] {
+            assert!(super::valid_instance_ids(Some(ids), ids.len()));
+        }
+        for (ids, count) in [(&[1, 1][..], 2), (&[1, 3, 1][..], 3), (&[1][..], 2), (&[][..], 1)] {
+            assert!(!super::valid_instance_ids(Some(ids), count));
+        }
+    }
+
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
@@ -516,7 +554,7 @@ mod tests {
                         assert!(colors.iter().all(|color| *color == [0.8,0.2,0.1,1.0]));
                     }
                     for &copy in &copies[index] {
-                        let node = app.world().get::<PrototypeEntities>(copy).unwrap().0[&path];
+                        let node = app.world().get::<PrototypeEntities>(copy).unwrap().0[path.as_str()];
                         assert_eq!(&app.world().get::<Mesh3d>(node).unwrap().0, expected, "{kind} at {}", times[index]);
                         assert_eq!(app.world().get::<Visibility>(node), Some(&Visibility::Inherited));
                         assert_eq!(app.world().get::<MeshMaterial3d<StandardMaterial>>(node), app.world().get::<MeshMaterial3d<StandardMaterial>>(ordinary));
@@ -570,6 +608,11 @@ mod tests {
         assert!(instances.iter().all(|instances| instances.len() == 2));
         let part = |world: &World, instance, path: &str| world.get::<PrototypeEntities>(instance).unwrap().0[path];
         let b_path = "/Library/Assembly/Nested/B";
+        for group in &instances {
+            let keys: Vec<_> = group.iter().map(|instance| app.world().get::<PrototypeEntities>(*instance).unwrap()
+                .0.get_key_value(b_path).unwrap().0).collect();
+            assert!(std::sync::Arc::ptr_eq(keys[0], keys[1]));
+        }
         let b = part(app.world(), instances[0][0], b_path);
         let runtime = app.world_mut().spawn((Transform::default(), ChildOf(b))).id();
         for times in [[0.0,10.0], [10.0,0.0], [5.0,10.0]] {
@@ -577,6 +620,9 @@ mod tests {
             app.update();
             for (index, group) in instances.iter().enumerate() {
                 assert!(app.world().get::<UsdInstancerWarning>(parents[index]).is_none());
+                let keys: Vec<_> = group.iter().map(|instance| app.world().get::<PrototypeEntities>(*instance).unwrap()
+                    .0.get_key_value(b_path).unwrap().0).collect();
+                assert!(std::sync::Arc::ptr_eq(keys[0], keys[1]));
                 let mut handles = Vec::new();
                 for &instance in group {
                     assert!(app.world().get::<Mesh3d>(instance).is_none());

@@ -45,7 +45,7 @@ pub(crate) fn enabled(ctx: &RouteCtx, world: &World) -> bool {
 }
 
 pub(crate) fn refined_mesh(ctx: &RouteCtx, levels: u32) -> anyhow::Result<crate::read::geom::ReadMesh> {
-    let mut mesh = crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time)?
+    let mut mesh = ctx.read_mesh()?.cloned()
         .ok_or_else(|| anyhow::anyhow!("missing subdivision mesh"))?;
     let points = if crate::read::skel::is_skinned(ctx.stage, ctx.path) {
         crate::read::skel::skinned_points_at(ctx.stage, ctx.path, ctx.time)?

@@ -1,5 +1,40 @@
 use bevy::prelude::*;
 
+pub(crate) fn mesh_residency_report(assets: &Assets<Mesh>, references: impl IntoIterator<Item = (AssetId<Mesh>, bool)>) -> String {
+    let mut usage = std::collections::HashMap::<AssetId<Mesh>, u8>::new();
+    for (id, visible) in references { *usage.entry(id).or_default() |= if visible { 1 } else { 2 }; }
+    let mut buckets = [[0usize; 7]; 4];
+    for (id, mesh) in assets.iter() {
+        let row = &mut buckets[usize::from(*usage.get(&id).unwrap_or(&0))];
+        row[0] += 1;
+        let render_world = mesh.asset_usage.contains(bevy::asset::RenderAssetUsages::RENDER_WORLD);
+        row[4] += usize::from(render_world);
+        match (mesh.try_attributes(), mesh.try_indices_option(), mesh.try_has_morph_targets()) {
+            (Ok(attributes), Ok(indices), Ok(_)) => {
+                let vertices = attributes.map(|(_, values)| values.get_bytes().len()).sum::<usize>();
+                let indices = indices.map_or(0, |indices| match indices {
+                    bevy::mesh::Indices::U16(values) => size_of_val(values.as_slice()),
+                    bevy::mesh::Indices::U32(values) => size_of_val(values.as_slice()),
+                });
+                let morph = mesh.get_morph_targets().map_or(0, size_of_val);
+                row[1] += vertices;
+                row[2] += indices;
+                row[3] += morph;
+                if render_world { row[5] += vertices + indices + morph; }
+            }
+            _ => row[6] += 1,
+        }
+    }
+    let missing = usage.keys().filter(|id| !assets.contains(**id)).count();
+    let mut report = format!("mesh_residency_scope=unique-retained-cpu-payload-by-hierarchy-visibility\nmesh_residency_excludes=frustum-culling,gpu-allocation,textures,skin-palettes,allocator-overhead\nmesh_residency_missing_assets={missing}\n");
+    for (name, row) in ["unreferenced", "visible_only", "hidden_only", "shared"].into_iter().zip(buckets) {
+        for (field, value) in ["assets", "vertex_bytes", "index_bytes", "morph_bytes", "render_world_assets", "render_world_cpu_bytes", "unavailable_cpu_assets"].into_iter().zip(row) {
+            report.push_str(&format!("mesh_residency_{name}_{field}={value}\n"));
+        }
+    }
+    report
+}
+
 pub(crate) fn environment_report(map: Option<&bevy::light::EnvironmentMapLight>,
     state: Option<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState>,
     recorded: u64, active: usize, phase: &str) -> String {
@@ -19,6 +54,28 @@ pub(crate) fn camera_report(transform: &GlobalTransform, clip_from_view: Mat4) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn residency_counts_shared_assets_once_and_separates_hidden_payload() {
+        let mut assets = Assets::<Mesh>::default();
+        let shared = assets.add(Mesh::from(Rectangle::default()));
+        let hidden = assets.add(Mesh::from(Rectangle::default()));
+        let unreferenced = assets.add(Mesh::from(Rectangle::default()));
+        let missing = assets.add(Mesh::from(Rectangle::default()));
+        assets.remove(missing.id());
+        let report = mesh_residency_report(&assets, [(shared.id(), true), (shared.id(), false),
+            (shared.id(), true), (hidden.id(), false), (missing.id(), true)]);
+        for (field, value) in [("shared_assets", 1), ("hidden_only_assets", 1), ("visible_only_assets", 0),
+            ("unreferenced_assets", 1), ("missing_assets", 1), ("shared_vertex_bytes", 128),
+            ("hidden_only_vertex_bytes", 128), ("shared_render_world_cpu_bytes", 152)] {
+            assert!(report.contains(&format!("mesh_residency_{field}={value}\n")), "{report}");
+        }
+        assert!(assets.contains(unreferenced.id()));
+        assets.get_mut(&hidden).unwrap().take_gpu_data().unwrap();
+        let report = mesh_residency_report(&assets, [(hidden.id(), false)]);
+        assert!(report.contains("mesh_residency_hidden_only_unavailable_cpu_assets=1\n"));
+        assert!(report.contains("mesh_residency_hidden_only_vertex_bytes=0\n"));
+    }
 
     #[test]
     fn environment_metadata_distinguishes_attachment_and_filtering() {

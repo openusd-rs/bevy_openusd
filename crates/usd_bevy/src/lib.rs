@@ -20,6 +20,8 @@ pub mod prim_ref;
 pub mod read;
 pub mod reload;
 pub mod route;
+#[cfg(feature = "skeleton_overlay")]
+pub mod skeleton_overlay;
 pub mod snippet;
 pub mod source;
 pub mod subdivision;

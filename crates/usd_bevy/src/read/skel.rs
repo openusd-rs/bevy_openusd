@@ -633,12 +633,23 @@ fn sample_joint_locals(
     resolver: &SkeletonResolver,
     time: Option<f64>,
 ) -> anyhow::Result<Vec<gf::Matrix4d>> {
+    let animation = animation_source(stage, skeleton, binding);
+    sample_animation_locals(stage, animation, joints, resolver, time)
+}
+
+fn sample_animation_locals(
+    stage: &Stage,
+    animation: Option<Path>,
+    joints: &[String],
+    resolver: &SkeletonResolver,
+    time: Option<f64>,
+) -> anyhow::Result<Vec<gf::Matrix4d>> {
     let rest = resolver.rest_pose_local();
     anyhow::ensure!(
         rest.len() == joints.len(),
         "skeleton rest-pose count does not match joint order"
     );
-    let Some(path) = animation_source(stage, skeleton, binding) else {
+    let Some(path) = animation else {
         return Ok(rest.to_vec());
     };
     let Some(animation) = SkelAnimQuery::new(stage, path)? else {
@@ -658,6 +669,42 @@ fn sample_joint_locals(
                 .map_or(rest[joint], |index| values[index])
         })
         .collect())
+}
+
+/// A skeleton's posed joints in skeleton space, with each joint's parent.
+#[derive(Debug, Clone)]
+pub struct SkeletonPose {
+    pub joints: Vec<bevy::math::Mat4>,
+    pub parents: Vec<Option<usize>>,
+}
+
+/// Poses `skeleton` at `time` from its `skel:animationSource`, else its rest pose.
+pub fn skeleton_pose(
+    stage: &Stage,
+    skeleton: &Path,
+    time: Option<f64>,
+) -> anyhow::Result<Option<SkeletonPose>> {
+    let Some(prim) = Skeleton::get(stage, skeleton.clone())? else {
+        return Ok(None);
+    };
+    let joints = prim.joints()?;
+    let resolver = SkeletonResolver::from_skeleton(&prim)?;
+    let animation = inherited_rel(stage, skeleton, "skel:animationSource")
+        .and_then(|path| openusd::sdf::path(&path).ok());
+    let locals = sample_animation_locals(stage, animation, &joints, &resolver, time)?;
+    let skel = resolver.joint_local_to_skel_space(&locals);
+    Ok(Some(SkeletonPose {
+        joints: skel
+            .iter()
+            .map(|matrix| bevy::math::Mat4::from_cols_array(&matrix.0.map(|value| value as f32)))
+            .collect(),
+        parents: resolver
+            .topology()
+            .parents()
+            .iter()
+            .map(|&parent| usize::try_from(parent).ok())
+            .collect(),
+    }))
 }
 
 /// The enclosing `SkelRoot` of `prim` (walking up, inclusive), which scopes
@@ -1032,6 +1079,42 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn skeleton_pose_follows_the_animation_with_joint_parents() {
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/skel_test_simple.usda"
+        );
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let skeleton = openusd::sdf::path("/Test/Skel").unwrap();
+        for time in [0.0, 30.0] {
+            let pose = super::skeleton_pose(&stage, &skeleton, Some(time))
+                .unwrap()
+                .unwrap();
+            assert_eq!(pose.parents, [None, Some(0)]);
+            let tip = pose.joints[1].w_axis.truncate();
+            assert!(
+                tip.distance(bevy::math::Vec3::Y) < 1e-5,
+                "{tip:?} at {time}"
+            );
+            let up = pose.joints[1].transform_vector3(bevy::math::Vec3::Y);
+            let expected = if time == 0.0 {
+                bevy::math::Vec3::Y
+            } else {
+                -bevy::math::Vec3::X
+            };
+            assert!(up.distance(expected) < 1e-3, "{up:?} at {time}");
+        }
+        assert!(
+            super::skeleton_pose(&stage, &openusd::sdf::path("/Test/Bar").unwrap(), None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[test]
     fn eight_influences_skin_on_the_cpu_with_every_joint() {
         let joints = (0..8)

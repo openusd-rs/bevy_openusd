@@ -355,13 +355,13 @@ impl WindowApp for UsdApp {
                 || click.action == ribbon_action(ACTION_FLATTEN) {
                 let mode = if click.action == ribbon_action(ACTION_SAVE_LAYER) { SaveMode::EditLayer }
                     else if click.action == ribbon_action(ACTION_FLATTEN) { SaveMode::Flattened } else { SaveMode::RootLayer };
-                file_dialogs.start(file_dialog::Request::save(mode, &view.document));
+                file_dialogs.start(file_dialog::Request::save(mode, &view.document), &view.document.root_layer);
             } else if click.action == ribbon_action(ACTION_UNDO) {
                 send(editor, EditorCommand::Undo);
             } else if click.action == ribbon_action(ACTION_REDO) {
                 send(editor, EditorCommand::Redo);
             } else if click.action == ribbon_action(ACTION_OPEN) {
-                file_dialogs.start(file_dialog::Request::open(&view.document));
+                file_dialogs.start(file_dialog::Request::open(&view.document), &view.document.root_layer);
             } else if click.action == ribbon_action(ACTION_REFRESH_TEXTURES) {
                 send(editor, EditorCommand::RefreshTextures);
             }
@@ -422,6 +422,7 @@ fn outliner_pane(
     accent: MaraColor32,
     visibility: &std::collections::HashMap<String, bool>,
 ) {
+    let status = if status.trim().is_empty() { "Idle" } else { status };
     let lines = lighting::status_lines(status);
     let status_pod = Pod::new(MaraId::new(("usd.outliner", "status")));
     let status_pod = if lines.len() > 1 {

@@ -167,7 +167,7 @@ impl<'a> RouteCtx<'a> {
         }
         self.decoded_mesh.get_or_init(|| {
             if self.trace_memory { profiling::memory_event("mesh-decode-begin", self.path, "read_mesh", None); }
-            let started = self.read_timing.get().map(|_| std::time::Instant::now());
+            let started = self.read_timing.get().map(|_| bevy::platform::time::Instant::now());
             let result = crate::read::geom::read_mesh_at(self.stage, self.path, self.time);
             if self.trace_memory {
                 profiling::memory_event("mesh-decode-returned", self.path, "read_mesh", result.as_ref().ok().and_then(Option::as_ref).map(cache::read_mesh_bytes));
@@ -418,12 +418,12 @@ fn run_route(route: &dyn PrimRoute, ctx: &RouteCtx, world: &mut World, entity: E
         } else { route.remove(ctx, world, entity); }
         return;
     }
-    let start = std::time::Instant::now();
+    let start = bevy::platform::time::Instant::now();
     let matched = route.matches(ctx);
     let matching = start.elapsed();
     let hidden = (matched && world.contains_resource::<ProjectionVisibilityTimings>())
         .then(|| hierarchy_hidden(world, entity));
-    let start = std::time::Instant::now();
+    let start = bevy::platform::time::Instant::now();
     if matched {
         if let Some(changed) = changed { route.patch(ctx, world, entity, changed); }
         else { route.project(ctx, world, entity); }

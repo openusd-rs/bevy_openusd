@@ -129,7 +129,7 @@ fn assemble_after_lookup(world: &mut World, read: &ReadMesh, signature: u64, hit
         record_cache(world, "assembly_clone_hits", 1);
         return (mesh, true);
     }
-    let started = world.contains_resource::<MeshCacheMetrics>().then(std::time::Instant::now);
+    let started = world.contains_resource::<MeshCacheMetrics>().then(bevy::platform::time::Instant::now);
     let mut mesh = crate::mesh::assemble_mesh(read, None, false);
     if read.uvs.is_some() { generate_cached_tangents(world, &mut mesh); }
     if let Some(started) = started {

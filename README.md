@@ -15,6 +15,17 @@ direnv allow
 make run --args path/to/scene.usd
 ```
 
+## Web
+
+`usd_bevy` runs on wasm32. `examples/web` loads a `.usdz` through the
+AssetServer and a scene from in-memory bytes (`UsdSource::from_memory`):
+
+```sh
+make serve-web
+```
+
+![usd_bevy in the browser](media/web-wasm.png)
+
 ## Used by
 
 [gearbox](https://github.com/robolibs/gearbox), a farm machine and robot simulator

@@ -50,11 +50,11 @@ pub(crate) fn prepare(
     ctx: &RouteCtx,
     world: &mut World,
     read: &crate::read::geom::ReadMesh,
-    source: &Mesh,
+    source: &Handle<Mesh>,
     default_material: &Handle<StandardMaterial>,
-) -> PreparedSubsets {
+) -> Option<PreparedSubsets> {
     let mut prepared = PreparedSubsets::default();
-    if read.subsets.is_empty() { return prepared; }
+    if read.subsets.is_empty() { return Some(prepared); }
     let mut assigned = vec![false; read.face_vertex_counts.len()];
     for subset in &read.subsets {
         for &face in &subset.indices {
@@ -62,10 +62,11 @@ pub(crate) fn prepare(
                 .is_some_and(|assigned| { let fresh = !*assigned; *assigned = true; fresh });
             if !valid {
                 prepared.warning = Some("invalid or overlapping material subset faces; rendering whole mesh".into());
-                return prepared;
+                return Some(prepared);
             }
         }
     }
+    let face_indices = crate::mesh::MeshFaceIndices::new(read);
     for subset in &read.subsets {
         let Ok(path) = ctx.path.append_path(subset.name.as_str()) else { continue };
         let subset_ctx = RouteCtx::at(ctx.stage, &path, ctx.time);
@@ -78,16 +79,16 @@ pub(crate) fn prepare(
             Ok(None) => (default_material.clone(), Vec::new()),
             Err(error) => (default_material.clone(), vec![error.to_string()]),
         };
-        let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &subset.indices));
+        let mesh = subset_mesh(world.resource::<Assets<Mesh>>().get(source)?, face_indices.for_faces(&subset.indices));
         if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
             super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
         }
         prepared.parts.push((subset.name.clone(), super::cache::intern_mesh(world, mesh), material, warnings));
     }
     let remaining: Vec<i32> = assigned.iter().enumerate().filter_map(|(face, assigned)| (!assigned).then_some(face as i32)).collect();
-    let mesh = subset_mesh(source, crate::mesh::mesh_indices_for_faces(read, &remaining));
+    let mesh = subset_mesh(world.resource::<Assets<Mesh>>().get(source)?, face_indices.for_faces(&remaining));
     prepared.remainder = Some(super::cache::intern_mesh(world, mesh));
-    prepared
+    Some(prepared)
 }
 
 fn subset_mesh(source: &Mesh, indices: bevy::mesh::Indices) -> Mesh {
@@ -133,20 +134,23 @@ impl PrimRoute for SubsetRoute {
     fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) { clear(world, entity); }
 
     fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        let read = world.get::<super::skel::CpuSubsetGeometry>(entity).map(|geometry| geometry.0.clone())
-            .or_else(|| crate::read::geom::read_mesh_at(ctx.stage, ctx.path, ctx.time).ok().flatten());
+        let read = world.get::<super::skel::CpuSubsetGeometry>(entity).map(|geometry| std::borrow::Cow::Owned(geometry.0.clone()))
+            .or_else(|| ctx.read_mesh().ok().flatten().map(std::borrow::Cow::Borrowed));
         let Some(read) = read else {
             clear(world, entity);
             return;
         };
         if read.subsets.is_empty() { clear(world, entity); return; }
-        let Some(source) = world.get::<Mesh3d>(entity)
-            .and_then(|handle| world.get_resource::<Assets<Mesh>>()?.get(&handle.0)).cloned() else {
+        let Some(source) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
+            .filter(|handle| world.get_resource::<Assets<Mesh>>().is_some_and(|assets| assets.contains(handle.id()))) else {
             clear(world, entity);
             return;
         };
         let Some(default_material) = super::flat_material::base_handle(world, entity) else { return };
-        let prepared = prepare(ctx, world, &read, &source, &default_material);
+        let Some(prepared) = prepare(ctx, world, &read, &source, &default_material) else {
+            clear(world, entity);
+            return;
+        };
         apply(world, entity, &prepared);
         update_skin(world, entity, crate::mesh::uses_flat_normals(&read));
     }
@@ -156,6 +160,43 @@ impl PrimRoute for SubsetRoute {
 mod tests {
     use super::*;
     use crate::instance::{UsdInstanceTime, UsdInstances};
+
+    #[test]
+    fn preparation_borrows_current_asset_and_handles_removal() {
+        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Mesh "M" {
+    point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    def GeomSubset "Part" {
+        uniform token familyName = "materialBind"
+        uniform token elementType = "face"
+        int[] indices = [0]
+    }
+}
+"#).open_stage().unwrap();
+        let path = openusd::sdf::path("/M").unwrap();
+        let ctx = RouteCtx::at(&stage, &path, None);
+        let read = ctx.read_mesh().unwrap().unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let source = world.resource_mut::<Assets<Mesh>>().add(crate::mesh::mesh_from_usd(read));
+        let material = world.resource_mut::<Assets<StandardMaterial>>().add(StandardMaterial::default());
+        for height in [0.0, 7.0] {
+            world.resource_mut::<Assets<Mesh>>().get_mut(&source).unwrap()
+                .insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, height, 0.0]; 3]);
+            let prepared = prepare(&ctx, &mut world, read, &source, &material).unwrap();
+            let assets = world.resource::<Assets<Mesh>>();
+            assert_eq!(prepared.parts.len(), 1);
+            assert_eq!(assets.get(&prepared.parts[0].1).unwrap().attribute(Mesh::ATTRIBUTE_POSITION),
+                assets.get(&source).unwrap().attribute(Mesh::ATTRIBUTE_POSITION));
+            assert_eq!(assets.get(&source).unwrap().indices().unwrap().len(), 3);
+            assert_eq!(assets.get(prepared.remainder.as_ref().unwrap()).unwrap().count_vertices(), 0);
+        }
+        world.resource_mut::<Assets<Mesh>>().remove(source.id());
+        assert!(prepare(&ctx, &mut world, read, &source, &material).is_none());
+    }
 
     #[test]
     fn gpu_morph_subsets_follow_independent_clocks_and_cpu_cleanup() {

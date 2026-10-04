@@ -3,6 +3,18 @@ resolver = "2"
 members = ["crates/usd_bevy", "crates/usd_macro"]
 exclude = ["xtra", "vendor/openusd", "vendor/bevy_asset", "vendor/bevy_pbr"]
 
+[profile.dev.package.openusd]
+opt-level = 3
+
+[profile.dev.package.usd_bevy]
+opt-level = 3
+
+[profile.dev.package.bevy_mesh]
+opt-level = 3
+
+[profile.dev.package.bevy_mikktspace]
+opt-level = 3
+
 [patch.crates-io]
 bevy_asset = { path = "vendor/bevy_asset" }
 bevy_pbr = { path = "vendor/bevy_pbr" }
@@ -28,6 +40,8 @@ path = "src/main.rs"
 file_watcher = ["usd_bevy/file_watcher"]
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 png = "0.18"
 # The live USD editor: stage projection, sync, authoring, persistence.
 usd_bevy = { path = "crates/usd_bevy" }
@@ -69,3 +83,6 @@ tempfile = "3"
 eframe = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
 wgpu = { version = "29", default-features = false, features = ["vulkan"] }
 egui-wgpu = { version = "0.34", default-features = false, features = ["winit"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }

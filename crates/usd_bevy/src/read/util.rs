@@ -15,6 +15,21 @@ fn attr_default(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option
     Ok(stage.prim(prim.clone()).expect("validated USD path").attribute(name).get::<Value>()?)
 }
 
+/// The composed value of attribute `name` on `prim` when some layer authored
+/// one; a schema fallback answers `None`. Physics readers want this: the
+/// UsdPhysics fallbacks (a zero `principalAxes`, an infinite `centerOfMass`)
+/// are placeholders, not values a backend can simulate.
+pub fn read_authored(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
+    use openusd::usd::ResolveInfoSource;
+    let attr = stage.prim(prim.clone()).expect("validated USD path").attribute(name);
+    Ok(match attr.resolve_info()?.source() {
+        ResolveInfoSource::Default | ResolveInfoSource::TimeSamples | ResolveInfoSource::ValueClips => {
+            attr.get::<Value>()?
+        }
+        _ => None,
+    })
+}
+
 pub fn read_f32(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<f32>> {
     Ok(match attr_default(stage, prim, name)? {
         Some(Value::Float(v)) => Some(v),

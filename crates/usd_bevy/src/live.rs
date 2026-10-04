@@ -227,6 +227,7 @@ impl PrimEntities {
 // `UsdPrimRef` + `Transform`. Mesh / material / the full field→component
 // routing (RETHINK §12) layer on top of this same shape.
 
+use crate::instance::UsdInstanceOverrides;
 use crate::prim_ref::UsdPrimRef;
 use crate::read::xform::read_transform;
 use crate::route::{SchemaRegistry, StageTime};
@@ -251,8 +252,8 @@ fn has_time_samples(stage: &Stage, path: &openusd::sdf::Path) -> bool {
     prim.authored_attributes()
         .map(|attrs| {
             attrs.iter().any(|a| {
-                a.time_sample_times()
-                    .map(|times| !times.is_empty())
+                a.num_time_samples()
+                    .map(|count| count != 0)
                     .unwrap_or(false)
             })
         })
@@ -292,6 +293,92 @@ fn prim_inputs_are_animated(stage: &Stage, path: &openusd::sdf::Path) -> bool {
         || ["primvars:normals", "primvars:displayColor", "primvars:displayOpacity", "primvars:st", "primvars:st0"].iter()
             .any(|name| inherited_primvar_is_animated(stage, path, name))
         || crate::read::shade::bound_material_is_time_varying(stage, path)
+}
+
+#[derive(Default)]
+struct AnimationDiscovery {
+    binding_opinions: HashMap<openusd::sdf::Path, bool>,
+    materials: HashMap<openusd::sdf::Path, bool>,
+    primvar_owners: HashMap<(openusd::sdf::Path, &'static str), Option<openusd::sdf::Path>>,
+    profile: bool,
+    timings: [std::time::Duration; 6],
+}
+
+impl AnimationDiscovery {
+    fn measured(&mut self, index: usize, query: impl FnOnce(&mut Self) -> bool) -> bool {
+        let started = self.profile.then(std::time::Instant::now);
+        let result = query(self);
+        if let Some(started) = started { self.timings[index] += started.elapsed(); }
+        result
+    }
+
+    fn report(&self, prims: usize, resets: usize) {
+        if !self.profile { return; }
+        let [instancer, attributes, subsets, deformation, primvars, material] = self.timings.map(|time| time.as_secs_f64()*1000.0);
+        eprintln!("animation_progress prims={prims} resets={resets} instancer_ms={instancer:.3} attributes_ms={attributes:.3} subsets_ms={subsets:.3} deformation_ms={deformation:.3} primvars_ms={primvars:.3} material_ms={material:.3} scope=live-initial-projection includes=per-query-timer-overhead");
+    }
+
+    fn has_binding_opinions(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
+        let mut pending = Vec::new();
+        let mut current = Some(path.clone());
+        let mut result = false;
+        while let Some(path) = current {
+            if path.is_abs_root() { break; }
+            if let Some(cached) = self.binding_opinions.get(&path) { result = *cached; break; }
+            let names = stage.prim(&path).ok().and_then(|prim| prim.authored_property_names().ok());
+            let local = names.is_none_or(|names| names.iter().any(|name|
+                name.as_str() == "material:binding" || name.as_str().starts_with("material:binding:")));
+            current = path.parent();
+            pending.push(path);
+            if local { result = true; break; }
+        }
+        for path in pending { self.binding_opinions.insert(path, result); }
+        result
+    }
+
+    fn material_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
+        if !self.has_binding_opinions(stage, path) { return false; }
+        let Ok(Some(material)) = crate::read::shade::read_material_binding(stage, path) else { return false };
+        *self.materials.entry(material.clone()).or_insert_with(||
+            crate::read::shade::material_is_time_varying(stage, &material))
+    }
+
+    fn inherited_primvar_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path, name: &'static str) -> anyhow::Result<bool> {
+        let info = stage.prim(path)?.attribute(name).resolve_info()?;
+        if info.has_authored_value() && !info.value_is_blocked() { return Ok(false); }
+        let mut current = path.parent();
+        let mut pending = Vec::new();
+        let mut owner = None;
+        while let Some(path) = current {
+            if path.is_abs_root() { break; }
+            let key = (path.clone(), name);
+            if let Some(cached) = self.primvar_owners.get(&key) { owner = cached.clone(); break; }
+            let info = stage.prim(&path)?.attribute(name).resolve_info()?;
+            let constant = info.has_authored_value() && !info.value_is_blocked()
+                && crate::read::geom::read_primvar_interpolation(stage, &path, name)?
+                    .unwrap_or(crate::read::geom::Interpolation::Constant) == crate::read::geom::Interpolation::Constant;
+            current = path.parent();
+            pending.push(key);
+            if constant { owner = Some(path); break; }
+        }
+        for key in pending { self.primvar_owners.insert(key, owner.clone()); }
+        let Some(owner) = owner else { return Ok(false) };
+        let prim = stage.prim(owner)?;
+        Ok([name.to_owned(), format!("{name}:indices")].iter().any(|name|
+            prim.attribute(name.as_str()).num_time_samples().is_ok_and(|count| count != 0)))
+    }
+
+    fn prim_is_animated(&mut self, stage: &Stage, path: &openusd::sdf::Path) -> bool {
+        if stage.prim(path).ok().and_then(|prim| prim.type_name().ok().flatten()).as_deref() == Some("PointInstancer") {
+            return self.measured(0, |_| prim_is_animated(stage, path));
+        }
+        self.measured(1, |_| has_time_samples(stage, path))
+            || self.measured(2, |_| subsets_are_animated(stage, path))
+            || self.measured(3, |_| crate::read::skel::deformation_is_time_varying(stage, path))
+            || self.measured(4, |this| ["primvars:normals", "primvars:displayColor", "primvars:displayOpacity", "primvars:st", "primvars:st0"].iter()
+                .any(|name| this.inherited_primvar_is_animated(stage, path, name).unwrap_or(false)))
+            || self.measured(5, |this| this.material_is_animated(stage, path))
+    }
 }
 
 fn prototype_is_animated(stage: &Stage, root: &openusd::sdf::Path) -> bool {
@@ -381,6 +468,36 @@ fn registry_of(world: &World) -> SchemaRegistry {
 pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
     let stage = &live.stage;
     let registry = registry_of(world);
+    let previous_material_reads = world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
+    world.insert_non_send(crate::route::material::ProjectionMaterialReads::new(stage));
+    let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
+    let memory_profiling = profiling && std::env::var_os("USD_PROFILE_MEMORY").is_some();
+    let memory_trace = profiling.then(crate::route::profiling::memory_trace_range).flatten();
+    let started = profiling.then(std::time::Instant::now);
+    let mut animation_time = std::time::Duration::ZERO;
+    let mut route_time = std::time::Duration::ZERO;
+    let report = |phase: &str, count: usize, path: &str, animation: std::time::Duration,
+                  routes: std::time::Duration, world: &World| {
+        let Some(started) = started else { return };
+        if memory_profiling { crate::route::profiling::memory_snapshot(world, phase, count); }
+        eprintln!("projection_progress phase={phase} prims={count} elapsed_ms={:.3} animation_ms={:.3} routes_ms={:.3} path={path:?} scope=live-initial-projection",
+            started.elapsed().as_secs_f64()*1000.0, animation.as_secs_f64()*1000.0, routes.as_secs_f64()*1000.0);
+        if let Some(row) = world.get_resource::<crate::route::material::MaterialResolveTimings>() {
+            eprintln!("material_resolve_progress phase={phase} prims={count} requests={} bound={} errors={} cache_hits={} read_cache_hits={} distinct_keys={} keys_capped={} binding_ms={:.3} reading_ms={:.3} preparing_ms={:.3} interning_ms={:.3} scope=world-cumulative overlaps=route-application keys=stage-agnostic-binding-time-sidedness",
+                row.requests, row.bound, row.errors, row.cache_hits, row.read_cache_hits, row.distinct_keys(), row.keys_capped,
+                row.binding.as_secs_f64()*1000.0, row.reading.as_secs_f64()*1000.0,
+                row.preparing.as_secs_f64()*1000.0, row.interning.as_secs_f64()*1000.0);
+        }
+        if let Some(timings) = world.get_resource::<crate::route::ProjectionTimings>() {
+            let mut rows: Vec<_> = timings.0.iter().collect();
+            rows.sort_by_key(|(_, row)| std::cmp::Reverse(row.matching + row.application));
+            for (name, row) in rows.into_iter().take(5) {
+                eprintln!("projection_route_progress phase={phase} prims={count} route={name} attempts={} matches={} match_ms={:.3} apply_ms={:.3} scope=world-cumulative-top-five",
+                    row.attempts, row.matches, row.matching.as_secs_f64()*1000.0, row.application.as_secs_f64()*1000.0);
+            }
+        }
+    };
+    report("begin", 0, "/", animation_time, route_time, world);
     // The stage-root entity (the pseudo-root `/`) carries the up-axis rotation;
     // every top-level prim hangs off it, so Bevy's transform propagation
     // composes prim-local transforms into correct world transforms and the
@@ -398,8 +515,11 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     map.insert("/", root);
 
     let mut prim_count = 0usize;
+    let mut discovery = AnimationDiscovery { profile: profiling, ..Default::default() };
+    let mut discovery_resets = 0;
+    let mut composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
     let mut animated: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let _ = stage.traverse(
+    let traversal = stage.traverse(
         traverse_predicate(),
         |path: &openusd::sdf::Path| {
             // Traversal is pre-order, so the parent prim's entity already exists.
@@ -414,22 +534,47 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
                 .id();
             map.insert(path.as_str().to_string(), entity);
             prim_count += 1;
-            if prim_is_animated(stage, path) {
+            let trace_memory = memory_trace.as_ref().is_some_and(|range| range.contains(&prim_count));
+            if trace_memory { crate::route::profiling::memory_event("prim-begin", path, "animation", None); }
+            let sampled = profiling && (prim_count <= 8 || prim_count % 1024 == 0);
+            if sampled { report("prim-start", prim_count, path.as_str(), animation_time, route_time, world); }
+            let animation_started = profiling.then(std::time::Instant::now);
+            if discovery.prim_is_animated(stage, path) {
                 animated.insert(path.as_str().to_string());
             }
+            if let Some(started) = animation_started { animation_time += started.elapsed(); }
+            if trace_memory { crate::route::profiling::memory_event("animation-complete", path, "registry", None); }
             // Every prim→component mapping goes through the registry.
-            registry.project_prim(stage, path, world, entity);
+            let route_started = profiling.then(std::time::Instant::now);
+            registry.project_prim_traced(stage, path, world, entity, trace_memory);
+            if let Some(started) = route_started { route_time += started.elapsed(); }
             map.remember_type(stage, path.as_str());
+            let current_composition = (stage.load_rules(), stage.mask(), stage.muted_layers());
+            if live.has_changes() || current_composition != composition {
+                discovery_resets += 1;
+                discovery = AnimationDiscovery { profile: profiling, timings: discovery.timings, ..Default::default() };
+                composition = current_composition;
+            }
+            if sampled {
+                report("prim-complete", prim_count, path.as_str(), animation_time, route_time, world);
+                discovery.report(prim_count, discovery_resets);
+            }
         },
     );
+    report(if traversal.is_ok() { "traversal-complete" } else { "traversal-error" }, prim_count, "/", animation_time, route_time, world);
+    discovery.report(prim_count, discovery_resets);
     bevy::log::info!(
         target: "usd_bevy::live",
         "projected {prim_count} prims ({} animated)",
         animated.len()
     );
+    crate::route::residency::materialize(world, stage, map);
+    report("materialize-complete", prim_count, "/", animation_time, route_time, world);
     world.insert_resource(AnimatedPrims(animated));
     // Projecting authored the initial read; clear so the first sync starts clean.
     let _ = live.drain_changes();
+    world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
+    if let Some(previous) = previous_material_reads { world.insert_non_send(previous); }
 }
 
 /// Project `stage` as a **static subtree** parented under `parent` — the asset
@@ -442,37 +587,89 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
 /// and every prim is projected beneath it through the same [`SchemaRegistry`]
 /// the live path uses. Returns the local prim→entity map for the caller.
 pub fn project_stage_under(world: &mut World, stage: &Stage, parent: Entity) -> PrimEntities {
-    let registry = registry_of(world);
-    let mut map = PrimEntities::default();
-    // The stage-root carries the up-axis rotation; the caller's `parent` keeps
-    // its own transform (placement of this instance).
-    let root = world
-        .spawn((
-            UsdPrimRef {
-                path: "/".to_string(),
-            },
-            Transform::from_rotation(stage_up_axis(stage)),
-            Visibility::default(),
-            ChildOf(parent),
-        ))
-        .id();
-    map.insert("/", root);
+    let (mut job, mut map) = ProjectionJob::begin(world, stage, parent);
+    while !job.step(world, stage, &mut map, std::time::Duration::MAX) {}
+    map
+}
 
-    let _ = stage.traverse(traverse_predicate(), |path: &openusd::sdf::Path| {
-        let parent = map.entity(parent_path(path.as_str())).unwrap_or(root);
-        let entity = world
+/// A projection under way: the prims of one instance still to spawn, in
+/// pre-order so every parent exists before its children. `begin` spawns the
+/// stage-root child and lists the prims; `step` projects as many as fit in a
+/// time budget, so a large stage is spread over frames instead of stalling
+/// the app.
+pub struct ProjectionJob {
+    root: Entity,
+    pending: std::collections::VecDeque<openusd::sdf::Path>,
+    total: usize,
+    materials: Option<crate::route::material::ProjectionMaterials>,
+}
+
+impl ProjectionJob {
+    pub fn begin(world: &mut World, stage: &Stage, parent: Entity) -> (Self, PrimEntities) {
+        let mut map = PrimEntities::default();
+        // The stage-root carries the up-axis rotation; the caller's `parent`
+        // keeps its own transform (placement of this instance).
+        let root = world
             .spawn((
                 UsdPrimRef {
-                    path: path.as_str().to_string(),
+                    path: "/".to_string(),
                 },
+                Transform::from_rotation(stage_up_axis(stage)),
+                Visibility::default(),
                 ChildOf(parent),
             ))
             .id();
-        map.insert(path.as_str().to_string(), entity);
-        registry.project_prim(stage, path, world, entity);
-        map.remember_type(stage, path.as_str());
-    });
-    map
+        map.insert("/", root);
+        let mut pending = std::collections::VecDeque::new();
+        let _ = stage.traverse(traverse_predicate(), |path: &openusd::sdf::Path| {
+            pending.push_back(path.clone());
+        });
+        let total = pending.len();
+        let materials = Some(crate::route::material::ProjectionMaterials::new(stage));
+        (Self { root, pending, total, materials }, map)
+    }
+
+    /// Project prims until `budget` is spent; `true` once nothing is left.
+    pub fn step(
+        &mut self,
+        world: &mut World,
+        stage: &Stage,
+        map: &mut PrimEntities,
+        budget: std::time::Duration,
+    ) -> bool {
+        if self.pending.is_empty() { self.materials = None; return true; }
+        let previous_materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+        if let Some(materials) = self.materials.take() { world.insert_non_send(materials); }
+        let registry = registry_of(world);
+        let started = std::time::Instant::now();
+        while let Some(path) = self.pending.pop_front() {
+            let parent = map.entity(parent_path(path.as_str())).unwrap_or(self.root);
+            let entity = world
+                .spawn((
+                    UsdPrimRef {
+                        path: path.as_str().to_string(),
+                    },
+                    ChildOf(parent),
+                ))
+                .id();
+            map.insert(path.as_str().to_string(), entity);
+            registry.project_prim(stage, &path, world, entity);
+            map.remember_type(stage, path.as_str());
+            if started.elapsed() >= budget {
+                break;
+            }
+        }
+        if self.pending.is_empty() { crate::route::residency::materialize(world, stage, map); }
+        let materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+        if !self.pending.is_empty() { self.materials = materials; }
+        if let Some(previous) = previous_materials { world.insert_non_send(previous); }
+        self.pending.is_empty()
+    }
+
+    /// Prims projected so far and the total to project.
+    pub fn progress(&self) -> (usize, usize) {
+        (self.total - self.pending.len(), self.total)
+    }
 }
 
 fn affects_projection_consumers(stage: &Stage, map: &PrimEntities, paths: &[&str]) -> bool {
@@ -588,6 +785,12 @@ fn expand_instancer_consumers(stage: &Stage, map: &PrimEntities, scopes: &mut Ve
 /// * Material graph, binding, collection or prototype changes → reconcile consumers.
 /// * Other `changed_info` changes → patch the touched prims in place.
 pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
+    if !live.has_changes() { return; }
+    apply_changes_inner(world, live, map);
+    crate::route::residency::materialize(world, &live.stage, map);
+}
+
+fn apply_changes_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
     let mut changes = live.drain_changes();
     if changes.is_empty() {
         return;
@@ -604,7 +807,7 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         && let Ok(mut scopes) = material_consumer_scopes(&live.stage, map, &graph_paths) {
         scopes.extend(graph_paths.iter().map(|path| prim_of(path).to_owned()));
         if expand_instancer_consumers(&live.stage, map, &mut scopes).is_ok() {
-            reconcile_scoped(world, live, map, true, Some(&scopes));
+            reconcile_scoped(world, live, map, true, Some(&scopes), &[]);
         } else {
             reconcile(world, live, map, true);
         }
@@ -618,7 +821,7 @@ pub fn apply_changes(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         } else {
             let mut scopes: Vec<_> = paths.iter().map(|path| prim_of(path).to_owned()).collect();
             scopes.extend(consumers.unwrap_or_default());
-            reconcile_scoped(world, live, map, true, Some(&scopes));
+            reconcile_scoped(world, live, map, true, Some(&scopes), &[]);
         }
         return;
     }
@@ -688,11 +891,93 @@ pub(crate) fn remap_namespace(world: &mut World, old: &str, new: &str) {
 
 /// Reconciles paths, hierarchy and routed components, optionally rebuilding the live animation index.
 pub(crate) fn reconcile(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool) {
-    reconcile_scoped(world, live, map, collect_animation, None);
+    reconcile_scoped(world, live, map, collect_animation, None, &[]);
 }
 
-fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool, scopes: Option<&[String]>) {
-    let affected = |path: &str| scopes.is_none_or(|scopes| scopes.iter().any(|scope|
+/// Reconciles only `subtrees` and the prims in `exact`, so entities outside
+/// them keep whatever state the app has given them since projection.
+pub(crate) fn reconcile_opinions(world: &mut World, live: &LiveStage, map: &mut PrimEntities, subtrees: &[String], exact: &[String]) {
+    reconcile_scoped(world, live, map, false, Some(subtrees), exact);
+}
+
+/// What a change of instance opinions can touch: subtrees to reconcile and
+/// prims to patch on their own, or `None` when only a full reconcile is safe.
+/// A switched variant touches the specs either selection authors in the root
+/// layer stack; its set's owner prim is patched alone.
+pub(crate) fn opinion_scopes(before: &Stage, after: &Stage, old: &UsdInstanceOverrides, new: &UsdInstanceOverrides) -> Option<(Vec<String>, Vec<String>)> {
+    let mut sets: Vec<(&str, &str)> = old.variants.iter().chain(&new.variants)
+        .map(|(prim, set, _)| (prim.as_str(), set.as_str())).collect();
+    sets.sort_unstable();
+    sets.dedup();
+    let mut changes = Vec::new();
+    for (prim, set) in sets {
+        let owner = openusd::sdf::path(prim).ok()?;
+        let was = crate::read::variants::variant_selection(before, &owner, set);
+        let now = crate::read::variants::variant_selection(after, &owner, set);
+        if was != now {
+            changes.push((prim.to_string(), set.to_string(), was, now));
+        }
+    }
+    let (subtrees, mut exact) = variant_scopes(after, &changes)?;
+    for attribute in old.attributes.iter().chain(&new.attributes) {
+        if !(old.attributes.contains(attribute) && new.attributes.contains(attribute)) {
+            exact.push(attribute.prim.clone());
+        }
+    }
+    Some((subtrees, exact))
+}
+
+/// Specs a variant switch touches on `stage`, from (owner prim, set, old
+/// selection, new selection); `None` when a set is not authored in the root
+/// layer stack, where only a full reconcile is safe.
+pub(crate) fn variant_scopes(stage: &Stage, changes: &[(String, String, Option<String>, Option<String>)]) -> Option<(Vec<String>, Vec<String>)> {
+    let (mut subtrees, mut exact) = (Vec::new(), Vec::new());
+    let layers = stage.layer_stack();
+    for (prim, set, was, now) in changes {
+        let owner = openusd::sdf::path(prim.as_str()).ok()?;
+        let authored = layers.iter().any(|id| stage.layer(id).is_some_and(|layer|
+            layer.prim(owner.clone()).ok().flatten().is_some_and(|spec| spec.has_field("variantSetNames"))));
+        if !authored {
+            return None;
+        }
+        exact.push(prim.clone());
+        for selection in [was, now].into_iter().flatten() {
+            let variant = owner.append_variant_selection(set, selection).ok()?;
+            for id in &layers {
+                if let Some(layer) = stage.layer(id) {
+                    collect_variant_specs(layer.data(), &variant, &mut subtrees, &mut exact);
+                }
+            }
+        }
+    }
+    Some((subtrees, exact))
+}
+
+/// Children of a variant spec: a `def` scopes its whole subtree, an `over`
+/// scopes itself and is walked for the specs beneath it. Variant specs are
+/// not prim specs, so this reads the layer's raw fields.
+fn collect_variant_specs(data: &dyn openusd::sdf::AbstractData, spec_path: &openusd::sdf::Path, subtrees: &mut Vec<String>, exact: &mut Vec<String>) {
+    let children = match data.try_field(spec_path, "primChildren").ok().flatten().map(|value| value.into_owned()) {
+        Some(openusd::sdf::Value::TokenVec(children)) => children,
+        _ => return,
+    };
+    for child in children {
+        let Ok(child_path) = spec_path.append_path(child.as_str()) else {
+            continue;
+        };
+        let prim = child_path.strip_all_variant_selections().as_str().to_string();
+        let specifier = data.try_field(&child_path, "specifier").ok().flatten().map(|value| value.into_owned());
+        if matches!(specifier, Some(openusd::sdf::Value::Specifier(openusd::sdf::Specifier::Over))) {
+            exact.push(prim);
+            collect_variant_specs(data, &child_path, subtrees, exact);
+        } else {
+            subtrees.push(prim);
+        }
+    }
+}
+
+fn reconcile_scoped(world: &mut World, live: &LiveStage, map: &mut PrimEntities, collect_animation: bool, scopes: Option<&[String]>, exact: &[String]) {
+    let affected = |path: &str| exact.iter().any(|prim| prim == path) || scopes.is_none_or(|scopes| scopes.iter().any(|scope|
         scope == "/" || path == scope || path.strip_prefix(scope).is_some_and(|rest| rest.starts_with('/'))));
     let stage = &live.stage;
     let registry = registry_of(world);
@@ -784,6 +1069,7 @@ struct AppliedCurveSteps((usize, Option<usize>));
 
 impl Plugin for LiveStagePlugin {
     fn build(&self, app: &mut App) {
+        crate::route::residency::configure(app);
         app.init_resource::<PrimEntities>()
             .init_resource::<StageTime>()
             .init_resource::<AnimatedPrims>()
@@ -792,6 +1078,7 @@ impl Plugin for LiveStagePlugin {
             .init_resource::<AppliedPurposes>()
             .init_resource::<AppliedSubdivision>()
             .init_resource::<AppliedCurveSteps>()
+            .init_resource::<crate::route::residency::AppliedDeferMode>()
             .add_systems(
                 Update,
                 (
@@ -801,6 +1088,7 @@ impl Plugin for LiveStagePlugin {
                     apply_curve_settings_system,
                     resample_animation_system,
                     apply_display_purposes_system,
+                    crate::route::residency::refresh_mode,
                 )
                     .chain(),
             );
@@ -891,6 +1179,7 @@ fn resample_animation_system(world: &mut World) {
             registry.patch_prim(&live.stage, &p, world, entity, &[]);
         }
     }
+    crate::route::residency::materialize(world, &live.stage, &map);
     world.insert_resource(map);
     world.insert_non_send(live);
     if let Some(mut sampled) = world.get_resource_mut::<SampledTime>() {
@@ -923,6 +1212,7 @@ fn apply_display_purposes_system(world: &mut World) {
             registry.patch_prim(&live.stage, &p, world, entity, &["purpose"]);
         }
     }
+    crate::route::residency::materialize(world, &live.stage, &map);
     world.insert_resource(map);
     world.insert_non_send(live);
     if let Some(mut applied) = world.get_resource_mut::<AppliedPurposes>() {
@@ -991,6 +1281,41 @@ pub fn current_transform(stage: &Stage, prim_path: &str) -> Option<Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_animation_discovery_matches_inheritance_and_material_collections() {
+        let stage = crate::snippet::UsdSnippet::new(r#"#usda 1.0
+def Xform "Group" {
+    float[] primvars:displayOpacity.timeSamples = {0: [1], 10: [0.5]}
+    def Cube "Inherited" {}
+    def Xform "Local" {
+        float[] primvars:displayOpacity = [1] (interpolation = "vertex")
+        def Cube "Child" {}
+    }
+}
+def Xform "Bindings" {
+    rel collection:paint:includes = </Bindings/Painted>
+    rel material:binding:collection:paint = [</Bindings.collection:paint>, </Mat>]
+    def Cube "Painted" {}
+    def Cube "Plain" {}
+}
+def Material "Mat" {
+    token outputs:surface.connect = </Shader.outputs:surface>
+}
+def Shader "Shader" {
+    uniform token info:id = "UsdPreviewSurface"
+    float inputs:roughness.timeSamples = {0: 0.2, 10: 0.8}
+    token outputs:surface
+}
+"#).open_stage().unwrap();
+        let mut discovery = AnimationDiscovery::default();
+        for (path, expected) in [("/Group", true), ("/Group/Inherited", true), ("/Group/Local", false),
+            ("/Group/Local/Child", true), ("/Bindings", false), ("/Bindings/Plain", false), ("/Bindings/Painted", true)] {
+            let path = openusd::sdf::path(path).unwrap();
+            assert_eq!(prim_is_animated(&stage, &path), expected, "baseline {path}");
+            assert_eq!(discovery.prim_is_animated(&stage, &path), expected, "cached {path}");
+        }
+    }
 
     #[test]
     fn initial_projection_records_purpose_and_sample_without_repeating_routes() {

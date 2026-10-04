@@ -15,6 +15,150 @@ use std::hash::{BuildHasher, Hash, Hasher};
 
 use bevy::platform::hash::FixedHasher;
 use bevy::prelude::*;
+use crate::read::geom::{ReadMesh, MeshPrimvar};
+
+/// Opt-in cumulative cache counters; byte counters measure CPU payload, not GPU memory.
+#[derive(Resource, Default, Debug)]
+pub struct MeshCacheMetrics(pub std::collections::BTreeMap<&'static str, u64>);
+
+fn record_cache(world: &mut World, name: &'static str, value: u64) {
+    if let Some(mut metrics) = world.get_resource_mut::<MeshCacheMetrics>() {
+        let counter = metrics.0.entry(name).or_default();
+        *counter = counter.saturating_add(value);
+    }
+}
+
+/// Bounded geometry-input cache containing immutable assembled meshes.
+#[derive(Resource)]
+pub struct MeshAssemblyCache {
+    entries: std::collections::VecDeque<(u64, ReadMesh, Mesh, usize, Option<AssetId<Mesh>>)>,
+    payload_bytes: usize,
+    byte_budget: usize,
+}
+
+impl Default for MeshAssemblyCache {
+    fn default() -> Self { Self::with_byte_budget(128 * 1024 * 1024) }
+}
+
+impl MeshAssemblyCache {
+    pub fn with_byte_budget(byte_budget: usize) -> Self {
+        Self { entries: default(), payload_bytes: 0, byte_budget }
+    }
+
+    pub fn retained_payload_bytes(&self) -> usize { self.payload_bytes }
+}
+
+fn same_geometry(a: &ReadMesh, b: &ReadMesh) -> bool {
+    a.points == b.points && a.triangulation_points == b.triangulation_points
+        && a.face_vertex_counts == b.face_vertex_counts && a.face_vertex_indices == b.face_vertex_indices
+        && a.hole_indices == b.hole_indices && a.orientation == b.orientation
+        && a.normals == b.normals && a.uvs == b.uvs
+        && a.display_color == b.display_color && a.display_opacity == b.display_opacity
+        && a.subdivision_scheme == b.subdivision_scheme
+}
+
+pub(crate) fn read_mesh_bytes(read: &ReadMesh) -> usize {
+    fn primvar<T>(value: &Option<MeshPrimvar<T>>) -> usize {
+        value.as_ref().map_or(0, |value| std::mem::size_of_val(value.values.as_slice())
+            + std::mem::size_of_val(value.indices.as_slice()))
+    }
+    std::mem::size_of_val(read.points.as_slice())
+        + read.triangulation_points.as_ref().map_or(0, |points| std::mem::size_of_val(points.as_slice()))
+        + std::mem::size_of_val(read.face_vertex_counts.as_slice())
+        + std::mem::size_of_val(read.face_vertex_indices.as_slice())
+        + std::mem::size_of_val(read.hole_indices.as_slice())
+        + primvar(&read.normals) + primvar(&read.uvs) + primvar(&read.display_color) + primvar(&read.display_opacity)
+}
+
+fn geometry_signature(read: &ReadMesh) -> u64 {
+    let mut hash = FixedHasher.build_hasher();
+    bytemuck::cast_slice::<_, u8>(&read.points).hash(&mut hash);
+    read.face_vertex_counts.hash(&mut hash);
+    read.face_vertex_indices.hash(&mut hash);
+    hash.finish()
+}
+
+pub(crate) fn intern_assembled_mesh(world: &mut World, read: &ReadMesh) -> Handle<Mesh> {
+    let (signature, hit) = lookup_assembly(world, read);
+    let budget = world.get_resource::<ProjectionCache>().map_or(0, |cache| cache.byte_budget);
+    let cached = if budget == 0 { None } else {
+        let assets = world.resource::<Assets<Mesh>>();
+        hit.and_then(|index| {
+            let (_, _, mesh, _, id) = &world.resource::<MeshAssemblyCache>().entries[index];
+            if mesh_payload_bytes(mesh) > budget { return None; }
+            id.filter(|id| assets.get(*id).is_some_and(|asset| meshes_equal(asset, mesh))).map(|id| (index, id))
+        })
+    };
+    if let Some((index, id)) = cached
+        && let Some(handle) = world.resource_mut::<Assets<Mesh>>().get_strong_handle(id) {
+        let mut cache = world.resource_mut::<MeshAssemblyCache>();
+        let entry = cache.entries.remove(index).unwrap();
+        cache.entries.push_back(entry);
+        record_cache(world, "assembly_handle_hits", 1);
+        return handle;
+    }
+    let (mesh, retained) = assemble_after_lookup(world, read, signature, hit);
+    let handle = intern_mesh(world, mesh);
+    if retained {
+        world.resource_mut::<MeshAssemblyCache>().entries.back_mut().unwrap().4 = Some(handle.id());
+    }
+    handle
+}
+
+pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
+    let (signature, hit) = lookup_assembly(world, read);
+    assemble_after_lookup(world, read, signature, hit).0
+}
+
+fn lookup_assembly(world: &mut World, read: &ReadMesh) -> (u64, Option<usize>) {
+    world.init_resource::<MeshAssemblyCache>();
+    let signature = geometry_signature(read);
+    let hit = world.resource::<MeshAssemblyCache>().entries.iter()
+        .position(|(key, input, _, _, _)| *key == signature && same_geometry(input, read));
+    record_cache(world, "assembly_lookups", 1);
+    (signature, hit)
+}
+
+/// Returns the mesh and whether its immutable snapshot occupies the MRU slot.
+fn assemble_after_lookup(world: &mut World, read: &ReadMesh, signature: u64, hit: Option<usize>) -> (Mesh, bool) {
+    if let Some(index) = hit {
+        let mut cache = world.resource_mut::<MeshAssemblyCache>();
+        let entry = cache.entries.remove(index).unwrap();
+        let mesh = entry.2.clone();
+        cache.entries.push_back(entry);
+        record_cache(world, "assembly_clone_hits", 1);
+        return (mesh, true);
+    }
+    let started = world.contains_resource::<MeshCacheMetrics>().then(std::time::Instant::now);
+    let mut mesh = crate::mesh::assemble_mesh(read, None, false);
+    if read.uvs.is_some() { generate_cached_tangents(world, &mut mesh); }
+    if let Some(started) = started {
+        record_cache(world, "assembly_build_ns", started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+        record_cache(world, "assembly_builds", 1);
+        record_cache(world, "assembly_build_input_bytes", read_mesh_bytes(read) as u64);
+    }
+    let bytes = read_mesh_bytes(read).saturating_add(mesh_payload_bytes(&mesh));
+    let mut cache = world.resource_mut::<MeshAssemblyCache>();
+    if cache.byte_budget == 0 || bytes > cache.byte_budget {
+        record_cache(world, "assembly_uncached_builds", 1);
+        return (mesh, false);
+    }
+    let mut evictions = 0;
+    let mut evicted_bytes = 0;
+    while cache.entries.len() >= 256 || bytes > cache.byte_budget.saturating_sub(cache.payload_bytes) {
+        let Some((_, _, _, removed, _)) = cache.entries.pop_front() else { break; };
+        cache.payload_bytes -= removed;
+        evictions += 1;
+        evicted_bytes += removed as u64;
+    }
+    let mut input = read.clone();
+    input.subsets = Vec::new();
+    cache.entries.push_back((signature, input, mesh.clone(), bytes, None));
+    cache.payload_bytes += bytes;
+    record_cache(world, "assembly_evictions", evictions);
+    record_cache(world, "assembly_evicted_bytes", evicted_bytes);
+    (mesh, true)
+}
 
 #[derive(Resource, Default)]
 pub struct MaterialCache {
@@ -74,6 +218,7 @@ const MAX_INTERNED: usize = 8192;
 #[derive(Resource)]
 pub struct ProjectionCache {
     meshes: HashMap<u64, Vec<(Handle<Mesh>, usize)>>,
+    insertion_order: std::collections::VecDeque<(u64, AssetId<Mesh>)>,
     count: usize,
     payload_bytes: usize,
     byte_budget: usize,
@@ -86,7 +231,7 @@ impl Default for ProjectionCache {
 impl ProjectionCache {
     /// Limits retained mesh payload bytes; zero disables new cache entries.
     pub fn with_byte_budget(byte_budget: usize) -> Self {
-        Self { meshes: HashMap::new(), count: 0, payload_bytes: 0, byte_budget }
+        Self { meshes: HashMap::new(), insertion_order: default(), count: 0, payload_bytes: 0, byte_budget }
     }
 
     /// Payload bytes measured at insertion, excluding allocator and GPU overhead.
@@ -111,6 +256,9 @@ impl ProjectionCache {
             self.payload_bytes += candidates.iter().map(|(_, bytes)| bytes).sum::<usize>();
             !candidates.is_empty()
         });
+        self.insertion_order.retain(|(signature, id)| {
+            self.meshes.get(signature).is_some_and(|entries| entries.iter().any(|(handle, _)| handle.id() == *id))
+        });
     }
 }
 
@@ -124,11 +272,14 @@ pub(crate) fn prune_mesh_cache(cache: Option<ResMut<ProjectionCache>>, assets: O
 pub fn intern_mesh(world: &mut World, mesh: Mesh) -> Handle<Mesh> {
     // No cache resource → behave exactly like `Assets::add`.
     if world.get_resource::<ProjectionCache>().is_none() {
+        record_cache(world, "intern_no_cache", 1);
         return world.resource_mut::<Assets<Mesh>>().add(mesh);
     }
     let payload_bytes = mesh_payload_bytes(&mesh);
     let budget = world.resource::<ProjectionCache>().byte_budget;
     if budget == 0 || payload_bytes > budget {
+        record_cache(world, "intern_budget_bypasses", 1);
+        record_cache(world, "intern_bypassed_bytes", payload_bytes as u64);
         return world.resource_mut::<Assets<Mesh>>().add(mesh);
     }
     let sig = mesh_signature(&mesh);
@@ -140,21 +291,39 @@ pub fn intern_mesh(world: &mut World, mesh: Mesh) -> Handle<Mesh> {
         let assets = world.resource::<Assets<Mesh>>();
         for (existing, _) in candidates {
             if assets.get(existing).is_some_and(|cached| meshes_equal(cached, &mesh)) {
-                return existing.clone();
+                let handle = existing.clone();
+                record_cache(world, "intern_hits", 1);
+                record_cache(world, "intern_reused_bytes", payload_bytes as u64);
+                return handle;
             }
         }
     }
     let handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
+    record_cache(world, "intern_misses", 1);
+    record_cache(world, "intern_inserted_bytes", payload_bytes as u64);
     let mut cache = world.resource_mut::<ProjectionCache>();
-    // Release cached handles when either retention limit would be exceeded.
-    if cache.len() >= MAX_INTERNED || payload_bytes > cache.byte_budget.saturating_sub(cache.payload_bytes) {
-        cache.meshes.clear();
-        cache.count = 0;
-        cache.payload_bytes = 0;
+    let mut evicted = (0, 0);
+    // Evict in insertion order until both retention limits admit the new mesh.
+    while cache.len() >= MAX_INTERNED || payload_bytes > cache.byte_budget.saturating_sub(cache.payload_bytes) {
+        let Some((signature, id)) = cache.insertion_order.pop_front() else { break; };
+        let Some(entries) = cache.meshes.get_mut(&signature) else { continue; };
+        let Some(index) = entries.iter().position(|(handle, _)| handle.id() == id) else { continue; };
+        let (_, bytes) = entries.swap_remove(index);
+        if entries.is_empty() { cache.meshes.remove(&signature); }
+        cache.count -= 1;
+        cache.payload_bytes -= bytes;
+        evicted.0 += 1;
+        evicted.1 += bytes as u64;
     }
     cache.meshes.entry(sig).or_default().push((handle.clone(),payload_bytes));
+    cache.insertion_order.push_back((sig, handle.id()));
     cache.count += 1;
     cache.payload_bytes += payload_bytes;
+    if evicted.0 != 0 {
+        record_cache(world, "intern_eviction_batches", 1);
+        record_cache(world, "intern_evicted_entries", evicted.0);
+        record_cache(world, "intern_evicted_bytes", evicted.1);
+    }
     handle
 }
 
@@ -205,7 +374,7 @@ pub(crate) fn generate_cached_tangents(world: &mut World, mesh: &mut Mesh) {
     cache.payload_bytes += bytes;
 }
 
-fn mesh_payload_bytes(mesh: &Mesh) -> usize {
+pub(crate) fn mesh_payload_bytes(mesh: &Mesh) -> usize {
     let attributes = mesh.attributes().fold(0usize, |total, (_, values)| total.saturating_add(values.get_bytes().len()));
     let indices = mesh.get_index_buffer_bytes().map_or(0, |bytes| bytes.len());
     let morph = mesh.get_morph_targets().map_or(0, std::mem::size_of_val);
@@ -254,6 +423,7 @@ fn meshes_equal(a: &Mesh, b: &Mesh) -> bool {
     a.primitive_topology() == b.primitive_topology()
         && a.asset_usage == b.asset_usage
         && a.enable_raytracing == b.enable_raytracing
+        && a.final_aabb == b.final_aabb
         && a.morph_target_names() == b.morph_target_names()
         && a.get_morph_targets() == b.get_morph_targets()
         && a.indices().map(std::mem::discriminant) == b.indices().map(std::mem::discriminant)
@@ -266,6 +436,146 @@ fn meshes_equal(a: &Mesh, b: &Mesh) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fifo_eviction_preserves_newer_entries_and_external_handles() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<MeshCacheMetrics>();
+        let mesh = |width| Mesh::from(Rectangle::new(width, 1.0));
+        let bytes = mesh_payload_bytes(&mesh(1.0));
+        world.insert_resource(ProjectionCache::with_byte_budget(bytes * 2));
+        let first = intern_mesh(&mut world, mesh(1.0));
+        let second = intern_mesh(&mut world, mesh(2.0));
+        assert_eq!(intern_mesh(&mut world, mesh(1.0)), first);
+        let third = intern_mesh(&mut world, mesh(3.0));
+        assert_eq!(intern_mesh(&mut world, mesh(2.0)), second);
+        assert_eq!(intern_mesh(&mut world, mesh(3.0)), third);
+        let cache = world.resource::<ProjectionCache>();
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.payload_bytes, bytes * 2);
+        assert_eq!(cache.insertion_order.len(), 2);
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["intern_evicted_entries"], 1);
+        assert!(world.resource::<Assets<Mesh>>().contains(&first));
+        drop(second);
+        world.resource_scope(|world, mut cache: Mut<ProjectionCache>| {
+            cache.retain_live(world.resource::<Assets<Mesh>>());
+        });
+        let cache = world.resource::<ProjectionCache>();
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.insertion_order.len(), 1);
+        assert_eq!(cache.insertion_order.front().unwrap().1, third.id());
+        assert_eq!(cache.payload_bytes, bytes);
+    }
+
+    #[test]
+    fn metrics_distinguish_reuse_eviction_and_disabled_caches() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        let mesh = Mesh::from(Rectangle::default());
+        let bytes = mesh_payload_bytes(&mesh);
+        let _ = intern_mesh(&mut world, mesh.clone());
+        assert!(!world.contains_resource::<MeshCacheMetrics>());
+        world.init_resource::<MeshCacheMetrics>();
+        let _ = intern_mesh(&mut world, mesh.clone());
+        world.insert_resource(ProjectionCache::with_byte_budget(bytes));
+        let first = intern_mesh(&mut world, mesh.clone());
+        assert_eq!(intern_mesh(&mut world, mesh.clone()), first);
+        let _ = intern_mesh(&mut world, Mesh::from(Rectangle::new(2.0, 1.0)));
+        world.insert_resource(ProjectionCache::with_byte_budget(0));
+        let _ = intern_mesh(&mut world, mesh);
+        let metrics = &world.resource::<MeshCacheMetrics>().0;
+        for (name, expected) in [("intern_no_cache", 1), ("intern_hits", 1),
+            ("intern_misses", 2), ("intern_eviction_batches", 1), ("intern_evicted_entries", 1),
+            ("intern_evicted_bytes", bytes as u64), ("intern_budget_bypasses", 1),
+            ("intern_bypassed_bytes", bytes as u64), ("intern_reused_bytes", bytes as u64)] {
+            assert_eq!(metrics[name], expected, "{name}");
+        }
+        assert!(world.resource::<Assets<Mesh>>().contains(&first));
+    }
+
+    #[test]
+    fn assembled_handles_recheck_mutations_removal_and_cache_budget() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/material_subsets.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let read = crate::read::geom::read_mesh_at(&stage, &openusd::sdf::path("/Panels").unwrap(), Some(0.0)).unwrap().unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<ProjectionCache>();
+        world.init_resource::<MeshCacheMetrics>();
+        let first = intern_assembled_mesh(&mut world, &read);
+        assert_eq!(first.id(), intern_assembled_mesh(&mut world, &read).id());
+        world.resource_mut::<Assets<Mesh>>().get_mut(&first).unwrap()
+            .insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[9.0; 3]; read.points.len()]);
+        let second = intern_assembled_mesh(&mut world, &read);
+        assert_ne!(first.id(), second.id());
+        assert!(meshes_equal(world.resource::<Assets<Mesh>>().get(&second).unwrap(), &crate::mesh::assemble_mesh(&read, None, true)));
+        world.resource_mut::<Assets<Mesh>>().get_mut(&second).unwrap().final_aabb =
+            Some(bevy::math::bounding::Aabb3d::new(Vec3::ZERO, Vec3::ONE));
+        let third = intern_assembled_mesh(&mut world, &read);
+        assert_ne!(second.id(), third.id());
+        world.resource_mut::<Assets<Mesh>>().remove(third.id());
+        let fourth = intern_assembled_mesh(&mut world, &read);
+        assert_ne!(third.id(), fourth.id());
+        world.insert_resource(ProjectionCache::with_byte_budget(0));
+        assert_ne!(fourth.id(), intern_assembled_mesh(&mut world, &read).id());
+        let metrics = &world.resource::<MeshCacheMetrics>().0;
+        assert_eq!(metrics["assembly_builds"], 1);
+        assert_eq!(metrics["assembly_handle_hits"], 1);
+        assert_eq!(metrics["assembly_clone_hits"], 4);
+        assert_eq!(metrics["assembly_lookups"], 6);
+        assert_eq!(metrics["assembly_build_input_bytes"], read_mesh_bytes(&read) as u64);
+        let previous = world.resource::<MeshAssemblyCache>().entries.back().unwrap().4;
+        let bytes = world.resource::<MeshAssemblyCache>().payload_bytes;
+        world.resource_mut::<MeshAssemblyCache>().byte_budget = bytes;
+        let mut oversized = read.clone();
+        oversized.points.push([10.0; 3]);
+        let uncached = intern_assembled_mesh(&mut world, &oversized);
+        let cache = world.resource::<MeshAssemblyCache>();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.entries.back().unwrap().4, previous);
+        assert_eq!(cache.payload_bytes, bytes);
+        assert_ne!(Some(uncached.id()), previous);
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["assembly_uncached_builds"], 1);
+    }
+
+    #[test]
+    fn assembly_cache_checks_geometry_and_isolates_mutations() {
+        let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/material_subsets.usda");
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap().open_stage().unwrap();
+        let path = openusd::sdf::path("/Panels").unwrap();
+        let mut read = crate::read::geom::read_mesh_at(&stage, &path, Some(0.0)).unwrap().unwrap();
+        let mut world = World::new();
+        let expected = crate::mesh::assemble_mesh(&read, None, true);
+        let mut first = assemble_cached_mesh(&mut world, &read);
+        assert!(meshes_equal(&first, &expected));
+        first.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[9.0; 3]; first.count_vertices()]);
+        read.subsets.clear();
+        read.double_sided = !read.double_sided;
+        assert!(meshes_equal(&assemble_cached_mesh(&mut world, &read), &expected));
+        assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 1);
+        for change in 0..3 {
+            match change {
+                0 => read.normals.as_mut().unwrap().values[0] = [0.0, 1.0, 0.0],
+                1 => read.hole_indices = vec![0],
+                _ => read.orientation = crate::read::geom::Orientation::LeftHanded,
+            }
+            let reference = crate::mesh::assemble_mesh(&read, None, true);
+            assert!(meshes_equal(&assemble_cached_mesh(&mut world, &read), &reference));
+        }
+        assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 4);
+        let budget = read_mesh_bytes(&read) + mesh_payload_bytes(&expected);
+        world.insert_resource(MeshAssemblyCache::with_byte_budget(budget));
+        for offset in [1.0, 2.0, 3.0] {
+            read.points[0][0] = offset;
+            assemble_cached_mesh(&mut world, &read);
+            assert!(world.resource::<MeshAssemblyCache>().retained_payload_bytes() <= budget);
+            assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 1);
+        }
+        world.insert_resource(MeshAssemblyCache::with_byte_budget(0));
+        assert!(meshes_equal(&assemble_cached_mesh(&mut world, &read), &crate::mesh::assemble_mesh(&read, None, true)));
+        assert!(world.resource::<MeshAssemblyCache>().entries.is_empty());
+    }
 
     #[test]
     fn tangent_cache_reuses_exact_inputs_and_isolates_output_mutation() {

@@ -27,7 +27,78 @@ fn asset_counts(world: &World) -> [usize; 3] {
     [world.resource::<Assets<Mesh>>().len(), world.resource::<Assets<StandardMaterial>>().len(), world.resource::<Assets<Image>>().len()]
 }
 
+fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    use usd_bevy::route::residency::{DeferHiddenMeshes, UsdDeferredMesh};
+    if !app.world().contains_resource::<DeferHiddenMeshes>() {
+        return Err("USD_BENCH_PREWARM_HIDDEN requires USD_DEFER_HIDDEN_MESHES".into());
+    }
+    let pending_before = app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).count();
+    let meshes_before = app.world().resource::<Assets<Mesh>>().len();
+    let rss_before = resident_bytes();
+    if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionTimings>() { timings.0.clear(); }
+    if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionVisibilityTimings>() { timings.0.clear(); }
+    if let Some(mut metrics) = app.world_mut().get_resource_mut::<usd_bevy::route::cache::MeshCacheMetrics>() { metrics.0.clear(); }
+    if let Some(mut reads) = app.world_mut().get_resource_mut::<usd_bevy::route::MeshReadTiming>() { *reads = default(); }
+    let start = Instant::now();
+    app.world_mut().remove_resource::<DeferHiddenMeshes>();
+    let mut updates = Vec::new();
+    loop {
+        let preparation_before = app.world().get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>().map_or(Duration::ZERO, |timing| timing.elapsed);
+        let palette_before = app.world().get_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>().map_or(Duration::ZERO, |timing| timing.elapsed);
+        let update_started = Instant::now();
+        app.update();
+        let update_elapsed = update_started.elapsed();
+        updates.push(update_elapsed);
+        if update_elapsed > Duration::from_millis(100) && app.world().contains_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>() {
+            let preparation = app.world().get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>().map_or(Duration::ZERO, |timing| timing.elapsed) - preparation_before;
+            let palette = app.world().get_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>().map_or(Duration::ZERO, |timing| timing.elapsed) - palette_before;
+            eprintln!("deferred_slow_update index={} elapsed_ms={:.3} preparation_ms={:.3} palette_ms={:.3}", updates.len(),
+                update_elapsed.as_secs_f64()*1000.0, preparation.as_secs_f64()*1000.0, palette.as_secs_f64()*1000.0);
+        }
+        if app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).next().is_none() { break; }
+        if start.elapsed() > Duration::from_secs(120) { return Err("deferred prewarm exceeded 120 seconds".into()); }
+    }
+    let elapsed = start.elapsed();
+    let pending_after = app.world_mut().query_filtered::<Entity, With<UsdDeferredMesh>>().iter(app.world()).count();
+    eprintln!("deferred_prewarm scope=all-deferred-cpu excludes=gpu,visibility-edit pending_before={pending_before} pending_after={pending_after} elapsed_ms={:.3} mesh_assets_before={meshes_before} mesh_assets_after={} rss_before={} rss_after={}",
+        elapsed.as_secs_f64()*1000.0, app.world().resource::<Assets<Mesh>>().len(),
+        rss_before.map_or("NA".into(), |value| value.to_string()), resident_bytes().map_or("NA".into(), |value| value.to_string()));
+    updates.sort_unstable();
+    eprintln!("deferred_prewarm_updates count={} p95_ms={:.3} max_ms={:.3} budget_ms={}", updates.len(),
+        updates[(updates.len()*95).div_ceil(100)-1].as_secs_f64()*1000.0,
+        updates.last().unwrap().as_secs_f64()*1000.0,
+        app.world().get_resource::<usd_bevy::route::residency::UsdResidencyBudget>()
+            .map_or("unlimited".into(), |budget| budget.0.as_millis().to_string()));
+    report_routes(app.world(), "deferred-prewarm", 1);
+    if pending_after != 0 { return Err("prewarm left deferred meshes pending".into()); }
+    Ok(())
+}
+
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(timing) = world.get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>() {
+        eprintln!("residency_preparation_profile phase={phase} attempts={} elapsed_ms={:.3} slowest_prim={:?} slowest_ms={:.3}",
+            timing.attempts, timing.elapsed.as_secs_f64()*1000.0,
+            timing.slowest.as_ref().map(|(path, _)| path), timing.slowest.as_ref().map_or(0.0, |(_, elapsed)| elapsed.as_secs_f64()*1000.0));
+    }
+    if let Some(timing) = world.get_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>() {
+        eprintln!("gpu_skin_update_profile phase={phase} updates={} joints={} elapsed_ms={:.3}", timing.updates, timing.joints, timing.elapsed.as_secs_f64()*1000.0);
+    }
+    if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionVisibilityTimings>() {
+        for ((route, hidden), row) in &timings.0 {
+            let visibility = match hidden { Some(true) => "hidden", Some(false) => "visible", None => "unknown" };
+            eprintln!("route_visibility_profile phase={phase} samples={samples} route={route} hierarchy={visibility} matches={} apply_ms={:.3}",
+                row.matches, row.application.as_secs_f64()*1000.0);
+        }
+    }
+    if let Some(reads) = world.get_resource::<usd_bevy::route::MeshReadTiming>() {
+        eprintln!("mesh_read_profile phase={phase} samples={samples} requests={} decodes={} missing={} errors={} array_bytes={} elapsed_ms={:.3} scope=registry-contexts overlaps=route-matching-and-application",
+            reads.requests, reads.decodes, reads.missing, reads.errors, reads.array_bytes, reads.elapsed.as_secs_f64()*1000.0);
+    }
+    if let Some(metrics) = world.get_resource::<usd_bevy::route::cache::MeshCacheMetrics>() {
+        for (name, value) in &metrics.0 {
+            eprintln!("mesh_cache_profile phase={phase} samples={samples} counter={name} value={value}");
+        }
+    }
     if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionTimings>() {
         let mut routes: Vec<_> = timings.0.iter().collect();
         routes.sort_by_key(|(_, timing)| std::cmp::Reverse(timing.matching + timing.application));
@@ -61,14 +132,29 @@ struct Measurement {
     cached_meshes: usize,
     cached_mesh_payload_bytes: usize,
     cached_tangent_payload_bytes: usize,
+    cached_assembly_payload_bytes: usize,
 }
 
 fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measurement, Box<dyn std::error::Error>> {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), UsdPlugin, LiveStagePlugin, EditorPlugin));
     app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>();
+    if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() { app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>(); }
+    if let Ok(value) = std::env::var("USD_RESIDENCY_BUDGET_MS") {
+        app.insert_resource(usd_bevy::route::residency::UsdResidencyBudget(Duration::from_millis(value.parse()?)));
+    }
     if gpu_prepared { app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin); }
-    if std::env::var_os("USD_PROFILE_ROUTES").is_some() { app.init_resource::<usd_bevy::route::ProjectionTimings>(); }
+    if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::route::material::MaterialResolveTimings>();
+        app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
+        app.init_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>();
+        app.init_resource::<usd_bevy::route::ProjectionTimings>();
+        if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
+            app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>();
+        }
+        app.init_resource::<usd_bevy::route::cache::MeshCacheMetrics>();
+        app.init_resource::<usd_bevy::route::MeshReadTiming>();
+    }
     app.update();
     let bridge = app.world().resource::<EditorBridge>().clone();
     bridge.send(EditorCommand::Open(path.to_str().ok_or("asset path must be UTF-8")?.into()))?;
@@ -81,6 +167,8 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     let start = Instant::now();
     for _ in 0..100 { app.update(); }
     let idle = start.elapsed() / 100;
+    report_routes(app.world(), "after-idle", 100);
+    if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() { promote_deferred(&mut app)?; }
     let mut result = Measurement { open, idle, peak_asset_counts: asset_counts(app.world()), rss_before_seeks: resident_bytes(), ..default() };
     if seek != SeekMode::Idle {
         if seek == SeekMode::Timeline {
@@ -94,6 +182,9 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
         for iteration in 0..seek.samples()+4 {
             if iteration == 4 {
                 if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionTimings>() { timings.0.clear(); }
+                if let Some(mut timings) = app.world_mut().get_resource_mut::<usd_bevy::route::ProjectionVisibilityTimings>() { timings.0.clear(); }
+                if let Some(mut metrics) = app.world_mut().get_resource_mut::<usd_bevy::route::cache::MeshCacheMetrics>() { metrics.0.clear(); }
+                if let Some(mut reads) = app.world_mut().get_resource_mut::<usd_bevy::route::MeshReadTiming>() { *reads = default(); }
             }
             let normalized = seek.clock(iteration);
             let time = if seek == SeekMode::Timeline {
@@ -124,6 +215,9 @@ fn measure(path: &Path, gpu_prepared: bool, seek: SeekMode) -> Result<Measuremen
     }
     if let Some(cache) = app.world().get_resource::<usd_bevy::route::cache::MeshTangentCache>() {
         result.cached_tangent_payload_bytes = cache.retained_payload_bytes();
+    }
+    if let Some(cache) = app.world().get_resource::<usd_bevy::route::cache::MeshAssemblyCache>() {
+        result.cached_assembly_payload_bytes = cache.retained_payload_bytes();
     }
     result.gpu_morph_entities = app.world_mut().query::<&usd_bevy::route::gpu_morph::UsdGpuMorph>().iter(app.world()).count();
     result.mesh_entities = app.world_mut().query::<&Mesh3d>().iter(app.world()).count();
@@ -198,21 +292,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         path.display(), if cfg!(debug_assertions) { "debug" } else { "release" },
         if gpu_prepared { "gpu-prepared" } else { "cpu" });
     println!("payloads=retained-cpu-bytes excludes=gpu-allocation,asset-handles,allocator-overhead");
+    if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() {
+        println!("prewarm=all-deferred-after-idle payload_phase_override=after-prewarm-or-seeks idle_phase=before-prewarm");
+    }
     println!("seek={seek:?} seek_clocks={} seek_warmup={} seek_samples={} seek_percentiles=nearest-rank payload_phase={}",
         if seek == SeekMode::Timeline { "1000-distinct-times-in-authored-range" }
         else if seek == SeekMode::Unique { "1000-distinct-times-in-(0,10]" } else { "0,5,10,5" },
         if seek == SeekMode::Idle { 0 } else { 4 }, seek.samples(), if seek != SeekMode::Idle { "after-seeks" } else { "after-idle" });
     println!("rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks peak_assets=sampled-after-updates-not-allocation-counts");
-    println!("sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes");
+    println!("sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes,cached_assembly_payload_bytes");
     for sample in 0..samples {
         let m = measure(&path, gpu_prepared, seek)?;
-        println!("{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{}", m.open.as_secs_f64()*1000.0,
+        println!("{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{}", m.open.as_secs_f64()*1000.0,
             m.idle.as_secs_f64()*1_000_000.0, m.mesh_entities, m.subset_entities, m.mesh_assets,
             m.vertices, m.unreferenced_vertices, m.vertex_bytes, m.index_bytes, m.morph_bytes, m.image_bytes,
             m.seek_median.as_secs_f64()*1_000_000.0, m.seek_p95.as_secs_f64()*1_000_000.0, m.seek_max.as_secs_f64()*1_000_000.0, m.gpu_morph_entities,
             m.peak_asset_counts[0], m.peak_asset_counts[1], m.peak_asset_counts[2],
             m.rss_before_seeks.map_or("NA".into(), |v| v.to_string()), m.rss_after_seeks.map_or("NA".into(), |v| v.to_string()),
-            m.cached_meshes,m.cached_mesh_payload_bytes,m.cached_tangent_payload_bytes);
+            m.cached_meshes,m.cached_mesh_payload_bytes,m.cached_tangent_payload_bytes,m.cached_assembly_payload_bytes);
     }
     Ok(())
 }

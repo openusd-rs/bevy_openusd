@@ -147,6 +147,12 @@ pub struct LayerRegistry {
     resolver: Box<dyn ar::Resolver>,
 }
 
+pub(crate) struct PreparedLayer {
+    pub identifier: String,
+    pub resolved: ar::ResolvedPath,
+    pub data: sdf::LayerData,
+}
+
 impl Default for LayerRegistry {
     /// A registry over the filesystem [`DefaultResolver`](ar::DefaultResolver)
     /// and the built-in formats — what [`Stage::builder`](crate::usd::Stage)
@@ -273,6 +279,13 @@ impl LayerRegistry {
             .read_bytes(bytes, source_name)
     }
 
+    /// Decodes a shared immutable snapshot using its content signature.
+    pub fn read_shared_bytes(bytes: std::sync::Arc<[u8]>, source_name: &str) -> Result<sdf::LayerData, sdf::FormatError> {
+        DEFAULT_FORMATS.iter().copied().find(|format| format.matches_content(&bytes))
+            .ok_or_else(|| sdf::FormatError::Unrecognized(source_name.into()))?
+            .read_shared_bytes(bytes, source_name)
+    }
+
     /// Find the format claiming `ext` (without the leading dot, case-insensitive),
     /// e.g. `"usda"` or `"usd"`. C++ `SdfFileFormat::FindByExtension`.
     pub fn find_by_extension(ext: &str) -> Option<&'static dyn sdf::FileFormat> {
@@ -309,30 +322,21 @@ impl LayerRegistry {
         }
     }
 
-    /// The `expressionVariables` authored on the single layer at `asset_path`
-    /// (anchored against `anchor`), read without opening its sublayers — the shallow
-    /// read the stage root stack needs to compose its root and session layers' own
-    /// variables into one context before either region's sublayer subtree is
-    /// collected. An empty identifier yields an empty map; a resolve or read failure
-    /// propagates.
-    ///
-    /// TODO(perf): the layer read here is read again when its stack is collected;
-    /// the registry does not cache reads, so a root or session layer is parsed twice
-    /// at open.
-    pub(crate) fn own_expression_variables(
+    /// Reads one root layer without opening its sublayers. Empty identifiers yield None.
+    pub(crate) fn prepare_root(
         &self,
         asset_path: &str,
         anchor: Option<&ar::ResolvedPath>,
-    ) -> Result<HashMap<String, sdf::Value>, LoadError> {
+    ) -> Result<Option<PreparedLayer>, LoadError> {
         let identifier = self.create_identifier(asset_path, anchor);
         if identifier.is_empty() {
-            return Ok(HashMap::new());
+            return Ok(None);
         }
         let resolved = self.resolve_layer(&identifier).ok_or_else(|| LoadError::Unresolved {
             asset_path: asset_path.to_owned(),
         })?;
         let data = self.read(&resolved)?;
-        Ok(expr::read_expression_variables(data.as_ref())?.into_owned())
+        Ok(Some(PreparedLayer { identifier, resolved, data }))
     }
 
     /// Opens the layer at `identifier` — a canonical identifier, as
@@ -380,9 +384,6 @@ impl LayerRegistry {
         on_error: &dyn Fn(Error) -> Result<(), Error>,
         already_present: &dyn Fn(&str) -> bool,
     ) -> Result<Option<Vec<sdf::Layer>>, LoadError> {
-        let mut layers = Vec::new();
-        let mut visited = HashSet::new();
-
         if identifier.is_empty() {
             return Ok(None);
         }
@@ -396,6 +397,20 @@ impl LayerRegistry {
             return Ok(None);
         };
         let data = self.read(&resolved)?;
+        self.open_prepared_stack(PreparedLayer { identifier, resolved, data }, ancestor_expr_vars, reload, on_error, already_present)
+    }
+
+    pub(crate) fn open_prepared_stack(
+        &self,
+        root: PreparedLayer,
+        ancestor_expr_vars: &HashMap<String, sdf::Value>,
+        reload: bool,
+        on_error: &dyn Fn(Error) -> Result<(), Error>,
+        already_present: &dyn Fn(&str) -> bool,
+    ) -> Result<Option<Vec<sdf::Layer>>, LoadError> {
+        let PreparedLayer { identifier, resolved, data } = root;
+        let mut layers = Vec::new();
+        let mut visited = HashSet::new();
         visited.insert(identifier.clone());
 
         // The whole stack resolves its `${VAR}` sublayers against one context (C++
@@ -471,11 +486,11 @@ impl LayerRegistry {
     fn read(&self, resolved: &ar::ResolvedPath) -> Result<sdf::LayerData, LoadError> {
         let ext = resolved.extension();
         if ext.eq_ignore_ascii_case("usd") {
-            let bytes = self
-                .resolver
-                .open_asset(resolved)
-                .and_then(|mut asset| asset.read_all())
-                .map_err(sdf::FormatError::from)?;
+            let mut asset = self.resolver.open_asset(resolved).map_err(sdf::FormatError::from)?;
+            if let Some(bytes) = asset.shared_bytes() {
+                return Ok(Self::read_shared_bytes(bytes, &resolved.to_string())?);
+            }
+            let bytes = asset.read_all().map_err(sdf::FormatError::from)?;
             return Ok(Self::read_bytes(bytes.into(), &resolved.to_string())?);
         }
         Ok(Self::find_by_extension(&ext)

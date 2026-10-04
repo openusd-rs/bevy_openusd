@@ -4,6 +4,13 @@
 `usd_bevy` is the library: it loads and composes USD stages, keeps them live, and
 writes edits back with undo/redo and save. `usdview` is the editor built on it.
 
+| ![Hummingbird](media/hummingbird.gif) | ![Chameleon](media/chameleon.gif) | ![Cow](media/cow.gif) |
+| --- | --- | --- |
+
+UsdSkel animation, with the bone overlay from `UsdSkeletonOverlayPlugin`
+(`skeleton_overlay` feature) switched on part of the way. Rendered with
+`cargo run --example gif_frames`.
+
 ## Use it in Bevy
 
 ```toml

@@ -10,6 +10,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 concurrency:
   group: rust-${{ github.ref }}
@@ -20,6 +21,9 @@ jobs:
     name: build + test
     runs-on: ubuntu-latest
     steps:
+      - name: Free runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain

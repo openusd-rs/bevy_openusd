@@ -6,7 +6,7 @@
 use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
 
-use super::util::{connections_at, read_asset_path, read_token_or_string};
+use super::util::{connections_at, read_asset_path, read_bool, read_token_or_string};
 
 /// Decoded UsdPreviewSurface material. Each channel is `None` (unauthored),
 /// a scalar, or a texture asset path (caller resolves via the AssetServer).
@@ -214,6 +214,17 @@ pub fn read_preview_material_at(
             _ => return Ok(None),
         },
     };
+    let omnipbr = match dialect {
+        SurfaceDialect::Mdl => !matches!(
+            mdl_id,
+            Some("OmniSurface") | Some("OmniSurfaceLite") | Some("OmniSurfaceBase")
+        ),
+        SurfaceDialect::Preview => matches!(
+            shader_id.as_deref(),
+            Some("OmniPBR") | Some("OmniPBR_Opacity") | Some("OmniPBR_ClearCoat")
+        ),
+        SurfaceDialect::MaterialX => false,
+    };
 
     let mut out = ReadPreviewMaterial::default();
     let mut textures = Vec::new();
@@ -231,6 +242,11 @@ pub fn read_preview_material_at(
             Some(ResolvedValue::Scalar(s)) => bind_scalar(&mut out, s),
             None => {}
         }
+    }
+    // OmniPBR emits only while `enable_emission` is on, which defaults to off.
+    if omnipbr && read_bool(stage, &shader, "inputs:enable_emission")? != Some(true) {
+        out.emissive_color = None;
+        out.emissive_texture = None;
     }
     out.uv_transform = read_uv_transform(stage, &textures, time)?;
     anyhow::ensure!(
@@ -330,6 +346,39 @@ fn sampled_value(stage: &Stage, path: &Path, time: Option<f64>) -> anyhow::Resul
         .prim(prim)?
         .attribute(name)
         .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?)
+}
+
+#[test]
+fn omnipbr_emission_needs_enable_emission() {
+    let cases = [
+        ("", None),
+        ("bool inputs:enable_emission = 0", None),
+        ("bool inputs:enable_emission = 1", Some([1.0, 0.5, 0.25])),
+    ];
+    for (enable, expected) in cases {
+        let text = format!(
+            r#"#usda 1.0
+def Material "Mat" {{
+    token outputs:mdl:surface.connect = </Mat/Shader.outputs:out>
+    def Shader "Shader" {{
+        uniform token info:implementationSource = "sourceAsset"
+        uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+        uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+        color3f inputs:emissive_color = (1, 0.5, 0.25)
+        {enable}
+        token outputs:out
+    }}
+}}
+"#
+        );
+        let stage = crate::UsdSource::snapshot("omnipbr.usda", text.into_bytes())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let material = openusd::sdf::path("/Mat").unwrap();
+        let read = read_preview_material(&stage, &material).unwrap().unwrap();
+        assert_eq!(read.emissive_color, expected, "{enable}");
+    }
 }
 
 #[test]

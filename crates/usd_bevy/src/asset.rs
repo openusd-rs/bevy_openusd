@@ -119,6 +119,12 @@ fn decode_textures(
         .texture_requests(stage, true)
         .map_err(std::io::Error::other)?;
     for (index, (path, srgb)) in requests.iter().cloned().enumerate() {
+        if !crate::source::rooted(Path::new(&path)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("USD texture unavailable: {path}"),
+            ));
+        }
         let bytes = source.read_asset(&path)?;
         let inner = openusd::ar::split_package_relative_path_inner(&path)
             .map(|(_, inner)| inner)
@@ -197,11 +203,13 @@ impl AssetLoader for UsdAssetLoader {
                 })?;
                 let asset_path =
                     AssetPath::from(dependency.to_path_buf()).with_source(source_id.clone());
-                let bytes = load_context
-                    .read_asset_bytes(asset_path)
-                    .await
-                    .map_err(std::io::Error::other)?;
-                source.insert_dependency(identifier, bytes);
+                match load_context.read_asset_bytes(asset_path).await {
+                    Ok(bytes) => source.insert_dependency(identifier, bytes),
+                    Err(error) => {
+                        warn!("USD dependency unavailable, continuing without it: {error}");
+                        source.mark_absent(identifier);
+                    }
+                }
             }
         }
         Err(std::io::Error::other(
@@ -3006,6 +3014,89 @@ def Material "Mat" {
     }
 }
 "#;
+
+    const SIDE_ASSETS: &str = r#"#usda 1.0
+def Mesh "Mesh" (prepend apiSchemas = ["MaterialBindingAPI"])
+{
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    rel material:binding = </Looks/Mat>
+}
+def Scope "Looks"
+{
+    def Material "Mat"
+    {
+        token outputs:surface.connect = </Looks/Mat/Surface.outputs:surface>
+        def Shader "Surface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor.connect = </Looks/Mat/Tex.outputs:rgb>
+            token outputs:surface
+        }
+        def Shader "Tex"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @../textures/missing.png@
+            float3 outputs:rgb
+        }
+        def Shader "Mdl"
+        {
+            uniform token info:implementationSource = "sourceAsset"
+            uniform asset info:mdl:sourceAsset = @missing.mdl@
+        }
+    }
+}
+"#;
+
+    #[test]
+    fn unused_missing_assets_load_but_missing_textures_fail() {
+        let (mut app, directory, _) = watched_memory_app();
+        directory.insert_asset(Path::new("textures/pixel.png"), pixel_png([255, 0, 0, 255]));
+        for (model, texture) in [
+            ("models/side.usda", "pixel.png"),
+            ("models/gap.usda", "missing.png"),
+        ] {
+            directory.insert_asset_text(
+                Path::new(model),
+                &SIDE_ASSETS.replace("missing.png", texture),
+            );
+        }
+        let mut states = Vec::new();
+        for model in ["models/side.usda", "models/gap.usda"] {
+            let handle: Handle<UsdScene> = app
+                .world()
+                .resource::<AssetServer>()
+                .load(format!("fixture://{model}"));
+            let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+            tick_until(&mut app, |world| {
+                matches!(
+                    world.get::<UsdSceneState>(root),
+                    Some(UsdSceneState::Ready | UsdSceneState::Failed(_))
+                )
+            });
+            states.push((
+                handle,
+                app.world().get::<UsdSceneState>(root).unwrap().clone(),
+            ));
+        }
+        let (handle, ready) = &states[0];
+        assert_eq!(
+            ready,
+            &UsdSceneState::Ready,
+            "an unused missing .mdl must not fail"
+        );
+        let scene = app
+            .world()
+            .resource::<Assets<UsdScene>>()
+            .get(handle)
+            .unwrap();
+        assert_eq!(scene.textures.len(), 1);
+        let UsdSceneState::Failed(error) = &states[1].1 else {
+            panic!("a missing texture must fail the scene");
+        };
+        assert!(error.contains("USD texture unavailable"), "{error}");
+    }
 
     #[test]
     fn memory_sources_report_gaps_and_decode_textures_without_disk() {

@@ -9,6 +9,7 @@ repository = "https://github.com/bresilla/bevy_openusd"
 [features]
 file_watcher = ["bevy/file_watcher", "dep:async-channel"]
 skeleton_overlay = ["bevy/bevy_gizmos"]
+physics_overlay = ["bevy/bevy_gizmos"]
 
 [dependencies]
 async-channel = { version = "2", optional = true }

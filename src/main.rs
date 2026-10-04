@@ -222,7 +222,7 @@ impl WindowApp for UsdApp {
             Err(error) => { error!("Viewer control API unavailable: {error}"); None }
         };
         let bevy_view = mara_bevy::MaraBevyViewport::with_render_state_and_content(
-            ctx.__internal_render_state(),
+            ctx.gpu(),
             move |app: &mut App| {
                 configure_usd_app(app, bridge.clone());
                 app.insert_resource(framing_bridge.clone());

@@ -16,6 +16,8 @@ pub mod instance;
 pub mod live;
 pub mod mesh;
 mod persistence;
+#[cfg(feature = "physics_overlay")]
+pub mod physics_overlay;
 pub mod prim_ref;
 pub mod read;
 pub mod reload;

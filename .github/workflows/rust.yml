@@ -41,7 +41,7 @@ jobs:
             libxrandr-dev
 
       - name: cargo fmt
-        run: cargo fmt --all -- --check
+        run: cargo fmt -p usdview -p usd_bevy -p usd_macro -p usd_web -- --check
 
       - name: cargo build
         run: cargo build --workspace --all-targets

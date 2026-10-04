@@ -12,6 +12,11 @@ local make = oslo.make
 
 local APP = "usdview"
 
+-- Formats workspace crates only; `--all` would also reach vendored path deps.
+local function fmt(...)
+  sh.cargo("fmt", "-p", "usdview", "-p", "usd_bevy", "-p", "usd_macro", "-p", "usd_web", ...)
+end
+
 -- Picks a live Wayland socket per launch, else falls back to X11, then runs `cmd`.
 local function fresh_display_env(cmd)
   return ([[
@@ -89,12 +94,14 @@ make.recipe{ name = "check", desc = "cargo check on the usdview target",
 make.recipe{ name = "check-all", desc = "cargo check on the full workspace, all targets",
              run = function() sh.cargo("check", "--workspace", "--all-targets") end }
 
+make.recipe{ name = "fmt", desc = "format the workspace crates (not vendor/)", run = function() fmt() end }
+
 make.recipe{
   name = "harden",
   desc = "diff whitespace, fmt, no-default-features check/test, strict clippy, all-feature tests",
   run = function()
     sh.git("diff", "--check")
-    sh.cargo("fmt", "--all", "--", "--check")
+    fmt("--", "--check")
     sh.cargo("check", "--workspace", "--no-default-features")
     sh.cargo("test", "--workspace", "--no-default-features")
     sh.cargo("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")

@@ -15,14 +15,6 @@ pub struct Waypoint {
 }
 
 impl Waypoint {
-    fn valid(&self) -> bool {
-        self.focus.iter().all(|v| v.is_finite()) && self.yaw.is_finite()
-            && self.elevation.is_finite() && self.elevation.abs() < std::f32::consts::FRAC_PI_2
-            && self.distance.is_finite() && self.distance > 0.0
-            && self.fov.is_finite() && self.fov > 0.0 && self.fov < std::f32::consts::PI
-            && self.seconds.is_finite() && (0.01..=3600.0).contains(&self.seconds)
-    }
-
     fn between(&self, next: &Self, t: f32) -> Self {
         let t = t.clamp(0.0, 1.0);
         let t = t * t * (3.0 - 2.0 * t);
@@ -35,20 +27,6 @@ impl Waypoint {
         result.distance += (next.distance - self.distance) * t;
         result.fov += (next.fov - self.fov) * t;
         result
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Plan { version: u32, points: Vec<Waypoint> }
-
-impl Plan {
-    fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let plan: Self = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        if plan.version != 1 || plan.points.len() > 1000 || !plan.points.iter().all(Waypoint::valid) {
-            return Err("Invalid camera plan or unsupported version".into());
-        }
-        Ok(plan)
     }
 }
 
@@ -131,15 +109,6 @@ mod tests {
         let (last, finished) = sample(&points, 2.0).unwrap();
         assert!(finished); assert_eq!(last.yaw, b.yaw);
         assert!(sample(&[], 0.0).is_none());
-    }
-    #[test]
-    fn persisted_plans_validate_before_replacement() {
-        let mut plan = Plan { version: 1, points: vec![point(0.0)] };
-        assert!(Plan::decode(&serde_json::to_vec(&plan).unwrap()).is_ok());
-        plan.points[0].seconds = 0.0;
-        assert!(Plan::decode(&serde_json::to_vec(&plan).unwrap()).is_err());
-        plan.points.clear(); plan.version = 2;
-        assert!(Plan::decode(&serde_json::to_vec(&plan).unwrap()).is_err());
     }
     #[test]
     fn playback_updates_the_camera_and_stops_at_the_endpoint() {

@@ -366,7 +366,8 @@ mod tests {
             ));
             app.init_asset::<Mesh>()
                 .init_asset::<StandardMaterial>()
-                .init_asset::<Image>();
+                .init_asset::<Image>()
+                .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             if !cached {
                 app.world_mut().remove_resource::<FlatMaterialCache>();
             }

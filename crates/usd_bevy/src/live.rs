@@ -306,7 +306,7 @@ struct AnimationDiscovery {
 
 impl AnimationDiscovery {
     fn measured(&mut self, index: usize, query: impl FnOnce(&mut Self) -> bool) -> bool {
-        let started = self.profile.then(std::time::Instant::now);
+        let started = self.profile.then(bevy::platform::time::Instant::now);
         let result = query(self);
         if let Some(started) = started { self.timings[index] += started.elapsed(); }
         result
@@ -473,7 +473,7 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
     let memory_profiling = profiling && std::env::var_os("USD_PROFILE_MEMORY").is_some();
     let memory_trace = profiling.then(crate::route::profiling::memory_trace_range).flatten();
-    let started = profiling.then(std::time::Instant::now);
+    let started = profiling.then(bevy::platform::time::Instant::now);
     let mut animation_time = std::time::Duration::ZERO;
     let mut route_time = std::time::Duration::ZERO;
     let report = |phase: &str, count: usize, path: &str, animation: std::time::Duration,
@@ -538,14 +538,14 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
             if trace_memory { crate::route::profiling::memory_event("prim-begin", path, "animation", None); }
             let sampled = profiling && (prim_count <= 8 || prim_count % 1024 == 0);
             if sampled { report("prim-start", prim_count, path.as_str(), animation_time, route_time, world); }
-            let animation_started = profiling.then(std::time::Instant::now);
+            let animation_started = profiling.then(bevy::platform::time::Instant::now);
             if discovery.prim_is_animated(stage, path) {
                 animated.insert(path.as_str().to_string());
             }
             if let Some(started) = animation_started { animation_time += started.elapsed(); }
             if trace_memory { crate::route::profiling::memory_event("animation-complete", path, "registry", None); }
             // Every prim→component mapping goes through the registry.
-            let route_started = profiling.then(std::time::Instant::now);
+            let route_started = profiling.then(bevy::platform::time::Instant::now);
             registry.project_prim_traced(stage, path, world, entity, trace_memory);
             if let Some(started) = route_started { route_time += started.elapsed(); }
             map.remember_type(stage, path.as_str());
@@ -641,7 +641,7 @@ impl ProjectionJob {
         let previous_materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
         if let Some(materials) = self.materials.take() { world.insert_non_send(materials); }
         let registry = registry_of(world);
-        let started = std::time::Instant::now();
+        let started = bevy::platform::time::Instant::now();
         while let Some(path) = self.pending.pop_front() {
             let parent = map.entity(parent_path(path.as_str())).unwrap_or(self.root);
             let entity = world

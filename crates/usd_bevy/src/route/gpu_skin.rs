@@ -47,7 +47,7 @@ fn update_joint_globals(
     )>,
     timing: Option<ResMut<GpuSkinUpdateTiming>>,
 ) {
-    let started = timing.as_ref().map(|_| std::time::Instant::now());
+    let started = timing.as_ref().map(|_| bevy::platform::time::Instant::now());
     let updates: Vec<_> = queries.p0().iter()
         .flat_map(|(transform, skin)| skin.joints.iter().zip(&skin.matrices)
             .map(move |(&joint, matrix)| (joint, GlobalTransform::from(transform.to_matrix() * *matrix))))

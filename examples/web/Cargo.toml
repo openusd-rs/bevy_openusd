@@ -1,0 +1,33 @@
+[package]
+name = "usd_web"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "usd_bevy in the browser: AssetServer over HTTP and in-memory sources."
+
+[dependencies]
+bevy = { version = "0.19.1", default-features = false, features = [
+    "std",
+    "async_executor",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_winit",
+    "bevy_window",
+    "x11",
+    "wayland",
+    "webgl2",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_camera",
+    "bevy_light",
+    "bevy_mesh",
+    "bevy_image",
+    "png",
+    "hdr",
+    "tonemapping_luts",
+    "zstd_rust",
+    "reflect_auto_register",
+] }
+usd_bevy = { path = "../../crates/usd_bevy" }

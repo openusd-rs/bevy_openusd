@@ -1,7 +1,8 @@
 //! Native disk-layer refresh for the live editor document.
 
 use super::*;
-use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, time::{Duration, Instant, SystemTime}};
+use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, time::{Duration, SystemTime}};
+use bevy::platform::time::Instant;
 
 #[derive(Resource, Default, Debug)]
 pub struct EditorReloadStatus {

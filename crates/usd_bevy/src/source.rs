@@ -11,6 +11,9 @@ use openusd::usd::Stage;
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(0);
 
+/// Virtual directory that anchors `UsdSource::from_memory` files; never on disk.
+const MEMORY_ROOT: &str = "__usd_memory__";
+
 pub(crate) type DiskBaselines = Arc<EditorDisk>;
 
 #[derive(Default)]
@@ -57,12 +60,7 @@ impl UsdSource {
 
     /// Anchor bytes at a filename without creating that file.
     pub fn new(path: impl AsRef<Path>, bytes: impl Into<Arc<[u8]>>) -> io::Result<Self> {
-        let path = path.as_ref();
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()?.join(path)
-        };
+        let absolute = absolute(path.as_ref())?;
         let raw = absolute.to_str().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "USD source path is not UTF-8")
         })?;
@@ -110,7 +108,7 @@ impl UsdSource {
     }
 
     pub(crate) fn read_asset(&self, identifier: &str) -> io::Result<Vec<u8>> {
-        if !Path::new(identifier).is_absolute() {
+        if !rooted(Path::new(identifier)) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
                 format!("unresolved asset identifier: {identifier}")));
         }
@@ -205,11 +203,57 @@ impl UsdSource {
     /// Anchor bytes without allowing filesystem fallback for missing dependencies.
     /// Bytes may represent a USD layer, package, or opaque dependency asset.
     pub fn snapshot(path: impl AsRef<Path>, bytes: impl Into<Arc<[u8]>>) -> io::Result<Self> {
-        let path = path.as_ref();
-        let absolute = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) };
-        let mut source = Self::new(normalize(&absolute), bytes)?;
+        let mut source = Self::new(normalize(&absolute(path.as_ref())?), bytes)?;
         source.filesystem = false;
         Ok(source)
+    }
+
+    /// Snapshot of `root` among in-memory `files`, keyed by `/`-separated paths
+    /// relative to one virtual directory, e.g. files a browser user picked.
+    /// Nothing is read from disk; see [`Self::missing_dependencies`].
+    pub fn from_memory<P: AsRef<str>, B: Into<Arc<[u8]>>>(
+        root: &str,
+        files: impl IntoIterator<Item = (P, B)>,
+    ) -> io::Result<Self> {
+        let base = absolute(Path::new(MEMORY_ROOT))?;
+        let locate = |path: &str| -> io::Result<PathBuf> {
+            let located = normalize(&base.join(path));
+            if rooted(Path::new(path)) || !located.starts_with(&base) || located == base {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                    format!("in-memory USD path must stay relative: {path}")));
+            }
+            Ok(located)
+        };
+        let root = locate(root)?;
+        let mut root_bytes = None;
+        let mut dependencies = Vec::new();
+        for (path, bytes) in files {
+            let path = locate(path.as_ref())?;
+            if path == root {
+                root_bytes = Some(bytes.into());
+            } else {
+                dependencies.push((path.to_string_lossy().into_owned(), bytes.into()));
+            }
+        }
+        let bytes = root_bytes.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,
+            format!("root is not among the in-memory files: {}", root.display())))?;
+        let mut source = Self::snapshot(root, bytes)?;
+        for (identifier, bytes) in dependencies {
+            source.insert_dependency(identifier, bytes);
+        }
+        Ok(source)
+    }
+
+    /// Layers and textures the composed stage requests that this snapshot
+    /// lacks. In-memory paths come back relative, as `from_memory` takes them;
+    /// sources that fall back to the filesystem report none.
+    pub fn missing_dependencies(&self) -> Vec<String> {
+        let base = absolute(Path::new(MEMORY_ROOT)).ok();
+        self.probe_stage().1.into_iter().map(|identifier| {
+            base.as_ref()
+                .and_then(|base| Path::new(&identifier).strip_prefix(base).ok())
+                .map_or_else(|| identifier.clone(), |relative| relative.to_string_lossy().into_owned())
+        }).collect()
     }
 
     /// Return a snapshot containing another source and its captured dependencies.
@@ -396,7 +440,7 @@ impl UsdSource {
     pub(crate) fn validate_composition(stage: &Stage) -> anyhow::Result<()> {
         let profile_values = std::env::var_os("USD_PROFILE_VALIDATION_VALUES").is_some();
         let mut value_times = [std::time::Duration::ZERO; 3];
-        let started = (std::env::var_os("USD_PROFILE_LOADING").is_some()).then(std::time::Instant::now);
+        let started = (std::env::var_os("USD_PROFILE_LOADING").is_some()).then(bevy::platform::time::Instant::now);
         let report = |phase: &str, prims: usize, attributes: usize| {
             if let Some(started) = started {
                 eprintln!("validation_profile phase={phase} elapsed_ms={:.3} prims={prims} attributes={attributes}", started.elapsed().as_secs_f64()*1000.0);
@@ -431,13 +475,13 @@ impl UsdSource {
             let attributes = if has_clips { prim.attributes()? } else { prim.authored_attributes()? };
             for attribute in attributes {
                 attribute_count += 1;
-                let value_started = profile_values.then(std::time::Instant::now);
+                let value_started = profile_values.then(bevy::platform::time::Instant::now);
                 attribute.get::<openusd::sdf::Value>()?;
                 if let Some(started) = value_started { value_times[0] += started.elapsed(); }
-                let type_started = profile_values.then(std::time::Instant::now);
+                let type_started = profile_values.then(bevy::platform::time::Instant::now);
                 let asset = attribute.type_name()?.is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]"));
                 if let Some(started) = type_started { value_times[1] += started.elapsed(); }
-                let samples_started = profile_values.then(std::time::Instant::now);
+                let samples_started = profile_values.then(bevy::platform::time::Instant::now);
                 if asset {
                     for time in attribute.time_sample_times()? {
                         attribute.get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(time)))?;
@@ -582,7 +626,7 @@ impl Resolver for SourceResolver {
     fn create_identifier(&self, path: &str, anchor: Option<&ResolvedPath>) -> String {
         if !self.source.filesystem
             && !openusd::ar::is_package_relative_path(path)
-            && !Path::new(path).is_absolute()
+            && !rooted(Path::new(path))
             && let Some(anchor) = anchor
             && !openusd::ar::is_package_relative_path(&anchor.to_string_lossy())
             && !anchor.to_string_lossy().ends_with(".usdz")
@@ -669,6 +713,23 @@ impl Resolver for SourceResolver {
             self.source.identity, self.source.identifier
         )
     }
+}
+
+/// `Path::is_absolute`, also true for `/`-rooted paths on wasm32, where std
+/// considers no path absolute.
+pub(crate) fn rooted(path: &Path) -> bool {
+    path.is_absolute() || (cfg!(target_arch = "wasm32") && path.has_root())
+}
+
+/// Anchors a relative path at the working directory, or at `/` on wasm32.
+pub(crate) fn absolute(path: &Path) -> io::Result<PathBuf> {
+    if rooted(path) {
+        return Ok(path.to_path_buf());
+    }
+    #[cfg(target_arch = "wasm32")]
+    return Ok(Path::new("/").join(path));
+    #[cfg(not(target_arch = "wasm32"))]
+    Ok(std::env::current_dir()?.join(path))
 }
 
 fn normalize(path: &Path) -> PathBuf {

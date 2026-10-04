@@ -1,8 +1,9 @@
-use std::time::Duration;
 use eframe::egui;
+use std::time::Duration;
 
 fn periodic_delay(predicted_dt: f32) -> Duration {
-    Duration::from_secs_f64(1.0 / 60.0) + Duration::try_from_secs_f32(predicted_dt).unwrap_or_default()
+    Duration::from_secs_f64(1.0 / 60.0)
+        + Duration::try_from_secs_f32(predicted_dt).unwrap_or_default()
 }
 
 pub fn request(ctx: &egui::Context) {
@@ -19,10 +20,19 @@ mod tests {
             let ctx = egui::Context::default();
             let mut output = egui::FullOutput::default();
             for _ in 0..5 {
-                output = ctx.run_ui(egui::RawInput { predicted_dt: predicted, ..Default::default() }, |ui| request(ui.ctx()));
+                output = ctx.run_ui(
+                    egui::RawInput {
+                        predicted_dt: predicted,
+                        ..Default::default()
+                    },
+                    |ui| request(ui.ctx()),
+                );
             }
             let delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
-            assert!(delay >= Duration::from_millis(16) && delay <= Duration::from_millis(17), "{predicted}: {delay:?}");
+            assert!(
+                delay >= Duration::from_millis(16) && delay <= Duration::from_millis(17),
+                "{predicted}: {delay:?}"
+            );
         }
         for invalid in [f32::NAN, f32::INFINITY, -1.] {
             assert_eq!(periodic_delay(invalid), Duration::from_secs_f64(1. / 60.));

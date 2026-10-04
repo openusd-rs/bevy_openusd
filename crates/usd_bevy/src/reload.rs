@@ -1,6 +1,9 @@
 //! Transactional, field-level updates of layers in an existing stage.
 
-use openusd::{sdf::{AbstractData, Data, Layer}, usd::Stage};
+use openusd::{
+    sdf::{AbstractData, Data, Layer},
+    usd::Stage,
+};
 
 /// Prepared layer changes validated against the current composed document.
 pub struct LayerReload {
@@ -14,44 +17,79 @@ impl LayerReload {
     /// Parses replacement bytes and validates composition without modifying `stage`.
     pub fn prepare(stage: &Stage, replacements: &[(String, Vec<u8>)]) -> anyhow::Result<Self> {
         Self::prepare_decoded(stage, replacements, |id, bytes| {
-            Ok(openusd::sdf::LayerRegistry::read_bytes(std::borrow::Cow::Owned(bytes.clone()), id)?)
+            Ok(openusd::sdf::LayerRegistry::read_bytes(
+                std::borrow::Cow::Owned(bytes.clone()),
+                id,
+            )?)
         })
     }
 
-    pub(crate) fn prepare_shared(stage: &Stage, replacements: &[(String, std::sync::Arc<[u8]>)]) -> anyhow::Result<Self> {
+    pub(crate) fn prepare_shared(
+        stage: &Stage,
+        replacements: &[(String, std::sync::Arc<[u8]>)],
+    ) -> anyhow::Result<Self> {
         Self::prepare_decoded(stage, replacements, |id, bytes| {
-            Ok(openusd::sdf::LayerRegistry::read_shared_bytes(bytes.clone(), id)?)
+            Ok(openusd::sdf::LayerRegistry::read_shared_bytes(
+                bytes.clone(),
+                id,
+            )?)
         })
     }
 
-    fn prepare_decoded<B>(stage: &Stage, replacements: &[(String, B)],
+    fn prepare_decoded<B>(
+        stage: &Stage,
+        replacements: &[(String, B)],
         decode: impl Fn(&str, &B) -> anyhow::Result<openusd::sdf::LayerData>,
     ) -> anyhow::Result<Self> {
         let mut layers = Vec::new();
         let mut expected = Vec::new();
         for (id, bytes) in replacements {
-            anyhow::ensure!(stage.layer(id).is_some(), "reload layer is not in the stage: {id}");
-            anyhow::ensure!(!layers.iter().any(|(existing, _)| existing == id), "duplicate reload layer: {id}");
+            anyhow::ensure!(
+                stage.layer(id).is_some(),
+                "reload layer is not in the stage: {id}"
+            );
+            anyhow::ensure!(
+                !layers.iter().any(|(existing, _)| existing == id),
+                "duplicate reload layer: {id}"
+            );
             let data = decode(id, bytes)?;
             layers.push((id.clone(), Data::from_abstract(data.as_ref())?));
-            expected.push(blake3::hash(stage.layer(id).unwrap().export_to_string()?.as_bytes()));
+            expected.push(blake3::hash(
+                stage.layer(id).unwrap().export_to_string()?.as_bytes(),
+            ));
         }
         let root = stage.root_layer();
         let root_id = root.identifier().to_owned();
-        let format_path = if root_id.ends_with(".usdz") { root.resolved_path().unwrap_or(&root_id) } else { &root_id };
+        let format_path = if root_id.ends_with(".usdz") {
+            root.resolved_path().unwrap_or(&root_id)
+        } else {
+            &root_id
+        };
         let mut bytes = layer_snapshot(&root, format_path)?;
         if root_id.ends_with(".usdz") {
             use std::io::{Read, Write};
-            let resolved = root.resolved_path().ok_or_else(|| anyhow::anyhow!("package root has no resolved path"))?;
+            let resolved = root
+                .resolved_path()
+                .ok_or_else(|| anyhow::anyhow!("package root has no resolved path"))?;
             let (_, inner) = openusd::ar::split_package_relative_path_outer(resolved)
                 .ok_or_else(|| anyhow::anyhow!("package root is not package-relative"))?;
-            let mut original = zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&root_id)?))?;
+            let mut original =
+                zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&root_id)?))?;
             let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
             for index in 0..original.len() {
                 let mut file = original.by_index(index)?;
-                archive.start_file(file.name(), zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored))?;
-                if file.name() == inner { archive.write_all(&bytes)?; }
-                else { let mut contents = Vec::new(); file.read_to_end(&mut contents)?; archive.write_all(&contents)?; }
+                archive.start_file(
+                    file.name(),
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )?;
+                if file.name() == inner {
+                    archive.write_all(&bytes)?;
+                } else {
+                    let mut contents = Vec::new();
+                    file.read_to_end(&mut contents)?;
+                    archive.write_all(&contents)?;
+                }
             }
             bytes = archive.finish()?.into_inner();
         }
@@ -59,28 +97,44 @@ impl LayerReload {
         drop(root);
         for id in stage.layer_identifiers() {
             if id != root_id {
-                source.insert_dependency(id.clone(), layer_snapshot(&stage.layer(&id).unwrap(), &id)?);
+                source.insert_dependency(
+                    id.clone(),
+                    layer_snapshot(&stage.layer(&id).unwrap(), &id)?,
+                );
             }
         }
         let (candidate, disk) = source.open_stage_for_editor()?;
         candidate.set_load_rules(stage.load_rules());
         candidate.set_interpolation_type(stage.interpolation_type());
-        for id in stage.muted_layers() { candidate.mute_layer(id); }
+        for id in stage.muted_layers() {
+            candidate.mute_layer(id);
+        }
         crate::UsdSource::validate_composition(&candidate)?;
-        let plan = Self { layers, candidate, expected, disk };
+        let plan = Self {
+            layers,
+            candidate,
+            expected,
+            disk,
+        };
         plan.apply(&plan.candidate)?;
         crate::UsdSource::validate_composition(&plan.candidate)?;
         Ok(plan)
     }
 
-    pub fn candidate(&self) -> &Stage { &self.candidate }
+    pub fn candidate(&self) -> &Stage {
+        &self.candidate
+    }
 
     /// Publishes changed fields in one transaction; unchanged fields are untouched.
     pub fn apply(&self, stage: &Stage) -> anyhow::Result<()> {
         for ((id, _), expected) in self.layers.iter().zip(&self.expected) {
-            let layer = stage.layer(id).ok_or_else(|| anyhow::anyhow!("reload layer disappeared: {id}"))?;
-            anyhow::ensure!(blake3::hash(layer.export_to_string()?.as_bytes()) == *expected,
-                "reload conflict: layer changed after preparation: {id}");
+            let layer = stage
+                .layer(id)
+                .ok_or_else(|| anyhow::anyhow!("reload layer disappeared: {id}"))?;
+            anyhow::ensure!(
+                blake3::hash(layer.export_to_string()?.as_bytes()) == *expected,
+                "reload conflict: layer changed after preparation: {id}"
+            );
         }
         let ids: Vec<_> = self.layers.iter().map(|(id, _)| id.as_str()).collect();
         stage.batch_edit(&ids, |edits| {
@@ -96,28 +150,41 @@ impl LayerReload {
 fn layer_snapshot(layer: &Layer, format_path: &str) -> anyhow::Result<Vec<u8>> {
     use openusd::sdf::FileFormat;
     let packaged = openusd::ar::split_package_relative_path_inner(format_path);
-    let path = packaged.as_ref().map_or(format_path, |(_, inner)| inner.as_str());
-    if std::path::Path::new(path).extension().and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("usdc")) {
+    let path = packaged
+        .as_ref()
+        .map_or(format_path, |(_, inner)| inner.as_str());
+    if std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("usdc"))
+    {
         let mut output = std::io::Cursor::new(Vec::new());
         openusd::usdc::UsdcFileFormat.write(layer.data(), &mut output)?;
         Ok(output.into_inner())
-    } else { Ok(layer.export_to_string()?.into_bytes()) }
+    } else {
+        Ok(layer.export_to_string()?.into_bytes())
+    }
 }
 
 fn patch(target: &mut dyn AbstractData, source: &Data) {
     for path in target.spec_paths() {
-        if !source.has_spec(&path) { target.erase_spec(&path); }
+        if !source.has_spec(&path) {
+            target.erase_spec(&path);
+        }
     }
     for path in source.spec_paths() {
         if target.spec_type(&path) != source.spec_type(&path) {
             target.create_spec(path.clone(), source.spec_type(&path).unwrap());
         }
         for field in target.list_fields(&path).unwrap_or_default() {
-            if !source.has_field(&path, &field) { target.erase_field(&path, &field); }
+            if !source.has_field(&path, &field) {
+                target.erase_field(&path, &field);
+            }
         }
         for field in source.list_fields(&path).unwrap_or_default() {
-            let value = source.get_field(&path, &field).expect("materialized layer data");
+            let value = source
+                .get_field(&path, &field)
+                .expect("materialized layer data");
             if target.try_field(&path, &field).ok().flatten().as_deref() != Some(value.as_ref()) {
                 target.set_field(&path, &field, value.into_owned());
             }
@@ -133,29 +200,62 @@ mod tests {
         use openusd::sdf::FileFormat;
         use std::io::{Cursor, Write};
         let binary = |size| {
-            let layer = Layer::from_bytes("fixture", format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n").into_bytes()).unwrap();
+            let layer = Layer::from_bytes(
+                "fixture",
+                format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n").into_bytes(),
+            )
+            .unwrap();
             let mut bytes = Cursor::new(Vec::new());
-            openusd::usdc::UsdcFileFormat.write(layer.data(), &mut bytes).unwrap();
+            openusd::usdc::UsdcFileFormat
+                .write(layer.data(), &mut bytes)
+                .unwrap();
             bytes.into_inner()
         };
         let directory = tempfile::tempdir().unwrap();
         let child = directory.path().join("child.usdc");
-        let root = directory.path().join(match kind { "dependency" => "root.usda", "package" => "root.usdz", _ => "root.usdc" });
+        let root = directory.path().join(match kind {
+            "dependency" => "root.usda",
+            "package" => "root.usdz",
+            _ => "root.usdc",
+        });
         if kind == "dependency" {
             std::fs::write(&child, binary(1)).unwrap();
-            std::fs::write(&root, "#usda 1.0\ndef Xform \"Model\" (prepend references = @child.usdc@</Model>) {}\n").unwrap();
+            std::fs::write(
+                &root,
+                "#usda 1.0\ndef Xform \"Model\" (prepend references = @child.usdc@</Model>) {}\n",
+            )
+            .unwrap();
         } else if kind == "package" {
             let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
-            archive.start_file("root.usdc", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+            archive
+                .start_file(
+                    "root.usdc",
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )
+                .unwrap();
             archive.write_all(&binary(1)).unwrap();
             std::fs::write(&root, archive.finish().unwrap().into_inner()).unwrap();
-        } else { std::fs::write(&root, binary(1)).unwrap(); }
+        } else {
+            std::fs::write(&root, binary(1)).unwrap();
+        }
         let source = crate::UsdSource::from_file(&root).unwrap();
         let stage = source.open_stage().unwrap();
         crate::UsdSource::validate_composition(&stage).unwrap();
-        let id = if kind == "dependency" { child.to_string_lossy().into_owned() } else { stage.root_layer().identifier().to_owned() };
+        let id = if kind == "dependency" {
+            child.to_string_lossy().into_owned()
+        } else {
+            stage.root_layer().identifier().to_owned()
+        };
         let plan = LayerReload::prepare(&stage, &[(id.clone(), binary(2))]).unwrap();
-        let size = |stage: &Stage| stage.prim("/Model").unwrap().attribute("size").get::<f64>().unwrap();
+        let size = |stage: &Stage| {
+            stage
+                .prim("/Model")
+                .unwrap()
+                .attribute("size")
+                .get::<f64>()
+                .unwrap()
+        };
         assert_eq!(size(&stage), Some(1.0));
         assert_eq!(size(plan.candidate()), Some(2.0));
         let shared = std::sync::Arc::<[u8]>::from(binary(2));
@@ -168,31 +268,63 @@ mod tests {
     }
 
     #[test]
-    fn binary_root_reload_preserves_candidate_format() { binary_reload_case("root"); }
+    fn binary_root_reload_preserves_candidate_format() {
+        binary_reload_case("root");
+    }
 
     #[test]
-    fn binary_dependency_reload_preserves_candidate_format() { binary_reload_case("dependency"); }
+    fn binary_dependency_reload_preserves_candidate_format() {
+        binary_reload_case("dependency");
+    }
 
     #[test]
-    fn binary_package_root_reload_preserves_candidate_format() { binary_reload_case("package"); }
+    fn binary_package_root_reload_preserves_candidate_format() {
+        binary_reload_case("package");
+    }
 
     #[test]
     fn shared_reload_rejects_invalid_input_and_stale_publication() {
         use std::sync::Arc;
-        let source = crate::UsdSource::new("shared-reload.usda", b"#usda 1.0\ndef Cube \"Model\" {}\n".as_slice()).unwrap();
+        let source = crate::UsdSource::new(
+            "shared-reload.usda",
+            b"#usda 1.0\ndef Cube \"Model\" {}\n".as_slice(),
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         let id = source.identifier().to_owned();
         let valid = Arc::<[u8]>::from(b"#usda 1.0\ndef Sphere \"Model\" {}\n".as_slice());
         let before = stage.root_layer().export_to_string().unwrap();
-        assert!(LayerReload::prepare_shared(&stage, &[(id.clone(), Arc::from(b"broken".as_slice()))]).is_err());
+        assert!(
+            LayerReload::prepare_shared(&stage, &[(id.clone(), Arc::from(b"broken".as_slice()))])
+                .is_err()
+        );
         assert!(LayerReload::prepare_shared(&stage, &[("missing".into(), valid.clone())]).is_err());
-        assert!(LayerReload::prepare_shared(&stage, &[(id.clone(), valid.clone()), (id.clone(), valid.clone())]).is_err());
+        assert!(
+            LayerReload::prepare_shared(
+                &stage,
+                &[(id.clone(), valid.clone()), (id.clone(), valid.clone())]
+            )
+            .is_err()
+        );
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
         let plan = LayerReload::prepare_shared(&stage, &[(id, valid)]).unwrap();
         stage.define_prim("/NewEdit").unwrap();
-        assert!(plan.apply(&stage).unwrap_err().to_string().contains("changed after preparation"));
+        assert!(
+            plan.apply(&stage)
+                .unwrap_err()
+                .to_string()
+                .contains("changed after preparation")
+        );
         assert!(stage.prim("/NewEdit").unwrap().is_valid().unwrap());
-        assert_eq!(stage.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+        assert_eq!(
+            stage
+                .prim("/Model")
+                .unwrap()
+                .type_name()
+                .unwrap()
+                .as_deref(),
+            Some("Cube")
+        );
     }
 
     #[test]
@@ -203,54 +335,142 @@ mod tests {
         stage.set_load_rules(openusd::pcp::LoadRules::none());
         stage.set_interpolation_type(openusd::usd::InterpolationType::Held);
         crate::UsdSource::validate_composition(&stage).unwrap();
-        let replacement = String::from_utf8(text.to_vec()).unwrap().replace("size = 1", "size = 2");
-        let plan = LayerReload::prepare(&stage, &[(source.identifier().into(), replacement.into_bytes())]).unwrap();
+        let replacement = String::from_utf8(text.to_vec())
+            .unwrap()
+            .replace("size = 1", "size = 2");
+        let plan = LayerReload::prepare(
+            &stage,
+            &[(source.identifier().into(), replacement.into_bytes())],
+        )
+        .unwrap();
         assert_eq!(plan.candidate().load_rules(), stage.load_rules());
-        assert_eq!(plan.candidate().interpolation_type(), openusd::usd::InterpolationType::Held);
+        assert_eq!(
+            plan.candidate().interpolation_type(),
+            openusd::usd::InterpolationType::Held
+        );
         plan.apply(&stage).unwrap();
         assert_eq!(stage.load_rules(), openusd::pcp::LoadRules::none());
-        assert_eq!(stage.prim("/Local").unwrap().attribute("size").get::<f64>().unwrap(), Some(2.0));
+        assert_eq!(
+            stage
+                .prim("/Local")
+                .unwrap()
+                .attribute("size")
+                .get::<f64>()
+                .unwrap(),
+            Some(2.0)
+        );
     }
 
     #[test]
     fn referenced_layer_reload_updates_both_instances_not_unrelated_prims() {
         let directory = tempfile::tempdir().unwrap();
         let child = directory.path().join("child.usda");
-        std::fs::write(&child, "#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n").unwrap();
+        std::fs::write(
+            &child,
+            "#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n",
+        )
+        .unwrap();
         let root = directory.path().join("root.usda");
         let source = crate::UsdSource::new(&root, b"#usda 1.0\ndef Xform \"A\" (prepend references = @child.usda@</Model>) {}\ndef Xform \"B\" (prepend references = @child.usda@</Model>) {}\ndef Cube \"Other\" { double size = 7 }\n".as_slice()).unwrap();
         let stage = source.open_stage().unwrap();
         crate::UsdSource::validate_composition(&stage).unwrap();
         let live = crate::live::LiveStage::new(stage.clone());
-        let plan = LayerReload::prepare(&stage, &[(child.to_string_lossy().into_owned(), b"#usda 1.0\ndef Cube \"Model\" { double size = 3 }\n".to_vec())]).unwrap();
-        assert_eq!(stage.prim("/A").unwrap().attribute("size").get::<f64>().unwrap(), Some(1.0));
+        let plan = LayerReload::prepare(
+            &stage,
+            &[(
+                child.to_string_lossy().into_owned(),
+                b"#usda 1.0\ndef Cube \"Model\" { double size = 3 }\n".to_vec(),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            stage
+                .prim("/A")
+                .unwrap()
+                .attribute("size")
+                .get::<f64>()
+                .unwrap(),
+            Some(1.0)
+        );
         plan.apply(&stage).unwrap();
         for path in ["/A", "/B"] {
-            assert_eq!(stage.prim(path).unwrap().attribute("size").get::<f64>().unwrap(), Some(3.0));
+            assert_eq!(
+                stage
+                    .prim(path)
+                    .unwrap()
+                    .attribute("size")
+                    .get::<f64>()
+                    .unwrap(),
+                Some(3.0)
+            );
         }
-        assert_eq!(stage.prim("/Other").unwrap().attribute("size").get::<f64>().unwrap(), Some(7.0));
+        assert_eq!(
+            stage
+                .prim("/Other")
+                .unwrap()
+                .attribute("size")
+                .get::<f64>()
+                .unwrap(),
+            Some(7.0)
+        );
         let changes = live.drain_changes();
         assert!(!changes.is_empty());
-        assert!(changes.iter().flat_map(|change| change.paths()).all(|path| path != "/" && !path.starts_with("/Other")));
+        assert!(
+            changes
+                .iter()
+                .flat_map(|change| change.paths())
+                .all(|path| path != "/" && !path.starts_with("/Other"))
+        );
     }
 
     #[test]
     fn malformed_reload_keeps_live_layer_unchanged() {
-        let source = crate::UsdSource::new("reload.usda", b"#usda 1.0\ndef Cube \"Model\" {}\n".as_slice()).unwrap();
+        let source = crate::UsdSource::new(
+            "reload.usda",
+            b"#usda 1.0\ndef Cube \"Model\" {}\n".as_slice(),
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
         let before = stage.root_layer().export_to_string().unwrap();
-        assert!(LayerReload::prepare(&stage, &[(source.identifier().into(), b"broken".to_vec())]).is_err());
+        assert!(
+            LayerReload::prepare(&stage, &[(source.identifier().into(), b"broken".to_vec())])
+                .is_err()
+        );
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
     }
 
     #[test]
     fn stale_prepared_reload_rejects_new_authoring() {
-        let source = crate::UsdSource::new("stale.usda", b"#usda 1.0\ndef Cube \"Model\" {}\n".as_slice()).unwrap();
+        let source = crate::UsdSource::new(
+            "stale.usda",
+            b"#usda 1.0\ndef Cube \"Model\" {}\n".as_slice(),
+        )
+        .unwrap();
         let stage = source.open_stage().unwrap();
-        let plan = LayerReload::prepare(&stage, &[(source.identifier().into(), b"#usda 1.0\ndef Sphere \"Model\" {}\n".to_vec())]).unwrap();
+        let plan = LayerReload::prepare(
+            &stage,
+            &[(
+                source.identifier().into(),
+                b"#usda 1.0\ndef Sphere \"Model\" {}\n".to_vec(),
+            )],
+        )
+        .unwrap();
         stage.define_prim("/NewEdit").unwrap();
-        assert!(plan.apply(&stage).unwrap_err().to_string().contains("changed after preparation"));
+        assert!(
+            plan.apply(&stage)
+                .unwrap_err()
+                .to_string()
+                .contains("changed after preparation")
+        );
         assert!(stage.prim("/NewEdit").unwrap().is_valid().unwrap());
-        assert_eq!(stage.prim("/Model").unwrap().type_name().unwrap().as_deref(), Some("Cube"));
+        assert_eq!(
+            stage
+                .prim("/Model")
+                .unwrap()
+                .type_name()
+                .unwrap()
+                .as_deref(),
+            Some("Cube")
+        );
     }
 }

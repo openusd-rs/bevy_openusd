@@ -145,15 +145,23 @@ mod tests {
     #[test]
     fn loading_time_does_not_consume_the_capture_delay() {
         let dir = tempfile::tempdir().unwrap();
-        let mut capture = configure(Some(dir.path().join("host.png")), Some("1000")).unwrap().unwrap();
+        let mut capture = configure(Some(dir.path().join("host.png")), Some("1000"))
+            .unwrap()
+            .unwrap();
         let ctx = egui::Context::default();
         let first_ui = capture.started + Duration::from_secs(180);
-        let _ = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), first_ui));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            capture.update_at(ui.ctx(), first_ui)
+        });
         assert_eq!(capture.started, first_ui);
         assert!(capture.requested.is_none());
-        let _ = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), first_ui + Duration::from_millis(999)));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            capture.update_at(ui.ctx(), first_ui + Duration::from_millis(999))
+        });
         assert!(capture.requested.is_none());
-        let _ = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), first_ui + Duration::from_secs(1)));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            capture.update_at(ui.ctx(), first_ui + Duration::from_secs(1))
+        });
         assert!(capture.requested.is_some());
     }
 

@@ -15,8 +15,6 @@ direnv allow
 make run --args path/to/scene.usd
 ```
 
-Needs `../mara-bevy-host` checked out next to this repo.
-
 ## Used by
 
 [gearbox](https://github.com/robolibs/gearbox), a farm machine and robot simulator

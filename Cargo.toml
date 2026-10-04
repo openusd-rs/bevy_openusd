@@ -43,7 +43,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 png = "0.18"
 # The live USD editor: stage projection, sync, authoring, persistence.
-usd_bevy = { path = "crates/usd_bevy", features = ["skeleton_overlay"] }
+usd_bevy = { path = "crates/usd_bevy", features = ["skeleton_overlay", "physics_overlay"] }
 # Pure-Rust USD — the viewer opens the live `Stage` directly.
 openusd = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0" }
 openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0", features = ["geom", "shade"] }

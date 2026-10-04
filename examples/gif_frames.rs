@@ -5,7 +5,8 @@
 //! ```
 //!
 //! Each line of `FRAMES.txt` is one frame:
-//! `TIME EYE_X EYE_Y EYE_Z FOCUS_X FOCUS_Y FOCUS_Z SKELETON(0|1) OUTPUT.png`.
+//! `TIME EYE_X EYE_Y EYE_Z FOCUS_X FOCUS_Y FOCUS_Z OVERLAYS(0|1) OUTPUT.png`,
+//! where OVERLAYS shows the skeleton and physics joint drawings.
 
 use std::{path::PathBuf, time::Duration};
 
@@ -21,6 +22,7 @@ use bevy::{
 use usd_bevy::{
     UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot, UsdSceneState,
     instance::UsdInstanceTime,
+    physics_overlay::{UsdPhysicsOverlay, UsdPhysicsOverlayPlugin},
     skeleton_overlay::{UsdSkeletonOverlay, UsdSkeletonOverlayPlugin},
 };
 
@@ -37,7 +39,7 @@ struct Frame {
     time: f64,
     eye: Vec3,
     focus: Vec3,
-    skeleton: bool,
+    overlays: bool,
     output: PathBuf,
 }
 
@@ -61,7 +63,7 @@ fn parse(text: &str) -> Result<Vec<Frame>, String> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
             let words: Vec<&str> = line.split_whitespace().collect();
-            let [time, ex, ey, ez, fx, fy, fz, skeleton, output] = words[..] else {
+            let [time, ex, ey, ez, fx, fy, fz, overlays, output] = words[..] else {
                 return Err(format!("expected 9 fields: {line}"));
             };
             let number = |word: &str| {
@@ -72,7 +74,7 @@ fn parse(text: &str) -> Result<Vec<Frame>, String> {
                 time: time.parse().map_err(|_| format!("bad time {time}"))?,
                 eye: Vec3::new(number(ex)?, number(ey)?, number(ez)?),
                 focus: Vec3::new(number(fx)?, number(fy)?, number(fz)?),
-                skeleton: skeleton == "1",
+                overlays: overlays == "1",
                 output: PathBuf::from(output),
             })
         })
@@ -125,6 +127,7 @@ fn main() -> AppExit {
             UsdPlugin,
             UsdAssetPlugin,
             UsdSkeletonOverlayPlugin,
+            UsdPhysicsOverlayPlugin,
             usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin,
             environment::ViewerEnvironmentPlugin,
         ))
@@ -217,7 +220,8 @@ fn record(
     states: Query<&UsdSceneState>,
     mut roots: Query<&mut UsdInstanceTime, With<UsdSceneRoot>>,
     mut cameras: Query<&mut Transform, With<Camera3d>>,
-    mut overlay: ResMut<UsdSkeletonOverlay>,
+    mut skeletons: ResMut<UsdSkeletonOverlay>,
+    mut joints: ResMut<UsdPhysicsOverlay>,
     mut exit: MessageWriter<AppExit>,
 ) {
     match states.iter().next() {
@@ -244,7 +248,8 @@ fn record(
         for mut transform in &mut cameras {
             *transform = Transform::from_translation(frame.eye).looking_at(frame.focus, Vec3::Y);
         }
-        overlay.visible = frame.skeleton;
+        skeletons.visible = frame.overlays;
+        joints.visible = frame.overlays;
         recorder.posed = true;
         recorder.wait = recorder.wait.max(SETTLE);
     }

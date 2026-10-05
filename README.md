@@ -15,7 +15,13 @@ UsdSkel animation, with the bone overlay from `UsdSkeletonOverlayPlugin`
 A UR10 moving a box between two pedestals, its joints solved by inverse
 kinematics and authored as USD time samples. While it carries, the joint
 overlay from `UsdPhysicsOverlayPlugin` (`physics_overlay` feature) shows
-joint frames, axes, body links and limits. All four rendered with
+joint frames, axes, body links and limits.
+
+![Flying over the capital of Activision's Caldera](media/caldera.webp)
+
+Activision's Caldera with its capital district at full detail: two million
+prims and 616k meshes, loaded and projected in about six minutes. The rest of
+the island stays at its proxy detail (purple). All five rendered with
 `cargo run --example gif_frames`.
 
 ## Use it in Bevy

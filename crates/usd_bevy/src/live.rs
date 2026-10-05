@@ -867,6 +867,7 @@ impl ProjectionJob {
         }
         let registry = registry_of(world);
         let started = bevy::platform::time::Instant::now();
+        let _primvars = crate::read::geom::PrimvarScope::begin(stage);
         while let Some(path) = self.pending.pop_front() {
             let parent = map.entity(parent_path(path.as_str())).unwrap_or(self.root);
             let entity = world

@@ -89,6 +89,7 @@ pub(crate) fn clear_geometry(world: &mut World, entity: Entity, owner: GeometryO
         return;
     }
     super::gpu_skin::clear(world, entity);
+    super::flat_material::clear(world, entity);
     world.entity_mut(entity).remove::<(
         Mesh3d,
         MeshMaterial3d<StandardMaterial>,
@@ -121,17 +122,25 @@ impl MeshRoute {
             ctx.prim_str(),
             read.points.len()
         );
-        let mesh_handle = super::cache::intern_assembled_mesh(world, read);
+        let assembly =
+            if crate::mesh::uses_flat_normals(read) && super::flat_material::enabled(world) {
+                super::cache::Assembly::FlatShared
+            } else {
+                super::cache::Assembly::Standard
+            };
+        let mesh_handle = super::cache::intern_assembled_mesh(world, read, assembly);
         let material = super::cache::intern_material(world, super::material::default_material(ctx));
-        if let Ok(mut e) = world.get_entity_mut(entity) {
-            e.insert((
-                Mesh3d(mesh_handle),
-                MeshMaterial3d(material),
-                GeometryOwner::Mesh,
-            ));
-            return true;
+        if world.get_entity(entity).is_err() {
+            return false;
         }
-        false
+        super::flat_material::clear(world, entity);
+        world.entity_mut(entity).insert((
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(material),
+            GeometryOwner::Mesh,
+        ));
+        super::flat_material::attach_if_normalless(world, entity);
+        true
     }
 }
 

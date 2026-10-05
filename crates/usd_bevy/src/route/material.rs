@@ -158,13 +158,26 @@ pub(crate) struct ProjectionMaterials {
         (String, Option<u64>, bool),
         (Handle<StandardMaterial>, Vec<String>),
     >,
+    /// Whether any layer authors a `material:binding` property; without one
+    /// no prim can be bound.
+    binds: bool,
 }
 
 impl ProjectionMaterials {
     pub(crate) fn new(stage: &openusd::usd::Stage) -> Self {
+        let binds = stage.layer_identifiers().iter().any(|identifier| {
+            stage.layer(identifier).is_some_and(|layer| {
+                layer
+                    .data()
+                    .spec_paths()
+                    .iter()
+                    .any(|path| path.as_str().contains(".material:binding"))
+            })
+        });
         Self {
             stage: stage.clone(),
             resolved: Default::default(),
+            binds,
         }
     }
 }
@@ -351,6 +364,12 @@ pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
 ) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>)>> {
+    if world
+        .get_non_send::<ProjectionMaterials>()
+        .is_some_and(|memo| memo.stage.ptr_eq(ctx.stage) && !memo.binds)
+    {
+        return Ok(None);
+    }
     let profiling = world.contains_resource::<MaterialResolveTimings>();
     let started = profiling.then(bevy::platform::time::Instant::now);
     let binding = read_material_binding(ctx.stage, ctx.path);
@@ -499,6 +518,31 @@ impl PrimRoute for MaterialRoute {
                 return;
             }
         };
+        let read = ctx.read_mesh().ok().flatten();
+        let uvs = read.is_some_and(|read| read.uvs.is_some());
+        let normal_mapped = world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&handle)
+            .is_some_and(|material| material.normal_map_texture.is_some());
+        let normalless = world
+            .get::<Mesh3d>(entity)
+            .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
+            .is_some_and(|mesh| mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
+        // A normal map needs a tangent frame, so it keeps stored normals.
+        if normal_mapped
+            && normalless
+            && let Some(read) = read
+        {
+            let mesh =
+                super::cache::intern_assembled_mesh(world, read, super::cache::Assembly::Standard);
+            super::flat_material::clear(world, entity);
+            world.entity_mut(entity).insert(Mesh3d(mesh));
+        }
+        if let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
+            && let Some(tangent) = super::cache::with_tangents_for(world, &mesh, &handle, uvs)
+        {
+            world.entity_mut(entity).insert(Mesh3d(tangent));
+        }
         if let Some(mesh) = world
             .get::<Mesh3d>(entity)
             .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
@@ -517,6 +561,7 @@ impl PrimRoute for MaterialRoute {
         } else if let Ok(mut e) = world.get_entity_mut(entity) {
             e.insert(MeshMaterial3d(handle));
         }
+        super::flat_material::attach_if_normalless(world, entity);
     }
 }
 
@@ -910,6 +955,7 @@ def Material "Mat" {{
             app.world_mut().spawn(crate::UsdSceneRoot(handle));
             app.update();
             let mut count = 0;
+            let mut tangents = 0;
             let mut query = app.world_mut().query::<(
                 &Mesh3d,
                 &MeshMaterial3d<StandardMaterial>,
@@ -928,6 +974,7 @@ def Material "Mat" {{
                 }
                 count += 1;
                 let mesh = app.world().resource::<Assets<Mesh>>().get(&mesh.0).unwrap();
+                tangents += usize::from(mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
                 assert_eq!(
                     warning.is_some_and(|warning| warning.0.contains("no tangent frame")),
                     mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none()
@@ -941,7 +988,134 @@ def Material "Mat" {{
                 count >= 5,
                 "expected ordinary, subset, curve and instanced material entities, got {count}"
             );
+            assert_eq!(uv, tangents >= 2, "normal maps get tangents only with UVs");
         }
+    }
+
+    #[test]
+    fn projection_skips_binding_only_without_authored_bindings() {
+        let open = |text: &str| {
+            crate::UsdSource::snapshot("binds.usda", text.as_bytes())
+                .unwrap()
+                .open_stage()
+                .unwrap()
+        };
+        let plain = open("#usda 1.0\ndef Mesh \"A\" {}\n");
+        assert!(!ProjectionMaterials::new(&plain).binds);
+        let varied = open(
+            r#"#usda 1.0
+def Xform "A" (
+    variants = { string look = "red" }
+    prepend variantSets = "look"
+) {
+    variantSet "look" = {
+        "red" { def Mesh "B" { rel material:binding = </M> } }
+    }
+}
+"#,
+        );
+        assert!(ProjectionMaterials::new(&varied).binds);
+    }
+
+    #[test]
+    fn flat_meshes_share_points_unless_normal_mapped() {
+        use super::super::flat_material::FlatMaterial;
+        let quad = r#"
+    uniform token subdivisionScheme = "none"
+    point3f[] points = [(0,0,0),(1,0,0),(1,1,0),(0,1,0)]
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0,1,2,3]
+    texCoord2f[] primvars:st = [(0,0),(1,0),(1,1),(0,1)] (interpolation = "vertex")"#;
+        let text = format!(
+            r#"#usda 1.0
+def Mesh "Flat" {{ {quad}
+    rel material:binding = </Plain>
+    def GeomSubset "Part" {{
+        uniform token elementType = "face"
+        uniform token familyName = "materialBind"
+        int[] indices = [0]
+        rel material:binding = </Plain>
+    }}
+}}
+def Mesh "Mapped" {{ {quad}
+    rel material:binding = </Bumped> }}
+def Material "Plain" {{
+    token outputs:surface.connect = </Plain/Surface.outputs:surface>
+    def Shader "Surface" {{
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.2, 0.4, 0.6)
+        token outputs:surface
+    }}
+}}
+def Material "Bumped" {{
+    token outputs:surface.connect = </Bumped/Surface.outputs:surface>
+    def Shader "Surface" {{
+        uniform token info:id = "UsdPreviewSurface"
+        normal3f inputs:normal = (0,0.5,0.5)
+        token outputs:surface
+    }}
+}}
+"#
+        );
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<FlatMaterial>>()
+            .init_resource::<Assets<Image>>();
+        let source = crate::UsdSource::snapshot("flat.usda", text.as_bytes()).unwrap();
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source,
+                textures: default(),
+            });
+        let root = app.world_mut().spawn(crate::UsdSceneRoot(handle)).id();
+        app.update();
+        let world = app.world();
+        let entity = |path| {
+            world
+                .non_send::<crate::instance::UsdInstances>()
+                .entity(root, path)
+                .unwrap()
+        };
+        let mesh = |entity| {
+            world
+                .resource::<Assets<Mesh>>()
+                .get(&world.get::<Mesh3d>(entity).unwrap().0)
+                .unwrap()
+        };
+        let flat = entity("/Flat");
+        assert!(mesh(flat).attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
+        assert!(world.get::<MeshMaterial3d<FlatMaterial>>(flat).is_some());
+        assert!(
+            world
+                .get::<MeshMaterial3d<StandardMaterial>>(flat)
+                .is_none()
+        );
+        let part = world
+            .get::<Children>(flat)
+            .unwrap()
+            .iter()
+            .find(|child| {
+                world
+                    .get::<super::super::subset::UsdSubset>(*child)
+                    .is_some()
+            })
+            .unwrap();
+        assert_eq!(mesh(part).count_vertices(), 4);
+        assert!(mesh(part).attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
+        assert!(world.get::<MeshMaterial3d<FlatMaterial>>(part).is_some());
+        let mapped = entity("/Mapped");
+        assert!(mesh(mapped).attribute(Mesh::ATTRIBUTE_NORMAL).is_some());
+        assert!(mesh(mapped).attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
+        assert!(world.get::<MeshMaterial3d<FlatMaterial>>(mapped).is_none());
     }
 
     #[test]

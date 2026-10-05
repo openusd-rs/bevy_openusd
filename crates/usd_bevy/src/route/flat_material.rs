@@ -36,6 +36,9 @@ struct FlatMaterialCache(
 );
 
 pub(crate) fn configure(app: &mut App) {
+    if app.is_plugin_added::<MaterialPlugin<FlatMaterial>>() {
+        return;
+    }
     app.init_resource::<FlatMaterialCache>();
     app.add_systems(Last, prune_cache);
     bevy::asset::embedded_asset!(app, "flat_material.wgsl");
@@ -144,6 +147,24 @@ pub(crate) fn attach(world: &mut World, entity: Entity) {
                 material: handle,
             },
         ));
+}
+
+/// Whether the geometric-normal material is available to draw meshes that
+/// carry no normals.
+pub(crate) fn enabled(world: &World) -> bool {
+    world.contains_resource::<Assets<FlatMaterial>>()
+}
+
+/// Wraps `entity`'s material in the geometric-normal material when its mesh
+/// carries no normals.
+pub(crate) fn attach_if_normalless(world: &mut World, entity: Entity) {
+    let normalless = world
+        .get::<Mesh3d>(entity)
+        .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
+        .is_some_and(|mesh| mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
+    if normalless {
+        attach(world, entity);
+    }
 }
 
 pub(crate) fn base_handle(world: &World, entity: Entity) -> Option<Handle<StandardMaterial>> {

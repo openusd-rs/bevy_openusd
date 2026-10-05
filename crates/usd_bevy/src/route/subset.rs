@@ -91,7 +91,15 @@ pub(crate) fn prepare(
             }
         }
     }
-    let face_indices = crate::mesh::MeshFaceIndices::new(read);
+    let flat_shared = world
+        .resource::<Assets<Mesh>>()
+        .get(source)
+        .is_some_and(|mesh| mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
+    let face_indices = if flat_shared {
+        crate::mesh::MeshFaceIndices::new_flat_shared(read)
+    } else {
+        crate::mesh::MeshFaceIndices::new(read)
+    };
     for subset in &read.subsets {
         let Ok(path) = ctx.path.append_path(subset.name.as_str()) else {
             continue;
@@ -110,19 +118,38 @@ pub(crate) fn prepare(
             Ok(None) => (default_material.clone(), Vec::new()),
             Err(error) => (default_material.clone(), vec![error.to_string()]),
         };
-        let mesh = subset_mesh(
-            world.resource::<Assets<Mesh>>().get(source)?,
-            face_indices.for_faces(&subset.indices),
-        );
-        if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
-            super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
+        let normal_mapped = world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&material)
+            .is_some_and(|material| material.normal_map_texture.is_some());
+        // A normal-mapped part draws from the stored-normal form.
+        let mesh = if flat_shared && normal_mapped {
+            let standard =
+                super::cache::intern_assembled_mesh(world, read, super::cache::Assembly::Standard);
+            subset_mesh(
+                world.resource::<Assets<Mesh>>().get(&standard)?,
+                crate::mesh::MeshFaceIndices::new(read).for_faces(&subset.indices),
+            )
+        } else {
+            subset_mesh(
+                world.resource::<Assets<Mesh>>().get(source)?,
+                face_indices.for_faces(&subset.indices),
+            )
+        };
+        let mut mesh = super::cache::intern_mesh(world, mesh);
+        if let Some(tangent) =
+            super::cache::with_tangents_for(world, &mesh, &material, read.uvs.is_some())
+        {
+            mesh = tangent;
         }
-        prepared.parts.push((
-            subset.name.clone(),
-            super::cache::intern_mesh(world, mesh),
-            material,
-            warnings,
-        ));
+        if let Some(part) = world.resource::<Assets<Mesh>>().get(&mesh)
+            && let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material)
+        {
+            super::material::warn_geometry_inputs(part, material, &mut warnings);
+        }
+        prepared
+            .parts
+            .push((subset.name.clone(), mesh, material, warnings));
     }
     let remaining: Vec<i32> = assigned
         .iter()
@@ -163,9 +190,11 @@ pub(crate) fn apply(world: &mut World, entity: Entity, prepared: &PreparedSubset
                     ))
                     .id()
             });
+        super::flat_material::clear(world, child);
         world
             .entity_mut(child)
             .insert((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+        super::flat_material::attach_if_normalless(world, child);
         world
             .entity_mut(child)
             .remove::<bevy::camera::primitives::Aabb>();

@@ -99,8 +99,48 @@ fn geometry_signature(read: &ReadMesh) -> u64 {
     hash.finish()
 }
 
-pub(crate) fn intern_assembled_mesh(world: &mut World, read: &ReadMesh) -> Handle<Mesh> {
-    let (signature, hit) = lookup_assembly(world, read);
+/// How a mesh is assembled from a read; the two forms of one geometry cache
+/// under different keys.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Assembly {
+    /// Normals stored on the vertices.
+    Standard,
+    /// Normals and, with authored UVs, tangents stored on the vertices.
+    StandardTangents,
+    /// Flat shading left to the fragment shader, points shared.
+    FlatShared,
+}
+
+impl Assembly {
+    fn salt(self) -> u64 {
+        match self {
+            Assembly::Standard => 0,
+            Assembly::StandardTangents => 0x6a09_e667_f3bc_c908,
+            Assembly::FlatShared => 0x9e37_79b9_7f4a_7c15,
+        }
+    }
+
+    fn build(self, world: &mut World, read: &ReadMesh) -> Mesh {
+        match self {
+            Assembly::Standard => crate::mesh::assemble_mesh(read, None, false),
+            Assembly::StandardTangents => {
+                let mut mesh = crate::mesh::assemble_mesh(read, None, false);
+                if read.uvs.is_some() {
+                    generate_cached_tangents(world, &mut mesh);
+                }
+                mesh
+            }
+            Assembly::FlatShared => crate::mesh::assemble_flat_shared(read, None),
+        }
+    }
+}
+
+pub(crate) fn intern_assembled_mesh(
+    world: &mut World,
+    read: &ReadMesh,
+    assembly: Assembly,
+) -> Handle<Mesh> {
+    let (signature, hit) = lookup_assembly(world, read, assembly);
     let budget = world
         .get_resource::<ProjectionCache>()
         .map_or(0, |cache| cache.byte_budget);
@@ -130,7 +170,7 @@ pub(crate) fn intern_assembled_mesh(world: &mut World, read: &ReadMesh) -> Handl
         record_cache(world, "assembly_handle_hits", 1);
         return handle;
     }
-    let (mesh, retained) = assemble_after_lookup(world, read, signature, hit);
+    let (mesh, retained) = assemble_after_lookup(world, read, signature, hit, assembly);
     let handle = intern_mesh(world, mesh);
     if retained {
         world
@@ -144,13 +184,36 @@ pub(crate) fn intern_assembled_mesh(world: &mut World, read: &ReadMesh) -> Handl
 }
 
 pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
-    let (signature, hit) = lookup_assembly(world, read);
-    assemble_after_lookup(world, read, signature, hit).0
+    let (signature, hit) = lookup_assembly(world, read, Assembly::StandardTangents);
+    assemble_after_lookup(world, read, signature, hit, Assembly::StandardTangents).0
 }
 
-fn lookup_assembly(world: &mut World, read: &ReadMesh) -> (u64, Option<usize>) {
+/// `mesh` with tangents, interned, when `material` has a normal map that
+/// needs them and the mesh has authored `uvs` but no tangents yet.
+pub(crate) fn with_tangents_for(
+    world: &mut World,
+    mesh: &Handle<Mesh>,
+    material: &Handle<StandardMaterial>,
+    uvs: bool,
+) -> Option<Handle<Mesh>> {
+    let normal_mapped = world
+        .get_resource::<Assets<StandardMaterial>>()?
+        .get(material)?
+        .normal_map_texture
+        .is_some();
+    let source = world.get_resource::<Assets<Mesh>>()?.get(mesh)?;
+    if !uvs || !normal_mapped || source.attribute(Mesh::ATTRIBUTE_TANGENT).is_some() {
+        return None;
+    }
+    let mut tangent = source.clone();
+    generate_cached_tangents(world, &mut tangent);
+    tangent.attribute(Mesh::ATTRIBUTE_TANGENT)?;
+    Some(intern_mesh(world, tangent))
+}
+
+fn lookup_assembly(world: &mut World, read: &ReadMesh, assembly: Assembly) -> (u64, Option<usize>) {
     world.init_resource::<MeshAssemblyCache>();
-    let signature = geometry_signature(read);
+    let signature = geometry_signature(read) ^ assembly.salt();
     let hit = world
         .resource::<MeshAssemblyCache>()
         .entries
@@ -166,6 +229,7 @@ fn assemble_after_lookup(
     read: &ReadMesh,
     signature: u64,
     hit: Option<usize>,
+    assembly: Assembly,
 ) -> (Mesh, bool) {
     if let Some(index) = hit {
         let mut cache = world.resource_mut::<MeshAssemblyCache>();
@@ -178,10 +242,7 @@ fn assemble_after_lookup(
     let started = world
         .contains_resource::<MeshCacheMetrics>()
         .then(bevy::platform::time::Instant::now);
-    let mut mesh = crate::mesh::assemble_mesh(read, None, false);
-    if read.uvs.is_some() {
-        generate_cached_tangents(world, &mut mesh);
-    }
+    let mesh = assembly.build(world, read);
     if let Some(started) = started {
         record_cache(
             world,
@@ -671,14 +732,17 @@ mod tests {
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<ProjectionCache>();
         world.init_resource::<MeshCacheMetrics>();
-        let first = intern_assembled_mesh(&mut world, &read);
-        assert_eq!(first.id(), intern_assembled_mesh(&mut world, &read).id());
+        let first = intern_assembled_mesh(&mut world, &read, Assembly::Standard);
+        assert_eq!(
+            first.id(),
+            intern_assembled_mesh(&mut world, &read, Assembly::Standard).id()
+        );
         world
             .resource_mut::<Assets<Mesh>>()
             .get_mut(&first)
             .unwrap()
             .insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[9.0; 3]; read.points.len()]);
-        let second = intern_assembled_mesh(&mut world, &read);
+        let second = intern_assembled_mesh(&mut world, &read, Assembly::Standard);
         assert_ne!(first.id(), second.id());
         assert!(meshes_equal(
             world.resource::<Assets<Mesh>>().get(&second).unwrap(),
@@ -689,13 +753,16 @@ mod tests {
             .get_mut(&second)
             .unwrap()
             .final_aabb = Some(bevy::math::bounding::Aabb3d::new(Vec3::ZERO, Vec3::ONE));
-        let third = intern_assembled_mesh(&mut world, &read);
+        let third = intern_assembled_mesh(&mut world, &read, Assembly::Standard);
         assert_ne!(second.id(), third.id());
         world.resource_mut::<Assets<Mesh>>().remove(third.id());
-        let fourth = intern_assembled_mesh(&mut world, &read);
+        let fourth = intern_assembled_mesh(&mut world, &read, Assembly::Standard);
         assert_ne!(third.id(), fourth.id());
         world.insert_resource(ProjectionCache::with_byte_budget(0));
-        assert_ne!(fourth.id(), intern_assembled_mesh(&mut world, &read).id());
+        assert_ne!(
+            fourth.id(),
+            intern_assembled_mesh(&mut world, &read, Assembly::Standard).id()
+        );
         let metrics = &world.resource::<MeshCacheMetrics>().0;
         assert_eq!(metrics["assembly_builds"], 1);
         assert_eq!(metrics["assembly_handle_hits"], 1);
@@ -715,7 +782,7 @@ mod tests {
         world.resource_mut::<MeshAssemblyCache>().byte_budget = bytes;
         let mut oversized = read.clone();
         oversized.points.push([10.0; 3]);
-        let uncached = intern_assembled_mesh(&mut world, &oversized);
+        let uncached = intern_assembled_mesh(&mut world, &oversized, Assembly::Standard);
         let cache = world.resource::<MeshAssemblyCache>();
         assert_eq!(cache.entries.len(), 1);
         assert_eq!(cache.entries.back().unwrap().4, previous);

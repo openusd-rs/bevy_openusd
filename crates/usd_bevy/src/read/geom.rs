@@ -1196,6 +1196,34 @@ fn read_vec3f_array(
     Ok(vec3f_values(attr_default(stage, prim, name)?))
 }
 
+/// A model's authored `extentsHint` in the prim's own space: the union of
+/// its per-purpose boxes as `Some([min, max])`, `Some(None)` when every box
+/// is empty (USD authors an empty box inverted, min above max), and `None`
+/// when no hint is authored.
+pub fn read_extents_hint(
+    stage: &Stage,
+    prim: &Path,
+) -> anyhow::Result<Option<Option<[[f32; 3]; 2]>>> {
+    let Some(values) = vec3f_values(attr_at(stage, prim, "extentsHint", None)?) else {
+        return Ok(None);
+    };
+    let boxes = values
+        .chunks_exact(2)
+        .filter(|pair| (0..3).all(|axis| pair[0][axis] <= pair[1][axis]));
+    Ok(Some(boxes.fold(
+        None,
+        |union: Option<[[f32; 3]; 2]>, pair| {
+            Some(match union {
+                None => [pair[0], pair[1]],
+                Some([low, high]) => [
+                    std::array::from_fn(|axis| low[axis].min(pair[0][axis])),
+                    std::array::from_fn(|axis| high[axis].max(pair[1][axis])),
+                ],
+            })
+        },
+    )))
+}
+
 fn vec3f_values(value: Option<Value>) -> Option<Vec<[f32; 3]>> {
     match value {
         Some(Value::Vec3fVec(v)) => Some(v.into_iter().map(|a| [a.x, a.y, a.z]).collect()),

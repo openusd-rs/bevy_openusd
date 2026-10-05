@@ -26,6 +26,7 @@ pub mod route;
 pub mod skeleton_overlay;
 pub mod snippet;
 pub mod source;
+pub mod streaming;
 pub mod subdivision;
 mod subdivision_normals;
 pub mod sync;

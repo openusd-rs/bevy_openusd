@@ -161,12 +161,30 @@ pub(crate) struct ProjectionMaterials {
     /// Whether any layer authors a `material:binding` property; without one
     /// no prim can be bound.
     binds: bool,
+    /// How many of the stage's layers `binds` has looked at.
+    scanned: usize,
 }
 
 impl ProjectionMaterials {
     pub(crate) fn new(stage: &openusd::usd::Stage) -> Self {
-        let binds = stage.layer_identifiers().iter().any(|identifier| {
-            stage.layer(identifier).is_some_and(|layer| {
+        let mut memo = Self {
+            stage: stage.clone(),
+            resolved: Default::default(),
+            binds: false,
+            scanned: 0,
+        };
+        memo.rescan();
+        memo
+    }
+
+    /// Looks for bindings in layers loaded since the last scan.
+    fn rescan(&mut self) {
+        if self.binds || self.stage.layer_count() == self.scanned {
+            return;
+        }
+        let identifiers = self.stage.layer_identifiers();
+        self.binds = identifiers.iter().skip(self.scanned).any(|identifier| {
+            self.stage.layer(identifier).is_some_and(|layer| {
                 layer
                     .data()
                     .spec_paths()
@@ -174,11 +192,7 @@ impl ProjectionMaterials {
                     .any(|path| path.as_str().contains(".material:binding"))
             })
         });
-        Self {
-            stage: stage.clone(),
-            resolved: Default::default(),
-            binds,
-        }
+        self.scanned = identifiers.len();
     }
 }
 
@@ -364,11 +378,13 @@ pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
 ) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>)>> {
-    if world
-        .get_non_send::<ProjectionMaterials>()
-        .is_some_and(|memo| memo.stage.ptr_eq(ctx.stage) && !memo.binds)
+    if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
+        && memo.stage.ptr_eq(ctx.stage)
     {
-        return Ok(None);
+        memo.rescan();
+        if !memo.binds {
+            return Ok(None);
+        }
     }
     let profiling = world.contains_resource::<MaterialResolveTimings>();
     let started = profiling.then(bevy::platform::time::Instant::now);
@@ -1015,6 +1031,34 @@ def Xform "A" (
 "#,
         );
         assert!(ProjectionMaterials::new(&varied).binds);
+        let root = r#"#usda 1.0
+def Xform "A" (
+    variants = { string look = "plain" }
+    prepend variantSets = "look"
+) {
+    variantSet "look" = {
+        "plain" { def Mesh "B" {} }
+        "bound" { def Mesh "B" (prepend references = @bound.usda@</B>) {} }
+    }
+}
+"#;
+        let bound = "#usda 1.0\ndef Mesh \"B\" { rel material:binding = </M> }\n";
+        let stage = crate::UsdSource::from_memory(
+            "root.usda",
+            [
+                ("root.usda", root.as_bytes()),
+                ("bound.usda", bound.as_bytes()),
+            ],
+        )
+        .unwrap()
+        .open_stage()
+        .unwrap();
+        let mut memo = ProjectionMaterials::new(&stage);
+        assert!(!memo.binds);
+        crate::authoring::set_variant(&stage, "/A", "look", "bound").unwrap();
+        assert!(stage.prim("/A/B").unwrap().is_valid().unwrap());
+        memo.rescan();
+        assert!(memo.binds, "a layer loaded after the scan is scanned too");
     }
 
     #[test]

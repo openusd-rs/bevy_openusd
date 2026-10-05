@@ -217,6 +217,9 @@ impl AssetLoader for UsdAssetLoader {
             return Err(std::io::Error::other("USD root escapes asset source"));
         }
         let fetcher = self.fetcher(source_id.clone(), root.clone());
+        if let Some(fetcher) = &fetcher {
+            source.set_fetch(fetcher.clone());
+        }
         let mut fetched_files = Vec::new();
         for _ in 0..128 {
             // The stage is `Rc`-based, so it is dropped inside this block
@@ -353,7 +356,7 @@ impl Plugin for UsdAssetPlugin {
 /// Project any `UsdSceneRoot` whose asset has finished loading and hasn't been
 /// spawned yet. Exclusive (`&mut World`) because projection spawns a hierarchy
 /// and runs the routes, which need `&mut World`.
-fn spawn_usd_scenes(world: &mut World) {
+pub(crate) fn spawn_usd_scenes(world: &mut World) {
     let budget = world
         .get_resource::<UsdProjectionBudget>()
         .map_or(std::time::Duration::MAX, |b| b.0);
@@ -456,32 +459,36 @@ fn spawn_usd_scenes(world: &mut World) {
             attempts: 1,
             ..default()
         };
-        let default_composition = overrides.variants.is_empty() && overrides.attributes.is_empty();
-        let opened = timed(profiled, &mut timing.open, || source.open_stage())
-            .map_err(anyhow::Error::from)
-            .and_then(|stage| {
-                timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
-                if default_composition && source.has_default_validation() {
-                    timing.validation_reuses += 1;
-                } else {
-                    timed(profiled, &mut timing.validation, || {
-                        UsdSource::validate_composition(&stage)
-                    })?;
-                    if default_composition {
-                        source.record_default_validation();
-                    }
-                }
-                timed(profiled, &mut timing.textures, || {
-                    decode_missing_textures(
-                        world,
-                        &stage,
-                        &source,
-                        &mut textures,
-                        default_composition,
-                    )
+        let streaming = world
+            .get::<crate::streaming::UsdStreaming>(entity)
+            .is_some();
+        let default_composition =
+            !streaming && overrides.variants.is_empty() && overrides.attributes.is_empty();
+        let opened = timed(profiled, &mut timing.open, || {
+            if streaming {
+                source.open_stage_unloaded()
+            } else {
+                source.open_stage()
+            }
+        })
+        .map_err(anyhow::Error::from)
+        .and_then(|stage| {
+            timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
+            if default_composition && source.has_default_validation() {
+                timing.validation_reuses += 1;
+            } else {
+                timed(profiled, &mut timing.validation, || {
+                    UsdSource::validate_composition(&stage)
                 })?;
-                Ok(stage)
-            });
+                if default_composition {
+                    source.record_default_validation();
+                }
+            }
+            timed(profiled, &mut timing.textures, || {
+                decode_missing_textures(world, &stage, &source, &mut textures, default_composition)
+            })?;
+            Ok(stage)
+        });
         timing.failures = usize::from(opened.is_err());
         match opened {
             Ok(stage) => {
@@ -538,7 +545,12 @@ fn spawn_usd_scenes(world: &mut World) {
                     } else {
                         let (mut started, mut map) =
                             ProjectionJob::begin(world, &live.stage, entity);
-                        if budget != std::time::Duration::MAX
+                        // Streaming finds its units among the prims the job
+                        // records, which `continue_projections` hands over.
+                        if streaming {
+                            started.record_projected();
+                            job = Some(started);
+                        } else if budget != std::time::Duration::MAX
                             || !started.step(world, &live.stage, &mut map, budget)
                         {
                             job = Some(started);
@@ -572,6 +584,8 @@ fn spawn_usd_scenes(world: &mut World) {
                     },
                     state,
                 ));
+                let streaming =
+                    streaming.then(|| crate::streaming::StreamingState::new(&live.stage));
                 instances.roots.insert(
                     entity,
                     InstanceRuntime {
@@ -590,6 +604,7 @@ fn spawn_usd_scenes(world: &mut World) {
                         job,
                         parked: default(),
                         materials: None,
+                        streaming,
                     },
                 );
             }
@@ -617,6 +632,7 @@ fn spawn_usd_scenes(world: &mut World) {
         }
     }
     continue_projections(world, &mut instances, budget);
+    crate::streaming::tick(world, &mut instances);
     crate::instance::tick(world, &mut instances);
     world.insert_non_send(instances);
 }
@@ -838,6 +854,9 @@ fn continue_projections(
             .contains_resource::<UsdSceneTimings>()
             .then(bevy::platform::time::Instant::now);
         let done = job.step(world, &runtime.live.stage, &mut runtime.map, remaining);
+        if let Some(streaming) = runtime.streaming.as_mut() {
+            streaming.note_projected(job.drain_projected());
+        }
         if let Some(started) = profiled {
             world.resource_mut::<UsdSceneTimings>().projection += started.elapsed();
         }

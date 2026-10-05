@@ -27,6 +27,12 @@ pub(crate) struct Fetcher {
     fetched: Arc<Mutex<BTreeMap<String, Option<Arc<[u8]>>>>>,
 }
 
+impl std::fmt::Debug for Fetcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Fetcher").finish_non_exhaustive()
+    }
+}
+
 impl Fetcher {
     pub(crate) fn new(read: Fetch) -> Self {
         Self {
@@ -88,6 +94,8 @@ pub struct UsdSource {
     filesystem: bool,
     validated_default: Arc<Mutex<Option<u64>>>,
     default_textures: Arc<Mutex<Option<(u64, Arc<BTreeSet<(String, bool)>>)>>>,
+    /// Reads files the snapshot lacks when a stage asks for them.
+    fetch: Option<Fetcher>,
 }
 
 impl UsdSource {
@@ -133,6 +141,7 @@ impl UsdSource {
             filesystem: true,
             validated_default: Arc::default(),
             default_textures: Arc::default(),
+            fetch: None,
         })
     }
 
@@ -639,7 +648,7 @@ impl UsdSource {
     ) -> (Result<Stage, String>, BTreeSet<String>) {
         let requests = Arc::new(Mutex::new(BTreeSet::new()));
         let result = (|| -> anyhow::Result<Stage> {
-            let stage = self.open_tracked(requests.clone(), fetch)?;
+            let stage = self.open_tracked(requests.clone(), fetch, false)?;
             Self::validate_until(&stage, || {
                 stop_at_missing && !requests.lock().expect("dependency requests").is_empty()
             })?;
@@ -655,7 +664,13 @@ impl UsdSource {
 
     /// Open an independent stage from this snapshot.
     pub fn open_stage(&self) -> openusd::Result<Stage> {
-        self.open_tracked(Arc::default(), None)
+        self.open_tracked(Arc::default(), None, false)
+    }
+
+    /// Open an independent stage from this snapshot with every payload
+    /// unloaded, for streaming to load as it needs.
+    pub fn open_stage_unloaded(&self) -> openusd::Result<Stage> {
+        self.open_tracked(Arc::default(), None, true)
     }
 
     pub(crate) fn open_stage_for_editor(&self) -> openusd::Result<(Stage, DiskBaselines)> {
@@ -839,7 +854,13 @@ impl UsdSource {
         &self,
         requests: Arc<Mutex<BTreeSet<String>>>,
         fetch: Option<Fetcher>,
+        unloaded: bool,
     ) -> openusd::Result<Stage> {
+        let load = if unloaded {
+            openusd::usd::InitialLoadSet::LoadNone
+        } else {
+            openusd::usd::InitialLoadSet::LoadAll
+        };
         Stage::builder()
             .schema_registry(openusd_schemas::schema_registry())
             .resolver(SourceResolver {
@@ -847,9 +868,16 @@ impl UsdSource {
                 fallback: DefaultResolver::new(),
                 requests,
                 disk_baselines: None,
-                fetch,
+                fetch: fetch.or_else(|| self.fetch.clone()),
             })
+            .load(load)
             .open(&self.identifier)
+    }
+
+    /// Keeps `fetch` for every stage opened from this source, so a payload
+    /// loaded later can read files the snapshot lacks.
+    pub(crate) fn set_fetch(&mut self, fetch: Fetcher) {
+        self.fetch = Some(fetch);
     }
 }
 

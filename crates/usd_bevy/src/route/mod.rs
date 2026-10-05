@@ -29,6 +29,7 @@ pub mod environment_map;
 pub mod flat_material;
 mod generated_image;
 pub mod geom;
+pub mod gpu_instancing;
 pub mod gpu_morph;
 pub mod gpu_skin;
 pub mod instancer;

@@ -3,6 +3,8 @@
 //! purpose/visibility/kind, and custom-data introspection — all decoded from
 //! the composed stage through openusd's public Prim / Attribute API.
 
+use std::collections::HashMap;
+
 use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
 
@@ -93,7 +95,6 @@ pub struct ReadMesh {
 pub struct ReadSubset {
     pub name: String,
     pub indices: Vec<i32>,
-    pub material_binding: Option<Path>,
 }
 
 pub fn read_mesh(stage: &Stage, prim: &Path) -> anyhow::Result<Option<ReadMesh>> {
@@ -244,7 +245,6 @@ fn read_material_subsets(
         out.push(ReadSubset {
             name: child_name.to_string(),
             indices: read_int_array_at(stage, &child_path, "indices", time)?.unwrap_or_default(),
-            material_binding: super::shade::read_material_binding(stage, &child_path)?,
         });
     }
     Ok(out)
@@ -672,17 +672,23 @@ pub fn read_effective_purpose(stage: &Stage, prim: &Path) -> anyhow::Result<Stri
         if cur.is_abs_root() || cur.is_empty() {
             return Ok("default".to_string());
         }
-        let attr = stage.prim(cur.clone())?.attribute("purpose");
-        if attr.resolve_info()?.has_authored_value() {
-            if let Some(t) = read_token(stage, &cur, "purpose")? {
-                return Ok(t);
-            }
+        if let Some(purpose) = read_authored_purpose(stage, &cur)? {
+            return Ok(purpose);
         }
         match cur.parent() {
             Some(p) => cur = p,
             None => return Ok("default".to_string()),
         }
     }
+}
+
+/// The `purpose` authored on `prim` itself, if any.
+pub fn read_authored_purpose(stage: &Stage, prim: &Path) -> anyhow::Result<Option<String>> {
+    let attr = stage.prim(prim.clone())?.attribute("purpose");
+    if !attr.resolve_info()?.has_authored_value() {
+        return Ok(None);
+    }
+    read_token(stage, prim, "purpose")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1196,6 +1202,34 @@ fn read_vec3f_array(
     Ok(vec3f_values(attr_default(stage, prim, name)?))
 }
 
+/// A model's authored `extentsHint` in the prim's own space: the union of
+/// its per-purpose boxes as `Some([min, max])`, `Some(None)` when every box
+/// is empty (USD authors an empty box inverted, min above max), and `None`
+/// when no hint is authored.
+pub fn read_extents_hint(
+    stage: &Stage,
+    prim: &Path,
+) -> anyhow::Result<Option<Option<[[f32; 3]; 2]>>> {
+    let Some(values) = vec3f_values(attr_at(stage, prim, "extentsHint", None)?) else {
+        return Ok(None);
+    };
+    let boxes = values
+        .chunks_exact(2)
+        .filter(|pair| (0..3).all(|axis| pair[0][axis] <= pair[1][axis]));
+    Ok(Some(boxes.fold(
+        None,
+        |union: Option<[[f32; 3]; 2]>, pair| {
+            Some(match union {
+                None => [pair[0], pair[1]],
+                Some([low, high]) => [
+                    std::array::from_fn(|axis| low[axis].min(pair[0][axis])),
+                    std::array::from_fn(|axis| high[axis].max(pair[1][axis])),
+                ],
+            })
+        },
+    )))
+}
+
 fn vec3f_values(value: Option<Value>) -> Option<Vec<[f32; 3]>> {
     match value {
         Some(Value::Vec3fVec(v)) => Some(v.into_iter().map(|a| [a.x, a.y, a.z]).collect()),
@@ -1216,6 +1250,66 @@ fn vec2f_values(value: Option<Value>) -> Option<Vec<[f32; 2]>> {
     }
 }
 
+thread_local! {
+    /// Answers of [`authors_primvar`] for ancestors, kept while a
+    /// [`PrimvarScope`] is open on this thread.
+    static ANCESTOR_PRIMVARS: std::cell::RefCell<Option<(Stage, HashMap<(Path, String), bool>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Shares ancestor primvar lookups between the prims read while it lives, for
+/// a pass that does not edit `stage`.
+pub(crate) struct PrimvarScope {
+    previous: Option<(Stage, HashMap<(Path, String), bool>)>,
+}
+
+impl PrimvarScope {
+    pub(crate) fn begin(stage: &Stage) -> Self {
+        let previous =
+            ANCESTOR_PRIMVARS.with(|memo| memo.replace(Some((stage.clone(), HashMap::new()))));
+        Self { previous }
+    }
+}
+
+impl Drop for PrimvarScope {
+    fn drop(&mut self) {
+        ANCESTOR_PRIMVARS.with(|memo| *memo.borrow_mut() = self.previous.take());
+    }
+}
+
+/// Whether `path` authors an unblocked `name` that `prim` inherits: any
+/// interpolation on `prim` itself, constant on an ancestor.
+fn authors_primvar(stage: &Stage, prim: &Path, path: &Path, name: &str) -> anyhow::Result<bool> {
+    let ancestor = path != prim;
+    let key = (path.clone(), name.to_owned());
+    if ancestor
+        && let Some(hit) = ANCESTOR_PRIMVARS.with(|memo| {
+            memo.borrow()
+                .as_ref()
+                .filter(|(owner, _)| owner.ptr_eq(stage))
+                .and_then(|(_, answers)| answers.get(&key).copied())
+        })
+    {
+        return Ok(hit);
+    }
+    let info = stage.prim(path.clone())?.attribute(name).resolve_info()?;
+    let authors = info.has_authored_value()
+        && !info.value_is_blocked()
+        && (!ancestor
+            || read_primvar_interpolation(stage, path, name)?.unwrap_or(Interpolation::Constant)
+                == Interpolation::Constant);
+    if ancestor {
+        ANCESTOR_PRIMVARS.with(|memo| {
+            if let Some((owner, answers)) = memo.borrow_mut().as_mut()
+                && owner.ptr_eq(stage)
+            {
+                answers.insert(key, authors);
+            }
+        });
+    }
+    Ok(authors)
+}
+
 pub(crate) fn inherited_primvar_owner(
     stage: &Stage,
     prim: &Path,
@@ -1226,14 +1320,7 @@ pub(crate) fn inherited_primvar_owner(
         if path.is_abs_root() {
             break;
         }
-        let info = stage.prim(path.clone())?.attribute(name).resolve_info()?;
-        if info.has_authored_value()
-            && !info.value_is_blocked()
-            && (path == *prim
-                || read_primvar_interpolation(stage, &path, name)?
-                    .unwrap_or(Interpolation::Constant)
-                    == Interpolation::Constant)
-        {
+        if authors_primvar(stage, prim, &path, name)? {
             return Ok(path);
         }
         candidate = path.parent();
@@ -1252,19 +1339,8 @@ fn inherited_primvar_owners<const N: usize>(
         if path.is_abs_root() || owners.iter().all(Option::is_some) {
             break;
         }
-        let current = stage.prim(&path)?;
         for (name, owner) in names.iter().zip(&mut owners) {
-            if owner.is_some() {
-                continue;
-            }
-            let info = current.attribute(*name).resolve_info()?;
-            if info.has_authored_value()
-                && !info.value_is_blocked()
-                && (path == *prim
-                    || read_primvar_interpolation(stage, &path, name)?
-                        .unwrap_or(Interpolation::Constant)
-                        == Interpolation::Constant)
-            {
+            if owner.is_none() && authors_primvar(stage, prim, &path, name)? {
                 *owner = Some(path.clone());
             }
         }
@@ -1414,6 +1490,14 @@ def Xform "Root" {
                     .unwrap()
                     .set_metadata("interpolation", Value::Token("constant".into()))
                     .unwrap();
+            }
+            let _scope = PrimvarScope::begin(&stage);
+            let mesh = openusd::sdf::path("/Root/Parent/Mesh").unwrap();
+            let expected = if edited { "/Root/Parent" } else { "/Root" };
+            for _ in 0..2 {
+                let owner =
+                    inherited_primvar_owner(&stage, &mesh, "primvars:displayColor").unwrap();
+                assert_eq!(owner.as_str(), expected);
             }
             for path in ["/Root", "/Root/Parent", "/Root/Parent/Mesh"] {
                 let path = openusd::sdf::path(path).unwrap();

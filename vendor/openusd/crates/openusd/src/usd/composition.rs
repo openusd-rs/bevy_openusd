@@ -634,8 +634,11 @@ impl StageComposition {
         // Newly joined layers need their plain sublayer edges (and relocates) wired
         // before any stack is composed against them.
         if grew {
-            // TODO(perf): rebuild only the new subtrees rather than the whole DAG.
-            let relocated = self.layers.borrow_mut().recompute_sublayers(None).affected;
+            let relocated = {
+                let mut graph = self.layers.borrow_mut();
+                let added = graph.all_ids()[before..].to_vec();
+                graph.recompute_sublayers_after_load(&added).affected
+            };
             // A demanded layer that introduces relocates restructures prims
             // composed against its stack; drop their cached indices so they
             // recompose with the relocates applied.

@@ -149,7 +149,47 @@ fn decode_textures(
 
 /// Reads a source snapshot and its discovered dependencies through Bevy.
 #[derive(Default, TypePath)]
-pub struct UsdAssetLoader;
+pub struct UsdAssetLoader {
+    server: Option<AssetServer>,
+}
+
+impl UsdAssetLoader {
+    /// A loader that reads dependencies through `server` while composing.
+    pub fn new(server: AssetServer) -> Self {
+        Self {
+            server: Some(server),
+        }
+    }
+
+    /// Reads a dependency synchronously from `source_id`, so one probe
+    /// composes the whole stage. Native unprocessed loads only: wasm cannot
+    /// block on a read, and processed loads read through the processor.
+    fn fetcher(
+        &self,
+        source_id: bevy::asset::io::AssetSourceId<'static>,
+        root: std::path::PathBuf,
+    ) -> Option<crate::source::Fetcher> {
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
+        let server = self.server.clone()?;
+        if !matches!(server.mode(), bevy::asset::AssetServerMode::Unprocessed) {
+            return None;
+        }
+        Some(crate::source::Fetcher::new(std::sync::Arc::new(
+            move |identifier: &str| {
+                let dependency = Path::new(identifier).strip_prefix(&root).ok()?;
+                let source = server.get_source(source_id.clone()).ok()?;
+                bevy::tasks::block_on(async {
+                    let mut reader = source.reader().read(dependency).await.ok()?;
+                    let mut bytes = Vec::new();
+                    reader.read_to_end(&mut bytes).await.ok()?;
+                    Some(std::sync::Arc::<[u8]>::from(bytes))
+                })
+            },
+        )))
+    }
+}
 
 impl AssetLoader for UsdAssetLoader {
     type Asset = UsdScene;
@@ -176,20 +216,68 @@ impl AssetLoader for UsdAssetLoader {
         if !Path::new(source.identifier()).starts_with(&root) {
             return Err(std::io::Error::other("USD root escapes asset source"));
         }
+        let fetcher = self.fetcher(source_id.clone(), root.clone());
+        if let Some(fetcher) = &fetcher {
+            source.set_fetch(fetcher.clone());
+        }
+        let mut fetched_files = Vec::new();
         for _ in 0..128 {
             // The stage is `Rc`-based, so it is dropped inside this block
             // before the dependency reads below await.
-            let missing = {
-                let (result, missing) = source.probe_stage();
+            let (missing, textures) = {
+                let (result, missing) = source.probe_round(fetcher.clone());
+                let fetched = fetcher.as_ref().map(|f| f.take()).unwrap_or_default();
+                let fetched_any = !fetched.is_empty();
+                for (identifier, bytes) in fetched {
+                    if !Path::new(&identifier).starts_with(&root) {
+                        return Err(std::io::Error::other(format!(
+                            "USD dependency escapes asset source: {identifier}"
+                        )));
+                    }
+                    match bytes {
+                        Some(bytes) => {
+                            fetched_files.push(identifier.clone());
+                            source.insert_dependency(identifier, bytes);
+                        }
+                        None => {
+                            warn!(
+                                "USD dependency unavailable, continuing without it: {identifier}"
+                            );
+                            source.mark_absent(identifier);
+                        }
+                    }
+                }
+                if fetched_any && result.is_ok() && missing.is_empty() {
+                    source.record_default_validation();
+                }
                 if missing.is_empty() {
                     let stage = result.map_err(std::io::Error::other)?;
                     let textures = decode_textures(&source, &stage, |index, image| {
                         load_context.add_labeled_asset(format!("texture_{index}"), image)
                     })?;
-                    return Ok(UsdScene { source, textures });
+                    (missing, Some(textures))
+                } else {
+                    (missing, None)
                 }
-                missing
             };
+            if let Some(textures) = textures {
+                // Fetched files bypassed the load context, so register them
+                // for hot reload by reading them through it.
+                if self
+                    .server
+                    .as_ref()
+                    .is_some_and(AssetServer::watching_for_changes)
+                {
+                    for identifier in fetched_files {
+                        if let Ok(dependency) = Path::new(&identifier).strip_prefix(&root) {
+                            let asset_path = AssetPath::from(dependency.to_path_buf())
+                                .with_source(source_id.clone());
+                            let _ = load_context.read_asset_bytes(asset_path).await;
+                        }
+                    }
+                }
+                return Ok(UsdScene { source, textures });
+            }
             for identifier in missing {
                 if openusd::ar::is_package_relative_path(&identifier) {
                     return Err(std::io::Error::other(format!(
@@ -250,10 +338,14 @@ impl Plugin for UsdAssetPlugin {
         if !app.world().contains_resource::<Assets<Image>>() {
             app.init_asset::<Image>();
         }
+        if app.is_plugin_added::<bevy::pbr::PbrPlugin>() {
+            crate::route::flat_material::configure(app);
+        }
+        let server = app.world().get_resource::<AssetServer>().cloned();
         app.init_asset::<UsdScene>()
             .init_resource::<UsdProjectionBudget>()
             .init_resource::<crate::route::cache::ProjectionCache>()
-            .register_asset_loader(UsdAssetLoader)
+            .register_asset_loader(UsdAssetLoader { server })
             .add_systems(Update, spawn_usd_scenes);
         if !app.world().contains_resource::<SchemaRegistry>() {
             app.insert_resource(SchemaRegistry::builtin());
@@ -264,7 +356,7 @@ impl Plugin for UsdAssetPlugin {
 /// Project any `UsdSceneRoot` whose asset has finished loading and hasn't been
 /// spawned yet. Exclusive (`&mut World`) because projection spawns a hierarchy
 /// and runs the routes, which need `&mut World`.
-fn spawn_usd_scenes(world: &mut World) {
+pub(crate) fn spawn_usd_scenes(world: &mut World) {
     let budget = world
         .get_resource::<UsdProjectionBudget>()
         .map_or(std::time::Duration::MAX, |b| b.0);
@@ -367,32 +459,36 @@ fn spawn_usd_scenes(world: &mut World) {
             attempts: 1,
             ..default()
         };
-        let default_composition = overrides.variants.is_empty() && overrides.attributes.is_empty();
-        let opened = timed(profiled, &mut timing.open, || source.open_stage())
-            .map_err(anyhow::Error::from)
-            .and_then(|stage| {
-                timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
-                if default_composition && source.has_default_validation() {
-                    timing.validation_reuses += 1;
-                } else {
-                    timed(profiled, &mut timing.validation, || {
-                        UsdSource::validate_composition(&stage)
-                    })?;
-                    if default_composition {
-                        source.record_default_validation();
-                    }
-                }
-                timed(profiled, &mut timing.textures, || {
-                    decode_missing_textures(
-                        world,
-                        &stage,
-                        &source,
-                        &mut textures,
-                        default_composition,
-                    )
+        let streaming = world
+            .get::<crate::streaming::UsdStreaming>(entity)
+            .is_some();
+        let default_composition =
+            !streaming && overrides.variants.is_empty() && overrides.attributes.is_empty();
+        let opened = timed(profiled, &mut timing.open, || {
+            if streaming {
+                source.open_stage_unloaded()
+            } else {
+                source.open_stage()
+            }
+        })
+        .map_err(anyhow::Error::from)
+        .and_then(|stage| {
+            timed(profiled, &mut timing.overrides, || overrides.apply(&stage))?;
+            if default_composition && source.has_default_validation() {
+                timing.validation_reuses += 1;
+            } else {
+                timed(profiled, &mut timing.validation, || {
+                    UsdSource::validate_composition(&stage)
                 })?;
-                Ok(stage)
-            });
+                if default_composition {
+                    source.record_default_validation();
+                }
+            }
+            timed(profiled, &mut timing.textures, || {
+                decode_missing_textures(world, &stage, &source, &mut textures, default_composition)
+            })?;
+            Ok(stage)
+        });
         timing.failures = usize::from(opened.is_err());
         match opened {
             Ok(stage) => {
@@ -449,7 +545,12 @@ fn spawn_usd_scenes(world: &mut World) {
                     } else {
                         let (mut started, mut map) =
                             ProjectionJob::begin(world, &live.stage, entity);
-                        if budget != std::time::Duration::MAX
+                        // Streaming finds its units among the prims the job
+                        // records, which `continue_projections` hands over.
+                        if streaming {
+                            started.record_projected();
+                            job = Some(started);
+                        } else if budget != std::time::Duration::MAX
                             || !started.step(world, &live.stage, &mut map, budget)
                         {
                             job = Some(started);
@@ -483,6 +584,8 @@ fn spawn_usd_scenes(world: &mut World) {
                     },
                     state,
                 ));
+                let streaming =
+                    streaming.then(|| crate::streaming::StreamingState::new(&live.stage));
                 instances.roots.insert(
                     entity,
                     InstanceRuntime {
@@ -501,6 +604,7 @@ fn spawn_usd_scenes(world: &mut World) {
                         job,
                         parked: default(),
                         materials: None,
+                        streaming,
                     },
                 );
             }
@@ -528,6 +632,7 @@ fn spawn_usd_scenes(world: &mut World) {
         }
     }
     continue_projections(world, &mut instances, budget);
+    crate::streaming::tick(world, &mut instances);
     crate::instance::tick(world, &mut instances);
     world.insert_non_send(instances);
 }
@@ -749,6 +854,9 @@ fn continue_projections(
             .contains_resource::<UsdSceneTimings>()
             .then(bevy::platform::time::Instant::now);
         let done = job.step(world, &runtime.live.stage, &mut runtime.map, remaining);
+        if let Some(streaming) = runtime.streaming.as_mut() {
+            streaming.note_projected(job.drain_projected());
+        }
         if let Some(started) = profiled {
             world.resource_mut::<UsdSceneTimings>().projection += started.elapsed();
         }
@@ -3099,6 +3207,61 @@ def Scope "Looks"
     }
 
     #[test]
+    fn deep_references_fetch_in_one_probe_and_reload() {
+        let (mut app, directory, changed) = watched_memory_app();
+        for (path, text) in [
+            (
+                "deep/root.usda",
+                r#"def Xform "Root" (references = @a.usda@</A>) {}"#,
+            ),
+            (
+                "deep/a.usda",
+                r#"def Xform "A" (references = @b.usda@</B>) {}"#,
+            ),
+            (
+                "deep/b.usda",
+                r#"def Xform "B" (references = @c.usda@</C>) {}"#,
+            ),
+            ("deep/c.usda", r#"def Xform "C" { def Cube "Box" {} }"#),
+        ] {
+            directory.insert_asset_text(Path::new(path), &format!("#usda 1.0\n{text}\n"));
+        }
+        let handle: Handle<UsdScene> = app
+            .world()
+            .resource::<AssetServer>()
+            .load("fixture://deep/root.usda");
+        let root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
+        tick_until(&mut app, |world| {
+            world.get::<UsdSceneState>(root) == Some(&UsdSceneState::Ready)
+        });
+        let source = &app
+            .world()
+            .resource::<Assets<UsdScene>>()
+            .get(&handle)
+            .unwrap()
+            .source;
+        assert_eq!(source.dependencies().count(), 3);
+        assert!(source.has_default_validation());
+        assert!(
+            app.world()
+                .non_send::<UsdInstances>()
+                .entity(root, "/Root/Box")
+                .is_some()
+        );
+        directory.insert_asset_text(
+            Path::new("deep/c.usda"),
+            "#usda 1.0\ndef Xform \"C\" { def Cube \"Crate\" {} }\n",
+        );
+        changed("deep/c.usda");
+        tick_until(&mut app, |world| {
+            world
+                .non_send::<UsdInstances>()
+                .entity(root, "/Root/Crate")
+                .is_some()
+        });
+    }
+
+    #[test]
     fn memory_sources_report_gaps_and_decode_textures_without_disk() {
         let root = "models/textured.usda";
         let partial = UsdSource::from_memory(root, [(root, TEXTURED.as_bytes().to_vec())]).unwrap();
@@ -3900,7 +4063,8 @@ def Scope "Model" (
 
     #[test]
     fn loader_advertises_usd_extensions() {
-        let exts = UsdAssetLoader.extensions();
+        let loader = UsdAssetLoader::default();
+        let exts = loader.extensions();
         for e in ["usd", "usda", "usdc", "usdz"] {
             assert!(exts.contains(&e), "loader handles .{e}");
         }

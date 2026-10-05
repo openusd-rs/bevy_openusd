@@ -467,7 +467,6 @@ impl RefinedSurface {
                 Ok(ReadSubset {
                     name: subset.name.clone(),
                     indices: selected.into_iter().collect(),
-                    material_binding: subset.material_binding.clone(),
                 })
             })
             .collect()
@@ -1866,10 +1865,7 @@ def Material "Material" {}
         );
         assert_eq!(output.display_opacity.as_ref().unwrap().values, [0.25]);
         assert_eq!(output.subsets[0].indices, (0..16).collect::<Vec<_>>());
-        assert_eq!(
-            output.subsets[0].material_binding,
-            input.subsets[0].material_binding
-        );
+        assert_eq!(output.subsets[0].name, input.subsets[0].name);
         let rendered = crate::mesh::mesh_from_usd(&output);
         assert_eq!(rendered.indices().unwrap().len(), 96);
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
@@ -1922,22 +1918,18 @@ def Material "Material" {}
             BoundaryInterpolation::EdgeOnly,
         )
         .unwrap();
-        let binding = openusd::sdf::Path::new("/Materials/Red").unwrap();
         let subsets = vec![
             ReadSubset {
                 name: "red".into(),
                 indices: vec![1, 1],
-                material_binding: Some(binding.clone()),
             },
             ReadSubset {
                 name: "empty".into(),
                 indices: vec![],
-                material_binding: None,
             },
         ];
         let output = surface.remap_subsets(&subsets).unwrap();
         assert_eq!(output[0].name, "red");
-        assert_eq!(output[0].material_binding, Some(binding));
         assert_eq!(output[0].indices.len(), 16);
         assert!(
             output[0]

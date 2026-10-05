@@ -7,6 +7,9 @@
 use bevy::camera::RenderTarget;
 use bevy::prelude::*;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod camera_plan;
 mod capture;
 mod capture_metadata;

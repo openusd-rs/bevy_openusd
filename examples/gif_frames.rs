@@ -26,6 +26,9 @@ use usd_bevy::{
     skeleton_overlay::{UsdSkeletonOverlay, UsdSkeletonOverlayPlugin},
 };
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[allow(dead_code)]
 #[path = "../src/environment.rs"]
 mod environment;
@@ -131,7 +134,7 @@ fn main() -> AppExit {
             usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin,
             environment::ViewerEnvironmentPlugin,
         ))
-        .insert_resource(usd_bevy::UsdProjectionBudget(Duration::MAX))
+        .insert_resource(usd_bevy::UsdProjectionBudget(Duration::from_secs(5)))
         .insert_resource(Asset(name))
         .insert_resource(Recorder {
             frames,
@@ -145,7 +148,7 @@ fn main() -> AppExit {
         .run()
 }
 
-/// Sizes the floor grid to the loaded scene once.
+/// Sizes the floor grid and the camera clip planes to the loaded scene once.
 fn fit_grid(
     mut fitted: Local<bool>,
     states: Query<&UsdSceneState>,
@@ -165,6 +168,7 @@ fn fit_grid(
         ),
         With<environment::ViewerGrid>,
     >,
+    mut projections: Query<&mut Projection, With<Camera3d>>,
 ) {
     if *fitted || !matches!(states.iter().next(), Some(UsdSceneState::Ready)) {
         return;
@@ -183,6 +187,13 @@ fn fit_grid(
             transform.translation.y = height;
             settings.scale = scale;
             settings.fadeout_distance = fade;
+        }
+        let span = (high - low).max_element();
+        for mut projection in &mut projections {
+            if let Projection::Perspective(perspective) = projection.as_mut() {
+                perspective.far = perspective.far.max(span * 4.0);
+                perspective.near = perspective.near.max(span * 1e-6);
+            }
         }
         *fitted = true;
     }

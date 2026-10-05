@@ -52,6 +52,8 @@ openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628c
 mara = { git = "https://github.com/bresilla/mara", branch = "main", default-features = false, features = ["window", "bevy"] }
 # Native "Open USD…" file picker.
 rfd = "0.15"
+# Global allocator for the binary and examples.
+mimalloc = { version = "0.1", default-features = false }
 # Detailed, filterable tracing to stderr (the embedded Bevy app has no
 # LogPlugin, so without this the app's logs go nowhere).
 tracing = "0.1"

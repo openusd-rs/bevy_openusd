@@ -783,6 +783,7 @@ fn resolve_surface_shader(
 ) -> anyhow::Result<Option<(Path, SurfaceDialect)>> {
     let outputs = [
         ("outputs:surface", SurfaceDialect::Preview),
+        ("outputs:glslfx:surface", SurfaceDialect::Preview),
         ("outputs:mtlx:surface", SurfaceDialect::MaterialX),
         ("outputs:mdl:surface", SurfaceDialect::Mdl),
     ];

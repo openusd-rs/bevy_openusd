@@ -156,7 +156,7 @@ pub(crate) struct ProjectionMaterials {
     stage: openusd::usd::Stage,
     resolved: std::collections::HashMap<
         (String, Option<u64>, bool),
-        (Handle<StandardMaterial>, Vec<String>),
+        (Handle<StandardMaterial>, Vec<String>, bool),
     >,
     /// Whether any layer authors a `material:binding` property; without one
     /// no prim can be bound.
@@ -377,7 +377,7 @@ fn to_standard_material(
 pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
-) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>)>> {
+) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>, bool)>> {
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
         && memo.stage.ptr_eq(ctx.stage)
     {
@@ -436,6 +436,8 @@ pub(crate) fn resolve_material(
     let started = profiling.then(bevy::platform::time::Instant::now);
     let assets = world.get_resource::<AssetServer>().cloned();
     let textures = world.get_resource::<crate::asset::SnapshotTextures>();
+    // A material with its own diffuse is not tinted by the gprim's displayColor.
+    let colored = read.diffuse_color.is_some() || read.diffuse_texture.is_some();
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
     apply_sidedness(ctx, &mut material);
     let mut warnings = read.warnings.clone();
@@ -507,9 +509,9 @@ pub(crate) fn resolve_material(
         && memo.stage.ptr_eq(ctx.stage)
     {
         memo.resolved
-            .insert(key, (handle.clone(), warnings.clone()));
+            .insert(key, (handle.clone(), warnings.clone(), colored));
     }
-    Ok(Some((handle, warnings)))
+    Ok(Some((handle, warnings, colored)))
 }
 
 impl PrimRoute for MaterialRoute {
@@ -523,7 +525,7 @@ impl PrimRoute for MaterialRoute {
         {
             return;
         }
-        let (handle, mut warnings) = match resolve_material(ctx, world) {
+        let (handle, mut warnings, colored) = match resolve_material(ctx, world) {
             Ok(Some(material)) => material,
             Ok(None) => {
                 world.entity_mut(entity).remove::<UsdMaterialWarning>();
@@ -534,6 +536,12 @@ impl PrimRoute for MaterialRoute {
                 return;
             }
         };
+        if colored
+            && let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
+            && let Some(plain) = super::cache::without_vertex_colors(world, &mesh)
+        {
+            world.entity_mut(entity).insert(Mesh3d(plain));
+        }
         let read = ctx.read_mesh().ok().flatten();
         let uvs = read.is_some_and(|read| read.uvs.is_some());
         let normal_mapped = world
@@ -617,7 +625,7 @@ def Cube "C" { rel material:binding = </Mat> }
         time: Option<f64>,
     ) -> anyhow::Result<StandardMaterial> {
         let path = openusd::sdf::path(path)?;
-        let (handle, _) = resolve_material(&RouteCtx::at(stage, &path, time), world)?.unwrap();
+        let (handle, ..) = resolve_material(&RouteCtx::at(stage, &path, time), world)?.unwrap();
         Ok(world
             .resource::<Assets<StandardMaterial>>()
             .get(&handle)
@@ -1006,6 +1014,87 @@ def Material "Mat" {{
             );
             assert_eq!(uv, tangents >= 2, "normal maps get tangents only with UVs");
         }
+    }
+
+    #[test]
+    fn display_color_tints_only_materials_without_their_own_diffuse() {
+        let mesh = |name: &str, material: &str| {
+            format!(
+                r#"def Mesh "{name}" (prepend apiSchemas = ["MaterialBindingAPI"]) {{
+    point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    color3f[] primvars:displayColor = [(0,0,1)] (interpolation = "vertex")
+    rel material:binding = </{material}>
+}}
+"#
+            )
+        };
+        let text = format!(
+            r#"#usda 1.0
+{}{}
+def Material "Water" {{
+    token outputs:glslfx:surface.connect = </Water/Surface.outputs:rgbColor>
+    def Shader "Surface" {{
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.6, 1, 0.9)
+        token outputs:rgbColor
+    }}
+}}
+def Material "Ptex" {{
+    token outputs:surface.connect = </Ptex/Surface.outputs:surface>
+    def Shader "Surface" {{
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Ptex/Texture.outputs:color>
+        token outputs:surface
+    }}
+    def Shader "Texture" {{
+        uniform token info:id = "HwPtexTexture_1"
+        color3f outputs:color
+    }}
+}}
+"#,
+            mesh("Owned", "Water"),
+            mesh("Preview", "Ptex")
+        );
+        let stage = crate::snippet::UsdSnippet::new(text).open_stage().unwrap();
+        let live = crate::live::LiveStage::new(stage);
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        let colors = |name: &str| {
+            let entity = map.entity(name).unwrap();
+            let mesh = &world.get::<Mesh3d>(entity).unwrap().0;
+            let base = world
+                .resource::<Assets<StandardMaterial>>()
+                .get(
+                    &world
+                        .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                        .unwrap()
+                        .0,
+                )
+                .unwrap()
+                .base_color
+                .to_linear();
+            let colored = world
+                .resource::<Assets<Mesh>>()
+                .get(mesh)
+                .unwrap()
+                .attribute(Mesh::ATTRIBUTE_COLOR)
+                .is_some();
+            (base, colored)
+        };
+        let (base, colored) = colors("/Owned");
+        assert_eq!([base.red, base.green, base.blue], [0.6, 1.0, 0.9]);
+        assert!(
+            !colored,
+            "an authored diffuse is not tinted by displayColor"
+        );
+        let (base, colored) = colors("/Preview");
+        assert_eq!([base.red, base.green, base.blue], [1.0, 1.0, 1.0]);
+        assert!(colored, "an unresolved diffuse falls back to displayColor");
     }
 
     #[test]

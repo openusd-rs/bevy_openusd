@@ -228,7 +228,7 @@ mod tests {
             assert!((skin.matrices[0].x_axis.truncate().length() - 2.0).abs() < 1e-5);
             assert!((skin.matrices[0].z_axis.truncate().length() - 0.5).abs() < 1e-5);
             for path in [path.clone(), path.append_path("Part").unwrap()] {
-                let (handle, warnings) = super::super::material::resolve_material(
+                let (handle, warnings, _) = super::super::material::resolve_material(
                     &RouteCtx::at(&stage, &path, Some(time)),
                     &mut world,
                 )

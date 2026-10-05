@@ -735,7 +735,7 @@ fn prototype_material(
     ctx: &RouteCtx,
     world: &mut World,
     fallback: impl FnOnce() -> StandardMaterial,
-) -> (Handle<StandardMaterial>, Vec<String>) {
+) -> (Handle<StandardMaterial>, Vec<String>, bool) {
     match super::material::resolve_material(ctx, world) {
         Ok(Some(material)) => material,
         result => {
@@ -743,7 +743,11 @@ fn prototype_material(
                 .err()
                 .map(|error| vec![error.to_string()])
                 .unwrap_or_default();
-            (super::cache::intern_material(world, fallback()), warnings)
+            (
+                super::cache::intern_material(world, fallback()),
+                warnings,
+                false,
+            )
         }
     }
 }
@@ -755,7 +759,7 @@ fn bake_shape(
 ) -> Option<ProtoHandles> {
     let ctx = RouteCtx::at(ctx.stage, path, ctx.time);
     let shape = super::shapes::shape_mesh(&ctx)?;
-    let (material, mut warnings) = prototype_material(&ctx, world, || {
+    let (material, mut warnings, _) = prototype_material(&ctx, world, || {
         super::material::default_material_with_opacity(&ctx, shape.opacity.as_ref())
     });
     if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
@@ -800,11 +804,14 @@ fn bake_mesh(
     {
         crate::mesh::affine::bake(&mut mesh, Mat4::from_cols_array(&matrix))?;
     }
-    let (material, mut warnings) = prototype_material(&proto_ctx, world, || {
+    let (material, mut warnings, colored) = prototype_material(&proto_ctx, world, || {
         super::material::default_material(&proto_ctx)
     });
     if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
         super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
+    }
+    if colored {
+        mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
     }
     let mesh_handle = super::cache::intern_mesh(world, mesh);
     let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh_handle, &material)?;

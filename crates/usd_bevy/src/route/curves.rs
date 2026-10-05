@@ -493,6 +493,7 @@ fn emit_polyline(cv: &[[f32; 3]], periodic: bool, out: &mut Vec<[f32; 3]>, idx: 
 
 /// Positions + line indices for every curve. Linear curves connect vertices
 /// directly; cubic curves are tessellated through their basis.
+#[cfg(test)]
 fn line_geometry(
     ctx: &RouteCtx,
     steps: usize,
@@ -505,6 +506,8 @@ struct Centerlines {
     points: Vec<[f32; 3]>,
     indices: Vec<u32>,
     colors: Option<Vec<[f32; 4]>>,
+    /// Authored `normals` at every point, which orient ribbon-like curves.
+    normals: Option<Vec<[f32; 3]>>,
     spans: Vec<(std::ops::Range<usize>, CurveSampling)>,
 }
 
@@ -557,6 +560,19 @@ fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
         interpolation: value.interpolation,
         indices: value.indices,
     });
+    let normal = crate::read::geom::read_primvar_vec3f(ctx.stage, ctx.path, "normals", ctx.time)
+        .ok()
+        .flatten()
+        .map(|value| MeshPrimvar {
+            values: value
+                .values
+                .into_iter()
+                .map(|value| Vec3::from(value).as_dvec3())
+                .collect(),
+            interpolation: value.interpolation,
+            indices: value.indices,
+        });
+    let mut normals = normal.as_ref().map(|_| Vec::new());
     let mut colors = (color.is_some() || opacity.is_some()).then(Vec::new);
     let mut cursor = 0usize;
     let mut varying_offset = 0usize;
@@ -607,6 +623,14 @@ fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
                 colors.push([rgb.x as f32, rgb.y as f32, rgb.z as f32, alpha as f32]);
             }
         }
+        if let (Some(normals), Some(normal)) = (&mut normals, &normal) {
+            for sample in 0..samples {
+                let n = layout
+                    .sample(normal, sample, DVec3::Y)
+                    .normalize_or(DVec3::Y);
+                normals.push([n.x as f32, n.y as f32, n.z as f32]);
+            }
+        }
         varying_offset += if cubic {
             segments + usize::from(!periodic)
         } else {
@@ -619,6 +643,7 @@ fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
         points: out,
         indices,
         colors,
+        normals,
         spans,
     })
 }
@@ -747,7 +772,14 @@ impl PrimRoute for CurvesRoute {
                 }
             }
         }
-        let Some((points, indices, colors)) = line_geometry(ctx, steps) else {
+        let Some(Centerlines {
+            points,
+            indices,
+            colors,
+            normals,
+            ..
+        }) = centerlines(ctx, steps)
+        else {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             return;
         };
@@ -778,10 +810,19 @@ impl PrimRoute for CurvesRoute {
         if let Some(colors) = colors {
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
         }
+        // Curves with authored normals shade like ribbons; bare lines stay unlit.
+        let lit = normals
+            .as_ref()
+            .is_some_and(|normals| normals.iter().flatten().all(|value| value.is_finite()));
+        if let Some(normals) = normals.filter(|_| lit) {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        }
         mesh.insert_indices(bevy::mesh::Indices::U32(indices));
         let mesh_handle = super::cache::intern_mesh(world, mesh);
         let mut material = super::material::default_material(ctx);
-        material.unlit = true;
+        material.unlit = !lit;
+        material.double_sided = lit;
+        material.cull_mode = None;
         material.alpha_mode = if translucent {
             AlphaMode::Blend
         } else {
@@ -1699,6 +1740,67 @@ def BasisCurves "Curve" {
         assert_eq!(mesh.primitive_topology(), PrimitiveTopology::LineList);
         // Three linear points produce two segments.
         assert_eq!(mesh.indices().map(|i| i.len()), Some(4));
+    }
+
+    #[test]
+    fn oriented_curves_shade_while_bare_lines_stay_unlit() {
+        let text = r#"#usda 1.0
+def BasisCurves "Ribbon" {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(0,0,0),(1,0,0)]
+    normal3f[] normals = [(0,1,0),(0,0,1)] (interpolation = "vertex")
+}
+def BasisCurves "Line" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(0,0,0),(1,0,0)]
+    rel material:binding = </Leaf>
+}
+def Material "Leaf" {
+    token outputs:surface.connect = </Leaf/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.2, 0.5, 0.1)
+        token outputs:surface
+    }
+}
+"#;
+        let stage = crate::snippet::UsdSnippet::new(text).open_stage().unwrap();
+        let mut world = World::new();
+        world.insert_resource(Assets::<Mesh>::default());
+        world.insert_resource(Assets::<StandardMaterial>::default());
+        let live = LiveStage::new(stage);
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let shading = |path: &str| {
+            let entity = map.entity(path).unwrap();
+            let mesh = &world.get::<Mesh3d>(entity).unwrap().0;
+            let normals = match world
+                .resource::<Assets<Mesh>>()
+                .get(mesh)
+                .unwrap()
+                .attribute(Mesh::ATTRIBUTE_NORMAL)
+            {
+                Some(bevy::mesh::VertexAttributeValues::Float32x3(values)) => Some(values.clone()),
+                _ => None,
+            };
+            let material = &world
+                .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                .unwrap()
+                .0;
+            let unlit = world
+                .resource::<Assets<StandardMaterial>>()
+                .get(material)
+                .unwrap()
+                .unlit;
+            (normals, unlit)
+        };
+        assert_eq!(
+            shading("/Ribbon"),
+            (Some(vec![[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), false)
+        );
+        assert_eq!(shading("/Line"), (None, true));
     }
 
     #[test]

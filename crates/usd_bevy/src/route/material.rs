@@ -580,6 +580,32 @@ impl PrimRoute for MaterialRoute {
             let message = warnings.join("; ");
             warn_material(world, entity, ctx, message);
         }
+        // Lines and points without normals have nothing to light, so they keep
+        // their color unlit.
+        let surfaceless = world
+            .get::<Mesh3d>(entity)
+            .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
+            .is_some_and(|mesh| {
+                !matches!(
+                    mesh.primitive_topology(),
+                    bevy::mesh::PrimitiveTopology::TriangleList
+                        | bevy::mesh::PrimitiveTopology::TriangleStrip
+                ) && mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none()
+            });
+        let handle = match world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&handle)
+            .filter(|material| surfaceless && !material.unlit)
+        {
+            Some(material) => {
+                let unlit = StandardMaterial {
+                    unlit: true,
+                    ..material.clone()
+                };
+                super::cache::intern_material(world, unlit)
+            }
+            None => handle,
+        };
         if let Some(mut mat) = world.get_mut::<MeshMaterial3d<StandardMaterial>>(entity) {
             mat.0 = handle;
         } else if let Ok(mut e) = world.get_entity_mut(entity) {

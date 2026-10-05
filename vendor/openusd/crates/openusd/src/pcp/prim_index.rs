@@ -729,7 +729,8 @@ impl PrimIndex {
     ///
     /// This is the C++ `!PcpNodeRef::HasTransitiveDirectDependency` partition.
     /// Instance-local = the local root plus the contiguous *trunk* of ancestral
-    /// references/payloads the instance prim is nested under — the outer arcs
+    /// references, payloads and variant selections the instance prim is
+    /// nested under — the outer arcs
     /// reaching down to, but stopping above, the instanceable arc. The
     /// instanceable arc (the first reference/payload introduced at the instance's
     /// own depth) and everything below it stay shared, as do the implied classes
@@ -761,7 +762,7 @@ impl PrimIndex {
             local[i] = match node.arc {
                 // The local site (and the synthetic root) is always instance-local.
                 ArcType::Root => true,
-                ArcType::Reference | ArcType::Payload => {
+                ArcType::Reference | ArcType::Payload | ArcType::Variant => {
                     self.graph.depth_below_introduction(NodeId(i as u32)) > below_instance
                         && node.parent.is_some_and(|p| local[p.idx()])
                 }

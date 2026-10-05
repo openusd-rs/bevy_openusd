@@ -10,11 +10,13 @@ writes edits back with undo/redo and save. `usdview` is the editor built on it.
 UsdSkel animation, with the bone overlay from `UsdSkeletonOverlayPlugin`
 (`skeleton_overlay` feature) switched on part of the way.
 
-![UR10 with its joints drawn](media/ur10.gif)
+![UR10 moving a box between two pedestals](media/ur10.gif)
 
-A UR10 driven through its six revolute joints, with the joint overlay from
-`UsdPhysicsOverlayPlugin` (`physics_overlay` feature): joint frames, axes,
-body links and limits. All four rendered with `cargo run --example gif_frames`.
+A UR10 moving a box between two pedestals, its joints solved by inverse
+kinematics and authored as USD time samples. While it carries, the joint
+overlay from `UsdPhysicsOverlayPlugin` (`physics_overlay` feature) shows
+joint frames, axes, body links and limits. All four rendered with
+`cargo run --example gif_frames`.
 
 ## Use it in Bevy
 

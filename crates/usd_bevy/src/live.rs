@@ -3893,7 +3893,7 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
                                 .0,
                         )
                         .unwrap();
-                    assert!(material.unlit);
+                    assert_eq!(material.unlit, kind == 0, "points stay unlit, curves shade");
                     if kind == 1 {
                         let expected = if time < 10.0 {
                             vec![0, 1, 1, 2, 2, 3]

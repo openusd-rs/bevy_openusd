@@ -648,6 +648,31 @@ fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
     })
 }
 
+/// Normals for curves that author none: the up axis with each point's tangent
+/// taken out, so strands such as grass and needles shade like blades lit
+/// from above.
+fn strand_normals(
+    points: &[[f32; 3]],
+    spans: &[(std::ops::Range<usize>, CurveSampling)],
+    up: Vec3,
+) -> Vec<[f32; 3]> {
+    let mut normals = vec![up.to_array(); points.len()];
+    for (range, _) in spans {
+        if range.is_empty() {
+            continue;
+        }
+        for index in range.clone() {
+            let before = Vec3::from(points[index.saturating_sub(1).max(range.start)]);
+            let after = Vec3::from(points[(index + 1).min(range.end - 1)]);
+            let tangent = (after - before).normalize_or_zero();
+            let across = tangent.any_orthonormal_vector();
+            let normal = (up - tangent * up.dot(tangent)).normalize_or(across);
+            normals[index] = normal.to_array();
+        }
+    }
+    normals
+}
+
 struct CurveSampling {
     steps: usize,
     curve: usize,
@@ -777,12 +802,14 @@ impl PrimRoute for CurvesRoute {
             indices,
             colors,
             normals,
-            ..
+            spans,
         }) = centerlines(ctx, steps)
         else {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             return;
         };
+        let up = crate::live::stage_up_axis(ctx.stage).inverse() * Vec3::Y;
+        let normals = normals.or_else(|| Some(strand_normals(&points, &spans, up)));
         if points.iter().flatten().any(|value| !value.is_finite()) {
             super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
             world
@@ -810,7 +837,7 @@ impl PrimRoute for CurvesRoute {
         if let Some(colors) = colors {
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
         }
-        // Curves with authored normals shade like ribbons; bare lines stay unlit.
+        // Curves shade with authored or upward strand normals; unusable ones stay unlit.
         let lit = normals
             .as_ref()
             .is_some_and(|normals| normals.iter().flatten().all(|value| value.is_finite()));
@@ -1743,7 +1770,7 @@ def BasisCurves "Curve" {
     }
 
     #[test]
-    fn oriented_curves_shade_while_bare_lines_stay_unlit() {
+    fn curves_shade_with_authored_or_upward_strand_normals() {
         let text = r#"#usda 1.0
 def BasisCurves "Ribbon" {
     uniform token type = "linear"
@@ -1800,7 +1827,10 @@ def Material "Leaf" {
             shading("/Ribbon"),
             (Some(vec![[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), false)
         );
-        assert_eq!(shading("/Line"), (None, true));
+        assert_eq!(
+            shading("/Line"),
+            (Some(vec![[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]), false)
+        );
     }
 
     #[test]

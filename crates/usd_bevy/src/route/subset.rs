@@ -61,6 +61,29 @@ pub(crate) struct PreparedSubsets {
     warning: Option<String>,
 }
 
+impl PreparedSubsets {
+    /// Each subset's mesh and material, then the faces no subset claims with
+    /// `material`; just `mesh` when there are no subsets.
+    pub(crate) fn draws(
+        &self,
+        mesh: &Handle<Mesh>,
+        material: &Handle<StandardMaterial>,
+    ) -> Vec<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        if self.parts.is_empty() {
+            return vec![(mesh.clone(), material.clone())];
+        }
+        self.parts
+            .iter()
+            .map(|(_, mesh, material, _)| (mesh.clone(), material.clone()))
+            .chain(
+                self.remainder
+                    .iter()
+                    .map(|mesh| (mesh.clone(), material.clone())),
+            )
+            .collect()
+    }
+}
+
 pub(crate) fn prepare(
     ctx: &RouteCtx,
     world: &mut World,

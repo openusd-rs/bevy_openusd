@@ -36,7 +36,9 @@ fn resolve(ctx: &RouteCtx, world: &World, entity: Entity) -> (Visibility, String
         read_visibility_at(ctx.stage, ctx.path, ctx.time),
         Ok(VisibilityState::Invisible)
     );
-    let hidden = invisible || !purposes.shows(&purpose);
+    let hidden = invisible
+        || !purposes.shows(&purpose)
+        || super::instancer::is_instancer_prototype(world, entity, ctx.prim_str());
     let vis = if hidden {
         Visibility::Hidden
     } else {

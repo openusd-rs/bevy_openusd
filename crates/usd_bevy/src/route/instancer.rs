@@ -88,6 +88,23 @@ pub struct UsdInstanceId(pub i64);
 #[derive(Component, Debug)]
 pub struct UsdInstancerWarning(pub String);
 
+/// The prototype prims a `PointInstancer` targets. Those beneath it are drawn
+/// only through its instances, never on their own.
+#[derive(Component, Debug, Clone, Default)]
+pub struct UsdPrototypeRoots(pub Vec<String>);
+
+/// Whether `path` is a prototype of the nearest `PointInstancer` above `entity`.
+pub(crate) fn is_instancer_prototype(world: &World, entity: Entity, path: &str) -> bool {
+    let mut current = world.get::<ChildOf>(entity).map(ChildOf::parent);
+    while let Some(ancestor) = current {
+        if let Some(roots) = world.get::<UsdPrototypeRoots>(ancestor) {
+            return roots.0.iter().any(|root| root == path);
+        }
+        current = world.get::<ChildOf>(ancestor).map(ChildOf::parent);
+    }
+    false
+}
+
 /// Maps a `PointInstancer` prim to per-instance child entities.
 pub struct PointInstancerRoute;
 
@@ -169,7 +186,10 @@ impl PointInstancerRoute {
 impl PrimRoute for PointInstancerRoute {
     fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
         Self::clear_instances(world, entity);
-        world.entity_mut(entity).remove::<UsdInstancerWarning>();
+        super::gpu_instancing::clear(world, entity);
+        world
+            .entity_mut(entity)
+            .remove::<(UsdInstancerWarning, UsdPrototypeRoots)>();
     }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         ctx.type_name.as_deref() == Some("PointInstancer")
@@ -190,6 +210,12 @@ impl PrimRoute for PointInstancerRoute {
                 return;
             }
         };
+        world.entity_mut(entity).insert(UsdPrototypeRoots(
+            read.prototypes
+                .iter()
+                .map(|path| path.as_str().to_string())
+                .collect(),
+        ));
         if let Err(error) = validate_instances(&read) {
             world.entity_mut(entity).insert(UsdInstancerWarning(error));
             return;
@@ -250,6 +276,12 @@ impl PrimRoute for PointInstancerRoute {
             }
         };
         world.entity_mut(entity).remove::<UsdInstancerWarning>();
+        super::gpu_instancing::clear(world, entity);
+        if super::gpu_instancing::enabled(world, read.positions.len()) {
+            Self::clear_instances(world, entity);
+            project_gpu(ctx, world, entity, &read, ids.as_deref(), &invisible);
+            return;
+        }
         let mut existing: HashMap<i64, Entity> = world
             .get::<Children>(entity)
             .into_iter()
@@ -355,6 +387,93 @@ impl PrimRoute for PointInstancerRoute {
             world
                 .entity_mut(entity)
                 .insert(UsdInstancerWarning(failed.join("; ")));
+        }
+    }
+}
+
+/// Draws every visible instance with GPU instancing: instances are grouped by
+/// prototype in chunks, and each prototype mesh draws its chunks.
+fn project_gpu(
+    ctx: &RouteCtx,
+    world: &mut World,
+    entity: Entity,
+    read: &ReadPointInstancer,
+    ids: Option<&[i64]>,
+    invisible: &bevy::platform::collections::HashSet<i64>,
+) {
+    use super::gpu_instancing::{CHUNK, GpuInstance};
+    if world.get_resource::<Assets<Mesh>>().is_none()
+        || world.get_resource::<Assets<StandardMaterial>>().is_none()
+    {
+        return;
+    }
+    let mut by_prototype: Vec<Vec<Vec<GpuInstance>>> = vec![Vec::new(); read.prototypes.len()];
+    for i in 0..read.positions.len() {
+        let id = ids.map_or(i as i64, |ids| ids[i]);
+        if invisible.contains(&id) {
+            continue;
+        }
+        let Some(chunks) = by_prototype.get_mut(read.proto_indices[i] as usize) else {
+            continue;
+        };
+        if chunks.last().is_none_or(|chunk| chunk.len() == CHUNK) {
+            chunks.push(Vec::with_capacity(CHUNK.min(read.positions.len() - i)));
+        }
+        let xf = instance_transform(read, i);
+        chunks
+            .last_mut()
+            .unwrap()
+            .push(GpuInstance::new(xf.translation, xf.rotation, xf.scale));
+    }
+    let mut failed = Vec::new();
+    for (index, chunks) in by_prototype.into_iter().enumerate() {
+        if chunks.is_empty() {
+            continue;
+        }
+        let Some(prototype) = bake_prototype(ctx, world, read, index) else {
+            failed.push(format!(
+                "prototype {index} could not be evaluated; generated geometry omitted"
+            ));
+            continue;
+        };
+        let meshes = prototype_meshes(&prototype);
+        super::gpu_instancing::spawn(world, entity, &meshes, chunks);
+    }
+    if !failed.is_empty() {
+        world
+            .entity_mut(entity)
+            .insert(UsdInstancerWarning(failed.join("; ")));
+    }
+}
+
+/// A prototype's visible meshes with their materials and placement inside it.
+fn prototype_meshes(prototype: &Prototype) -> Vec<(Handle<Mesh>, Handle<StandardMaterial>, Mat4)> {
+    let draws = |(mesh, material, _, subsets): &ProtoHandles, placement: Mat4| {
+        subsets
+            .draws(mesh, material)
+            .into_iter()
+            .map(move |(mesh, material)| (mesh, material, placement))
+    };
+    match prototype {
+        Prototype::Mesh(handles) => draws(handles, Mat4::IDENTITY).collect(),
+        Prototype::Hierarchy(parts) => {
+            let mut placed: HashMap<&str, (Mat4, bool)> = HashMap::default();
+            let mut meshes = Vec::new();
+            for part in parts {
+                let (parent, parent_visible) = part
+                    .parent
+                    .as_deref()
+                    .and_then(|parent| placed.get(parent))
+                    .copied()
+                    .unwrap_or((Mat4::IDENTITY, true));
+                let placement = parent * part.transform.to_matrix();
+                let visible = parent_visible && part.visibility != Visibility::Hidden;
+                placed.insert(&part.path, (placement, visible));
+                if visible && let Some(handles) = &part.handles {
+                    meshes.extend(draws(handles, placement));
+                }
+            }
+            meshes
         }
     }
 }

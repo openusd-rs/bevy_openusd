@@ -743,6 +743,7 @@ fn configure_usd_app(app: &mut App, editor: EditorBridge) {
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
+    app.add_plugins(usd_bevy::route::gpu_instancing::UsdGpuInstancingPlugin);
     capture::configure(app);
     perf_render::configure(app);
     if let Ok(levels) = std::env::var("USD_SUBDIVISION_LEVELS") {

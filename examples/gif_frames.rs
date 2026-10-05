@@ -224,7 +224,7 @@ fn fit_grid(
                 perspective.near = perspective.near.max(span * 1e-6);
             }
         }
-        commands.insert_resource(SceneSpan(span));
+        commands.insert_resource(SceneSpan(span, (low + high) * 0.5));
         *fitted = true;
     }
 }
@@ -365,26 +365,42 @@ fn record(
         );
 }
 
+/// The fitted scene's largest extent and its center.
 #[derive(Resource)]
-struct SceneSpan(f32);
+struct SceneSpan(f32, Vec3);
 
 #[derive(Component)]
 struct SunFitted;
 
+/// A directional sun standing in for a far-away scene light.
+#[derive(Component)]
+struct FrameSun;
+
 /// Lights the scene with the dome named by `USD_FRAME_DOME` instead of the
 /// studio rig, with its sun as a shadowed light when `USD_FRAME_SUN` is set,
-/// and draws the dome named by `USD_FRAME_SKY` behind it.
+/// and draws the dome named by `USD_FRAME_SKY` behind it. The scene light
+/// named by `USD_FRAME_SUN_LIGHT`, too far away to light the scene as a
+/// point, becomes a shadowed directional sun of the same irradiance.
 fn scene_lighting(
     mut commands: Commands,
-    mut done: Local<(bool, bool)>,
+    mut done: Local<(bool, bool, bool)>,
     span: Option<Res<SceneSpan>>,
     suns: Query<
         Entity,
         (
-            With<usd_bevy::route::dome_environment::UsdDomeSun>,
+            Or<(
+                With<usd_bevy::route::dome_environment::UsdDomeSun>,
+                With<FrameSun>,
+            )>,
             Without<SunFitted>,
         ),
     >,
+    lights: Query<(
+        &usd_bevy::UsdPrimRef,
+        &usd_bevy::route::light::UsdLightEmission,
+        Option<&usd_bevy::route::light::UsdAreaLight>,
+        &GlobalTransform,
+    )>,
     domes: Query<(
         Entity,
         &usd_bevy::UsdPrimRef,
@@ -438,6 +454,41 @@ fn scene_lighting(
                 rotation,
             });
         done.1 = true;
+    }
+    if !done.2
+        && let Some(span) = &span
+        && let Ok(path) = std::env::var("USD_FRAME_SUN_LIGHT")
+        && let Some((_, emission, area, transform)) =
+            lights.iter().find(|light| light.0.path == path)
+    {
+        let (scale, rotation, position) = transform.to_scale_rotation_translation();
+        let toward = (position - span.1).normalize();
+        let area = match area {
+            Some(usd_bevy::route::light::UsdAreaLight::Rect { width, height }) => {
+                width * height * scale.x * scale.y
+            }
+            Some(usd_bevy::route::light::UsdAreaLight::Cylinder { length, radius }) => {
+                2.0 * radius * length * scale.x * scale.y
+            }
+            None => 1.0,
+        };
+        // A rect emits along its -Z, so a tilted sun delivers less.
+        let facing = (rotation * Vec3::NEG_Z).dot(-toward).max(0.0);
+        let illuminance = emission.intensity * area * facing / position.distance_squared(span.1);
+        commands.spawn((
+            FrameSun,
+            DirectionalLight {
+                color: emission.color,
+                illuminance,
+                shadow_maps_enabled: true,
+                ..default()
+            },
+            Transform::from_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, -toward)),
+        ));
+        for mut light in &mut studio {
+            light.illuminance = 0.0;
+        }
+        done.2 = true;
     }
     if let Some(span) = span {
         for sun in &suns {

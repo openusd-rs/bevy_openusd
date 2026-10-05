@@ -133,13 +133,20 @@ fn decode_textures(
             .extension()
             .and_then(|ext| ext.to_str())
             .ok_or_else(|| std::io::Error::other(format!("texture has no extension: {path}")))?;
+        // A dome light bakes its own cubemap on the CPU, so its source image
+        // never needs a GPU copy.
+        let usage = if requests.environment_only.contains(&path) {
+            bevy::asset::RenderAssetUsages::MAIN_WORLD
+        } else {
+            bevy::asset::RenderAssetUsages::default()
+        };
         let image = Image::from_buffer(
             &bytes,
             bevy::image::ImageType::Extension(extension),
             bevy::image::CompressedImageFormats::NONE,
             srgb,
             bevy::image::ImageSampler::default(),
-            bevy::asset::RenderAssetUsages::default(),
+            usage,
         )
         .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
         textures.insert((path, srgb), add(index, image));
@@ -3259,6 +3266,36 @@ def Scope "Looks"
                 .entity(root, "/Root/Crate")
                 .is_some()
         });
+    }
+
+    #[test]
+    fn ptex_textures_resolve_without_being_captured() {
+        let root = "models/ptex.usda";
+        let text = r#"#usda 1.0
+def Material "Mat" {
+    asset inputs:surfaceMap = @../textures/Color/body.ptx@
+}
+def Mesh "Body" {
+    asset primvars:skin = @../textures/Color/skin.PTEX@
+}
+"#;
+        let source = UsdSource::from_memory(root, [(root, text.as_bytes().to_vec())]).unwrap();
+        assert!(source.missing_dependencies().is_empty());
+        let stage = source.open_stage().unwrap();
+        let value = stage
+            .attribute("/Mat.inputs:surfaceMap")
+            .unwrap()
+            .get::<openusd::sdf::Value>()
+            .unwrap();
+        let Some(openusd::sdf::Value::AssetPath(path)) = value else {
+            panic!("surfaceMap is not an asset: {value:?}")
+        };
+        assert!(
+            path.resolved_path()
+                .unwrap()
+                .ends_with("textures/Color/body.ptx")
+        );
+        assert_eq!(source.dependencies().count(), 0);
     }
 
     #[test]

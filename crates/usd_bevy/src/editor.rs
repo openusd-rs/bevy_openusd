@@ -784,7 +784,7 @@ fn refresh_textures(
 ) -> anyhow::Result<()> {
     let requests = crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?;
     set_texture_requests(world, texture_request_paths(stage, &requests));
-    let textures = decode_textures(source, requests)?;
+    let textures = decode_textures(source, requests.textures, &requests.environment_only)?;
     install_textures(world, textures)
 }
 
@@ -817,15 +817,22 @@ fn prepare_textures(
     editor: &EditorSession,
     source: &crate::UsdSource,
 ) -> anyhow::Result<PreparedTextures> {
-    decode_textures(source, editor.texture_requests()?)
+    let requests = editor.texture_requests()?;
+    decode_textures(source, requests.textures, &requests.environment_only)
 }
 
 fn decode_textures(
     source: &crate::UsdSource,
     requests: std::collections::BTreeSet<(String, bool)>,
+    environment_only: &std::collections::BTreeSet<String>,
 ) -> anyhow::Result<PreparedTextures> {
     let mut images = Vec::new();
     for (path, srgb) in requests {
+        let usage = if environment_only.contains(&path) {
+            bevy::asset::RenderAssetUsages::MAIN_WORLD
+        } else {
+            bevy::asset::RenderAssetUsages::default()
+        };
         let bytes = source
             .read_asset(&path)
             .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
@@ -842,7 +849,7 @@ fn decode_textures(
             bevy::image::CompressedImageFormats::NONE,
             srgb,
             bevy::image::ImageSampler::default(),
-            bevy::asset::RenderAssetUsages::default(),
+            usage,
         )
         .map_err(|error| anyhow::anyhow!("cannot decode texture {path}: {error}"))?;
         images.push(((path, srgb), image));
@@ -1275,7 +1282,7 @@ impl EditorSession {
         &self.stage
     }
 
-    fn texture_requests(&self) -> anyhow::Result<std::collections::BTreeSet<(String, bool)>> {
+    fn texture_requests(&self) -> anyhow::Result<crate::source::TextureRequests> {
         self.texture_index
             .borrow_mut()
             .requests(self.stage(), &self.layer_changes)

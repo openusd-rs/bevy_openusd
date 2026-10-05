@@ -672,17 +672,23 @@ pub fn read_effective_purpose(stage: &Stage, prim: &Path) -> anyhow::Result<Stri
         if cur.is_abs_root() || cur.is_empty() {
             return Ok("default".to_string());
         }
-        let attr = stage.prim(cur.clone())?.attribute("purpose");
-        if attr.resolve_info()?.has_authored_value() {
-            if let Some(t) = read_token(stage, &cur, "purpose")? {
-                return Ok(t);
-            }
+        if let Some(purpose) = read_authored_purpose(stage, &cur)? {
+            return Ok(purpose);
         }
         match cur.parent() {
             Some(p) => cur = p,
             None => return Ok("default".to_string()),
         }
     }
+}
+
+/// The `purpose` authored on `prim` itself, if any.
+pub fn read_authored_purpose(stage: &Stage, prim: &Path) -> anyhow::Result<Option<String>> {
+    let attr = stage.prim(prim.clone())?.attribute("purpose");
+    if !attr.resolve_info()?.has_authored_value() {
+        return Ok(None);
+    }
+    read_token(stage, prim, "purpose")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

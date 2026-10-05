@@ -5,7 +5,9 @@
 use bevy::prelude::*;
 
 use super::{DisplayPurposes, PrimRoute, RouteCtx};
-use crate::read::geom::{VisibilityState, read_effective_purpose, read_visibility_at};
+use crate::read::geom::{
+    VisibilityState, read_authored_purpose, read_effective_purpose, read_visibility_at,
+};
 
 /// The prim's effective (inherited) USD `purpose`: `"default"`, `"render"`,
 /// `"proxy"`, or `"guide"`. Carried so gameplay/UI can query or re-filter it.
@@ -24,9 +26,8 @@ pub struct VisibilityRoute;
 
 /// Combined visibility + effective purpose for `entity`'s prim, honoring the
 /// world's [`DisplayPurposes`] (defaults when the resource is absent).
-fn resolve(ctx: &RouteCtx, world: &World) -> (Visibility, String) {
-    let purpose =
-        read_effective_purpose(ctx.stage, ctx.path).unwrap_or_else(|_| "default".to_string());
+fn resolve(ctx: &RouteCtx, world: &World, entity: Entity) -> (Visibility, String) {
+    let purpose = effective_purpose(ctx, world, entity).unwrap_or_else(|_| "default".to_string());
     let purposes = world
         .get_resource::<DisplayPurposes>()
         .copied()
@@ -44,8 +45,27 @@ fn resolve(ctx: &RouteCtx, world: &World) -> (Visibility, String) {
     (vis, purpose)
 }
 
+/// The prim's own purpose, else the one its parent prim's entity resolved,
+/// else the nearest authored ancestor's.
+fn effective_purpose(ctx: &RouteCtx, world: &World, entity: Entity) -> anyhow::Result<String> {
+    if let Some(purpose) = read_authored_purpose(ctx.stage, ctx.path)? {
+        return Ok(purpose);
+    }
+    let parent = world.get::<ChildOf>(entity).map(ChildOf::parent);
+    let inherited = parent.zip(ctx.path.parent()).and_then(|(parent, path)| {
+        let prim = world.get::<crate::prim_ref::UsdPrimRef>(parent)?;
+        (prim.path == path.as_str())
+            .then(|| world.get::<UsdPurpose>(parent))
+            .flatten()
+    });
+    match inherited {
+        Some(purpose) => Ok(purpose.0.clone()),
+        None => read_effective_purpose(ctx.stage, ctx.path),
+    }
+}
+
 fn apply(ctx: &RouteCtx, world: &mut World, entity: Entity) {
-    let (vis, purpose) = resolve(ctx, world);
+    let (vis, purpose) = resolve(ctx, world, entity);
     if let Ok(mut e) = world.get_entity_mut(entity) {
         e.insert((vis, UsdPurpose(purpose)));
     }

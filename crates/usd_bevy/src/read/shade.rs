@@ -1610,7 +1610,7 @@ fn shader_kind(stage: &Stage, prim: &Path) -> anyhow::Result<ShaderKind> {
     })
 }
 
-fn texture_input_attribute(
+pub(super) fn texture_input_attribute(
     stage: &Stage,
     tex_prim: &Path,
     name: &str,

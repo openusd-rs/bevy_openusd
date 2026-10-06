@@ -4,10 +4,10 @@
 //! value that `PxrDispTransform` remaps from Ptex files a `PxrBlend`
 //! multiplies together.
 
-use openusd::sdf::Path;
+use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
 
-use super::util::{connections_at, read_f32, read_int, read_token_or_string};
+use super::util::{connections_at, read_token_or_string};
 
 /// How far a surface moves along its normal: `amount` times the remapped
 /// product of the Ptex files' first channels, in the mesh's units.
@@ -70,7 +70,7 @@ pub fn read_displacement(
     if read_token_or_string(stage, &displace, "info:id")?.as_deref() != Some("PxrDisplace") {
         return Ok(None);
     }
-    let amount = read_f32(stage, &displace, "inputs:dispAmount")?.unwrap_or(1.0);
+    let amount = input_value(stage, &displace, "dispAmount")?.unwrap_or(1.0);
     let mut remap = Remap::None;
     let mut textures = Vec::new();
     let mut pending = vec![displace.append_property("inputs:dispScalar")?];
@@ -83,26 +83,26 @@ pub fn read_displacement(
             return Ok(None);
         };
         let value = |name: &str, default: f32| -> anyhow::Result<f32> {
-            Ok(read_f32(stage, &node, name)?.unwrap_or(default))
+            Ok(input_value(stage, &node, name)?.unwrap_or(default))
         };
         match read_token_or_string(stage, &node, "info:id")?.as_deref() {
             Some("PxrDispTransform") if remap == Remap::None => {
-                remap = match read_int(stage, &node, "inputs:dispRemapMode")?.unwrap_or(0) {
+                remap = match input_value(stage, &node, "dispRemapMode")?.unwrap_or(0.0) as i32 {
                     0 => Remap::None,
                     1 => Remap::Centered {
-                        center: value("inputs:dispCenter", 0.5)?,
+                        center: value("dispCenter", 0.5)?,
                     },
                     2 => Remap::DepthHeight {
-                        center: value("inputs:dispCenter", 0.5)?,
-                        depth: value("inputs:dispDepth", 1.0)?,
-                        height: value("inputs:dispHeight", 1.0)?,
+                        center: value("dispCenter", 0.5)?,
+                        depth: value("dispDepth", 1.0)?,
+                        height: value("dispHeight", 1.0)?,
                     },
                     _ => return Ok(None),
                 };
                 pending.push(node.append_property("inputs:dispScalar")?);
             }
             // Operation 18 multiplies the top layer by the bottom one.
-            Some("PxrBlend") if read_int(stage, &node, "inputs:operation")? == Some(18) => {
+            Some("PxrBlend") if input_value(stage, &node, "operation")? == Some(18.0) => {
                 pending.push(node.append_property("inputs:topRGB")?);
                 pending.push(node.append_property("inputs:bottomRGB")?);
             }
@@ -118,6 +118,20 @@ pub fn read_displacement(
         textures,
         remap,
     }))
+}
+
+/// The number an input of `node` holds, read through any connection to its
+/// material's interface.
+fn input_value(stage: &Stage, node: &Path, name: &str) -> anyhow::Result<Option<f32>> {
+    let Some(attribute) = super::shade::texture_input_attribute(stage, node, name)? else {
+        return Ok(None);
+    };
+    Ok(match attribute.get_at::<Value>(None)? {
+        Some(Value::Float(value)) => Some(value),
+        Some(Value::Double(value)) => Some(value as f32),
+        Some(Value::Int(value)) => Some(value as f32),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -165,6 +179,33 @@ def Material "Soil" {
 }
 def Material "Plain" {
 }
+def Material "Interface" {
+    float inputs:dispScale = 6.25
+    float inputs:dispOffset = 0.25
+    int inputs:dispRemapMode = 2
+    asset inputs:displacementMap = @height.ptx@
+    token outputs:ri:displacement.connect = </Interface/Displace.outputs:displace>
+    def Shader "Displace" {
+        uniform token info:id = "PxrDisplace"
+        float inputs:dispAmount.connect = </Interface.inputs:dispScale>
+        float inputs:dispScalar = 0
+        float inputs:dispScalar.connect = </Interface/Transform.outputs:resultF>
+        token outputs:displace
+    }
+    def Shader "Transform" {
+        uniform token info:id = "PxrDispTransform"
+        float inputs:dispCenter.connect = </Interface.inputs:dispOffset>
+        int inputs:dispRemapMode = 0
+        int inputs:dispRemapMode.connect = </Interface.inputs:dispRemapMode>
+        float inputs:dispScalar.connect = </Interface/Height.outputs:resultR>
+        float outputs:resultF
+    }
+    def Shader "Height" {
+        uniform token info:id = "PxrPtexture"
+        asset inputs:filename.connect = </Interface.inputs:displacementMap>
+        float outputs:resultR
+    }
+}
 "#,
         )
         .open_stage()
@@ -185,5 +226,18 @@ def Material "Plain" {
         assert!((soil.remap.apply(1.0) - 0.35).abs() < 1e-6);
         let plain = read_displacement(&stage, &openusd::sdf::path("/Plain").unwrap()).unwrap();
         assert!(plain.is_none());
+        let interface = read_displacement(&stage, &openusd::sdf::path("/Interface").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(interface.amount, 6.25);
+        assert!(interface.textures[0].ends_with("height.ptx"));
+        assert_eq!(
+            interface.remap,
+            Remap::DepthHeight {
+                center: 0.25,
+                depth: 1.0,
+                height: 1.0
+            }
+        );
     }
 }

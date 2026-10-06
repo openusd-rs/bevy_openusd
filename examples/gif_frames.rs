@@ -15,7 +15,7 @@ use std::{path::PathBuf, time::Duration};
 use bevy::{
     app::{AppExit, ScheduleRunnerPlugin},
     camera::RenderTarget,
-    core_pipeline::tonemapping::Tonemapping,
+    core_pipeline::{prepass::DepthPrepass, tonemapping::Tonemapping},
     prelude::*,
     render::{
         render_resource::{TextureFormat, TextureUsages},
@@ -272,6 +272,8 @@ fn setup(
         Camera3d::default(),
         exposure,
         tonemapping,
+        // Media such as water measure the depth behind them from the prepass.
+        DepthPrepass,
         Projection::Perspective(PerspectiveProjection { fov, ..default() }),
         Msaa::Sample4,
         RenderTarget::from(target.clone()),

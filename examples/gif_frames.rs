@@ -15,6 +15,7 @@ use std::{path::PathBuf, time::Duration};
 use bevy::{
     app::{AppExit, ScheduleRunnerPlugin},
     camera::RenderTarget,
+    core_pipeline::tonemapping::Tonemapping,
     prelude::*,
     render::{
         render_resource::{TextureFormat, TextureUsages},
@@ -171,7 +172,11 @@ fn main() -> AppExit {
         );
     }
     if std::env::var_os("USD_CPU_INSTANCING").is_none() {
-        app.add_plugins(usd_bevy::route::gpu_instancing::UsdGpuInstancingPlugin);
+        app.insert_resource(usd_bevy::route::gpu_instancing::UsdGpuInstancing {
+            shadows: std::env::var_os("USD_INSTANCED_SHADOWS").is_some(),
+            ..default()
+        })
+        .add_plugins(usd_bevy::route::gpu_instancing::UsdGpuInstancingPlugin);
     }
     app.run()
 }
@@ -252,12 +257,21 @@ fn setup(
         .map_or_else(bevy::camera::Exposure::default, |ev100| {
             bevy::camera::Exposure { ev100 }
         });
+    let tonemapping = match std::env::var("USD_FRAME_TONEMAP").as_deref() {
+        Ok("aces") => Tonemapping::AcesFitted,
+        Ok("agx") => Tonemapping::AgX,
+        Ok("filmic") => Tonemapping::BlenderFilmic,
+        Ok("reinhard") => Tonemapping::ReinhardLuminance,
+        Ok("none") => Tonemapping::None,
+        _ => Tonemapping::TonyMcMapface,
+    };
     let mut image = Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
     commands.spawn((
         Camera3d::default(),
         exposure,
+        tonemapping,
         Projection::Perspective(PerspectiveProjection { fov, ..default() }),
         Msaa::Sample4,
         RenderTarget::from(target.clone()),

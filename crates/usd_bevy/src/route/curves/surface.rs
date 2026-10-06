@@ -281,6 +281,7 @@ pub(super) fn project(
         AlphaMode::Opaque
     };
     let material = super::super::cache::intern_material(world, material);
+    super::super::strand_material::clear(world, entity);
     world
         .entity_mut(entity)
         .remove::<bevy::camera::primitives::Aabb>()

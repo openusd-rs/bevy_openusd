@@ -21,6 +21,7 @@ anyhow = "1"
 blake3 = "1"
 bytemuck = "1"
 half = "2"
+miniz_oxide = "0.8"
 log = "0.4"
 tempfile = "3"
 zip = { version = "8.2.0", default-features = false, features = ["deflate"] }

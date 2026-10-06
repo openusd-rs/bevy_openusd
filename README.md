@@ -15,8 +15,20 @@ UsdSkel animation, with the bone overlay from `UsdSkeletonOverlayPlugin`
 A UR10 moving a box between two pedestals, its joints solved by inverse
 kinematics and authored as USD time samples. While it carries, the joint
 overlay from `UsdPhysicsOverlayPlugin` (`physics_overlay` feature) shows
-joint frames, axes, body links and limits. All four rendered with
-`cargo run --example gif_frames`.
+joint frames, axes, body links and limits.
+
+![Flying over the capital of Activision's Caldera](media/caldera.webp)
+
+Activision's Caldera with its capital district at full detail: two million
+prims and 616k meshes, loaded and projected in about six minutes. The rest of
+the island stays at its proxy detail (purple).
+
+![Flying in over the lagoon of Disney's Moana Island](media/moana.webp)
+
+Walt Disney Animation Studios' Moana Island, flying in over the lagoon: 31
+million plants and corals drawn by GPU instancing, terrain textured from its
+Ptex and displaced, and lit by the island's own sun and sky dome. All six
+rendered with `cargo run --example gif_frames`.
 
 ## Use it in Bevy
 

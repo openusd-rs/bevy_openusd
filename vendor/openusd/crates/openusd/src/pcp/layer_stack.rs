@@ -23,7 +23,8 @@
 //! fresh id. Ids are never reused.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::mem;
 
 use crate::sdf::{LayerOffset, Value};
 
@@ -355,6 +356,10 @@ pub(crate) struct LayerStackRegistry {
     // would restore O(1) and drop `targets`' per-call allocation.
     instances: BTreeMap<LayerStackId, LayerStackInstance>,
     by_key: HashMap<LayerStackKey, LayerStackId>,
+    /// The target instances each layer roots or is a member of, so a rebuild
+    /// scoped to a few layers visits only the stacks they reach
+    /// ([`targets_touching`](Self::targets_touching)).
+    by_layer: HashMap<LayerId, BTreeSet<LayerStackId>>,
     /// The interned composed expression-variable sets, keyed by [`ExprVarId`].
     contexts: ExprVarInterner,
     /// The next handle to mint. Monotonic: a removed instance's id is never
@@ -434,6 +439,7 @@ impl LayerStackRegistry {
         }
         let vars_source = self.derive_vars_source(id, key, expr_id);
         self.minted_since_sweep += 1;
+        self.index_layers(id, key, &member_set, true);
         self.instances.insert(
             id,
             LayerStackInstance {
@@ -531,6 +537,47 @@ impl LayerStackRegistry {
             .collect()
     }
 
+    /// The target instances whose key root or members include any of `layers`,
+    /// in ascending id order.
+    pub(crate) fn targets_touching(&self, layers: &HashSet<LayerId>) -> BTreeSet<LayerStackId> {
+        layers
+            .iter()
+            .filter_map(|layer| self.by_layer.get(layer))
+            .flatten()
+            .copied()
+            .collect()
+    }
+
+    /// The target instances whose key source refers to `referent`, the stacks a
+    /// change to `referent`'s composed variables re-seeds.
+    pub(crate) fn targets_keyed_by(&self, referent: LayerStackId) -> impl Iterator<Item = LayerStackId> + '_ {
+        self.instances
+            .range(referent..)
+            .filter_map(move |(&id, instance)| match instance.key {
+                LayerStackKey::Target { source, .. } if source.referent() == referent => Some(id),
+                _ => None,
+            })
+    }
+
+    /// Adds (`present`) or removes target instance `id` under its key root and
+    /// each of `members` in [`by_layer`](Self::by_layer). The root stack is
+    /// never indexed: a rebuild checks it on its own.
+    fn index_layers(&mut self, id: LayerStackId, key: LayerStackKey, members: &HashSet<LayerId>, present: bool) {
+        let LayerStackKey::Target { root, .. } = key else {
+            return;
+        };
+        for layer in members.iter().copied().chain([root]) {
+            if present {
+                self.by_layer.entry(layer).or_default().insert(id);
+            } else if let Some(stacks) = self.by_layer.get_mut(&layer) {
+                stacks.remove(&id);
+                if stacks.is_empty() {
+                    self.by_layer.remove(&layer);
+                }
+            }
+        }
+    }
+
     /// Replaces a stack's members and composed expression variables after a
     /// re-resolve, keeping the id stable so a handle held by a surviving prim index
     /// stays valid, and re-deriving the stack's variable source
@@ -545,7 +592,18 @@ impl LayerStackRegistry {
         expr_vars: HashMap<String, Value>,
     ) -> Option<StackVarsDelta> {
         let expr_id = self.contexts.intern(&expr_vars);
-        let vars_source = self.derive_vars_source(id, self.instances[&id].key, expr_id);
+        let key = self.instances[&id].key;
+        let vars_source = self.derive_vars_source(id, key, expr_id);
+        let old_members = mem::take(
+            &mut self
+                .instances
+                .get_mut(&id)
+                .expect("a recomposed stack is interned")
+                .member_set,
+        );
+        self.index_layers(id, key, &old_members, false);
+        let member_set: HashSet<LayerId> = members.iter().map(|&(id, _)| id).collect();
+        self.index_layers(id, key, &member_set, true);
         let instance = self.instances.get_mut(&id).expect("a recomposed stack is interned");
         let delta = (instance.expr_id != expr_id || instance.vars_source != vars_source).then_some(StackVarsDelta {
             stack: id,
@@ -554,7 +612,7 @@ impl LayerStackRegistry {
             old_source: instance.vars_source,
             new_source: vars_source,
         });
-        instance.member_set = members.iter().map(|&(id, _)| id).collect();
+        instance.member_set = member_set;
         instance.members = members;
         instance.expr_vars = expr_vars;
         instance.expr_id = expr_id;
@@ -646,6 +704,7 @@ impl LayerStackRegistry {
         for &id in &removed {
             let instance = self.instances.remove(&id).expect("removal ids were just enumerated");
             self.by_key.remove(&instance.key);
+            self.index_layers(id, instance.key, &instance.member_set, false);
         }
         let used: HashSet<usize> = self.instances.values().map(|instance| instance.expr_id.idx()).collect();
         if used.len() < self.contexts.contexts.len() {

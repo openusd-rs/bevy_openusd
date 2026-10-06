@@ -25,8 +25,23 @@ pub struct ReadPreviewMaterial {
     pub metallic: Option<f32>,
     pub emissive_color: Option<[f32; 3]>,
     pub ior: Option<f32>,
+    /// How much light passes through, as through glass or water.
+    pub transmission: Option<f32>,
+    /// The tint light picks up passing through.
+    pub transmission_color: Option<[f32; 3]>,
+    /// How much transmitted light scatters diffusely, as in murky water.
+    pub diffuse_transmission: Option<f32>,
+    /// The color diffusely transmitted light takes on.
+    pub diffuse_transmission_color: Option<[f32; 3]>,
+    /// A grazing glow, as of cloth or sand, as Disney's BRDF weighs it.
+    pub sheen: Option<f32>,
+    /// How far the sheen takes on the base color's hue rather than white.
+    pub sheen_tint: Option<f32>,
 
     pub diffuse_texture: Option<String>,
+    /// A Ptex diffuse texture, which colors faces rather than UVs, and
+    /// whether its texels are sRGB.
+    pub diffuse_ptex: Option<(String, bool)>,
     pub normal_texture: Option<String>,
     pub normal: Option<[f32; 3]>,
     pub roughness_texture: Option<String>,
@@ -213,6 +228,11 @@ pub fn read_preview_material_at(
             Some("ND_standard_surface_surfaceshader") => MATERIALX_STD_SURFACE_CHANNELS,
             _ => return Ok(None),
         },
+        SurfaceDialect::RenderMan => match shader_id.as_deref() {
+            Some("PxrDisneyBsdf") => PXR_DISNEY_CHANNELS,
+            Some("PxrSurface") => PXR_SURFACE_CHANNELS,
+            _ => return Ok(None),
+        },
     };
     let omnipbr = match dialect {
         SurfaceDialect::Mdl => !matches!(
@@ -223,7 +243,7 @@ pub fn read_preview_material_at(
             shader_id.as_deref(),
             Some("OmniPBR") | Some("OmniPBR_Opacity") | Some("OmniPBR_ClearCoat")
         ),
-        SurfaceDialect::MaterialX => false,
+        SurfaceDialect::MaterialX | SurfaceDialect::RenderMan => false,
     };
 
     let mut out = ReadPreviewMaterial::default();
@@ -241,6 +261,27 @@ pub fn read_preview_material_at(
             Some(ResolvedValue::Color3(c)) => bind_colour(&mut out, c),
             Some(ResolvedValue::Scalar(s)) => bind_scalar(&mut out, s),
             None => {}
+        }
+    }
+    // Ptex colors faces rather than UVs: the diffuse one becomes face color
+    // and any other is dropped.
+    if let Some(path) = out.diffuse_texture.take_if(|path| is_ptex(path)) {
+        let srgb = out.texture_srgb("diffuse");
+        out.diffuse_ptex = Some((path, srgb));
+    }
+    for texture in [
+        &mut out.normal_texture,
+        &mut out.roughness_texture,
+        &mut out.metallic_texture,
+        &mut out.emissive_texture,
+        &mut out.opacity_texture,
+        &mut out.occlusion_texture,
+        &mut out.clearcoat_texture,
+        &mut out.clearcoat_roughness_texture,
+    ] {
+        if let Some(path) = texture.take_if(|path| is_ptex(path)) {
+            out.warnings
+                .push(format!("{path}: only diffuse Ptex is supported"));
         }
     }
     // OmniPBR emits only while `enable_emission` is on, which defaults to off.
@@ -775,21 +816,39 @@ enum SurfaceDialect {
     Preview,
     MaterialX,
     Mdl,
+    RenderMan,
 }
+
+/// RenderMan surfaces this reader translates. They carry a material's final
+/// look, so they win over a glslfx preview, which is often a placeholder.
+const RENDERMAN_SURFACES: &[&str] = &["PxrDisneyBsdf", "PxrSurface"];
 
 fn resolve_surface_shader(
     stage: &Stage,
     material: &Path,
 ) -> anyhow::Result<Option<(Path, SurfaceDialect)>> {
     let outputs = [
-        ("outputs:surface", SurfaceDialect::Preview),
-        ("outputs:mtlx:surface", SurfaceDialect::MaterialX),
-        ("outputs:mdl:surface", SurfaceDialect::Mdl),
+        ("outputs:surface", SurfaceDialect::Preview, None),
+        ("outputs:mtlx:surface", SurfaceDialect::MaterialX, None),
+        ("outputs:mdl:surface", SurfaceDialect::Mdl, None),
+        (
+            "outputs:ri:surface",
+            SurfaceDialect::RenderMan,
+            Some(RENDERMAN_SURFACES),
+        ),
+        ("outputs:glslfx:surface", SurfaceDialect::Preview, None),
     ];
-    for (attr_name, dialect) in outputs {
+    for (attr_name, dialect, ids) in outputs {
         let attr_path = material.append_property(attr_name)?;
         if let Some(t) = connections_at(stage, &attr_path)?.into_iter().next() {
-            return Ok(Some((t.prim_path(), dialect)));
+            let prim = t.prim_path();
+            if let Some(ids) = ids {
+                let id = read_token_or_string(stage, &prim, "info:id")?;
+                if !id.as_deref().is_some_and(|id| ids.contains(&id)) {
+                    continue;
+                }
+            }
+            return Ok(Some((prim, dialect)));
         }
     }
     // Fallback: scan child Shader prims and infer the dialect.
@@ -1108,6 +1167,105 @@ const OMNIPBR_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &
     ),
 ];
 
+/// Whether `path` names a Ptex file.
+pub fn is_ptex(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "ptx" | "ptex"))
+}
+
+/// `clearcoatGloss` is the inverse of clearcoat roughness.
+fn set_coat_gloss_s(o: &mut ReadPreviewMaterial, s: f32) {
+    o.clearcoat_roughness = Some(1.0 - s);
+}
+
+const PXR_DISNEY_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &[
+    ("baseColor", set_diffuse_c, set_diffuse_s, set_diffuse_tex),
+    ("opacity", set_opacity_c, set_opacity_s, set_opacity_tex),
+    ("presence", set_opacity_c, set_opacity_s, set_opacity_tex),
+    ("roughness", set_rough_c, set_rough_s, set_rough_tex),
+    ("metallic", set_metal_c, set_metal_s, set_metal_tex),
+    ("clearcoat", set_coat_c, set_coat_s, set_coat_tex),
+    (
+        "clearcoatGloss",
+        set_coat_rough_c,
+        set_coat_gloss_s,
+        set_coat_rough_tex,
+    ),
+    (
+        "emitColor",
+        set_emissive_c,
+        set_emissive_s,
+        set_emissive_tex,
+    ),
+    ("ior", set_ior_c, set_ior_s, set_ior_tex),
+    ("sheen", ignore_c, set_sheen_s, ignore_sheen_tex),
+    ("sheenTint", ignore_c, set_sheen_tint_s, ignore_sheen_tex),
+];
+
+fn set_transmission_s(o: &mut ReadPreviewMaterial, s: f32) {
+    o.transmission = Some(s);
+}
+fn set_transmission_c(o: &mut ReadPreviewMaterial, c: [f32; 3]) {
+    o.transmission_color = Some(c);
+}
+fn set_diffuse_transmission_s(o: &mut ReadPreviewMaterial, s: f32) {
+    o.diffuse_transmission = Some(s);
+}
+fn set_diffuse_transmission_c(o: &mut ReadPreviewMaterial, c: [f32; 3]) {
+    o.diffuse_transmission_color = Some(c);
+}
+fn set_sheen_s(o: &mut ReadPreviewMaterial, s: f32) {
+    o.sheen = Some(s);
+}
+fn set_sheen_tint_s(o: &mut ReadPreviewMaterial, s: f32) {
+    o.sheen_tint = Some(s);
+}
+fn ignore_sheen_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.warnings
+        .push(format!("{}: textured sheen is not supported", s.0));
+}
+fn ignore_s(_: &mut ReadPreviewMaterial, _: f32) {}
+fn ignore_c(_: &mut ReadPreviewMaterial, _: [f32; 3]) {}
+fn ignore_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.warnings
+        .push(format!("{}: textured refraction is not supported", s.0));
+}
+
+const PXR_SURFACE_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &[
+    (
+        "diffuseColor",
+        set_diffuse_c,
+        set_diffuse_s,
+        set_diffuse_tex,
+    ),
+    ("presence", set_opacity_c, set_opacity_s, set_opacity_tex),
+    ("specularRoughness", set_rough_c, set_rough_s, set_rough_tex),
+    (
+        "glowColor",
+        set_emissive_c,
+        set_emissive_s,
+        set_emissive_tex,
+    ),
+    ("glassIor", set_ior_c, set_ior_s, set_ior_tex),
+    ("refractionGain", ignore_c, set_transmission_s, ignore_tex),
+    ("refractionColor", set_transmission_c, ignore_s, ignore_tex),
+    (
+        "diffuseTransmitGain",
+        ignore_c,
+        set_diffuse_transmission_s,
+        ignore_tex,
+    ),
+    (
+        "diffuseTransmitColor",
+        set_diffuse_transmission_c,
+        ignore_s,
+        ignore_tex,
+    ),
+    ("glassRoughness", set_rough_c, set_rough_s, set_rough_tex),
+];
+
 const OMNISURFACE_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &[
     (
         "diffuse_reflection_color",
@@ -1169,14 +1327,14 @@ fn resolve_channel(
     warnings: &mut Vec<String>,
     time: Option<f64>,
 ) -> anyhow::Result<(Option<ResolvedValue>, Option<TextureInput>)> {
-    let mat_attr = format!("inputs:{channel}");
-    let mat_path = material.append_property(&mat_attr)?;
-    let (v, t) = resolve_attr_chain(stage, &mat_path, warnings, time)?;
+    // The shader's own input decides; a same-named material input only
+    // stands in when the shader leaves it unset.
+    let name = format!("inputs:{channel}");
+    let (v, t) = resolve_attr_chain(stage, &shader.append_property(&name)?, warnings, time)?;
     if v.is_some() || t.is_some() {
         return Ok((v, t));
     }
-    let sh_path = shader.append_property(&mat_attr)?;
-    resolve_attr_chain(stage, &sh_path, warnings, time)
+    resolve_attr_chain(stage, &material.append_property(&name)?, warnings, time)
 }
 
 fn resolve_attr_chain(
@@ -1323,6 +1481,52 @@ fn resolve_attr_chain_inner(
                     ));
                     return Ok(bg);
                 }
+                ShaderKind::ColorCorrect => {
+                    let (value, texture) = resolve_attr_chain_inner(
+                        stage,
+                        &prim.append_property("inputs:inputRGB")?,
+                        remaining,
+                        warnings,
+                        time,
+                        depth + 1,
+                    )?;
+                    let gamma =
+                        match sampled_value(stage, &prim.append_property("inputs:gamma")?, time)?
+                            .and_then(value_to_preview)
+                        {
+                            Some(ResolvedValue::Color3(gamma)) => gamma,
+                            Some(ResolvedValue::Scalar(gamma)) => [gamma; 3],
+                            None => [1.0; 3],
+                        };
+                    anyhow::ensure!(
+                        gamma.iter().all(|value| value.is_finite() && *value > 0.0),
+                        "{prim}: color correction gamma must be positive"
+                    );
+                    // RenderMan's correction raises each channel to 1 / gamma.
+                    let correct = |value: f32, gamma: f32| value.max(0.0).powf(gamma.recip());
+                    let value = value.map(|value| match value {
+                        ResolvedValue::Color3(color) => {
+                            ResolvedValue::Color3(std::array::from_fn(|channel| {
+                                correct(color[channel], gamma[channel])
+                            }))
+                        }
+                        ResolvedValue::Scalar(scalar) => {
+                            ResolvedValue::Scalar(correct(scalar, gamma[0]))
+                        }
+                    });
+                    let decodes_srgb = gamma.iter().all(|value| (value - 1.0 / 2.2).abs() < 0.02);
+                    let texture = texture.map(|mut texture| {
+                        if decodes_srgb && texture.2 != Some(true) {
+                            texture.2 = Some(true);
+                        } else if gamma.iter().any(|value| (value - 1.0).abs() > 1e-3) {
+                            warnings.push(format!(
+                                "{prim}: texture gamma other than sRGB decoding is ignored"
+                            ));
+                        }
+                        texture
+                    });
+                    return Ok((value, texture));
+                }
                 ShaderKind::Unknown => {
                     cur = next;
                     continue;
@@ -1401,6 +1605,7 @@ enum ShaderKind {
     Add,
     Subtract,
     Mix,
+    ColorCorrect,
     Unknown,
 }
 
@@ -1408,6 +1613,8 @@ fn shader_kind(stage: &Stage, prim: &Path) -> anyhow::Result<ShaderKind> {
     let id = read_token_or_string(stage, prim, "info:id")?;
     Ok(match id.as_deref() {
         Some("UsdUVTexture") => ShaderKind::Texture,
+        Some("PxrTexture" | "PxrPtexture" | "HwPtexTexture_1") => ShaderKind::Texture,
+        Some("PxrColorCorrect") => ShaderKind::ColorCorrect,
         Some(s) if s.starts_with("ND_image_") => ShaderKind::Texture,
         Some("ND_normalmap") => ShaderKind::NormalMap,
         Some(s) if s.starts_with("ND_constant_") => ShaderKind::Constant,
@@ -1419,7 +1626,7 @@ fn shader_kind(stage: &Stage, prim: &Path) -> anyhow::Result<ShaderKind> {
     })
 }
 
-fn texture_input_attribute(
+pub(super) fn texture_input_attribute(
     stage: &Stage,
     tex_prim: &Path,
     name: &str,
@@ -1438,20 +1645,31 @@ fn texture_input_attribute(
         "multiple texture {name} value producers at {}",
         input.path()
     );
+    // A connection to an interface input nobody set leaves the input unset;
+    // one to an output that produces nothing is a broken graph.
+    let unset_interface = connections
+        .sources()
+        .iter()
+        .all(|source| source.source_type() == openusd_schemas::shade::AttributeType::Input);
     anyhow::ensure!(
-        connections.sources().is_empty() || !producers.is_empty(),
+        connections.sources().is_empty() || !producers.is_empty() || unset_interface,
         "texture {name} connection has no value producer at {}",
         input.path()
     );
     Ok(producers.first().map(|source| source.attribute().clone()))
 }
 
-fn read_texture_file(
+pub(super) fn read_texture_file(
     stage: &Stage,
     tex_prim: &Path,
     time: Option<f64>,
 ) -> anyhow::Result<Option<String>> {
-    let Some(attribute) = texture_input_attribute(stage, tex_prim, "file")? else {
+    // RenderMan's texture nodes name the input `filename`.
+    let attribute = match texture_input_attribute(stage, tex_prim, "file")? {
+        Some(attribute) => Some(attribute),
+        None => texture_input_attribute(stage, tex_prim, "filename")?,
+    };
+    let Some(attribute) = attribute else {
         return Ok(None);
     };
     Ok(
@@ -1476,7 +1694,14 @@ fn read_texture_color_space(
     time: Option<f64>,
 ) -> anyhow::Result<Option<bool>> {
     let Some(attribute) = texture_input_attribute(stage, tex_prim, "sourceColorSpace")? else {
-        return Ok(None);
+        // RenderMan's texture nodes decode sRGB only when `linearize` is on.
+        return Ok(
+            match sampled_value(stage, &tex_prim.append_property("inputs:linearize")?, time)? {
+                Some(Value::Int(linearize)) => Some(linearize != 0),
+                Some(Value::Bool(linearize)) => Some(linearize),
+                _ => None,
+            },
+        );
     };
     let value = match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
         Some(Value::Token(value)) => value.as_str().to_owned(),
@@ -2395,4 +2620,104 @@ def Material "Mat" {
             .expect("material");
         assert!(read.uv_transform.is_none());
     }
+}
+
+#[test]
+fn renderman_surfaces_translate_ahead_of_glslfx_previews() {
+    let source = crate::UsdSource::snapshot(
+        "renderman.usda",
+        br#"#usda 1.0
+def Material "Base" {
+    color3f inputs:baseColor = (1, 0, 0)
+    color3f inputs:tint = (0.5, 0.5, 0.5)
+    float inputs:roughness = 0.7
+    asset inputs:surfaceMap
+    token outputs:ri:surface.connect = </Base/Disney.outputs:bxdf_out>
+    token outputs:glslfx:surface.connect = </Base/Preview.outputs:rgbColor>
+    def Shader "Disney" {
+        uniform token info:id = "PxrDisneyBsdf"
+        color3f inputs:baseColor.connect = </Base/Correct.outputs:resultRGB>
+        float inputs:roughness.connect = </Base.inputs:roughness>
+        float inputs:clearcoatGloss = 0.75
+        token outputs:bxdf_out
+    }
+    def Shader "Correct" {
+        uniform token info:id = "PxrColorCorrect"
+        normal3f inputs:gamma = (0.45454547, 0.45454547, 0.45454547)
+        color3f inputs:inputRGB.connect = </Base.inputs:tint>
+        color3f outputs:resultRGB
+    }
+    def Shader "Preview" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Base/Ptex.outputs:color>
+        token outputs:rgbColor
+    }
+    def Shader "Ptex" {
+        uniform token info:id = "HwPtexTexture_1"
+        asset inputs:file.connect = </Base.inputs:surfaceMap>
+        color3f outputs:color
+    }
+}
+def Material "Textured" {
+    asset inputs:surfaceMap = @leaf.ptx@
+    token outputs:ri:surface.connect = </Textured/Disney.outputs:bxdf_out>
+    def Shader "Disney" {
+        uniform token info:id = "PxrDisneyBsdf"
+        color3f inputs:baseColor.connect = </Textured/Correct.outputs:resultRGB>
+        token outputs:bxdf_out
+    }
+    def Shader "Correct" {
+        uniform token info:id = "PxrColorCorrect"
+        normal3f inputs:gamma = (0.45454547, 0.45454547, 0.45454547)
+        color3f inputs:inputRGB.connect = </Textured/Texture.outputs:resultRGB>
+        color3f outputs:resultRGB
+    }
+    def Shader "Texture" {
+        uniform token info:id = "PxrPtexture"
+        asset inputs:filename.connect = </Textured.inputs:surfaceMap>
+        int inputs:linearize = 0
+        color3f outputs:resultRGB
+    }
+}
+def Material "Water" {
+    token outputs:ri:surface.connect = </Water/Surface.outputs:bxdf_out>
+    def Shader "Surface" {
+        uniform token info:id = "PxrSurface"
+        float inputs:refractionGain = 1
+        float inputs:glassIor = 1.33
+        float inputs:glassRoughness = 0.05
+        float inputs:diffuseTransmitGain = 0.4
+        color3f inputs:diffuseTransmitColor = (0.1, 0.8, 0.4)
+        token outputs:bxdf_out
+    }
+}
+"#
+        .as_slice(),
+    )
+    .unwrap();
+    let stage = source.open_stage().unwrap();
+    let read = |path: &str| {
+        read_preview_material_at(&stage, &openusd::sdf::path(path).unwrap(), None)
+            .unwrap()
+            .unwrap()
+    };
+    let base = read("/Base");
+    let [r, g, b] = base.diffuse_color.unwrap();
+    assert!(
+        (r - 0.5f32.powf(2.2)).abs() < 1e-4 && r == g && g == b,
+        "{r} {g} {b}"
+    );
+    assert_eq!(base.roughness, Some(0.7));
+    assert!((base.clearcoat_roughness.unwrap() - 0.25).abs() < 1e-6);
+    assert!(base.diffuse_ptex.is_none());
+    let textured = read("/Textured");
+    let (path, srgb) = textured.diffuse_ptex.unwrap();
+    assert!(path.ends_with("leaf.ptx") && srgb);
+    assert!(textured.diffuse_texture.is_none());
+    let water = read("/Water");
+    assert_eq!(water.transmission, Some(1.0));
+    assert_eq!(water.ior, Some(1.33));
+    assert_eq!(water.roughness, Some(0.05));
+    assert_eq!(water.diffuse_transmission, Some(0.4));
+    assert_eq!(water.diffuse_transmission_color, Some([0.1, 0.8, 0.4]));
 }

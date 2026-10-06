@@ -37,6 +37,14 @@ pub enum UsdAreaLight {
     Cylinder { length: f32, radius: f32 },
 }
 
+/// A light's authored emission before any unit mapping: its linear color and
+/// `inputs:intensity` scaled by `inputs:exposure` stops.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct UsdLightEmission {
+    pub color: Color,
+    pub intensity: f32,
+}
+
 /// USD `DistantLight` intensity → Bevy illuminance (lux). USD's default distant
 /// intensity is 1; daylight in Bevy is ~10⁴ lux.
 const DISTANT_LUX_SCALE: f32 = 10_000.0;
@@ -109,7 +117,7 @@ fn clear_light(world: &mut World, entity: Entity) {
             entity.remove::<SpotLight>();
         }
     }
-    entity.remove::<UsdAreaLight>();
+    entity.remove::<(UsdAreaLight, UsdLightEmission)>();
 }
 
 impl LightRoute {
@@ -201,6 +209,10 @@ impl PrimRoute for LightRoute {
         if let Some(area) = lux.area {
             e.insert(area);
         }
+        e.insert(UsdLightEmission {
+            color: lux.color,
+            intensity: lux.intensity,
+        });
 
         match kind {
             "distant" => {

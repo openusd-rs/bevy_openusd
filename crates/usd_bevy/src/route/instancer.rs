@@ -88,6 +88,23 @@ pub struct UsdInstanceId(pub i64);
 #[derive(Component, Debug)]
 pub struct UsdInstancerWarning(pub String);
 
+/// The prototype prims a `PointInstancer` targets. Those beneath it are drawn
+/// only through its instances, never on their own.
+#[derive(Component, Debug, Clone, Default)]
+pub struct UsdPrototypeRoots(pub Vec<String>);
+
+/// Whether `path` is a prototype of the nearest `PointInstancer` above `entity`.
+pub(crate) fn is_instancer_prototype(world: &World, entity: Entity, path: &str) -> bool {
+    let mut current = world.get::<ChildOf>(entity).map(ChildOf::parent);
+    while let Some(ancestor) = current {
+        if let Some(roots) = world.get::<UsdPrototypeRoots>(ancestor) {
+            return roots.0.iter().any(|root| root == path);
+        }
+        current = world.get::<ChildOf>(ancestor).map(ChildOf::parent);
+    }
+    false
+}
+
 /// Maps a `PointInstancer` prim to per-instance child entities.
 pub struct PointInstancerRoute;
 
@@ -169,7 +186,10 @@ impl PointInstancerRoute {
 impl PrimRoute for PointInstancerRoute {
     fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
         Self::clear_instances(world, entity);
-        world.entity_mut(entity).remove::<UsdInstancerWarning>();
+        super::gpu_instancing::clear(world, entity);
+        world
+            .entity_mut(entity)
+            .remove::<(UsdInstancerWarning, UsdPrototypeRoots)>();
     }
     fn matches(&self, ctx: &RouteCtx) -> bool {
         ctx.type_name.as_deref() == Some("PointInstancer")
@@ -190,6 +210,12 @@ impl PrimRoute for PointInstancerRoute {
                 return;
             }
         };
+        world.entity_mut(entity).insert(UsdPrototypeRoots(
+            read.prototypes
+                .iter()
+                .map(|path| path.as_str().to_string())
+                .collect(),
+        ));
         if let Err(error) = validate_instances(&read) {
             world.entity_mut(entity).insert(UsdInstancerWarning(error));
             return;
@@ -250,6 +276,12 @@ impl PrimRoute for PointInstancerRoute {
             }
         };
         world.entity_mut(entity).remove::<UsdInstancerWarning>();
+        super::gpu_instancing::clear(world, entity);
+        if super::gpu_instancing::enabled(world, read.positions.len()) {
+            Self::clear_instances(world, entity);
+            project_gpu(ctx, world, entity, &read, ids.as_deref(), &invisible);
+            return;
+        }
         let mut existing: HashMap<i64, Entity> = world
             .get::<Children>(entity)
             .into_iter()
@@ -359,6 +391,100 @@ impl PrimRoute for PointInstancerRoute {
     }
 }
 
+/// Draws every visible instance with GPU instancing: instances are grouped by
+/// prototype in chunks, and each prototype mesh draws its chunks.
+fn project_gpu(
+    ctx: &RouteCtx,
+    world: &mut World,
+    entity: Entity,
+    read: &ReadPointInstancer,
+    ids: Option<&[i64]>,
+    invisible: &bevy::platform::collections::HashSet<i64>,
+) {
+    use super::gpu_instancing::{CHUNK, GpuInstance};
+    if world.get_resource::<Assets<Mesh>>().is_none()
+        || world.get_resource::<Assets<StandardMaterial>>().is_none()
+    {
+        return;
+    }
+    let mut by_prototype: Vec<Vec<Vec<GpuInstance>>> = vec![Vec::new(); read.prototypes.len()];
+    for i in 0..read.positions.len() {
+        let id = ids.map_or(i as i64, |ids| ids[i]);
+        if invisible.contains(&id) {
+            continue;
+        }
+        let Some(chunks) = by_prototype.get_mut(read.proto_indices[i] as usize) else {
+            continue;
+        };
+        if chunks.last().is_none_or(|chunk| chunk.len() == CHUNK) {
+            chunks.push(Vec::with_capacity(CHUNK.min(read.positions.len() - i)));
+        }
+        let xf = instance_transform(read, i);
+        chunks
+            .last_mut()
+            .unwrap()
+            .push(GpuInstance::new(xf.translation, xf.rotation, xf.scale));
+    }
+    let mut failed = Vec::new();
+    for (index, chunks) in by_prototype.into_iter().enumerate() {
+        if chunks.is_empty() {
+            continue;
+        }
+        let Some(prototype) = bake_prototype(ctx, world, read, index) else {
+            failed.push(format!(
+                "prototype {index} could not be evaluated; generated geometry omitted"
+            ));
+            continue;
+        };
+        // The instancing shader cannot widen strand ribbons.
+        let mut meshes = prototype_meshes(&prototype);
+        meshes.retain(|(mesh, ..)| {
+            world
+                .resource::<Assets<Mesh>>()
+                .get(mesh)
+                .is_none_or(|mesh| !super::strand_material::is_strand(mesh))
+        });
+        super::gpu_instancing::spawn(world, entity, &meshes, chunks);
+    }
+    if !failed.is_empty() {
+        world
+            .entity_mut(entity)
+            .insert(UsdInstancerWarning(failed.join("; ")));
+    }
+}
+
+/// A prototype's visible meshes with their materials and placement inside it.
+fn prototype_meshes(prototype: &Prototype) -> Vec<(Handle<Mesh>, Handle<StandardMaterial>, Mat4)> {
+    let draws = |(mesh, material, _, subsets): &ProtoHandles, placement: Mat4| {
+        subsets
+            .draws(mesh, material)
+            .into_iter()
+            .map(move |(mesh, material)| (mesh, material, placement))
+    };
+    match prototype {
+        Prototype::Mesh(handles) => draws(handles, Mat4::IDENTITY).collect(),
+        Prototype::Hierarchy(parts) => {
+            let mut placed: HashMap<&str, (Mat4, bool)> = HashMap::default();
+            let mut meshes = Vec::new();
+            for part in parts {
+                let (parent, parent_visible) = part
+                    .parent
+                    .as_deref()
+                    .and_then(|parent| placed.get(parent))
+                    .copied()
+                    .unwrap_or((Mat4::IDENTITY, true));
+                let placement = parent * part.transform.to_matrix();
+                let visible = parent_visible && part.visibility != Visibility::Hidden;
+                placed.insert(&part.path, (placement, visible));
+                if visible && let Some(handles) = &part.handles {
+                    meshes.extend(draws(handles, placement));
+                }
+            }
+            meshes
+        }
+    }
+}
+
 /// Prepares shared geometry and local transforms for a referenced prototype.
 fn bake_prototype(
     ctx: &RouteCtx,
@@ -444,7 +570,12 @@ fn collect_parts(
         kind.as_str(),
         "Cube" | "Sphere" | "Cylinder" | "Capsule" | "Cone" | "Plane"
     );
-    if !shape && !matches!(kind.as_str(), "" | "Xform" | "Scope" | "SkelRoot" | "Mesh") {
+    if !shape
+        && !matches!(
+            kind.as_str(),
+            "" | "Xform" | "Scope" | "SkelRoot" | "Mesh" | "BasisCurves"
+        )
+    {
         return None;
     }
     let order = prim
@@ -497,6 +628,8 @@ fn collect_parts(
     }
     let handles = if kind == "Mesh" {
         Some(bake_mesh(ctx, world, path, false)?)
+    } else if kind == "BasisCurves" {
+        bake_curves(ctx, world, path)
     } else if shape {
         Some(bake_shape(ctx, world, path)?)
     } else {
@@ -567,7 +700,10 @@ fn apply_handles(
             e.insert(super::material::UsdMaterialWarning(warnings.join("; ")));
         }
         super::subset::apply(world, entity, subsets);
+        super::strand_material::attach_if_strand(world, entity);
     } else {
+        super::strand_material::clear(world, entity);
+        let mut e = world.entity_mut(entity);
         e.remove::<(
             Mesh3d,
             MeshMaterial3d<StandardMaterial>,
@@ -616,7 +752,11 @@ fn prototype_material(
     ctx: &RouteCtx,
     world: &mut World,
     fallback: impl FnOnce() -> StandardMaterial,
-) -> (Handle<StandardMaterial>, Vec<String>) {
+) -> (
+    Handle<StandardMaterial>,
+    Vec<String>,
+    super::material::MaterialColor,
+) {
     match super::material::resolve_material(ctx, world) {
         Ok(Some(material)) => material,
         result => {
@@ -624,9 +764,49 @@ fn prototype_material(
                 .err()
                 .map(|error| vec![error.to_string()])
                 .unwrap_or_default();
-            (super::cache::intern_material(world, fallback()), warnings)
+            (
+                super::cache::intern_material(world, fallback()),
+                warnings,
+                super::material::MaterialColor::Open,
+            )
         }
     }
+}
+
+fn bake_curves(
+    ctx: &RouteCtx,
+    world: &mut World,
+    proto_path: &openusd::sdf::Path,
+) -> Option<ProtoHandles> {
+    let proto_ctx = RouteCtx::at(ctx.stage, proto_path, ctx.time);
+    let curves = super::curves::prototype_mesh(&proto_ctx, world)?;
+    let mut mesh = curves.mesh;
+    let (material, warnings, color) = prototype_material(&proto_ctx, world, || {
+        let mut material = super::material::default_material(&proto_ctx);
+        material.double_sided = true;
+        material.cull_mode = None;
+        material
+    });
+    if matches!(color, super::material::MaterialColor::Owned) {
+        mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+    }
+    // Lines without normals keep their color unlit.
+    let material = match world
+        .resource::<Assets<StandardMaterial>>()
+        .get(&material)
+        .filter(|material| !curves.lit && !material.unlit)
+    {
+        Some(material) => {
+            let unlit = StandardMaterial {
+                unlit: true,
+                ..material.clone()
+            };
+            super::cache::intern_material(world, unlit)
+        }
+        None => material,
+    };
+    let mesh = super::cache::intern_mesh(world, mesh);
+    Some((mesh, material, warnings, default()))
 }
 
 fn bake_shape(
@@ -636,7 +816,7 @@ fn bake_shape(
 ) -> Option<ProtoHandles> {
     let ctx = RouteCtx::at(ctx.stage, path, ctx.time);
     let shape = super::shapes::shape_mesh(&ctx)?;
-    let (material, mut warnings) = prototype_material(&ctx, world, || {
+    let (material, mut warnings, _) = prototype_material(&ctx, world, || {
         super::material::default_material_with_opacity(&ctx, shape.opacity.as_ref())
     });
     if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
@@ -670,9 +850,10 @@ fn bake_mesh(
     {
         super::skel::deformed_mesh(&proto_ctx).ok().flatten()?
     } else {
-        crate::read::geom::read_mesh_at(ctx.stage, proto_path, ctx.time)
+        let read = crate::read::geom::read_mesh_at(ctx.stage, proto_path, ctx.time)
             .ok()
-            .flatten()?
+            .flatten()?;
+        super::subdivision::limit_cage(&proto_ctx, world, &read).unwrap_or(read)
     };
     let mut mesh = crate::mesh::mesh_from_usd(&mesh_read);
     if bake_transform
@@ -681,12 +862,13 @@ fn bake_mesh(
     {
         crate::mesh::affine::bake(&mut mesh, Mat4::from_cols_array(&matrix))?;
     }
-    let (material, mut warnings) = prototype_material(&proto_ctx, world, || {
+    let (material, mut warnings, color) = prototype_material(&proto_ctx, world, || {
         super::material::default_material(&proto_ctx)
     });
     if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
         super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
     }
+    color.apply(world, &mut mesh, &mesh_read);
     let mesh_handle = super::cache::intern_mesh(world, mesh);
     let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh_handle, &material)?;
     Some((mesh_handle, material, warnings, subsets))
@@ -1842,6 +2024,96 @@ def Xform "Group" {
         assert_eq!(child(app.world(), second), b);
         assert_eq!(leftmost(app.world(), a), 14.0);
         assert_eq!(leftmost(app.world(), b), 16.0);
+    }
+
+    #[test]
+    fn curve_prototypes_instance_as_strands() {
+        use super::super::strand_material::{ATTRIBUTE_STRAND_WIDTH, StrandMaterial};
+        let source = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def PointInstancer "PI" {
+    point3f[] positions = [(0,0,0), (2,0,0)]
+    int[] protoIndices = [0,1]
+    rel prototypes = [</Tree>, </Grass>]
+}
+def Xform "Tree" {
+    def Mesh "Trunk" {
+        point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+    }
+    def BasisCurves "Needles" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+        uniform token type = "linear"
+        int[] curveVertexCounts = [2]
+        point3f[] points = [(0,1,0), (0,2,0)]
+        float[] widths = [0.01, 0.02]
+        color3f[] primvars:displayColor = [(1,0,0)]
+        rel material:binding = </Leaf>
+    }
+}
+def BasisCurves "Grass" {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(0,0,0), (0,1,0)]
+    float[] widths = [0.1, 0.1]
+    color3f[] primvars:displayColor = [(0,1,0)]
+    double3 xformOp:translate = (0, 0, 5)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+def Material "Leaf" {
+    token outputs:surface.connect = </Leaf/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.2, 0.5, 0.1)
+        token outputs:surface
+    }
+}
+"#,
+        );
+        let live = LiveStage::new(source.open_stage().unwrap());
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<StrandMaterial>>();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let parent = map.entity("/PI").unwrap();
+        assert!(world.get::<UsdInstancerWarning>(parent).is_none());
+        let children: Vec<_> = world.get::<Children>(parent).unwrap().iter().collect();
+        let strand = |entity: Entity| {
+            let mesh = &world.get::<Mesh3d>(entity).unwrap().0;
+            let mesh = world.resource::<Assets<Mesh>>().get(mesh).unwrap();
+            let material = &world.get::<MeshMaterial3d<StrandMaterial>>(entity)?.0;
+            let material = world.resource::<Assets<StrandMaterial>>().get(material)?;
+            Some((
+                mesh.primitive_topology(),
+                mesh.attribute(ATTRIBUTE_STRAND_WIDTH).is_some(),
+                mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_some(),
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION).cloned(),
+                material.base.base_color.to_linear(),
+            ))
+        };
+        let parts = world.get::<PrototypeEntities>(children[0]).unwrap();
+        let needles = strand(parts.0["/Tree/Needles"]).unwrap();
+        assert_eq!(
+            (needles.0, needles.1, needles.2),
+            (bevy::mesh::PrimitiveTopology::TriangleStrip, true, false)
+        );
+        assert_eq!(needles.4, LinearRgba::rgb(0.2, 0.5, 0.1));
+        assert!(world.get::<Mesh3d>(parts.0["/Tree/Trunk"]).is_some());
+        // A curve prototype root keeps its own transform as a part.
+        let grass = world.get::<PrototypeEntities>(children[1]).unwrap().0["/Grass"];
+        assert_eq!(
+            world.get::<Transform>(grass).unwrap().translation,
+            Vec3::new(0.0, 0.0, 5.0)
+        );
+        let grass = strand(grass).unwrap();
+        assert!(grass.2, "unbound curves keep their display color");
+        assert!(matches!(
+            grass.3,
+            Some(bevy::mesh::VertexAttributeValues::Float32x3(points))
+                if points == vec![[0.0; 3], [0.0; 3], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+        ));
     }
 
     #[test]

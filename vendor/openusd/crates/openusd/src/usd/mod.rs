@@ -54,7 +54,7 @@ pub use schema_registry::{
 pub use sink::{CommittedChange, PendingChange, Provenance, StageSink, StageSinkId};
 pub use stage::{
     EditContext, EditTarget, EditTargetArc, InitialLoadSet, LoadPolicy, PrimPredicate, PrimStatus, Stage,
-    StageAuthoringError, StageBuilder, TypeConflict, WeakStage,
+    StageAuthoringError, StageBuilder, Traversal, TypeConflict, WeakStage,
 };
 
 /// The population mask limiting which prims a [`Stage`] exposes, under its C++

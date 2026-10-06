@@ -16,6 +16,59 @@ const MEMORY_ROOT: &str = "__usd_memory__";
 
 pub(crate) type DiskBaselines = Arc<EditorDisk>;
 
+/// Reads one dependency by identifier, or `None` when it cannot be read.
+pub(crate) type Fetch = Arc<dyn Fn(&str) -> Option<Arc<[u8]>> + Send + Sync>;
+
+/// Reads missing dependencies while a probe composes, so one composition
+/// discovers every file, and keeps what it read for the source.
+#[derive(Clone)]
+pub(crate) struct Fetcher {
+    read: Fetch,
+    fetched: Arc<Mutex<BTreeMap<String, Option<Arc<[u8]>>>>>,
+}
+
+impl std::fmt::Debug for Fetcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Fetcher").finish_non_exhaustive()
+    }
+}
+
+impl Fetcher {
+    pub(crate) fn new(read: Fetch) -> Self {
+        Self {
+            read,
+            fetched: Arc::default(),
+        }
+    }
+
+    /// The bytes of `identifier`, read on first request.
+    fn get(&self, identifier: &str) -> Option<Arc<[u8]>> {
+        if let Some(bytes) = self.peek(identifier) {
+            return bytes;
+        }
+        let bytes = (self.read)(identifier);
+        self.fetched
+            .lock()
+            .expect("fetched dependencies")
+            .insert(identifier.to_owned(), bytes.clone());
+        bytes
+    }
+
+    /// What an earlier request for `identifier` read, if one ran.
+    fn peek(&self, identifier: &str) -> Option<Option<Arc<[u8]>>> {
+        self.fetched
+            .lock()
+            .expect("fetched dependencies")
+            .get(identifier)
+            .cloned()
+    }
+
+    /// Everything read so far, `None` for reads that failed.
+    pub(crate) fn take(&self) -> BTreeMap<String, Option<Arc<[u8]>>> {
+        std::mem::take(&mut *self.fetched.lock().expect("fetched dependencies"))
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct EditorDisk {
     hashes: Mutex<BTreeMap<PathBuf, blake3::Hash>>,
@@ -30,6 +83,31 @@ impl std::ops::Deref for EditorDisk {
     }
 }
 
+/// Textures a stage asks for, each with whether it is sRGB.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct TextureRequests {
+    pub(crate) textures: BTreeSet<(String, bool)>,
+    /// Requested only by dome lights, which read them on the CPU.
+    pub(crate) environment_only: BTreeSet<String>,
+}
+
+impl std::ops::Deref for TextureRequests {
+    type Target = BTreeSet<(String, bool)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.textures
+    }
+}
+
+impl<'a> IntoIterator for &'a TextureRequests {
+    type Item = &'a (String, bool);
+    type IntoIter = std::collections::btree_set::Iter<'a, (String, bool)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.textures.iter()
+    }
+}
+
 /// An immutable root-layer snapshot anchored at its source filename.
 #[derive(Clone, Debug)]
 pub struct UsdSource {
@@ -40,7 +118,9 @@ pub struct UsdSource {
     absent: Arc<BTreeSet<String>>,
     filesystem: bool,
     validated_default: Arc<Mutex<Option<u64>>>,
-    default_textures: Arc<Mutex<Option<(u64, Arc<BTreeSet<(String, bool)>>)>>>,
+    default_textures: Arc<Mutex<Option<(u64, Arc<TextureRequests>)>>>,
+    /// Reads files the snapshot lacks when a stage asks for them.
+    fetch: Option<Fetcher>,
 }
 
 impl UsdSource {
@@ -86,6 +166,7 @@ impl UsdSource {
             filesystem: true,
             validated_default: Arc::default(),
             default_textures: Arc::default(),
+            fetch: None,
         })
     }
 
@@ -135,6 +216,7 @@ impl UsdSource {
             fallback: DefaultResolver::new(),
             requests: Arc::default(),
             disk_baselines: None,
+            fetch: None,
         }
         .open_asset(&ResolvedPath::new(identifier))?
         .read_all()
@@ -145,7 +227,7 @@ impl UsdSource {
         &self,
         stage: &Stage,
         default_composition: bool,
-    ) -> Result<Arc<BTreeSet<(String, bool)>>, String> {
+    ) -> Result<Arc<TextureRequests>, String> {
         let reusable = default_composition && !self.filesystem;
         if reusable
             && let Some((revision, requests)) =
@@ -162,9 +244,7 @@ impl UsdSource {
         Ok(requests)
     }
 
-    pub(crate) fn stage_texture_requests(
-        stage: &Stage,
-    ) -> Result<BTreeSet<(String, bool)>, String> {
+    pub(crate) fn stage_texture_requests(stage: &Stage) -> Result<TextureRequests, String> {
         Self::texture_requests_for_prims(stage, &Self::stage_texture_prims(stage)?)
     }
 
@@ -192,8 +272,10 @@ impl UsdSource {
     pub(crate) fn texture_requests_for_prims(
         stage: &Stage,
         paths: &[openusd::sdf::Path],
-    ) -> Result<BTreeSet<(String, bool)>, String> {
+    ) -> Result<TextureRequests, String> {
         let mut requests = BTreeSet::new();
+        let mut environment = BTreeSet::new();
+        let mut materials = BTreeSet::new();
         for path in paths {
             let prim = stage.prim(path).map_err(|error| error.to_string())?;
             let type_name = prim.type_name().map_err(|error| error.to_string())?;
@@ -212,6 +294,7 @@ impl UsdSource {
                             .map_err(|error| error.to_string())?,
                     );
                     if !path.is_empty() {
+                        environment.insert(path.clone());
                         requests.insert((path, false));
                     }
                 }
@@ -259,12 +342,17 @@ impl UsdSource {
                     (&material.opacity_texture, material.texture_srgb("opacity")),
                 ] {
                     if let Some(path) = path {
+                        materials.insert(path.clone());
                         requests.insert((path.clone(), srgb));
                     }
                 }
             }
         }
-        Ok(requests)
+        environment.retain(|path| !materials.contains(path));
+        Ok(TextureRequests {
+            textures: requests,
+            environment_only: environment,
+        })
     }
 
     /// Anchor bytes without allowing filesystem fallback for missing dependencies.
@@ -570,10 +658,31 @@ impl UsdSource {
     /// Like `probe`, keeping the validated stage so a caller that needs it
     /// next (texture requests, say) does not parse the source again.
     pub(crate) fn probe_stage(&self) -> (Result<Stage, String>, BTreeSet<String>) {
+        self.probe_with(false, None)
+    }
+
+    /// One dependency discovery round: like `probe_stage`, but validation
+    /// stops once the traversal has requested a missing layer, since the
+    /// caller reopens the stage after loading it. With `fetch`, missing files
+    /// are read as composition asks for them instead of being requested.
+    pub(crate) fn probe_round(
+        &self,
+        fetch: Option<Fetcher>,
+    ) -> (Result<Stage, String>, BTreeSet<String>) {
+        self.probe_with(true, fetch)
+    }
+
+    fn probe_with(
+        &self,
+        stop_at_missing: bool,
+        fetch: Option<Fetcher>,
+    ) -> (Result<Stage, String>, BTreeSet<String>) {
         let requests = Arc::new(Mutex::new(BTreeSet::new()));
         let result = (|| -> anyhow::Result<Stage> {
-            let stage = self.open_tracked(requests.clone())?;
-            Self::validate_composition(&stage)?;
+            let stage = self.open_tracked(requests.clone(), fetch, false)?;
+            Self::validate_until(&stage, || {
+                stop_at_missing && !requests.lock().expect("dependency requests").is_empty()
+            })?;
             Ok(stage)
         })()
         .map_err(|error| error.to_string());
@@ -586,7 +695,13 @@ impl UsdSource {
 
     /// Open an independent stage from this snapshot.
     pub fn open_stage(&self) -> openusd::Result<Stage> {
-        self.open_tracked(Arc::default())
+        self.open_tracked(Arc::default(), None, false)
+    }
+
+    /// Open an independent stage from this snapshot with every payload
+    /// unloaded, for streaming to load as it needs.
+    pub fn open_stage_unloaded(&self) -> openusd::Result<Stage> {
+        self.open_tracked(Arc::default(), None, true)
     }
 
     pub(crate) fn open_stage_for_editor(&self) -> openusd::Result<(Stage, DiskBaselines)> {
@@ -598,12 +713,19 @@ impl UsdSource {
                 fallback: DefaultResolver::new(),
                 requests: Arc::default(),
                 disk_baselines: self.filesystem.then_some(baselines.clone()),
+                fetch: None,
             })
             .open(&self.identifier)?;
         Ok((stage, baselines))
     }
 
     pub(crate) fn validate_composition(stage: &Stage) -> anyhow::Result<()> {
+        Self::validate_until(stage, || false)
+    }
+
+    /// `validate_composition` that returns early, unvalidated, when `missing`
+    /// holds after the traversal.
+    fn validate_until(stage: &Stage, missing: impl Fn() -> bool) -> anyhow::Result<()> {
         let profile_values = std::env::var_os("USD_PROFILE_VALIDATION_VALUES").is_some();
         let mut value_times = [std::time::Duration::ZERO; 3];
         let started = (std::env::var_os("USD_PROFILE_LOADING").is_some())
@@ -624,6 +746,9 @@ impl UsdSource {
         let prim_count = paths.len();
         let mut attribute_count = 0;
         report("traverse-complete", prim_count, 0);
+        if missing() {
+            return Ok(());
+        }
         let mut clip_prims = std::collections::HashSet::new();
         for (index, path) in paths.into_iter().enumerate() {
             let prim = stage.prim(&path)?;
@@ -678,17 +803,21 @@ impl UsdSource {
             };
             for attribute in attributes {
                 attribute_count += 1;
-                let value_started = profile_values.then(bevy::platform::time::Instant::now);
-                attribute.get::<openusd::sdf::Value>()?;
-                if let Some(started) = value_started {
-                    value_times[0] += started.elapsed();
-                }
                 let type_started = profile_values.then(bevy::platform::time::Instant::now);
                 let asset = attribute
                     .type_name()?
                     .is_some_and(|name| matches!(name.as_str(), "asset" | "asset[]"));
                 if let Some(started) = type_started {
                     value_times[1] += started.elapsed();
+                }
+                // Only asset values and clip-backed values can request files.
+                if !asset && !has_clips {
+                    continue;
+                }
+                let value_started = profile_values.then(bevy::platform::time::Instant::now);
+                attribute.get::<openusd::sdf::Value>()?;
+                if let Some(started) = value_started {
+                    value_times[0] += started.elapsed();
                 }
                 let samples_started = profile_values.then(bevy::platform::time::Instant::now);
                 if asset {
@@ -752,7 +881,17 @@ impl UsdSource {
         Ok(())
     }
 
-    fn open_tracked(&self, requests: Arc<Mutex<BTreeSet<String>>>) -> openusd::Result<Stage> {
+    fn open_tracked(
+        &self,
+        requests: Arc<Mutex<BTreeSet<String>>>,
+        fetch: Option<Fetcher>,
+        unloaded: bool,
+    ) -> openusd::Result<Stage> {
+        let load = if unloaded {
+            openusd::usd::InitialLoadSet::LoadNone
+        } else {
+            openusd::usd::InitialLoadSet::LoadAll
+        };
         Stage::builder()
             .schema_registry(openusd_schemas::schema_registry())
             .resolver(SourceResolver {
@@ -760,8 +899,16 @@ impl UsdSource {
                 fallback: DefaultResolver::new(),
                 requests,
                 disk_baselines: None,
+                fetch: fetch.or_else(|| self.fetch.clone()),
             })
+            .load(load)
             .open(&self.identifier)
+    }
+
+    /// Keeps `fetch` for every stage opened from this source, so a payload
+    /// loaded later can read files the snapshot lacks.
+    pub(crate) fn set_fetch(&mut self, fetch: Fetcher) {
+        self.fetch = Some(fetch);
     }
 }
 
@@ -770,6 +917,7 @@ struct SourceResolver {
     fallback: DefaultResolver,
     requests: Arc<Mutex<BTreeSet<String>>>,
     disk_baselines: Option<DiskBaselines>,
+    fetch: Option<Fetcher>,
 }
 
 pub(crate) struct SharedAsset(pub(crate) Cursor<Arc<[u8]>>);
@@ -782,6 +930,15 @@ pub(crate) fn file_hash(path: &Path) -> io::Result<blake3::Hash> {
     let mut hash = blake3::Hasher::new();
     hash.update_reader(std::fs::File::open(path)?)?;
     Ok(hash.finalize())
+}
+
+/// Ptex textures resolve by name but are never captured: nothing reads their
+/// texels, and a production set can hold gigabytes of them.
+fn uncaptured(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "ptx" | "ptex"))
 }
 
 fn read_shared_asset(asset: &mut dyn Asset) -> io::Result<Arc<[u8]>> {
@@ -853,7 +1010,11 @@ impl SourceResolver {
         if identifier == self.source.identifier {
             Some(self.source.bytes.clone())
         } else {
-            self.source.files.get(identifier).cloned()
+            self.source.files.get(identifier).cloned().or_else(|| {
+                self.fetch
+                    .as_ref()
+                    .and_then(|fetch| fetch.peek(identifier).flatten())
+            })
         }
     }
 
@@ -906,6 +1067,8 @@ impl Resolver for SourceResolver {
             Some(ResolvedPath::new(PathBuf::from(path)))
         } else if self.contains_packaged_path(path) {
             Some(ResolvedPath::new(PathBuf::from(path)))
+        } else if uncaptured(path) {
+            Some(ResolvedPath::new(PathBuf::from(path)))
         } else if self.source.filesystem {
             self.fallback.resolve(path)
         } else {
@@ -919,6 +1082,13 @@ impl Resolver for SourceResolver {
             };
             if self.source.absent.contains(&request) {
                 return None;
+            }
+            if let Some(fetch) = self
+                .fetch
+                .as_ref()
+                .filter(|_| !openusd::ar::is_package_relative_path(&request))
+            {
+                return fetch.get(&request).and_then(|_| self.resolve(path));
             }
             self.requests
                 .lock()
@@ -2768,6 +2938,7 @@ def Xform "Second" (
             fallback: DefaultResolver::new(),
             requests: Arc::default(),
             disk_baselines: None,
+            fetch: None,
         };
         for (identifier, bytes) in [
             (resolver.source.identifier(), &root),

@@ -1035,31 +1035,47 @@ impl LayerGraph {
         // everything — while its layer data still feeds the stack's composed
         // variables), a member, or when its seed shifted: its key source's
         // referent changed this pass. The seed is read live from that referent,
-        // already refreshed by this pass's ascending order.
-        for (id, root, source) in self.stacks.targets() {
-            let rebuild = match affected {
-                None => true,
-                Some(affected) => {
-                    affected.contains(&root)
-                        || self
-                            .stacks
-                            .member_set(id)
-                            .is_some_and(|members| !members.is_disjoint(affected))
-                        || vars_deltas.iter().any(|delta| delta.stack == source.referent())
-                }
-            };
-            if !rebuild {
-                continue;
+        // already refreshed by this pass's ascending order. A scoped pass finds
+        // the root and member hits through the registry's layer index and adds
+        // each re-seeded stack as its referent changes; ids above the current
+        // one, so the ascending worklist still meets them in order.
+        let Some(affected) = affected else {
+            for (id, root, source) in self.stacks.targets() {
+                self.rebuild_target_stack(id, root, source, &mut vars_deltas);
             }
-            let seed_vars = self.stacks.expression_variables(source.referent()).clone();
-            let mut sink = EdgeSink::contextual();
-            let (members, expr_vars) = self.build_stack_members(root, &seed_vars, Some(&mut sink));
-            if let Some(delta) = self.stacks.set_composed(id, members, expr_vars) {
-                vars_deltas.push(delta);
+            return vars_deltas;
+        };
+        let mut pending = self.stacks.targets_touching(affected);
+        for delta in &vars_deltas {
+            pending.extend(self.stacks.targets_keyed_by(delta.stack));
+        }
+        while let Some(id) = pending.pop_first() {
+            let (root, source) = self.stacks.target_key(id).expect("a pending stack is a target");
+            if self.rebuild_target_stack(id, root, source, &mut vars_deltas) {
+                pending.extend(self.stacks.targets_keyed_by(id));
             }
-            self.file_stack_discoveries(id, sink);
         }
         vars_deltas
+    }
+
+    /// Recomposes target stack `id` from its root and its source's current
+    /// variables, pushing its delta. Returns whether its composed variables
+    /// changed.
+    fn rebuild_target_stack(
+        &mut self,
+        id: LayerStackId,
+        root: LayerId,
+        source: VarsSource,
+        vars_deltas: &mut Vec<StackVarsDelta>,
+    ) -> bool {
+        let seed_vars = self.stacks.expression_variables(source.referent()).clone();
+        let mut sink = EdgeSink::contextual();
+        let (members, expr_vars) = self.build_stack_members(root, &seed_vars, Some(&mut sink));
+        let delta = self.stacks.set_composed(id, members, expr_vars);
+        let changed = delta.is_some();
+        vars_deltas.extend(delta);
+        self.file_stack_discoveries(id, sink);
+        changed
     }
 
     /// Classifies one stack composition's [`EdgeSink`] discoveries and files
@@ -2047,6 +2063,73 @@ impl LayerGraph {
         let (affected, vars_deltas) = self.build_sublayer_edges(edited);
         let mut affected = affected.unwrap_or_default();
         affected.extend(self.recompute_relocates());
+        SublayerRecompute { affected, vars_deltas }
+    }
+
+    /// [`recompute_sublayers`](Self::recompute_sublayers) for a load that
+    /// interned `added`. Without expression sublayers, a load changes only the
+    /// edges of the added layers and of parents holding unresolved entries, so
+    /// only those are re-resolved and only the stacks they reach are rebuilt.
+    /// Relocates are re-validated only when some layer authors them. Any
+    /// expression sublayer falls back to the full pass.
+    pub(crate) fn recompute_sublayers_after_load(&mut self, added: &[LayerId]) -> SublayerRecompute {
+        let root_path = Path::abs_root();
+        for id in added {
+            let node = self.nodes.get_mut(id).expect("added layer exists");
+            node.has_expr_sublayer = matches!(
+                node.layer.data().get_field(&root_path, FieldKey::SubLayers.as_str()),
+                Ok(subs) if matches!(&*subs, Value::StringVec(paths) if paths.iter().any(|p| expr::is_expression(p)))
+            );
+            self.sublayers.any_expr |= node.has_expr_sublayer;
+        }
+        if self.sublayers.any_expr {
+            return self.recompute_sublayers(None);
+        }
+        let mut parents: Vec<LayerId> = added.to_vec();
+        let added_set: HashSet<LayerId> = added.iter().copied().collect();
+        parents.extend(
+            self.sublayers
+                .unresolved_plain
+                .keys()
+                .copied()
+                .filter(|id| !added_set.contains(id)),
+        );
+        let empty = HashMap::new();
+        let mut resolution = mem::take(&mut self.sublayers.resolution);
+        let mut sink = EdgeSink::default();
+        let resolved: Vec<(LayerId, SublayerEdges)> = parents
+            .iter()
+            .map(|&id| (id, self.resolve_edges(id, &empty, &mut resolution, Some(&mut sink))))
+            .collect();
+        self.sublayers.resolution = resolution;
+        for id in &parents {
+            self.sublayers.unresolved_plain.remove(id);
+        }
+        for (parent, evaluated) in sink.demands {
+            self.sublayers
+                .unresolved_plain
+                .entry(parent)
+                .or_default()
+                .push(evaluated);
+        }
+        let mut changed = added_set;
+        for (id, edges) in resolved {
+            let node = self.nodes.get_mut(&id).expect("edge source exists");
+            if node.children != edges {
+                node.children = edges;
+                changed.insert(id);
+            }
+        }
+        let vars_deltas = self.rebuild_sublayer_stacks(Some(&changed));
+        self.recompute_cycle_diagnostics();
+        let quiet = !self.has_relocates
+            && self.diagnostics.relocates.is_empty()
+            && added.iter().all(|&id| self.layer(id).relocates().is_empty());
+        let affected = if quiet {
+            HashSet::new()
+        } else {
+            self.recompute_relocates()
+        };
         SublayerRecompute { affected, vars_deltas }
     }
 

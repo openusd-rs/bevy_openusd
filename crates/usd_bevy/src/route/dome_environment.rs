@@ -19,6 +19,9 @@ use bevy::render::{
 pub struct UsdDomeEnvironmentSource {
     pub dome: Entity,
     pub face_size: u32,
+    /// Lights the scene with the dome's sun as a shadowed directional light,
+    /// taken out of the environment maps so it is not counted twice.
+    pub sun: bool,
 }
 
 impl UsdDomeEnvironmentSource {
@@ -26,9 +29,18 @@ impl UsdDomeEnvironmentSource {
         Self {
             dome,
             face_size: 128,
+            sun: false,
         }
     }
+
+    pub fn with_sun(self) -> Self {
+        Self { sun: true, ..self }
+    }
 }
+
+/// The directional light standing in for a dome's sun.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct UsdDomeSun(pub super::environment_map::DomeSun);
 
 /// Attachment state, not confirmation that GPU convolution has completed.
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
@@ -43,12 +55,14 @@ struct Key {
     image: bevy::asset::AssetId<Image>,
     tint: [f32; 3],
     size: u32,
+    sun: bool,
 }
 
 #[derive(Component, Clone)]
 struct OwnedEnvironment {
     key: Key,
     baker: Entity,
+    sun: Option<Entity>,
     previous: Option<EnvironmentMapLight>,
     applied: Option<EnvironmentMapLight>,
 }
@@ -228,8 +242,33 @@ fn same(a: &EnvironmentMapLight, b: &EnvironmentMapLight) -> bool {
         && a.affects_lightmapped_mesh_diffuse == b.affects_lightmapped_mesh_diffuse
 }
 
+/// Points the sun light along the rotated dome and scales it by its intensity.
+fn place_sun(world: &mut World, sun: Entity, intensity: f32, rotation: Quat) {
+    let Some(&UsdDomeSun(source)) = world.get::<UsdDomeSun>(sun) else {
+        return;
+    };
+    let peak = source.irradiance.max_element();
+    let direction = rotation * source.direction;
+    let mut entity = world.entity_mut(sun);
+    if let Some(mut light) = entity.get_mut::<DirectionalLight>() {
+        light.color = Color::linear_rgb(
+            source.irradiance.x / peak,
+            source.irradiance.y / peak,
+            source.irradiance.z / peak,
+        );
+        light.illuminance = peak * intensity;
+    }
+    entity.insert(Transform::from_rotation(Quat::from_rotation_arc(
+        Vec3::NEG_Z,
+        -direction,
+    )));
+}
+
 fn clear(world: &mut World, camera: Entity, owned: OwnedEnvironment) {
     world.despawn(owned.baker);
+    if let Some(sun) = owned.sun.filter(|sun| world.get_entity(*sun).is_ok()) {
+        world.despawn(sun);
+    }
     let unchanged = owned.applied.as_ref().is_some_and(|applied| {
         world
             .get::<EnvironmentMapLight>(camera)
@@ -297,6 +336,7 @@ fn selected(
             image: texture.0.id(),
             tint: dome.color,
             size: source.face_size,
+            sun: source.sun,
         },
         dome.intensity,
         rotation.normalize(),
@@ -332,10 +372,28 @@ fn update(world: &mut World) {
                     .resource::<Assets<Image>>()
                     .get(key.image)
                     .ok_or_else(|| anyhow::anyhow!("dome image is unavailable"))?;
-                let cube = super::environment_map::latlong_cubemap(image, key.size, key.tint)?;
+                let (cube, sun) = if key.sun {
+                    super::environment_map::latlong_cubemap_with_sun(image, key.size, key.tint)?
+                } else {
+                    (
+                        super::environment_map::latlong_cubemap(image, key.size, key.tint)?,
+                        None,
+                    )
+                };
                 if let Some(old) = owned.take() {
                     clear(world, camera, old);
                 }
+                let sun = sun.map(|sun| {
+                    world
+                        .spawn((
+                            UsdDomeSun(sun),
+                            DirectionalLight {
+                                shadow_maps_enabled: true,
+                                ..default()
+                            },
+                        ))
+                        .id()
+                });
                 let previous = world.get::<EnvironmentMapLight>(camera).cloned();
                 let cube = world.resource_mut::<Assets<Image>>().add(cube);
                 let baker = world
@@ -353,11 +411,15 @@ fn update(world: &mut World) {
                 owned = Some(OwnedEnvironment {
                     key,
                     baker,
+                    sun,
                     previous,
                     applied: None,
                 });
             }
             let state = owned.as_mut().unwrap();
+            if let Some(sun) = state.sun {
+                place_sun(world, sun, intensity, rotation);
+            }
             let maps = world.get::<EnvironmentMapLight>(state.baker).cloned();
             if let Some(mut maps) = maps {
                 maps.intensity = intensity;
@@ -451,6 +513,7 @@ mod tests {
                 UsdDomeEnvironmentSource {
                     dome,
                     face_size: 16,
+                    sun: false,
                 },
             ))
             .id();
@@ -551,6 +614,7 @@ mod tests {
                 UsdDomeEnvironmentSource {
                     dome: other_dome,
                     face_size: 16,
+                    sun: false,
                 },
             ))
             .id();

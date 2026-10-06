@@ -279,15 +279,27 @@ fn setup(
         .and_then(|factor| factor.parse::<u32>().ok())
         .unwrap_or(1)
         .max(1);
+    // Linear captures keep the exposed scene light, untoned, for grading
+    // elsewhere.
+    let linear = std::env::var_os("USD_FRAME_LINEAR").is_some();
     let mut image = Image::new_target_texture(
         width * supersample,
         height * supersample,
-        TextureFormat::Rgba8UnormSrgb,
+        if linear {
+            TextureFormat::Rgba16Float
+        } else {
+            TextureFormat::Rgba8UnormSrgb
+        },
         None,
     );
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
-    commands.spawn((
+    let tonemapping = if linear {
+        Tonemapping::None
+    } else {
+        tonemapping
+    };
+    let mut camera = commands.spawn((
         Camera3d::default(),
         exposure,
         tonemapping,
@@ -303,6 +315,9 @@ fn setup(
             ..default()
         },
     ));
+    if linear {
+        camera.insert(bevy::camera::Hdr);
+    }
     commands.insert_resource(Target(target, supersample));
     let scene: Handle<UsdScene> = server.load(asset.0.clone());
     let root = commands
@@ -377,15 +392,20 @@ fn record(
                   mut recorder: ResMut<Recorder>,
                   mut exit: MessageWriter<AppExit>| {
                 let output = recorder.frames[recorder.next].output.clone();
-                let saved = downsample(&event.image, supersample)
-                    .try_into_dynamic()
-                    .map_err(|error| error.to_string())
-                    .and_then(|image| {
-                        image
-                            .to_rgba8()
-                            .save(&output)
-                            .map_err(|error| error.to_string())
-                    });
+                let saved = if event.image.texture_descriptor.format == TextureFormat::Rgba16Float {
+                    save_linear(&event.image, supersample, &output)
+                        .map_err(|error| error.to_string())
+                } else {
+                    downsample(&event.image, supersample)
+                        .try_into_dynamic()
+                        .map_err(|error| error.to_string())
+                        .and_then(|image| {
+                            image
+                                .to_rgba8()
+                                .save(&output)
+                                .map_err(|error| error.to_string())
+                        })
+                };
                 if let Err(error) = saved {
                     eprintln!("{}: {error}", output.display());
                     exit.write(AppExit::error());
@@ -585,4 +605,45 @@ fn downsample(image: &Image, factor: u32) -> Image {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     )
+}
+
+/// Writes a half-float RGBA capture as a PFM file of linear RGB, each pixel
+/// the mean of a `factor`×`factor` block.
+fn save_linear(image: &Image, factor: u32, output: &std::path::Path) -> std::io::Result<()> {
+    let source = image
+        .data
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("capture holds no data"))?;
+    let half = |at: usize| {
+        let bits = u16::from_le_bytes([source[at], source[at + 1]]);
+        let magnitude = match (bits >> 10) & 31 {
+            0 => f32::from(bits & 1023) * 2f32.powi(-24),
+            31 => f32::INFINITY,
+            exponent => {
+                (1.0 + f32::from(bits & 1023) / 1024.0) * 2f32.powi(i32::from(exponent) - 15)
+            }
+        };
+        if bits & 0x8000 == 0 {
+            magnitude
+        } else {
+            -magnitude
+        }
+    };
+    let (width, height) = (image.width() / factor, image.height() / factor);
+    let mut pfm = format!("PF\n{width} {height}\n-1.0\n").into_bytes();
+    // PFM rows run from the bottom of the image up.
+    for y in (0..height).rev() {
+        for x in 0..width {
+            for channel in 0..3 {
+                let mut sum = 0.0;
+                for row in y * factor..(y + 1) * factor {
+                    for column in x * factor..(x + 1) * factor {
+                        sum += half((((row * image.width() + column) * 4 + channel) * 2) as usize);
+                    }
+                }
+                pfm.extend((sum / (factor * factor) as f32).to_le_bytes());
+            }
+        }
+    }
+    std::fs::write(output, pfm)
 }

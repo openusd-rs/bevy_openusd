@@ -494,8 +494,8 @@ fn scene_lighting(
         for sun in &suns {
             commands.entity(sun).insert((
                 bevy::light::CascadeShadowConfigBuilder {
-                    first_cascade_far_bound: span.0 * 0.01,
-                    maximum_distance: span.0 * 0.25,
+                    first_cascade_far_bound: span.0 * 0.002,
+                    maximum_distance: span.0 * 0.2,
                     ..default()
                 }
                 .build(),

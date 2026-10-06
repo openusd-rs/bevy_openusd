@@ -151,7 +151,21 @@ impl MeshRoute {
             } else {
                 super::cache::Assembly::Standard
             };
-        let mesh_handle = super::cache::intern_assembled_mesh(world, read, assembly);
+        // A bound material that colors the mesh is applied before the mesh is
+        // stored, so the uncolored version never reaches the GPU.
+        let color = super::material::resolve_material(ctx, world)
+            .ok()
+            .flatten()
+            .map(|(_, _, color)| color)
+            .filter(|color| !matches!(color, super::material::MaterialColor::Open));
+        let mesh_handle = match color {
+            Some(color) => {
+                let mut mesh = assembly.build(world, read);
+                color.apply(world, &mut mesh, read);
+                super::cache::intern_mesh(world, mesh)
+            }
+            None => super::cache::intern_assembled_mesh(world, read, assembly),
+        };
         let material = super::cache::intern_material(world, super::material::default_material(ctx));
         if world.get_entity(entity).is_err() {
             return false;
@@ -171,6 +185,47 @@ impl MeshRoute {
 mod mesh_matching_tests {
     use super::*;
     use crate::read::geom::read_mesh_at;
+
+    #[test]
+    fn material_colors_apply_before_the_mesh_is_stored() {
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def Mesh "Leaf" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+    point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    color3f[] primvars:displayColor = [(1,0,0), (0,1,0), (0,0,1)] (interpolation = "vertex")
+    rel material:binding = </Green>
+}
+def Material "Green" {
+    token outputs:surface.connect = </Green/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.2, 0.5, 0.1)
+        token outputs:surface
+    }
+}
+"#,
+        )
+        .open_stage()
+        .unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let live = crate::live::LiveStage::new(stage);
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        let meshes = world.resource::<Assets<Mesh>>();
+        assert_eq!(meshes.len(), 1, "only the colored mesh is stored");
+        let mesh = &world.get::<Mesh3d>(map.entity("/Leaf").unwrap()).unwrap().0;
+        assert!(
+            meshes
+                .get(mesh)
+                .unwrap()
+                .attribute(Mesh::ATTRIBUTE_COLOR)
+                .is_none()
+        );
+    }
 
     #[test]
     fn sampled_mesh_geometry_and_primvars_follow_independent_roots() {

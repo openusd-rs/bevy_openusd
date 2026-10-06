@@ -562,6 +562,15 @@ pub(crate) fn stage_up_axis(stage: &Stage) -> Quat {
     }
 }
 
+/// Meters per stage unit, defaulting to USD's centimeters.
+pub(crate) fn stage_meters_per_unit(stage: &Stage) -> f32 {
+    match stage.stage_metadata("metersPerUnit").ok().flatten() {
+        Some(openusd::sdf::Value::Double(meters)) => meters as f32,
+        Some(openusd::sdf::Value::Float(meters)) => meters,
+        _ => 0.01,
+    }
+}
+
 /// The namespace parent of a prim path — the pseudo-root `/` for a top-level
 /// prim, so it parents onto the stage-root entity.
 fn parent_path(path: &str) -> &str {

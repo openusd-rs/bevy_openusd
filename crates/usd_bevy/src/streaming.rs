@@ -171,11 +171,7 @@ pub(crate) struct StreamingState {
 
 impl StreamingState {
     pub(crate) fn new(stage: &Stage) -> Self {
-        let meters_per_unit = match stage.stage_metadata("metersPerUnit").ok().flatten() {
-            Some(openusd::sdf::Value::Double(meters)) => meters as f32,
-            Some(openusd::sdf::Value::Float(meters)) => meters,
-            _ => 0.01,
-        };
+        let meters_per_unit = crate::live::stage_meters_per_unit(stage);
         Self {
             units: HashMap::new(),
             discovered: Vec::new(),

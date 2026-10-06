@@ -35,6 +35,7 @@ pub mod gpu_skin;
 pub mod instancer;
 pub mod light;
 pub mod material;
+pub mod medium_material;
 pub mod meta;
 pub mod native;
 pub mod points;

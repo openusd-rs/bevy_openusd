@@ -61,6 +61,29 @@ pub(crate) struct PreparedSubsets {
     warning: Option<String>,
 }
 
+impl PreparedSubsets {
+    /// Each subset's mesh and material, then the faces no subset claims with
+    /// `material`; just `mesh` when there are no subsets.
+    pub(crate) fn draws(
+        &self,
+        mesh: &Handle<Mesh>,
+        material: &Handle<StandardMaterial>,
+    ) -> Vec<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        if self.parts.is_empty() {
+            return vec![(mesh.clone(), material.clone())];
+        }
+        self.parts
+            .iter()
+            .map(|(_, mesh, material, _)| (mesh.clone(), material.clone()))
+            .chain(
+                self.remainder
+                    .iter()
+                    .map(|mesh| (mesh.clone(), material.clone())),
+            )
+            .collect()
+    }
+}
+
 pub(crate) fn prepare(
     ctx: &RouteCtx,
     world: &mut World,
@@ -91,38 +114,87 @@ pub(crate) fn prepare(
             }
         }
     }
-    let face_indices = crate::mesh::MeshFaceIndices::new(read);
+    let flat_shared = world
+        .resource::<Assets<Mesh>>()
+        .get(source)
+        .is_some_and(|mesh| mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
+    let face_indices = if flat_shared {
+        crate::mesh::MeshFaceIndices::new_flat_shared(read)
+    } else {
+        crate::mesh::MeshFaceIndices::new(read)
+    };
     for subset in &read.subsets {
         let Ok(path) = ctx.path.append_path(subset.name.as_str()) else {
             continue;
         };
         let subset_ctx = RouteCtx::at(ctx.stage, &path, ctx.time);
-        let (material, mut warnings) = match super::material::resolve_material(&subset_ctx, world) {
-            Ok(Some((handle, warnings))) => {
-                let mut material = world
-                    .resource::<Assets<StandardMaterial>>()
-                    .get(&handle)
-                    .unwrap()
-                    .clone();
-                super::material::apply_sidedness(ctx, &mut material);
-                (super::cache::intern_material(world, material), warnings)
-            }
-            Ok(None) => (default_material.clone(), Vec::new()),
-            Err(error) => (default_material.clone(), vec![error.to_string()]),
+        let (material, mut warnings, color) =
+            match super::material::resolve_material(&subset_ctx, world) {
+                Ok(Some((handle, warnings, color))) => {
+                    let mut material = world
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&handle)
+                        .unwrap()
+                        .clone();
+                    super::material::apply_sidedness(ctx, &mut material);
+                    (
+                        super::cache::intern_material_with_sheen(
+                            world,
+                            material,
+                            super::cache::sheen_of(world, handle.id()),
+                        ),
+                        warnings,
+                        color,
+                    )
+                }
+                Ok(None) => (
+                    default_material.clone(),
+                    Vec::new(),
+                    super::material::MaterialColor::Open,
+                ),
+                Err(error) => (
+                    default_material.clone(),
+                    vec![error.to_string()],
+                    super::material::MaterialColor::Open,
+                ),
+            };
+        let normal_mapped = world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&material)
+            .is_some_and(|material| material.normal_map_texture.is_some());
+        // A normal-mapped part draws from the stored-normal form.
+        let mesh = if flat_shared && normal_mapped {
+            let standard =
+                super::cache::intern_assembled_mesh(world, read, super::cache::Assembly::Standard);
+            subset_mesh(
+                world.resource::<Assets<Mesh>>().get(&standard)?,
+                crate::mesh::MeshFaceIndices::new(read).for_faces(&subset.indices),
+            )
+        } else {
+            subset_mesh(
+                world.resource::<Assets<Mesh>>().get(source)?,
+                face_indices.for_faces(&subset.indices),
+            )
         };
-        let mesh = subset_mesh(
-            world.resource::<Assets<Mesh>>().get(source)?,
-            face_indices.for_faces(&subset.indices),
-        );
-        if let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material) {
-            super::material::warn_geometry_inputs(&mesh, material, &mut warnings);
+        let mut mesh = super::cache::intern_mesh(world, mesh);
+        if color == super::material::MaterialColor::Owned
+            && let Some(plain) = super::cache::without_vertex_colors(world, &mesh)
+        {
+            mesh = plain;
         }
-        prepared.parts.push((
-            subset.name.clone(),
-            super::cache::intern_mesh(world, mesh),
-            material,
-            warnings,
-        ));
+        if let Some(tangent) =
+            super::cache::with_tangents_for(world, &mesh, &material, read.uvs.is_some())
+        {
+            mesh = tangent;
+        }
+        if let Some(part) = world.resource::<Assets<Mesh>>().get(&mesh)
+            && let Some(material) = world.resource::<Assets<StandardMaterial>>().get(&material)
+        {
+            super::material::warn_geometry_inputs(part, material, &mut warnings);
+        }
+        prepared
+            .parts
+            .push((subset.name.clone(), mesh, material, warnings));
     }
     let remaining: Vec<i32> = assigned
         .iter()
@@ -163,9 +235,13 @@ pub(crate) fn apply(world: &mut World, entity: Entity, prepared: &PreparedSubset
                     ))
                     .id()
             });
+        super::flat_material::clear(world, child);
+        super::sheen_material::clear(world, child);
         world
             .entity_mut(child)
             .insert((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+        super::flat_material::attach_if_normalless(world, child);
+        super::sheen_material::attach_if_sheen(world, child);
         world
             .entity_mut(child)
             .remove::<bevy::camera::primitives::Aabb>();
@@ -244,6 +320,11 @@ impl PrimRoute for SubsetRoute {
             clear(world, entity);
             return;
         }
+        let read = match read {
+            std::borrow::Cow::Borrowed(cage) => super::subdivision::limit_cage(ctx, world, cage)
+                .map_or(std::borrow::Cow::Borrowed(cage), std::borrow::Cow::Owned),
+            owned => owned,
+        };
         let Some(source) = world
             .get::<Mesh3d>(entity)
             .map(|mesh| mesh.0.clone())
@@ -256,7 +337,7 @@ impl PrimRoute for SubsetRoute {
             clear(world, entity);
             return;
         };
-        let Some(default_material) = super::flat_material::base_handle(world, entity) else {
+        let Some(default_material) = super::wrapped::base_handle(world, entity) else {
             return;
         };
         let Some(prepared) = prepare(ctx, world, &read, &source, &default_material) else {

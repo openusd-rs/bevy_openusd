@@ -12,9 +12,45 @@ use bevy::render::render_resource::{
 /// exposure and world rotation belong on the environment-light component.
 /// Sampling uses pixel centers, periodic longitude and clamped latitude.
 /// Cubemap Z is reflected to match Bevy's environment-light shader sampling.
-/// Faces are power-of-two, at most 1024 pixels; sources are at most 16M pixels.
+/// Faces are power-of-two, at most 1024 pixels; sources over 16M pixels are
+/// box-filtered down first.
 /// The output is suitable for Bevy's `GeneratedEnvironmentMapLight`.
 pub fn latlong_cubemap(source: &Image, face_size: u32, tint: [f32; 3]) -> anyhow::Result<Image> {
+    let (pixels, width, height) = linear_pixels(source, face_size, tint)?;
+    cubemap(&pixels, width, height, face_size, tint)
+}
+
+/// A dome's sun: a compact hotspot far brighter than the rest of the sky.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DomeSun {
+    /// Unit direction toward the sun, in the environment's own space.
+    pub direction: Vec3,
+    /// Linear RGB irradiance it delivers to a surface facing it.
+    pub irradiance: Vec3,
+}
+
+/// [`latlong_cubemap`] with the sun, when the image has one, taken out of the
+/// map and returned separately, so it can light the scene as a directional
+/// light with shadows without being counted twice.
+pub fn latlong_cubemap_with_sun(
+    source: &Image,
+    face_size: u32,
+    tint: [f32; 3],
+) -> anyhow::Result<(Image, Option<DomeSun>)> {
+    let (mut pixels, width, height) = linear_pixels(source, face_size, tint)?;
+    let sun = extract_sun(&mut pixels, width, height).map(|sun| DomeSun {
+        irradiance: sun.irradiance * Vec3::from_array(tint),
+        ..sun
+    });
+    Ok((cubemap(&pixels, width, height, face_size, tint)?, sun))
+}
+
+/// The source's linear radiance, averaged down to at most 16M pixels.
+fn linear_pixels(
+    source: &Image,
+    face_size: u32,
+    tint: [f32; 3],
+) -> anyhow::Result<(Vec<Vec3>, u32, u32)> {
     let size = source.texture_descriptor.size;
     anyhow::ensure!(
         source.texture_descriptor.dimension == TextureDimension::D2
@@ -32,13 +68,12 @@ pub fn latlong_cubemap(source: &Image, face_size: u32, tint: [f32; 3]) -> anyhow
         "environment tint must be finite and nonnegative"
     );
     let count = u64::from(size.width) * u64::from(size.height);
-    anyhow::ensure!(count <= 16_777_216, "environment source exceeds 16M pixels");
     let stride = match source.texture_descriptor.format {
         TextureFormat::Rgba8Unorm
         | TextureFormat::Rgba8UnormSrgb
         | TextureFormat::Bgra8Unorm
         | TextureFormat::Bgra8UnormSrgb => 4,
-        TextureFormat::Rgba16Float => 8,
+        TextureFormat::Rgba16Float | TextureFormat::Rgba16Unorm => 8,
         TextureFormat::Rgba32Float => 16,
         format => anyhow::bail!("unsupported environment pixel format: {format:?}"),
     };
@@ -50,19 +85,48 @@ pub fn latlong_cubemap(source: &Image, face_size: u32, tint: [f32; 3]) -> anyhow
                 .is_some_and(|data| data.len() == count as usize * stride),
         "environment requires one complete CPU-resident mip level"
     );
+    // Larger sources are averaged over `factor`² blocks down to 16M pixels.
+    let factor = (1..)
+        .find(|factor| u64::from(size.width / factor) * u64::from(size.height / factor) <= 1 << 24)
+        .unwrap();
+    let (width, height) = (size.width / factor, size.height / factor);
     let mut pixels = Vec::new();
-    pixels.try_reserve_exact(count as usize)?;
-    for y in 0..size.height {
-        for x in 0..size.width {
-            let c = source.get_color_at(x, y)?.to_linear();
-            let rgb = [c.red, c.green, c.blue];
-            anyhow::ensure!(
-                rgb.iter().all(|v| v.is_finite() && *v >= 0.0),
-                "environment contains invalid radiance"
-            );
-            pixels.push(Vec3::from_array(rgb));
+    pixels.try_reserve_exact(width as usize * height as usize)?;
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = Vec3::ZERO;
+            for dy in 0..factor {
+                for dx in 0..factor {
+                    let c = source
+                        .get_color_at(x * factor + dx, y * factor + dy)?
+                        .to_linear();
+                    let rgb = [c.red, c.green, c.blue];
+                    anyhow::ensure!(
+                        rgb.iter().all(|v| v.is_finite() && *v >= 0.0),
+                        "environment contains invalid radiance"
+                    );
+                    sum += Vec3::from_array(rgb);
+                }
+            }
+            pixels.push(sum / (factor * factor) as f32);
         }
     }
+    Ok((pixels, width, height))
+}
+
+/// Samples latitude-longitude `pixels` into the six faces of a cubemap.
+fn cubemap(
+    pixels: &[Vec3],
+    width: u32,
+    height: u32,
+    face_size: u32,
+    tint: [f32; 3],
+) -> anyhow::Result<Image> {
+    let size = Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
     let mut data = Vec::new();
     data.try_reserve_exact(face_size as usize * face_size as usize * 6 * 8)?;
     for face in 0..6 {
@@ -131,9 +195,142 @@ fn sample(pixels: &[Vec3], width: u32, height: u32, direction: Vec3) -> Vec3 {
         .lerp(texel(x0, y0 + 1).lerp(texel(x0 + 1, y0 + 1), tx), ty)
 }
 
+/// How much brighter than the sphere's mean a peak must be to count as a sun.
+const SUN_CONTRAST: f32 = 100.0;
+/// Angular radius taken as the sun, and the outer edge of the sky around it.
+const SUN_RADIUS: f32 = 3.0 * std::f32::consts::PI / 180.0;
+const SKY_RADIUS: f32 = 6.0 * std::f32::consts::PI / 180.0;
+
+fn luminance(c: Vec3) -> f32 {
+    c.dot(Vec3::new(0.2126, 0.7152, 0.0722))
+}
+
+fn pixel_direction(x: u32, y: u32, width: u32, height: u32) -> Vec3 {
+    let longitude = (0.5 - (x as f32 + 0.5) / width as f32) * std::f32::consts::TAU;
+    let latitude = (0.5 - (y as f32 + 0.5) / height as f32) * std::f32::consts::PI;
+    Vec3::new(
+        latitude.cos() * longitude.sin(),
+        latitude.sin(),
+        latitude.cos() * longitude.cos(),
+    )
+}
+
+fn pixel_solid_angle(y: u32, width: u32, height: u32) -> f32 {
+    let latitude = (0.5 - (y as f32 + 0.5) / height as f32) * std::f32::consts::PI;
+    std::f32::consts::TAU / width as f32 * std::f32::consts::PI / height as f32 * latitude.cos()
+}
+
+/// Takes a distinct sun out of `pixels`: its radiance above the surrounding
+/// sky, summed over solid angle, becomes the irradiance, and the sky color
+/// fills its place.
+fn extract_sun(pixels: &mut [Vec3], width: u32, height: u32) -> Option<DomeSun> {
+    let (mut total, mut peak, mut at) = (0.0, 0.0, 0);
+    for (index, color) in pixels.iter().enumerate() {
+        let value = luminance(*color);
+        total += value * pixel_solid_angle(index as u32 / width, width, height);
+        if value > peak {
+            (peak, at) = (value, index);
+        }
+    }
+    if !(peak > SUN_CONTRAST * total / (4.0 * std::f32::consts::PI)) {
+        return None;
+    }
+    let center = pixel_direction(at as u32 % width, at as u32 / width, width, height);
+    let center_row = at as f32 / width as f32;
+    let reach = (SKY_RADIUS / std::f32::consts::PI * height as f32).ceil() + 1.0;
+    let rows = (center_row - reach).max(0.0) as u32..((center_row + reach) as u32 + 1).min(height);
+    let (mut sky, mut weight) = (Vec3::ZERO, 0.0);
+    for y in rows.clone() {
+        for x in 0..width {
+            let angle = pixel_direction(x, y, width, height).dot(center);
+            if angle <= SUN_RADIUS.cos() && angle > SKY_RADIUS.cos() {
+                let area = pixel_solid_angle(y, width, height);
+                sky += pixels[(y * width + x) as usize] * area;
+                weight += area;
+            }
+        }
+    }
+    let sky = if weight > 0.0 {
+        sky / weight
+    } else {
+        Vec3::ZERO
+    };
+    let (mut irradiance, mut direction) = (Vec3::ZERO, Vec3::ZERO);
+    for y in rows {
+        for x in 0..width {
+            let toward = pixel_direction(x, y, width, height);
+            let pixel = &mut pixels[(y * width + x) as usize];
+            if toward.dot(center) <= SUN_RADIUS.cos() || luminance(*pixel) <= 2.0 * luminance(sky) {
+                continue;
+            }
+            let excess = (*pixel - sky).max(Vec3::ZERO) * pixel_solid_angle(y, width, height);
+            irradiance += excess;
+            direction += toward * luminance(excess);
+            *pixel = sky;
+        }
+    }
+    (luminance(irradiance) > 0.0).then(|| DomeSun {
+        direction: direction.normalize(),
+        irradiance,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_distinct_sun_leaves_the_map_as_a_directional_irradiance() {
+        let (width, height) = (2048u32, 1024u32);
+        let toward = Vec3::new(0.3, 0.8, -0.52).normalize();
+        let radius = 1.0_f32.to_radians();
+        let mut data = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let inside = pixel_direction(x, y, width, height).dot(toward) > radius.cos();
+                let rgb = if inside {
+                    [20000.0, 18000.0, 15000.0]
+                } else {
+                    [0.5, 0.6, 0.8]
+                };
+                for value in [rgb[0], rgb[1], rgb[2], 1.0f32] {
+                    data.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        let image = Image::new(
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            data,
+            TextureFormat::Rgba32Float,
+            bevy::asset::RenderAssetUsages::all(),
+        );
+        let (cube, sun) = latlong_cubemap_with_sun(&image, 16, [1.0; 3]).unwrap();
+        let sun = sun.expect("sun found");
+        assert!(sun.direction.dot(toward) > 0.99995, "{:?}", sun.direction);
+        let disc = std::f32::consts::TAU * (1.0 - radius.cos());
+        let expected = (18000.0 - 0.6) * disc;
+        assert!(
+            (sun.irradiance.y - expected).abs() < 0.05 * expected,
+            "{} vs {expected}",
+            sun.irradiance.y
+        );
+        for face in 0..6 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    let c = cube.get_color_at_3d(x, y, face).unwrap().to_linear();
+                    assert!(c.red < 1.0 && c.green < 1.0 && c.blue < 1.0, "{c:?}");
+                }
+            }
+        }
+        let (_, none) =
+            latlong_cubemap_with_sun(&constant([0.5, 0.6, 0.8, 1.0]), 1, [1.0; 3]).unwrap();
+        assert!(none.is_none());
+    }
 
     fn constant(color: [f32; 4]) -> Image {
         Image::new_fill(

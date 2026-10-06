@@ -42,7 +42,90 @@ pub fn try_into_path(path: impl IntoPath) -> Result<Path, PathParseError> {
 /// parseable; construct it with [`Path::default`].
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Path {
-    path: std::sync::Arc<String>,
+    path: std::sync::Arc<PathText>,
+}
+
+/// A path's text with its hash computed once, so hashing a [`Path`] writes
+/// one word instead of rehashing the text, and unequal paths usually differ
+/// on the hash before the text is compared.
+struct PathText {
+    hash: u64,
+    text: String,
+}
+
+impl PathText {
+    fn new(text: String) -> Self {
+        Self {
+            hash: text_hash(&text),
+            text,
+        }
+    }
+}
+
+/// FxHash-style word hash of `text`.
+fn text_hash(text: &str) -> u64 {
+    const SEED: u64 = 0xf135_7aea_2e62_a9c5;
+    let mut chunks = text.as_bytes().chunks_exact(8);
+    let mut hash = text.len() as u64;
+    for chunk in &mut chunks {
+        let word = u64::from_le_bytes(chunk.try_into().expect("an 8-byte chunk"));
+        hash = (hash.rotate_left(5) ^ word).wrapping_mul(SEED);
+    }
+    let mut tail = [0u8; 8];
+    tail[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
+    (hash.rotate_left(5) ^ u64::from_le_bytes(tail)).wrapping_mul(SEED)
+}
+
+impl Default for PathText {
+    fn default() -> Self {
+        Self::new(String::new())
+    }
+}
+
+impl std::ops::Deref for PathText {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl fmt::Debug for PathText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.text, f)
+    }
+}
+
+impl fmt::Display for PathText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl PartialEq for PathText {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.text == other.text
+    }
+}
+
+impl Eq for PathText {}
+
+impl PartialOrd for PathText {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PathText {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.text.cmp(&other.text)
+    }
+}
+
+impl std::hash::Hash for PathText {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
 }
 
 impl fmt::Display for Path {
@@ -94,7 +177,7 @@ impl FromStr for Path {
 
     fn from_str(s: &str) -> Result<Path, Self::Err> {
         Path::validate(s)?;
-        Ok(Path { path: s.to_owned().into() })
+        Ok(Path::from_text(s.to_owned()))
     }
 }
 
@@ -108,7 +191,15 @@ impl Path {
 
     #[inline]
     pub fn abs_root() -> Path {
-        Path::from_str_unchecked("/")
+        static ROOT: std::sync::LazyLock<Path> = std::sync::LazyLock::new(|| Path::from_text("/".to_owned()));
+        ROOT.clone()
+    }
+
+    /// Wraps already-checked `text`, keeping its allocation.
+    fn from_text(text: String) -> Path {
+        Path {
+            path: std::sync::Arc::new(PathText::new(text)),
+        }
     }
 
     /// Wraps `path` without validating it — the fast path for strings a
@@ -121,7 +212,7 @@ impl Path {
             path.is_empty() || Path::validate(path).is_ok(),
             "from_str_unchecked on invalid path {path:?}"
         );
-        Path { path: path.to_owned().into() }
+        Path::from_text(path.to_owned())
     }
 
     #[inline]
@@ -176,7 +267,7 @@ impl Path {
         new_path.push('.');
         new_path.push_str(property);
 
-        Ok(Path { path: new_path.into() })
+        Ok(Path::from_text(new_path))
     }
 
     /// Appends `path` (parsed if given as a string) under this path with a `/`
@@ -235,7 +326,7 @@ impl Path {
             format!("{}/{}", self.path, append.path)
         };
 
-        Ok(Path { path: combined.into() })
+        Ok(Path::from_text(combined))
     }
 
     pub fn is_property_path(&self) -> bool {
@@ -1331,7 +1422,7 @@ impl TryFrom<String> for Path {
     /// Validates `value` and shares its existing text allocation.
     fn try_from(value: String) -> Result<Path, PathParseError> {
         Path::validate(&value)?;
-        Ok(Path { path: value.into() })
+        Ok(Path::from_text(value))
     }
 }
 
@@ -1406,7 +1497,7 @@ mod tests {
     /// Builds a `Path` directly from `path`, skipping validation — for
     /// exercising lenient read-side behavior on malformed input.
     fn raw(path: &str) -> Path {
-        Path { path: path.to_owned().into() }
+        Path::from_text(path.to_owned())
     }
 
     #[test]

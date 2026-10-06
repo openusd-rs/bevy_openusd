@@ -146,6 +146,36 @@ pub enum FaceVaryingInterpolation {
 /// Refines a sampled Catmull–Clark or bilinear mesh with supported rules and primvars.
 /// Surfaces without remaining sharpness or holes use limit normals; other normals approximate the finite mesh.
 pub fn refine_mesh(mesh: &ReadMesh, rules: &ReadSubdivision, levels: u32) -> Result<ReadMesh> {
+    refine_read_mesh(mesh, rules, levels, false).map(|(mesh, _)| mesh)
+}
+
+/// Where each refined face corner lies on the control mesh: its control
+/// face, and its (u, v) across that face with corner 0 at (0, 0), corner 1
+/// at (1, 0) and corner 3 at (0, 1), as per-face textures such as Ptex
+/// address a quad. Faces of other sizes carry their corners' values only.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FaceCoordinates {
+    pub faces: Vec<usize>,
+    pub corners: Vec<[f32; 2]>,
+}
+
+/// Refines like [`refine_mesh`] and reports where every refined face corner
+/// lies on the control mesh.
+pub fn refine_mesh_with_coordinates(
+    mesh: &ReadMesh,
+    rules: &ReadSubdivision,
+    levels: u32,
+) -> Result<(ReadMesh, FaceCoordinates)> {
+    let (refined, coordinates) = refine_read_mesh(mesh, rules, levels, true)?;
+    Ok((refined, coordinates.expect("coordinates were requested")))
+}
+
+fn refine_read_mesh(
+    mesh: &ReadMesh,
+    rules: &ReadSubdivision,
+    levels: u32,
+    coordinates: bool,
+) -> Result<(ReadMesh, Option<FaceCoordinates>)> {
     rules.validate(mesh.points.len(), mesh.face_vertex_counts.len())?;
     let linear = mesh.subdivision_scheme == SubdivScheme::Bilinear && rules.scheme == "bilinear";
     ensure!(
@@ -184,6 +214,20 @@ pub fn refine_mesh(mesh: &ReadMesh, rules: &ReadSubdivision, levels: u32) -> Res
         linear,
         Some(rules),
     )?;
+    let coordinates = if coordinates {
+        const QUAD: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let corners: Vec<[f32; 2]> = mesh
+            .face_vertex_counts
+            .iter()
+            .flat_map(|&count| (0..count.max(0) as usize).map(|corner| QUAD[corner.min(3)]))
+            .collect();
+        Some(FaceCoordinates {
+            faces: surface.source_faces.clone(),
+            corners: surface.interpolate_face_varying_linear(&corners)?,
+        })
+    } else {
+        None
+    };
     let uvs = mesh
         .uvs
         .as_ref()
@@ -227,6 +271,21 @@ pub fn refine_mesh(mesh: &ReadMesh, rules: &ReadSubdivision, levels: u32) -> Res
         .iter()
         .map(|face| !holes.contains(face))
         .collect();
+    let coordinates = coordinates.map(|coordinates| FaceCoordinates {
+        faces: coordinates
+            .faces
+            .into_iter()
+            .zip(&keep)
+            .filter_map(|(face, &kept)| kept.then_some(face))
+            .collect(),
+        corners: coordinates
+            .corners
+            .chunks(4)
+            .zip(&keep)
+            .filter(|(_, kept)| **kept)
+            .flat_map(|(corners, _)| corners.iter().copied())
+            .collect(),
+    });
     let hard_edges = surface.hard_edges;
     let hard_corners = surface.hard_corners;
     let output = ReadMesh {
@@ -268,7 +327,7 @@ pub fn refine_mesh(mesh: &ReadMesh, rules: &ReadSubdivision, levels: u32) -> Res
     {
         output.normals = Some(crate::subdivision_normals::limit_normals(&output));
     }
-    Ok(output)
+    Ok((output, coordinates))
 }
 
 fn boundary_faces(mesh: &ReadMesh) -> BTreeSet<usize> {
@@ -467,7 +526,6 @@ impl RefinedSurface {
                 Ok(ReadSubset {
                     name: subset.name.clone(),
                     indices: selected.into_iter().collect(),
-                    material_binding: subset.material_binding.clone(),
                 })
             })
             .collect()
@@ -1469,6 +1527,57 @@ def Mesh "M" {
     }
 
     #[test]
+    fn refined_corners_know_their_place_on_the_control_faces() {
+        let snippet = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def Mesh "Strip" {
+    point3f[] points = [(0,0,0),(1,0,0),(2,0,0),(3,0,0),(0,1,0),(1,1,0),(2,1,0),(3,1,0)]
+    int[] faceVertexCounts = [4,4,4]
+    int[] faceVertexIndices = [0,1,5,4, 1,2,6,5, 2,3,7,6]
+    int[] holeIndices = [1]
+}
+"#,
+        );
+        let stage = snippet.open_stage().unwrap();
+        let path = openusd::sdf::path("/Strip").unwrap();
+        let mesh = crate::read::geom::read_mesh_at(&stage, &path, None)
+            .unwrap()
+            .unwrap();
+        let rules = crate::read::subdivision::read_subdivision_at(&stage, &path, None).unwrap();
+        let (refined, coordinates) = refine_mesh_with_coordinates(&mesh, &rules, 2).unwrap();
+        assert_eq!(coordinates.faces.len(), refined.face_vertex_counts.len());
+        assert_eq!(coordinates.corners.len(), refined.face_vertex_indices.len());
+        assert_eq!(
+            coordinates.faces.iter().filter(|&&face| face == 0).count(),
+            16
+        );
+        assert_eq!(
+            coordinates.faces.iter().filter(|&&face| face == 2).count(),
+            16
+        );
+        // Each control face is covered once by its refined faces, which
+        // reach every corner of its unit square.
+        for face in [0, 2] {
+            let mut area = 0.0;
+            let mut reached = BTreeSet::new();
+            for (corners, _) in coordinates
+                .corners
+                .chunks(4)
+                .zip(&coordinates.faces)
+                .filter(|(_, source)| **source == face)
+            {
+                let [a, b, c, d] = [corners[0], corners[1], corners[2], corners[3]];
+                area += 0.5 * ((c[0] - a[0]) * (d[1] - b[1]) - (c[1] - a[1]) * (d[0] - b[0]));
+                reached.extend(corners.iter().map(|uv| (uv[0].to_bits(), uv[1].to_bits())));
+            }
+            assert!((area - 1.0).abs() < 1e-6, "face {face}: {area}");
+            for corner in [[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] {
+                assert!(reached.contains(&(corner[0].to_bits(), corner[1].to_bits())));
+            }
+        }
+    }
+
+    #[test]
     fn closed_cube_refines_interior_vertices_and_preserves_winding() {
         let points = [
             [-1.0, -1.0, -1.0],
@@ -1866,10 +1975,7 @@ def Material "Material" {}
         );
         assert_eq!(output.display_opacity.as_ref().unwrap().values, [0.25]);
         assert_eq!(output.subsets[0].indices, (0..16).collect::<Vec<_>>());
-        assert_eq!(
-            output.subsets[0].material_binding,
-            input.subsets[0].material_binding
-        );
+        assert_eq!(output.subsets[0].name, input.subsets[0].name);
         let rendered = crate::mesh::mesh_from_usd(&output);
         assert_eq!(rendered.indices().unwrap().len(), 96);
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
@@ -1922,22 +2028,18 @@ def Material "Material" {}
             BoundaryInterpolation::EdgeOnly,
         )
         .unwrap();
-        let binding = openusd::sdf::Path::new("/Materials/Red").unwrap();
         let subsets = vec![
             ReadSubset {
                 name: "red".into(),
                 indices: vec![1, 1],
-                material_binding: Some(binding.clone()),
             },
             ReadSubset {
                 name: "empty".into(),
                 indices: vec![],
-                material_binding: None,
             },
         ];
         let output = surface.remap_subsets(&subsets).unwrap();
         assert_eq!(output[0].name, "red");
-        assert_eq!(output[0].material_binding, Some(binding));
         assert_eq!(output[0].indices.len(), 16);
         assert!(
             output[0]

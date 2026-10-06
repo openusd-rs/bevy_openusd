@@ -1,0 +1,30 @@
+#usda 1.0
+
+def "World" (
+    variants = {
+        string lod = "proxy"
+    }
+    prepend variantSets = "lod"
+)
+{
+    variantSet "lod" = {
+        "proxy" {
+            def "Inst" (
+                instanceable = true
+                prepend references = </Proto>
+            )
+            {
+                def "Local"
+                {
+                }
+            }
+        }
+    }
+}
+
+def "Proto"
+{
+    def "ProtoChild"
+    {
+    }
+}

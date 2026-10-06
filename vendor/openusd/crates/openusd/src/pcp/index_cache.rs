@@ -5312,6 +5312,23 @@ def "Model" (
         Ok(())
     }
 
+    /// An instance authored inside a variant selected on its parent keeps that
+    /// variant's own opinions out of the prototype (spec 11.3.3): the variant
+    /// node is instance-local, while the reference authored in it stays shared.
+    #[test]
+    fn ancestral_variant_prototype() -> Result<()> {
+        let root = format!("{}/fixtures/instancing_ancestral_variant.usda", manifest_dir());
+        let (graph, mut cache) = single_layer_stack(&root);
+
+        let inst = sdf::path("/World/Inst")?;
+        let proto = cache
+            .prototype_of(&graph, &inst)?
+            .expect("the variant-authored prim is an instance");
+        assert_eq!(cache.prim_children(&graph, &proto)?, vec![Token::from("ProtoChild")]);
+        assert_eq!(cache.prim_children(&graph, &inst)?, vec![Token::from("ProtoChild")]);
+        Ok(())
+    }
+
     /// A prototype root whose shared content carries `instanceable = true` — the
     /// opinion an asset authors on the prim its referencing layer targets — is
     /// still not an instance (spec 11.3.3). The opinion describes the prims that

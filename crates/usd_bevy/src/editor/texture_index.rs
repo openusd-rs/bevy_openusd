@@ -1,5 +1,5 @@
 use openusd::{sdf::Path, usd::Stage};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(PartialEq, Eq)]
 struct Revision {
@@ -42,7 +42,7 @@ impl TextureIndex {
         &mut self,
         stage: &Stage,
         changes: &super::layer_changes::LayerChanges,
-    ) -> Result<BTreeSet<(String, bool)>, String> {
+    ) -> Result<crate::source::TextureRequests, String> {
         let revision = Revision::read(stage, changes);
         if !revision.reusable() || self.revision.as_ref() != Some(&revision) {
             self.revision = None;

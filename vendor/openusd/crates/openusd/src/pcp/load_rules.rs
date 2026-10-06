@@ -256,17 +256,12 @@ impl LoadRules {
     /// descendants once it has been inspected, so an intervening explicit
     /// rule shadows whatever is beneath it.
     fn has_loaded_descendant(&self, path: &Path) -> bool {
-        let descendants: Vec<(&Path, &Rule)> = self.strict_subtree(path).collect();
-        let mut i = 0;
-        while i < descendants.len() {
-            let (cur_path, cur_rule) = descendants[i];
+        let mut descendants = self.strict_subtree(path).peekable();
+        while let Some((cur_path, cur_rule)) = descendants.next() {
             if matches!(cur_rule, Rule::All | Rule::Only) {
                 return true;
             }
-            i += 1;
-            while i < descendants.len() && descendants[i].0.has_prefix(cur_path) {
-                i += 1;
-            }
+            while descendants.next_if(|(p, _)| p.has_prefix(cur_path)).is_some() {}
         }
         false
     }
@@ -278,28 +273,28 @@ impl LoadRules {
     /// already accounts for whatever a shallower entry's own lookahead
     /// (step 4) sees through it.
     ///
-    /// Verifies safety empirically, recomputing every authored path's
-    /// effective rule after each tentative removal, because an authored
+    /// Verifies safety empirically, recomputing the effective rule of every
+    /// authored path a tentative removal can reach, because an authored
     /// entry's raw rule can differ from its own effective rule (an authored
     /// [`Rule::None`] shadowing a loaded descendant still resolves to
     /// [`Rule::Only`]), and a removal can change a shallower ancestor's
     /// decision through that same lookahead, not just the removed entry's
-    /// own path. Rule tables are small (authored entries, not one per prim),
-    /// so this stays cheap.
-    // TODO(perf): O(candidates² · effective_rule cost) — every candidate's
-    // removal re-verifies the whole `expected` set. Called on every
-    // `IndexCache::set_load_rules` and every `make_relative_to` (so once per
-    // instance registration); scoping the re-verification to entries near
-    // each candidate, rather than the full table, would help if a profile
-    // ever shows a stage with many authored rules paying for this.
+    /// own path. An entry reaches only its own path, its ancestors (through
+    /// that lookahead) and its descendants (which inherit it), so only those
+    /// are rechecked, which keeps a table with thousands of streamed entries
+    /// cheap.
     pub fn minimize(&mut self) {
         let mut candidates: Vec<Path> = self.rules.keys().cloned().collect();
         candidates.sort_by_key(|p| std::cmp::Reverse(p.prim_element_count()));
-        let expected: Vec<(Path, Rule)> = candidates.iter().map(|p| (p.clone(), self.effective_rule(p))).collect();
+        let expected: BTreeMap<Path, Rule> = candidates.iter().map(|p| (p.clone(), self.effective_rule(p))).collect();
         for candidate in candidates {
             let rule = self.rules[&candidate];
             self.rules.remove(&candidate);
-            let safe = expected.iter().all(|(p, r)| self.effective_rule(p) == *r);
+            let ancestors = candidate.ancestors().filter_map(|path| expected.get_key_value(&path));
+            let descendants = expected
+                .range((Bound::Excluded(&candidate), Bound::Unbounded))
+                .take_while(|(p, _)| p.has_prefix(&candidate));
+            let safe = ancestors.chain(descendants).all(|(p, r)| self.effective_rule(p) == *r);
             if !safe {
                 self.rules.insert(candidate, rule);
             }
@@ -685,6 +680,50 @@ mod tests {
         rules.add_rule(p("/"), Rule::All);
         rules.minimize();
         assert!(rules.is_empty());
+    }
+
+    /// Rechecking only a removed entry's ancestors and descendants keeps
+    /// exactly the entries a recheck of the whole table keeps.
+    #[test]
+    fn minimize_matches_full_verification() {
+        fn full(rules: &mut LoadRules) {
+            let mut candidates: Vec<Path> = rules.rules.keys().cloned().collect();
+            candidates.sort_by_key(|p| std::cmp::Reverse(p.prim_element_count()));
+            let expected: Vec<(Path, Rule)> = candidates
+                .iter()
+                .map(|p| (p.clone(), rules.effective_rule(p)))
+                .collect();
+            for candidate in candidates {
+                let rule = rules.rules[&candidate];
+                rules.rules.remove(&candidate);
+                if !expected.iter().all(|(p, r)| rules.effective_rule(p) == *r) {
+                    rules.rules.insert(candidate, rule);
+                }
+            }
+        }
+        let paths: Vec<Path> = ["/", "/A", "/A/B", "/A/B/C", "/A/D", "/E", "/E/F", "/E/F/G", "/E/H"]
+            .into_iter()
+            .map(p)
+            .collect();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..2000 {
+            let mut table = LoadRules::all();
+            for path in &paths {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                match seed % 5 {
+                    0 => table.rules.insert(path.clone(), Rule::All),
+                    1 => table.rules.insert(path.clone(), Rule::Only),
+                    2 => table.rules.insert(path.clone(), Rule::None),
+                    _ => None,
+                };
+            }
+            let mut reference = table.clone();
+            full(&mut reference);
+            table.minimize();
+            assert_eq!(table.rules(), reference.rules());
+        }
     }
 
     #[test]

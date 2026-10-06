@@ -3201,15 +3201,58 @@ impl Stage {
     /// inactive, unloaded, undefined, or abstract prims when the predicate
     /// excludes those regions.
     pub fn traverse(&self, predicate: PrimPredicate, mut visitor: impl FnMut(&sdf::Path)) -> Result<()> {
+        let mut traversal = self.traversal(sdf::Path::abs_root(), predicate)?;
+        while let Some(path) = traversal.next(self)? {
+            visitor(&path);
+        }
+        Ok(())
+    }
+
+    /// Starts a depth-first traversal of `root` and its descendants under
+    /// `predicate`, visiting them in [`traverse`](Self::traverse) order. It is
+    /// empty when an ancestor of `root` prunes it: inactive, unloaded,
+    /// undefined, abstract, or an instance the predicate stops at.
+    pub fn traversal(&self, root: impl sdf::IntoPath, predicate: PrimPredicate) -> Result<Traversal> {
+        let root = sdf::try_into_path(root)?.prim_path();
+        let mut traversal = Traversal {
+            predicate,
+            stack: Vec::new(),
+        };
+        let needed = predicate.consulted_bits();
+        for ancestor in root.strict_ancestors().filter(|path| !path.is_abs_root()) {
+            let status = self.prim_status_masked(&ancestor, needed)?;
+            if predicate.prunes_descendants(status)
+                || (!predicate.traverse_instance_proxies && status.contains(PrimStatus::INSTANCE))
+            {
+                return Ok(traversal);
+            }
+        }
+        traversal.stack.push((root, None));
+        Ok(traversal)
+    }
+}
+
+/// A depth-first walk over composed prims that advances one matching prim at
+/// a time, so a large walk can be spread over several calls. Created by
+/// [`Stage::traversal`].
+#[derive(Debug, Clone)]
+pub struct Traversal {
+    predicate: PrimPredicate,
+    stack: Vec<(sdf::Path, Option<u64>)>,
+}
+
+impl Traversal {
+    /// The next prim matching the predicate, or `None` once the walk is done.
+    pub fn next(&mut self, stage: &Stage) -> Result<Option<sdf::Path>> {
+        let predicate = self.predicate;
         let needed = predicate.consulted_bits();
         let inherit_default = predicate == PrimPredicate::DEFAULT_PROXIES;
-        let mut stack = vec![(sdf::Path::abs_root(), None)];
-
-        while let Some((path, parent_epoch)) = stack.pop() {
+        while let Some((path, parent_epoch)) = self.stack.pop() {
             let mut child_epoch = None;
+            let mut matched = false;
             if path != sdf::Path::abs_root() {
                 let local = match parent_epoch {
-                    Some(epoch) => self.masked(&path, |g, cache| cache.default_child_status(g, &path, epoch))?,
+                    Some(epoch) => stage.masked(&path, |g, cache| cache.default_child_status(g, &path, epoch))?,
                     None => None,
                 };
                 let status = if let Some((active, defined, abstract_)) = local {
@@ -3220,36 +3263,43 @@ impl Stage {
                     status.set(PrimStatus::ABSTRACT, abstract_);
                     status
                 } else {
-                    let before = inherit_default.then(|| self.population_epoch());
-                    let status = self.prim_status_masked(&path, needed)?;
-                    if before.is_some_and(|epoch| epoch == self.population_epoch()) {
+                    let before = inherit_default.then(|| stage.population_epoch());
+                    let status = stage.prim_status_masked(&path, needed)?;
+                    if before.is_some_and(|epoch| epoch == stage.population_epoch()) {
                         child_epoch = before;
                     }
                     status
                 };
-                if predicate.matches(status) {
-                    visitor(&path);
-                }
-                if predicate.prunes_descendants(status) {
-                    continue;
-                }
+                matched = predicate.matches(status);
                 // Stop at instance prims unless instance proxies are requested;
                 // the instance's subtree is the prototype's (spec 11.3.3).
-                if !predicate.traverse_instance_proxies && status.contains(PrimStatus::INSTANCE) {
+                if predicate.prunes_descendants(status)
+                    || (!predicate.traverse_instance_proxies && status.contains(PrimStatus::INSTANCE))
+                {
+                    if matched {
+                        return Ok(Some(path));
+                    }
                     continue;
                 }
             }
 
-            let children = self.masked(&path, |g, cache| cache.prim_children(g, &path))?;
+            let children = stage.masked(&path, |g, cache| cache.prim_children(g, &path))?;
             // Push in reverse so first child is visited first.
             for name in children.iter().rev() {
                 if let Ok(child) = path.append_path(name.as_str()) {
-                    stack.push((child, child_epoch));
+                    self.stack.push((child, child_epoch));
                 }
             }
+            if matched {
+                return Ok(Some(path));
+            }
         }
+        Ok(None)
+    }
 
-        Ok(())
+    /// Prims queued but not yet visited, a lower bound on what remains.
+    pub fn pending(&self) -> usize {
+        self.stack.len()
     }
 }
 
@@ -3766,6 +3816,47 @@ mod tests {
     /// composition in opposite orders, so the same contextual target stacks get
     /// different numeric ids per stage, and the installed target must still
     /// resolve the stack matching its captured source chain.
+    /// A traversal rooted below the pseudo-root visits exactly the full
+    /// traversal's prims under that root, in the same order, and is empty
+    /// below an ancestor that prunes it.
+    #[test]
+    fn subtree_traversal_matches_full_order() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("root.usda");
+        fs::write(
+            &path,
+            r#"#usda 1.0
+def Xform "A" {
+    def Xform "B" { def Mesh "C" {} def Mesh "D" {} }
+    def Xform "E" (active = false) { def Mesh "F" {} }
+    over "G" { def Mesh "H" {} }
+    def Xform "I" {}
+}
+"#,
+        )?;
+        let stage = Stage::open(path.to_str().unwrap())?;
+        let mut full = Vec::new();
+        stage.traverse(PrimPredicate::DEFAULT, |p| full.push(p.clone()))?;
+        let walk = |root: &str| -> Result<Vec<sdf::Path>> {
+            let mut traversal = stage.traversal(root, PrimPredicate::DEFAULT)?;
+            let mut seen = Vec::new();
+            while let Some(path) = traversal.next(&stage)? {
+                seen.push(path);
+            }
+            Ok(seen)
+        };
+        assert_eq!(walk("/")?, full);
+        for root in ["/A", "/A/B", "/A/I"] {
+            let root_path = sdf::Path::new(root)?;
+            let expected: Vec<_> = full.iter().filter(|p| p.has_prefix(&root_path)).cloned().collect();
+            assert_eq!(walk(root)?, expected, "{root}");
+        }
+        assert!(walk("/A/E/F")?.is_empty());
+        assert!(walk("/A/G/H")?.is_empty());
+        assert!(walk("/Missing")?.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn cross_stage_arc_stack() -> Result<()> {
         let dir = tempfile::tempdir()?;

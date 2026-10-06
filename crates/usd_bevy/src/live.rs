@@ -156,7 +156,8 @@ impl Drop for LiveStage {
 /// `Resource` (the paths are owned `String`s, the entities are ids).
 #[derive(Resource, Default)]
 pub struct PrimEntities {
-    by_path: HashMap<String, Entity>,
+    /// Ordered, so a prim's descendants form one range (`subtree`).
+    by_path: std::collections::BTreeMap<String, Entity>,
     by_entity: HashMap<Entity, String>,
     projected_types: HashMap<String, Option<String>>,
 }
@@ -206,7 +207,7 @@ impl PrimEntities {
         self.by_path.is_empty()
     }
 
-    fn remember_type(&mut self, stage: &Stage, path: &str) {
+    pub(crate) fn remember_type(&mut self, stage: &Stage, path: &str) {
         if let Ok(prim) = stage.prim(path)
             && let Ok(kind) = prim.type_name()
         {
@@ -218,10 +219,20 @@ impl PrimEntities {
     /// Every `(path, entity)` whose path is `prefix` or a descendant of it —
     /// the set a `resynced` parent invalidates.
     pub fn subtree(&self, prefix: &str) -> Vec<(String, Entity)> {
-        let with_slash = format!("{prefix}/");
-        self.by_path
-            .iter()
-            .filter(|(p, _)| p.as_str() == prefix || p.starts_with(&with_slash))
+        let own = self.by_path.get_key_value(prefix);
+        let below: Box<dyn Iterator<Item = (&String, &Entity)>> = if prefix == "/" {
+            Box::new(self.by_path.iter().filter(|(p, _)| p.as_str() != "/"))
+        } else {
+            // Prim names sort after `/`, so "/A/B/…" lies between "/A/B/" and "/A/B0".
+            let start = format!("{prefix}/");
+            let end = format!("{prefix}0");
+            Box::new(self.by_path.range::<str, _>((
+                std::ops::Bound::Included(start.as_str()),
+                std::ops::Bound::Excluded(end.as_str()),
+            )))
+        };
+        own.into_iter()
+            .chain(below)
             .map(|(p, e)| (p.clone(), *e))
             .collect()
     }
@@ -551,6 +562,15 @@ pub(crate) fn stage_up_axis(stage: &Stage) -> Quat {
     }
 }
 
+/// Meters per stage unit, defaulting to USD's centimeters.
+pub(crate) fn stage_meters_per_unit(stage: &Stage) -> f32 {
+    match stage.stage_metadata("metersPerUnit").ok().flatten() {
+        Some(openusd::sdf::Value::Double(meters)) => meters as f32,
+        Some(openusd::sdf::Value::Float(meters)) => meters,
+        _ => 0.01,
+    }
+}
+
 /// The namespace parent of a prim path — the pseudo-root `/` for a top-level
 /// prim, so it parents onto the stage-root entity.
 fn parent_path(path: &str) -> &str {
@@ -588,7 +608,7 @@ fn traverse_predicate() -> openusd::usd::PrimPredicate {
 /// Snapshot the registry out of the world (Arc-cheap `Clone`), falling back to
 /// the built-in routes when none is installed — so direct `project_stage` /
 /// `apply_changes` calls in tests work without wiring a registry.
-fn registry_of(world: &World) -> SchemaRegistry {
+pub(crate) fn registry_of(world: &World) -> SchemaRegistry {
     world
         .get_resource::<SchemaRegistry>()
         .cloned()
@@ -805,14 +825,19 @@ pub fn project_stage_under(world: &mut World, stage: &Stage, parent: Entity) -> 
 
 /// A projection under way: the prims of one instance still to spawn, in
 /// pre-order so every parent exists before its children. `begin` spawns the
-/// stage-root child and lists the prims; `step` projects as many as fit in a
-/// time budget, so a large stage is spread over frames instead of stalling
-/// the app.
+/// stage-root child; `step` walks and projects as many prims as fit in a time
+/// budget, so both composing and projecting a large stage are spread over
+/// frames instead of stalling the app.
 pub struct ProjectionJob {
     root: Entity,
-    pending: std::collections::VecDeque<openusd::sdf::Path>,
-    total: usize,
+    /// The walk still to project; `None` once it is done.
+    traversal: Option<openusd::usd::Traversal>,
+    done: usize,
     materials: Option<crate::route::material::ProjectionMaterials>,
+    /// A subtree root that is already projected and is not spawned again.
+    skip: Option<openusd::sdf::Path>,
+    /// The prims projected so far, when recorded.
+    projected: Option<Vec<openusd::sdf::Path>>,
 }
 
 impl ProjectionJob {
@@ -831,21 +856,63 @@ impl ProjectionJob {
             ))
             .id();
         map.insert("/", root);
-        let mut pending = std::collections::VecDeque::new();
-        let _ = stage.traverse(traverse_predicate(), |path: &openusd::sdf::Path| {
-            pending.push_back(path.clone());
-        });
-        let total = pending.len();
+        let traversal = stage
+            .traversal(openusd::sdf::Path::abs_root(), traverse_predicate())
+            .inspect_err(|error| warn!("USD projection skipped: {error}"))
+            .ok();
         let materials = Some(crate::route::material::ProjectionMaterials::new(stage));
         (
             Self {
                 root,
-                pending,
-                total,
+                traversal,
+                done: 0,
                 materials,
+                skip: None,
+                projected: None,
             },
             map,
         )
+    }
+
+    /// Projects the descendants of `path`, whose own entity already exists,
+    /// parenting anything without a projected parent to `root`. It uses the
+    /// material memo the caller has installed, if any.
+    pub(crate) fn subtree(stage: &Stage, path: &openusd::sdf::Path, root: Entity) -> Self {
+        let traversal = stage
+            .traversal(path.clone(), traverse_predicate())
+            .inspect_err(|error| warn!("USD projection of {path} skipped: {error}"))
+            .ok();
+        Self {
+            root,
+            traversal,
+            done: 0,
+            materials: None,
+            skip: Some(path.clone()),
+            projected: None,
+        }
+    }
+
+    /// Records every prim projected from now on, for [`Self::drain_projected`].
+    pub(crate) fn record_projected(&mut self) {
+        self.projected.get_or_insert_default();
+    }
+
+    /// The prims projected since the last drain.
+    pub(crate) fn drain_projected(&mut self) -> Vec<openusd::sdf::Path> {
+        self.projected
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    /// Whether this projects a subtree at or below `path`.
+    pub(crate) fn covers(&self, path: &openusd::sdf::Path) -> bool {
+        self.skip.as_ref().is_some_and(|root| root.has_prefix(path))
+    }
+
+    /// The prim whose descendants this projects, for a subtree job.
+    pub(crate) fn subtree_root(&self) -> Option<&openusd::sdf::Path> {
+        self.skip.as_ref()
     }
 
     /// Project prims until `budget` is spent; `true` once nothing is left.
@@ -856,18 +923,33 @@ impl ProjectionJob {
         map: &mut PrimEntities,
         budget: std::time::Duration,
     ) -> bool {
-        if self.pending.is_empty() {
+        let Some(traversal) = self.traversal.as_mut() else {
             self.materials = None;
             return true;
-        }
-        let previous_materials =
-            world.remove_non_send::<crate::route::material::ProjectionMaterials>();
-        if let Some(materials) = self.materials.take() {
+        };
+        let own_materials = self.materials.take();
+        let owns_materials = own_materials.is_some();
+        let previous_materials = own_materials.and_then(|materials| {
+            let previous = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
             world.insert_non_send(materials);
-        }
+            previous
+        });
         let registry = registry_of(world);
         let started = bevy::platform::time::Instant::now();
-        while let Some(path) = self.pending.pop_front() {
+        let _primvars = crate::read::geom::PrimvarScope::begin(stage);
+        let finished = loop {
+            let path = match traversal.next(stage) {
+                Ok(Some(path)) => path,
+                Ok(None) => break true,
+                Err(error) => {
+                    warn!("USD projection stopped early: {error}");
+                    break true;
+                }
+            };
+            if self.skip.as_ref() == Some(&path) {
+                continue;
+            }
+            self.done += 1;
             let parent = map.entity(parent_path(path.as_str())).unwrap_or(self.root);
             let entity = world
                 .spawn((
@@ -880,26 +962,34 @@ impl ProjectionJob {
             map.insert(path.as_str().to_string(), entity);
             registry.project_prim(stage, &path, world, entity);
             map.remember_type(stage, path.as_str());
-            if started.elapsed() >= budget {
-                break;
+            if let Some(projected) = &mut self.projected {
+                projected.push(path);
             }
-        }
-        if self.pending.is_empty() {
+            if started.elapsed() >= budget {
+                break traversal.pending() == 0;
+            }
+        };
+        if finished {
+            self.traversal = None;
             crate::route::residency::materialize(world, stage, map);
         }
-        let materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
-        if !self.pending.is_empty() {
-            self.materials = materials;
+        if owns_materials {
+            let materials = world.remove_non_send::<crate::route::material::ProjectionMaterials>();
+            if !finished {
+                self.materials = materials;
+            }
+            if let Some(previous) = previous_materials {
+                world.insert_non_send(previous);
+            }
         }
-        if let Some(previous) = previous_materials {
-            world.insert_non_send(previous);
-        }
-        self.pending.is_empty()
+        finished
     }
 
-    /// Prims projected so far and the total to project.
+    /// Prims projected so far and a lower bound on the total, which grows as
+    /// the walk discovers more of the stage.
     pub fn progress(&self) -> (usize, usize) {
-        (self.total - self.pending.len(), self.total)
+        let pending = self.traversal.as_ref().map_or(0, |walk| walk.pending());
+        (self.done, self.done + pending)
     }
 }
 
@@ -1278,6 +1368,50 @@ pub(crate) fn reconcile(
     reconcile_scoped(world, live, map, collect_animation, None, &[]);
 }
 
+/// The traversable prims a reconcile can touch: every prim for `None` scopes,
+/// otherwise those under the outermost `scopes` plus whichever `exact` prims
+/// are traversable.
+fn present_prims(
+    stage: &Stage,
+    scopes: Option<&[String]>,
+    exact: &[String],
+) -> openusd::Result<std::collections::HashSet<String>> {
+    let mut current = std::collections::HashSet::new();
+    let Some(scopes) = scopes.filter(|scopes| !scopes.iter().any(|scope| scope == "/")) else {
+        stage.traverse(traverse_predicate(), |p: &openusd::sdf::Path| {
+            current.insert(p.as_str().to_string());
+        })?;
+        return Ok(current);
+    };
+    let inside = |path: &str, scope: &str| {
+        path.strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    for scope in scopes {
+        if scopes.iter().any(|outer| inside(scope, outer)) {
+            continue;
+        }
+        let mut traversal = stage.traversal(openusd::sdf::path(scope)?, traverse_predicate())?;
+        while let Some(path) = traversal.next(stage)? {
+            current.insert(path.as_str().to_string());
+        }
+    }
+    for prim in exact {
+        if current.contains(prim) {
+            continue;
+        }
+        let path = openusd::sdf::path(prim)?;
+        if stage
+            .traversal(path.clone(), traverse_predicate())?
+            .next(stage)?
+            .is_some_and(|first| first == path)
+        {
+            current.insert(prim.clone());
+        }
+    }
+    Ok(current)
+}
+
 /// Reconciles only `subtrees` and the prims in `exact`, so entities outside
 /// them keep whatever state the app has given them since projection.
 pub(crate) fn reconcile_opinions(
@@ -1429,14 +1563,13 @@ fn reconcile_scoped(
     };
     let stage = &live.stage;
     let registry = registry_of(world);
-    let mut current: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let traversal = stage.traverse(traverse_predicate(), |p: &openusd::sdf::Path| {
-        current.insert(p.as_str().to_string());
-    });
-    if let Err(error) = traversal {
-        bevy::log::warn!("USD reconciliation skipped: {error}");
-        return;
-    }
+    let current = match present_prims(stage, scopes, exact) {
+        Ok(current) => current,
+        Err(error) => {
+            bevy::log::warn!("USD reconciliation skipped: {error}");
+            return;
+        }
+    };
 
     // Despawn entities for prims no longer present (never the `/` stage root).
     let stale: Vec<(String, Entity)> = map
@@ -1752,6 +1885,31 @@ pub fn current_transform(stage: &Stage, prim_path: &str) -> Option<Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subtree_holds_descendants_and_not_name_siblings() {
+        let mut map = PrimEntities::default();
+        let paths = [
+            "/", "/A", "/A/B", "/A/B/C", "/A/B/C/D", "/A/B0", "/A/Bx", "/A/B_y", "/AB",
+        ];
+        for (index, path) in paths.iter().enumerate() {
+            map.insert(*path, Entity::from_raw_u32(index as u32 + 1).unwrap());
+        }
+        let names = |prefix: &str| {
+            let mut found: Vec<_> = map
+                .subtree(prefix)
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
+            found.sort();
+            found
+        };
+        assert_eq!(names("/A/B"), ["/A/B", "/A/B/C", "/A/B/C/D"]);
+        assert_eq!(names("/A/B/C/D"), ["/A/B/C/D"]);
+        assert_eq!(names("/A").len(), 7);
+        assert_eq!(names("/").len(), paths.len());
+        assert!(names("/Missing").is_empty());
+    }
 
     #[test]
     fn cached_animation_discovery_matches_inheritance_and_material_collections() {
@@ -3744,7 +3902,7 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
                                 .0,
                         )
                         .unwrap();
-                    assert!(material.unlit);
+                    assert_eq!(material.unlit, kind == 0, "points stay unlit, curves shade");
                     if kind == 1 {
                         let expected = if time < 10.0 {
                             vec![0, 1, 1, 2, 2, 3]

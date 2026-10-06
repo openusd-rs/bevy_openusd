@@ -307,9 +307,9 @@ impl EditorSession {
                 accepted.insert(outer);
             }
         }
-        let prepared = decode_textures(&source, changed_requests)?;
+        let prepared = decode_textures(&source, changed_requests, &requests.environment_only)?;
         let mut publication = TexturePublication {
-            requests,
+            requests: requests.textures,
             prepared,
             consumers: Vec::new(),
         };

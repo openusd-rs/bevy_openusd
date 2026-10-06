@@ -29,17 +29,20 @@ pub fn mesh_from_usd(read: &ReadMesh) -> Mesh {
     mesh_from_usd_subset(read, None)
 }
 
-/// Whether per-face or per-corner primvars require duplicated render vertices.
+/// Whether flat shading or per-corner primvars require duplicated vertices.
 fn expands_vertices(read: &ReadMesh) -> bool {
+    uses_flat_normals(read) || primvars_expand(read)
+}
+
+/// Whether per-face or per-corner primvars alone require duplicated vertices.
+fn primvars_expand(read: &ReadMesh) -> bool {
     let non_indexed = |interp: Interpolation| {
         matches!(interp, Interpolation::FaceVarying | Interpolation::Uniform)
     };
-    uses_flat_normals(read)
-        || read
-            .normals
-            .as_ref()
-            .map(|p| non_indexed(p.interpolation))
-            .unwrap_or(false)
+    read.normals
+        .as_ref()
+        .map(|p| non_indexed(p.interpolation))
+        .unwrap_or(false)
         || read
             .uvs
             .as_ref()
@@ -180,8 +183,15 @@ pub(crate) struct MeshFaceIndices {
 
 impl MeshFaceIndices {
     pub(crate) fn new(read: &ReadMesh) -> Self {
-        let flat = uses_flat_normals(read);
-        let expanded = expands_vertices(read);
+        Self::with_layout(read, uses_flat_normals(read), expands_vertices(read))
+    }
+
+    /// Face indices in the [`assemble_flat_shared`] vertex layout.
+    pub(crate) fn new_flat_shared(read: &ReadMesh) -> Self {
+        Self::with_layout(read, false, primvars_expand(read))
+    }
+
+    fn with_layout(read: &ReadMesh, flat: bool, expanded: bool) -> Self {
         let positions: std::borrow::Cow<'_, [[f32; 3]]> = if expanded {
             corner_points(read)
                 .into_iter()
@@ -286,9 +296,42 @@ pub(crate) fn assemble_mesh(read: &ReadMesh, face_subset: Option<&[i32]>, tangen
     } else if expand {
         build_expanded(read, face_subset)
     } else {
-        build_indexed(read, face_subset)
+        build_indexed(read, face_subset, true)
     };
 
+    let mut mesh = new_mesh(positions, uvs, colors, indices);
+    if let Some(ns) = normals {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, ns);
+    } else {
+        mesh.compute_smooth_normals();
+    }
+    if tangents && read.uvs.is_some() {
+        if let Err(e) = mesh.generate_tangents() {
+            bevy::log::debug!("mesh: generate_tangents failed: {e}");
+        }
+    }
+    mesh
+}
+
+/// A flat-shaded mesh for a material that derives normals per fragment:
+/// points stay shared unless a per-corner primvar splits them, and no
+/// normals are stored.
+pub(crate) fn assemble_flat_shared(read: &ReadMesh, face_subset: Option<&[i32]>) -> Mesh {
+    let (positions, _, uvs, colors, indices) = if primvars_expand(read) {
+        build_expanded(read, face_subset)
+    } else {
+        build_indexed(read, face_subset, false)
+    };
+    new_mesh(positions, uvs, colors, indices)
+}
+
+/// A triangle list from built attributes, with `uvs` flipped to Bevy's V.
+fn new_mesh(
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Option<Vec<[f32; 4]>>,
+    indices: Vec<u32>,
+) -> Mesh {
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
@@ -308,16 +351,6 @@ pub(crate) fn assemble_mesh(read: &ReadMesh, face_subset: Option<&[i32]>, tangen
     // average across — it requires an indexed mesh to find adjacent
     // faces.
     mesh.insert_indices(Indices::U32(indices));
-    if let Some(ns) = normals {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, ns);
-    } else {
-        mesh.compute_smooth_normals();
-    }
-    if tangents && read.uvs.is_some() {
-        if let Err(e) = mesh.generate_tangents() {
-            bevy::log::debug!("mesh: generate_tangents failed: {e}");
-        }
-    }
     mesh
 }
 
@@ -331,24 +364,26 @@ type BuiltMesh = (
 );
 
 /// Build the common case: indexed triangle list, one vertex per USD point.
-/// Uses vertex-level or constant interpolation only.
-fn build_indexed(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
+/// Uses vertex-level or constant interpolation only. `with_normals` false
+/// leaves normals out.
+fn build_indexed(read: &ReadMesh, face_subset: Option<&[i32]>, with_normals: bool) -> BuiltMesh {
     let positions = read.points.clone();
 
     // Preserve authored normals; generate angle-weighted normals otherwise.
-    let normals = read
-        .normals
-        .as_ref()
-        .and_then(|p| match p.interpolation {
-            Interpolation::Vertex | Interpolation::Varying => {
-                Some(expand_vertex_primvar(p, positions.len(), [0.0, 1.0, 0.0]))
-            }
-            Interpolation::Constant if !p.values.is_empty() => {
-                Some(vec![corner_normal(read, 0, 0, 0); positions.len()])
-            }
-            _ => None,
-        })
-        .or_else(|| Some(compute_point_smooth_normals(read)));
+    let normals = with_normals.then(|| {
+        read.normals
+            .as_ref()
+            .and_then(|p| match p.interpolation {
+                Interpolation::Vertex | Interpolation::Varying => {
+                    Some(expand_vertex_primvar(p, positions.len(), [0.0, 1.0, 0.0]))
+                }
+                Interpolation::Constant if !p.values.is_empty() => {
+                    Some(vec![corner_normal(read, 0, 0, 0); positions.len()])
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| compute_point_smooth_normals(read))
+    });
 
     let uvs = read
         .uvs

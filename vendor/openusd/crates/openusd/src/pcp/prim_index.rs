@@ -729,7 +729,8 @@ impl PrimIndex {
     ///
     /// This is the C++ `!PcpNodeRef::HasTransitiveDirectDependency` partition.
     /// Instance-local = the local root plus the contiguous *trunk* of ancestral
-    /// references/payloads the instance prim is nested under — the outer arcs
+    /// references, payloads and variant selections the instance prim is
+    /// nested under — the outer arcs
     /// reaching down to, but stopping above, the instanceable arc. The
     /// instanceable arc (the first reference/payload introduced at the instance's
     /// own depth) and everything below it stay shared, as do the implied classes
@@ -761,7 +762,7 @@ impl PrimIndex {
             local[i] = match node.arc {
                 // The local site (and the synthetic root) is always instance-local.
                 ArcType::Root => true,
-                ArcType::Reference | ArcType::Payload => {
+                ArcType::Reference | ArcType::Payload | ArcType::Variant => {
                     self.graph.depth_below_introduction(NodeId(i as u32)) > below_instance
                         && node.parent.is_some_and(|p| local[p.idx()])
                 }
@@ -1051,8 +1052,9 @@ impl PrimIndex {
         // (e.g. a reference whose target shares the prim's path): it still
         // crosses into another layer, so a child must follow it to reach the
         // referenced layer's descendants. Root nodes are skipped — the child's
-        // own root `L` site rescans the root layer stack.
-        let mut ancestor_arcs = parent_ctx.ancestor_arcs.clone();
+        // own root `L` site rescans the root layer stack. Only this prim's arcs
+        // are kept; the ancestors' are read from their own cached contexts.
+        let mut ancestor_arcs = Vec::new();
         // Record each non-Root node's namespace mapping so a descendant prim can
         // translate a relative inherit/specialize target authored at this prim
         // into the composed namespace (cache `precache_inherit_targets`).
@@ -1123,8 +1125,9 @@ pub(crate) struct CompositionContext {
     /// Variant selections accumulated from all ancestor compositions.
     /// First-opinion-wins: strongest ancestor's selection takes priority.
     pub selections: HashMap<String, String>,
-    /// Ancestor composition arcs with namespace mappings.
-    /// Used for descendant namespace remapping and implied inherit propagation.
+    /// This prim's own composition arcs with namespace mappings. A descendant
+    /// gathers them from every cached ancestor for namespace remapping and
+    /// implied inherit propagation.
     pub ancestor_arcs: Vec<AncestorArc>,
     /// Variant fallback selections for sets without authored opinions.
     /// Propagated unchanged from the stage configuration.

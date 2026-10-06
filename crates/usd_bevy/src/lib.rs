@@ -26,7 +26,9 @@ pub mod route;
 pub mod skeleton_overlay;
 pub mod snippet;
 pub mod source;
+pub mod streaming;
 pub mod subdivision;
+mod subdivision_limit;
 mod subdivision_normals;
 pub mod sync;
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]

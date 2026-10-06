@@ -190,6 +190,8 @@ pub(crate) struct InstanceRuntime {
     >,
     /// Material memo for variant switches on this runtime's own stage.
     pub materials: Option<crate::route::material::ProjectionMaterials>,
+    /// Units and pending work of a root with [`UsdStreaming`](crate::streaming::UsdStreaming).
+    pub streaming: Option<crate::streaming::StreamingState>,
 }
 
 #[cfg(test)]

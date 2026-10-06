@@ -3,6 +3,7 @@
 //! (`crate::live`) reads geometry/transforms/visibility through these.
 
 pub mod curves;
+pub mod displacement;
 pub mod geom;
 pub mod ptex;
 pub mod shade;

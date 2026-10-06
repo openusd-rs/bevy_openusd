@@ -120,7 +120,7 @@ impl Assembly {
         }
     }
 
-    fn build(self, world: &mut World, read: &ReadMesh) -> Mesh {
+    pub(crate) fn build(self, world: &mut World, read: &ReadMesh) -> Mesh {
         match self {
             Assembly::Standard => crate::mesh::assemble_mesh(read, None, false),
             Assembly::StandardTangents => {

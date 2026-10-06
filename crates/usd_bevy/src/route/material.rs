@@ -312,6 +312,10 @@ fn warn_material(world: &mut World, entity: Entity, ctx: &RouteCtx, message: Str
     world.entity_mut(entity).insert(UsdMaterialWarning(message));
 }
 
+/// How far light travels through a murky medium, in meters, before taking on
+/// its color: the clarity of a sandy lagoon.
+const MURKY_METERS: f32 = 2.0;
+
 fn to_standard_material(
     read: &ReadPreviewMaterial,
     assets: Option<&AssetServer>,
@@ -353,17 +357,22 @@ fn to_standard_material(
     }
     // Light passing through takes the transmission tint, which Bevy reads
     // from the base color.
-    // A medium that also transmits diffusely, as murky water does, colors
-    // all the light passing through it.
+    // Light passing through takes the refraction tint. A medium that also
+    // transmits diffusely, as murky water does, takes on its own color over
+    // the depth of water the light crosses.
     if let Some(transmission) = read.transmission.filter(|value| *value > 0.0) {
         m.specular_transmission = transmission.min(1.0);
-        let scattered = read
+        let [r, g, b] = read.transmission_color.unwrap_or([1.0; 3]);
+        m.base_color = Color::linear_rgba(r, g, b, m.base_color.alpha());
+        if let Some([r, g, b]) = read
             .diffuse_transmission
             .is_some_and(|gain| gain > 0.0)
             .then_some(read.diffuse_transmission_color)
-            .flatten();
-        let [r, g, b] = scattered.or(read.transmission_color).unwrap_or([1.0; 3]);
-        m.base_color = Color::linear_rgba(r, g, b, m.base_color.alpha());
+            .flatten()
+        {
+            m.attenuation_color = Color::linear_rgb(r, g, b);
+            m.attenuation_distance = MURKY_METERS;
+        }
     }
     // Convert the USD UV transform through the mesh's V-flipped coordinate basis.
     if let Some(uv) = &read.uv_transform {
@@ -513,6 +522,8 @@ pub(crate) fn resolve_material(
         None => MaterialColor::Open,
     };
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
+    // A medium's depth scale is metric; the stage measures in its own units.
+    material.attenuation_distance /= crate::live::stage_meters_per_unit(ctx.stage);
     apply_sidedness(ctx, &mut material);
     let mut warnings = read.warnings.clone();
     for semantic in ["diffuse", "emissive", "normal"] {
@@ -610,11 +621,35 @@ impl PrimRoute for MaterialRoute {
                 return;
             }
         };
-        if let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
-            && let Some(recolored) = color.recolor(ctx, world, &mesh)
-        {
-            world.entity_mut(entity).insert(Mesh3d(recolored));
-        }
+        let atlas = world
+            .get::<super::ptex_atlas::PtexAtlasImage>(entity)
+            .filter(|_| matches!(color, MaterialColor::Ptex(..)))
+            .map(|atlas| atlas.0.clone());
+        let handle = match atlas {
+            // The texture holds the Ptex texels the vertex colors would average.
+            Some(image) => {
+                let material = world
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(&handle)
+                    .cloned()
+                    .unwrap_or_default();
+                super::cache::intern_material(
+                    world,
+                    StandardMaterial {
+                        base_color_texture: Some(image),
+                        ..material
+                    },
+                )
+            }
+            None => {
+                if let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
+                    && let Some(recolored) = color.recolor(ctx, world, &mesh)
+                {
+                    world.entity_mut(entity).insert(Mesh3d(recolored));
+                }
+                handle
+            }
+        };
         let read = ctx.read_mesh().ok().flatten();
         let uvs = read.is_some_and(|read| read.uvs.is_some());
         let normal_mapped = world
@@ -679,15 +714,34 @@ impl PrimRoute for MaterialRoute {
             }
             None => handle,
         };
+        // Surfaces that pass most light, as water and glass do, cast no shadow.
+        let clear = world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&handle)
+            .is_some_and(|material| material.specular_transmission >= 0.5);
         if let Some(mut mat) = world.get_mut::<MeshMaterial3d<StandardMaterial>>(entity) {
             mat.0 = handle;
         } else if let Ok(mut e) = world.get_entity_mut(entity) {
             e.insert(MeshMaterial3d(handle));
         }
+        if clear {
+            world
+                .entity_mut(entity)
+                .insert((bevy::light::NotShadowCaster, PassesLight));
+        } else if world.entity_mut(entity).take::<PassesLight>().is_some() {
+            world
+                .entity_mut(entity)
+                .remove::<bevy::light::NotShadowCaster>();
+        }
         super::flat_material::attach_if_normalless(world, entity);
         super::strand_material::attach_if_strand(world, entity);
+        super::medium_material::attach_if_medium(world, entity);
     }
 }
+
+/// Marks a shadow left out because the bound material passes light.
+#[derive(Component)]
+struct PassesLight;
 
 #[cfg(test)]
 mod tests {
@@ -1793,14 +1847,121 @@ def Material "Mat" {
         let clear = to_standard_material(&read, None, None);
         assert_eq!(clear.specular_transmission, 1.0);
         assert_eq!(clear.base_color.to_linear(), LinearRgba::rgb(0.9, 0.9, 1.0));
+        assert!(clear.attenuation_distance.is_infinite());
         read.diffuse_transmission = Some(0.4);
         read.diffuse_transmission_color = Some([0.1, 0.8, 0.4]);
         let murky = to_standard_material(&read, None, None);
         assert_eq!(murky.specular_transmission, 1.0);
-        assert_eq!(murky.base_color.to_linear(), LinearRgba::rgb(0.1, 0.8, 0.4));
+        assert_eq!(murky.base_color.to_linear(), LinearRgba::rgb(0.9, 0.9, 1.0));
+        assert_eq!(
+            murky.attenuation_color.to_linear(),
+            LinearRgba::rgb(0.1, 0.8, 0.4)
+        );
+        assert_eq!(murky.attenuation_distance, MURKY_METERS);
         read.diffuse_transmission = Some(0.0);
         let clear = to_standard_material(&read, None, None);
-        assert_eq!(clear.base_color.to_linear(), LinearRgba::rgb(0.9, 0.9, 1.0));
+        assert!(clear.attenuation_distance.is_infinite());
+    }
+
+    #[test]
+    fn murky_water_deepens_its_color_in_stage_units() {
+        use super::super::medium_material::MediumMaterial;
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+(
+    metersPerUnit = 0.0254
+)
+def Mesh "Lagoon" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+    point3f[] points = [(0,0,0), (1,0,0), (0,0,1)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    rel material:binding = </Sea>
+}
+def Material "Sea" {
+    token outputs:ri:surface.connect = </Sea/Surface.outputs:bxdf_out>
+    def Shader "Surface" {
+        uniform token info:id = "PxrSurface"
+        float inputs:refractionGain = 1
+        float inputs:diffuseTransmitGain = 0.4
+        color3f inputs:diffuseTransmitColor = (0.1, 0.8, 0.4)
+        token outputs:bxdf_out
+    }
+}
+"#,
+        )
+        .open_stage()
+        .unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<MediumMaterial>>();
+        let live = crate::live::LiveStage::new(stage);
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        let lagoon = map.entity("/Lagoon").unwrap();
+        let medium = &world
+            .get::<MeshMaterial3d<MediumMaterial>>(lagoon)
+            .unwrap()
+            .0;
+        let medium = world
+            .resource::<Assets<MediumMaterial>>()
+            .get(medium)
+            .unwrap();
+        assert!((medium.base.attenuation_distance - MURKY_METERS / 0.0254).abs() < 1e-3);
+        assert_eq!(
+            medium.base.attenuation_color.to_linear(),
+            LinearRgba::rgb(0.1, 0.8, 0.4)
+        );
+    }
+
+    #[test]
+    fn light_passing_surfaces_cast_no_shadow() {
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def Mesh "Water" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+    point3f[] points = [(0,0,0), (1,0,0), (0,0,1)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    rel material:binding = </Sea>
+}
+def Mesh "Rock" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+    point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    rel material:binding = </Stone>
+}
+def Material "Sea" {
+    token outputs:ri:surface.connect = </Sea/Surface.outputs:bxdf_out>
+    def Shader "Surface" {
+        uniform token info:id = "PxrSurface"
+        float inputs:refractionGain = 1
+        token outputs:bxdf_out
+    }
+}
+def Material "Stone" {
+    token outputs:surface.connect = </Stone/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        token outputs:surface
+    }
+}
+"#,
+        )
+        .open_stage()
+        .unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let live = crate::live::LiveStage::new(stage);
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        let casts = |path: &str| {
+            world
+                .get::<bevy::light::NotShadowCaster>(map.entity(path).unwrap())
+                .is_none()
+        };
+        assert!(!casts("/Water"));
+        assert!(casts("/Rock"));
     }
 
     #[test]

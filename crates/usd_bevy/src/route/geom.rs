@@ -113,6 +113,7 @@ pub(crate) fn clear_geometry(world: &mut World, entity: Entity, owner: GeometryO
     super::gpu_skin::clear(world, entity);
     super::flat_material::clear(world, entity);
     super::strand_material::clear(world, entity);
+    super::medium_material::clear(world, entity);
     world.entity_mut(entity).remove::<(
         Mesh3d,
         MeshMaterial3d<StandardMaterial>,
@@ -129,6 +130,9 @@ impl MeshRoute {
             clear_geometry(world, entity, GeometryOwner::Mesh);
             return false;
         };
+        let cage = read;
+        let limited = super::subdivision::limit_cage(ctx, world, read);
+        let read = limited.as_ref().unwrap_or(read);
         if world.get_resource::<Assets<Mesh>>().is_none()
             || world.get_resource::<Assets<StandardMaterial>>().is_none()
         {
@@ -151,7 +155,29 @@ impl MeshRoute {
             } else {
                 super::cache::Assembly::Standard
             };
-        let mesh_handle = super::cache::intern_assembled_mesh(world, read, assembly);
+        // A bound material that colors the mesh is applied before the mesh is
+        // stored, so the uncolored version never reaches the GPU.
+        let color = super::material::resolve_material(ctx, world)
+            .ok()
+            .flatten()
+            .map(|(_, _, color)| color)
+            .filter(|color| !matches!(color, super::material::MaterialColor::Open));
+        let atlas = match &color {
+            Some(super::material::MaterialColor::Ptex(path, srgb)) => {
+                super::ptex_atlas::atlas_mesh(ctx, world, cage, path, *srgb)
+            }
+            _ => None,
+        };
+        let (atlas_mesh, atlas_image) = atlas.unzip();
+        let mesh_handle = match (atlas_mesh, color) {
+            (Some(mesh), _) => super::cache::intern_mesh(world, mesh),
+            (None, Some(color)) => {
+                let mut mesh = assembly.build(world, read);
+                color.apply(world, &mut mesh, read);
+                super::cache::intern_mesh(world, mesh)
+            }
+            (None, None) => super::cache::intern_assembled_mesh(world, read, assembly),
+        };
         let material = super::cache::intern_material(world, super::material::default_material(ctx));
         if world.get_entity(entity).is_err() {
             return false;
@@ -162,6 +188,14 @@ impl MeshRoute {
             MeshMaterial3d(material),
             GeometryOwner::Mesh,
         ));
+        match atlas_image {
+            Some(image) => world
+                .entity_mut(entity)
+                .insert(super::ptex_atlas::PtexAtlasImage(image)),
+            None => world
+                .entity_mut(entity)
+                .remove::<super::ptex_atlas::PtexAtlasImage>(),
+        };
         super::flat_material::attach_if_normalless(world, entity);
         true
     }
@@ -171,6 +205,85 @@ impl MeshRoute {
 mod mesh_matching_tests {
     use super::*;
     use crate::read::geom::read_mesh_at;
+
+    #[test]
+    fn catmull_clark_cages_draw_at_their_limit_when_asked() {
+        let text = r#"#usda 1.0
+def Mesh "Cube" {
+    point3f[] points = [(-1,-1,-1),(1,-1,-1),(1,1,-1),(-1,1,-1),(-1,-1,1),(1,-1,1),(1,1,1),(-1,1,1)]
+    int[] faceVertexCounts = [4,4,4,4,4,4]
+    int[] faceVertexIndices = [0,3,2,1, 4,5,6,7, 0,1,5,4, 1,2,6,5, 2,3,7,6, 3,0,4,7]
+}
+"#;
+        let corner = |limit: bool| {
+            let stage = crate::snippet::UsdSnippet::new(text).open_stage().unwrap();
+            let mut world = World::new();
+            world.init_resource::<Assets<Mesh>>();
+            world.init_resource::<Assets<StandardMaterial>>();
+            if limit {
+                world.init_resource::<super::super::subdivision::UsdSubdivisionLimit>();
+            }
+            let live = crate::live::LiveStage::new(stage);
+            let mut map = crate::live::PrimEntities::default();
+            crate::live::project_stage(&mut world, &live, &mut map);
+            let mesh = &world.get::<Mesh3d>(map.entity("/Cube").unwrap()).unwrap().0;
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) = world
+                .resource::<Assets<Mesh>>()
+                .get(mesh)
+                .unwrap()
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                panic!("no positions")
+            };
+            positions.iter().map(|p| p[0].abs()).fold(0.0f32, f32::max)
+        };
+        assert_eq!(corner(false), 1.0, "the cage draws as authored");
+        assert!(
+            (corner(true) - 0.5).abs() < 1e-5,
+            "the limit surface is inside"
+        );
+    }
+
+    #[test]
+    fn material_colors_apply_before_the_mesh_is_stored() {
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def Mesh "Leaf" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+    point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    color3f[] primvars:displayColor = [(1,0,0), (0,1,0), (0,0,1)] (interpolation = "vertex")
+    rel material:binding = </Green>
+}
+def Material "Green" {
+    token outputs:surface.connect = </Green/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.2, 0.5, 0.1)
+        token outputs:surface
+    }
+}
+"#,
+        )
+        .open_stage()
+        .unwrap();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let live = crate::live::LiveStage::new(stage);
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        let meshes = world.resource::<Assets<Mesh>>();
+        assert_eq!(meshes.len(), 1, "only the colored mesh is stored");
+        let mesh = &world.get::<Mesh3d>(map.entity("/Leaf").unwrap()).unwrap().0;
+        assert!(
+            meshes
+                .get(mesh)
+                .unwrap()
+                .attribute(Mesh::ATTRIBUTE_COLOR)
+                .is_none()
+        );
+    }
 
     #[test]
     fn sampled_mesh_geometry_and_primvars_follow_independent_roots() {

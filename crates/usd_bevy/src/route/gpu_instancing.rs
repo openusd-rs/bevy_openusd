@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::camera::primitives::{Aabb, MeshAabb};
 use bevy::camera::visibility::{self, VisibilityClass};
-use bevy::core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d};
+use bevy::core_pipeline::core_3d::{CORE_3D_DEPTH_FORMAT, Transparent3d, TransparentSortingInfo3d};
 use bevy::core_pipeline::{Core3d, Core3dSystems};
 use bevy::ecs::{
     query::ROQueryItem,
@@ -24,29 +24,33 @@ use bevy::ecs::{
 use bevy::math::primitives::ViewFrustum;
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{
-    MeshPipeline, MeshPipelineKey, MeshPipelineSystems, SetMeshViewBindGroup,
-    SetMeshViewBindingArrayBindGroup, ViewKeyCache,
+    MeshPipeline, MeshPipelineKey, MeshPipelineSystems, PrepassPipeline, SetMeshViewBindGroup,
+    SetMeshViewBindingArrayBindGroup, SetPrepassViewBindGroup, SetPrepassViewEmptyBindGroup,
+    Shadow, ShadowBatchSetKey, ShadowBinKey, ViewKeyCache, ViewLightEntities,
 };
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use bevy::render::{
     Extract, ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems,
+    extract_resource::{ExtractResource, ExtractResourcePlugin},
     mesh::{RenderMesh, RenderMeshBufferInfo, allocator::MeshAllocator},
     render_asset::RenderAssets,
     render_phase::{
-        AddRenderCommand, DrawFunctions, PhaseItem, PhaseItemExtraIndex, RenderCommand,
-        RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewSortedRenderPhases,
+        AddRenderCommand, BinnedRenderPhaseType, DrawFunctions, InputUniformIndex, PhaseItem,
+        PhaseItemExtraIndex, RenderCommand, RenderCommandResult, SetItemPipeline,
+        TrackedRenderPass, ViewBinnedRenderPhases, ViewSortedRenderPhases,
     },
     render_resource::{
         BindGroup, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, Buffer,
         BufferDescriptor, BufferInitDescriptor, BufferUsages, CachedComputePipelineId,
-        ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache, RenderPipelineDescriptor,
-        ShaderStages, SpecializedMeshPipeline, SpecializedMeshPipelineError,
-        SpecializedMeshPipelines, binding_types,
+        CompareFunction, ComputePassDescriptor, ComputePipelineDescriptor, DepthStencilState,
+        PipelineCache, PrimitiveState, RenderPipelineDescriptor, ShaderStages,
+        SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
+        VertexState, binding_types,
     },
     renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
-    sync_world::{RenderEntity, SyncToRenderWorld},
-    view::{ExtractedView, RenderVisibleEntities},
+    sync_world::{MainEntity, RenderEntity, SyncToRenderWorld},
+    view::{ExtractedView, RenderVisibleEntities, RetainedViewEntity},
 };
 use bevy::shader::ShaderDefVal;
 use bytemuck::{Pod, Zeroable};
@@ -59,7 +63,7 @@ const VIEW_STRIDE: u64 = 256;
 
 /// Turns on GPU instancing for point instancers. Present in the main world
 /// once [`UsdGpuInstancingPlugin`] is added.
-#[derive(Resource, Debug, Clone, Copy)]
+#[derive(Resource, ExtractResource, Debug, Clone, Copy)]
 pub struct UsdGpuInstancing {
     /// Instancers with more instances than this are drawn on the GPU; smaller
     /// ones keep one entity per instance.
@@ -67,6 +71,9 @@ pub struct UsdGpuInstancing {
     /// Instances whose bounding sphere projects to a smaller radius than this
     /// many pixels are not drawn.
     pub min_pixels: f32,
+    /// Whether the instances a camera draws also cast its directional light
+    /// shadows.
+    pub shadows: bool,
 }
 
 impl Default for UsdGpuInstancing {
@@ -74,6 +81,7 @@ impl Default for UsdGpuInstancing {
         Self {
             threshold: 4096,
             min_pixels: 0.75,
+            shadows: false,
         }
     }
 }
@@ -85,28 +93,48 @@ impl Plugin for UsdGpuInstancingPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "gpu_instancing.wgsl");
         bevy::asset::embedded_asset!(app, "gpu_instancing_cull.wgsl");
+        bevy::asset::embedded_asset!(app, "gpu_instancing_shadow.wgsl");
+        bevy::asset::embedded_asset!(app, "gpu_instancing_types.wgsl");
         if !app.world().contains_resource::<UsdGpuInstancing>() {
             app.init_resource::<UsdGpuInstancing>();
         }
+        app.add_plugins(ExtractResourcePlugin::<UsdGpuInstancing>::default());
         let Some(render) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render
             .init_resource::<SpecializedMeshPipelines<InstancingPipeline>>()
+            .init_resource::<SpecializedMeshPipelines<InstancedShadowPipeline>>()
             .init_resource::<GpuChunks>()
             .init_resource::<CullViews>()
+            .init_resource::<QueuedShadows>()
             .add_render_command::<Transparent3d, DrawInstanced>()
-            .add_systems(RenderStartup, init_pipeline.after(MeshPipelineSystems))
+            .add_render_command::<Shadow, DrawInstancedShadow>()
+            .add_systems(
+                RenderStartup,
+                (
+                    init_pipeline.after(MeshPipelineSystems),
+                    init_shadow_pipeline
+                        .after(init_pipeline)
+                        .after(bevy::pbr::init_prepass_pipeline),
+                ),
+            )
             .add_systems(ExtractSchedule, extract_draws)
             .add_systems(
                 Render,
                 (
                     (prepare_chunks, prepare_views).in_set(RenderSystems::PrepareResources),
                     prepare_bind_groups.in_set(RenderSystems::PrepareBindGroups),
-                    queue_draws.in_set(RenderSystems::QueueMeshes),
+                    (queue_draws, queue_shadows).in_set(RenderSystems::QueueMeshes),
                 ),
             )
-            .add_systems(Core3d, cull_instances.before(Core3dSystems::MainPass));
+            // Shadows draw the instances the camera kept, so culling runs first.
+            .add_systems(
+                Core3d,
+                cull_instances
+                    .before(bevy::pbr::per_view_shadow_pass::<{ bevy::pbr::EARLY_SHADOW_PASS }>)
+                    .before(Core3dSystems::MainPass),
+            );
     }
 }
 
@@ -390,6 +418,82 @@ impl SpecializedMeshPipeline for InstancingPipeline {
     }
 }
 
+/// Depth-only drawing of instanced prototypes into directional shadow maps.
+#[derive(Resource)]
+struct InstancedShadowPipeline {
+    view_layout: BindGroupLayoutDescriptor,
+    empty_layout: BindGroupLayoutDescriptor,
+    draw_layout: BindGroupLayoutDescriptor,
+    shader: Handle<Shader>,
+    unclipped_depth: bool,
+}
+
+fn init_shadow_pipeline(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    instancing: Option<Res<InstancingPipeline>>,
+    prepass: Option<Res<PrepassPipeline>>,
+) {
+    let (Some(instancing), Some(prepass)) = (instancing, prepass) else {
+        return;
+    };
+    commands.insert_resource(InstancedShadowPipeline {
+        view_layout: prepass.view_layout_no_motion_vectors.clone(),
+        empty_layout: prepass.empty_layout.clone(),
+        draw_layout: instancing.draw_layout.clone(),
+        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing_shadow.wgsl"),
+        unclipped_depth: prepass.depth_clip_control_supported,
+    });
+}
+
+impl SpecializedMeshPipeline for InstancedShadowPipeline {
+    type Key = MeshPipelineKey;
+
+    fn specialize(
+        &self,
+        key: Self::Key,
+        layout: &MeshVertexBufferLayoutRef,
+    ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        let shader_defs = if self.unclipped_depth {
+            Vec::new()
+        } else {
+            vec!["CLAMP_DEPTH".into()]
+        };
+        Ok(RenderPipelineDescriptor {
+            label: Some("usd_instanced_shadow".into()),
+            layout: vec![
+                self.view_layout.clone(),
+                self.empty_layout.clone(),
+                self.draw_layout.clone(),
+            ],
+            vertex: VertexState {
+                shader: self.shader.clone(),
+                shader_defs,
+                buffers: vec![
+                    layout
+                        .0
+                        .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?,
+                ],
+                ..default()
+            },
+            primitive: PrimitiveState {
+                topology: key.primitive_topology(),
+                strip_index_format: key.strip_index_format(),
+                unclipped_depth: self.unclipped_depth,
+                ..default()
+            },
+            depth_stencil: Some(DepthStencilState {
+                format: CORE_3D_DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(CompareFunction::GreaterEqual),
+                stencil: default(),
+                bias: default(),
+            }),
+            ..default()
+        })
+    }
+}
+
 fn prepare_chunks(
     draws: Query<&ExtractedDraw>,
     mut chunks: ResMut<GpuChunks>,
@@ -668,6 +772,88 @@ fn queue_draws(
     }
 }
 
+/// The instanced draws queued last frame into each shadow phase, which keeps
+/// its items until they are removed.
+#[derive(Resource, Default)]
+struct QueuedShadows(HashMap<RetainedViewEntity, Vec<MainEntity>>);
+
+/// Queues the draws each camera sees into its directional shadow cascades.
+fn queue_shadows(
+    draw_functions: Res<DrawFunctions<Shadow>>,
+    pipeline: Option<Res<InstancedShadowPipeline>>,
+    mut pipelines: ResMut<SpecializedMeshPipelines<InstancedShadowPipeline>>,
+    pipeline_cache: Res<PipelineCache>,
+    meshes: Res<RenderAssets<RenderMesh>>,
+    allocator: Res<MeshAllocator>,
+    draws: Query<&ExtractedDraw, With<GpuDraw>>,
+    mut phases: ResMut<ViewBinnedRenderPhases<Shadow>>,
+    cameras: Query<(&RenderVisibleEntities, &ViewLightEntities)>,
+    light_views: Query<&ExtractedView>,
+    mut queued: ResMut<QueuedShadows>,
+    settings: Option<Res<UsdGpuInstancing>>,
+) {
+    for (view, entities) in queued.0.drain() {
+        if let Some(phase) = phases.get_mut(&view) {
+            for entity in entities {
+                phase.remove(entity);
+            }
+        }
+    }
+    let (Some(pipeline), true) = (pipeline, settings.is_some_and(|settings| settings.shadows))
+    else {
+        return;
+    };
+    let draw_function = draw_functions.read().id::<DrawInstancedShadow>();
+    for (visible, lights) in &cameras {
+        let Some(visible) = visible.get::<UsdInstancedDraw>() else {
+            continue;
+        };
+        for light in &lights.lights {
+            let Ok(light_view) = light_views.get(*light) else {
+                continue;
+            };
+            let Some(phase) = phases.get_mut(&light_view.retained_view_entity) else {
+                continue;
+            };
+            let added = queued.0.entry(light_view.retained_view_entity).or_default();
+            for (&entity, &main_entity) in visible.iter_visible() {
+                let Ok(draw) = draws.get(entity) else {
+                    continue;
+                };
+                let (Some(mesh), Some(slabs)) =
+                    (meshes.get(draw.mesh), allocator.mesh_slabs(&draw.mesh))
+                else {
+                    continue;
+                };
+                let key = MeshPipelineKey::from_primitive_topology_and_strip_index(
+                    mesh.primitive_topology(),
+                    mesh.index_format(),
+                );
+                let Ok(pipeline_id) =
+                    pipelines.specialize(&pipeline_cache, &pipeline, key, &mesh.layout)
+                else {
+                    continue;
+                };
+                phase.add(
+                    ShadowBatchSetKey {
+                        pipeline: pipeline_id,
+                        draw_function,
+                        material_bind_group_index: None,
+                        slabs,
+                    },
+                    ShadowBinKey {
+                        asset_id: draw.mesh.untyped(),
+                    },
+                    (entity, main_entity),
+                    InputUniformIndex::default(),
+                    BinnedRenderPhaseType::NonMesh,
+                );
+                added.push(main_entity);
+            }
+        }
+    }
+}
+
 fn cull_instances(
     view: ViewQuery<(&CullViewOffset, &RenderVisibleEntities)>,
     draws: Query<(&ExtractedDraw, &GpuDraw)>,
@@ -729,6 +915,13 @@ type DrawInstanced = (
     SetItemPipeline,
     SetMeshViewBindGroup<0>,
     SetMeshViewBindingArrayBindGroup<1>,
+    DrawInstancedIndirect,
+);
+
+type DrawInstancedShadow = (
+    SetItemPipeline,
+    SetPrepassViewBindGroup<0>,
+    SetPrepassViewEmptyBindGroup<1>,
     DrawInstancedIndirect,
 );
 

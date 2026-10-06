@@ -314,6 +314,11 @@ impl PrimRoute for SubsetRoute {
             clear(world, entity);
             return;
         }
+        let read = match read {
+            std::borrow::Cow::Borrowed(cage) => super::subdivision::limit_cage(ctx, world, cage)
+                .map_or(std::borrow::Cow::Borrowed(cage), std::borrow::Cow::Owned),
+            owned => owned,
+        };
         let Some(source) = world
             .get::<Mesh3d>(entity)
             .map(|mesh| mesh.0.clone())

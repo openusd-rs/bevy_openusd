@@ -152,6 +152,11 @@ pub(crate) fn base_handle(world: &World, entity: Entity) -> Option<Handle<Standa
                     .get::<Owned<super::strand_material::StrandCoverage>>(entity)
                     .map(|owned| owned.base.clone())
             })
+            .or_else(|| {
+                world
+                    .get::<Owned<super::medium_material::DepthMedium>>(entity)
+                    .map(|owned| owned.base.clone())
+            })
     };
     world
         .get::<MeshMaterial3d<StandardMaterial>>(entity)

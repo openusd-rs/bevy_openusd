@@ -9,8 +9,10 @@ use std::sync::Arc;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
+use bevy::tasks::futures_lite::AsyncReadExt;
+
 use crate::read::geom::ReadMesh;
-use crate::read::ptex::PtexFaces;
+use crate::read::ptex::{PtexFaces, PtexLayout, PtexLevel};
 
 /// Face colors of every Ptex file read so far, by resolved path.
 #[derive(Resource, Default)]
@@ -36,11 +38,54 @@ pub(crate) fn faces(world: &mut World, path: &str) -> Option<Arc<PtexFaces>> {
 /// Reads from disk, or through the default asset source for paths the asset
 /// loader resolved under its virtual root.
 fn read(world: &World, path: &str) -> anyhow::Result<PtexFaces> {
+    read_file(world, path, async |reader| {
+        let mut head = vec![0u8; 64];
+        reader.read_exact(&mut head).await?;
+        let word = |at: usize| u32::from_le_bytes(head[at..at + 4].try_into().unwrap()) as usize;
+        let mut rest = vec![0u8; word(28) + word(32) + word(36)];
+        reader.read_exact(&mut rest).await?;
+        head.extend(rest);
+        crate::read::ptex::read_face_colors(head.as_slice())
+    })
+}
+
+/// The layout of the Ptex file at `path` and the texels of the level `pick`
+/// chooses from it; only that level's bytes are read.
+pub(crate) fn read_level(
+    world: &World,
+    path: &str,
+    pick: impl FnOnce(&PtexLayout) -> usize,
+) -> anyhow::Result<(PtexLayout, PtexLevel)> {
+    use bevy::tasks::futures_lite::AsyncSeekExt;
+    read_file(world, path, async |reader| {
+        let mut head = vec![0u8; 64];
+        reader.read_exact(&mut head).await?;
+        head.resize(PtexLayout::prefix_len(&head)?, 0);
+        reader.read_exact(&mut head[64..]).await?;
+        let layout = PtexLayout::parse(&head)?;
+        let level = pick(&layout);
+        let range = layout.level_range(level);
+        reader.seek(std::io::SeekFrom::Start(range.start)).await?;
+        let mut bytes = vec![0u8; (range.end - range.start) as usize];
+        reader.read_exact(&mut bytes).await?;
+        let texels = layout.decode_level(level, &bytes)?;
+        Ok((layout, texels))
+    })
+}
+
+/// Runs `body` on a seekable reader of `path`, from disk or from the
+/// default asset source.
+fn read_file<T>(
+    world: &World,
+    path: &str,
+    body: impl AsyncFnOnce(&mut dyn PtexReader) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     let file = std::path::Path::new(path);
     if file.is_file() {
-        return crate::read::ptex::read_face_colors(std::io::BufReader::new(std::fs::File::open(
-            file,
-        )?));
+        let mut reader = bevy::tasks::futures_lite::io::AssertAsync::new(std::io::BufReader::new(
+            std::fs::File::open(file)?,
+        ));
+        return bevy::tasks::block_on(body(&mut reader));
     }
     let root = crate::source::absolute(std::path::Path::new(crate::asset::ASSET_ROOT))?;
     let relative = file
@@ -56,16 +101,23 @@ fn read(world: &World, path: &str) -> anyhow::Result<PtexFaces> {
         .ok_or_else(|| anyhow::anyhow!("no asset server"))?;
     let source = server.get_source(bevy::asset::io::AssetSourceId::Default)?;
     bevy::tasks::block_on(async {
-        use bevy::tasks::futures_lite::AsyncReadExt;
         let mut reader = source.reader().read(&relative).await?;
-        let mut head = vec![0u8; 64];
-        reader.read_exact(&mut head).await?;
-        let word = |at: usize| u32::from_le_bytes(head[at..at + 4].try_into().unwrap()) as usize;
-        let mut rest = vec![0u8; word(28) + word(32) + word(36)];
-        reader.read_exact(&mut rest).await?;
-        head.extend(rest);
-        crate::read::ptex::read_face_colors(head.as_slice())
+        let mut reader = reader
+            .seekable()
+            .map_err(|_| anyhow::anyhow!("asset reader cannot seek"))?;
+        body(&mut reader).await
     })
+}
+
+/// A byte source Ptex files are read from.
+trait PtexReader:
+    bevy::tasks::futures_lite::AsyncRead + bevy::tasks::futures_lite::AsyncSeek + Unpin
+{
+}
+
+impl<T: bevy::tasks::futures_lite::AsyncRead + bevy::tasks::futures_lite::AsyncSeek + Unpin>
+    PtexReader for T
+{
 }
 
 /// `mesh` colored by `faces`, its texels decoded from sRGB when `srgb`;

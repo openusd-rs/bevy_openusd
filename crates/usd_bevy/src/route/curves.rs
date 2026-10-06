@@ -665,16 +665,16 @@ fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
     })
 }
 
-/// A curve prim drawn as lines.
-pub(crate) struct Lines {
+/// A curve prim drawn as lines, or as ribbons when lit with widths.
+pub(crate) struct CurveMesh {
     pub mesh: Mesh,
-    /// Whether the lines carry normals to shade with.
+    /// Whether the curves carry normals to shade with.
     pub lit: bool,
-    /// Whether any line color is partly transparent.
+    /// Whether any curve color is partly transparent.
     pub translucent: bool,
 }
 
-fn lines(ctx: &RouteCtx, steps: usize) -> Result<Option<Lines>, String> {
+fn curve_mesh(ctx: &RouteCtx, steps: usize) -> Result<Option<CurveMesh>, String> {
     let Some(Centerlines {
         points,
         indices,
@@ -687,6 +687,7 @@ fn lines(ctx: &RouteCtx, steps: usize) -> Result<Option<Lines>, String> {
         return Ok(None);
     };
     let up = crate::live::stage_up_axis(ctx.stage).inverse() * Vec3::Y;
+    let oriented = normals.is_some();
     let normals = normals.or_else(|| Some(strand_normals(&points, &spans, up)));
     if points.iter().flatten().any(|value| !value.is_finite()) {
         return Err("non-finite tessellated curve point".into());
@@ -702,40 +703,126 @@ fn lines(ctx: &RouteCtx, steps: usize) -> Result<Option<Lines>, String> {
             .iter()
             .any(|color| color[3].is_finite() && color[3] < 1.)
     });
-    let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, points);
-    if let Some(colors) = colors {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    }
     // Curves shade with authored or upward strand normals; unusable ones stay unlit.
     let lit = normals
         .as_ref()
         .is_some_and(|normals| normals.iter().flatten().all(|value| value.is_finite()));
-    if let Some(normals) = normals.filter(|_| lit) {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        // Lit strands with usable widths draw by pixel coverage.
-        if let Some(widths) = widths.filter(|widths| {
-            widths
-                .iter()
-                .all(|width| width.is_finite() && *width >= 0.0)
-        }) {
-            mesh.insert_attribute(super::strand_material::ATTRIBUTE_STRAND_WIDTH, widths);
+    let widths = widths.filter(|widths| {
+        widths
+            .iter()
+            .all(|width| width.is_finite() && *width >= 0.0)
+    });
+    let mesh = match (normals.filter(|_| lit), widths) {
+        (Some(normals), Some(widths)) => {
+            let authored = oriented.then_some(normals.as_slice());
+            ribbons(&points, &indices, authored, &widths, colors)
         }
-    }
-    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
-    Ok(Some(Lines {
+        (normals, _) => {
+            let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, points);
+            if let Some(colors) = colors {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+            }
+            if let Some(normals) = normals {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+            }
+            mesh.insert_indices(bevy::mesh::Indices::U32(indices));
+            mesh
+        }
+    };
+    Ok(Some(CurveMesh {
         mesh,
         lit,
         translucent,
     }))
 }
 
-/// Lines for a curve prim at the current curve quality; `None` when it is
+/// Lit strands with widths as triangle strips of ribbons, one pair of
+/// vertices per sample on the centerline. The strand material widens each
+/// pair across the view, or across `normals` when they are authored.
+fn ribbons(
+    points: &[[f32; 3]],
+    segments: &[u32],
+    normals: Option<&[[f32; 3]]>,
+    widths: &[f32],
+    colors: Option<Vec<[f32; 4]>>,
+) -> Mesh {
+    use super::strand_material::{
+        ATTRIBUTE_STRAND_NORMAL, ATTRIBUTE_STRAND_TANGENT, ATTRIBUTE_STRAND_WIDTH,
+    };
+    fn twice<T: Copy>(values: &[T]) -> Vec<T> {
+        values.iter().flat_map(|value| [*value, *value]).collect()
+    }
+    let mut tangents = vec![Vec3::ZERO; points.len()];
+    for pair in segments.chunks_exact(2) {
+        let (a, b) = (pair[0] as usize, pair[1] as usize);
+        let direction = (Vec3::from(points[b]) - Vec3::from(points[a])).normalize_or_zero();
+        tangents[a] += direction;
+        tangents[b] += direction;
+    }
+    let pack = |vector: Vec3, w: f32| {
+        (vector.extend(w).clamp(Vec4::NEG_ONE, Vec4::ONE) * 127.0)
+            .round()
+            .to_array()
+            .map(|value| value as i8)
+    };
+    let tangents = tangents
+        .iter()
+        .flat_map(|tangent| {
+            let tangent = tangent.normalize_or(Vec3::Y);
+            [pack(tangent, -1.0), pack(tangent, 1.0)]
+        })
+        .collect::<Vec<_>>();
+    // One strip per run of joined segments, restarted between curves.
+    let mut strip = Vec::with_capacity(segments.len() * 2 + 4);
+    let mut last = None;
+    for pair in segments.chunks_exact(2) {
+        if last != Some(pair[0]) {
+            if last.is_some() {
+                strip.push(u32::MAX);
+            }
+            strip.extend([pair[0] * 2, pair[0] * 2 + 1]);
+        }
+        strip.extend([pair[1] * 2, pair[1] * 2 + 1]);
+        last = Some(pair[1]);
+    }
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleStrip,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, twice(points));
+    mesh.insert_attribute(
+        ATTRIBUTE_STRAND_TANGENT,
+        bevy::mesh::VertexAttributeValues::Snorm8x4(tangents),
+    );
+    // Without authored normals the shader lights strands from above.
+    if let Some(normals) = normals {
+        let normals = normals
+            .iter()
+            .flat_map(|normal| {
+                let normal = pack(Vec3::from(*normal), 0.0);
+                [normal, normal]
+            })
+            .collect();
+        mesh.insert_attribute(
+            ATTRIBUTE_STRAND_NORMAL,
+            bevy::mesh::VertexAttributeValues::Snorm8x4(normals),
+        );
+    }
+    mesh.insert_attribute(ATTRIBUTE_STRAND_WIDTH, twice(widths));
+    if let Some(colors) = colors {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, twice(&colors));
+    }
+    mesh.insert_indices(bevy::mesh::Indices::U32(strip));
+    mesh
+}
+
+/// The mesh for a curve prim at the current curve quality; `None` when it is
 /// invalid or has nothing to draw.
-pub(crate) fn prototype_lines(ctx: &RouteCtx, world: &World) -> Option<Lines> {
+pub(crate) fn prototype_mesh(ctx: &RouteCtx, world: &World) -> Option<CurveMesh> {
     let steps = current_steps(world);
     validate_curves(ctx, steps).ok()?;
-    lines(ctx, steps).ok().flatten()
+    curve_mesh(ctx, steps).ok().flatten()
 }
 
 /// Normals for curves that author none: the up axis with each point's tangent
@@ -887,8 +974,8 @@ impl PrimRoute for CurvesRoute {
                 }
             }
         }
-        let lines = match lines(ctx, steps) {
-            Ok(Some(lines)) => lines,
+        let curves = match curve_mesh(ctx, steps) {
+            Ok(Some(curves)) => curves,
             Ok(None) => {
                 super::geom::clear_geometry(world, entity, super::geom::GeometryOwner::Curves);
                 return;
@@ -899,12 +986,12 @@ impl PrimRoute for CurvesRoute {
                 return;
             }
         };
-        let mesh_handle = super::cache::intern_mesh(world, lines.mesh);
+        let mesh_handle = super::cache::intern_mesh(world, curves.mesh);
         let mut material = super::material::default_material(ctx);
-        material.unlit = !lines.lit;
-        material.double_sided = lines.lit;
+        material.unlit = !curves.lit;
+        material.double_sided = curves.lit;
         material.cull_mode = None;
-        material.alpha_mode = if lines.translucent {
+        material.alpha_mode = if curves.translucent {
             AlphaMode::Blend
         } else {
             AlphaMode::Opaque
@@ -1891,8 +1978,11 @@ def Material "Leaf" {
     }
 
     #[test]
-    fn widened_strands_draw_with_pixel_coverage() {
-        use super::super::strand_material::{ATTRIBUTE_STRAND_WIDTH, StrandMaterial};
+    fn widened_strands_draw_as_ribbons() {
+        use super::super::strand_material::{
+            ATTRIBUTE_STRAND_NORMAL, ATTRIBUTE_STRAND_TANGENT, ATTRIBUTE_STRAND_WIDTH,
+            StrandMaterial,
+        };
         let text = r#"#usda 1.0
 def BasisCurves "Needles" (prepend apiSchemas = ["MaterialBindingAPI"]) {
     uniform token type = "linear"
@@ -1900,6 +1990,13 @@ def BasisCurves "Needles" (prepend apiSchemas = ["MaterialBindingAPI"]) {
     point3f[] points = [(0,0,0),(1,0,0),(0,1,0),(1,1,0)]
     float[] widths = [0.02, 0.5] (interpolation = "uniform")
     rel material:binding = </Leaf>
+}
+def BasisCurves "Blade" {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(0,0,0),(0,1,0)]
+    normal3f[] normals = [(0,0,1),(0,0,1)] (interpolation = "vertex")
+    float[] widths = [0.2]
 }
 def BasisCurves "Bare" {
     uniform token type = "linear"
@@ -1925,15 +2022,33 @@ def Material "Leaf" {
         project_stage(&mut world, &live, &mut map);
         let needles = map.entity("/Needles").unwrap();
         let mesh = &world.get::<Mesh3d>(needles).unwrap().0;
-        let widths = world
-            .resource::<Assets<Mesh>>()
-            .get(mesh)
-            .unwrap()
-            .attribute(ATTRIBUTE_STRAND_WIDTH);
+        let mesh = world.resource::<Assets<Mesh>>().get(mesh).unwrap();
+        assert_eq!(mesh.primitive_topology(), PrimitiveTopology::TriangleStrip);
         assert!(matches!(
-            widths,
+            mesh.indices(),
+            Some(bevy::mesh::Indices::U32(strip))
+                if strip == &[0, 1, 2, 3, u32::MAX, 4, 5, 6, 7]
+        ));
+        assert!(matches!(
+            mesh.attribute(ATTRIBUTE_STRAND_WIDTH),
             Some(bevy::mesh::VertexAttributeValues::Float32(widths))
-                if widths == &[0.02, 0.02, 0.5, 0.5]
+                if widths == &[0.02, 0.02, 0.02, 0.02, 0.5, 0.5, 0.5, 0.5]
+        ));
+        assert!(matches!(
+            mesh.attribute(ATTRIBUTE_STRAND_TANGENT),
+            Some(bevy::mesh::VertexAttributeValues::Snorm8x4(tangents))
+                if tangents[..2] == [[127, 0, 0, -127], [127, 0, 0, 127]]
+        ));
+        assert!(mesh.attribute(ATTRIBUTE_STRAND_NORMAL).is_none());
+        let blade = &world
+            .get::<Mesh3d>(map.entity("/Blade").unwrap())
+            .unwrap()
+            .0;
+        let blade = world.resource::<Assets<Mesh>>().get(blade).unwrap();
+        assert!(matches!(
+            blade.attribute(ATTRIBUTE_STRAND_NORMAL),
+            Some(bevy::mesh::VertexAttributeValues::Snorm8x4(normals))
+                if normals[..2] == [[0, 0, 127, 0], [0, 0, 127, 0]]
         ));
         let strand = &world
             .get::<MeshMaterial3d<StrandMaterial>>(needles)
@@ -1991,14 +2106,15 @@ def BasisCurves "Curve" {
                 .copied()
                 .unwrap_or_default()
                 .surface_sides();
-            let ring_size = sides.unwrap_or(1);
+            // Ribbons carry two vertices per sample on the centerline.
+            let ring_size = sides.unwrap_or(2);
             assert_eq!(mesh.count_vertices(), (steps + 1) * ring_size);
             assert_eq!(
                 mesh.primitive_topology(),
                 if sides.is_some() {
                     PrimitiveTopology::TriangleList
                 } else {
-                    PrimitiveTopology::LineList
+                    PrimitiveTopology::TriangleStrip
                 }
             );
             let Some(bevy::mesh::VertexAttributeValues::Float32x3(points)) =

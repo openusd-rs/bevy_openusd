@@ -69,7 +69,7 @@ pub(crate) fn atlas_mesh(
     let grid = Grid::new(faces, &settings)?;
     let rules =
         crate::read::subdivision::read_subdivision_at(ctx.stage, ctx.path, ctx.time).ok()?;
-    let (mut refined, coordinates) = (1..=3u32)
+    let (levels, (mut refined, coordinates)) = (1..=3u32)
         .rev()
         .filter(|&levels| faces << (2 * levels) <= settings.max_faces)
         .find_map(|levels| {
@@ -78,6 +78,7 @@ pub(crate) fn atlas_mesh(
                     debug!("{}: Ptex atlas at {levels} levels: {error}", ctx.prim_str())
                 })
                 .ok()
+                .map(|refined| (levels, refined))
         })?;
     let (layout, level) = super::ptex::read_level(world, path, |layout| {
         let mut picks: Vec<usize> = (0..layout.faces.len())
@@ -93,6 +94,24 @@ pub(crate) fn atlas_mesh(
     if rules.crease_indices.is_empty() && rules.corner_indices.is_empty() && rules.holes.is_empty()
     {
         refined.points = crate::subdivision_limit::limit_points(&refined, &rules);
+    }
+    if let Some(displacement) = crate::read::shade::read_material_binding(ctx.stage, ctx.path)
+        .ok()
+        .flatten()
+        .and_then(|material| {
+            crate::read::displacement::read_displacement(ctx.stage, &material)
+                .ok()
+                .flatten()
+        })
+    {
+        displace(
+            world,
+            &mut refined,
+            &coordinates,
+            &tiles,
+            &displacement,
+            1 << levels,
+        );
     }
     refined.uvs = Some(MeshPrimvar {
         values: coordinates
@@ -116,6 +135,71 @@ pub(crate) fn atlas_mesh(
     let mesh = crate::mesh::assemble_mesh(&refined, None, false);
     let image = world.resource_mut::<Assets<Image>>().add(image);
     Some((mesh, image))
+}
+
+/// Moves `refined`'s points along their normals by `displacement`, its
+/// textures sampled `side` texels across each control face, and renews the
+/// normals; leaves the mesh as it is when a texture cannot be read.
+fn displace(
+    world: &World,
+    refined: &mut ReadMesh,
+    coordinates: &crate::subdivision::FaceCoordinates,
+    tiles: &[std::ops::Range<usize>],
+    displacement: &crate::read::displacement::ReadDisplacement,
+    side: usize,
+) {
+    let mut product = vec![1.0f32; coordinates.corners.len()];
+    for path in &displacement.textures {
+        let Ok((layout, level)) = super::ptex::read_level(world, path, |layout| {
+            let mut picks: Vec<usize> = (0..layout.faces.len())
+                .map(|face| layout.level_for(face, side))
+                .collect();
+            picks.sort_unstable();
+            picks.get(picks.len() / 2).copied().unwrap_or(0)
+        })
+        .inspect_err(|error| warn!("Ptex {path}: {error}")) else {
+            return;
+        };
+        if layout.faces.len() != tiles.last().map_or(0, |tile| tile.end) {
+            return;
+        }
+        for (corner, value) in product.iter_mut().enumerate() {
+            let subfaces = &tiles[coordinates.faces[corner / 4]];
+            let [u, v] = coordinates.corners[corner];
+            *value *= match level.faces[subfaces.start].as_ref() {
+                Some(texels) if subfaces.len() == 1 => texels.sample(u, v)[0],
+                _ => {
+                    subfaces
+                        .clone()
+                        .map(|face| layout.average(face)[0])
+                        .sum::<f32>()
+                        / subfaces.len() as f32
+                }
+            };
+        }
+    }
+    let Some(normals) = refined
+        .normals
+        .take_if(|normals| normals.interpolation == Interpolation::Vertex)
+        .map(|normals| normals.values)
+        .or_else(|| Some(crate::subdivision_normals::limit_normals(refined).values))
+        .filter(|normals| normals.len() == refined.points.len())
+    else {
+        return;
+    };
+    let mut sums = vec![(0.0f32, 0u32); refined.points.len()];
+    for (corner, &point) in refined.face_vertex_indices.iter().enumerate() {
+        let sum = &mut sums[point as usize];
+        sum.0 += product[corner];
+        sum.1 += 1;
+    }
+    for ((point, normal), (sum, count)) in refined.points.iter_mut().zip(&normals).zip(sums) {
+        if count > 0 {
+            let offset = displacement.amount * displacement.remap.apply(sum / count as f32);
+            *point = (Vec3::from_array(*point) + Vec3::from_array(*normal) * offset).to_array();
+        }
+    }
+    refined.normals = Some(crate::subdivision_normals::limit_normals(refined));
 }
 
 /// The area of `read`'s faces, fanned from their first corners.
@@ -350,6 +434,100 @@ def Material "Mat" {{
         assert_eq!(pixel(1, tile - 2), Srgba::BLUE);
         assert_eq!(pixel(0, 0), Srgba::RED, "the border repeats the edge");
         assert_eq!(pixel(tile + 10, 10), Srgba::WHITE);
+    }
+
+    #[test]
+    fn displacement_moves_the_refined_surface_along_its_normals() {
+        let directory = tempfile::tempdir().unwrap();
+        let color = directory.path().join("color.ptx");
+        let height = directory.path().join("height.ptx");
+        std::fs::write(
+            &color,
+            crate::read::ptex::tests::ptex_texels(&[[[90; 3]; 4]]),
+        )
+        .unwrap();
+        std::fs::write(
+            &height,
+            crate::read::ptex::tests::ptex_texels(&[[[255; 3]; 4]]),
+        )
+        .unwrap();
+        let root = directory.path().join("scene.usda");
+        std::fs::write(
+            &root,
+            format!(
+                r#"#usda 1.0
+def Mesh "Ground" (prepend apiSchemas = ["MaterialBindingAPI"]) {{
+    point3f[] points = [(0,0,0),(1,0,0),(1,0,1),(0,0,1)]
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0, 1, 2, 3]
+    rel material:binding = </Mat>
+}}
+def Material "Mat" {{
+    token outputs:ri:surface.connect = </Mat/Disney.outputs:bxdf_out>
+    token outputs:ri:displacement.connect = </Mat/Displace.outputs:displace>
+    def Shader "Disney" {{
+        uniform token info:id = "PxrDisneyBsdf"
+        color3f inputs:baseColor.connect = </Mat/Color.outputs:resultRGB>
+        token outputs:bxdf_out
+    }}
+    def Shader "Color" {{
+        uniform token info:id = "PxrPtexture"
+        asset inputs:filename = @{}@
+        color3f outputs:resultRGB
+    }}
+    def Shader "Displace" {{
+        uniform token info:id = "PxrDisplace"
+        float inputs:dispAmount = 2
+        float inputs:dispScalar.connect = </Mat/Remap.outputs:resultF>
+        token outputs:displace
+    }}
+    def Shader "Remap" {{
+        uniform token info:id = "PxrDispTransform"
+        int inputs:dispRemapMode = 2
+        float inputs:dispDepth = 0.5
+        float inputs:dispHeight = 0.5
+        float inputs:dispScalar.connect = </Mat/Height.outputs:resultR>
+        float outputs:resultF
+    }}
+    def Shader "Height" {{
+        uniform token info:id = "PxrPtexture"
+        asset inputs:filename = @{}@
+        float outputs:resultR
+    }}
+}}
+"#,
+                color.display(),
+                height.display()
+            ),
+        )
+        .unwrap();
+        let source = crate::UsdSource::from_file(&root).unwrap();
+        let live = crate::live::LiveStage::new(source.open_stage().unwrap());
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<Image>>();
+        world.insert_resource(UsdPtexAtlas {
+            min_face_meters: 0.0,
+            ..default()
+        });
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        let entity = map.entity("/Ground").unwrap();
+        let mesh = world
+            .resource::<Assets<Mesh>>()
+            .get(&world.get::<Mesh3d>(entity).unwrap().0)
+            .unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions")
+        };
+        // A full texel lifts by the remapped height, 0.5, times the amount,
+        // 2, along the face's normal, which points down.
+        for position in positions {
+            assert!((position[1] + 1.0).abs() < 1e-5, "{position:?}");
+        }
     }
 
     #[test]

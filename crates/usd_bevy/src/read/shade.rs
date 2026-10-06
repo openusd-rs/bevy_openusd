@@ -1643,7 +1643,7 @@ fn texture_input_attribute(
     Ok(producers.first().map(|source| source.attribute().clone()))
 }
 
-fn read_texture_file(
+pub(super) fn read_texture_file(
     stage: &Stage,
     tex_prim: &Path,
     time: Option<f64>,

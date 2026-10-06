@@ -1,5 +1,204 @@
 # Changelog
 
+## [0.2.0] - 2026-10-06
+
+### <!-- 0 -->⛰️  Features
+
+- Make capture settle frames tunable
+- Capture linear frames as pfm
+- Add disney sheen to materials
+- Add supersampling and ptex options
+- Displace ptex terrain from materials
+- Texture ptex terrain through atlases
+- Draw subdivision cages at their limit
+- Give frame captures a depth prepass
+- Deepen murky water color with depth
+- Add tonemap and instance shadow options
+- Cast shadows from gpu instances
+- Draw curve strands as ribbons
+- Draw curve strands by pixel coverage
+- Translate renderman and ptex materials
+- Light scenes with their own sun
+- Expose authored light emission
+- Streaming, framing and sky options
+- Dome suns, downsample large HDRs
+- GPU instancing for point instancers
+- Stream payloads and LODs by camera
+- Drive the UR10 through a pick and place
+- Add a driven UR10 arm
+- Toggle joint drawings in gif_frames
+- Draw joints with a gizmo overlay
+- Render animation frame sequences
+- Draw skeletons with a gizmo overlay
+- Add browser example
+- Load on wasm and from memory
+- Reopen in last picked folder
+- Budget deferred preparation updates
+- Capture screenshots from running viewers
+- Add camera waypoint planner
+- Export UsdSceneInstance for swap hooks
+- Scope variant switches to their specs
+- Project full UsdPhysics data, kind, variants, budgeted projection
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Read displacement through interfaces
+- Color meshes before storing them
+- Let light-passing surfaces cast no shadow
+- Fit sun shadow cascades to the view
+- Shade curve strands without normals
+- Shade oriented curves, keep lines unlit
+- Own diffuse beats displayColor
+- Skip Ptex bytes, keep dome images on CPU
+- Keep ancestral variants out of prototypes
+- Skip hidden skeletons in the overlay
+- Honour OmniPBR enable_emission
+- Skip unused missing dependencies
+- Read empty string arrays
+- Count workers without fetch_update
+- Drop orphaned camera plan decoder
+- Use mara gpu render state
+- Guard empty status readout
+- Preserve binary candidate formats
+- Track material image dependencies
+- Track unresolved scene asset handles
+- Rotate deferred work across roots
+- Preserve edits made during loading
+- Keep sliced projection time coherent
+
+### <!-- 3 -->📚 Documentation
+
+- Fly in over the moana island
+- Fly over the Caldera capital
+- Film the UR10 with a moving camera
+- Show the UR10 pick and place
+- Add the UR10 gif
+- Re-render the cow gif
+- Add skeletal animation gifs
+- Lead with the bevy library
+- Use the full firefox screenshot
+- Show the web example in firefox
+- Shorten and add screenshots
+- Identify ground-cover expansion limit
+- Record shared-path full-load limit
+- Record full-stage memory retest
+- Record rejected property path trial
+- Identify duplicate root parsing
+- Record rejected promotion memo
+- Record rejected subset worker trial
+- Record paired owner-walk benchmarks
+- Record workspace validation checkpoint
+- Record rejected subset cache trial
+- Clarify plan progress
+
+### <!-- 4 -->⚡ Performance
+
+- Shrink ptex atlases on the gpu
+- Bake static skins, inherit purpose
+- Resumable traversal, scoped minimize
+- Use mimalloc in usdview and gif_frames
+- Speed up projection of large stages
+- Discover dependencies in one probe
+- Trim prim contexts, cache path hashes
+- Recompute only new layers on load
+- Cull compact batches by bounds
+- Bound compact GPU batches
+- Prototype compact PBR draws
+- Decode shared replacement snapshots
+- Share immutable replacement bytes
+- Stream unchanged file verification
+- Read snapshots into shared buffers
+- Observe material draw outcomes
+- Check per-view mesh prerequisites
+- Observe GPU queue completion
+- Track extracted asset revisions
+- Share immutable crate byte snapshots
+- Share immutable path storage
+- Share hierarchy map path keys
+- Attribute instancer ECS capacity
+- Borrow prepared prototypes
+- Reduce ID scratch allocations
+- Reuse projection shader reads
+- Split material resolution costs
+- Trace live projection progress
+- Reuse traversal parent status
+- Batch property classification
+- Attribute validation getter costs
+- Share ancestor specifier reads
+- Batch abstract ancestry queries
+- Reuse active state during traversal
+- Split composition validation costs
+- Reuse parsed stage roots
+- Retain deferred preparation queues
+- Index texture-bearing prims
+- Reuse texture scan prim types
+- Skip unchanged reload inspection
+- Attribute deferred update stalls
+- Skip unchanged joint palettes
+- Order deferred preparation by path
+- Defer initially hidden geometry
+- Attribute hidden geometry work
+- Batch inherited primvar owner walks
+- Retain per-job projection caches
+- Share projection budget across roots
+- Seek directory without copying archive
+- Reuse repeated influence corrections
+- Reuse snapshot texture manifests
+- Evict only enough meshes to fit
+- Reuse assembly lookup results
+- Track prepared material readiness
+- Borrow expanded triangulation positions
+- Measure mesh visibility residency
+- Reuse validated immutable snapshots
+- Share CPU position and normal palettes
+- Reuse decoded deformation geometry
+- Reuse local deformation classification
+- Use sparse remapping for small subsets
+- Borrow parent mesh during splitting
+- Probe render asset readiness
+- Separate geometry read costs
+- Measure mesh cache churn
+- Reuse assets and subset triangulation
+- Avoid repeated partial-scene work
+- Reuse discovery within projection
+- Skip unauthored validation reads
+- Cache assembly before asset interning
+- Reuse mesh data and cached tangents
+- Keep switched-off variant assets
+- Switch variants on the open stage
+- Spawn-side textures, memo materials
+- Parse loader stage once
+- Optimize mesh and tangent generation
+- Optimize USD loading crates
+- Avoid text exports during loading
+
+### <!-- 5 -->🎨 Styling
+
+- Format workspace with rustfmt
+
+### <!-- 6 -->🧪 Testing
+
+- Project morph roots in one update
+- Cover eight joint influences
+- Watch deferred mesh dependencies
+- Verify deferred reload and reveal
+- Add stage traversal benchmark
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Drop PLAN_PERF.md and cliff.toml
+- Drop the patches folder
+- Free runner disk and drop debug info
+- Check formatting of workspace crates only
+
+### Build
+
+- Drop vendored bevy_pbr
+- Use stock bevy_pbr
+- Track mara main
+- Fetch mara from github
+- Move to oslo make and env lua
+
 ## [0.1.0] - 2026-09-12
 
 ### <!-- 0 -->⛰️  Features

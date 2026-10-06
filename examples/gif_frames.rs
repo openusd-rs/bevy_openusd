@@ -62,6 +62,8 @@ struct Recorder {
     posed: bool,
     pending: bool,
     streamed: u32,
+    /// Frames drawn after each pose change before it is captured.
+    settle: u32,
 }
 
 /// The render target, and how many target pixels each saved pixel averages
@@ -161,6 +163,10 @@ fn main() -> AppExit {
         posed: false,
         pending: false,
         streamed: 0,
+        settle: std::env::var("USD_FRAME_SETTLE")
+            .ok()
+            .and_then(|frames| frames.parse().ok())
+            .unwrap_or(SETTLE),
     })
     .add_systems(Startup, setup)
     .add_systems(Last, (fit_grid, record).chain())
@@ -372,7 +378,7 @@ fn record(
         skeletons.visible = frame.overlays;
         joints.visible = frame.overlays;
         recorder.posed = true;
-        recorder.wait = recorder.wait.max(SETTLE);
+        recorder.wait = recorder.wait.max(recorder.settle);
     }
     if recorder.wait > 0 {
         recorder.wait -= 1;

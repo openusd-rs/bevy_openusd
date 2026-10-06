@@ -6190,6 +6190,7 @@ dependencies = [
  "glam 0.30.10",
  "half",
  "log",
+ "miniz_oxide",
  "openusd",
  "openusd-schemas",
  "png 0.18.1",

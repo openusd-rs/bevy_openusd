@@ -128,9 +128,9 @@ pub(crate) fn prepare(
             continue;
         };
         let subset_ctx = RouteCtx::at(ctx.stage, &path, ctx.time);
-        let (material, mut warnings, colored) =
+        let (material, mut warnings, color) =
             match super::material::resolve_material(&subset_ctx, world) {
-                Ok(Some((handle, warnings, colored))) => {
+                Ok(Some((handle, warnings, color))) => {
                     let mut material = world
                         .resource::<Assets<StandardMaterial>>()
                         .get(&handle)
@@ -140,11 +140,19 @@ pub(crate) fn prepare(
                     (
                         super::cache::intern_material(world, material),
                         warnings,
-                        colored,
+                        color,
                     )
                 }
-                Ok(None) => (default_material.clone(), Vec::new(), false),
-                Err(error) => (default_material.clone(), vec![error.to_string()], false),
+                Ok(None) => (
+                    default_material.clone(),
+                    Vec::new(),
+                    super::material::MaterialColor::Open,
+                ),
+                Err(error) => (
+                    default_material.clone(),
+                    vec![error.to_string()],
+                    super::material::MaterialColor::Open,
+                ),
             };
         let normal_mapped = world
             .resource::<Assets<StandardMaterial>>()
@@ -165,7 +173,9 @@ pub(crate) fn prepare(
             )
         };
         let mut mesh = super::cache::intern_mesh(world, mesh);
-        if colored && let Some(plain) = super::cache::without_vertex_colors(world, &mesh) {
+        if color == super::material::MaterialColor::Owned
+            && let Some(plain) = super::cache::without_vertex_colors(world, &mesh)
+        {
             mesh = plain;
         }
         if let Some(tangent) =

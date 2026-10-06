@@ -154,6 +154,9 @@ fn decode_textures(
     Ok(textures)
 }
 
+/// The virtual directory asset-loaded stages resolve their files under.
+pub(crate) const ASSET_ROOT: &str = "__bevy_usd_assets__";
+
 /// Reads a source snapshot and its discovered dependencies through Bevy.
 #[derive(Default, TypePath)]
 pub struct UsdAssetLoader {
@@ -211,7 +214,7 @@ impl AssetLoader for UsdAssetLoader {
     ) -> Result<UsdScene, std::io::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let root = crate::source::absolute(Path::new("__bevy_usd_assets__"))?;
+        let root = crate::source::absolute(Path::new(ASSET_ROOT))?;
         let path = load_context.path().path().to_path_buf();
         if crate::source::rooted(&path) {
             return Err(std::io::Error::other(

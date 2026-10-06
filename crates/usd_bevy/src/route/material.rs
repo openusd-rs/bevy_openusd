@@ -156,7 +156,7 @@ pub(crate) struct ProjectionMaterials {
     stage: openusd::usd::Stage,
     resolved: std::collections::HashMap<
         (String, Option<u64>, bool),
-        (Handle<StandardMaterial>, Vec<String>, bool),
+        (Handle<StandardMaterial>, Vec<String>, MaterialColor),
     >,
     /// Whether any layer authors a `material:binding` property; without one
     /// no prim can be bound.
@@ -351,6 +351,20 @@ fn to_standard_material(
     if let Some(ior) = read.ior {
         m.ior = ior;
     }
+    // Light passing through takes the transmission tint, which Bevy reads
+    // from the base color.
+    // A medium that also transmits diffusely, as murky water does, colors
+    // all the light passing through it.
+    if let Some(transmission) = read.transmission.filter(|value| *value > 0.0) {
+        m.specular_transmission = transmission.min(1.0);
+        let scattered = read
+            .diffuse_transmission
+            .is_some_and(|gain| gain > 0.0)
+            .then_some(read.diffuse_transmission_color)
+            .flatten();
+        let [r, g, b] = scattered.or(read.transmission_color).unwrap_or([1.0; 3]);
+        m.base_color = Color::linear_rgba(r, g, b, m.base_color.alpha());
+    }
     // Convert the USD UV transform through the mesh's V-flipped coordinate basis.
     if let Some(uv) = &read.uv_transform {
         let flip =
@@ -374,10 +388,65 @@ fn to_standard_material(
     m
 }
 
+/// Where a bound material's base color comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MaterialColor {
+    /// Left open, so the gprim's `displayColor` shows through.
+    Open,
+    /// Authored by the material, so `displayColor` must not tint it.
+    Owned,
+    /// A Ptex file's face colors, and whether its texels are sRGB.
+    Ptex(std::sync::Arc<str>, bool),
+}
+
+impl MaterialColor {
+    /// The mesh `mesh` turns into under this color, when it changes.
+    pub(crate) fn recolor(
+        &self,
+        ctx: &RouteCtx,
+        world: &mut World,
+        mesh: &Handle<Mesh>,
+    ) -> Option<Handle<Mesh>> {
+        match self {
+            Self::Open => None,
+            Self::Owned => super::cache::without_vertex_colors(world, mesh),
+            Self::Ptex(path, srgb) => {
+                let read = ctx.read_mesh().ok().flatten()?;
+                let faces = super::ptex::faces(world, path)?;
+                let source = world.resource::<Assets<Mesh>>().get(mesh)?;
+                let colored = super::ptex::color_mesh(source, read, &faces, *srgb)?;
+                Some(super::cache::intern_mesh(world, colored))
+            }
+        }
+    }
+
+    /// Recolors a mesh that is not interned yet.
+    pub(crate) fn apply(
+        &self,
+        world: &mut World,
+        mesh: &mut Mesh,
+        read: &crate::read::geom::ReadMesh,
+    ) {
+        match self {
+            Self::Open => {}
+            Self::Owned => {
+                mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+            }
+            Self::Ptex(path, srgb) => {
+                if let Some(faces) = super::ptex::faces(world, path)
+                    && let Some(colored) = super::ptex::color_mesh(mesh, read, &faces, *srgb)
+                {
+                    *mesh = colored;
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
-) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>, bool)>> {
+) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>, MaterialColor)>> {
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
         && memo.stage.ptr_eq(ctx.stage)
     {
@@ -436,8 +505,13 @@ pub(crate) fn resolve_material(
     let started = profiling.then(bevy::platform::time::Instant::now);
     let assets = world.get_resource::<AssetServer>().cloned();
     let textures = world.get_resource::<crate::asset::SnapshotTextures>();
-    // A material with its own diffuse is not tinted by the gprim's displayColor.
-    let colored = read.diffuse_color.is_some() || read.diffuse_texture.is_some();
+    let color = match &read.diffuse_ptex {
+        Some((path, srgb)) => MaterialColor::Ptex(path.as_str().into(), *srgb),
+        None if read.diffuse_color.is_some() || read.diffuse_texture.is_some() => {
+            MaterialColor::Owned
+        }
+        None => MaterialColor::Open,
+    };
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
     apply_sidedness(ctx, &mut material);
     let mut warnings = read.warnings.clone();
@@ -509,9 +583,9 @@ pub(crate) fn resolve_material(
         && memo.stage.ptr_eq(ctx.stage)
     {
         memo.resolved
-            .insert(key, (handle.clone(), warnings.clone(), colored));
+            .insert(key, (handle.clone(), warnings.clone(), color.clone()));
     }
-    Ok(Some((handle, warnings, colored)))
+    Ok(Some((handle, warnings, color)))
 }
 
 impl PrimRoute for MaterialRoute {
@@ -525,7 +599,7 @@ impl PrimRoute for MaterialRoute {
         {
             return;
         }
-        let (handle, mut warnings, colored) = match resolve_material(ctx, world) {
+        let (handle, mut warnings, color) = match resolve_material(ctx, world) {
             Ok(Some(material)) => material,
             Ok(None) => {
                 world.entity_mut(entity).remove::<UsdMaterialWarning>();
@@ -536,11 +610,10 @@ impl PrimRoute for MaterialRoute {
                 return;
             }
         };
-        if colored
-            && let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
-            && let Some(plain) = super::cache::without_vertex_colors(world, &mesh)
+        if let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
+            && let Some(recolored) = color.recolor(ctx, world, &mesh)
         {
-            world.entity_mut(entity).insert(Mesh3d(plain));
+            world.entity_mut(entity).insert(Mesh3d(recolored));
         }
         let read = ctx.read_mesh().ok().flatten();
         let uvs = read.is_some_and(|read| read.uvs.is_some());
@@ -1707,6 +1780,26 @@ def Material "Mat" {
         assert!((m.ior - 1.4).abs() < 1e-6);
         assert_eq!(m.emissive, LinearRgba::rgb(1.0, 0.0, 0.0));
         assert!(matches!(m.alpha_mode, AlphaMode::Opaque));
+    }
+
+    #[test]
+    fn diffusely_transmitting_media_tint_the_light_through_them() {
+        let mut read = ReadPreviewMaterial {
+            transmission: Some(1.0),
+            transmission_color: Some([0.9, 0.9, 1.0]),
+            ..Default::default()
+        };
+        let clear = to_standard_material(&read, None, None);
+        assert_eq!(clear.specular_transmission, 1.0);
+        assert_eq!(clear.base_color.to_linear(), LinearRgba::rgb(0.9, 0.9, 1.0));
+        read.diffuse_transmission = Some(0.4);
+        read.diffuse_transmission_color = Some([0.1, 0.8, 0.4]);
+        let murky = to_standard_material(&read, None, None);
+        assert_eq!(murky.specular_transmission, 1.0);
+        assert_eq!(murky.base_color.to_linear(), LinearRgba::rgb(0.1, 0.8, 0.4));
+        read.diffuse_transmission = Some(0.0);
+        let clear = to_standard_material(&read, None, None);
+        assert_eq!(clear.base_color.to_linear(), LinearRgba::rgb(0.9, 0.9, 1.0));
     }
 
     #[test]

@@ -39,6 +39,7 @@ pub mod meta;
 pub mod native;
 pub mod points;
 pub(crate) mod profiling;
+pub(crate) mod ptex;
 mod texture_pack;
 
 pub(crate) fn configure_texture_caches(app: &mut bevy::prelude::App) {

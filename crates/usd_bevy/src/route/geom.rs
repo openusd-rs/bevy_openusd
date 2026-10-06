@@ -183,6 +183,7 @@ impl MeshRoute {
             return false;
         }
         super::flat_material::clear(world, entity);
+        super::sheen_material::clear(world, entity);
         world.entity_mut(entity).insert((
             Mesh3d(mesh_handle),
             MeshMaterial3d(material),

@@ -313,11 +313,15 @@ pub(crate) fn externally_owned<A: Asset>(handle: &Handle<A>) -> bool {
 
 pub(crate) fn prune_material_cache(
     cache: Option<ResMut<MaterialCache>>,
+    sheen: Option<ResMut<MaterialSheen>>,
     assets: Option<Res<Assets<StandardMaterial>>>,
 ) {
     let (Some(mut cache), Some(assets)) = (cache, assets) else {
         return;
     };
+    if let Some(mut sheen) = sheen {
+        sheen.0.retain(|material, _| assets.contains(*material));
+    }
     cache.materials.retain(|_, candidates| {
         candidates.retain(|handle| assets.contains(handle) && externally_owned(handle));
         !candidates.is_empty()
@@ -325,23 +329,57 @@ pub(crate) fn prune_material_cache(
     cache.count = cache.materials.values().map(Vec::len).sum();
 }
 
+/// Disney's sheen on a material: a grazing glow of the light, `weight`
+/// strong, that takes on the base color's hue by `tint` rather than white.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sheen {
+    pub weight: f32,
+    pub tint: f32,
+}
+
+/// The sheen of each material that has one, which a standard material
+/// cannot hold.
+#[derive(Resource, Default)]
+pub(crate) struct MaterialSheen(HashMap<AssetId<StandardMaterial>, Sheen>);
+
+pub(crate) fn sheen_of(world: &World, material: AssetId<StandardMaterial>) -> Option<Sheen> {
+    world
+        .get_resource::<MaterialSheen>()?
+        .0
+        .get(&material)
+        .copied()
+}
+
 /// Shares fully equal materials while retaining at most 1024 cached handles.
 pub fn intern_material(world: &mut World, material: StandardMaterial) -> Handle<StandardMaterial> {
+    intern_material_with_sheen(world, material, None)
+}
+
+/// Shares materials equal in everything and in `sheen` too.
+pub(crate) fn intern_material_with_sheen(
+    world: &mut World,
+    material: StandardMaterial,
+    sheen: Option<Sheen>,
+) -> Handle<StandardMaterial> {
     if !world.contains_resource::<MaterialCache>() {
-        return world
+        let handle = world
             .resource_mut::<Assets<StandardMaterial>>()
             .add(material);
+        record_sheen(world, &handle, sheen);
+        return handle;
     }
     let mut hash = FixedHasher.build_hasher();
-    format!("{material:?}").hash(&mut hash);
+    format!("{material:?}{sheen:?}").hash(&mut hash);
     let signature = hash.finish();
     if let Some(candidates) = world.resource::<MaterialCache>().materials.get(&signature) {
         let assets = world.resource::<Assets<StandardMaterial>>();
         for handle in candidates {
-            if assets.get(handle).is_some_and(|existing| {
-                existing.cull_mode == material.cull_mode
-                    && existing.reflect_partial_eq(&material) == Some(true)
-            }) {
+            if sheen_of(world, handle.id()) == sheen
+                && assets.get(handle).is_some_and(|existing| {
+                    existing.cull_mode == material.cull_mode
+                        && existing.reflect_partial_eq(&material) == Some(true)
+                })
+            {
                 return handle.clone();
             }
         }
@@ -349,6 +387,7 @@ pub fn intern_material(world: &mut World, material: StandardMaterial) -> Handle<
     let handle = world
         .resource_mut::<Assets<StandardMaterial>>()
         .add(material);
+    record_sheen(world, &handle, sheen);
     let mut cache = world.resource_mut::<MaterialCache>();
     if cache.count >= 1024 {
         cache.materials.clear();
@@ -361,6 +400,15 @@ pub fn intern_material(world: &mut World, material: StandardMaterial) -> Handle<
         .push(handle.clone());
     cache.count += 1;
     handle
+}
+
+fn record_sheen(world: &mut World, handle: &Handle<StandardMaterial>, sheen: Option<Sheen>) {
+    if let Some(sheen) = sheen {
+        world
+            .get_resource_or_init::<MaterialSheen>()
+            .0
+            .insert(handle.id(), sheen);
+    }
 }
 
 /// Maximum retained entries, independently of the configured payload budget.

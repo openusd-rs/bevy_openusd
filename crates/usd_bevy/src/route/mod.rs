@@ -54,6 +54,7 @@ pub mod physics;
 pub mod reflect;
 pub mod residency;
 pub mod shapes;
+pub mod sheen_material;
 pub mod skel;
 pub mod strand_material;
 pub mod subdivision;

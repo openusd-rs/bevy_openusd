@@ -71,6 +71,28 @@ pub(crate) fn clear<E: MaterialExtension>(world: &mut World, entity: Entity) {
 }
 
 pub(crate) fn attach<E: MaterialExtension + Default>(world: &mut World, entity: Entity) {
+    attach_matching(world, entity, E::default(), |_| true);
+}
+
+/// Wraps `entity`'s material in `extension`, whose settings follow from
+/// the material it wraps.
+pub(crate) fn attach_with<E: MaterialExtension + Clone + PartialEq>(
+    world: &mut World,
+    entity: Entity,
+    extension: E,
+) {
+    let wanted = extension.clone();
+    attach_matching(world, entity, extension, move |existing| {
+        *existing == wanted
+    });
+}
+
+fn attach_matching<E: MaterialExtension>(
+    world: &mut World,
+    entity: Entity,
+    extension: E,
+    same: impl Fn(&E) -> bool,
+) {
     if !enabled::<E>(world) {
         return;
     }
@@ -93,6 +115,7 @@ pub(crate) fn attach<E: MaterialExtension + Default>(world: &mut World, entity: 
     let matches = |existing: &Wrapped<E>| {
         existing.base.cull_mode == material.cull_mode
             && existing.base.reflect_partial_eq(&material) == Some(true)
+            && same(&existing.extension)
     };
     let existing = world.get::<Owned<E>>(entity).and_then(|owned| {
         world
@@ -114,7 +137,7 @@ pub(crate) fn attach<E: MaterialExtension + Default>(world: &mut World, entity: 
     let handle = existing.or(cached).unwrap_or_else(|| {
         let handle = world.resource_mut::<Assets<Wrapped<E>>>().add(Wrapped {
             base: material,
-            extension: E::default(),
+            extension,
         });
         if let Some(mut cache) = world.get_resource_mut::<Cache<E>>() {
             if cache.0.len() >= 1024 {
@@ -155,6 +178,11 @@ pub(crate) fn base_handle(world: &World, entity: Entity) -> Option<Handle<Standa
             .or_else(|| {
                 world
                     .get::<Owned<super::medium_material::DepthMedium>>(entity)
+                    .map(|owned| owned.base.clone())
+            })
+            .or_else(|| {
+                world
+                    .get::<Owned<super::sheen_material::SheenLobe>>(entity)
                     .map(|owned| owned.base.clone())
             })
     };

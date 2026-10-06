@@ -586,7 +586,15 @@ pub(crate) fn resolve_material(
         world.resource_mut::<MaterialResolveTimings>().preparing += started.elapsed();
     }
     let started = profiling.then(bevy::platform::time::Instant::now);
-    let handle = super::cache::intern_material(world, material);
+    // Disney's sheen defaults to half tinted.
+    let sheen = read
+        .sheen
+        .filter(|weight| *weight > 0.0)
+        .map(|weight| super::cache::Sheen {
+            weight,
+            tint: read.sheen_tint.unwrap_or(0.5),
+        });
+    let handle = super::cache::intern_material_with_sheen(world, material, sheen);
     if let Some(started) = started {
         world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed();
     }
@@ -633,12 +641,14 @@ impl PrimRoute for MaterialRoute {
                     .get(&handle)
                     .cloned()
                     .unwrap_or_default();
-                super::cache::intern_material(
+                let sheen = super::cache::sheen_of(world, handle.id());
+                super::cache::intern_material_with_sheen(
                     world,
                     StandardMaterial {
                         base_color_texture: Some(image),
                         ..material
                     },
+                    sheen,
                 )
             }
             None => {
@@ -724,6 +734,7 @@ impl PrimRoute for MaterialRoute {
         } else if let Ok(mut e) = world.get_entity_mut(entity) {
             e.insert(MeshMaterial3d(handle));
         }
+        super::sheen_material::clear(world, entity);
         if clear {
             world
                 .entity_mut(entity)
@@ -736,6 +747,7 @@ impl PrimRoute for MaterialRoute {
         super::flat_material::attach_if_normalless(world, entity);
         super::strand_material::attach_if_strand(world, entity);
         super::medium_material::attach_if_medium(world, entity);
+        super::sheen_material::attach_if_sheen(world, entity);
     }
 }
 

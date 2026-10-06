@@ -352,6 +352,7 @@ impl Plugin for UsdAssetPlugin {
             crate::route::flat_material::configure(app);
             crate::route::strand_material::configure(app);
             crate::route::medium_material::configure(app);
+            crate::route::sheen_material::configure(app);
         }
         let server = app.world().get_resource::<AssetServer>().cloned();
         app.init_asset::<UsdScene>()

@@ -138,7 +138,11 @@ pub(crate) fn prepare(
                         .clone();
                     super::material::apply_sidedness(ctx, &mut material);
                     (
-                        super::cache::intern_material(world, material),
+                        super::cache::intern_material_with_sheen(
+                            world,
+                            material,
+                            super::cache::sheen_of(world, handle.id()),
+                        ),
                         warnings,
                         color,
                     )
@@ -232,10 +236,12 @@ pub(crate) fn apply(world: &mut World, entity: Entity, prepared: &PreparedSubset
                     .id()
             });
         super::flat_material::clear(world, child);
+        super::sheen_material::clear(world, child);
         world
             .entity_mut(child)
             .insert((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
         super::flat_material::attach_if_normalless(world, child);
+        super::sheen_material::attach_if_sheen(world, child);
         world
             .entity_mut(child)
             .remove::<bevy::camera::primitives::Aabb>();

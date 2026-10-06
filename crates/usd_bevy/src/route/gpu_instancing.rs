@@ -95,6 +95,7 @@ impl Plugin for UsdGpuInstancingPlugin {
         bevy::asset::embedded_asset!(app, "gpu_instancing_cull.wgsl");
         bevy::asset::embedded_asset!(app, "gpu_instancing_shadow.wgsl");
         bevy::asset::embedded_asset!(app, "gpu_instancing_types.wgsl");
+        bevy::asset::embedded_asset!(app, "sheen_functions.wgsl");
         if !app.world().contains_resource::<UsdGpuInstancing>() {
             app.init_resource::<UsdGpuInstancing>();
         }
@@ -212,6 +213,8 @@ pub(crate) struct InstancedMaterial {
     emissive: LinearRgba,
     roughness: f32,
     metallic: f32,
+    /// Disney sheen's weight and tint.
+    sheen: [f32; 2],
 }
 
 impl From<&StandardMaterial> for InstancedMaterial {
@@ -221,6 +224,7 @@ impl From<&StandardMaterial> for InstancedMaterial {
             emissive: material.emissive,
             roughness: material.perceptual_roughness,
             metallic: material.metallic,
+            sheen: [0.0; 2],
         }
     }
 }
@@ -300,7 +304,8 @@ struct DrawUniform {
     emissive: [f32; 4],
     roughness: f32,
     metallic: f32,
-    pad: [f32; 2],
+    sheen: f32,
+    sheen_tint: f32,
 }
 
 struct GpuChunk {
@@ -706,7 +711,8 @@ fn prepare_bind_groups(
             emissive: draw.material.emissive.to_f32_array(),
             roughness: draw.material.roughness,
             metallic: draw.material.metallic,
-            pad: [0.0; 2],
+            sheen: draw.material.sheen[0],
+            sheen_tint: draw.material.sheen[1],
         };
         queue.write_buffer(&target.uniform, 0, bytemuck::bytes_of(&uniform));
         if let Some(gpu) = gpu {
@@ -994,10 +1000,13 @@ pub(crate) fn spawn(
     for instances in chunks {
         let (chunk, bounds) = InstanceChunk::new(instances, sphere);
         for (mesh, material, part) in meshes {
+            let sheen = super::cache::sheen_of(world, material.id())
+                .map_or([0.0; 2], |sheen| [sheen.weight, sheen.tint]);
             let material = world
                 .resource::<Assets<StandardMaterial>>()
                 .get(material)
                 .map(InstancedMaterial::from)
+                .map(|material| InstancedMaterial { sheen, ..material })
                 .unwrap_or(InstancedMaterial::from(&StandardMaterial::default()));
             world.spawn((
                 UsdInstancedDraw {

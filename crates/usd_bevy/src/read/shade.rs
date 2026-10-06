@@ -33,6 +33,10 @@ pub struct ReadPreviewMaterial {
     pub diffuse_transmission: Option<f32>,
     /// The color diffusely transmitted light takes on.
     pub diffuse_transmission_color: Option<[f32; 3]>,
+    /// A grazing glow, as of cloth or sand, as Disney's BRDF weighs it.
+    pub sheen: Option<f32>,
+    /// How far the sheen takes on the base color's hue rather than white.
+    pub sheen_tint: Option<f32>,
 
     pub diffuse_texture: Option<String>,
     /// A Ptex diffuse texture, which colors faces rather than UVs, and
@@ -1196,6 +1200,8 @@ const PXR_DISNEY_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] 
         set_emissive_tex,
     ),
     ("ior", set_ior_c, set_ior_s, set_ior_tex),
+    ("sheen", ignore_c, set_sheen_s, ignore_sheen_tex),
+    ("sheenTint", ignore_c, set_sheen_tint_s, ignore_sheen_tex),
 ];
 
 fn set_transmission_s(o: &mut ReadPreviewMaterial, s: f32) {
@@ -1209,6 +1215,16 @@ fn set_diffuse_transmission_s(o: &mut ReadPreviewMaterial, s: f32) {
 }
 fn set_diffuse_transmission_c(o: &mut ReadPreviewMaterial, c: [f32; 3]) {
     o.diffuse_transmission_color = Some(c);
+}
+fn set_sheen_s(o: &mut ReadPreviewMaterial, s: f32) {
+    o.sheen = Some(s);
+}
+fn set_sheen_tint_s(o: &mut ReadPreviewMaterial, s: f32) {
+    o.sheen_tint = Some(s);
+}
+fn ignore_sheen_tex(o: &mut ReadPreviewMaterial, s: TextureInput) {
+    o.warnings
+        .push(format!("{}: textured sheen is not supported", s.0));
 }
 fn ignore_s(_: &mut ReadPreviewMaterial, _: f32) {}
 fn ignore_c(_: &mut ReadPreviewMaterial, _: [f32; 3]) {}

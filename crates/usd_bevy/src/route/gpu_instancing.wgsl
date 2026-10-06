@@ -7,6 +7,7 @@
     view_transformations::position_world_to_clip,
 }
 #import "embedded://usd_bevy/route/gpu_instancing_types.wgsl"::{draw, place, rotate}
+#import "embedded://usd_bevy/route/sheen_functions.wgsl"::sheen_light
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -58,6 +59,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
     pbr.is_orthographic = view.clip_from_view[3].w == 1.0;
     pbr.V = pbr_functions::calculate_view(in.world_position, pbr.is_orthographic);
     pbr.flags = MESH_FLAGS_SHADOW_RECEIVER_BIT;
-    let color = pbr_functions::apply_pbr_lighting(pbr);
+    var color = pbr_functions::apply_pbr_lighting(pbr);
+    if draw.sheen > 0.0 {
+        color = vec4(color.rgb + sheen_light(pbr, draw.sheen, draw.sheen_tint), color.a);
+    }
     return pbr_functions::main_pass_post_lighting_processing(pbr, color);
 }

@@ -16,6 +16,8 @@ struct Draw {
     emissive: vec4<f32>,
     roughness: f32,
     metallic: f32,
+    sheen: f32,
+    sheen_tint: f32,
 }
 
 @group(2) @binding(0) var<storage, read> instances: array<Instance>;

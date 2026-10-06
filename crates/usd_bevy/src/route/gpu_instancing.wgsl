@@ -6,30 +6,7 @@
     pbr_types,
     view_transformations::position_world_to_clip,
 }
-
-struct Instance {
-    translation_x: f32,
-    translation_y: f32,
-    translation_z: f32,
-    rotation_xy: u32,
-    rotation_zw: u32,
-    scale_x: f32,
-    scale_y: f32,
-    scale_z: f32,
-}
-
-struct Draw {
-    world_from_instancer: mat4x4<f32>,
-    part: mat4x4<f32>,
-    base_color: vec4<f32>,
-    emissive: vec4<f32>,
-    roughness: f32,
-    metallic: f32,
-}
-
-@group(2) @binding(0) var<storage, read> instances: array<Instance>;
-@group(2) @binding(1) var<storage, read> visible: array<u32>;
-@group(2) @binding(2) var<uniform> draw: Draw;
+#import "embedded://usd_bevy/route/gpu_instancing_types.wgsl"::{draw, place, rotate}
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -40,26 +17,14 @@ struct VertexOutput {
 #endif
 }
 
-fn rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
-    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
-}
-
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
-    let instance = instances[visible[vertex.instance_index]];
-    let rotation = normalize(vec4<f32>(
-        unpack2x16snorm(instance.rotation_xy),
-        unpack2x16snorm(instance.rotation_zw),
-    ));
-    let scale = vec3<f32>(instance.scale_x, instance.scale_y, instance.scale_z);
-    let translation = vec3<f32>(instance.translation_x, instance.translation_y, instance.translation_z);
-    let in_prototype = (draw.part * vec4<f32>(vertex.position, 1.0)).xyz;
-    let in_instancer = rotate(rotation, in_prototype * scale) + translation;
+    let placed = place(vertex.position, vertex.instance_index);
     var out: VertexOutput;
-    out.world_position = draw.world_from_instancer * vec4<f32>(in_instancer, 1.0);
+    out.world_position = placed.world_position;
     out.position = position_world_to_clip(out.world_position.xyz);
 #ifdef VERTEX_NORMALS
-    let normal = rotate(rotation, (draw.part * vec4<f32>(vertex.normal, 0.0)).xyz / scale);
+    let normal = rotate(placed.rotation, (draw.part * vec4<f32>(vertex.normal, 0.0)).xyz / placed.scale);
     out.world_normal = normalize((draw.world_from_instancer * vec4<f32>(normal, 0.0)).xyz);
 #else
     out.world_normal = vec3<f32>(0.0, 1.0, 0.0);

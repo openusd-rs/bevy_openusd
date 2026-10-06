@@ -130,6 +130,8 @@ impl MeshRoute {
             clear_geometry(world, entity, GeometryOwner::Mesh);
             return false;
         };
+        let limited = super::subdivision::limit_cage(ctx, world, read);
+        let read = limited.as_ref().unwrap_or(read);
         if world.get_resource::<Assets<Mesh>>().is_none()
             || world.get_resource::<Assets<StandardMaterial>>().is_none()
         {
@@ -186,6 +188,44 @@ impl MeshRoute {
 mod mesh_matching_tests {
     use super::*;
     use crate::read::geom::read_mesh_at;
+
+    #[test]
+    fn catmull_clark_cages_draw_at_their_limit_when_asked() {
+        let text = r#"#usda 1.0
+def Mesh "Cube" {
+    point3f[] points = [(-1,-1,-1),(1,-1,-1),(1,1,-1),(-1,1,-1),(-1,-1,1),(1,-1,1),(1,1,1),(-1,1,1)]
+    int[] faceVertexCounts = [4,4,4,4,4,4]
+    int[] faceVertexIndices = [0,3,2,1, 4,5,6,7, 0,1,5,4, 1,2,6,5, 2,3,7,6, 3,0,4,7]
+}
+"#;
+        let corner = |limit: bool| {
+            let stage = crate::snippet::UsdSnippet::new(text).open_stage().unwrap();
+            let mut world = World::new();
+            world.init_resource::<Assets<Mesh>>();
+            world.init_resource::<Assets<StandardMaterial>>();
+            if limit {
+                world.init_resource::<super::super::subdivision::UsdSubdivisionLimit>();
+            }
+            let live = crate::live::LiveStage::new(stage);
+            let mut map = crate::live::PrimEntities::default();
+            crate::live::project_stage(&mut world, &live, &mut map);
+            let mesh = &world.get::<Mesh3d>(map.entity("/Cube").unwrap()).unwrap().0;
+            let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) = world
+                .resource::<Assets<Mesh>>()
+                .get(mesh)
+                .unwrap()
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                panic!("no positions")
+            };
+            positions.iter().map(|p| p[0].abs()).fold(0.0f32, f32::max)
+        };
+        assert_eq!(corner(false), 1.0, "the cage draws as authored");
+        assert!(
+            (corner(true) - 0.5).abs() < 1e-5,
+            "the limit surface is inside"
+        );
+    }
 
     #[test]
     fn material_colors_apply_before_the_mesh_is_stored() {

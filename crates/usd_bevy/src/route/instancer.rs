@@ -850,9 +850,10 @@ fn bake_mesh(
     {
         super::skel::deformed_mesh(&proto_ctx).ok().flatten()?
     } else {
-        crate::read::geom::read_mesh_at(ctx.stage, proto_path, ctx.time)
+        let read = crate::read::geom::read_mesh_at(ctx.stage, proto_path, ctx.time)
             .ok()
-            .flatten()?
+            .flatten()?;
+        super::subdivision::limit_cage(&proto_ctx, world, &read).unwrap_or(read)
     };
     let mut mesh = crate::mesh::mesh_from_usd(&mesh_read);
     if bake_transform

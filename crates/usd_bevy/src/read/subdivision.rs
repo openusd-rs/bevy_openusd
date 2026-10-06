@@ -6,7 +6,7 @@ use openusd::{
     usd::{Stage, TimeCode},
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ReadSubdivision {
     pub scheme: String,
     pub boundary: String,

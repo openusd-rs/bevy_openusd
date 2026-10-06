@@ -65,6 +65,32 @@ pub(crate) fn enabled(ctx: &RouteCtx, world: &World) -> bool {
             Some(openusd::sdf::Value::Token(token)) if token.as_str() == "none")
 }
 
+/// Draws unrefined Catmull-Clark meshes at their limit surface, as offline
+/// renderers do: each control point moves onto the smooth surface its cage
+/// subdivides to, which adds no geometry. Without it a cage draws as
+/// authored, as Hydra does at its lowest complexity.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct UsdSubdivisionLimit;
+
+/// An unrefined Catmull-Clark cage with its points on the limit surface, so
+/// it draws at the authored shape rather than the puffier cage.
+pub(crate) fn limit_cage(
+    ctx: &RouteCtx,
+    world: &World,
+    read: &crate::read::geom::ReadMesh,
+) -> Option<crate::read::geom::ReadMesh> {
+    if read.subdivision_scheme != crate::read::geom::SubdivScheme::CatmullClark
+        || !world.contains_resource::<UsdSubdivisionLimit>()
+    {
+        return None;
+    }
+    let rules =
+        crate::read::subdivision::read_subdivision_at(ctx.stage, ctx.path, ctx.time).ok()?;
+    let mut limited = read.clone();
+    limited.points = crate::subdivision_limit::limit_points(read, &rules);
+    Some(limited)
+}
+
 pub(crate) fn refined_mesh(
     ctx: &RouteCtx,
     levels: u32,

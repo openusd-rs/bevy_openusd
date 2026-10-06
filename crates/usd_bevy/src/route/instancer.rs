@@ -436,7 +436,14 @@ fn project_gpu(
             ));
             continue;
         };
-        let meshes = prototype_meshes(&prototype);
+        // The instancing shader cannot widen strand ribbons.
+        let mut meshes = prototype_meshes(&prototype);
+        meshes.retain(|(mesh, ..)| {
+            world
+                .resource::<Assets<Mesh>>()
+                .get(mesh)
+                .is_none_or(|mesh| !super::strand_material::is_strand(mesh))
+        });
         super::gpu_instancing::spawn(world, entity, &meshes, chunks);
     }
     if !failed.is_empty() {
@@ -488,14 +495,8 @@ fn bake_prototype(
     let proto_path = read.prototypes.get(proto_idx)?;
     let prim = ctx.stage.prim(proto_path.clone()).ok()?;
     let has_scene_children = has_prototype_geometry_children(ctx.stage, proto_path)?;
-    match prim.type_name().ok().flatten().as_deref() {
-        Some("Mesh") if !has_scene_children => {
-            return bake_mesh(ctx, world, proto_path, true).map(Prototype::Mesh);
-        }
-        Some("BasisCurves") => {
-            return bake_curves(ctx, world, proto_path, true).map(Prototype::Mesh);
-        }
-        _ => {}
+    if prim.type_name().ok().flatten().as_deref() == Some("Mesh") && !has_scene_children {
+        return bake_mesh(ctx, world, proto_path, true).map(Prototype::Mesh);
     }
     let mut parts = Vec::new();
     collect_parts(ctx, world, proto_path, None, 0, &mut parts)?;
@@ -628,7 +629,7 @@ fn collect_parts(
     let handles = if kind == "Mesh" {
         Some(bake_mesh(ctx, world, path, false)?)
     } else if kind == "BasisCurves" {
-        bake_curves(ctx, world, path, false)
+        bake_curves(ctx, world, path)
     } else if shape {
         Some(bake_shape(ctx, world, path)?)
     } else {
@@ -776,17 +777,10 @@ fn bake_curves(
     ctx: &RouteCtx,
     world: &mut World,
     proto_path: &openusd::sdf::Path,
-    bake_transform: bool,
 ) -> Option<ProtoHandles> {
     let proto_ctx = RouteCtx::at(ctx.stage, proto_path, ctx.time);
-    let lines = super::curves::prototype_lines(&proto_ctx, world)?;
-    let mut mesh = lines.mesh;
-    if bake_transform
-        && let Some(matrix) =
-            crate::read::xform::read_transform_matrix_at(ctx.stage, proto_path, ctx.time).ok()?
-    {
-        crate::mesh::affine::bake(&mut mesh, Mat4::from_cols_array(&matrix))?;
-    }
+    let curves = super::curves::prototype_mesh(&proto_ctx, world)?;
+    let mut mesh = curves.mesh;
     let (material, warnings, color) = prototype_material(&proto_ctx, world, || {
         let mut material = super::material::default_material(&proto_ctx);
         material.double_sided = true;
@@ -800,7 +794,7 @@ fn bake_curves(
     let material = match world
         .resource::<Assets<StandardMaterial>>()
         .get(&material)
-        .filter(|material| !lines.lit && !material.unlit)
+        .filter(|material| !curves.lit && !material.unlit)
     {
         Some(material) => {
             let unlit = StandardMaterial {
@@ -2102,16 +2096,22 @@ def Material "Leaf" {
         let needles = strand(parts.0["/Tree/Needles"]).unwrap();
         assert_eq!(
             (needles.0, needles.1, needles.2),
-            (bevy::mesh::PrimitiveTopology::LineList, true, false)
+            (bevy::mesh::PrimitiveTopology::TriangleStrip, true, false)
         );
         assert_eq!(needles.4, LinearRgba::rgb(0.2, 0.5, 0.1));
         assert!(world.get::<Mesh3d>(parts.0["/Tree/Trunk"]).is_some());
-        let grass = strand(children[1]).unwrap();
+        // A curve prototype root keeps its own transform as a part.
+        let grass = world.get::<PrototypeEntities>(children[1]).unwrap().0["/Grass"];
+        assert_eq!(
+            world.get::<Transform>(grass).unwrap().translation,
+            Vec3::new(0.0, 0.0, 5.0)
+        );
+        let grass = strand(grass).unwrap();
         assert!(grass.2, "unbound curves keep their display color");
         assert!(matches!(
             grass.3,
             Some(bevy::mesh::VertexAttributeValues::Float32x3(points))
-                if points == vec![[0.0, 0.0, 5.0], [0.0, 1.0, 5.0]]
+                if points == vec![[0.0; 3], [0.0; 3], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
         ));
     }
 

@@ -50,7 +50,10 @@ pub(crate) fn attach_if_normalless(world: &mut World, entity: Entity) {
     let normalless = world
         .get::<Mesh3d>(entity)
         .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
-        .is_some_and(|mesh| mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none());
+        .is_some_and(|mesh| {
+            mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none()
+                && !super::strand_material::is_strand(mesh)
+        });
     if normalless {
         attach(world, entity);
     }

@@ -14,11 +14,12 @@ use std::{path::PathBuf, time::Duration};
 
 use bevy::{
     app::{AppExit, ScheduleRunnerPlugin},
+    asset::RenderAssetUsages,
     camera::RenderTarget,
     core_pipeline::{prepass::DepthPrepass, tonemapping::Tonemapping},
     prelude::*,
     render::{
-        render_resource::{TextureFormat, TextureUsages},
+        render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
         view::screenshot::{Screenshot, ScreenshotCaptured},
     },
 };
@@ -63,8 +64,10 @@ struct Recorder {
     streamed: u32,
 }
 
+/// The render target, and how many target pixels each saved pixel averages
+/// along each axis.
 #[derive(Resource)]
-struct Target(Handle<Image>);
+struct Target(Handle<Image>, u32);
 
 #[derive(Resource)]
 struct Asset(String, bool);
@@ -171,6 +174,12 @@ fn main() -> AppExit {
             usd_bevy::route::curves::UsdCurveSettings::new(steps).expect("USD_CURVE_STEPS"),
         );
     }
+    if std::env::var_os("USD_SUBDIVISION_LIMIT").is_some() {
+        app.init_resource::<usd_bevy::route::subdivision::UsdSubdivisionLimit>();
+    }
+    if std::env::var_os("USD_PTEX_ATLAS").is_some() {
+        app.init_resource::<usd_bevy::route::ptex_atlas::UsdPtexAtlas>();
+    }
     if std::env::var_os("USD_CPU_INSTANCING").is_none() {
         app.insert_resource(usd_bevy::route::gpu_instancing::UsdGpuInstancing {
             shadows: std::env::var_os("USD_INSTANCED_SHADOWS").is_some(),
@@ -265,7 +274,17 @@ fn setup(
         Ok("none") => Tonemapping::None,
         _ => Tonemapping::TonyMcMapface,
     };
-    let mut image = Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
+    let supersample = std::env::var("USD_FRAME_SUPERSAMPLE")
+        .ok()
+        .and_then(|factor| factor.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let mut image = Image::new_target_texture(
+        width * supersample,
+        height * supersample,
+        TextureFormat::Rgba8UnormSrgb,
+        None,
+    );
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
     commands.spawn((
@@ -284,7 +303,7 @@ fn setup(
             ..default()
         },
     ));
-    commands.insert_resource(Target(target));
+    commands.insert_resource(Target(target, supersample));
     let scene: Handle<UsdScene> = server.load(asset.0.clone());
     let root = commands
         .spawn((UsdSceneRoot(scene), UsdInstanceTime::default()))
@@ -350,16 +369,15 @@ fn record(
     }
     recorder.streamed = 0;
     recorder.pending = true;
+    let supersample = target.1;
     commands
         .spawn(Screenshot(RenderTarget::from(target.0.clone())))
         .observe(
-            |event: On<ScreenshotCaptured>,
-             mut recorder: ResMut<Recorder>,
-             mut exit: MessageWriter<AppExit>| {
+            move |event: On<ScreenshotCaptured>,
+                  mut recorder: ResMut<Recorder>,
+                  mut exit: MessageWriter<AppExit>| {
                 let output = recorder.frames[recorder.next].output.clone();
-                let saved = event
-                    .image
-                    .clone()
+                let saved = downsample(&event.image, supersample)
                     .try_into_dynamic()
                     .map_err(|error| error.to_string())
                     .and_then(|image| {
@@ -519,4 +537,52 @@ fn scene_lighting(
             ));
         }
     }
+}
+
+/// Averages each `factor`×`factor` block of an sRGB RGBA8 capture in linear
+/// light, as a film's pixels gather many samples.
+fn downsample(image: &Image, factor: u32) -> Image {
+    let Some(source) = image.data.as_ref().filter(|_| factor > 1) else {
+        return image.clone();
+    };
+    let (width, height) = (image.width() / factor, image.height() / factor);
+    let linear: Vec<f32> = (0..=255u8)
+        .map(|value| Srgba::gamma_function(f32::from(value) / 255.0))
+        .collect();
+    let samples = (factor * factor) as f32;
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = [0.0f32; 4];
+            for row in y * factor..(y + 1) * factor {
+                for column in x * factor..(x + 1) * factor {
+                    let at = ((row * image.width() + column) * 4) as usize;
+                    for channel in 0..3 {
+                        sum[channel] += linear[usize::from(source[at + channel])];
+                    }
+                    sum[3] += f32::from(source[at + 3]) / 255.0;
+                }
+            }
+            for (channel, total) in sum.iter().enumerate() {
+                let mean = total / samples;
+                let encoded = if channel < 3 {
+                    Srgba::gamma_function_inverse(mean)
+                } else {
+                    mean
+                };
+                pixels.push((encoded * 255.0).round() as u8);
+            }
+        }
+    }
+    Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
 }

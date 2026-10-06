@@ -112,6 +112,7 @@ pub(crate) fn clear_geometry(world: &mut World, entity: Entity, owner: GeometryO
     }
     super::gpu_skin::clear(world, entity);
     super::flat_material::clear(world, entity);
+    super::strand_material::clear(world, entity);
     world.entity_mut(entity).remove::<(
         Mesh3d,
         MeshMaterial3d<StandardMaterial>,

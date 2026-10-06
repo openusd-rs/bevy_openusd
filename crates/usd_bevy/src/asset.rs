@@ -350,6 +350,7 @@ impl Plugin for UsdAssetPlugin {
         }
         if app.is_plugin_added::<bevy::pbr::PbrPlugin>() {
             crate::route::flat_material::configure(app);
+            crate::route::strand_material::configure(app);
         }
         let server = app.world().get_resource::<AssetServer>().cloned();
         app.init_asset::<UsdScene>()

@@ -488,8 +488,14 @@ fn bake_prototype(
     let proto_path = read.prototypes.get(proto_idx)?;
     let prim = ctx.stage.prim(proto_path.clone()).ok()?;
     let has_scene_children = has_prototype_geometry_children(ctx.stage, proto_path)?;
-    if prim.type_name().ok().flatten().as_deref() == Some("Mesh") && !has_scene_children {
-        return bake_mesh(ctx, world, proto_path, true).map(Prototype::Mesh);
+    match prim.type_name().ok().flatten().as_deref() {
+        Some("Mesh") if !has_scene_children => {
+            return bake_mesh(ctx, world, proto_path, true).map(Prototype::Mesh);
+        }
+        Some("BasisCurves") => {
+            return bake_curves(ctx, world, proto_path, true).map(Prototype::Mesh);
+        }
+        _ => {}
     }
     let mut parts = Vec::new();
     collect_parts(ctx, world, proto_path, None, 0, &mut parts)?;
@@ -563,7 +569,12 @@ fn collect_parts(
         kind.as_str(),
         "Cube" | "Sphere" | "Cylinder" | "Capsule" | "Cone" | "Plane"
     );
-    if !shape && !matches!(kind.as_str(), "" | "Xform" | "Scope" | "SkelRoot" | "Mesh") {
+    if !shape
+        && !matches!(
+            kind.as_str(),
+            "" | "Xform" | "Scope" | "SkelRoot" | "Mesh" | "BasisCurves"
+        )
+    {
         return None;
     }
     let order = prim
@@ -616,6 +627,8 @@ fn collect_parts(
     }
     let handles = if kind == "Mesh" {
         Some(bake_mesh(ctx, world, path, false)?)
+    } else if kind == "BasisCurves" {
+        bake_curves(ctx, world, path, false)
     } else if shape {
         Some(bake_shape(ctx, world, path)?)
     } else {
@@ -686,7 +699,10 @@ fn apply_handles(
             e.insert(super::material::UsdMaterialWarning(warnings.join("; ")));
         }
         super::subset::apply(world, entity, subsets);
+        super::strand_material::attach_if_strand(world, entity);
     } else {
+        super::strand_material::clear(world, entity);
+        let mut e = world.entity_mut(entity);
         e.remove::<(
             Mesh3d,
             MeshMaterial3d<StandardMaterial>,
@@ -754,6 +770,49 @@ fn prototype_material(
             )
         }
     }
+}
+
+fn bake_curves(
+    ctx: &RouteCtx,
+    world: &mut World,
+    proto_path: &openusd::sdf::Path,
+    bake_transform: bool,
+) -> Option<ProtoHandles> {
+    let proto_ctx = RouteCtx::at(ctx.stage, proto_path, ctx.time);
+    let lines = super::curves::prototype_lines(&proto_ctx, world)?;
+    let mut mesh = lines.mesh;
+    if bake_transform
+        && let Some(matrix) =
+            crate::read::xform::read_transform_matrix_at(ctx.stage, proto_path, ctx.time).ok()?
+    {
+        crate::mesh::affine::bake(&mut mesh, Mat4::from_cols_array(&matrix))?;
+    }
+    let (material, warnings, color) = prototype_material(&proto_ctx, world, || {
+        let mut material = super::material::default_material(&proto_ctx);
+        material.double_sided = true;
+        material.cull_mode = None;
+        material
+    });
+    if matches!(color, super::material::MaterialColor::Owned) {
+        mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+    }
+    // Lines without normals keep their color unlit.
+    let material = match world
+        .resource::<Assets<StandardMaterial>>()
+        .get(&material)
+        .filter(|material| !lines.lit && !material.unlit)
+    {
+        Some(material) => {
+            let unlit = StandardMaterial {
+                unlit: true,
+                ..material.clone()
+            };
+            super::cache::intern_material(world, unlit)
+        }
+        None => material,
+    };
+    let mesh = super::cache::intern_mesh(world, mesh);
+    Some((mesh, material, warnings, default()))
 }
 
 fn bake_shape(
@@ -1970,6 +2029,90 @@ def Xform "Group" {
         assert_eq!(child(app.world(), second), b);
         assert_eq!(leftmost(app.world(), a), 14.0);
         assert_eq!(leftmost(app.world(), b), 16.0);
+    }
+
+    #[test]
+    fn curve_prototypes_instance_as_strands() {
+        use super::super::strand_material::{ATTRIBUTE_STRAND_WIDTH, StrandMaterial};
+        let source = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def PointInstancer "PI" {
+    point3f[] positions = [(0,0,0), (2,0,0)]
+    int[] protoIndices = [0,1]
+    rel prototypes = [</Tree>, </Grass>]
+}
+def Xform "Tree" {
+    def Mesh "Trunk" {
+        point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+    }
+    def BasisCurves "Needles" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+        uniform token type = "linear"
+        int[] curveVertexCounts = [2]
+        point3f[] points = [(0,1,0), (0,2,0)]
+        float[] widths = [0.01, 0.02]
+        color3f[] primvars:displayColor = [(1,0,0)]
+        rel material:binding = </Leaf>
+    }
+}
+def BasisCurves "Grass" {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(0,0,0), (0,1,0)]
+    float[] widths = [0.1, 0.1]
+    color3f[] primvars:displayColor = [(0,1,0)]
+    double3 xformOp:translate = (0, 0, 5)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+def Material "Leaf" {
+    token outputs:surface.connect = </Leaf/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.2, 0.5, 0.1)
+        token outputs:surface
+    }
+}
+"#,
+        );
+        let live = LiveStage::new(source.open_stage().unwrap());
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<StrandMaterial>>();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let parent = map.entity("/PI").unwrap();
+        assert!(world.get::<UsdInstancerWarning>(parent).is_none());
+        let children: Vec<_> = world.get::<Children>(parent).unwrap().iter().collect();
+        let strand = |entity: Entity| {
+            let mesh = &world.get::<Mesh3d>(entity).unwrap().0;
+            let mesh = world.resource::<Assets<Mesh>>().get(mesh).unwrap();
+            let material = &world.get::<MeshMaterial3d<StrandMaterial>>(entity)?.0;
+            let material = world.resource::<Assets<StrandMaterial>>().get(material)?;
+            Some((
+                mesh.primitive_topology(),
+                mesh.attribute(ATTRIBUTE_STRAND_WIDTH).is_some(),
+                mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_some(),
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION).cloned(),
+                material.base.base_color.to_linear(),
+            ))
+        };
+        let parts = world.get::<PrototypeEntities>(children[0]).unwrap();
+        let needles = strand(parts.0["/Tree/Needles"]).unwrap();
+        assert_eq!(
+            (needles.0, needles.1, needles.2),
+            (bevy::mesh::PrimitiveTopology::LineList, true, false)
+        );
+        assert_eq!(needles.4, LinearRgba::rgb(0.2, 0.5, 0.1));
+        assert!(world.get::<Mesh3d>(parts.0["/Tree/Trunk"]).is_some());
+        let grass = strand(children[1]).unwrap();
+        assert!(grass.2, "unbound curves keep their display color");
+        assert!(matches!(
+            grass.3,
+            Some(bevy::mesh::VertexAttributeValues::Float32x3(points))
+                if points == vec![[0.0, 0.0, 5.0], [0.0, 1.0, 5.0]]
+        ));
     }
 
     #[test]

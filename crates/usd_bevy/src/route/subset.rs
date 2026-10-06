@@ -326,7 +326,7 @@ impl PrimRoute for SubsetRoute {
             clear(world, entity);
             return;
         };
-        let Some(default_material) = super::flat_material::base_handle(world, entity) else {
+        let Some(default_material) = super::wrapped::base_handle(world, entity) else {
             return;
         };
         let Some(prepared) = prepare(ctx, world, &read, &source, &default_material) else {

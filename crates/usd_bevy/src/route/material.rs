@@ -685,6 +685,7 @@ impl PrimRoute for MaterialRoute {
             e.insert(MeshMaterial3d(handle));
         }
         super::flat_material::attach_if_normalless(world, entity);
+        super::strand_material::attach_if_strand(world, entity);
     }
 }
 

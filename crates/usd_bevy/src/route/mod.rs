@@ -53,8 +53,10 @@ pub mod reflect;
 pub mod residency;
 pub mod shapes;
 pub mod skel;
+pub mod strand_material;
 pub mod subdivision;
 pub mod subset;
+pub(crate) mod wrapped;
 pub mod xform;
 
 use std::sync::Arc;

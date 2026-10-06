@@ -83,6 +83,31 @@ impl std::ops::Deref for EditorDisk {
     }
 }
 
+/// Textures a stage asks for, each with whether it is sRGB.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct TextureRequests {
+    pub(crate) textures: BTreeSet<(String, bool)>,
+    /// Requested only by dome lights, which read them on the CPU.
+    pub(crate) environment_only: BTreeSet<String>,
+}
+
+impl std::ops::Deref for TextureRequests {
+    type Target = BTreeSet<(String, bool)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.textures
+    }
+}
+
+impl<'a> IntoIterator for &'a TextureRequests {
+    type Item = &'a (String, bool);
+    type IntoIter = std::collections::btree_set::Iter<'a, (String, bool)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.textures.iter()
+    }
+}
+
 /// An immutable root-layer snapshot anchored at its source filename.
 #[derive(Clone, Debug)]
 pub struct UsdSource {
@@ -93,7 +118,7 @@ pub struct UsdSource {
     absent: Arc<BTreeSet<String>>,
     filesystem: bool,
     validated_default: Arc<Mutex<Option<u64>>>,
-    default_textures: Arc<Mutex<Option<(u64, Arc<BTreeSet<(String, bool)>>)>>>,
+    default_textures: Arc<Mutex<Option<(u64, Arc<TextureRequests>)>>>,
     /// Reads files the snapshot lacks when a stage asks for them.
     fetch: Option<Fetcher>,
 }
@@ -202,7 +227,7 @@ impl UsdSource {
         &self,
         stage: &Stage,
         default_composition: bool,
-    ) -> Result<Arc<BTreeSet<(String, bool)>>, String> {
+    ) -> Result<Arc<TextureRequests>, String> {
         let reusable = default_composition && !self.filesystem;
         if reusable
             && let Some((revision, requests)) =
@@ -219,9 +244,7 @@ impl UsdSource {
         Ok(requests)
     }
 
-    pub(crate) fn stage_texture_requests(
-        stage: &Stage,
-    ) -> Result<BTreeSet<(String, bool)>, String> {
+    pub(crate) fn stage_texture_requests(stage: &Stage) -> Result<TextureRequests, String> {
         Self::texture_requests_for_prims(stage, &Self::stage_texture_prims(stage)?)
     }
 
@@ -249,8 +272,10 @@ impl UsdSource {
     pub(crate) fn texture_requests_for_prims(
         stage: &Stage,
         paths: &[openusd::sdf::Path],
-    ) -> Result<BTreeSet<(String, bool)>, String> {
+    ) -> Result<TextureRequests, String> {
         let mut requests = BTreeSet::new();
+        let mut environment = BTreeSet::new();
+        let mut materials = BTreeSet::new();
         for path in paths {
             let prim = stage.prim(path).map_err(|error| error.to_string())?;
             let type_name = prim.type_name().map_err(|error| error.to_string())?;
@@ -269,6 +294,7 @@ impl UsdSource {
                             .map_err(|error| error.to_string())?,
                     );
                     if !path.is_empty() {
+                        environment.insert(path.clone());
                         requests.insert((path, false));
                     }
                 }
@@ -316,12 +342,17 @@ impl UsdSource {
                     (&material.opacity_texture, material.texture_srgb("opacity")),
                 ] {
                     if let Some(path) = path {
+                        materials.insert(path.clone());
                         requests.insert((path.clone(), srgb));
                     }
                 }
             }
         }
-        Ok(requests)
+        environment.retain(|path| !materials.contains(path));
+        Ok(TextureRequests {
+            textures: requests,
+            environment_only: environment,
+        })
     }
 
     /// Anchor bytes without allowing filesystem fallback for missing dependencies.
@@ -901,6 +932,15 @@ pub(crate) fn file_hash(path: &Path) -> io::Result<blake3::Hash> {
     Ok(hash.finalize())
 }
 
+/// Ptex textures resolve by name but are never captured: nothing reads their
+/// texels, and a production set can hold gigabytes of them.
+fn uncaptured(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "ptx" | "ptex"))
+}
+
 fn read_shared_asset(asset: &mut dyn Asset) -> io::Result<Arc<[u8]>> {
     if let Some(bytes) = asset.shared_bytes() {
         return Ok(bytes);
@@ -1026,6 +1066,8 @@ impl Resolver for SourceResolver {
         if self.bytes(path).is_some() {
             Some(ResolvedPath::new(PathBuf::from(path)))
         } else if self.contains_packaged_path(path) {
+            Some(ResolvedPath::new(PathBuf::from(path)))
+        } else if uncaptured(path) {
             Some(ResolvedPath::new(PathBuf::from(path)))
         } else if self.source.filesystem {
             self.fallback.resolve(path)

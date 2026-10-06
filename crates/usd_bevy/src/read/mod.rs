@@ -4,6 +4,7 @@
 
 pub mod curves;
 pub mod geom;
+pub mod ptex;
 pub mod shade;
 pub mod skel;
 pub mod subdivision;

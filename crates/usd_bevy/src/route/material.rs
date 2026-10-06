@@ -156,7 +156,7 @@ pub(crate) struct ProjectionMaterials {
     stage: openusd::usd::Stage,
     resolved: std::collections::HashMap<
         (String, Option<u64>, bool),
-        (Handle<StandardMaterial>, Vec<String>),
+        (Handle<StandardMaterial>, Vec<String>, MaterialColor),
     >,
     /// Whether any layer authors a `material:binding` property; without one
     /// no prim can be bound.
@@ -351,6 +351,20 @@ fn to_standard_material(
     if let Some(ior) = read.ior {
         m.ior = ior;
     }
+    // Light passing through takes the transmission tint, which Bevy reads
+    // from the base color.
+    // A medium that also transmits diffusely, as murky water does, colors
+    // all the light passing through it.
+    if let Some(transmission) = read.transmission.filter(|value| *value > 0.0) {
+        m.specular_transmission = transmission.min(1.0);
+        let scattered = read
+            .diffuse_transmission
+            .is_some_and(|gain| gain > 0.0)
+            .then_some(read.diffuse_transmission_color)
+            .flatten();
+        let [r, g, b] = scattered.or(read.transmission_color).unwrap_or([1.0; 3]);
+        m.base_color = Color::linear_rgba(r, g, b, m.base_color.alpha());
+    }
     // Convert the USD UV transform through the mesh's V-flipped coordinate basis.
     if let Some(uv) = &read.uv_transform {
         let flip =
@@ -374,10 +388,65 @@ fn to_standard_material(
     m
 }
 
+/// Where a bound material's base color comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MaterialColor {
+    /// Left open, so the gprim's `displayColor` shows through.
+    Open,
+    /// Authored by the material, so `displayColor` must not tint it.
+    Owned,
+    /// A Ptex file's face colors, and whether its texels are sRGB.
+    Ptex(std::sync::Arc<str>, bool),
+}
+
+impl MaterialColor {
+    /// The mesh `mesh` turns into under this color, when it changes.
+    pub(crate) fn recolor(
+        &self,
+        ctx: &RouteCtx,
+        world: &mut World,
+        mesh: &Handle<Mesh>,
+    ) -> Option<Handle<Mesh>> {
+        match self {
+            Self::Open => None,
+            Self::Owned => super::cache::without_vertex_colors(world, mesh),
+            Self::Ptex(path, srgb) => {
+                let read = ctx.read_mesh().ok().flatten()?;
+                let faces = super::ptex::faces(world, path)?;
+                let source = world.resource::<Assets<Mesh>>().get(mesh)?;
+                let colored = super::ptex::color_mesh(source, read, &faces, *srgb)?;
+                Some(super::cache::intern_mesh(world, colored))
+            }
+        }
+    }
+
+    /// Recolors a mesh that is not interned yet.
+    pub(crate) fn apply(
+        &self,
+        world: &mut World,
+        mesh: &mut Mesh,
+        read: &crate::read::geom::ReadMesh,
+    ) {
+        match self {
+            Self::Open => {}
+            Self::Owned => {
+                mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+            }
+            Self::Ptex(path, srgb) => {
+                if let Some(faces) = super::ptex::faces(world, path)
+                    && let Some(colored) = super::ptex::color_mesh(mesh, read, &faces, *srgb)
+                {
+                    *mesh = colored;
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
-) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>)>> {
+) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>, MaterialColor)>> {
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
         && memo.stage.ptr_eq(ctx.stage)
     {
@@ -436,6 +505,13 @@ pub(crate) fn resolve_material(
     let started = profiling.then(bevy::platform::time::Instant::now);
     let assets = world.get_resource::<AssetServer>().cloned();
     let textures = world.get_resource::<crate::asset::SnapshotTextures>();
+    let color = match &read.diffuse_ptex {
+        Some((path, srgb)) => MaterialColor::Ptex(path.as_str().into(), *srgb),
+        None if read.diffuse_color.is_some() || read.diffuse_texture.is_some() => {
+            MaterialColor::Owned
+        }
+        None => MaterialColor::Open,
+    };
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
     apply_sidedness(ctx, &mut material);
     let mut warnings = read.warnings.clone();
@@ -507,9 +583,9 @@ pub(crate) fn resolve_material(
         && memo.stage.ptr_eq(ctx.stage)
     {
         memo.resolved
-            .insert(key, (handle.clone(), warnings.clone()));
+            .insert(key, (handle.clone(), warnings.clone(), color.clone()));
     }
-    Ok(Some((handle, warnings)))
+    Ok(Some((handle, warnings, color)))
 }
 
 impl PrimRoute for MaterialRoute {
@@ -523,7 +599,7 @@ impl PrimRoute for MaterialRoute {
         {
             return;
         }
-        let (handle, mut warnings) = match resolve_material(ctx, world) {
+        let (handle, mut warnings, color) = match resolve_material(ctx, world) {
             Ok(Some(material)) => material,
             Ok(None) => {
                 world.entity_mut(entity).remove::<UsdMaterialWarning>();
@@ -534,6 +610,11 @@ impl PrimRoute for MaterialRoute {
                 return;
             }
         };
+        if let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
+            && let Some(recolored) = color.recolor(ctx, world, &mesh)
+        {
+            world.entity_mut(entity).insert(Mesh3d(recolored));
+        }
         let read = ctx.read_mesh().ok().flatten();
         let uvs = read.is_some_and(|read| read.uvs.is_some());
         let normal_mapped = world
@@ -572,12 +653,39 @@ impl PrimRoute for MaterialRoute {
             let message = warnings.join("; ");
             warn_material(world, entity, ctx, message);
         }
+        // Lines and points without normals have nothing to light, so they keep
+        // their color unlit.
+        let surfaceless = world
+            .get::<Mesh3d>(entity)
+            .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
+            .is_some_and(|mesh| {
+                !matches!(
+                    mesh.primitive_topology(),
+                    bevy::mesh::PrimitiveTopology::TriangleList
+                        | bevy::mesh::PrimitiveTopology::TriangleStrip
+                ) && mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_none()
+            });
+        let handle = match world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&handle)
+            .filter(|material| surfaceless && !material.unlit)
+        {
+            Some(material) => {
+                let unlit = StandardMaterial {
+                    unlit: true,
+                    ..material.clone()
+                };
+                super::cache::intern_material(world, unlit)
+            }
+            None => handle,
+        };
         if let Some(mut mat) = world.get_mut::<MeshMaterial3d<StandardMaterial>>(entity) {
             mat.0 = handle;
         } else if let Ok(mut e) = world.get_entity_mut(entity) {
             e.insert(MeshMaterial3d(handle));
         }
         super::flat_material::attach_if_normalless(world, entity);
+        super::strand_material::attach_if_strand(world, entity);
     }
 }
 
@@ -617,7 +725,7 @@ def Cube "C" { rel material:binding = </Mat> }
         time: Option<f64>,
     ) -> anyhow::Result<StandardMaterial> {
         let path = openusd::sdf::path(path)?;
-        let (handle, _) = resolve_material(&RouteCtx::at(stage, &path, time), world)?.unwrap();
+        let (handle, ..) = resolve_material(&RouteCtx::at(stage, &path, time), world)?.unwrap();
         Ok(world
             .resource::<Assets<StandardMaterial>>()
             .get(&handle)
@@ -1006,6 +1114,87 @@ def Material "Mat" {{
             );
             assert_eq!(uv, tangents >= 2, "normal maps get tangents only with UVs");
         }
+    }
+
+    #[test]
+    fn display_color_tints_only_materials_without_their_own_diffuse() {
+        let mesh = |name: &str, material: &str| {
+            format!(
+                r#"def Mesh "{name}" (prepend apiSchemas = ["MaterialBindingAPI"]) {{
+    point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0,1,2]
+    color3f[] primvars:displayColor = [(0,0,1)] (interpolation = "vertex")
+    rel material:binding = </{material}>
+}}
+"#
+            )
+        };
+        let text = format!(
+            r#"#usda 1.0
+{}{}
+def Material "Water" {{
+    token outputs:glslfx:surface.connect = </Water/Surface.outputs:rgbColor>
+    def Shader "Surface" {{
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.6, 1, 0.9)
+        token outputs:rgbColor
+    }}
+}}
+def Material "Ptex" {{
+    token outputs:surface.connect = </Ptex/Surface.outputs:surface>
+    def Shader "Surface" {{
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Ptex/Texture.outputs:color>
+        token outputs:surface
+    }}
+    def Shader "Texture" {{
+        uniform token info:id = "HwPtexTexture_1"
+        color3f outputs:color
+    }}
+}}
+"#,
+            mesh("Owned", "Water"),
+            mesh("Preview", "Ptex")
+        );
+        let stage = crate::snippet::UsdSnippet::new(text).open_stage().unwrap();
+        let live = crate::live::LiveStage::new(stage);
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        let colors = |name: &str| {
+            let entity = map.entity(name).unwrap();
+            let mesh = &world.get::<Mesh3d>(entity).unwrap().0;
+            let base = world
+                .resource::<Assets<StandardMaterial>>()
+                .get(
+                    &world
+                        .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                        .unwrap()
+                        .0,
+                )
+                .unwrap()
+                .base_color
+                .to_linear();
+            let colored = world
+                .resource::<Assets<Mesh>>()
+                .get(mesh)
+                .unwrap()
+                .attribute(Mesh::ATTRIBUTE_COLOR)
+                .is_some();
+            (base, colored)
+        };
+        let (base, colored) = colors("/Owned");
+        assert_eq!([base.red, base.green, base.blue], [0.6, 1.0, 0.9]);
+        assert!(
+            !colored,
+            "an authored diffuse is not tinted by displayColor"
+        );
+        let (base, colored) = colors("/Preview");
+        assert_eq!([base.red, base.green, base.blue], [1.0, 1.0, 1.0]);
+        assert!(colored, "an unresolved diffuse falls back to displayColor");
     }
 
     #[test]
@@ -1592,6 +1781,26 @@ def Material "Mat" {
         assert!((m.ior - 1.4).abs() < 1e-6);
         assert_eq!(m.emissive, LinearRgba::rgb(1.0, 0.0, 0.0));
         assert!(matches!(m.alpha_mode, AlphaMode::Opaque));
+    }
+
+    #[test]
+    fn diffusely_transmitting_media_tint_the_light_through_them() {
+        let mut read = ReadPreviewMaterial {
+            transmission: Some(1.0),
+            transmission_color: Some([0.9, 0.9, 1.0]),
+            ..Default::default()
+        };
+        let clear = to_standard_material(&read, None, None);
+        assert_eq!(clear.specular_transmission, 1.0);
+        assert_eq!(clear.base_color.to_linear(), LinearRgba::rgb(0.9, 0.9, 1.0));
+        read.diffuse_transmission = Some(0.4);
+        read.diffuse_transmission_color = Some([0.1, 0.8, 0.4]);
+        let murky = to_standard_material(&read, None, None);
+        assert_eq!(murky.specular_transmission, 1.0);
+        assert_eq!(murky.base_color.to_linear(), LinearRgba::rgb(0.1, 0.8, 0.4));
+        read.diffuse_transmission = Some(0.0);
+        let clear = to_standard_material(&read, None, None);
+        assert_eq!(clear.base_color.to_linear(), LinearRgba::rgb(0.9, 0.9, 1.0));
     }
 
     #[test]

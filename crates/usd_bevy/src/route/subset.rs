@@ -128,19 +128,32 @@ pub(crate) fn prepare(
             continue;
         };
         let subset_ctx = RouteCtx::at(ctx.stage, &path, ctx.time);
-        let (material, mut warnings) = match super::material::resolve_material(&subset_ctx, world) {
-            Ok(Some((handle, warnings))) => {
-                let mut material = world
-                    .resource::<Assets<StandardMaterial>>()
-                    .get(&handle)
-                    .unwrap()
-                    .clone();
-                super::material::apply_sidedness(ctx, &mut material);
-                (super::cache::intern_material(world, material), warnings)
-            }
-            Ok(None) => (default_material.clone(), Vec::new()),
-            Err(error) => (default_material.clone(), vec![error.to_string()]),
-        };
+        let (material, mut warnings, color) =
+            match super::material::resolve_material(&subset_ctx, world) {
+                Ok(Some((handle, warnings, color))) => {
+                    let mut material = world
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(&handle)
+                        .unwrap()
+                        .clone();
+                    super::material::apply_sidedness(ctx, &mut material);
+                    (
+                        super::cache::intern_material(world, material),
+                        warnings,
+                        color,
+                    )
+                }
+                Ok(None) => (
+                    default_material.clone(),
+                    Vec::new(),
+                    super::material::MaterialColor::Open,
+                ),
+                Err(error) => (
+                    default_material.clone(),
+                    vec![error.to_string()],
+                    super::material::MaterialColor::Open,
+                ),
+            };
         let normal_mapped = world
             .resource::<Assets<StandardMaterial>>()
             .get(&material)
@@ -160,6 +173,11 @@ pub(crate) fn prepare(
             )
         };
         let mut mesh = super::cache::intern_mesh(world, mesh);
+        if color == super::material::MaterialColor::Owned
+            && let Some(plain) = super::cache::without_vertex_colors(world, &mesh)
+        {
+            mesh = plain;
+        }
         if let Some(tangent) =
             super::cache::with_tangents_for(world, &mesh, &material, read.uvs.is_some())
         {
@@ -308,7 +326,7 @@ impl PrimRoute for SubsetRoute {
             clear(world, entity);
             return;
         };
-        let Some(default_material) = super::flat_material::base_handle(world, entity) else {
+        let Some(default_material) = super::wrapped::base_handle(world, entity) else {
             return;
         };
         let Some(prepared) = prepare(ctx, world, &read, &source, &default_material) else {

@@ -190,6 +190,19 @@ pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
 
 /// `mesh` with tangents, interned, when `material` has a normal map that
 /// needs them and the mesh has authored `uvs` but no tangents yet.
+/// `mesh` without vertex colors, interned, for a material that authors its
+/// own diffuse; `None` when it has none to remove.
+pub(crate) fn without_vertex_colors(
+    world: &mut World,
+    mesh: &Handle<Mesh>,
+) -> Option<Handle<Mesh>> {
+    let source = world.get_resource::<Assets<Mesh>>()?.get(mesh)?;
+    source.attribute(Mesh::ATTRIBUTE_COLOR)?;
+    let mut plain = source.clone();
+    plain.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+    Some(intern_mesh(world, plain))
+}
+
 pub(crate) fn with_tangents_for(
     world: &mut World,
     mesh: &Handle<Mesh>,

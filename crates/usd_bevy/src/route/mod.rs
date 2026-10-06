@@ -39,6 +39,7 @@ pub mod meta;
 pub mod native;
 pub mod points;
 pub(crate) mod profiling;
+pub(crate) mod ptex;
 mod texture_pack;
 
 pub(crate) fn configure_texture_caches(app: &mut bevy::prelude::App) {
@@ -52,8 +53,10 @@ pub mod reflect;
 pub mod residency;
 pub mod shapes;
 pub mod skel;
+pub mod strand_material;
 pub mod subdivision;
 pub mod subset;
+pub(crate) mod wrapped;
 pub mod xform;
 
 use std::sync::Arc;

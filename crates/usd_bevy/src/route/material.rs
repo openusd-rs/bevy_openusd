@@ -621,11 +621,35 @@ impl PrimRoute for MaterialRoute {
                 return;
             }
         };
-        if let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
-            && let Some(recolored) = color.recolor(ctx, world, &mesh)
-        {
-            world.entity_mut(entity).insert(Mesh3d(recolored));
-        }
+        let atlas = world
+            .get::<super::ptex_atlas::PtexAtlasImage>(entity)
+            .filter(|_| matches!(color, MaterialColor::Ptex(..)))
+            .map(|atlas| atlas.0.clone());
+        let handle = match atlas {
+            // The texture holds the Ptex texels the vertex colors would average.
+            Some(image) => {
+                let material = world
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(&handle)
+                    .cloned()
+                    .unwrap_or_default();
+                super::cache::intern_material(
+                    world,
+                    StandardMaterial {
+                        base_color_texture: Some(image),
+                        ..material
+                    },
+                )
+            }
+            None => {
+                if let Some(mesh) = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.clone())
+                    && let Some(recolored) = color.recolor(ctx, world, &mesh)
+                {
+                    world.entity_mut(entity).insert(Mesh3d(recolored));
+                }
+                handle
+            }
+        };
         let read = ctx.read_mesh().ok().flatten();
         let uvs = read.is_some_and(|read| read.uvs.is_some());
         let normal_mapped = world

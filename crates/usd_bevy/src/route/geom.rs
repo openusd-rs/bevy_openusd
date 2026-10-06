@@ -130,6 +130,7 @@ impl MeshRoute {
             clear_geometry(world, entity, GeometryOwner::Mesh);
             return false;
         };
+        let cage = read;
         let limited = super::subdivision::limit_cage(ctx, world, read);
         let read = limited.as_ref().unwrap_or(read);
         if world.get_resource::<Assets<Mesh>>().is_none()
@@ -161,13 +162,21 @@ impl MeshRoute {
             .flatten()
             .map(|(_, _, color)| color)
             .filter(|color| !matches!(color, super::material::MaterialColor::Open));
-        let mesh_handle = match color {
-            Some(color) => {
+        let atlas = match &color {
+            Some(super::material::MaterialColor::Ptex(path, srgb)) => {
+                super::ptex_atlas::atlas_mesh(ctx, world, cage, path, *srgb)
+            }
+            _ => None,
+        };
+        let (atlas_mesh, atlas_image) = atlas.unzip();
+        let mesh_handle = match (atlas_mesh, color) {
+            (Some(mesh), _) => super::cache::intern_mesh(world, mesh),
+            (None, Some(color)) => {
                 let mut mesh = assembly.build(world, read);
                 color.apply(world, &mut mesh, read);
                 super::cache::intern_mesh(world, mesh)
             }
-            None => super::cache::intern_assembled_mesh(world, read, assembly),
+            (None, None) => super::cache::intern_assembled_mesh(world, read, assembly),
         };
         let material = super::cache::intern_material(world, super::material::default_material(ctx));
         if world.get_entity(entity).is_err() {
@@ -179,6 +188,14 @@ impl MeshRoute {
             MeshMaterial3d(material),
             GeometryOwner::Mesh,
         ));
+        match atlas_image {
+            Some(image) => world
+                .entity_mut(entity)
+                .insert(super::ptex_atlas::PtexAtlasImage(image)),
+            None => world
+                .entity_mut(entity)
+                .remove::<super::ptex_atlas::PtexAtlasImage>(),
+        };
         super::flat_material::attach_if_normalless(world, entity);
         true
     }

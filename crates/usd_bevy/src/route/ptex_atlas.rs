@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use super::RouteCtx;
-use crate::read::geom::{Interpolation, MeshPrimvar, ReadMesh, SubdivScheme};
+use crate::read::geom::{Interpolation, ReadMesh, SubdivScheme};
 use crate::read::ptex::{PtexLayout, PtexLevel};
 
 /// Draws Ptex-colored Catmull-Clark meshes with large faces through a
@@ -80,17 +80,8 @@ pub(crate) fn atlas_mesh(
                 .ok()
                 .map(|refined| (levels, refined))
         })?;
-    let (layout, level) = super::ptex::read_level(world, path, |layout| {
-        let mut picks: Vec<usize> = (0..layout.faces.len())
-            .map(|face| layout.level_for(face, grid.side))
-            .collect();
-        picks.sort_unstable();
-        picks.get(picks.len() / 2).copied().unwrap_or(0)
-    })
-    .inspect_err(|error| warn!("Ptex {path}: {error}"))
-    .ok()?;
-    let tiles = ptex_faces(&layout, &read.face_vertex_counts)?;
-    let image = grid.image(&tiles, &layout, &level, srgb);
+    let tiles = ptex_faces(&read.face_vertex_counts);
+    let image = atlas_image(world, path, srgb, grid, &tiles)?;
     if rules.crease_indices.is_empty() && rules.corner_indices.is_empty() && rules.holes.is_empty()
     {
         refined.points = crate::subdivision_limit::limit_points(&refined, &rules);
@@ -113,17 +104,6 @@ pub(crate) fn atlas_mesh(
             1 << levels,
         );
     }
-    refined.uvs = Some(MeshPrimvar {
-        values: coordinates
-            .corners
-            .iter()
-            .enumerate()
-            .map(|(corner, &uv)| grid.uv(coordinates.faces[corner / 4], uv))
-            .collect(),
-        interpolation: Interpolation::FaceVarying,
-        indices: Vec::new(),
-    });
-    refined.display_color = None;
     debug!(
         "{}: Ptex atlas {}x{} at {} texels a face, {} faces",
         ctx.prim_str(),
@@ -132,9 +112,107 @@ pub(crate) fn atlas_mesh(
         grid.side,
         refined.face_vertex_counts.len()
     );
-    let mesh = crate::mesh::assemble_mesh(&refined, None, false);
+    Some((assemble(&refined, &coordinates, &grid), image))
+}
+
+/// Atlases already built, by Ptex file, color space and tiles.
+#[derive(Resource, Default)]
+struct AtlasImages(bevy::platform::collections::HashMap<(String, bool, Grid), Handle<Image>>);
+
+/// The atlas of the Ptex file at `path` in `grid`'s tiles, built once and
+/// shared by every mesh drawing that file the same way.
+fn atlas_image(
+    world: &mut World,
+    path: &str,
+    srgb: bool,
+    grid: Grid,
+    tiles: &[std::ops::Range<usize>],
+) -> Option<Handle<Image>> {
+    let key = (path.to_string(), srgb, grid);
+    world.init_resource::<AtlasImages>();
+    if let Some(image) = world.resource::<AtlasImages>().0.get(&key) {
+        return Some(image.clone());
+    }
+    let (layout, level) = super::ptex::read_level(world, path, |layout| {
+        let mut picks: Vec<usize> = (0..layout.faces.len())
+            .map(|face| layout.level_for(face, grid.side))
+            .collect();
+        picks.sort_unstable();
+        picks.get(picks.len() / 2).copied().unwrap_or(0)
+    })
+    .inspect_err(|error| warn!("Ptex {path}: {error}"))
+    .ok()?;
+    if layout.triangles || layout.faces.len() != tiles.last().map_or(0, |tile| tile.end) {
+        return None;
+    }
+    let compress = world
+        .get_resource::<bevy::image::CompressedImageFormatSupport>()
+        .is_some_and(|support| support.0.contains(bevy::image::CompressedImageFormats::BC));
+    let image = grid.image(tiles, &layout, &level, srgb, compress);
     let image = world.resource_mut::<Assets<Image>>().add(image);
-    Some((mesh, image))
+    let mut cache = world.resource_mut::<AtlasImages>();
+    cache
+        .0
+        .retain(|_, image| super::cache::externally_owned(image));
+    cache.0.insert(key, image.clone());
+    Some(image)
+}
+
+/// A triangle mesh of `refined` that samples `grid`: the corners of one
+/// control face share vertices, and points on the edges between control
+/// faces split into one vertex per face, as their tiles differ.
+fn assemble(
+    refined: &ReadMesh,
+    coordinates: &crate::subdivision::FaceCoordinates,
+    grid: &Grid,
+) -> Mesh {
+    let normal = |corner: usize, point: usize| -> Option<[f32; 3]> {
+        let normals = refined.normals.as_ref()?;
+        let at = match normals.interpolation {
+            Interpolation::FaceVarying => corner,
+            _ => point,
+        };
+        let at = normals.indices.get(at).map_or(at, |&index| index as usize);
+        normals.values.get(at).copied()
+    };
+    let mut vertices = bevy::platform::collections::HashMap::<(u32, u32), u32>::new();
+    let (mut positions, mut normals, mut uvs) = (Vec::new(), Vec::new(), Vec::new());
+    let corners: Vec<u32> = refined
+        .face_vertex_indices
+        .iter()
+        .enumerate()
+        .map(|(corner, &point)| {
+            let face = coordinates.faces[corner / 4];
+            *vertices
+                .entry((point as u32, face as u32))
+                .or_insert_with(|| {
+                    positions.push(refined.points[point as usize]);
+                    normals.push(normal(corner, point as usize));
+                    uvs.push(grid.uv(face, coordinates.corners[corner]));
+                    (positions.len() - 1) as u32
+                })
+        })
+        .collect();
+    let mut indices = Vec::with_capacity(corners.len() / 4 * 6);
+    for quad in corners.chunks_exact(4) {
+        let [a, b, c, d] = [quad[0], quad[1], quad[2], quad[3]];
+        match refined.orientation {
+            crate::read::geom::Orientation::LeftHanded => indices.extend([a, c, b, a, d, c]),
+            crate::read::geom::Orientation::RightHanded => indices.extend([a, b, c, a, c, d]),
+        }
+    }
+    let mut mesh = Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
+    match normals.into_iter().collect::<Option<Vec<_>>>() {
+        Some(normals) => mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals),
+        None => mesh.compute_smooth_normals(),
+    }
+    mesh
 }
 
 /// Moves `refined`'s points along their normals by `displacement`, its
@@ -229,26 +307,26 @@ fn face_area(read: &ReadMesh) -> f32 {
     area
 }
 
-/// The Ptex faces of each mesh face: one for a quad, one per corner for
-/// any other face; `None` when the file was written for other topology.
-fn ptex_faces(layout: &PtexLayout, counts: &[i32]) -> Option<Vec<std::ops::Range<usize>>> {
-    if layout.triangles {
-        return None;
-    }
+/// The Ptex faces of each mesh face in a quad Ptex file: one for a quad,
+/// one per corner for any other face.
+fn ptex_faces(counts: &[i32]) -> Vec<std::ops::Range<usize>> {
     let mut next = 0;
-    let ranges: Vec<_> = counts
+    counts
         .iter()
         .map(|&count| {
             let subfaces = if count == 4 { 1 } else { count.max(0) as usize };
             next += subfaces;
             next - subfaces..next
         })
-        .collect();
-    (next == layout.faces.len()).then_some(ranges)
+        .collect()
 }
 
-/// Square tiles of `side` texels and a one-texel border, in rows.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Texels around each tile that repeat its edge, so filtering stays inside
+/// the tile and compressed blocks never straddle two tiles.
+const BORDER: usize = 2;
+
+/// Square tiles of `side` texels and a border, in rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Grid {
     side: usize,
     columns: usize,
@@ -264,7 +342,7 @@ impl Grid {
         let rows = faces.div_ceil(columns.max(1));
         let mut side = settings.texels.next_power_of_two();
         while side >= 4 {
-            let tile = side + 2;
+            let tile = side + 2 * BORDER;
             if faces * tile * tile <= settings.max_texels
                 && columns.max(rows) * tile <= LARGEST_SIDE
             {
@@ -280,30 +358,36 @@ impl Grid {
         None
     }
 
+    fn tile(&self) -> usize {
+        self.side + 2 * BORDER
+    }
+
     fn origin(&self, face: usize) -> (usize, usize) {
-        let tile = self.side + 2;
+        let tile = self.tile();
         ((face % self.columns) * tile, (face / self.columns) * tile)
     }
 
     /// Where face coordinates `uv` of mesh face `face` land in the texture,
-    /// as a USD texture coordinate.
+    /// from its top-left corner.
     fn uv(&self, face: usize, [u, v]: [f32; 2]) -> [f32; 2] {
         let (left, top) = self.origin(face);
-        let x = (left as f32 + 1.0 + u * self.side as f32) / self.width as f32;
-        let y = (top as f32 + 1.0 + v * self.side as f32) / self.height as f32;
-        [x, 1.0 - y]
+        let inset = BORDER as f32;
+        let x = (left as f32 + inset + u * self.side as f32) / self.width as f32;
+        let y = (top as f32 + inset + v * self.side as f32) / self.height as f32;
+        [x, y]
     }
 
     /// Fills each mesh face's tile from its Ptex texels, or with its
-    /// average where the level holds none.
+    /// average where the level holds none; `compress` stores it as BC1.
     fn image(
         &self,
         tiles: &[std::ops::Range<usize>],
         layout: &PtexLayout,
         level: &PtexLevel,
         srgb: bool,
+        compress: bool,
     ) -> Image {
-        let tile = self.side + 2;
+        let tile = self.tile();
         let mut data = vec![255u8; self.width * self.height * 4];
         for (face, subfaces) in tiles.iter().enumerate() {
             let texels = (subfaces.len() == 1)
@@ -314,20 +398,25 @@ impl Grid {
                 std::array::from_fn(|channel| sum[channel] + color[channel] / subfaces.len() as f32)
             });
             let (left, top) = self.origin(face);
+            let at = |texel: usize| (texel as f32 - BORDER as f32 + 0.5) / self.side as f32;
             for y in 0..tile {
                 for x in 0..tile {
-                    let color = texels.map_or(average, |texels| {
-                        texels.sample(
-                            (x as f32 - 0.5) / self.side as f32,
-                            (y as f32 - 0.5) / self.side as f32,
-                        )
-                    });
+                    let color = texels.map_or(average, |texels| texels.sample(at(x), at(y)));
                     let at = ((top + y) * self.width + left + x) * 4;
                     for channel in 0..3 {
                         data[at + channel] = (color[channel].clamp(0.0, 1.0) * 255.0).round() as u8;
                     }
                 }
             }
+        }
+        let format = match (compress, srgb) {
+            (true, true) => TextureFormat::Bc1RgbaUnormSrgb,
+            (true, false) => TextureFormat::Bc1RgbaUnorm,
+            (false, true) => TextureFormat::Rgba8UnormSrgb,
+            (false, false) => TextureFormat::Rgba8Unorm,
+        };
+        if compress {
+            data = bc1(&data, self.width, self.height);
         }
         let mut image = Image::new(
             Extent3d {
@@ -337,16 +426,74 @@ impl Grid {
             },
             TextureDimension::D2,
             data,
-            if srgb {
-                TextureFormat::Rgba8UnormSrgb
-            } else {
-                TextureFormat::Rgba8Unorm
-            },
+            format,
             RenderAssetUsages::RENDER_WORLD,
         );
         image.sampler = ImageSampler::linear();
         image
     }
+}
+
+/// RGBA8 texels, `width` by `height` in multiples of four, as opaque BC1
+/// blocks: each four by four block keeps two colors spanning its texels'
+/// range, slightly inset, and picks one of four blends of them per texel.
+fn bc1(rgba: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let pack = |color: [u8; 3]| {
+        (u16::from(color[0]) >> 3) << 11
+            | (u16::from(color[1]) >> 2) << 5
+            | u16::from(color[2]) >> 3
+    };
+    let unpack = |packed: u16| {
+        let (r, g, b) = (packed >> 11 & 31, packed >> 5 & 63, packed & 31);
+        [r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2].map(i32::from)
+    };
+    let mut blocks = Vec::with_capacity(width * height / 2);
+    for top in (0..height).step_by(4) {
+        for left in (0..width).step_by(4) {
+            let texels: [[u8; 3]; 16] = std::array::from_fn(|texel| {
+                let at = ((top + texel / 4) * width + left + texel % 4) * 4;
+                [rgba[at], rgba[at + 1], rgba[at + 2]]
+            });
+            let (mut low, mut high) = ([u8::MAX; 3], [0u8; 3]);
+            for texel in &texels {
+                for channel in 0..3 {
+                    low[channel] = low[channel].min(texel[channel]);
+                    high[channel] = high[channel].max(texel[channel]);
+                }
+            }
+            for channel in 0..3 {
+                let inset = (high[channel] - low[channel]) >> 4;
+                low[channel] += inset;
+                high[channel] -= inset;
+            }
+            let (first, second) = (pack(high).max(pack(low)), pack(high).min(pack(low)));
+            let mut indices = 0u32;
+            if first != second {
+                let (a, b) = (unpack(first), unpack(second));
+                let palette: [[i32; 3]; 4] = [
+                    a,
+                    b,
+                    std::array::from_fn(|channel| (2 * a[channel] + b[channel]) / 3),
+                    std::array::from_fn(|channel| (a[channel] + 2 * b[channel]) / 3),
+                ];
+                for (texel, color) in texels.iter().enumerate() {
+                    let distance = |entry: &[i32; 3]| -> i32 {
+                        (0..3)
+                            .map(|channel| (entry[channel] - i32::from(color[channel])).pow(2))
+                            .sum()
+                    };
+                    let best = (0..4)
+                        .min_by_key(|&entry| distance(&palette[entry]))
+                        .unwrap();
+                    indices |= (best as u32) << (2 * texel);
+                }
+            }
+            blocks.extend(first.to_le_bytes());
+            blocks.extend(second.to_le_bytes());
+            blocks.extend(indices.to_le_bytes());
+        }
+    }
+    blocks
 }
 
 #[cfg(test)]
@@ -370,6 +517,12 @@ mod tests {
                 r#"#usda 1.0
 def Mesh "Ground" (prepend apiSchemas = ["MaterialBindingAPI"]) {{
     point3f[] points = [(0,0,0),(1,0,0),(2,0,0),(0,0,1),(1,0,1),(2,0,1)]
+    int[] faceVertexCounts = [4, 4]
+    int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]
+    rel material:binding = </Mat>
+}}
+def Mesh "Raised" (prepend apiSchemas = ["MaterialBindingAPI"]) {{
+    point3f[] points = [(0,1,0),(1,1,0),(2,1,0),(0,1,1),(1,1,1),(2,1,1)]
     int[] faceVertexCounts = [4, 4]
     int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]
     rel material:binding = </Mat>
@@ -407,6 +560,12 @@ def Material "Mat" {{
         crate::live::project_stage(&mut world, &live, &mut map);
         let entity = map.entity("/Ground").unwrap();
         let atlas = world.get::<PtexAtlasImage>(entity).unwrap().0.clone();
+        let raised = map.entity("/Raised").unwrap();
+        assert_eq!(
+            world.get::<PtexAtlasImage>(raised).unwrap().0,
+            atlas,
+            "meshes on one Ptex file share its atlas"
+        );
         let material = world
             .resource::<Assets<StandardMaterial>>()
             .get(
@@ -423,17 +582,64 @@ def Material "Mat" {{
             .unwrap();
         assert!(mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
         assert!(mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
-        // Two faces refined three times, each corner its own vertex.
-        assert_eq!(mesh.count_vertices(), 2 * 64 * 4);
+        // Two faces refined three times into nine by nine points each; the
+        // points on the edge they share split, one for each face's tile.
+        assert_eq!(mesh.count_vertices(), 2 * 9 * 9);
         let image = world.resource::<Assets<Image>>().get(&atlas).unwrap();
         assert!(image.texture_descriptor.format.is_srgb());
         let pixel = |x: u32, y: u32| image.get_color_at(x, y).unwrap().to_srgba();
-        let tile = 64 + 2;
-        assert_eq!(pixel(1, 1), Srgba::RED);
-        assert_eq!(pixel(tile - 2, 1), Srgba::GREEN);
-        assert_eq!(pixel(1, tile - 2), Srgba::BLUE);
+        let tile = 64 + 2 * BORDER as u32;
+        assert_eq!(pixel(2, 2), Srgba::RED);
+        assert_eq!(pixel(tile - 3, 2), Srgba::GREEN);
+        assert_eq!(pixel(2, tile - 3), Srgba::BLUE);
         assert_eq!(pixel(0, 0), Srgba::RED, "the border repeats the edge");
         assert_eq!(pixel(tile + 10, 10), Srgba::WHITE);
+    }
+
+    #[test]
+    fn bc1_blocks_keep_flat_colors_and_follow_gradients() {
+        let (width, height) = (8, 4);
+        let rgba: Vec<u8> = (0..width * height)
+            .flat_map(|texel| {
+                let x = texel % width;
+                if x < 4 {
+                    [200, 120, 40, 255]
+                } else {
+                    let ramp = (x - 4) as u8 * 80;
+                    [ramp, ramp, ramp, 255]
+                }
+            })
+            .collect();
+        let blocks = bc1(&rgba, width, height);
+        assert_eq!(blocks.len(), 2 * 8);
+        let decode = |block: &[u8], texel: usize| -> [i32; 3] {
+            let unpack = |packed: u16| {
+                let (r, g, b) = (packed >> 11 & 31, packed >> 5 & 63, packed & 31);
+                [r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2].map(i32::from)
+            };
+            let a = unpack(u16::from_le_bytes([block[0], block[1]]));
+            let b = unpack(u16::from_le_bytes([block[2], block[3]]));
+            let index = u32::from_le_bytes(block[4..8].try_into().unwrap()) >> (2 * texel) & 3;
+            std::array::from_fn(|channel| match index {
+                0 => a[channel],
+                1 => b[channel],
+                2 => (2 * a[channel] + b[channel]) / 3,
+                _ => (a[channel] + 2 * b[channel]) / 3,
+            })
+        };
+        for texel in 0..16 {
+            let flat = decode(&blocks[..8], texel);
+            assert!(
+                (flat[0] - 200).abs() <= 8 && (flat[1] - 120).abs() <= 4,
+                "{flat:?}"
+            );
+            let ramp = decode(&blocks[8..], texel)[1];
+            let expected = (texel % 4) as i32 * 80;
+            assert!(
+                (ramp - expected).abs() <= 24,
+                "texel {texel}: {ramp} vs {expected}"
+            );
+        }
     }
 
     #[test]
@@ -535,7 +741,7 @@ def Material "Mat" {{
         let settings = UsdPtexAtlas::default();
         let small = Grid::new(4637, &settings).unwrap();
         assert_eq!((small.side, small.columns), (64, 69));
-        assert_eq!((small.width, small.height), (69 * 66, 68 * 66));
+        assert_eq!((small.width, small.height), (69 * 68, 68 * 68));
         let large = Grid::new(57700, &settings).unwrap();
         assert_eq!(large.side, 16);
         assert!(large.width <= LARGEST_SIDE && large.height <= LARGEST_SIDE);
@@ -546,10 +752,10 @@ def Material "Mat" {{
         let grid = Grid::new(5, &UsdPtexAtlas::default()).unwrap();
         assert_eq!((grid.side, grid.columns), (64, 3));
         let texel = |[x, y]: [f32; 2]| {
-            [x * grid.width as f32, (1.0 - y) * grid.height as f32].map(|value| value.round())
+            [x * grid.width as f32, y * grid.height as f32].map(|value| value.round())
         };
-        assert_eq!(texel(grid.uv(4, [0.0, 0.0])), [67.0, 67.0]);
-        assert_eq!(texel(grid.uv(4, [1.0, 1.0])), [131.0, 131.0]);
-        assert_eq!(texel(grid.uv(2, [1.0, 0.0])), [197.0, 1.0]);
+        assert_eq!(texel(grid.uv(4, [0.0, 0.0])), [70.0, 70.0]);
+        assert_eq!(texel(grid.uv(4, [1.0, 1.0])), [134.0, 134.0]);
+        assert_eq!(texel(grid.uv(2, [1.0, 0.0])), [202.0, 2.0]);
     }
 }

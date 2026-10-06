@@ -21,8 +21,14 @@ joint frames, axes, body links and limits.
 
 Activision's Caldera with its capital district at full detail: two million
 prims and 616k meshes, loaded and projected in about six minutes. The rest of
-the island stays at its proxy detail (purple). All five rendered with
-`cargo run --example gif_frames`.
+the island stays at its proxy detail (purple).
+
+![Flying in over the lagoon of Disney's Moana Island](media/moana.webp)
+
+Walt Disney Animation Studios' Moana Island, flying in over the lagoon: 31
+million plants and corals drawn by GPU instancing, terrain textured from its
+Ptex and displaced, and lit by the island's own sun and sky dome. All six
+rendered with `cargo run --example gif_frames`.
 
 ## Use it in Bevy
 

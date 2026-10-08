@@ -95,4 +95,11 @@ built on `usd_bevy`. Every machine is a USD file.
 | ![Field robots](media/gearbox-robots.jpg) | ![Gearbox machine pane](media/gearbox-ui.jpg) |
 | --- | --- |
 
+A Kubota working a stubble field with a Knoche disc harrow, two rows and a
+headland turn, in real time. The discs and packer rollers are physics bodies
+turned by the soil they cut and ride on, and the worked soil is geometry.
+The full video is [on YouTube](https://www.youtube.com/watch?v=6SIxO1Lz-Es).
+
+<a href="https://www.youtube.com/watch?v=6SIxO1Lz-Es"><img src="media/cultivation.webp" width="100%" alt="A Kubota cultivating stubble with a Knoche disc harrow"></a>
+
 Supported by [Wageningen University & Research](https://www.wur.nl/). MIT licensed.

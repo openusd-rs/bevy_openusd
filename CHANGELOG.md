@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0] - 2026-10-08
+
+### <!-- 0 -->⛰️  Features
+
+- Sun shadow links, fill and purpose
+- Texture curves and UDIM atlases
+- Decode UDIM sets of bound materials
+- Fall back to full material binding
+- Record light shadow link excludes
+- Upload cap knob and shadowed distant sun
+- Skip UDIM sets and read scalar EXR
+
+### <!-- 3 -->📚 Documentation
+
+- Sharper and brighter alab fly-by
+- Alab stoat in its knitted sweater
+- Glide through the alab
+- Gearbox cultivating a stubble field
+
 ## [0.2.0] - 2026-10-06
 
 ### <!-- 0 -->⛰️  Features

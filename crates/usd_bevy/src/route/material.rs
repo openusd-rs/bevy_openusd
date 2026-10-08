@@ -316,6 +316,103 @@ fn warn_material(world: &mut World, entity: Entity, ctx: &RouteCtx, message: Str
 /// its color: the clarity of a sandy lagoon.
 const MURKY_METERS: f32 = 2.0;
 
+/// Each base color texture's mean color, weighted by alpha so the empty cells
+/// of a UDIM atlas do not darken it.
+#[derive(Resource, Default)]
+struct TextureMeans(bevy::platform::collections::HashMap<AssetId<Image>, Option<LinearRgba>>);
+
+fn texture_mean(world: &mut World, texture: &Handle<Image>) -> Option<LinearRgba> {
+    if let Some(mean) = world
+        .get_resource::<TextureMeans>()
+        .and_then(|means| means.0.get(&texture.id()))
+    {
+        return *mean;
+    }
+    let mean = world
+        .get_resource::<Assets<Image>>()
+        .and_then(|images| images.get(texture))
+        .and_then(|image| {
+            let step = |extent: u32| (extent / 64).max(1);
+            let (mut sum, mut weight) = (Vec3::ZERO, 0.0);
+            for y in (0..image.height()).step_by(step(image.height()) as usize) {
+                for x in (0..image.width()).step_by(step(image.width()) as usize) {
+                    let color = image.get_color_at(x, y).ok()?.to_linear();
+                    sum += color.to_vec3() * color.alpha;
+                    weight += color.alpha;
+                }
+            }
+            (weight > 0.0).then(|| LinearRgba::from_vec3(sum / weight))
+        });
+    world
+        .get_resource_or_insert_with(TextureMeans::default)
+        .0
+        .insert(texture.id(), mean);
+    mean
+}
+
+/// Geometry without UVs cannot sample its base color texture, so it takes the
+/// texture's mean color instead, as hair rooted on a textured surface does.
+fn uvless_fallback(
+    world: &mut World,
+    entity: Entity,
+    handle: &Handle<StandardMaterial>,
+) -> Option<Handle<StandardMaterial>> {
+    let mesh = world.get::<Mesh3d>(entity)?;
+    if world
+        .get_resource::<Assets<Mesh>>()?
+        .get(&mesh.0)?
+        .attribute(Mesh::ATTRIBUTE_UV_0)
+        .is_some()
+    {
+        return None;
+    }
+    let material = world
+        .resource::<Assets<StandardMaterial>>()
+        .get(handle)
+        .filter(|material| material.base_color_channel == bevy::mesh::UvChannel::Uv0)?
+        .clone();
+    let mean = texture_mean(world, material.base_color_texture.as_ref()?)?;
+    let variant = StandardMaterial {
+        base_color: LinearRgba::from_vec4(
+            material.base_color.to_linear().to_vec4() * mean.to_vec4(),
+        )
+        .with_alpha(material.base_color.alpha())
+        .into(),
+        base_color_texture: None,
+        ..material
+    };
+    let sheen = super::cache::sheen_of(world, handle.id());
+    Some(super::cache::intern_material_with_sheen(
+        world, variant, sheen,
+    ))
+}
+
+/// Tile rows of the UDIM atlas behind a material's base color, when it is one.
+fn udim_rows(world: &World, read: &ReadPreviewMaterial) -> Option<u32> {
+    let path = read
+        .diffuse_texture
+        .as_ref()
+        .filter(|path| path.contains(crate::source::UDIM))?;
+    let key = (path.clone(), read.texture_srgb("diffuse"));
+    let handle = world
+        .get_resource::<crate::asset::SnapshotTextures>()?
+        .0
+        .get(&key)?;
+    let image = world.get_resource::<Assets<Image>>()?.get(handle)?;
+    Some((image.height() * crate::asset::UDIM_COLUMNS / image.width()).max(1))
+}
+
+/// Maps V-flipped mesh UVs spanning UDIM tiles onto their atlas: tile
+/// `(u, v)` sits in column `u` and, counted from the bottom, row `v`.
+fn udim_transform(rows: u32) -> bevy::math::Affine2 {
+    let rows = rows as f32;
+    bevy::math::Affine2::from_scale_angle_translation(
+        Vec2::new(1.0 / crate::asset::UDIM_COLUMNS as f32, 1.0 / rows),
+        0.0,
+        Vec2::new(0.0, (rows - 1.0) / rows),
+    )
+}
+
 fn to_standard_material(
     read: &ReadPreviewMaterial,
     assets: Option<&AssetServer>,
@@ -522,6 +619,9 @@ pub(crate) fn resolve_material(
         None => MaterialColor::Open,
     };
     let mut material = to_standard_material(&read, assets.as_ref(), textures);
+    if let Some(rows) = udim_rows(world, &read) {
+        material.uv_transform = udim_transform(rows) * material.uv_transform;
+    }
     // A medium's depth scale is metric; the stage measures in its own units.
     material.attenuation_distance /= crate::live::stage_meters_per_unit(ctx.stage);
     apply_sidedness(ctx, &mut material);
@@ -685,6 +785,7 @@ impl PrimRoute for MaterialRoute {
         {
             world.entity_mut(entity).insert(Mesh3d(tangent));
         }
+        let handle = uvless_fallback(world, entity, &handle).unwrap_or(handle);
         if let Some(mesh) = world
             .get::<Mesh3d>(entity)
             .and_then(|mesh| world.get_resource::<Assets<Mesh>>()?.get(&mesh.0))
@@ -1032,6 +1133,87 @@ def Cube "B" { rel material:binding = </Mat> }
     }
 
     use super::*;
+
+    #[test]
+    fn geometry_without_uvs_takes_its_texture_mean() {
+        let text = r#"#usda 1.0
+def BasisCurves "Fuzz" {
+    uniform token type = "linear"
+    int[] curveVertexCounts = [2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0)]
+    rel material:binding = </Mat>
+}
+def Mesh "Patch" {
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    texCoord2f[] primvars:st = [(0, 0), (1, 0), (0, 1)] (interpolation = "vertex")
+    rel material:binding = </Mat>
+}
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @wool.png@
+        float3 outputs:rgb
+    }
+}
+"#;
+        let stage = crate::snippet::UsdSnippet::new(text).open_stage().unwrap();
+        let read = read_preview_material_at(&stage, &openusd::sdf::path("/Mat").unwrap(), None)
+            .unwrap()
+            .unwrap();
+        let live = crate::live::LiveStage::new(stage);
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<Image>>();
+        // One wool texel beside an empty one, as in a sparse UDIM atlas.
+        let texels: [f32; 8] = [1.0, 0.25, 0.25, 1.0, 0.0, 0.0, 0.0, 0.0];
+        let image = world.resource_mut::<Assets<Image>>().add(Image::new(
+            bevy::render::render_resource::Extent3d {
+                width: 2,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            bytemuck::cast_slice(&texels).to_vec(),
+            bevy::render::render_resource::TextureFormat::Rgba32Float,
+            bevy::asset::RenderAssetUsages::default(),
+        ));
+        let key = (
+            read.diffuse_texture.clone().unwrap(),
+            read.texture_srgb("diffuse"),
+        );
+        world.insert_resource(crate::asset::SnapshotTextures(
+            [(key, image.clone())].into(),
+        ));
+        let mut map = crate::live::PrimEntities::default();
+        crate::live::project_stage(&mut world, &live, &mut map);
+        let material = |name: &str| {
+            let handle = &world
+                .get::<MeshMaterial3d<StandardMaterial>>(map.entity(name).unwrap())
+                .unwrap()
+                .0;
+            world
+                .resource::<Assets<StandardMaterial>>()
+                .get(handle)
+                .unwrap()
+                .clone()
+        };
+        let fuzz = material("/Fuzz");
+        assert!(fuzz.base_color_texture.is_none());
+        assert_eq!(
+            fuzz.base_color.to_linear(),
+            LinearRgba::rgb(1.0, 0.25, 0.25)
+        );
+        assert_eq!(material("/Patch").base_color_texture, Some(image));
+    }
 
     #[test]
     fn texture_coordinate_diagnostics_follow_requested_channels() {
@@ -1737,6 +1919,23 @@ def Material "Mat" {
             assets.get(b).unwrap().cull_mode,
             Some(bevy::render::render_resource::Face::Back)
         );
+    }
+
+    #[test]
+    fn udim_transform_lands_each_tile_in_its_atlas_cell() {
+        let atlas = udim_transform(2);
+        // USD (u, v) reaches the shader as (u, 1 - v).
+        let cell = |u: f32, v: f32| {
+            let at = atlas.transform_point2(Vec2::new(u, 1.0 - v));
+            (
+                (at.x * crate::asset::UDIM_COLUMNS as f32).floor(),
+                (at.y * 2.0).floor(),
+            )
+        };
+        assert_eq!(cell(0.5, 0.5), (0.0, 1.0));
+        assert_eq!(cell(1.5, 0.5), (1.0, 1.0));
+        assert_eq!(cell(0.5, 1.5), (0.0, 0.0));
+        assert_eq!(cell(9.5, 1.5), (9.0, 0.0));
     }
 
     #[test]

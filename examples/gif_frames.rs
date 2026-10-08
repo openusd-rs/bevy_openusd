@@ -162,6 +162,11 @@ fn main() -> AppExit {
             << 20,
     ))
     .insert_resource(Asset(name, streaming))
+    .insert_resource(usd_bevy::DisplayPurposes {
+        render: std::env::var("USD_FRAME_PURPOSE").as_deref() == Ok("render"),
+        proxy: std::env::var("USD_FRAME_PURPOSE").as_deref() != Ok("render"),
+        guide: false,
+    })
     .insert_resource(Recorder {
         frames,
         next: 0,
@@ -471,9 +476,13 @@ fn scene_lighting(
             Option<&usd_bevy::route::light::UsdAreaLight>,
             &GlobalTransform,
             Option<&DirectionalLight>,
+            Option<&usd_bevy::route::light::UsdShadowLink>,
         ),
         Without<environment::StudioLight>,
     >,
+    meshes: Query<Entity, With<Mesh3d>>,
+    parents: Query<&ChildOf>,
+    prims: Query<&usd_bevy::UsdPrimRef>,
     domes: Query<(
         Entity,
         &usd_bevy::UsdPrimRef,
@@ -499,13 +508,24 @@ fn scene_lighting(
         } else {
             source
         };
-        commands.entity(*camera).insert((
-            source,
-            AmbientLight {
+        // `USD_FRAME_FILL` ("R G B NITS") stands in for bounce light.
+        let fill: Vec<f32> = std::env::var("USD_FRAME_FILL")
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|value| value.parse().ok())
+            .collect();
+        let fill = match fill[..] {
+            [red, green, blue, brightness] => AmbientLight {
+                color: Color::linear_rgb(red, green, blue),
+                brightness,
+                ..default()
+            },
+            _ => AmbientLight {
                 brightness: 0.0,
                 ..default()
             },
-        ));
+        };
+        commands.entity(*camera).insert((source, fill));
         for mut light in &mut studio {
             light.illuminance = 0.0;
         }
@@ -531,13 +551,30 @@ fn scene_lighting(
     if !done.2
         && let Some(span) = &span
         && let Ok(path) = std::env::var("USD_FRAME_SUN_LIGHT")
-        && let Some((entity, _, emission, area, transform, directional)) =
+        && let Some((entity, _, emission, area, transform, directional, link)) =
             lights.iter().find(|light| light.1.path == path)
     {
         for mut light in &mut studio {
             light.illuminance = 0.0;
         }
         done.2 = true;
+        // Prims the sun's shadow link excludes let its light through.
+        if let Some(link) = link {
+            let excluded = |path: &str| {
+                link.excludes.iter().any(|root| {
+                    path.strip_prefix(root.as_str())
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                })
+            };
+            for mesh in &meshes {
+                let prim = std::iter::once(mesh)
+                    .chain(parents.iter_ancestors(mesh))
+                    .find_map(|entity| prims.get(entity).ok());
+                if prim.is_some_and(|prim| excluded(&prim.path)) {
+                    commands.entity(mesh).insert(bevy::light::NotShadowCaster);
+                }
+            }
+        }
         if let Some(directional) = directional {
             commands.entity(entity).insert((
                 FrameSun,

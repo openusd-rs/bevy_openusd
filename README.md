@@ -32,8 +32,9 @@ Ptex and displaced, and lit by the island's own sun and sky dome.
 ![Gliding through Netflix Animation Studios' ALab](media/alab.webp)
 
 Netflix Animation Studios' ALab, built by Animal Logic, gliding down the lab to
-Remi's workbench: 7,600 meshes with their preview textures, lit by the shot's
-sun and sky dome. All seven rendered with `cargo run --example gif_frames`.
+the workbench: 7,600 meshes lit by the shot's sun and sky dome, and the stoat's
+knitted sweater and fur from ALab's baked procedurals, as curves textured from
+UDIM tiles. All seven rendered with `cargo run --example gif_frames`.
 
 ## Use it in Bevy
 

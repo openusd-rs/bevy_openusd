@@ -27,8 +27,13 @@ the island stays at its proxy detail (purple).
 
 Walt Disney Animation Studios' Moana Island, flying in over the lagoon: 31
 million plants and corals drawn by GPU instancing, terrain textured from its
-Ptex and displaced, and lit by the island's own sun and sky dome. All six
-rendered with `cargo run --example gif_frames`.
+Ptex and displaced, and lit by the island's own sun and sky dome.
+
+![Gliding through Netflix Animation Studios' ALab](media/alab.webp)
+
+Netflix Animation Studios' ALab, built by Animal Logic, gliding down the lab to
+Remi's workbench: 7,600 meshes with their preview textures, lit by the shot's
+sun and sky dome. All seven rendered with `cargo run --example gif_frames`.
 
 ## Use it in Bevy
 

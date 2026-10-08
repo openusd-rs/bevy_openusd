@@ -152,8 +152,14 @@ fn main() -> AppExit {
         environment::ViewerEnvironmentPlugin,
     ))
     .insert_resource(usd_bevy::UsdProjectionBudget(Duration::from_secs(5)))
+    // Large texture sets can starve their materials under this cap; raise it
+    // with `USD_FRAME_UPLOAD_MB`.
     .insert_resource(bevy::render::render_asset::RenderAssetBytesPerFrame::new(
-        256 << 20,
+        std::env::var("USD_FRAME_UPLOAD_MB")
+            .ok()
+            .and_then(|megabytes| megabytes.parse::<usize>().ok())
+            .unwrap_or(256)
+            << 20,
     ))
     .insert_resource(Asset(name, streaming))
     .insert_resource(Recorder {
@@ -440,7 +446,9 @@ struct FrameSun;
 /// studio rig, with its sun as a shadowed light when `USD_FRAME_SUN` is set,
 /// and draws the dome named by `USD_FRAME_SKY` behind it. The scene light
 /// named by `USD_FRAME_SUN_LIGHT`, too far away to light the scene as a
-/// point, becomes a shadowed directional sun of the same irradiance.
+/// point, becomes a shadowed directional sun of the same irradiance; a
+/// distant light named there keeps its own light and gains shadows. Shadow
+/// cascades reach `USD_FRAME_SHADOW_RANGE` (default 0.2) of the scene span.
 fn scene_lighting(
     mut commands: Commands,
     mut done: Local<(bool, bool, bool)>,
@@ -455,12 +463,17 @@ fn scene_lighting(
             Without<SunFitted>,
         ),
     >,
-    lights: Query<(
-        &usd_bevy::UsdPrimRef,
-        &usd_bevy::route::light::UsdLightEmission,
-        Option<&usd_bevy::route::light::UsdAreaLight>,
-        &GlobalTransform,
-    )>,
+    lights: Query<
+        (
+            Entity,
+            &usd_bevy::UsdPrimRef,
+            &usd_bevy::route::light::UsdLightEmission,
+            Option<&usd_bevy::route::light::UsdAreaLight>,
+            &GlobalTransform,
+            Option<&DirectionalLight>,
+        ),
+        Without<environment::StudioLight>,
+    >,
     domes: Query<(
         Entity,
         &usd_bevy::UsdPrimRef,
@@ -518,9 +531,23 @@ fn scene_lighting(
     if !done.2
         && let Some(span) = &span
         && let Ok(path) = std::env::var("USD_FRAME_SUN_LIGHT")
-        && let Some((_, emission, area, transform)) =
-            lights.iter().find(|light| light.0.path == path)
+        && let Some((entity, _, emission, area, transform, directional)) =
+            lights.iter().find(|light| light.1.path == path)
     {
+        for mut light in &mut studio {
+            light.illuminance = 0.0;
+        }
+        done.2 = true;
+        if let Some(directional) = directional {
+            commands.entity(entity).insert((
+                FrameSun,
+                DirectionalLight {
+                    shadow_maps_enabled: true,
+                    ..directional.clone()
+                },
+            ));
+            return;
+        }
         let (scale, rotation, position) = transform.to_scale_rotation_translation();
         let toward = (position - span.1).normalize();
         let area = match area {
@@ -545,17 +572,17 @@ fn scene_lighting(
             },
             Transform::from_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, -toward)),
         ));
-        for mut light in &mut studio {
-            light.illuminance = 0.0;
-        }
-        done.2 = true;
     }
     if let Some(span) = span {
+        let range = std::env::var("USD_FRAME_SHADOW_RANGE")
+            .ok()
+            .and_then(|range| range.parse::<f32>().ok())
+            .unwrap_or(0.2);
         for sun in &suns {
             commands.entity(sun).insert((
                 bevy::light::CascadeShadowConfigBuilder {
                     first_cascade_far_bound: span.0 * 0.002,
-                    maximum_distance: span.0 * 0.2,
+                    maximum_distance: span.0 * range,
                     ..default()
                 }
                 .build(),

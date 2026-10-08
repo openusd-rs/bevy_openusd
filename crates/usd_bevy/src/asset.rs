@@ -108,6 +108,70 @@ impl UsdScene {
     }
 }
 
+/// Decodes a texture file's bytes. An OpenEXR without R, G and B channels —
+/// a scalar map, as metallic and roughness maps often are — is read through
+/// its first channel as grey.
+fn decode_image(
+    bytes: &[u8],
+    extension: &str,
+    srgb: bool,
+    usage: bevy::asset::RenderAssetUsages,
+) -> Result<Image, String> {
+    match Image::from_buffer(
+        bytes,
+        bevy::image::ImageType::Extension(extension),
+        bevy::image::CompressedImageFormats::NONE,
+        srgb,
+        bevy::image::ImageSampler::default(),
+        usage,
+    ) {
+        Ok(image) => Ok(image),
+        Err(error) if extension.eq_ignore_ascii_case("exr") => {
+            scalar_exr(bytes, usage).ok_or_else(|| error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The first channel of an OpenEXR's first layer, as a grey half-float image.
+fn scalar_exr(bytes: &[u8], usage: bevy::asset::RenderAssetUsages) -> Option<Image> {
+    use exr::prelude::{FlatSamples, ReadChannels, ReadLayers, f16, read};
+    let image = read()
+        .no_deep_data()
+        .largest_resolution_level()
+        .all_channels()
+        .first_valid_layer()
+        .all_attributes()
+        .from_buffered(std::io::Cursor::new(bytes))
+        .ok()?;
+    let layer = image.layer_data;
+    let grey: Vec<f16> = match &layer.channel_data.list.first()?.sample_data {
+        FlatSamples::F16(values) => values.clone(),
+        FlatSamples::F32(values) => values.iter().map(|value| f16::from_f32(*value)).collect(),
+        FlatSamples::U32(values) => values
+            .iter()
+            .map(|value| f16::from_f32(*value as f32))
+            .collect(),
+    };
+    let data = grey
+        .iter()
+        .flat_map(|value| [*value, *value, *value, f16::ONE])
+        .flat_map(f16::to_le_bytes)
+        .collect();
+    let size = bevy::render::render_resource::Extent3d {
+        width: layer.size.width() as u32,
+        height: layer.size.height() as u32,
+        depth_or_array_layers: 1,
+    };
+    Some(Image::new(
+        size,
+        bevy::render::render_resource::TextureDimension::D2,
+        data,
+        bevy::render::render_resource::TextureFormat::Rgba16Float,
+        usage,
+    ))
+}
+
 /// Decodes every texture the stage requests from the source's bytes.
 fn decode_textures(
     source: &UsdSource,
@@ -118,7 +182,19 @@ fn decode_textures(
     let requests = source
         .texture_requests(stage, true)
         .map_err(std::io::Error::other)?;
+    // A UDIM set names its tiles with a token no file carries, so it cannot
+    // be read as one image; its material draws without that texture.
+    let udim = requests
+        .iter()
+        .filter(|(path, _)| path.contains("<UDIM>"))
+        .count();
+    if udim > 0 {
+        warn!("{udim} UDIM texture sets are not decoded; their materials draw without them");
+    }
     for (index, (path, srgb)) in requests.iter().cloned().enumerate() {
+        if path.contains("<UDIM>") {
+            continue;
+        }
         if !crate::source::rooted(Path::new(&path)) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -140,15 +216,8 @@ fn decode_textures(
         } else {
             bevy::asset::RenderAssetUsages::default()
         };
-        let image = Image::from_buffer(
-            &bytes,
-            bevy::image::ImageType::Extension(extension),
-            bevy::image::CompressedImageFormats::NONE,
-            srgb,
-            bevy::image::ImageSampler::default(),
-            usage,
-        )
-        .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
+        let image = decode_image(&bytes, extension, srgb, usage)
+            .map_err(|error| std::io::Error::other(format!("texture {path}: {error}")))?;
         textures.insert((path, srgb), add(index, image));
     }
     Ok(textures)
@@ -788,7 +857,7 @@ fn decode_missing_textures(
         .map_err(anyhow::Error::msg)?;
     let missing: Vec<_> = requests
         .iter()
-        .filter(|key| !textures.contains_key(*key))
+        .filter(|key| !textures.contains_key(*key) && !key.0.contains("<UDIM>"))
         .cloned()
         .collect();
     if missing.is_empty() {
@@ -809,12 +878,10 @@ fn decode_missing_textures(
             .extension()
             .and_then(|extension| extension.to_str())
             .ok_or_else(|| anyhow::anyhow!("texture has no extension: {path}"))?;
-        let image = Image::from_buffer(
+        let image = decode_image(
             &bytes,
-            bevy::image::ImageType::Extension(extension),
-            bevy::image::CompressedImageFormats::NONE,
+            extension,
             srgb,
-            bevy::image::ImageSampler::default(),
             bevy::asset::RenderAssetUsages::default(),
         )
         .map_err(|error| anyhow::anyhow!("cannot decode texture {path}: {error}"))?;

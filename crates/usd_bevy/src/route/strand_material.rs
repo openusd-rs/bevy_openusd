@@ -78,6 +78,9 @@ impl MaterialExtension for StrandCoverage {
         if !prepass && layout.0.contains(Mesh::ATTRIBUTE_COLOR) {
             attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
         }
+        if !prepass && layout.0.contains(Mesh::ATTRIBUTE_UV_0) {
+            attributes.push(Mesh::ATTRIBUTE_UV_0.at_shader_location(2));
+        }
         descriptor.vertex.buffers = vec![layout.0.get_layout(&attributes)?];
         // Ribbons oriented by authored normals show both faces.
         descriptor.primitive.cull_mode = None;

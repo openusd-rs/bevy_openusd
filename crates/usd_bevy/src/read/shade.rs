@@ -66,9 +66,13 @@ pub struct ReadPreviewMaterial {
     pub uv_transform: Option<bevy::math::Affine2>,
 }
 
-/// Resolves preview-purpose material binding, falling back to all-purpose.
+/// Resolves preview-purpose material binding, falling back to all-purpose and
+/// then to full-purpose, so geometry bound only for final renders keeps its look.
 pub fn read_material_binding(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Path>> {
-    read_material_binding_for_purpose(stage, prim, "preview")
+    match read_material_binding_for_purpose(stage, prim, "preview")? {
+        Some(material) => Ok(Some(material)),
+        None => read_material_binding_for_purpose(stage, prim, "full"),
+    }
 }
 
 /// Resolves inherited, collection and direct bindings using USD binding strength.
@@ -2161,6 +2165,29 @@ def Material "Mat" {
             "/Strong"
         );
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
+    }
+
+    #[test]
+    fn full_binding_stands_in_when_nothing_previews() {
+        use openusd_schemas::shade::{BindingStrength, MaterialBindingAPI};
+        let source = crate::UsdSource::new(
+            "full.usda",
+            &b"#usda 1.0\ndef BasisCurves \"Hair\" {}\n"[..],
+        )
+        .unwrap();
+        let stage = source.open_stage().unwrap();
+        let path = Path::new("/Hair").unwrap();
+        assert!(read_material_binding(&stage, &path).unwrap().is_none());
+        MaterialBindingAPI::new(stage.prim("/Hair").unwrap())
+            .bind_for_purpose("full", "/Full", BindingStrength::WeakerThanDescendants)
+            .unwrap();
+        assert_eq!(
+            read_material_binding(&stage, &path)
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "/Full"
+        );
     }
 
     #[test]

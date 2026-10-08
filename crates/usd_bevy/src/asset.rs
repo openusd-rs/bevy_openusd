@@ -94,7 +94,7 @@ fn timed<T>(enabled: bool, elapsed: &mut std::time::Duration, operation: impl Fn
 impl UsdScene {
     /// A scene from a self-contained source, with its textures decoded into
     /// `images`. Fails naming the first gap when a layer or texture is missing.
-    pub fn from_source(source: UsdSource, images: &mut Assets<Image>) -> std::io::Result<Self> {
+    pub fn from_source(mut source: UsdSource, images: &mut Assets<Image>) -> std::io::Result<Self> {
         let (stage, missing) = source.probe_stage();
         if let Some(identifier) = missing.into_iter().next() {
             return Err(std::io::Error::new(
@@ -103,7 +103,11 @@ impl UsdScene {
             ));
         }
         let stage = stage.map_err(std::io::Error::other)?;
-        let textures = decode_textures(&source, &stage, |_, image| images.add(image))?;
+        let requests = source
+            .texture_requests(&stage, true)
+            .map_err(std::io::Error::other)?;
+        let udim = udim_sets(&mut source, &stage, &requests, None)?;
+        let textures = decode_textures(&source, &requests, &udim, |_, image| images.add(image))?;
         Ok(Self { source, textures })
     }
 }
@@ -172,27 +176,119 @@ fn scalar_exr(bytes: &[u8], usage: bevy::asset::RenderAssetUsages) -> Option<Ima
     ))
 }
 
-/// Decodes every texture the stage requests from the source's bytes.
+/// Tile columns of a UDIM atlas: UDIM numbers ten tiles across each row.
+pub(crate) const UDIM_COLUMNS: u32 = 10;
+/// Largest atlas tile edge, so ten columns fit a 8192-texel texture.
+const UDIM_TILE: u32 = 816;
+
+/// The UDIM sets bound materials read, their tiles fetched into the source.
+fn udim_sets(
+    source: &mut UsdSource,
+    stage: &openusd::usd::Stage,
+    requests: &crate::source::TextureRequests,
+    fetcher: Option<&crate::source::Fetcher>,
+) -> std::io::Result<std::collections::BTreeSet<(String, bool)>> {
+    if !requests
+        .iter()
+        .any(|(path, _)| path.contains(crate::source::UDIM))
+    {
+        return Ok(Default::default());
+    }
+    let bound = UsdSource::bound_udim_requests(stage).map_err(std::io::Error::other)?;
+    if let Some(fetcher) = fetcher {
+        for (pattern, _) in &bound {
+            source.fetch_udim_tiles(fetcher, pattern);
+        }
+    }
+    Ok(bound)
+}
+
+/// A UDIM set's tiles packed into one linear atlas of [`UDIM_COLUMNS`]
+/// columns, its first tile row at the bottom as in UV space.
+fn udim_atlas(source: &UsdSource, pattern: &str, srgb: bool) -> Option<Image> {
+    let usage = bevy::asset::RenderAssetUsages::MAIN_WORLD;
+    let tiles: Vec<(u32, Image)> = crate::source::udim_tiles(pattern)
+        .filter_map(|(tile, identifier)| {
+            let bytes = source.read_asset(&identifier).ok()?;
+            let extension = Path::new(&identifier).extension()?.to_str()?;
+            let image = decode_image(&bytes, extension, srgb, usage).ok()?;
+            Some((tile - 1001, image))
+        })
+        .collect();
+    let size = tiles
+        .iter()
+        .map(|(_, image)| image.width().max(image.height()))
+        .max()?
+        .min(UDIM_TILE);
+    let rows = tiles.iter().map(|(index, _)| index / UDIM_COLUMNS).max()? + 1;
+    let width = UDIM_COLUMNS * size;
+    let mut texels = vec![half::f16::ZERO; (width * rows * size * 4) as usize];
+    // Each atlas texel averages the source texels it covers.
+    for (index, image) in &tiles {
+        let left = index % UDIM_COLUMNS * size;
+        let top = (rows - 1 - index / UDIM_COLUMNS) * size;
+        let span = |at: u32, extent: u32| {
+            let start = at * extent / size;
+            start..((at + 1) * extent / size).max(start + 1)
+        };
+        for y in 0..size {
+            let ys = span(y, image.height());
+            let y_step = (ys.len() / 4).max(1);
+            for x in 0..size {
+                let xs = span(x, image.width());
+                let x_step = (xs.len() / 4).max(1);
+                let (mut sum, mut count) = (Vec4::ZERO, 0.0f32);
+                for sy in ys.clone().step_by(y_step) {
+                    for sx in xs.clone().step_by(x_step) {
+                        if let Ok(color) = image.get_color_at(sx, sy) {
+                            sum += color.to_linear().to_vec4();
+                            count += 1.0;
+                        }
+                    }
+                }
+                let at = (((top + y) * width + left + x) * 4) as usize;
+                for (channel, value) in (sum / count.max(1.0)).to_array().into_iter().enumerate() {
+                    texels[at + channel] = half::f16::from_f32(value);
+                }
+            }
+        }
+    }
+    Some(Image::new(
+        bevy::render::render_resource::Extent3d {
+            width,
+            height: rows * size,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        texels
+            .iter()
+            .flat_map(|texel| texel.to_le_bytes())
+            .collect(),
+        bevy::render::render_resource::TextureFormat::Rgba16Float,
+        bevy::asset::RenderAssetUsages::default(),
+    ))
+}
+
+/// Decodes every texture the stage requests from the source's bytes; of the
+/// UDIM sets, only those in `udim`.
 fn decode_textures(
     source: &UsdSource,
-    stage: &openusd::usd::Stage,
+    requests: &crate::source::TextureRequests,
+    udim: &std::collections::BTreeSet<(String, bool)>,
     mut add: impl FnMut(usize, Image) -> Handle<Image>,
 ) -> std::io::Result<bevy::platform::collections::HashMap<(String, bool), Handle<Image>>> {
     let mut textures = bevy::platform::collections::HashMap::default();
-    let requests = source
-        .texture_requests(stage, true)
-        .map_err(std::io::Error::other)?;
-    // A UDIM set names its tiles with a token no file carries, so it cannot
-    // be read as one image; its material draws without that texture.
-    let udim = requests
-        .iter()
-        .filter(|(path, _)| path.contains("<UDIM>"))
-        .count();
-    if udim > 0 {
-        warn!("{udim} UDIM texture sets are not decoded; their materials draw without them");
-    }
     for (index, (path, srgb)) in requests.iter().cloned().enumerate() {
-        if path.contains("<UDIM>") {
+        if path.contains(crate::source::UDIM) {
+            if !udim.contains(&(path.clone(), srgb)) {
+                continue;
+            }
+            match udim_atlas(source, &path, srgb) {
+                Some(image) => {
+                    textures.insert((path, srgb), add(index, image));
+                }
+                None => warn!("UDIM texture has no readable tiles: {path}"),
+            }
             continue;
         }
         if !crate::source::rooted(Path::new(&path)) {
@@ -331,7 +427,11 @@ impl AssetLoader for UsdAssetLoader {
                 }
                 if missing.is_empty() {
                     let stage = result.map_err(std::io::Error::other)?;
-                    let textures = decode_textures(&source, &stage, |index, image| {
+                    let requests = source
+                        .texture_requests(&stage, true)
+                        .map_err(std::io::Error::other)?;
+                    let udim = udim_sets(&mut source, &stage, &requests, fetcher.as_ref())?;
+                    let textures = decode_textures(&source, &requests, &udim, |index, image| {
                         load_context.add_labeled_asset(format!("texture_{index}"), image)
                     })?;
                     (missing, Some(textures))
@@ -857,7 +957,7 @@ fn decode_missing_textures(
         .map_err(anyhow::Error::msg)?;
     let missing: Vec<_> = requests
         .iter()
-        .filter(|key| !textures.contains_key(*key) && !key.0.contains("<UDIM>"))
+        .filter(|key| !textures.contains_key(*key) && !key.0.contains(crate::source::UDIM))
         .cloned()
         .collect();
     if missing.is_empty() {
@@ -3369,6 +3469,66 @@ def Mesh "Body" {
                 .ends_with("textures/Color/body.ptx")
         );
         assert_eq!(source.dependencies().count(), 0);
+    }
+
+    #[test]
+    fn bound_udim_sets_pack_their_tiles_into_one_atlas() {
+        let root = "models/udim.usda";
+        let text = r#"#usda 1.0
+def Mesh "Mesh" {
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    rel material:binding = </Mat>
+}
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @../textures/color.<UDIM>.png@
+        float3 outputs:rgb
+    }
+}
+def Material "Unused" {
+    token outputs:surface.connect = </Unused/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Unused/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @../textures/other.<UDIM>.png@
+        float3 outputs:rgb
+    }
+}
+"#;
+        let files = [
+            (root, text.as_bytes().to_vec()),
+            ("textures/color.1001.png", pixel_png([255, 0, 0, 255])),
+            ("textures/color.1002.png", pixel_png([0, 255, 0, 255])),
+            ("textures/color.1011.png", pixel_png([0, 0, 255, 255])),
+            ("textures/other.1001.png", pixel_png([255, 255, 0, 255])),
+        ];
+        let source = UsdSource::from_memory(root, files).unwrap();
+        assert!(source.missing_dependencies().is_empty());
+        let mut images = Assets::<Image>::default();
+        let scene = UsdScene::from_source(source, &mut images).unwrap();
+        assert_eq!(scene.textures.len(), 1);
+        let ((path, _), handle) = scene.textures.iter().next().unwrap();
+        assert!(path.ends_with("textures/color.<UDIM>.png"), "{path}");
+        let atlas = images.get(handle).unwrap();
+        assert_eq!((atlas.width(), atlas.height()), (UDIM_COLUMNS, 2));
+        let texel = |x, y| atlas.get_color_at(x, y).unwrap().to_linear();
+        assert_eq!(texel(0, 0), LinearRgba::BLUE);
+        assert_eq!(texel(0, 1), LinearRgba::RED);
+        assert_eq!(texel(1, 1), LinearRgba::GREEN);
+        assert_eq!(texel(1, 0), LinearRgba::NONE);
     }
 
     #[test]

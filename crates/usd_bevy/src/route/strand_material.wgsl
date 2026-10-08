@@ -14,6 +14,9 @@
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
+#ifdef VERTEX_UVS_A
+    @location(2) uv: vec2<f32>,
+#endif
 #ifdef VERTEX_COLORS
     @location(5) color: vec4<f32>,
 #endif
@@ -43,6 +46,9 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.position = position_world_to_clip(strand.world_position);
     // The projected width rides in the unused w for the fragment's coverage.
     out.world_position = vec4(strand.world_position, strand.pixels);
+#ifdef VERTEX_UVS_A
+    out.uv = vertex.uv;
+#endif
 #ifdef VERTEX_COLORS
     out.color = vertex.color;
 #endif

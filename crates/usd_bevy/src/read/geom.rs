@@ -1425,6 +1425,23 @@ pub(crate) fn read_primvar_vec3f(
     }))
 }
 
+pub(crate) fn read_primvar_vec2f(
+    stage: &Stage,
+    prim: &Path,
+    name: &str,
+    time: Option<f64>,
+) -> anyhow::Result<Option<MeshPrimvar<[f32; 2]>>> {
+    read_owned_primvar(
+        stage,
+        prim,
+        prim,
+        name,
+        time,
+        Interpolation::Vertex,
+        vec2f_values,
+    )
+}
+
 pub(crate) fn read_primvar_float(
     stage: &Stage,
     prim: &Path,

@@ -3,7 +3,7 @@
 //! Surfaces are open-ended polygonal approximations without UVs or caps.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::math::DVec3;
+use bevy::math::{DVec2, DVec3};
 use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
 use openusd_schemas::geom::BasisCurvesSchema;
@@ -510,6 +510,8 @@ struct Centerlines {
     normals: Option<Vec<[f32; 3]>>,
     /// Authored `widths` at every point, in local units.
     widths: Option<Vec<f32>>,
+    /// `primvars:st` at every point, V-flipped as mesh UVs are.
+    uvs: Option<Vec<[f32; 2]>>,
     spans: Vec<(std::ops::Range<usize>, CurveSampling)>,
 }
 
@@ -582,6 +584,19 @@ fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
             interpolation: value.interpolation,
             indices: value.indices,
         });
+    let st = crate::read::geom::read_primvar_vec2f(ctx.stage, ctx.path, "primvars:st", ctx.time)
+        .ok()
+        .flatten()
+        .map(|value| MeshPrimvar {
+            values: value
+                .values
+                .into_iter()
+                .map(|value| Vec2::from(value).as_dvec2())
+                .collect(),
+            interpolation: value.interpolation,
+            indices: value.indices,
+        });
+    let mut uvs = st.as_ref().map(|_| Vec::new());
     let mut widths = width.as_ref().map(|_| Vec::new());
     let mut normals = normal.as_ref().map(|_| Vec::new());
     let mut colors = (color.is_some() || opacity.is_some()).then(Vec::new);
@@ -647,6 +662,12 @@ fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
                 widths.push(layout.sample(width, sample, f64::NAN) as f32);
             }
         }
+        if let (Some(uvs), Some(st)) = (&mut uvs, &st) {
+            for sample in 0..samples {
+                let uv = layout.sample(st, sample, DVec2::ZERO);
+                uvs.push([uv.x as f32, 1.0 - uv.y as f32]);
+            }
+        }
         varying_offset += if cubic {
             segments + usize::from(!periodic)
         } else {
@@ -661,6 +682,7 @@ fn centerlines(ctx: &RouteCtx, steps: usize) -> Option<Centerlines> {
         colors,
         normals,
         widths,
+        uvs,
         spans,
     })
 }
@@ -681,6 +703,7 @@ fn curve_mesh(ctx: &RouteCtx, steps: usize) -> Result<Option<CurveMesh>, String>
         colors,
         normals,
         widths,
+        uvs,
         spans,
     }) = centerlines(ctx, steps)
     else {
@@ -712,10 +735,11 @@ fn curve_mesh(ctx: &RouteCtx, steps: usize) -> Result<Option<CurveMesh>, String>
             .iter()
             .all(|width| width.is_finite() && *width >= 0.0)
     });
+    let uvs = uvs.filter(|uvs| uvs.iter().flatten().all(|value| value.is_finite()));
     let mesh = match (normals.filter(|_| lit), widths) {
         (Some(normals), Some(widths)) => {
             let authored = oriented.then_some(normals.as_slice());
-            ribbons(&points, &indices, authored, &widths, colors)
+            ribbons(&points, &indices, authored, &widths, colors, uvs)
         }
         (normals, _) => {
             let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
@@ -725,6 +749,9 @@ fn curve_mesh(ctx: &RouteCtx, steps: usize) -> Result<Option<CurveMesh>, String>
             }
             if let Some(normals) = normals {
                 mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+            }
+            if let Some(uvs) = uvs {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
             }
             mesh.insert_indices(bevy::mesh::Indices::U32(indices));
             mesh
@@ -746,6 +773,7 @@ fn ribbons(
     normals: Option<&[[f32; 3]]>,
     widths: &[f32],
     colors: Option<Vec<[f32; 4]>>,
+    uvs: Option<Vec<[f32; 2]>>,
 ) -> Mesh {
     use super::strand_material::{
         ATTRIBUTE_STRAND_NORMAL, ATTRIBUTE_STRAND_TANGENT, ATTRIBUTE_STRAND_WIDTH,
@@ -812,6 +840,9 @@ fn ribbons(
     mesh.insert_attribute(ATTRIBUTE_STRAND_WIDTH, twice(widths));
     if let Some(colors) = colors {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, twice(&colors));
+    }
+    if let Some(uvs) = uvs {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, twice(&uvs));
     }
     mesh.insert_indices(bevy::mesh::Indices::U32(strip));
     mesh
@@ -1997,6 +2028,7 @@ def BasisCurves "Blade" {
     point3f[] points = [(0,0,0),(0,1,0)]
     normal3f[] normals = [(0,0,1),(0,0,1)] (interpolation = "vertex")
     float[] widths = [0.2]
+    texCoord2f[] primvars:st = [(0.25, 0.5), (1.5, 2)] (interpolation = "vertex")
 }
 def BasisCurves "Bare" {
     uniform token type = "linear"
@@ -2050,6 +2082,12 @@ def Material "Leaf" {
             Some(bevy::mesh::VertexAttributeValues::Snorm8x4(normals))
                 if normals[..2] == [[0, 0, 127, 0], [0, 0, 127, 0]]
         ));
+        assert!(matches!(
+            blade.attribute(Mesh::ATTRIBUTE_UV_0),
+            Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs))
+                if uvs == &[[0.25, 0.5], [0.25, 0.5], [1.5, -1.0], [1.5, -1.0]]
+        ));
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_none());
         let strand = &world
             .get::<MeshMaterial3d<StrandMaterial>>(needles)
             .unwrap()

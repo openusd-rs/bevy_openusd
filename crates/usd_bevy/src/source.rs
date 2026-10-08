@@ -41,6 +41,11 @@ impl Fetcher {
         }
     }
 
+    /// The bytes of `identifier`, read now and not recorded as fetched.
+    pub(crate) fn read_now(&self, identifier: &str) -> Option<Arc<[u8]>> {
+        (self.read)(identifier)
+    }
+
     /// The bytes of `identifier`, read on first request.
     fn get(&self, identifier: &str) -> Option<Arc<[u8]>> {
         if let Some(bytes) = self.peek(identifier) {
@@ -81,6 +86,14 @@ impl std::ops::Deref for EditorDisk {
     fn deref(&self) -> &Self::Target {
         &self.hashes
     }
+}
+
+/// The token a UDIM texture set puts where each tile's number goes.
+pub(crate) const UDIM: &str = "<UDIM>";
+
+/// The tiles a UDIM set may name, `1001` through `1100`, with their files.
+pub(crate) fn udim_tiles(pattern: &str) -> impl Iterator<Item = (u32, String)> + '_ {
+    (1001..=1100).map(move |tile| (tile, pattern.replace(UDIM, &tile.to_string())))
 }
 
 /// Textures a stage asks for, each with whether it is sRGB.
@@ -242,6 +255,50 @@ impl UsdSource {
                 Some((self.identity, requests.clone()));
         }
         Ok(requests)
+    }
+
+    /// UDIM sets the materials bound to geometry read, as `(pattern, srgb)`.
+    /// Unbound materials' sets are left out, so a scene's unused full-quality
+    /// looks cost nothing.
+    pub(crate) fn bound_udim_requests(stage: &Stage) -> Result<BTreeSet<(String, bool)>, String> {
+        let mut paths = Vec::new();
+        stage
+            .traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| {
+                paths.push(path.clone());
+            })
+            .map_err(|error| error.to_string())?;
+        let mut materials = BTreeSet::new();
+        for path in paths {
+            let prim = stage.prim(&path).map_err(|error| error.to_string())?;
+            let kind = prim.type_name().map_err(|error| error.to_string())?;
+            if matches!(
+                kind.as_deref(),
+                Some("Mesh" | "BasisCurves" | "NurbsCurves" | "HermiteCurves" | "Points")
+            ) && let Ok(Some(material)) = crate::read::shade::read_material_binding(stage, &path)
+            {
+                materials.insert(material);
+            }
+        }
+        let materials: Vec<_> = materials.into_iter().collect();
+        Ok(Self::texture_requests_for_prims(stage, &materials)?
+            .textures
+            .into_iter()
+            .filter(|(path, _)| path.contains(UDIM))
+            .collect())
+    }
+
+    /// Reads the tiles of a UDIM set into the snapshot, returning how many it holds.
+    pub(crate) fn fetch_udim_tiles(&mut self, fetcher: &Fetcher, pattern: &str) -> usize {
+        let mut held = 0;
+        for (_, identifier) in udim_tiles(pattern) {
+            if self.read_asset(&identifier).is_ok() {
+                held += 1;
+            } else if let Some(bytes) = fetcher.read_now(&identifier) {
+                self.insert_dependency(identifier, bytes);
+                held += 1;
+            }
+        }
+        held
     }
 
     pub(crate) fn stage_texture_requests(stage: &Stage) -> Result<TextureRequests, String> {
@@ -933,12 +990,16 @@ pub(crate) fn file_hash(path: &Path) -> io::Result<blake3::Hash> {
 }
 
 /// Ptex textures resolve by name but are never captured: nothing reads their
-/// texels, and a production set can hold gigabytes of them.
+/// texels, and a production set can hold gigabytes of them. A UDIM pattern
+/// names no file; the tiles of the sets bound materials read are fetched apart.
 fn uncaptured(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "ptx" | "ptex"))
+    path.contains(UDIM)
+        || Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(extension.to_ascii_lowercase().as_str(), "ptx" | "ptex")
+            })
 }
 
 fn read_shared_asset(asset: &mut dyn Asset) -> io::Result<Arc<[u8]>> {
@@ -1048,7 +1109,8 @@ impl SourceResolver {
 
 impl Resolver for SourceResolver {
     fn create_identifier(&self, path: &str, anchor: Option<&ResolvedPath>) -> String {
-        if !self.source.filesystem
+        // A UDIM pattern names no file for a search to find, so it is anchored.
+        if (!self.source.filesystem || path.contains(UDIM))
             && !openusd::ar::is_package_relative_path(path)
             && !rooted(Path::new(path))
             && let Some(anchor) = anchor

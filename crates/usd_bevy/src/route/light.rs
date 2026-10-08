@@ -37,6 +37,14 @@ pub enum UsdAreaLight {
     Cylinder { length: f32, radius: f32 },
 }
 
+/// Prims a light's `collection:shadowLink:excludes` names: they receive the
+/// light but cast no shadow from it. Bevy has no per-light shadow linking,
+/// so an app applies it, for instance as `NotShadowCaster` for its one sun.
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct UsdShadowLink {
+    pub excludes: Vec<String>,
+}
+
 /// A light's authored emission before any unit mapping: its linear color and
 /// `inputs:intensity` scaled by `inputs:exposure` stops.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
@@ -117,7 +125,25 @@ fn clear_light(world: &mut World, entity: Entity) {
             entity.remove::<SpotLight>();
         }
     }
-    entity.remove::<(UsdAreaLight, UsdLightEmission)>();
+    entity.remove::<(UsdAreaLight, UsdLightEmission, UsdShadowLink)>();
+}
+
+fn shadow_link_excludes(ctx: &RouteCtx) -> Vec<String> {
+    ctx.stage
+        .prim(ctx.path.clone())
+        .ok()
+        .and_then(|prim| {
+            prim.relationship("collection:shadowLink:excludes")
+                .targets()
+                .ok()
+        })
+        .map(|targets| {
+            targets
+                .iter()
+                .map(|path| path.as_str().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl LightRoute {
@@ -203,11 +229,15 @@ impl PrimRoute for LightRoute {
             }
         };
         clear_light(world, entity);
+        let excludes = shadow_link_excludes(ctx);
         let Ok(mut e) = world.get_entity_mut(entity) else {
             return;
         };
         if let Some(area) = lux.area {
             e.insert(area);
+        }
+        if !excludes.is_empty() {
+            e.insert(UsdShadowLink { excludes });
         }
         e.insert(UsdLightEmission {
             color: lux.color,
@@ -571,6 +601,35 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
         let d = world.get::<DirectionalLight>(e).expect("directional light");
         assert!((d.illuminance - 2.0 * DISTANT_LUX_SCALE).abs() < 1.0);
         assert_eq!(d.color, Color::linear_rgb(1.0, 0.9, 0.8));
+        assert!(world.get::<UsdShadowLink>(e).is_none());
+    }
+
+    #[test]
+    fn shadow_link_excludes_are_recorded() {
+        let stage = Stage::builder()
+            .schema_registry(openusd_schemas::schema_registry())
+            .in_memory("link.usda")
+            .unwrap();
+        stage
+            .define_prim("/Sun")
+            .unwrap()
+            .set_type_name("DistantLight")
+            .unwrap();
+        stage.define_prim("/Window").unwrap();
+        crate::authoring::set_relationship_targets(
+            &stage,
+            "/Sun",
+            "collection:shadowLink:excludes",
+            &[openusd::sdf::path("/Window").unwrap()],
+        )
+        .unwrap();
+
+        let live = LiveStage::new(stage);
+        let mut world = light_world();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let link = world.get::<UsdShadowLink>(map.entity("/Sun").unwrap());
+        assert_eq!(link.unwrap().excludes, ["/Window"]);
     }
 
     #[test]

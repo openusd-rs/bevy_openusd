@@ -21,7 +21,6 @@ use bevy::ecs::{
         lifetimeless::{Read, SRes},
     },
 };
-use bevy::math::primitives::ViewFrustum;
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{
     MeshPipeline, MeshPipelineKey, MeshPipelineSystems, PrepassPipeline, SetMeshViewBindGroup,
@@ -53,6 +52,7 @@ use bevy::render::{
     view::{ExtractedView, RenderVisibleEntities, RetainedViewEntity},
 };
 use bevy::shader::ShaderDefVal;
+use bevy::shape::ViewFrustum;
 use bytemuck::{Pod, Zeroable};
 
 /// Instances per chunk: one buffer, one culling dispatch, one bounding box.
@@ -64,6 +64,7 @@ const VIEW_STRIDE: u64 = 256;
 /// Turns on GPU instancing for point instancers. Present in the main world
 /// once [`UsdGpuInstancingPlugin`] is added.
 #[derive(Resource, ExtractResource, Debug, Clone, Copy)]
+#[extract_app(RenderApp)]
 pub struct UsdGpuInstancing {
     /// Instancers with more instances than this are drawn on the GPU; smaller
     /// ones keep one entity per instance.
@@ -91,11 +92,11 @@ pub struct UsdGpuInstancingPlugin;
 
 impl Plugin for UsdGpuInstancingPlugin {
     fn build(&self, app: &mut App) {
-        bevy::asset::embedded_asset!(app, "gpu_instancing.wgsl");
+        bevy::asset::embedded_asset!(app, "gpu_instancing.wesl");
         bevy::asset::embedded_asset!(app, "gpu_instancing_cull.wgsl");
-        bevy::asset::embedded_asset!(app, "gpu_instancing_shadow.wgsl");
-        bevy::asset::embedded_asset!(app, "gpu_instancing_types.wgsl");
-        bevy::asset::embedded_asset!(app, "sheen_functions.wgsl");
+        bevy::asset::embedded_asset!(app, "gpu_instancing_shadow.wesl");
+        bevy::asset::embedded_asset!(app, "gpu_instancing_types.wesl");
+        bevy::asset::embedded_asset!(app, "sheen_functions.wesl");
         if !app.world().contains_resource::<UsdGpuInstancing>() {
             app.init_resource::<UsdGpuInstancing>();
         }
@@ -392,7 +393,7 @@ fn init_pipeline(
     });
     commands.insert_resource(InstancingPipeline {
         mesh_pipeline: mesh_pipeline.clone(),
-        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing.wgsl"),
+        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing.wesl"),
         draw_layout,
         cull_layout,
         cull,
@@ -446,7 +447,7 @@ fn init_shadow_pipeline(
         view_layout: prepass.view_layout_no_motion_vectors.clone(),
         empty_layout: prepass.empty_layout.clone(),
         draw_layout: instancing.draw_layout.clone(),
-        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing_shadow.wgsl"),
+        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing_shadow.wesl"),
         unclipped_depth: prepass.depth_clip_control_supported,
     });
 }
@@ -1030,7 +1031,7 @@ fn prototype_sphere(
     let assets = world.resource::<Assets<Mesh>>();
     let (mut min, mut max) = (Vec3::INFINITY, Vec3::NEG_INFINITY);
     for (mesh, _, part) in meshes {
-        let Some(aabb) = assets.get(mesh).and_then(|mesh| mesh.compute_aabb()) else {
+        let Some(aabb) = assets.get(mesh).and_then(|mesh| mesh.get_aabb()) else {
             continue;
         };
         let (center, half) = (Vec3::from(aabb.center), Vec3::from(aabb.half_extents));

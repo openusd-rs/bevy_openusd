@@ -34,7 +34,7 @@ impl egui::Plugin for Replay {
         "usd-ui-replay"
     }
 
-    fn input_hook(&mut self, input: &mut RawInput) {
+    fn input_hook(&mut self, _ctx: &egui::Context, input: &mut RawInput) {
         while self
             .events
             .front()
@@ -91,6 +91,7 @@ fn parse(script: &str) -> Result<VecDeque<(Duration, Event)>, String> {
                         unit: egui::MouseWheelUnit::Point,
                         phase: egui::TouchPhase::Move,
                         delta: egui::vec2(x, y),
+                        source: egui::MouseWheelSource::Unknown,
                         modifiers: Modifiers::NONE,
                     },
                     _ => Event::PointerButton {
@@ -465,8 +466,9 @@ mod tests {
         };
         let mut input = RawInput::default();
         input.events.push(Event::Text("host".into()));
-        replay.input_hook(&mut input);
-        replay.input_hook(&mut input);
+        let ctx = egui::Context::default();
+        replay.input_hook(&ctx, &mut input);
+        replay.input_hook(&ctx, &mut input);
         assert_eq!(input.events.len(), 2);
         assert!(matches!(&input.events[1], Event::Text(text) if text == "  hello  "));
         assert_eq!(replay.events.len(), 1);

@@ -2296,8 +2296,15 @@ def Material "Mat" {
 
     #[test]
     fn inactive_ids_compose_and_preserve_masked_children() {
+        // Virtual layers need an absolute identifier on every platform; `/virtual/...`
+        // is not absolute on Windows.
+        let virtual_root = std::path::absolute("virtual/masks/root.usda").unwrap();
+        let weak = virtual_root
+            .with_file_name("weak.usda")
+            .to_string_lossy()
+            .into_owned();
         let mut source = crate::UsdSource::snapshot(
-            std::path::Path::new("/virtual/masks/root.usda"),
+            &virtual_root,
             br#"#usda 1.0
 ( subLayers = [@weak.usda@] )
 over "PI" {}
@@ -2306,7 +2313,7 @@ over "PI" {}
         )
         .unwrap();
         source.insert_dependency(
-            "/virtual/masks/weak.usda".into(),
+            weak.clone().into(),
             br#"#usda 1.0
 def PointInstancer "PI" {
     point3f[] positions = [(1,0,0), (2,0,0), (3,0,0)]
@@ -2320,9 +2327,7 @@ def PointInstancer "PI" {
         let live = LiveStage::new(source.open_stage().unwrap());
         let root = live.stage.edit_target().clone();
         live.stage
-            .set_edit_target(openusd::usd::EditTarget::for_layer(
-                "/virtual/masks/weak.usda",
-            ))
+            .set_edit_target(openusd::usd::EditTarget::for_layer(&weak))
             .unwrap();
         live.stage
             .prim("/PI")

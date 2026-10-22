@@ -40,7 +40,10 @@ pub(crate) fn memory_event(
     );
 }
 
-fn component_label(info: &bevy::ecs::component::ComponentInfo) -> String {
+fn component_label(
+    id: bevy::ecs::component::ComponentId,
+    info: &bevy::ecs::component::ComponentInfo,
+) -> String {
     macro_rules! known {
         ($($ty:ty),*) => { $(if info.type_id() == Some(std::any::TypeId::of::<$ty>()) {
             return std::any::type_name::<$ty>().into();
@@ -60,7 +63,7 @@ fn component_label(info: &bevy::ecs::component::ComponentInfo) -> String {
         super::instancer::UsdInstanceId,
         super::instancer::UsdPrototypePart
     );
-    format!("{:?}:{}", info.id(), info.name())
+    format!("{:?}:{}", id, info.name())
 }
 
 pub(crate) fn ecs_snapshot(world: &World, phase: &str) {
@@ -69,8 +72,8 @@ pub(crate) fn ecs_snapshot(world: &World, phase: &str) {
     for (index, table) in world.storages().tables.iter().enumerate() {
         let stride = components
             .iter()
-            .filter(|info| table.has_column(info.id()))
-            .map(|info| info.layout().size())
+            .filter(|(id, _)| table.has_column(*id))
+            .map(|(_, info)| info.layout().size())
             .sum::<usize>();
         rows.push((
             stride.saturating_mul(table.capacity()),
@@ -91,8 +94,8 @@ pub(crate) fn ecs_snapshot(world: &World, phase: &str) {
         let table = world.storages().tables.iter().nth(index).unwrap();
         let names: Vec<_> = components
             .iter()
-            .filter(|info| table.has_column(info.id()))
-            .map(|info| format!("{}:{}", component_label(info), info.layout().size()))
+            .filter(|(id, _)| table.has_column(*id))
+            .map(|(id, info)| format!("{}:{}", component_label(*id, info), info.layout().size()))
             .collect();
         eprintln!(
             "projection_ecs_table phase={phase} table={index} live={count} capacity={capacity} row_bytes={stride} component_capacity_bytes={bytes} components={names:?}"

@@ -84,6 +84,7 @@ fn generation_limit_error(
 }
 
 #[derive(Component, Clone, Copy, ExtractComponent)]
+#[extract_app(RenderApp)]
 struct OwnedGenerator;
 
 #[derive(Component)]

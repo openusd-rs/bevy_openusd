@@ -30,8 +30,8 @@ pub const ATTRIBUTE_STRAND_TANGENT: MeshVertexAttribute =
 pub const ATTRIBUTE_STRAND_NORMAL: MeshVertexAttribute =
     MeshVertexAttribute::new("UsdStrandNormal", 0x5553_4459, VertexFormat::Snorm8x4);
 
-const SHADER: &str = "embedded://usd_bevy/route/strand_material.wgsl";
-const PREPASS_SHADER: &str = "embedded://usd_bevy/route/strand_prepass.wgsl";
+const SHADER: &str = "embedded://usd_bevy/route/strand_material.wesl";
+const PREPASS_SHADER: &str = "embedded://usd_bevy/route/strand_prepass.wesl";
 
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone, Default)]
 pub struct StrandCoverage {}
@@ -92,9 +92,9 @@ pub type StrandMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, StrandCo
 
 pub(crate) fn configure(app: &mut App) {
     if super::wrapped::configure::<StrandCoverage>(app) {
-        bevy::asset::embedded_asset!(app, "strand_material.wgsl");
-        bevy::asset::embedded_asset!(app, "strand_prepass.wgsl");
-        bevy::asset::embedded_asset!(app, "strand_functions.wgsl");
+        bevy::asset::embedded_asset!(app, "strand_material.wesl");
+        bevy::asset::embedded_asset!(app, "strand_prepass.wesl");
+        bevy::asset::embedded_asset!(app, "strand_functions.wesl");
     }
 }
 

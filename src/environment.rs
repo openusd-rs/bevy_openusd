@@ -73,6 +73,7 @@ fn setup_environment(mut commands: Commands) {
             fadeout_distance: 100.0,
             dot_fadeout_strength: 0.9,
             scale: 1.0,
+            major_line_interval: 10,
         },
     ));
 

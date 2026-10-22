@@ -212,8 +212,8 @@ mod tests {
             bytes.into_inner()
         };
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usdc");
-        let root = directory.path().join(match kind {
+        let child = directory.path().canonicalize().unwrap().join("child.usdc");
+        let root = directory.path().canonicalize().unwrap().join(match kind {
             "dependency" => "root.usda",
             "package" => "root.usdz",
             _ => "root.usdc",
@@ -364,13 +364,13 @@ mod tests {
     #[test]
     fn referenced_layer_reload_updates_both_instances_not_unrelated_prims() {
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usda");
+        let child = directory.path().canonicalize().unwrap().join("child.usda");
         std::fs::write(
             &child,
             "#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n",
         )
         .unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let source = crate::UsdSource::new(&root, b"#usda 1.0\ndef Xform \"A\" (prepend references = @child.usda@</Model>) {}\ndef Xform \"B\" (prepend references = @child.usda@</Model>) {}\ndef Cube \"Other\" { double size = 7 }\n".as_slice()).unwrap();
         let stage = source.open_stage().unwrap();
         crate::UsdSource::validate_composition(&stage).unwrap();

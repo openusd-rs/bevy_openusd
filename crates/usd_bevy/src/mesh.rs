@@ -1198,7 +1198,7 @@ fn point_in_triangle_2d(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> b
 /// Build a Bevy mesh from a UsdGeom.Cube's `size`. The USD cube is
 /// size × size × size centred at the prim origin.
 pub fn mesh_cube(size: f64) -> Mesh {
-    Mesh::from(bevy::math::primitives::Cuboid::new(
+    Mesh::from(bevy::shape::Cuboid::new(
         size as f32,
         size as f32,
         size as f32,
@@ -1207,13 +1207,13 @@ pub fn mesh_cube(size: f64) -> Mesh {
 
 /// UsdGeom.Sphere radius → Bevy's UV sphere.
 pub fn mesh_sphere(radius: f64) -> Mesh {
-    Mesh::from(bevy::math::primitives::Sphere::new(radius as f32))
+    Mesh::from(bevy::shape::Sphere::new(radius as f32))
 }
 
 /// UsdGeom.Cylinder dimensions + axis. Bevy's `Cylinder` points up the Y
 /// axis by convention, so we apply an axis rotation for X/Z cases.
 pub fn mesh_cylinder(params: ReadCylinder) -> Mesh {
-    let mut mesh = Mesh::from(bevy::math::primitives::Cylinder::new(
+    let mut mesh = Mesh::from(bevy::shape::Cylinder::new(
         params.radius as f32,
         params.height as f32,
     ));
@@ -1224,7 +1224,7 @@ pub fn mesh_cylinder(params: ReadCylinder) -> Mesh {
 /// UsdGeom.Plane `width` × `length`. Y-normal plane centred at the origin.
 pub fn mesh_plane(width: f64, length: f64) -> Mesh {
     Mesh::from(
-        bevy::math::primitives::Plane3d::default()
+        bevy::shape::Plane3d::default()
             .mesh()
             .size(width as f32, length as f32),
     )
@@ -1235,7 +1235,7 @@ pub fn mesh_capsule(params: ReadCylinder) -> Mesh {
     // UsdGeom.Capsule's `height` is the cylinder portion length (hemispheres
     // add `2*radius` to the total). Bevy's Capsule3d takes `half_length` =
     // half the cylinder portion.
-    let mut mesh = Mesh::from(bevy::math::primitives::Capsule3d::new(
+    let mut mesh = Mesh::from(bevy::shape::Capsule3d::new(
         params.radius as f32,
         params.height as f32,
     ));

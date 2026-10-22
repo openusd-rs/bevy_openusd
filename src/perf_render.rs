@@ -19,6 +19,7 @@ use usd_bevy::route::flat_material::FlatMaterial;
 mod draw_probe;
 
 #[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 struct UploadManifest {
     started: Instant,
     document: Option<u64>,

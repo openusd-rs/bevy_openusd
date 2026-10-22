@@ -1360,7 +1360,7 @@ mod tests {
     fn file_sources_keep_immutable_root_snapshots() {
         use super::*;
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("root.usda");
+        let path = directory.path().canonicalize().unwrap().join("root.usda");
         assert_eq!(
             UsdSource::from_file(&path).err().unwrap().kind(),
             io::ErrorKind::NotFound
@@ -1468,7 +1468,11 @@ mod tests {
     fn property_classification_preserves_schemas_masks_and_edits() {
         use super::*;
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("properties.usda");
+        let file = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("properties.usda");
         std::fs::write(
             &file,
             br#"#usda 1.0
@@ -1547,11 +1551,19 @@ def "Instance" (instanceable = true prepend references = </Shape>) {}
         use openusd::usd::PrimPredicate;
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
-            directory.path().join("payload.usda"),
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("payload.usda"),
             b"#usda 1.0\ndef \"Model\" { def \"Child\" {} }\n",
         )
         .unwrap();
-        let file = directory.path().join("traversal.usda");
+        let file = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("traversal.usda");
         std::fs::write(
             &file,
             br#"#usda 1.0
@@ -1695,7 +1707,11 @@ def "Root" {
     fn abstract_ancestry_matches_field_queries_and_live_edits() {
         use super::*;
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("classes.usda");
+        let file = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("classes.usda");
         std::fs::write(
             &file,
             br#"#usda 1.0
@@ -1775,12 +1791,16 @@ over "Undefined" { def Xform "Child" {} }
         use openusd::usd::{PrimPredicate, PrimStatus};
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
-            directory.path().join("payload.usda"),
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("payload.usda"),
             b"#usda 1.0\ndef Xform \"Model\" { def Xform \"Child\" {} }\n",
         )
         .unwrap();
         let source = UsdSource::new(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             br#"#usda 1.0
 def Xform "Root" {
     def Xform "Payload" (prepend payload = @payload.usda@</Model>) {}
@@ -2075,7 +2095,7 @@ def Xform "Root" {}
     fn typed_builder_publishes_independent_snapshot_without_files() {
         use openusd_schemas::geom::{Sphere, SphereSchema};
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("typed.usda");
+        let path = directory.path().canonicalize().unwrap().join("typed.usda");
         let source = super::UsdSource::build(&path, |stage| {
             Sphere::define(stage, "/Model")?
                 .create_radius_attr()?
@@ -2103,10 +2123,17 @@ def Xform "Root" {}
                 .unwrap(),
             Some(2.5)
         );
-        let assembly = super::UsdSource::build(directory.path().join("assembly.usda"), |_| Ok(()))
-            .unwrap()
-            .with_reference("/Copy", &source, openusd::sdf::path("/Model").unwrap())
-            .unwrap();
+        let assembly = super::UsdSource::build(
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("assembly.usda"),
+            |_| Ok(()),
+        )
+        .unwrap()
+        .with_reference("/Copy", &source, openusd::sdf::path("/Model").unwrap())
+        .unwrap();
         assert_eq!(
             assembly
                 .open_stage()
@@ -2125,12 +2152,13 @@ def Xform "Root" {}
     fn typed_builder_rejects_failed_authoring_and_missing_composition() {
         let directory = tempfile::tempdir().unwrap();
         assert!(
-            super::UsdSource::build(directory.path().join("wrong.usdc"), |_| panic!(
-                "must reject before callback"
-            ))
+            super::UsdSource::build(
+                directory.path().canonicalize().unwrap().join("wrong.usdc"),
+                |_| panic!("must reject before callback")
+            )
             .is_err()
         );
-        let path = directory.path().join("failed.usda");
+        let path = directory.path().canonicalize().unwrap().join("failed.usda");
         assert!(super::UsdSource::build(&path, |_| anyhow::bail!("authoring failed")).is_err());
         assert!(
             super::UsdSource::build(&path, |stage| {
@@ -2174,7 +2202,11 @@ def Xform "Root" {}
                 "#usda 1.0\ndef Xform \"Root\" (references = @{reference}@</Model>) {{}}\n"
             );
             let bytes = archive(&[("root.usda", root.as_bytes()), ("inner.usdz", &inner)]);
-            let virtual_path = directory.path().join(format!("virtual-{name}.usdz"));
+            let virtual_path = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("virtual-{name}.usdz"));
             let source = UsdSource::snapshot(&virtual_path, bytes.clone()).unwrap();
             let stage = source.open_stage().unwrap();
             UsdSource::validate_composition(&stage).unwrap();
@@ -2197,7 +2229,11 @@ def Xform "Root" {}
                     .read_asset(&format!("{}[inner.usdz[missing.png]]", source.identifier()))
                     .is_err()
             );
-            let disk = directory.path().join(format!("{name}.usdz"));
+            let disk = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("{name}.usdz"));
             std::fs::write(&disk, &bytes).unwrap();
             let stage = Stage::open(disk.to_str().unwrap()).unwrap();
             UsdSource::validate_composition(&stage).unwrap();
@@ -2225,7 +2261,7 @@ def Xform "Root" {}
     fn clip_switch_interpolates_to_the_next_activation_sample() {
         let directory = tempfile::tempdir().unwrap();
         let source = super::UsdSource::snapshot(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             br#"#usda 1.0
 def Sphere "Model" (
     clips = {
@@ -2243,7 +2279,7 @@ def Sphere "Model" (
         )
         .unwrap();
         let a = super::UsdSource::snapshot(
-            directory.path().join("a.usda"),
+            directory.path().canonicalize().unwrap().join("a.usda"),
             br#"#usda 1.0
 def Sphere "Model" {
     double radius.timeSamples = {0: 1, 20: 3}
@@ -2253,7 +2289,7 @@ def Sphere "Model" {
         )
         .unwrap();
         let b = super::UsdSource::snapshot(
-            directory.path().join("b.usda"),
+            directory.path().canonicalize().unwrap().join("b.usda"),
             br#"#usda 1.0
 def Sphere "Model" {
     double radius.timeSamples = {0: 5, 20: 7}
@@ -2293,7 +2329,7 @@ def Sphere "Model" {
     fn probe_discovers_numeric_value_clip_layers() {
         let directory = tempfile::tempdir().unwrap();
         let mut source = super::UsdSource::snapshot(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             br#"#usda 1.0
 def Sphere "Model" (
     clips = {
@@ -2311,6 +2347,8 @@ def Sphere "Model" (
         .unwrap();
         let clip = directory
             .path()
+            .canonicalize()
+            .unwrap()
             .join("clipped_sphere_values.usda")
             .to_string_lossy()
             .into_owned();
@@ -2409,11 +2447,13 @@ def Xform "Second" (
             .unwrap()
             .set(1.5_f64)
             .unwrap();
-        let image =
-            UsdSource::snapshot(directory.path().join("texture.bin"), &b"texture bytes"[..])
-                .unwrap();
+        let image = UsdSource::snapshot(
+            directory.path().canonicalize().unwrap().join("texture.bin"),
+            &b"texture bytes"[..],
+        )
+        .unwrap();
         let model = UsdSource::snapshot(
-            directory.path().join("model.usda"),
+            directory.path().canonicalize().unwrap().join("model.usda"),
             model_stage
                 .root_layer()
                 .export_to_string()
@@ -2423,8 +2463,11 @@ def Xform "Second" (
         .unwrap()
         .with_dependency(&image)
         .unwrap();
-        let root =
-            UsdSource::snapshot(directory.path().join("root.usda"), &b"#usda 1.0\n"[..]).unwrap();
+        let root = UsdSource::snapshot(
+            directory.path().canonicalize().unwrap().join("root.usda"),
+            &b"#usda 1.0\n"[..],
+        )
+        .unwrap();
         let before = root.bytes.clone();
         let first = root
             .with_reference("/Assembly/First", &model, "/Model")
@@ -2482,14 +2525,17 @@ def Xform "Second" (
         use openusd::sdf::Value;
         let directory = tempfile::tempdir().unwrap();
         let model = UsdSource::snapshot(
-            directory.path().join("model.usda"),
+            directory.path().canonicalize().unwrap().join("model.usda"),
             &b"#usda 1.0\ndef Cube \"Model\" {}\n"[..],
         )
         .unwrap();
-        let source = UsdSource::snapshot(directory.path().join("root.usda"), &b"#usda 1.0\n"[..])
-            .unwrap()
-            .with_reference("/Object", &model, "/Model")
-            .unwrap();
+        let source = UsdSource::snapshot(
+            directory.path().canonicalize().unwrap().join("root.usda"),
+            &b"#usda 1.0\n"[..],
+        )
+        .unwrap()
+        .with_reference("/Object", &model, "/Model")
+        .unwrap();
         let original = source.bytes.clone();
         let edited = source
             .with_edits([
@@ -2970,8 +3016,11 @@ def Xform "Second" (
     #[test]
     fn asset_reads_reject_unresolved_working_directory_paths() {
         let directory = tempfile::tempdir().unwrap();
-        let source =
-            UsdSource::new(directory.path().join("scene.usda"), &b"root bytes"[..]).unwrap();
+        let source = UsdSource::new(
+            directory.path().canonicalize().unwrap().join("scene.usda"),
+            &b"root bytes"[..],
+        )
+        .unwrap();
         let cwd_file = std::env::current_dir().unwrap().join("Cargo.toml");
         assert!(cwd_file.is_file());
         let error = source.read_asset("Cargo.toml").unwrap_err();
@@ -3039,7 +3088,11 @@ def Xform "Second" (
     fn composition_validation_follows_active_variant_selection() {
         let directory = tempfile::tempdir().unwrap();
         let source = UsdSource::snapshot(
-            directory.path().join("variants.usda"),
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("variants.usda"),
             &br#"#usda 1.0
 def Scope "Model" (
     prepend variantSets = ["choice"]
@@ -3080,7 +3133,11 @@ def Scope "Model" (
     fn merged_sources_preserve_transitive_layer_and_asset_anchors() {
         let directory = tempfile::tempdir().unwrap();
         let source = |name: &str, bytes: &[u8]| {
-            UsdSource::snapshot(&directory.path().join(name), bytes.to_vec()).unwrap()
+            UsdSource::snapshot(
+                &directory.path().canonicalize().unwrap().join(name),
+                bytes.to_vec(),
+            )
+            .unwrap()
         };
         let weak = source(
             "parts/weak.usda",
@@ -3151,7 +3208,11 @@ def Scope "Model" (
     fn merging_conflicting_identifiers_never_changes_either_source() {
         let directory = tempfile::tempdir().unwrap();
         let source = |name: &str, bytes: &[u8]| {
-            UsdSource::snapshot(&directory.path().join(name), bytes.to_vec()).unwrap()
+            UsdSource::snapshot(
+                &directory.path().canonicalize().unwrap().join(name),
+                bytes.to_vec(),
+            )
+            .unwrap()
         };
         let root = source("root.usda", b"root");
         let original = source("asset.bin", b"original");
@@ -3182,13 +3243,20 @@ def Scope "Model" (
     #[test]
     fn merged_sources_retain_the_receivers_filesystem_policy() {
         let directory = tempfile::tempdir().unwrap();
-        let root_path = directory.path().join("root.usda");
-        let asset_path = directory.path().join("disk.bin");
+        let root_path = directory.path().canonicalize().unwrap().join("root.usda");
+        let asset_path = directory.path().canonicalize().unwrap().join("disk.bin");
         std::fs::write(&asset_path, b"on disk").unwrap();
         let closed = UsdSource::snapshot(&root_path, b"root".to_vec()).unwrap();
         let open = UsdSource::new(&root_path, &b"root"[..]).unwrap();
-        let dependency =
-            UsdSource::new(directory.path().join("dependency.bin"), &b"captured"[..]).unwrap();
+        let dependency = UsdSource::new(
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("dependency.bin"),
+            &b"captured"[..],
+        )
+        .unwrap();
         assert!(
             closed
                 .with_dependency(&dependency)
@@ -3232,9 +3300,13 @@ def Scope "Model" (
     #[test]
     fn source_anchor_resolves_siblings_without_writing_root() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("virtual-root.usda");
+        let root = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("virtual-root.usda");
         std::fs::write(
-            directory.path().join("part.usda"),
+            directory.path().canonicalize().unwrap().join("part.usda"),
             b"#usda 1.0\ndef Xform \"Part\" { def Cube \"Box\" {} }\n",
         )
         .unwrap();

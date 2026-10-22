@@ -1305,7 +1305,7 @@ def Xform "Old" {}
             .clone();
         let directory = tempfile::tempdir().unwrap();
         let broken = UsdSource::snapshot(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             &b"#usda 1.0\ndef Xform \"Broken\" (prepend references = @missing.usda@</Model>) {}\n"
                 [..],
         )
@@ -2246,7 +2246,9 @@ def Xform "Model" (
         exercise_clip_reload(
             app,
             "root.usda",
-            |path, text| std::fs::write(directory.path().join(path), text).unwrap(),
+            |path, text| {
+                std::fs::write(directory.path().canonicalize().unwrap().join(path), text).unwrap()
+            },
             |_| {},
         );
     }
@@ -2381,7 +2383,7 @@ def Sphere "Model" (
     fn native_file_watcher_updates_deferred_mesh_dependencies() {
         use crate::route::residency::{DeferHiddenMeshes, UsdDeferredMesh};
         let directory = tempfile::tempdir().unwrap();
-        let layer = directory.path().join("mesh.usda");
+        let layer = directory.path().canonicalize().unwrap().join("mesh.usda");
         let geometry = |size: u32| {
             format!(
                 r#"#usda 1.0
@@ -2398,7 +2400,7 @@ def Xform "Hidden" {{
             )
         };
         std::fs::write(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             "#usda 1.0\n(subLayers = [@mesh.usda@])\n",
         )
         .unwrap();
@@ -2506,7 +2508,11 @@ def Xform "Hidden" {{
     #[ignore = "requires native filesystem events"]
     fn native_file_watcher_recovers_missing_initial_root() {
         let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("missing/root");
+        let source = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("missing/root");
         let mut app = App::new();
         app.register_asset_source(
             bevy::asset::io::AssetSourceId::Default,
@@ -2600,12 +2606,20 @@ def Xform "Hidden" {{
     #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
     fn exercise_native_file_watcher(removal_adapter: bool) {
         let directory = tempfile::tempdir().unwrap();
-        let layer = directory.path().join("models/textured.usda");
-        let texture = directory.path().join("textures/pixel.png");
+        let layer = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("models/textured.usda");
+        let texture = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("textures/pixel.png");
         std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
         std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
         std::fs::write(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             "#usda 1.0\n( subLayers = [@models/textured.usda@] )\n",
         )
         .unwrap();
@@ -2756,7 +2770,11 @@ def Xform "Hidden" {{
         });
         if removal_adapter {
             let textures = texture.parent().unwrap();
-            let moved_textures = directory.path().join("moved-textures");
+            let moved_textures = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("moved-textures");
             let retained_images = image_handles(app.world());
             std::fs::rename(textures, &moved_textures).unwrap();
             tick_until(&mut app, |world| {
@@ -2810,7 +2828,11 @@ def Xform "Hidden" {{
                 })
             });
             let models = layer.parent().unwrap();
-            let moved = directory.path().join("moved-models");
+            let moved = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("moved-models");
             let retained_meshes = mesh_handles(app.world());
             std::fs::rename(models, &moved).unwrap();
             tick_until(&mut app, |world| {
@@ -2904,7 +2926,11 @@ def Xform "Hidden" {{
             std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
             std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
             for relative in ["root.usda", "models/textured.usda", "textures/pixel.png"] {
-                std::fs::copy(old_root.join(relative), directory.path().join(relative)).unwrap();
+                std::fs::copy(
+                    old_root.join(relative),
+                    directory.path().canonicalize().unwrap().join(relative),
+                )
+                .unwrap();
             }
             tick_until(&mut app, |world| {
                 roots
@@ -3463,11 +3489,7 @@ def Mesh "Body" {
         let Some(openusd::sdf::Value::AssetPath(path)) = value else {
             panic!("surfaceMap is not an asset: {value:?}")
         };
-        assert!(
-            path.resolved_path()
-                .unwrap()
-                .ends_with("textures/Color/body.ptx")
-        );
+        assert!(Path::new(path.resolved_path().unwrap()).ends_with("textures/Color/body.ptx"));
         assert_eq!(source.dependencies().count(), 0);
     }
 
@@ -3521,7 +3543,10 @@ def Material "Unused" {
         let scene = UsdScene::from_source(source, &mut images).unwrap();
         assert_eq!(scene.textures.len(), 1);
         let ((path, _), handle) = scene.textures.iter().next().unwrap();
-        assert!(path.ends_with("textures/color.<UDIM>.png"), "{path}");
+        assert!(
+            Path::new(path).ends_with("textures/color.<UDIM>.png"),
+            "{path}"
+        );
         let atlas = images.get(handle).unwrap();
         assert_eq!((atlas.width(), atlas.height()), (UDIM_COLUMNS, 2));
         let texel = |x, y| atlas.get_color_at(x, y).unwrap().to_linear();
@@ -3535,10 +3560,23 @@ def Material "Unused" {
     fn memory_sources_report_gaps_and_decode_textures_without_disk() {
         let root = "models/textured.usda";
         let partial = UsdSource::from_memory(root, [(root, TEXTURED.as_bytes().to_vec())]).unwrap();
-        assert_eq!(partial.missing_dependencies(), ["textures/pixel.png"]);
+        assert_eq!(
+            partial
+                .missing_dependencies()
+                .iter()
+                .map(|dependency| dependency.replace('\\', "/"))
+                .collect::<Vec<_>>(),
+            ["textures/pixel.png"]
+        );
         let mut images = Assets::<Image>::default();
         let error = UsdScene::from_source(partial, &mut images).unwrap_err();
-        assert!(error.to_string().contains("textures/pixel.png"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .replace('\\', "/")
+                .contains("textures/pixel.png"),
+            "{error}"
+        );
 
         let files = [
             (root, TEXTURED.as_bytes().to_vec()),

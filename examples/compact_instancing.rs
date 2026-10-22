@@ -38,8 +38,6 @@ use bevy::{
 };
 use std::collections::HashMap;
 
-const SHADER: Handle<Shader> = bevy::asset::uuid_handle!("3e5e507a-7301-4c35-82ac-ae906a8b9178");
-
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
 struct Pulling {
     #[storage(100, read_only)]
@@ -52,7 +50,7 @@ struct Pulling {
 
 impl MaterialExtension for Pulling {
     fn vertex_shader() -> ShaderRef {
-        SHADER.into()
+        "shaders/compact_instancing.wesl".into()
     }
     fn enable_prepass() -> bool {
         false
@@ -72,7 +70,8 @@ impl MaterialExtension for Pulling {
     }
 }
 
-#[derive(Clone, ShaderType)]
+#[derive(Clone, Copy, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 struct Point {
     translation: Vec4,
     rotation: Vec4,
@@ -245,6 +244,10 @@ fn main() {
     });
     app.add_plugins(
         DefaultPlugins
+            .set(AssetPlugin {
+                file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/assets").into(),
+                ..default()
+            })
             .set(PbrPlugin {
                 use_gpu_instance_buffer_builder: false,
                 ..default()
@@ -264,16 +267,6 @@ fn main() {
         std::time::Duration::from_secs_f64(1.0 / 60.0),
     ));
     app.add_plugins(MaterialPlugin::<ExtendedMaterial<StandardMaterial, Pulling>>::default());
-    app.world_mut()
-        .resource_mut::<Assets<Shader>>()
-        .insert(
-            SHADER.id(),
-            Shader::from_wgsl(
-                include_str!("compact_instancing.wgsl"),
-                "compact_instancing.wgsl",
-            ),
-        )
-        .unwrap();
     let render = app.sub_app_mut(RenderApp);
     use bevy::render::batching::gpu_preprocessing::{
         GpuPreprocessingMode, GpuPreprocessingSupport,
@@ -333,7 +326,7 @@ fn setup(
         .flat_map(|((p, n), uv)| [Vec3::from(*p).extend(uv[0]), Vec3::from(*n).extend(uv[1])])
         .collect();
     let vertices = buffers.add(ShaderBuffer::from(packed));
-    let prototype_bounds = prototype.compute_aabb().unwrap();
+    let prototype_bounds = prototype.get_aabb().unwrap();
     let prototype = meshes.add(prototype);
     let limits = device.limits();
     let capacity = batch_capacity(

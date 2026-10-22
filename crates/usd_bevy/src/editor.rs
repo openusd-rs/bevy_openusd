@@ -1913,7 +1913,11 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         let original = editor.stage().root_layer().export_to_string().unwrap();
         let directory = tempfile::tempdir().unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let exported = directory.path().join(format!("exported.{extension}"));
+            let exported = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("exported.{extension}"));
             editor
                 .save(exported.to_str().unwrap(), SaveMode::RootLayer)
                 .unwrap();
@@ -1951,8 +1955,16 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         let editor = EditorSession::new(source.open_stage().unwrap());
         let directory = tempfile::tempdir().unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let exported = directory.path().join(format!("exported.{extension}"));
-            let native = directory.path().join(format!("native-{extension}.usda"));
+            let exported = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("exported.{extension}"));
+            let native = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("native-{extension}.usda"));
             editor
                 .save(exported.to_str().unwrap(), SaveMode::RootLayer)
                 .unwrap();
@@ -2300,11 +2312,15 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         let directory = tempfile::tempdir().unwrap();
         let first = directory
             .path()
+            .canonicalize()
+            .unwrap()
             .join("first.usda")
             .to_string_lossy()
             .into_owned();
         let second = directory
             .path()
+            .canonicalize()
+            .unwrap()
             .join("second.usda")
             .to_string_lossy()
             .into_owned();
@@ -2372,7 +2388,12 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         );
         bridge
             .send(open(
-                &directory.path().join("missing.usda").to_string_lossy(),
+                &directory
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join("missing.usda")
+                    .to_string_lossy(),
                 &replaced.document,
             ))
             .unwrap();
@@ -2719,7 +2740,7 @@ def Xform "Instance" {}
         use super::*;
         let directory = tempfile::tempdir().unwrap();
         let source = crate::UsdSource::snapshot(
-            directory.path().join("scene.usda"),
+            directory.path().canonicalize().unwrap().join("scene.usda"),
             br#"#usda 1.0
 def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
 "#
@@ -2745,6 +2766,8 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
             world.resource::<EditorTextureRequests>().0,
             [directory
                 .path()
+                .canonicalize()
+                .unwrap()
                 .join("missing.png")
                 .to_string_lossy()
                 .into_owned()]
@@ -3105,7 +3128,11 @@ def Xform "M" {}
             ("flat", SaveMode::Flattened),
         ] {
             for extension in ["usda", "usdc", "usd"] {
-                let output = directory.path().join(format!("{name}.{extension}"));
+                let output = directory
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(format!("{name}.{extension}"));
                 editor.save(output.to_str().unwrap(), mode).unwrap();
                 let reopened = Stage::builder()
                     .schema_registry(openusd_schemas::schema_registry())
@@ -3502,7 +3529,7 @@ def Xform "Model" (
             crate::UsdSource::new("checked.usda", &b"#usda 1.0\ndef Scope \"Model\" {}\n"[..])
                 .unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let output = directory.path().join("saved.usda");
+        let output = directory.path().canonicalize().unwrap().join("saved.usda");
         std::fs::write(&output, "original").unwrap();
         let editor = EditorSession::new(source.open_stage().unwrap());
         let snapshot = editor.snapshot().unwrap();
@@ -3573,8 +3600,8 @@ def Xform "Model" (
     #[test]
     fn source_save_baselines_reject_external_edits_and_follow_own_saves() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
-        let weak = directory.path().join("weak.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
+        let weak = directory.path().canonicalize().unwrap().join("weak.usda");
         let initial = "#usda 1.0\n(subLayers = [@weak.usda@])\n";
         std::fs::write(&root, initial).unwrap();
         std::fs::write(&weak, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
@@ -3600,7 +3627,7 @@ def Xform "Model" (
         editor
             .save(root.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
-        let copy = directory.path().join("copy.usda");
+        let copy = directory.path().canonicalize().unwrap().join("copy.usda");
         editor
             .save(copy.to_str().unwrap(), SaveMode::EditLayer)
             .unwrap();
@@ -3626,7 +3653,7 @@ def Xform "Model" (
     #[test]
     fn source_save_baseline_tracks_outer_package_bytes() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usdz");
+        let root = directory.path().canonicalize().unwrap().join("root.usdz");
         let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
         archive
             .add_layer("root.usda", b"#usda 1.0\ndef Xform \"Root\" {}\n")
@@ -3653,7 +3680,7 @@ def Xform "Model" (
     #[test]
     fn source_save_baseline_uses_supplied_root_bytes_not_later_disk_content() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let source =
             crate::UsdSource::new(&root, b"#usda 1.0\ndef Xform \"Original\" {}\n".as_slice())
                 .unwrap();
@@ -3673,8 +3700,8 @@ def Xform "Model" (
     fn layer_save_states_follow_content_and_only_source_saves() {
         use save_state::LayerSaveState::{Clean, Modified, Unknown};
         let directory = tempfile::tempdir().unwrap();
-        let root_file = directory.path().join("root.usda");
-        let weak_file = directory.path().join("weak.usda");
+        let root_file = directory.path().canonicalize().unwrap().join("root.usda");
+        let weak_file = directory.path().canonicalize().unwrap().join("weak.usda");
         std::fs::write(&root_file, "#usda 1.0\n(subLayers = [@weak.usda@])\nover \"Root\" { point3f[] points = [(0,0,0), (1,0,0)] }\n").unwrap();
         std::fs::write(&weak_file, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let source = crate::UsdSource::new(&root_file, std::fs::read(&root_file).unwrap()).unwrap();
@@ -3718,14 +3745,29 @@ def Xform "Model" (
             SaveMode::Flattened,
         ] {
             editor
-                .save(directory.path().join("copy.usda").to_str().unwrap(), mode)
+                .save(
+                    directory
+                        .path()
+                        .canonicalize()
+                        .unwrap()
+                        .join("copy.usda")
+                        .to_str()
+                        .unwrap(),
+                    mode,
+                )
                 .unwrap();
             assert_eq!(editor.snapshot().unwrap().layer_save_states, both);
         }
         assert!(
             editor
                 .save(
-                    directory.path().join("missing/out.usda").to_str().unwrap(),
+                    directory
+                        .path()
+                        .canonicalize()
+                        .unwrap()
+                        .join("missing/out.usda")
+                        .to_str()
+                        .unwrap(),
                     SaveMode::RootLayer
                 )
                 .is_err()
@@ -4838,12 +4880,12 @@ def Xform "Mover" {
     fn relationship_targets_distinguish_empty_from_cleared_and_undo() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
-            directory.path().join("weak.usda"),
+            directory.path().canonicalize().unwrap().join("weak.usda"),
             "#usda 1.0\ndef Xform \"Owner\" { rel links = [</A>, </B.value>] }\n",
         )
         .unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             &b"#usda 1.0\n( subLayers = [@weak.usda@] )\n"[..],
         )
         .unwrap();
@@ -4906,7 +4948,7 @@ def Xform "Mover" {
                 targets: vec![openusd::sdf::path("/Future").unwrap()],
             })
             .unwrap();
-        let output = directory.path().join("saved.usda");
+        let output = directory.path().canonicalize().unwrap().join("saved.usda");
         editor
             .save(output.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
@@ -4985,7 +5027,11 @@ def Xform "Mover" {
         #[derive(Component, PartialEq, Debug)]
         struct RuntimeState(u32);
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("namespace.usda");
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("namespace.usda");
         std::fs::write(
             &path,
             "#usda 1.0\ndef Cube \"Box\" {}\ndef Xform \"Group\" {}\n",
@@ -5307,13 +5353,21 @@ def Material "Mat" {
                 .write_image_data(&[200, 80, 20, 255])
                 .unwrap();
         }
-        std::fs::write(directory.path().join("pixel.png"), &png).unwrap();
-        std::fs::write(directory.path().join("scene.usda"), text).unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join("pixel.png"),
+            &png,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join("scene.usda"),
+            text,
+        )
+        .unwrap();
         let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
         archive.add_layer("scene.usda", text.as_bytes()).unwrap();
         archive.add_layer("pixel.png", &png).unwrap();
         std::fs::write(
-            directory.path().join("scene.usdz"),
+            directory.path().canonicalize().unwrap().join("scene.usdz"),
             archive.finish().unwrap().into_inner(),
         )
         .unwrap();
@@ -5328,6 +5382,8 @@ def Material "Mat" {
                 .send(EditorCommand::Open(
                     directory
                         .path()
+                        .canonicalize()
+                        .unwrap()
                         .join(filename)
                         .to_string_lossy()
                         .into_owned(),
@@ -5412,7 +5468,8 @@ def Material "Mat" {
                     .export_to_string()
                     .unwrap();
                 let document_id = bridge.view().unwrap().document.document_id;
-                std::fs::remove_file(directory.path().join("pixel.png")).unwrap();
+                std::fs::remove_file(directory.path().canonicalize().unwrap().join("pixel.png"))
+                    .unwrap();
                 bridge.send(EditorCommand::RefreshTextures).unwrap();
                 app.update();
                 let status = bridge.view().unwrap().status;
@@ -5432,12 +5489,26 @@ def Material "Mat" {
                         .as_ref(),
                     Some(&texture)
                 );
-                std::fs::write(directory.path().join("pixel.png"), b"broken image").unwrap();
+                std::fs::write(
+                    directory.path().canonicalize().unwrap().join("pixel.png"),
+                    b"broken image",
+                )
+                .unwrap();
                 bridge.send(EditorCommand::RefreshTextures).unwrap();
                 app.update();
                 let status = bridge.view().unwrap().status;
                 assert!(status.starts_with("Failed: cannot decode texture "));
-                assert!(status.contains(directory.path().join("pixel.png").to_str().unwrap()));
+                assert!(
+                    status.contains(
+                        directory
+                            .path()
+                            .canonicalize()
+                            .unwrap()
+                            .join("pixel.png")
+                            .to_str()
+                            .unwrap()
+                    )
+                );
                 assert_eq!(
                     app.world()
                         .resource::<Assets<StandardMaterial>>()
@@ -5463,7 +5534,11 @@ def Material "Mat" {
                         .write_image_data(&[20, 160, 240, 255])
                         .unwrap();
                 }
-                std::fs::write(directory.path().join("pixel.png"), changed).unwrap();
+                std::fs::write(
+                    directory.path().canonicalize().unwrap().join("pixel.png"),
+                    changed,
+                )
+                .unwrap();
                 bridge.send(EditorCommand::RefreshTextures).unwrap();
                 app.update();
                 assert_eq!(bridge.view().unwrap().status, "Ready");
@@ -5552,12 +5627,18 @@ def Material "Mat" {
                         .unwrap(),
                     Some(Value::Float(1.7))
                 );
-                std::fs::write(directory.path().join("pixel.png"), &png).unwrap();
+                std::fs::write(
+                    directory.path().canonicalize().unwrap().join("pixel.png"),
+                    &png,
+                )
+                .unwrap();
             }
             bridge
                 .send(EditorCommand::Open(
                     directory
                         .path()
+                        .canonicalize()
+                        .unwrap()
                         .join("missing.usda")
                         .to_string_lossy()
                         .into_owned(),
@@ -5584,12 +5665,16 @@ def Material "Mat" {
     fn typed_references_compose_reusable_assets_and_undo() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
-            directory.path().join("part.usda"),
+            directory.path().canonicalize().unwrap().join("part.usda"),
             "#usda 1.0\n(defaultPrim = \"Part\")\ndef Xform \"Part\" { def Cube \"Shape\" {} }\n",
         )
         .unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("assembly.usda"),
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("assembly.usda"),
             &b"#usda 1.0\ndef Xform \"Left\" {}\ndef Xform \"Right\" {}\n"[..],
         )
         .unwrap();
@@ -5642,7 +5727,11 @@ def Material "Mat" {
             crate::authoring::export_stage_string(editor.stage()).unwrap(),
             before
         );
-        let output = directory.path().join("assembly-out.usda");
+        let output = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("assembly-out.usda");
         editor
             .save(output.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
@@ -5709,7 +5798,7 @@ def Material "Mat" {
     fn variant_choices_follow_referenced_namespace_and_undo_selection() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
-            directory.path().join("model.usda"),
+            directory.path().canonicalize().unwrap().join("model.usda"),
             r#"#usda 1.0
 def Xform "Asset" (prepend variantSets = "shape") {
     variantSet "shape" = {
@@ -5721,7 +5810,7 @@ def Xform "Asset" (prepend variantSets = "shape") {
         )
         .unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             &b"#usda 1.0\ndef Xform \"Mounted\" ( prepend references = @model.usda@</Asset> ) {}\n"
                 [..],
         )
@@ -5919,11 +6008,15 @@ def Xform "Asset" (prepend variantSets = "shape") {
     #[test]
     fn authored_external_payloads_reconcile_live_history_and_save() {
         let directory = tempfile::tempdir().unwrap();
-        let part = directory.path().join("part.usda");
+        let part = directory.path().canonicalize().unwrap().join("part.usda");
         let part_text =
             "#usda 1.0\n(defaultPrim = \"Part\")\ndef Xform \"Part\" { def Cube \"Shape\" {} }\n";
         std::fs::write(&part, part_text).unwrap();
-        let root = directory.path().join("assembly.usda");
+        let root = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("assembly.usda");
         std::fs::write(&root, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((
@@ -6002,7 +6095,7 @@ def Xform "Asset" (prepend variantSets = "shape") {
                 );
             }
         }
-        let output = directory.path().join("saved.usda");
+        let output = directory.path().canonicalize().unwrap().join("saved.usda");
         bridge
             .send(EditorCommand::Save {
                 filename: output.to_string_lossy().into_owned(),
@@ -6123,7 +6216,7 @@ def Xform "Asset" (prepend variantSets = "shape") {
     fn flatten_rejects_timecode_clips_without_replacing_destination() {
         let directory = tempfile::tempdir().unwrap();
         let source = crate::UsdSource::snapshot(
-            directory.path().join("source.usda"),
+            directory.path().canonicalize().unwrap().join("source.usda"),
             &br#"#usda 1.0
 def Xform "Model" (
     clips = {
@@ -6141,7 +6234,7 @@ def Xform "Model" (
         )
         .unwrap();
         let clip = crate::UsdSource::snapshot(
-            directory.path().join("clip.usda"),
+            directory.path().canonicalize().unwrap().join("clip.usda"),
             &b"#usda 1.0\ndef Xform \"Model\" { timecode score.timeSamples = {0: 1, 10: 3} }\n"[..],
         )
         .unwrap();
@@ -6149,7 +6242,11 @@ def Xform "Model" (
         let editor = EditorSession::new(source.open_stage().unwrap());
         let before = editor.stage().root_layer().export_to_string().unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let destination = directory.path().join(format!("output.{extension}"));
+            let destination = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("output.{extension}"));
             std::fs::write(&destination, b"existing output").unwrap();
             let error = editor
                 .save(destination.to_str().unwrap(), SaveMode::Flattened)
@@ -6168,7 +6265,11 @@ def Xform "Model" (
             before
         );
         for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
-            let destination = directory.path().join("authored.usda");
+            let destination = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("authored.usda");
             editor.save(destination.to_str().unwrap(), mode).unwrap();
             assert!(
                 std::fs::read_to_string(destination)
@@ -6181,7 +6282,7 @@ def Xform "Model" (
     #[test]
     fn flatten_rejects_incomplete_composition_without_publishing_or_mutating() {
         let directory = tempfile::tempdir().unwrap();
-        let source = crate::UsdSource::snapshot(directory.path().join("source.usda"), &b"#usda 1.0\ndef Scope \"Model\" (prepend references = @missing.usda@</Model>) {}\n"[..]).unwrap();
+        let source = crate::UsdSource::snapshot(directory.path().canonicalize().unwrap().join("source.usda"), &b"#usda 1.0\ndef Scope \"Model\" (prepend references = @missing.usda@</Model>) {}\n"[..]).unwrap();
         let mut editor = EditorSession::new(source.open_stage().unwrap());
         editor.select(Some("/Model".into())).unwrap();
         editor
@@ -6194,7 +6295,11 @@ def Xform "Model" (
             .unwrap();
         let before = editor.stage().root_layer().export_to_string().unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let path = directory.path().join(format!("flat.{extension}"));
+            let path = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("flat.{extension}"));
             std::fs::write(&path, "existing output").unwrap();
             let error = editor
                 .save(path.to_str().unwrap(), SaveMode::Flattened)
@@ -6213,7 +6318,11 @@ def Xform "Model" (
         );
         assert!(editor.snapshot().unwrap().can_undo);
         for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
-            let path = directory.path().join("authored.usda");
+            let path = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("authored.usda");
             editor.save(path.to_str().unwrap(), mode).unwrap();
             assert!(
                 std::fs::read_to_string(path)
@@ -6237,10 +6346,14 @@ def Xform "Model" (
     #[test]
     fn invalid_composition_open_preserves_document_selection_and_history() {
         let directory = tempfile::tempdir().unwrap();
-        let current = directory.path().join("current.usda");
+        let current = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("current.usda");
         std::fs::write(&current, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         std::fs::write(
-            directory.path().join("model.usda"),
+            directory.path().canonicalize().unwrap().join("model.usda"),
             "#usda 1.0\ndef Scope \"Present\" {}\n",
         )
         .unwrap();
@@ -6290,7 +6403,11 @@ def Xform "Model" (
                 "#usda 1.0\ndef Scope \"Broken\" (prepend payload = @missing.usda@</Model>) {}\n",
             ),
         ] {
-            let path = directory.path().join(format!("{name}.usda"));
+            let path = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("{name}.usda"));
             std::fs::write(&path, text).unwrap();
             bridge
                 .send(EditorCommand::Open(path.to_string_lossy().into_owned()))
@@ -6328,7 +6445,11 @@ def Xform "Model" (
     #[test]
     fn command_bridge_edits_the_projected_document_and_preserves_it_on_open_failure() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("document.usda");
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("document.usda");
         std::fs::write(&path, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
@@ -6373,6 +6494,8 @@ def Xform "Model" (
             .send(EditorCommand::Open(
                 directory
                     .path()
+                    .canonicalize()
+                    .unwrap()
                     .join("absent.usda")
                     .to_string_lossy()
                     .into_owned(),
@@ -6391,7 +6514,11 @@ def Xform "Model" (
     #[test]
     fn unchanged_reload_reuses_inspection_but_changes_and_errors_refresh_it() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("document.usda");
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("document.usda");
         std::fs::write(&path, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
@@ -6576,10 +6703,10 @@ def Xform "Model" (
     #[test]
     fn layer_target_undo_and_save_modes_preserve_composition() {
         let directory = tempfile::tempdir().unwrap();
-        let weak = directory.path().join("weak.usda");
+        let weak = directory.path().canonicalize().unwrap().join("weak.usda");
         std::fs::write(&weak, "#usda 1.0\ndef Cube \"Box\" { double size = 3 }\n").unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             &b"#usda 1.0\n( subLayers = [@weak.usda@] )\n"[..],
         )
         .unwrap();
@@ -6617,7 +6744,7 @@ def Xform "Model" (
                 .iter()
                 .any(|a| a.name == "size" && a.value == Some(Value::Double(7.0)))
         );
-        let flat = directory.path().join("flat.usda");
+        let flat = directory.path().canonicalize().unwrap().join("flat.usda");
         editor
             .save(flat.to_str().unwrap(), SaveMode::Flattened)
             .unwrap();
@@ -6634,7 +6761,11 @@ def Xform "Model" (
                 .unwrap(),
             Some(7.0)
         );
-        let root_out = directory.path().join("root_out.usda");
+        let root_out = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("root_out.usda");
         editor
             .save(root_out.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
@@ -6644,7 +6775,11 @@ def Xform "Model" (
                 .contains("subLayers")
         );
         editor.set_edit_layer(weak.to_str().unwrap()).unwrap();
-        let layer_out = directory.path().join("layer_out.usda");
+        let layer_out = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("layer_out.usda");
         editor
             .save(layer_out.to_str().unwrap(), SaveMode::EditLayer)
             .unwrap();

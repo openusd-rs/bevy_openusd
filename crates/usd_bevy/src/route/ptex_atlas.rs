@@ -503,14 +503,14 @@ mod tests {
     #[test]
     fn large_ptex_faces_draw_their_texels_through_an_atlas() {
         let directory = tempfile::tempdir().unwrap();
-        let texture = directory.path().join("ground.ptx");
+        let texture = directory.path().canonicalize().unwrap().join("ground.ptx");
         let (red, green, blue, white) = ([255, 0, 0], [0, 255, 0], [0, 0, 255], [255; 3]);
         std::fs::write(
             &texture,
             crate::read::ptex::tests::ptex_texels(&[[red, green, blue, white], [white; 4]]),
         )
         .unwrap();
-        let root = directory.path().join("scene.usda");
+        let root = directory.path().canonicalize().unwrap().join("scene.usda");
         std::fs::write(
             &root,
             format!(
@@ -645,8 +645,8 @@ def Material "Mat" {{
     #[test]
     fn displacement_moves_the_refined_surface_along_its_normals() {
         let directory = tempfile::tempdir().unwrap();
-        let color = directory.path().join("color.ptx");
-        let height = directory.path().join("height.ptx");
+        let color = directory.path().canonicalize().unwrap().join("color.ptx");
+        let height = directory.path().canonicalize().unwrap().join("height.ptx");
         std::fs::write(
             &color,
             crate::read::ptex::tests::ptex_texels(&[[[90; 3]; 4]]),
@@ -657,7 +657,7 @@ def Material "Mat" {{
             crate::read::ptex::tests::ptex_texels(&[[[255; 3]; 4]]),
         )
         .unwrap();
-        let root = directory.path().join("scene.usda");
+        let root = directory.path().canonicalize().unwrap().join("scene.usda");
         std::fs::write(
             &root,
             format!(

@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn streaming_checks_detect_same_size_changes_and_return_matching_snapshot_hashes() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("bytes");
+        let path = directory.path().canonicalize().unwrap().join("bytes");
         assert_eq!(
             changed_file(&path, None).unwrap_err().kind(),
             std::io::ErrorKind::NotFound
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn disk_change_during_preflight_rejects_publication_and_recovers() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("root.usda");
+        let path = directory.path().canonicalize().unwrap().join("root.usda");
         let contents = |size| format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n");
         std::fs::write(&path, contents(1)).unwrap();
         let mut editor =
@@ -600,7 +600,7 @@ mod tests {
     #[test]
     fn snapshot_only_documents_do_not_reload_same_named_disk_files() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         std::fs::write(&root, "#usda 1.0\ndef Sphere \"Disk\" {}\n").unwrap();
         let source =
             crate::UsdSource::snapshot(&root, b"#usda 1.0\ndef Cube \"Snapshot\" {}\n".as_slice())
@@ -627,7 +627,7 @@ mod tests {
     #[test]
     fn missing_image_assets_reject_reload_before_stage_publication() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let original = b"#usda 1.0\ndef Cube \"Model\" {}\n";
         std::fs::write(&root, original).unwrap();
         let mut png = Vec::new();
@@ -641,7 +641,11 @@ mod tests {
                 .write_image_data(&[255, 0, 0, 255])
                 .unwrap();
         }
-        std::fs::write(directory.path().join("pixel.png"), png).unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join("pixel.png"),
+            png,
+        )
+        .unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
         app.init_resource::<Assets<Mesh>>()
@@ -731,7 +735,7 @@ def Material "Mat" {
     #[test]
     fn unrelated_layer_reload_preserves_undo_and_redo() {
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usda");
+        let child = directory.path().canonicalize().unwrap().join("child.usda");
         let write_child = |size| {
             std::fs::write(
                 &child,
@@ -740,7 +744,7 @@ def Material "Mat" {
             .unwrap()
         };
         write_child(1);
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let text = b"#usda 1.0\ndef Xform \"External\" (prepend references = @child.usda@</Model>) {}\ndef Cube \"Local\" { double size = 1 }\n";
         std::fs::write(&root, text).unwrap();
         let mut editor =
@@ -798,7 +802,7 @@ def Material "Mat" {
     #[test]
     fn reload_invalidates_redo_that_would_overwrite_the_source() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let text = b"#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n";
         std::fs::write(&root, text).unwrap();
         let mut editor =
@@ -831,13 +835,13 @@ def Material "Mat" {
     #[test]
     fn reload_prunes_conflicting_commands_without_dropping_unrelated_undo() {
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usda");
+        let child = directory.path().canonicalize().unwrap().join("child.usda");
         std::fs::write(
             &child,
             "#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n",
         )
         .unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let text =
             b"#usda 1.0\n(subLayers = [@child.usda@])\ndef Cube \"Local\" { double size = 1 }\n";
         std::fs::write(&root, text).unwrap();
@@ -940,10 +944,10 @@ def Material "Mat" {
         #[derive(Component, PartialEq, Debug)]
         struct Runtime(u32);
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usda");
+        let child = directory.path().canonicalize().unwrap().join("child.usda");
         let model = |size| format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n");
         std::fs::write(&child, model(1)).unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         std::fs::write(&root, "#usda 1.0\ndef Xform \"A\" (prepend references = @child.usda@</Model>) {}\ndef Xform \"B\" (prepend references = @child.usda@</Model>) {}\ndef Cube \"Other\" { double size = 7 }\n").unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
@@ -1012,7 +1016,7 @@ def Material "Mat" {
                 .unwrap(),
             Some(3.0)
         );
-        let temporary = directory.path().join("export.tmp");
+        let temporary = directory.path().canonicalize().unwrap().join("export.tmp");
         std::fs::write(&temporary, model(5)).unwrap();
         std::fs::rename(&temporary, &child).unwrap();
         tick_until(&mut app, |world| {
@@ -1031,7 +1035,7 @@ def Material "Mat" {
     #[test]
     fn dirty_layer_conflict_retains_edits_and_disk_baseline() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let original = b"#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n";
         std::fs::write(&root, original).unwrap();
         let mut editor =
@@ -1069,7 +1073,7 @@ def Material "Mat" {
     fn package_layer_save_updates_in_place_repeatedly() {
         use std::io::Write;
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("model.usdz");
+        let file = directory.path().canonicalize().unwrap().join("model.usdz");
         let package = |size| {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
             zip.start_file(
@@ -1110,7 +1114,7 @@ def Material "Mat" {
     #[test]
     fn missing_new_reference_recovers_when_dependency_appears() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         std::fs::write(&root, "#usda 1.0\ndef Xform \"A\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
@@ -1142,7 +1146,7 @@ def Material "Mat" {
             Some(entity)
         );
         std::fs::write(
-            directory.path().join("new.usda"),
+            directory.path().canonicalize().unwrap().join("new.usda"),
             "#usda 1.0\ndef Xform \"Model\" { def Cube \"Child\" {} }\n",
         )
         .unwrap();
@@ -1159,7 +1163,7 @@ def Material "Mat" {
             Some(entity)
         );
         std::fs::write(
-            directory.path().join("new.usda"),
+            directory.path().canonicalize().unwrap().join("new.usda"),
             "#usda 1.0\ndef Xform \"Model\" { def Sphere \"Next\" {} }\n",
         )
         .unwrap();
@@ -1194,9 +1198,9 @@ def Material "Mat" {
             bytes
         };
         let directory = tempfile::tempdir().unwrap();
-        let texture = directory.path().join("pixel.png");
+        let texture = directory.path().canonicalize().unwrap().join("pixel.png");
         std::fs::write(&texture, png([255, 0, 0, 255])).unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         std::fs::write(
             &root,
             r#"#usda 1.0
@@ -1280,7 +1284,7 @@ def Material "Mat" {
         assert_eq!(pixels(app.world()), [0, 255, 0, 255]);
         std::fs::write(&texture, png([0, 0, 255, 255])).unwrap();
         tick_until(&mut app, |world| pixels(world) == [0, 0, 255, 255]);
-        let next = directory.path().join("next.png");
+        let next = directory.path().canonicalize().unwrap().join("next.png");
         std::fs::write(&next, png([255, 255, 0, 255])).unwrap();
         let original_root = std::fs::read_to_string(&root).unwrap();
         std::fs::write(&root, original_root.replace("@pixel.png@", "@next.png@")).unwrap();

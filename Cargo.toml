@@ -49,7 +49,9 @@ openusd = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103
 openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0", features = ["geom", "shade"] }
 
 # mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
-mara = { git = "https://github.com/bresilla/mara", branch = "main", default-features = false, features = ["window", "bevy"] }
+mara = { git = "https://github.com/dave-gray101/mara", branch = "feat-bevy-0.20", default-features = false, features = ["window", "bevy"] }
+# Byte casting for GPU storage buffers in the compact-instancing example.
+bytemuck = { version = "1", features = ["derive"] }
 # Native "Open USD…" file picker.
 rfd = "0.15"
 # Global allocator for the binary and examples.
@@ -59,9 +61,9 @@ mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Bevy 0.19 (needs Rust 1.95+) — the embedded viewport renders the USD scene
+# Bevy 0.20 — the embedded viewport renders the USD scene
 # offscreen into a mara-provided render target.
-bevy = { version = "0.19.1", default-features = false, features = [
+bevy = { version = "0.20.0", default-features = false, features = [
     "bevy_anti_alias",
     "std",
     "bevy_asset",
@@ -74,6 +76,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "bevy_camera",
     "bevy_image",
     "bevy_dev_tools",
+    "render_dev_tools",
     "bevy_gizmos",
     "bevy_gizmos_render",
     "reflect_auto_register",
@@ -83,9 +86,9 @@ bevy = { version = "0.19.1", default-features = false, features = [
 tempfile = "3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
-wgpu = { version = "29", default-features = false, features = ["vulkan"] }
-egui-wgpu = { version = "0.34", default-features = false, features = ["winit"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+egui-wgpu = { version = "0.37", default-features = false, features = ["winit"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["process"] }

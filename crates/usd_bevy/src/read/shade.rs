@@ -60,10 +60,55 @@ pub struct ReadPreviewMaterial {
     pub color_texture_transforms: std::collections::BTreeMap<String, [[f32; 3]; 2]>,
     /// Signed tangent-space RGB transform for Preview Surface UsdUVTexture normals.
     pub normal_texture_transform: Option<[[f32; 3]; 2]>,
+    /// How each texture file wraps along S and T, as its texture node says.
+    pub texture_wraps: std::collections::BTreeMap<String, [TextureWrap; 2]>,
     pub warnings: Vec<String>,
 
     /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
     pub uv_transform: Option<bevy::math::Affine2>,
+}
+
+/// How a texture continues past its edges. Unauthored and `useMetadata`
+/// wraps repeat, as DCC exports expect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextureWrap {
+    #[default]
+    Repeat,
+    Mirror,
+    Clamp,
+    Black,
+}
+
+/// The S and T wraps of a texture node: UsdUVTexture's `wrapS`/`wrapT`, or
+/// MaterialX's `uaddressmode`/`vaddressmode`.
+fn read_texture_wrap(
+    stage: &Stage,
+    tex_prim: &Path,
+    time: Option<f64>,
+) -> anyhow::Result<[TextureWrap; 2]> {
+    let mut wrap = [TextureWrap::Repeat; 2];
+    for (axis, names) in [["wrapS", "uaddressmode"], ["wrapT", "vaddressmode"]]
+        .into_iter()
+        .enumerate()
+    {
+        for name in names {
+            let Some(attribute) = texture_input_attribute(stage, tex_prim, name)? else {
+                continue;
+            };
+            let value = match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+                Some(Value::Token(value)) => value.as_str().to_owned(),
+                Some(Value::String(value)) => value,
+                _ => continue,
+            };
+            wrap[axis] = match value.as_str() {
+                "mirror" => TextureWrap::Mirror,
+                "clamp" => TextureWrap::Clamp,
+                "black" | "constant" => TextureWrap::Black,
+                _ => TextureWrap::Repeat,
+            };
+        }
+    }
+    Ok(wrap)
 }
 
 /// Resolves preview-purpose material binding, falling back to all-purpose and
@@ -259,6 +304,8 @@ pub fn read_preview_material_at(
             if !textures.contains(&tex.3) {
                 textures.push(tex.3.clone());
             }
+            out.texture_wraps
+                .insert(tex.0.clone(), read_texture_wrap(stage, &tex.3, time)?);
             bind_texture(&mut out, tex);
         }
         match value {

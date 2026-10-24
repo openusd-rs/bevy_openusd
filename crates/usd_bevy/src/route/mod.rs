@@ -42,12 +42,14 @@ pub mod points;
 pub(crate) mod profiling;
 pub(crate) mod ptex;
 pub mod ptex_atlas;
+pub(crate) mod sampling;
 mod texture_pack;
 
 pub(crate) fn configure_texture_caches(app: &mut bevy::prelude::App) {
     color_texture::configure(app);
     generated_image::configure(app);
     texture_pack::configure(app);
+    sampling::configure(app);
 }
 pub mod payload;
 pub mod physics;

@@ -682,6 +682,7 @@ pub(crate) fn resolve_material(
             Err(error) => warnings.push(error.to_string()),
         }
     }
+    super::sampling::note(world, &material, &read);
     if let Some(started) = started {
         world.resource_mut::<MaterialResolveTimings>().preparing += started.elapsed();
     }

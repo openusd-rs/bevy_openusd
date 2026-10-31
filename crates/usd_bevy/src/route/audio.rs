@@ -11,10 +11,10 @@
 use bevy::prelude::*;
 use openusd_schemas::media::SpatialAudioSchema;
 
-use openusd::sdf::Value;
 use openusd::usd::Stage;
+use openusd::vt::Value;
 use openusd_schemas::media::SpatialAudio;
-use openusd_schemas::vol::{Field3DAsset, FieldAsset, OpenVDBAsset, Volume};
+use openusd_schemas::vol::{Field3DAsset, OpenVDBAsset, Volume, VolumeFieldAssetSchema};
 
 use super::{PrimRoute, RouteCtx};
 
@@ -157,7 +157,7 @@ fn resolve_field(stage: &Stage, binding: String, path: openusd::sdf::Path) -> Us
 }
 
 /// Pull `filePath` / `fieldName` / `fieldIndex` off any `FieldAsset`.
-fn field_asset_data<F: FieldAsset>(f: &F) -> (String, Option<String>, Option<i32>) {
+fn field_asset_data<F: VolumeFieldAssetSchema>(f: &F) -> (String, Option<String>, Option<i32>) {
     let file = path_string(f.file_path_attr().get::<Value>().ok().flatten()).unwrap_or_default();
     let grid = token_string(f.field_name_attr().get::<Value>().ok().flatten());
     let index = f.field_index_attr().get::<i32>().ok().flatten();
@@ -169,9 +169,8 @@ mod tests {
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
-    use openusd::sdf;
     use openusd::usd::Stage;
-    use openusd_schemas::vol::VolumeFieldAsset;
+    use openusd::vt;
 
     #[test]
     fn spatial_audio_projects_marker() {
@@ -188,7 +187,7 @@ mod tests {
         audio
             .create_file_path_attr()
             .unwrap()
-            .set(sdf::Value::AssetPath("./ambient.wav".into()))
+            .set(vt::Value::AssetPath("./ambient.wav".into()))
             .unwrap();
         audio.create_gain_attr().unwrap().set(0.5_f64).unwrap();
 
@@ -220,16 +219,15 @@ mod tests {
         field
             .create_file_path_attr()
             .unwrap()
-            .set(sdf::Value::AssetPath("./smoke.vdb".into()))
+            .set(vt::Value::AssetPath("./smoke.vdb".into()))
             .unwrap();
         field
             .create_field_name_attr()
             .unwrap()
-            .set(sdf::Value::Token("density".into()))
+            .set(vt::Value::Token("density".into()))
             .unwrap();
         let vol = Volume::define(&stage, "/World/Fog").unwrap();
-        vol.create_field_relationship("density", "/World/density")
-            .unwrap();
+        vol.create_field_rel("density", "/World/density").unwrap();
 
         let live = LiveStage::new(stage);
         let mut world = World::new();

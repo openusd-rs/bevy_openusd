@@ -13,7 +13,7 @@ use openusd_schemas::proc::GenerativeProceduralSchema;
 use openusd_schemas::render::SettingsSchema;
 use openusd_schemas::ui::BackdropSchema;
 
-use openusd::sdf::Value;
+use openusd::vt::Value;
 use openusd_schemas::proc::GenerativeProcedural;
 use openusd_schemas::render::Settings as RenderSettings;
 use openusd_schemas::ui::Backdrop;

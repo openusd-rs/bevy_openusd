@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
-use openusd::sdf::Value;
+use openusd::{sdf::ListOpType, vt::Value};
 use usd_bevy::editor::{EditorBridge, EditorCommand, EditorEdit, EditorSnapshot};
 
 #[derive(Default, Clone)]
@@ -557,7 +557,7 @@ pub fn show(
                 if let Some((time, matrix)) = sampled_time.zip(attribute.sampled_matrix) {
                     if ui.button(&format!("Load sampled matrix at {time}")).clicked {
                         draft.1 =
-                            editable_text(&Value::Matrix4d(openusd::gf::Matrix4d(matrix))).unwrap();
+                            editable_text(&Value::Matrix4d(openusd::gf::Mat4d(matrix))).unwrap();
                         draft.2.clear();
                         loaded = Some(time);
                     }
@@ -762,16 +762,16 @@ fn reference_opinion_lines(
         opinion.offset.offset, opinion.offset.scale
     ));
     let op = &opinion.operation;
-    if op.explicit && op.explicit_items.is_empty() {
+    if op.is_explicit() && op.explicit_items().is_empty() {
         lines.push("Explicit empty list (blocks weaker references)".into());
     }
     for (name, entries) in [
-        ("Explicit", &op.explicit_items),
-        ("Prepend", &op.prepended_items),
-        ("Append", &op.appended_items),
-        ("Add", &op.added_items),
-        ("Delete", &op.deleted_items),
-        ("Order", &op.ordered_items),
+        ("Explicit", op.explicit_items()),
+        ("Prepend", op.prepended_items()),
+        ("Append", op.appended_items()),
+        ("Add", op.added_items()),
+        ("Delete", op.deleted_items()),
+        ("Order", op.ordered_items()),
     ] {
         for reference in entries {
             lines.push(name.into());
@@ -908,9 +908,9 @@ fn edited_reference(
     }
     if !reference.prim_path.is_empty()
         && (!reference.prim_path.as_str().starts_with('/')
-            || !reference.prim_path.is_prim_path()
+            || !reference.prim_path.is_prim()
             || reference.prim_path.as_str() == "/"
-            || reference.prim_path.contains_prim_variant_selection())
+            || reference.prim_path.has_variant_selection())
     {
         return Err("Use an absolute prim target or empty defaultPrim".into());
     }
@@ -936,29 +936,32 @@ fn insert_reference(
     fields: &[String; 4],
 ) -> Result<openusd::sdf::ReferenceListOp, String> {
     let reference = edited_reference(&Default::default(), fields)?;
-    if source.is_some_and(|source| source.explicit != (bucket == "Explicit")) {
+    if source.is_some_and(|source| source.is_explicit() != (bucket == "Explicit")) {
         return Err("Cannot mix explicit replacement with other list modes".into());
     }
-    let mut operation = source
-        .cloned()
-        .unwrap_or_else(|| openusd::sdf::ReferenceListOp {
-            explicit: bucket == "Explicit",
-            ..Default::default()
-        });
-    let entries = match bucket {
-        "Explicit" => &mut operation.explicit_items,
-        "Prepend" => &mut operation.prepended_items,
-        "Append" => &mut operation.appended_items,
-        "Add" => &mut operation.added_items,
-        "Delete" => &mut operation.deleted_items,
-        "Order" => &mut operation.ordered_items,
-        _ => return Err("Unknown reference list mode".into()),
-    };
-    if entries.contains(&reference) {
+    let mut operation = source.cloned().unwrap_or_else(|| {
+        let mut operation = openusd::sdf::ReferenceListOp::default();
+        operation.set_explicit(bucket == "Explicit");
+        operation
+    });
+    let list = reference_list(bucket).ok_or_else(|| "Unknown reference list mode".to_string())?;
+    if !operation.push(list, reference) {
         return Err("This reference already exists in this bucket".into());
     }
-    entries.push(reference);
     Ok(operation)
+}
+
+/// The list a reference bucket label names.
+fn reference_list(bucket: &str) -> Option<ListOpType> {
+    Some(match bucket {
+        "Explicit" => ListOpType::Explicit,
+        "Prepend" => ListOpType::Prepended,
+        "Append" => ListOpType::Appended,
+        "Add" => ListOpType::Added,
+        "Delete" => ListOpType::Deleted,
+        "Order" => ListOpType::Ordered,
+        _ => return None,
+    })
 }
 
 fn reference_creation_pod(
@@ -1017,7 +1020,7 @@ fn reference_creation_pod(
             let Ok(mut values) = drafts.0.lock() else {
                 return;
             };
-            let modes: &[&str] = match local.as_ref().map(|operation| operation.explicit) {
+            let modes: &[&str] = match local.as_ref().map(|operation| operation.is_explicit()) {
                 Some(true) => &["Explicit"],
                 Some(false) => &["Prepend", "Append", "Add", "Delete", "Order"],
                 None => &["Prepend", "Append", "Add", "Delete", "Order", "Explicit"],
@@ -1116,12 +1119,12 @@ fn reference_edit_pods(
         }
         let operation = Arc::new(opinion.operation.clone());
         for (bucket, entries) in [
-            ("Explicit", &opinion.operation.explicit_items),
-            ("Prepend", &opinion.operation.prepended_items),
-            ("Append", &opinion.operation.appended_items),
-            ("Add", &opinion.operation.added_items),
-            ("Delete", &opinion.operation.deleted_items),
-            ("Order", &opinion.operation.ordered_items),
+            ("Explicit", opinion.operation.explicit_items()),
+            ("Prepend", opinion.operation.prepended_items()),
+            ("Append", opinion.operation.appended_items()),
+            ("Add", opinion.operation.added_items()),
+            ("Delete", opinion.operation.deleted_items()),
+            ("Order", opinion.operation.ordered_items()),
         ] {
             for (index, reference) in entries.iter().enumerate() {
                 let key = format!(
@@ -1249,15 +1252,10 @@ fn reference_edit_pods(
                             match edited_reference(&reference, &fields) {
                                 Ok(reference) => {
                                     let mut operation = (*operation).clone();
-                                    let entries = match bucket {
-                                        "Explicit" => &mut operation.explicit_items,
-                                        "Prepend" => &mut operation.prepended_items,
-                                        "Append" => &mut operation.appended_items,
-                                        "Add" => &mut operation.added_items,
-                                        "Delete" => &mut operation.deleted_items,
-                                        _ => &mut operation.ordered_items,
-                                    };
-                                    entries[index] = reference;
+                                    let list =
+                                        reference_list(bucket).unwrap_or(ListOpType::Ordered);
+                                    operation
+                                        .edit_items(list, |entries| entries[index] = reference);
                                     error.clear();
                                     send_edit(
                                         &bridge,
@@ -1293,27 +1291,21 @@ fn change_reference_structure(
     action: ReferenceStructure,
 ) -> Option<openusd::sdf::ReferenceListOp> {
     let mut operation = source.clone();
-    let entries = match bucket {
-        "Explicit" => &mut operation.explicit_items,
-        "Prepend" => &mut operation.prepended_items,
-        "Append" => &mut operation.appended_items,
-        "Add" => &mut operation.added_items,
-        "Delete" => &mut operation.deleted_items,
-        "Order" => &mut operation.ordered_items,
-        _ => return None,
-    };
-    if index >= entries.len() {
-        return None;
-    }
-    match action {
-        ReferenceStructure::Earlier if index > 0 => entries.swap(index, index - 1),
-        ReferenceStructure::Later if index + 1 < entries.len() => entries.swap(index, index + 1),
-        ReferenceStructure::Remove => {
-            entries.remove(index);
+    let changed = operation.edit_items(reference_list(bucket)?, |entries| {
+        match action {
+            _ if index >= entries.len() => return false,
+            ReferenceStructure::Earlier if index > 0 => entries.swap(index, index - 1),
+            ReferenceStructure::Later if index + 1 < entries.len() => {
+                entries.swap(index, index + 1)
+            }
+            ReferenceStructure::Remove => {
+                entries.remove(index);
+            }
+            _ => return false,
         }
-        _ => return None,
-    }
-    Some(operation)
+        true
+    });
+    changed.then_some(operation)
 }
 
 fn reference_structure_pods(
@@ -1339,12 +1331,12 @@ fn reference_structure_pods(
         }
         let operation = Arc::new(opinion.operation.clone());
         for (bucket, entries) in [
-            ("Explicit", &opinion.operation.explicit_items),
-            ("Prepend", &opinion.operation.prepended_items),
-            ("Append", &opinion.operation.appended_items),
-            ("Add", &opinion.operation.added_items),
-            ("Delete", &opinion.operation.deleted_items),
-            ("Order", &opinion.operation.ordered_items),
+            ("Explicit", opinion.operation.explicit_items()),
+            ("Prepend", opinion.operation.prepended_items()),
+            ("Append", opinion.operation.appended_items()),
+            ("Add", opinion.operation.added_items()),
+            ("Delete", opinion.operation.deleted_items()),
+            ("Order", opinion.operation.ordered_items()),
         ] {
             for index in 0..entries.len() {
                 let count = entries.len();
@@ -1414,36 +1406,26 @@ fn move_reference_bucket(
     index: usize,
     to: &str,
 ) -> Result<openusd::sdf::ReferenceListOp, String> {
-    fn entries<'a>(
-        operation: &'a mut openusd::sdf::ReferenceListOp,
-        bucket: &str,
-    ) -> Result<&'a mut Vec<openusd::sdf::Reference>, String> {
-        match bucket {
-            "Prepend" => Ok(&mut operation.prepended_items),
-            "Append" => Ok(&mut operation.appended_items),
-            "Add" => Ok(&mut operation.added_items),
-            "Delete" => Ok(&mut operation.deleted_items),
-            "Order" => Ok(&mut operation.ordered_items),
-            _ => Err("Choose a non-explicit reference bucket".into()),
-        }
-    }
-    if source.explicit {
+    let list = |bucket| match reference_list(bucket) {
+        Some(ListOpType::Explicit) | None => Err("Choose a non-explicit reference bucket"),
+        Some(list) => Ok(list),
+    };
+    if source.is_explicit() {
         return Err("Explicit replacement requires whole-op conversion".into());
     }
     if from == to {
         return Err("Choose a different destination bucket".into());
     }
+    let (from, to) = (list(from)?, list(to)?);
     let mut operation = source.clone();
-    let source_entries = entries(&mut operation, from)?;
-    if index >= source_entries.len() {
+    let Some(reference) = operation.items(from).get(index).cloned() else {
         return Err("Reference entry no longer exists".into());
-    }
-    let reference = source_entries.remove(index);
-    let destination = entries(&mut operation, to)?;
-    if destination.contains(&reference) {
+    };
+    if operation.items(to).contains(&reference) {
         return Err("Reference already exists in destination".into());
     }
-    destination.push(reference);
+    operation.edit_items(from, |entries| entries.remove(index));
+    operation.push(to, reference);
     Ok(operation)
 }
 
@@ -1465,7 +1447,7 @@ fn reference_bucket_pods(
         {
             continue;
         }
-        if opinion.operation.explicit {
+        if opinion.operation.is_explicit() {
             pods.push(Pod::new(Id::new(&key)).with_custom_units(2, |ui| {
                 ui.label("Explicit lists cannot mix other buckets");
                 ui.label("Whole-op conversion is not available here");
@@ -1474,11 +1456,11 @@ fn reference_bucket_pods(
         }
         let operation = Arc::new(opinion.operation.clone());
         for (bucket, entries) in [
-            ("Prepend", &operation.prepended_items),
-            ("Append", &operation.appended_items),
-            ("Add", &operation.added_items),
-            ("Delete", &operation.deleted_items),
-            ("Order", &operation.ordered_items),
+            ("Prepend", operation.prepended_items()),
+            ("Append", operation.appended_items()),
+            ("Add", operation.added_items()),
+            ("Delete", operation.deleted_items()),
+            ("Order", operation.ordered_items()),
         ] {
             for (index, reference) in entries.iter().enumerate() {
                 let entry_key = format!("{key}:{bucket}:{index}");
@@ -1617,7 +1599,7 @@ fn value_template(type_name: &str) -> Option<Value> {
         "double3[]" | "point3d[]" | "vector3d[]" | "normal3d[]" | "color3d[]" => {
             Value::Vec3dVec(Vec::new())
         }
-        "matrix4d" => Value::Matrix4d(openusd::gf::Matrix4d([
+        "matrix4d" => Value::Matrix4d(openusd::gf::Mat4d([
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ])),
         "string" => Value::String(String::new()),
@@ -1799,7 +1781,7 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
             if !values.iter().all(|v| v.is_finite()) {
                 return Err("Matrix needs sixteen finite numbers".into());
             }
-            Value::Matrix4d(openusd::gf::Matrix4d(values))
+            Value::Matrix4d(openusd::gf::Mat4d(values))
         }
         Value::Vec3f(_) | Value::Vec3d(_) => {
             let values: Vec<f64> = text
@@ -1871,7 +1853,7 @@ mod tests {
 
     #[test]
     fn numeric_array_samples_preserve_defaults_and_clear_undo() {
-        use openusd::{sdf::Value, usd::TimeCode};
+        use openusd::{usd::TimeCode, vt::Value};
         use usd_bevy::editor::{EditorEdit, EditorSession};
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/numeric_array.usda");
         let bytes = std::fs::read(path).unwrap();
@@ -1920,7 +1902,7 @@ mod tests {
     #[test]
     fn numeric_array_edits_preserve_types_and_undo() {
         use super::{editable_text, parse_value, value_template};
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         for value in [
             Value::IntVec(vec![i32::MIN, i32::MAX]),
             Value::Int64Vec(vec![i64::MIN, i64::MAX]),
@@ -2015,7 +1997,10 @@ mod tests {
     #[test]
     fn reference_bucket_moves_preserve_data_and_compose_with_undo() {
         use super::move_reference_bucket;
-        use openusd::sdf::{LayerOffset, Reference, ReferenceListOp, Value};
+        use openusd::{
+            sdf::{LayerOffset, Reference, ReferenceListOp},
+            vt::Value,
+        };
         let reference = Reference {
             asset_path: "relative.usda".into(),
             prim_path: openusd::sdf::path("/Source").unwrap(),
@@ -2025,49 +2010,40 @@ mod tests {
         let modes = ["Prepend", "Append", "Add", "Delete", "Order"];
         fn bucket<'a>(op: &'a ReferenceListOp, mode: &str) -> &'a [Reference] {
             match mode {
-                "Prepend" => &op.prepended_items,
-                "Append" => &op.appended_items,
-                "Add" => &op.added_items,
-                "Delete" => &op.deleted_items,
-                _ => &op.ordered_items,
+                "Prepend" => op.prepended_items(),
+                "Append" => op.appended_items(),
+                "Add" => op.added_items(),
+                "Delete" => op.deleted_items(),
+                _ => op.ordered_items(),
             }
         }
         for from in modes {
             let mut source = ReferenceListOp::default();
-            match from {
-                "Prepend" => source.prepended_items.push(reference.clone()),
-                "Append" => source.appended_items.push(reference.clone()),
-                "Add" => source.added_items.push(reference.clone()),
-                "Delete" => source.deleted_items.push(reference.clone()),
-                _ => source.ordered_items.push(reference.clone()),
-            }
+            source.push(super::reference_list(from).unwrap(), reference.clone());
             for to in modes.into_iter().filter(|mode| *mode != from) {
                 let changed = move_reference_bucket(&source, from, 0, to).unwrap();
                 assert!(bucket(&changed, from).is_empty());
                 assert_eq!(bucket(&changed, to), &[reference.clone()]);
                 assert_eq!(bucket(&source, from), &[reference.clone()]);
-                assert!(!changed.explicit);
+                assert!(!changed.is_explicit());
             }
         }
-        let duplicate = ReferenceListOp {
-            prepended_items: vec![reference.clone()],
-            appended_items: vec![reference.clone()],
-            ..Default::default()
-        };
+        let duplicate = ReferenceListOp::prepended([reference.clone()])
+            .with(ListOpType::Appended, [reference.clone()]);
         let other = Reference {
             prim_path: openusd::sdf::path("/Other").unwrap(),
             ..reference.clone()
         };
-        let populated = ReferenceListOp {
-            prepended_items: vec![reference.clone(), other.clone()],
-            appended_items: vec![other.clone()],
-            deleted_items: vec![other.clone()],
-            ..Default::default()
-        };
+        let populated = ReferenceListOp::prepended([reference.clone(), other.clone()])
+            .with(ListOpType::Appended, [other.clone()])
+            .with(ListOpType::Deleted, [other.clone()]);
         let moved = move_reference_bucket(&populated, "Prepend", 0, "Append").unwrap();
-        assert_eq!(moved.prepended_items, vec![other.clone()]);
-        assert_eq!(moved.appended_items, vec![other.clone(), reference.clone()]);
-        assert_eq!(moved.deleted_items, populated.deleted_items);
+        assert_eq!(moved.prepended_items(), vec![other.clone()]);
+        assert_eq!(
+            moved.appended_items(),
+            vec![other.clone(), reference.clone()]
+        );
+        assert_eq!(moved.deleted_items(), populated.deleted_items());
         for (from, index, to) in [
             ("Prepend", 0, "Append"),
             ("Prepend", 1, "Add"),
@@ -2096,8 +2072,8 @@ mod tests {
             .operation
             .clone();
         let moved = move_reference_bucket(&original, "Prepend", 0, "Append").unwrap();
-        assert_eq!(moved.appended_items[0], original.prepended_items[0]);
-        assert_eq!(moved.prepended_items[0], original.prepended_items[1]);
+        assert_eq!(moved.appended_items()[0], original.prepended_items()[0]);
+        assert_eq!(moved.prepended_items()[0], original.prepended_items()[1]);
         editor
             .edit(usd_bevy::editor::EditorEdit::ReferenceListOp {
                 prim: "/Root".into(),
@@ -2136,7 +2112,10 @@ mod tests {
     #[test]
     fn reference_creation_preserves_operations_and_undo() {
         use super::insert_reference;
-        use openusd::sdf::{Reference, ReferenceListOp, Value};
+        use openusd::{
+            sdf::{Reference, ReferenceListOp},
+            vt::Value,
+        };
         let fields = [
             "payload_authoring_content.usda".into(),
             "/Ball".into(),
@@ -2159,12 +2138,12 @@ mod tests {
             };
             let changed = insert_reference(Some(&base), bucket, &fields).unwrap();
             let inserted = match bucket {
-                "Explicit" => &changed.explicit_items,
-                "Prepend" => &changed.prepended_items,
-                "Append" => &changed.appended_items,
-                "Add" => &changed.added_items,
-                "Delete" => &changed.deleted_items,
-                _ => &changed.ordered_items,
+                "Explicit" => changed.explicit_items(),
+                "Prepend" => changed.prepended_items(),
+                "Append" => changed.appended_items(),
+                "Add" => changed.added_items(),
+                "Delete" => changed.deleted_items(),
+                _ => changed.ordered_items(),
             };
             assert_eq!(inserted.last().unwrap().prim_path.as_str(), "/Ball");
             assert_eq!(
@@ -2176,11 +2155,11 @@ mod tests {
                 }
             );
             if bucket == "Explicit" {
-                assert_eq!(changed.explicit_items[0], existing);
+                assert_eq!(changed.explicit_items()[0], existing);
             } else {
-                assert_eq!(changed.prepended_items[0], existing);
+                assert_eq!(changed.prepended_items()[0], existing);
             }
-            assert_eq!(base.explicit, changed.explicit);
+            assert_eq!(base.is_explicit(), changed.is_explicit());
         }
         assert!(
             insert_reference(Some(&ReferenceListOp::explicit([])), "Prepend", &fields).is_err()
@@ -2254,7 +2233,10 @@ mod tests {
         ] {
             let operation =
                 change_reference_structure(&original, "Prepend", index, action).unwrap();
-            assert_eq!(operation.prepended_items[0], original.prepended_items[1]);
+            assert_eq!(
+                operation.prepended_items()[0],
+                original.prepended_items()[1]
+            );
             editor
                 .edit(usd_bevy::editor::EditorEdit::ReferenceListOp {
                     prim: "/Root".into(),
@@ -2294,24 +2276,27 @@ mod tests {
                 .is_none()
         );
         let explicit =
-            openusd::sdf::ReferenceListOp::explicit([original.prepended_items[0].clone()]);
+            openusd::sdf::ReferenceListOp::explicit([original.prepended_items()[0].clone()]);
         let empty =
             change_reference_structure(&explicit, "Explicit", 0, ReferenceStructure::Remove)
                 .unwrap();
-        assert!(empty.explicit && empty.explicit_items.is_empty());
+        assert!(empty.is_explicit() && empty.explicit_items().is_empty());
         let single =
-            openusd::sdf::ReferenceListOp::prepended([original.prepended_items[0].clone()]);
+            openusd::sdf::ReferenceListOp::prepended([original.prepended_items()[0].clone()]);
         assert!(
             !change_reference_structure(&single, "Prepend", 0, ReferenceStructure::Remove)
                 .unwrap()
-                .explicit
+                .is_explicit()
         );
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 
     #[test]
     fn reference_source_changes_preserve_dirty_fields_and_acknowledge_writes() {
-        use openusd::sdf::{LayerOffset, Reference, Value};
+        use openusd::{
+            sdf::{LayerOffset, Reference},
+            vt::Value,
+        };
         let original = Reference {
             asset_path: "part.usda".into(),
             prim_path: openusd::sdf::path("/A").unwrap(),
@@ -2385,7 +2370,7 @@ mod tests {
         let mut operation = editor.snapshot().unwrap().reference_opinions[0]
             .operation
             .clone();
-        let base = operation.prepended_items[0].clone();
+        let base = operation.prepended_items()[0].clone();
         let fields = [
             base.asset_path.clone(),
             "/Ball".into(),
@@ -2398,7 +2383,7 @@ mod tests {
             edited.layer_offset,
             openusd::sdf::LayerOffset::new(12.5, 3.)
         );
-        operation.prepended_items[0] = edited;
+        operation.edit_items(ListOpType::Prepended, |items| items[0] = edited);
         editor
             .edit(usd_bevy::editor::EditorEdit::ReferenceListOp {
                 prim: "/Root".into(),
@@ -2419,7 +2404,7 @@ mod tests {
         assert_eq!(
             editor.snapshot().unwrap().reference_opinions[0]
                 .operation
-                .prepended_items[0],
+                .prepended_items()[0],
             base
         );
         assert_eq!(std::fs::read(path).unwrap(), bytes);
@@ -2474,7 +2459,10 @@ mod tests {
 
     #[test]
     fn reference_readout_keeps_source_identity_buckets_and_custom_data() {
-        use openusd::sdf::{LayerOffset, Reference, ReferenceListOp, Value};
+        use openusd::{
+            sdf::{LayerOffset, Reference, ReferenceListOp},
+            vt::Value,
+        };
         let reference = Reference {
             asset_path: "long relative path with spaces/model.usda".into(),
             prim_path: openusd::sdf::path("/Original").unwrap(),
@@ -2681,7 +2669,7 @@ mod tests {
                 prim: "/Root".into(),
                 name: "value".into(),
                 type_name: "double".into(),
-                value: openusd::sdf::Value::Double(3.),
+                value: openusd::vt::Value::Double(3.),
             },
         );
         app.update();
@@ -2730,7 +2718,7 @@ mod tests {
 
     #[test]
     fn matrix_rows_preserve_double_precision_and_reject_invalid_input() {
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let values = [
             1.000000000000001,
             0.0,
@@ -2749,7 +2737,7 @@ mod tests {
             5.75,
             1.0,
         ];
-        let value = Value::Matrix4d(openusd::gf::Matrix4d(values));
+        let value = Value::Matrix4d(openusd::gf::Mat4d(values));
         let text = super::editable_text(&value).unwrap();
         assert_eq!(text.lines().count(), 4);
         assert_eq!(text.lines().last().unwrap(), "3.25 -4.5 5.75 1");
@@ -2790,7 +2778,7 @@ def Xform "M" {
         let order = stage
             .attribute("/M.xformOpOrder")
             .unwrap()
-            .get::<openusd::sdf::Value>()
+            .get::<openusd::vt::Value>()
             .unwrap();
         editor
             .edit(EditorEdit::AttributeSample {
@@ -2803,12 +2791,12 @@ def Xform "M" {
             .unwrap();
         let attribute = stage.attribute("/M.xformOp:transform").unwrap();
         assert_eq!(
-            attribute.get::<openusd::sdf::Value>().unwrap(),
+            attribute.get::<openusd::vt::Value>().unwrap(),
             Some(template)
         );
         assert_eq!(
             attribute
-                .get_at::<openusd::sdf::Value>(Some(openusd::usd::TimeCode::new(10.0)))
+                .get_at::<openusd::vt::Value>(Some(openusd::usd::TimeCode::new(10.0)))
                 .unwrap(),
             Some(value)
         );
@@ -2816,7 +2804,7 @@ def Xform "M" {
             stage
                 .attribute("/M.xformOpOrder")
                 .unwrap()
-                .get::<openusd::sdf::Value>()
+                .get::<openusd::vt::Value>()
                 .unwrap(),
             order
         );

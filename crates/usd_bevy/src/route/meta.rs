@@ -41,7 +41,7 @@ impl PrimRoute for MetaRoute {
             .map(|t| t.as_str().to_string())
             .filter(|k| !k.is_empty());
         let display_name = prim
-            .get_metadata::<String>("displayName")
+            .metadata::<String>("displayName")
             .ok()
             .flatten()
             .filter(|n| !n.is_empty());
@@ -75,7 +75,7 @@ mod tests {
             .unwrap()
             .set_kind("component")
             .unwrap()
-            .set_metadata("displayName", openusd::sdf::Value::String("Fendt".into()))
+            .set_metadata("displayName", openusd::vt::Value::String("Fendt".into()))
             .unwrap();
         stage
             .define_prim("/Plain")

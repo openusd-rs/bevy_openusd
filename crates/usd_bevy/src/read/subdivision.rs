@@ -2,8 +2,9 @@
 
 use anyhow::{Result, bail, ensure};
 use openusd::{
-    sdf::{Path, Value},
+    sdf::Path,
     usd::{Stage, TimeCode},
+    vt::Value,
 };
 
 #[derive(Debug, Clone, PartialEq, Default)]

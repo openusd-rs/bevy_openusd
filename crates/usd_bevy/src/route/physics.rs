@@ -11,8 +11,8 @@
 //! values, and read as `None`.
 
 use bevy::prelude::*;
-use openusd::sdf::Value;
 use openusd::usd::{Attribute, ResolveInfoSource};
+use openusd::vt::Value;
 use openusd_schemas::physics::{CollisionAPI, DriveAPI, LimitAPI, MassAPI, RigidBodyAPI};
 
 use super::{PrimRoute, RouteCtx};
@@ -563,7 +563,7 @@ fn read_joint(ctx: &RouteCtx, type_name: &str) -> UsdJoint {
 }
 
 fn read_drives(ctx: &RouteCtx) -> UsdDrives {
-    let drives = DriveAPI::get_all(
+    let drives = DriveAPI::all(
         &ctx.stage
             .prim(ctx.path.clone())
             .expect("validated USD path"),
@@ -584,7 +584,7 @@ fn read_drives(ctx: &RouteCtx) -> UsdDrives {
 }
 
 fn read_limits(ctx: &RouteCtx) -> UsdLimits {
-    let limits = LimitAPI::get_all(
+    let limits = LimitAPI::all(
         &ctx.stage
             .prim(ctx.path.clone())
             .expect("validated USD path"),

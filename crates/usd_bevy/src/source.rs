@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use openusd::ar::{Asset, DefaultResolver, ResolvedPath, Resolver};
+use openusd::ar::{Asset, AssetBuffer, DefaultResolver, ResolvedPath, Resolver, SharedBuffer};
 use openusd::usd::Stage;
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(0);
@@ -347,7 +347,7 @@ impl UsdSource {
                 );
                 for time in times {
                     let path = crate::route::dome::asset_string(
-                        attr.get_at::<openusd::sdf::Value>(time)
+                        attr.get_at::<openusd::vt::Value>(time)
                             .map_err(|error| error.to_string())?,
                     );
                     if !path.is_empty() {
@@ -631,8 +631,8 @@ impl UsdSource {
                 anyhow::ensure!(
                     path.as_str().starts_with('/')
                         && path.as_str() != "/"
-                        && path.is_prim_path()
-                        && !path.contains_prim_variant_selection(),
+                        && path.is_prim()
+                        && !path.has_variant_selection(),
                     "reference assembly requires absolute non-root prim paths"
                 );
             }
@@ -812,19 +812,19 @@ impl UsdSource {
             let has_clips = path
                 .parent()
                 .is_some_and(|parent| clip_prims.contains(&parent))
-                || prim.get_metadata::<openusd::sdf::Value>("clips")?.is_some();
+                || prim.metadata::<openusd::vt::Value>("clips")?.is_some();
             if has_clips {
                 clip_prims.insert(path.clone());
             }
-            if let Some(openusd::sdf::Value::ReferenceListOp(references)) =
-                prim.get_metadata("references")?
+            if let Some(openusd::vt::Value::ReferenceListOp(references)) =
+                prim.metadata("references")?
             {
                 for reference in references
-                    .explicit_items
+                    .explicit_items()
                     .iter()
-                    .chain(&references.prepended_items)
-                    .chain(&references.appended_items)
-                    .chain(&references.added_items)
+                    .chain(references.prepended_items())
+                    .chain(references.appended_items())
+                    .chain(references.added_items())
                 {
                     anyhow::ensure!(
                         reference.layer_offset.is_valid_composition(),
@@ -833,21 +833,16 @@ impl UsdSource {
                     );
                 }
             }
-            if let Some(openusd::sdf::Value::PayloadListOp(payloads)) =
-                prim.get_metadata("payload")?
-            {
+            if let Some(openusd::vt::Value::PayloadListOp(payloads)) = prim.metadata("payload")? {
                 for payload in payloads
-                    .explicit_items
+                    .explicit_items()
                     .iter()
-                    .chain(&payloads.prepended_items)
-                    .chain(&payloads.appended_items)
-                    .chain(&payloads.added_items)
+                    .chain(payloads.prepended_items())
+                    .chain(payloads.appended_items())
+                    .chain(payloads.added_items())
                 {
                     anyhow::ensure!(
-                        payload
-                            .layer_offset
-                            .as_ref()
-                            .is_none_or(openusd::sdf::LayerOffset::is_valid_composition),
+                        payload.layer_offset.is_valid_composition(),
                         "unsupported payload time offset at {path}: {:?}",
                         payload.layer_offset
                     );
@@ -872,14 +867,14 @@ impl UsdSource {
                     continue;
                 }
                 let value_started = profile_values.then(bevy::platform::time::Instant::now);
-                attribute.get::<openusd::sdf::Value>()?;
+                attribute.get::<openusd::vt::Value>()?;
                 if let Some(started) = value_started {
                     value_times[0] += started.elapsed();
                 }
                 let samples_started = profile_values.then(bevy::platform::time::Instant::now);
                 if asset {
                     for time in attribute.time_sample_times()? {
-                        attribute.get_at::<openusd::sdf::Value>(Some(
+                        attribute.get_at::<openusd::vt::Value>(Some(
                             openusd::usd::TimeCode::new(time),
                         ))?;
                     }
@@ -1002,9 +997,28 @@ fn uncaptured(path: &str) -> bool {
             })
 }
 
+/// Reads the entry `inner` names in `package`, one nested package at a time.
+pub(crate) fn package_entry(package: Arc<[u8]>, inner: &str) -> io::Result<AssetBuffer> {
+    let mut buffer = AssetBuffer::from(package);
+    let mut remaining = inner.to_owned();
+    loop {
+        let (name, rest) = match openusd::ar::split_package_relative_path_outer(&remaining) {
+            Some((name, rest)) => (name, Some(rest)),
+            None => (std::mem::take(&mut remaining), None),
+        };
+        buffer = openusd::usdz::Archive::from_bytes(buffer)
+            .and_then(|mut archive| archive.entry(&name))
+            .map_err(io::Error::other)?;
+        match rest {
+            Some(rest) => remaining = rest,
+            None => return Ok(buffer),
+        }
+    }
+}
+
 fn read_shared_asset(asset: &mut dyn Asset) -> io::Result<Arc<[u8]>> {
-    if let Some(bytes) = asset.shared_bytes() {
-        return Ok(bytes);
+    if let Some(view) = asset.shared_buffer() {
+        return Ok(Arc::from(&*view));
     }
     asset.seek(SeekFrom::Start(0))?;
     let size = usize::try_from(asset.size()?)
@@ -1052,8 +1066,8 @@ impl Asset for SharedAsset {
     fn size(&self) -> io::Result<u64> {
         Ok(self.0.get_ref().len() as u64)
     }
-    fn shared_bytes(&self) -> Option<Arc<[u8]>> {
-        Some(self.0.get_ref().clone())
+    fn shared_buffer(&self) -> Option<SharedBuffer> {
+        Some(SharedBuffer::new(self.0.get_ref().clone()))
     }
 }
 
@@ -1096,14 +1110,14 @@ impl SourceResolver {
             .unwrap_or(false)
     }
 
-    fn packaged_bytes(&self, path: &str) -> io::Result<Option<Vec<u8>>> {
+    fn packaged_bytes(&self, path: &str) -> io::Result<Option<AssetBuffer>> {
         let Some((package, inner)) = openusd::ar::split_package_relative_path_outer(path) else {
             return Ok(None);
         };
         let Some(bytes) = self.bytes(&package) else {
             return Ok(None);
         };
-        openusd::ar::read_package_entry(Box::new(SharedAsset(Cursor::new(bytes))), &inner).map(Some)
+        package_entry(bytes, &inner).map(Some)
     }
 }
 
@@ -1200,8 +1214,8 @@ impl Resolver for SourceResolver {
                 .entry(outer.to_owned())
                 .or_insert_with(|| bytes.clone());
             return if let Some((_, inner)) = packaged {
-                openusd::ar::read_package_entry(Box::new(SharedAsset(Cursor::new(bytes))), &inner)
-                    .map(|bytes| Box::new(Cursor::new(bytes)) as Box<dyn Asset>)
+                package_entry(bytes, &inner)
+                    .map(|buffer| Box::new(Cursor::new(buffer)) as Box<dyn Asset>)
             } else {
                 Ok(Box::new(SharedAsset(Cursor::new(bytes))))
             };
@@ -1350,10 +1364,7 @@ mod tests {
         let bytes: Arc<[u8]> = Arc::from([1, 2, 3]);
         let mut shared = SharedAsset(Cursor::new(bytes.clone()));
         shared.seek(SeekFrom::End(0)).unwrap();
-        assert!(Arc::ptr_eq(
-            &bytes,
-            &read_shared_asset(&mut shared).unwrap()
-        ));
+        assert_eq!(read_shared_asset(&mut shared).unwrap(), bytes);
     }
 
     #[test]
@@ -1401,9 +1412,14 @@ mod tests {
     #[test]
     fn binary_snapshots_share_bytes_and_keep_edits_isolated() {
         use super::*;
-        use openusd::sdf::{FileFormat, LayerRegistry, Value};
+        use openusd::{
+            sdf::{FileFormat, LayerRegistry},
+            vt::Value,
+        };
         let text = b"#usda 1.0\ndef Xform \"Root\" { double value = 2 }";
-        let data = LayerRegistry::read_bytes(text.as_slice().into(), "source.usda").unwrap();
+        let data = LayerRegistry::read_bytes(text.as_slice().into(), "source.usda")
+            .unwrap()
+            .0;
         let mut output = Cursor::new(Vec::new());
         openusd::usdc::UsdcFileFormat
             .write(data.as_ref(), &mut output)
@@ -1412,22 +1428,24 @@ mod tests {
         let digest = blake3::hash(&bytes);
         let mut asset = SharedAsset(Cursor::new(bytes.clone()));
         asset.seek(SeekFrom::End(0)).unwrap();
-        let snapshot = asset.shared_bytes().unwrap();
-        assert!(Arc::ptr_eq(&bytes, &snapshot));
+        let snapshot = asset.shared_buffer().unwrap();
+        assert_eq!(snapshot.as_ptr(), bytes.as_ptr());
         let owners = Arc::strong_count(&bytes);
-        let mut first = LayerRegistry::read_shared_bytes(snapshot, "first.usd").unwrap();
+        let mut first = LayerRegistry::read_bytes(snapshot.into(), "first.usd")
+            .unwrap()
+            .0;
         assert_eq!(Arc::strong_count(&bytes), owners);
         let second = openusd::usdc::UsdcFileFormat
-            .read_shared_bytes(bytes.clone(), "second.usdc")
+            .read_bytes(bytes.clone().into(), "second.usdc")
             .unwrap();
         let path = openusd::sdf::path("/Root.value").unwrap();
         first.set_field(&path, "default", Value::Double(7.0));
         assert_eq!(
-            first.get_field(&path, "default").unwrap().into_owned(),
+            first.field(&path, "default").unwrap().into_owned(),
             Value::Double(7.0)
         );
         assert_eq!(
-            second.get_field(&path, "default").unwrap().into_owned(),
+            second.field(&path, "default").unwrap().into_owned(),
             Value::Double(2.0)
         );
         assert_eq!(blake3::hash(&bytes), digest);
@@ -1454,13 +1472,17 @@ mod tests {
         }
         let text: Arc<[u8]> = Arc::from(text.as_slice());
         assert!(
-            LayerRegistry::read_shared_bytes(text, "text.usd")
+            LayerRegistry::read_bytes(text.into(), "text.usd")
                 .unwrap()
+                .0
                 .has_spec(&openusd::sdf::path("/Root").unwrap())
         );
         assert!(
-            LayerRegistry::read_shared_bytes(Arc::from(b"PXR-USDC".as_slice()), "broken.usd")
-                .is_err()
+            LayerRegistry::read_bytes(
+                Arc::<[u8]>::from(b"PXR-USDC".as_slice()).into(),
+                "broken.usd"
+            )
+            .is_err()
         );
     }
 
@@ -1757,7 +1779,11 @@ over "Undefined" { def Xform "Child" {} }
                     .is_abstract()
                     .unwrap()
             );
-            stage.define_prim("/Abstract").unwrap();
+            stage
+                .prim("/Abstract")
+                .unwrap()
+                .set_specifier(openusd::sdf::Specifier::Def)
+                .unwrap();
             check();
             assert!(
                 !stage
@@ -2008,9 +2034,9 @@ def Xform "Root" {}
         stage
             .attribute("/Sky.inputs:texture:file")
             .unwrap()
-            .set(openusd::sdf::Value::AssetPath(
-                openusd::sdf::AssetPath::new("changed.exr"),
-            ))
+            .set(openusd::vt::Value::AssetPath(openusd::sdf::AssetPath::new(
+                "changed.exr",
+            )))
             .unwrap();
         let edited = source.texture_requests(&stage, false).unwrap();
         assert_ne!(*first, *edited);
@@ -2382,14 +2408,13 @@ def Xform "Second" (
             .unwrap()
             .set_metadata(
                 "references",
-                openusd::sdf::Value::ReferenceListOp(openusd::sdf::ListOp {
-                    prepended_items: vec![openusd::sdf::Reference {
+                openusd::vt::Value::ReferenceListOp(openusd::sdf::ListOp::prepended([
+                    openusd::sdf::Reference {
                         prim_path: openusd::sdf::path("/Template").unwrap(),
                         layer_offset: openusd::sdf::LayerOffset::new(0.0, -1.0),
                         ..Default::default()
-                    }],
-                    ..Default::default()
-                }),
+                    },
+                ])),
             )
             .unwrap();
         assert!(UsdSource::validate_composition(&stage).is_err());
@@ -2479,7 +2504,7 @@ def Xform "Second" (
     #[test]
     fn typed_snapshot_edits_preserve_dependencies_and_inputs() {
         use crate::editor::EditorEdit;
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let directory = tempfile::tempdir().unwrap();
         let model = UsdSource::snapshot(
             directory.path().join("model.usda"),
@@ -2724,7 +2749,10 @@ def Xform "Second" (
 
     #[test]
     fn offset_reference_batches_preserve_arcs_and_retime_samples() {
-        use openusd::sdf::{LayerOffset, Path, Value};
+        use openusd::{
+            sdf::{LayerOffset, Path},
+            vt::Value,
+        };
         let root = UsdSource::snapshot("retimed/root.usda", &b"#usda 1.0\n"[..]).unwrap();
         let model = UsdSource::snapshot("retimed/model.usda", &b"#usda 1.0\n(defaultPrim = \"Model\")\ndef Sphere \"Model\" { double radius.timeSamples = {0: 1, 10: 3} }\n"[..]).unwrap();
         let offset = LayerOffset::new(10.0, 2.0);
@@ -2759,14 +2787,14 @@ def Xform "Second" (
         let Value::ReferenceListOp(arcs) = stage
             .prim("/Retimed")
             .unwrap()
-            .get_metadata("references")
+            .metadata("references")
             .unwrap()
             .unwrap()
         else {
             panic!()
         };
-        assert!(arcs.explicit_items[0].prim_path.is_empty());
-        assert_eq!(arcs.explicit_items[0].layer_offset, offset);
+        assert!(arcs.explicit_items()[0].prim_path.is_empty());
+        assert_eq!(arcs.explicit_items()[0].layer_offset, offset);
         assert_eq!(assembly.dependencies().count(), 1);
         for invalid in [
             LayerOffset::new(f64::NAN, 1.0),
@@ -2808,17 +2836,17 @@ def Xform "Second" (
                 .unwrap(),
             Some(2.0)
         );
-        let openusd::sdf::Value::ReferenceListOp(references) = stage
+        let openusd::vt::Value::ReferenceListOp(references) = stage
             .prim("/Instance")
             .unwrap()
-            .get_metadata("references")
+            .metadata("references")
             .unwrap()
             .unwrap()
         else {
             panic!()
         };
-        assert_eq!(references.explicit_items.len(), 1);
-        assert!(references.explicit_items[0].prim_path.is_empty());
+        assert_eq!(references.explicit_items().len(), 1);
+        assert!(references.explicit_items()[0].prim_path.is_empty());
         let changed = UsdSource::snapshot(
             "defaults/model.usda",
             &b"#usda 1.0\n(defaultPrim = \"Other\")\ndef Cube \"Other\" {}\n"[..],
@@ -2898,8 +2926,8 @@ def Xform "Second" (
                 assert_eq!(prim.attribute("radius").get::<f64>().unwrap(), Some(1.5));
                 assert_eq!(
                     matches!(
-                        prim.get_metadata("references").unwrap(),
-                        Some(openusd::sdf::Value::ReferenceListOp(_))
+                        prim.metadata("references").unwrap(),
+                        Some(openusd::vt::Value::ReferenceListOp(_))
                     ),
                     retains_references
                 );
@@ -2924,9 +2952,9 @@ def Xform "Second" (
                 reopened
                     .prim("/First")
                     .unwrap()
-                    .get_metadata("references")
+                    .metadata("references")
                     .unwrap(),
-                Some(openusd::sdf::Value::ReferenceListOp(_))
+                Some(openusd::vt::Value::ReferenceListOp(_))
             ));
         }
         assert_eq!(std::fs::read_dir(input.path()).unwrap().count(), 0);
@@ -3104,10 +3132,10 @@ def Scope "Model" (
             assert_eq!(prim.attribute("score").get::<f64>().unwrap(), Some(17.0));
             let value = prim
                 .attribute("paint")
-                .get::<openusd::sdf::Value>()
+                .get::<openusd::vt::Value>()
                 .unwrap()
                 .unwrap();
-            let openusd::sdf::Value::AssetPath(asset) = value else {
+            let openusd::vt::Value::AssetPath(asset) = value else {
                 panic!("expected asset")
             };
             assert_eq!(
@@ -3284,11 +3312,11 @@ def Scope "Model" (
         };
         assert_eq!(
             read("chameleon_camo_mat/Clamp"),
-            Some(openusd::sdf::Value::StringVec(vec![]))
+            Some(openusd::vt::Value::StringVec(vec![]))
         );
         assert_eq!(
             read("chameleon_blue_mat/PreviewSurface"),
-            Some(openusd::sdf::Value::StringVec(vec![
+            Some(openusd::vt::Value::StringVec(vec![
                 "Advanced".into(),
                 "inputs:diffuseColor".into()
             ]))

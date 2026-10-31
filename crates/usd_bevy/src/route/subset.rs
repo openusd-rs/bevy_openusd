@@ -686,7 +686,7 @@ def Mesh "M" {
                 stage
                     .attribute("/Test/Bar.skel:blendShapes")
                     .unwrap()
-                    .set(openusd::sdf::Value::TokenVec(vec![]))
+                    .set(openusd::vt::Value::TokenVec(vec![]))
                     .unwrap();
                 app.update();
                 for entity in std::iter::once(parent).chain(parts.iter().map(|(child, _)| *child)) {
@@ -799,7 +799,7 @@ def Mesh "M" {
         for indices in [vec![-1], vec![1], vec![0, 0]] {
             attribute
                 .clone()
-                .set(openusd::sdf::Value::IntVec(indices))
+                .set(openusd::vt::Value::IntVec(indices))
                 .unwrap();
             crate::live::apply_changes(&mut world, &live, &mut map);
             assert!(children(&world, parent).is_empty());
@@ -817,7 +817,7 @@ def Mesh "M" {
             );
         }
         assert!(world.get_entity(child).is_err());
-        attribute.set(openusd::sdf::Value::IntVec(vec![0])).unwrap();
+        attribute.set(openusd::vt::Value::IntVec(vec![0])).unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert_eq!(children(&world, parent).len(), 1);
         assert!(world.get::<UsdSubsetWarning>(parent).is_none());

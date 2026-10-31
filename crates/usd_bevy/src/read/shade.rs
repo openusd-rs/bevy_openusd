@@ -3,8 +3,8 @@
 //! [`ReadPreviewMaterial`], following connections through `UsdUVTexture` and
 //! the MaterialX node graph. Reads through openusd only.
 
-use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
+use openusd::{sdf::Path, vt::Value};
 
 use super::util::{connections_at, read_asset_path, read_bool, read_token_or_string};
 
@@ -127,8 +127,13 @@ pub fn read_material_binding_for_purpose(
     purpose: &str,
 ) -> anyhow::Result<Option<Path>> {
     Ok(
-        openusd_schemas::shade::MaterialBindingAPI::new(stage.prim(prim.clone())?)
-            .compute_bound_material(purpose)?,
+        openusd_schemas::shade::MaterialBindingAPI::from_prim_unchecked(stage.prim(prim.clone())?)
+            .resolve_binding(
+                purpose,
+                true,
+                &mut openusd_schemas::shade::BindingCache::default(),
+            )?
+            .map(|binding| binding.material_path().clone()),
     )
 }
 
@@ -381,13 +386,13 @@ fn texture_rgba_transform(
         return Ok([[1.0; 4], [0.0; 4]]);
     }
     let mut result = [[1.0; 4], [0.0; 4]];
-    let shader = Shader::new(stage.prim(prim)?);
+    let shader = Shader::from_prim_unchecked(stage.prim(prim)?);
     for (index, name) in ["scale", "bias"].into_iter().enumerate() {
         let input = shader.input(name);
         let path = input.path();
         let connections = input.connected_sources()?;
         anyhow::ensure!(
-            connections.invalid_source_paths().is_empty(),
+            connections.invalid_paths().is_empty(),
             "connected texture scale/bias has invalid sources at {path}"
         );
         let producers = input.value_producing_attributes(ProducerFilter::Any)?;
@@ -1683,10 +1688,10 @@ pub(super) fn texture_input_attribute(
     name: &str,
 ) -> anyhow::Result<Option<openusd::usd::Attribute>> {
     use openusd_schemas::shade::{Connectable, ProducerFilter, Shader};
-    let input = Shader::new(stage.prim(tex_prim)?).input(name);
+    let input = Shader::from_prim_unchecked(stage.prim(tex_prim)?).input(name);
     let connections = input.connected_sources()?;
     anyhow::ensure!(
-        connections.invalid_source_paths().is_empty(),
+        connections.invalid_paths().is_empty(),
         "invalid texture {name} connection at {}",
         input.path()
     );
@@ -1986,7 +1991,7 @@ def Material "Mat" {
 
     #[test]
     fn texture_times_follow_each_material_graph_and_surface_fallback() {
-        use openusd::sdf::{Path, Value};
+        use openusd::{sdf::Path, vt::Value};
         let stage = openusd::usd::Stage::builder()
             .in_memory("texture-graphs.usda")
             .unwrap();
@@ -2160,8 +2165,8 @@ def Material "Mat" {
         )
         .unwrap();
         let stage = source.open_stage().unwrap();
-        let parent = MaterialBindingAPI::new(stage.prim("/Set").unwrap());
-        let child = MaterialBindingAPI::new(stage.prim("/Set/Child").unwrap());
+        let parent = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set").unwrap());
+        let child = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set/Child").unwrap());
         let path = Path::new("/Set/Child").unwrap();
         parent.bind("/Inherited").unwrap();
         assert_eq!(
@@ -2180,7 +2185,11 @@ def Material "Mat" {
             "/Local"
         );
         parent
-            .bind_for_purpose("", "/Strong", BindingStrength::StrongerThanDescendants)
+            .bind_for_purpose(
+                "",
+                "/Strong",
+                Some(BindingStrength::StrongerThanDescendants),
+            )
             .unwrap();
         assert_eq!(
             read_material_binding(&stage, &path)
@@ -2193,7 +2202,7 @@ def Material "Mat" {
             .bind_for_purpose(
                 "preview",
                 "/Preview",
-                BindingStrength::WeakerThanDescendants,
+                Some(BindingStrength::WeakerThanDescendants),
             )
             .unwrap();
         let before = stage.root_layer().export_to_string().unwrap();
@@ -2225,8 +2234,12 @@ def Material "Mat" {
         let stage = source.open_stage().unwrap();
         let path = Path::new("/Hair").unwrap();
         assert!(read_material_binding(&stage, &path).unwrap().is_none());
-        MaterialBindingAPI::new(stage.prim("/Hair").unwrap())
-            .bind_for_purpose("full", "/Full", BindingStrength::WeakerThanDescendants)
+        MaterialBindingAPI::from_prim_unchecked(stage.prim("/Hair").unwrap())
+            .bind_for_purpose(
+                "full",
+                "/Full",
+                Some(BindingStrength::WeakerThanDescendants),
+            )
             .unwrap();
         assert_eq!(
             read_material_binding(&stage, &path)
@@ -2249,17 +2262,17 @@ def Material "Mat" {
         let collection =
             openusd::usd::apply_collection(&stage, Path::new("/Set").unwrap(), "selected").unwrap();
         collection
-            .include_path(&stage, Path::new("/Set/A").unwrap())
+            .include_path(Path::new("/Set/A").unwrap())
             .unwrap();
-        let binding = MaterialBindingAPI::new(stage.prim("/Set").unwrap());
+        let binding = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set").unwrap());
         binding.bind("/Default").unwrap();
         binding
             .bind_collection(
                 "selected",
-                Path::new("/Set.collection:selected").unwrap(),
+                &collection,
                 Path::new("/Collection").unwrap(),
                 "",
-                BindingStrength::WeakerThanDescendants,
+                Some(BindingStrength::WeakerThanDescendants),
             )
             .unwrap();
         assert_eq!(

@@ -19,7 +19,7 @@ use openusd_schemas::lux::RectLightSchema;
 use openusd_schemas::lux::SphereLightSchema;
 use std::f32::consts::PI;
 
-use openusd::sdf::Value;
+use openusd::vt::Value;
 use openusd_schemas::lux::{
     CylinderLight, DiskLight, DistantLight, LightAPI, RectLight, ShapingAPI, SphereLight,
 };
@@ -78,7 +78,7 @@ fn sampled_scalar(attribute: openusd::usd::Attribute, time: Option<f64>) -> Opti
 
 /// Sample common UsdLux color, intensity and exposure inputs.
 fn common_inputs<L: openusd::usd::SchemaBase>(light: &L, time: Option<f64>) -> (Color, f32) {
-    let light = LightAPI::new(light.prim().clone());
+    let light = LightAPI::from_prim_unchecked(light.prim().clone());
     let color = match light
         .color_attr()
         .get_at::<Value>(time.map(openusd::usd::TimeCode::new))
@@ -286,8 +286,8 @@ mod tests {
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
-    use openusd::sdf::Value;
     use openusd::usd::Stage;
+    use openusd::vt::Value;
 
     fn light_world() -> World {
         let mut w = World::new();

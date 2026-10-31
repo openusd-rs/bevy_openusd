@@ -14,8 +14,8 @@ physics_overlay = ["bevy/bevy_gizmos"]
 [dependencies]
 async-channel = { version = "2", optional = true }
 usd_macro = { path = "../usd_macro" }
-openusd = { path = "../../vendor/openusd/crates/openusd" }
-openusd-schemas = { path = "../../vendor/openusd/crates/openusd-schemas", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
+openusd = { git = "https://github.com/mxpv/openusd", rev = "d10fa4c2838e1e18a5c4fb4aa47534f94fde8995" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "d10fa4c2838e1e18a5c4fb4aa47534f94fde8995", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
 glam = "0.30"
 anyhow = "1"
 blake3 = "1"

@@ -14,7 +14,7 @@ use openusd_schemas::geom::PointInstancerSchema;
 
 use super::{PrimRoute, RouteCtx};
 use crate::read::geom::{ReadPointInstancer, read_point_instancer_at};
-use openusd::sdf::Value;
+use openusd::vt::Value;
 use openusd_schemas::geom::PointInstancer;
 
 /// Instance IDs masked by composed metadata or sampled visibility.
@@ -25,10 +25,10 @@ fn masked_ids(ctx: &RouteCtx) -> Result<bevy::platform::collections::HashSet<i64
         .prim(ctx.path.clone())
         .map_err(|error| error.to_string())?;
     match prim
-        .get_metadata::<Value>("inactiveIds")
+        .metadata::<Value>("inactiveIds")
         .map_err(|error| error.to_string())?
     {
-        Some(Value::Int64ListOp(op)) if op.explicit => set.extend(op.explicit_items),
+        Some(Value::Int64ListOp(op)) if op.is_explicit() => set.extend(op.explicit_items()),
         None => {}
         _ => return Err("invalid composed inactiveIds metadata".into()),
     }
@@ -895,8 +895,8 @@ mod tests {
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
-    use openusd::sdf::Value;
     use openusd::usd::Stage;
+    use openusd::vt::Value;
 
     #[test]
     fn affine_mesh_prototypes_match_explicit_points_and_share_subsets() {
@@ -2334,7 +2334,7 @@ def PointInstancer "PI" {
             .unwrap();
         live.stage.set_edit_target(root).unwrap();
         let mut operation = openusd::sdf::ListOp::prepended(vec![20]);
-        operation.deleted_items = vec![10];
+        operation.set_items(openusd::sdf::ListOpType::Deleted, [10]);
         live.stage
             .prim("/PI")
             .unwrap()

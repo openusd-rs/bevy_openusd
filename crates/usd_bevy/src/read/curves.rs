@@ -2,8 +2,9 @@
 
 use super::geom::{Interpolation, MeshPrimvar};
 use openusd::{
-    sdf::{Path, Value},
+    sdf::Path,
     usd::{Stage, TimeCode},
+    vt::Value,
 };
 
 fn field(
@@ -30,7 +31,7 @@ fn field(
         (attribute, value, false)
     };
     let interpolation = {
-        let token = match attribute.get_metadata::<Value>("interpolation")? {
+        let token = match attribute.metadata::<Value>("interpolation")? {
             Some(Value::Token(value)) => value.to_string(),
             Some(Value::String(value)) => value,
             None => {

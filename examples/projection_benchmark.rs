@@ -54,7 +54,7 @@ fn measure(count: usize, cached: bool) -> Measurement {
         "/Template/Shape",
         "size",
         "double",
-        openusd::sdf::Value::Double(4.0),
+        openusd::vt::Value::Double(4.0),
     )
     .unwrap();
     apply_changes(&mut world, &live, &mut map);

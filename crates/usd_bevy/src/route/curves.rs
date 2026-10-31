@@ -8,8 +8,8 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
 use openusd_schemas::geom::BasisCurvesSchema;
 
-use openusd::sdf::Value;
-use openusd_schemas::geom::{BasisCurves, Curves, PointBased};
+use openusd::vt::Value;
+use openusd_schemas::geom::{BasisCurves, CurvesSchema, PointBasedSchema};
 
 use super::{PrimRoute, RouteCtx};
 use crate::read::geom::{Interpolation, MeshPrimvar};

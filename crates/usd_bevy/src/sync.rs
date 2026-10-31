@@ -16,8 +16,8 @@ use bevy::ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy::prelude::*;
 use bevy::reflect::enums::VariantType;
 use bevy::reflect::{PartialReflect, ReflectRef, TypeRegistry};
-use openusd::sdf::Value;
 use openusd::usd::Stage;
+use openusd::vt::Value;
 
 type Result<T> = anyhow::Result<T>;
 
@@ -427,7 +427,7 @@ pub(crate) fn component_value_overrides<T: Component + Reflect + TypePath>(
 ) -> Result<Vec<crate::instance::UsdAttributeOverride>> {
     let prim = openusd::sdf::path(prim_path)?;
     anyhow::ensure!(
-        prim.is_prim_path() && prim.as_str() != "/",
+        prim.is_prim() && prim.as_str() != "/",
         "component owner must be a non-root prim path"
     );
     let registration = registry
@@ -466,7 +466,7 @@ fn write_component_opinions(
 ) -> Result<Vec<String>> {
     let prim = openusd::sdf::path(prim_path)?;
     anyhow::ensure!(
-        prim.is_prim_path() && prim.as_str() != "/" && stage.prim(&prim)?.is_valid()?,
+        prim.is_prim() && prim.as_str() != "/" && stage.prim(&prim)?.is_valid()?,
         "component owner must be an existing prim"
     );
     let owner = stage.prim(&prim)?;

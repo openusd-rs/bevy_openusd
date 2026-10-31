@@ -38,9 +38,9 @@ Current limitations, still being implemented:
 - Renaming a package's default layer entry is not qualified; existing entry
   identity is required. Nested-package and large machinery refresh timing still
   need dedicated coverage.
-- External layer updates retain unrelated undo/redo commands. Commands touching
-  a reloaded layer are discarded, including redo commands whose replay would
-  overwrite the new source. A changed dirty layer still blocks publication.
+- External layer updates clear undo history. Redo commands are kept unless they
+  touch a reloaded layer, whose replay would overwrite the new source. A changed
+  dirty layer still blocks publication.
 - Candidate validation traverses a document copy even though publication applies
   only changed layer fields. Large-document timing is not qualified.
 - Structural projection is scoped, but shared-schema removals and some material/skeleton/prototype

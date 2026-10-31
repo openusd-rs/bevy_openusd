@@ -401,7 +401,7 @@ mod tests {
             stage
                 .attribute("/Test/Face.primvars:skel:jointWeights")
                 .unwrap()
-                .set(openusd::sdf::Value::FloatVec(joint_weights.to_vec()))
+                .set(openusd::vt::Value::FloatVec(joint_weights.to_vec()))
                 .unwrap();
             let ctx = RouteCtx::at(&stage, &path, Some(time));
             let read = crate::read::geom::read_mesh_at(&stage, &path, Some(time))
@@ -571,7 +571,7 @@ mod tests {
             .attribute("/Test/Bar.primvars:skel:jointWeights")
             .unwrap()
             .set_at(
-                openusd::sdf::Value::FloatVec([0.25, 0.75].repeat(4)),
+                openusd::vt::Value::FloatVec([0.25, 0.75].repeat(4)),
                 openusd::usd::TimeCode::new(5.0),
             )
             .unwrap();
@@ -593,8 +593,8 @@ mod tests {
 
     #[test]
     fn sampled_base_points_feed_cpu_and_gpu_skinning() {
-        use openusd::sdf::Value;
         use openusd::usd::TimeCode;
+        use openusd::vt::Value;
         let stage = stage();
         let path = openusd::sdf::path("/Test/Bar").unwrap();
         let rest = crate::read::geom::read_mesh(&stage, &path)
@@ -710,7 +710,7 @@ mod tests {
 
     #[test]
     fn cached_skin_tangents_match_direct_generation_after_uv_edits() {
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let stage = stage();
         let path = openusd::sdf::path("/Test/Bar").unwrap();
         let corners = crate::read::geom::read_mesh(&stage, &path)
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn seam_vertices_keep_their_point_influences() {
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let stage = stage();
         let path = openusd::sdf::path("/Test/Bar").unwrap();
         let mut read = crate::read::geom::read_mesh(&stage, &path)
@@ -901,9 +901,7 @@ mod tests {
             "/Test/Bar",
             "primvars:skel:geomBindTransform",
             "matrix4d",
-            openusd::sdf::Value::Matrix4d(openusd::gf::Matrix4d(
-                bind.to_cols_array().map(f64::from),
-            )),
+            openusd::vt::Value::Matrix4d(openusd::gf::Mat4d(bind.to_cols_array().map(f64::from))),
         )
         .unwrap();
         let points = crate::read::geom::read_mesh(&stage, &path)
@@ -985,7 +983,7 @@ mod tests {
             "/Test/Bar",
             "skel:blendShapes",
             "token[]",
-            openusd::sdf::Value::TokenVec(vec!["Blend".into()]),
+            openusd::vt::Value::TokenVec(vec!["Blend".into()]),
         )
         .unwrap();
         registry.patch_prim(

@@ -43,7 +43,7 @@ fn verify_instances() {
                     prim: "/World/Static".into(),
                     name: "size".into(),
                     type_name: "double".into(),
-                    value: openusd::sdf::Value::Double(2.0),
+                    value: openusd::vt::Value::Double(2.0),
                 }],
                 ..default()
             },

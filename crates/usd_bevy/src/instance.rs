@@ -15,7 +15,7 @@ pub struct UsdAttributeOverride {
     pub prim: String,
     pub name: String,
     pub type_name: String,
-    pub value: openusd::sdf::Value,
+    pub value: openusd::vt::Value,
 }
 
 /// Root-local opinions applied in order: variants, then attributes.
@@ -341,7 +341,7 @@ def PointInstancer "PI" {{
             .attribute("/Root.primvars:normals")
             .unwrap()
             .set_at(
-                openusd::sdf::Value::Vec3fVec(vec![openusd::gf::Vec3f::from([0.0, 1.0, 0.0])]),
+                openusd::vt::Value::Vec3fVec(vec![openusd::gf::Vec3f::from([0.0, 1.0, 0.0])]),
                 openusd::usd::TimeCode::new(0.0),
             )
             .unwrap();
@@ -351,7 +351,7 @@ def PointInstancer "PI" {{
         stage
             .create_attribute("/Root/M.primvars:normals", "normal3f[]")
             .unwrap()
-            .set(openusd::sdf::Value::Vec3fVec(vec![
+            .set(openusd::vt::Value::Vec3fVec(vec![
                 openusd::gf::Vec3f::from([0.0, 0.0, -1.0]),
             ]))
             .unwrap();
@@ -386,7 +386,7 @@ def PointInstancer "PI" {{
                 prim: "/Prim".into(),
                 name: "custom".into(),
                 type_name: "int".into(),
-                value: openusd::sdf::Value::Int(7),
+                value: openusd::vt::Value::Int(7),
             }],
         };
         let before = overrides.clone();

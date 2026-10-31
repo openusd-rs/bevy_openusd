@@ -7,9 +7,9 @@
 
 use bevy::prelude::*;
 
-use openusd::sdf::Value;
+use openusd::vt::Value;
 use openusd_schemas::lux::{
-    DomeLight, DomeLight_1, DomeLight_1Schema, DomeLightSchema, NonboundableLightBase,
+    DomeLight, DomeLight_1, DomeLight_1Schema, DomeLightSchema, NonboundableLightBaseSchema,
 };
 
 use super::{PrimRoute, RouteCtx};

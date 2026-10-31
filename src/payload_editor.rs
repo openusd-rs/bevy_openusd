@@ -1,5 +1,5 @@
 use mara::ui::mara_core::{pod::Pod, vocab::Id};
-use openusd::sdf::{LayerOffset, Payload, PayloadListOp};
+use openusd::sdf::{LayerOffset, ListOpType, Payload, PayloadListOp};
 use std::sync::{Arc, Mutex};
 use usd_bevy::editor::{EditorBridge, EditorEdit, EditorSnapshot};
 
@@ -10,7 +10,6 @@ struct Row {
     offset: String,
     scale: String,
     mode: Mode,
-    authored_offset: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -56,7 +55,6 @@ impl Default for Row {
             offset: "0".into(),
             scale: "1".into(),
             mode: Mode::default(),
-            authored_offset: true,
         }
     }
 }
@@ -66,20 +64,19 @@ fn parse_rows(rows: &[Row]) -> Result<PayloadListOp, String> {
     if !explicit && rows.iter().any(|row| row.mode == Mode::Replace) {
         return Err("Replace cannot be mixed with other row modes".into());
     }
-    let mut operation = PayloadListOp {
-        explicit,
-        ..Default::default()
-    };
+    let mut operation = PayloadListOp::default();
+    operation.set_explicit(explicit);
     for row in rows {
-        let bucket = match row.mode {
-            Mode::Replace => &mut operation.explicit_items,
-            Mode::Prepend => &mut operation.prepended_items,
-            Mode::Append => &mut operation.appended_items,
-            Mode::Add => &mut operation.added_items,
-            Mode::Delete => &mut operation.deleted_items,
-            Mode::Order => &mut operation.ordered_items,
+        let list = match row.mode {
+            Mode::Replace => ListOpType::Explicit,
+            Mode::Prepend => ListOpType::Prepended,
+            Mode::Append => ListOpType::Appended,
+            Mode::Add => ListOpType::Added,
+            Mode::Delete => ListOpType::Deleted,
+            Mode::Order => ListOpType::Ordered,
         };
-        bucket.push(row.parse()?);
+        let payload = row.parse()?;
+        operation.edit_items(list, |items| items.push(payload));
     }
     Ok(operation)
 }
@@ -96,9 +93,9 @@ impl Row {
         }
         if !prim_path.is_empty()
             && (!prim_path.as_str().starts_with('/')
-                || !prim_path.is_prim_path()
+                || !prim_path.is_prim()
                 || prim_path.as_str() == "/"
-                || prim_path.contains_prim_variant_selection())
+                || prim_path.has_variant_selection())
         {
             return Err("Target must be an absolute prim path, or empty for defaultPrim".into());
         }
@@ -115,12 +112,10 @@ impl Row {
         if !offset.is_finite() || !scale.is_finite() || scale <= 0. {
             return Err("Use a finite offset and positive finite scale".into());
         }
-        let layer_offset = (self.authored_offset || offset != 0. || scale != 1.)
-            .then_some(LayerOffset::new(offset, scale));
         Ok(Payload {
             asset_path: self.asset.clone(),
             prim_path,
-            layer_offset,
+            layer_offset: LayerOffset::new(offset, scale),
         })
     }
 }
@@ -138,25 +133,24 @@ fn local_operation(snapshot: &EditorSnapshot) -> Option<&PayloadListOp> {
 fn rows_from_operation(operation: &PayloadListOp) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
     for (mode, items) in [
-        (Mode::Replace, &operation.explicit_items),
-        (Mode::Prepend, &operation.prepended_items),
-        (Mode::Append, &operation.appended_items),
-        (Mode::Add, &operation.added_items),
-        (Mode::Delete, &operation.deleted_items),
-        (Mode::Order, &operation.ordered_items),
+        (Mode::Replace, operation.explicit_items()),
+        (Mode::Prepend, operation.prepended_items()),
+        (Mode::Append, operation.appended_items()),
+        (Mode::Add, operation.added_items()),
+        (Mode::Delete, operation.deleted_items()),
+        (Mode::Order, operation.ordered_items()),
     ] {
         for payload in items {
             if rows.len() == 64 {
                 return Err("Local opinion exceeds the 64-row editor limit".into());
             }
-            let offset = payload.layer_offset.unwrap_or_default();
+            let offset = payload.layer_offset;
             rows.push(Row {
                 asset: payload.asset_path.clone(),
                 prim: payload.prim_path.to_string(),
                 offset: offset.offset.to_string(),
                 scale: offset.scale.to_string(),
                 mode,
-                authored_offset: payload.layer_offset.is_some(),
             });
         }
     }
@@ -237,16 +231,16 @@ pub fn opinion_pods(snapshot: &EditorSnapshot) -> Vec<Pod> {
                 opinion.offset.offset, opinion.offset.scale
             ));
             let op = &opinion.operation;
-            if op.explicit && op.explicit_items.is_empty() {
+            if op.is_explicit() && op.explicit_items().is_empty() {
                 lines.push("Explicit empty list (blocks weaker payloads)".into());
             }
             for (name, entries) in [
-                ("Explicit", &op.explicit_items),
-                ("Prepend", &op.prepended_items),
-                ("Append", &op.appended_items),
-                ("Add", &op.added_items),
-                ("Delete", &op.deleted_items),
-                ("Order", &op.ordered_items),
+                ("Explicit", op.explicit_items()),
+                ("Prepend", op.prepended_items()),
+                ("Append", op.appended_items()),
+                ("Add", op.added_items()),
+                ("Delete", op.deleted_items()),
+                ("Order", op.ordered_items()),
             ] {
                 for payload in entries {
                     lines.push(name.into());
@@ -266,10 +260,10 @@ pub fn opinion_pods(snapshot: &EditorSnapshot) -> Vec<Pod> {
                             payload.prim_path.as_str()
                         }
                     )));
-                    if let Some(offset) = payload.layer_offset {
+                    if !payload.layer_offset.is_identity() {
                         lines.push(format!(
                             "Arc time: offset {}, scale {}",
-                            offset.offset, offset.scale
+                            payload.layer_offset.offset, payload.layer_offset.scale
                         ));
                     }
                 }
@@ -577,9 +571,9 @@ mod tests {
         assert!(state.touched);
         let moved = parse_rows(&state.rows).unwrap();
         assert_eq!(
-            moved.prepended_items,
+            moved.prepended_items(),
             original
-                .prepended_items
+                .prepended_items()
                 .iter()
                 .rev()
                 .cloned()
@@ -623,8 +617,8 @@ mod tests {
         assert!(move_row(&mut state, 0, false));
         assert!(state.rows[1] == first);
         assert_eq!(
-            parse_rows(&state.rows).unwrap().deleted_items[0],
-            original.prepended_items[0]
+            parse_rows(&state.rows).unwrap().deleted_items()[0],
+            original.prepended_items()[0]
         );
         assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
@@ -674,40 +668,46 @@ mod tests {
         let payload = Payload {
             asset_path: "relative with spaces.usda".into(),
             prim_path: openusd::sdf::Path::default(),
-            layer_offset: None,
+            layer_offset: LayerOffset::default(),
         };
         for operation in [
             PayloadListOp::explicit([]),
             PayloadListOp::explicit([payload.clone()]),
-            PayloadListOp {
-                prepended_items: vec![payload.clone()],
-                deleted_items: vec![Payload {
-                    layer_offset: Some(LayerOffset::new(12.125, 0.375)),
-                    ..payload.clone()
-                }],
-                ordered_items: vec![Payload {
-                    layer_offset: Some(LayerOffset::default()),
-                    ..payload.clone()
-                }],
-                ..Default::default()
-            },
+            PayloadListOp::prepended([payload.clone()])
+                .with(
+                    ListOpType::Deleted,
+                    [Payload {
+                        layer_offset: LayerOffset::new(12.125, 0.375),
+                        ..payload.clone()
+                    }],
+                )
+                .with(ListOpType::Ordered, [payload.clone()]),
         ] {
             let rows = rows_from_operation(&operation).unwrap();
             assert_eq!(parse_rows(&rows).unwrap(), operation);
         }
         assert!(rows_from_operation(&PayloadListOp::default()).is_err());
-        assert!(rows_from_operation(&PayloadListOp::explicit(vec![payload.clone(); 65])).is_err());
+        assert!(
+            rows_from_operation(&PayloadListOp::explicit((0..65).map(|index| Payload {
+                asset_path: format!("{index}.usda"),
+                ..payload.clone()
+            })))
+            .is_err()
+        );
         assert_eq!(
-            rows_from_operation(&PayloadListOp::explicit(vec![payload.clone(); 64]))
-                .unwrap()
-                .len(),
+            rows_from_operation(&PayloadListOp::explicit((0..64).map(|index| Payload {
+                asset_path: format!("{index}.usda"),
+                ..payload.clone()
+            })))
+            .unwrap()
+            .len(),
             64
         );
         let mut rows = rows_from_operation(&PayloadListOp::explicit([payload])).unwrap();
         rows[0].offset = "2".into();
         assert_eq!(
-            parse_rows(&rows).unwrap().explicit_items[0].layer_offset,
-            Some(LayerOffset::new(2., 1.))
+            parse_rows(&rows).unwrap().explicit_items()[0].layer_offset,
+            LayerOffset::new(2., 1.)
         );
     }
 
@@ -736,7 +736,7 @@ mod tests {
             openusd::usd::EditTarget::for_local_direct_variant("weak.usda", "/Root{choice=a}")
                 .unwrap(),
         );
-        assert!(local_operation(&snapshot).unwrap().explicit);
+        assert!(local_operation(&snapshot).unwrap().is_explicit());
     }
 
     #[test]
@@ -788,9 +788,9 @@ mod tests {
             },
         ])
         .unwrap();
-        assert_eq!(mixed.prepended_items, vec![payload.clone()]);
-        assert_eq!(mixed.deleted_items, vec![payload]);
-        assert!(!mixed.explicit);
+        assert_eq!(mixed.prepended_items(), vec![payload.clone()]);
+        assert_eq!(mixed.deleted_items(), vec![payload]);
+        assert!(!mixed.is_explicit());
     }
 
     #[test]

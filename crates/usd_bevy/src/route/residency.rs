@@ -370,7 +370,7 @@ def Xform "Hidden" {
             stage
                 .attribute("/Hidden.visibility")
                 .unwrap()
-                .set(openusd::sdf::Value::Token("inherited".into()))
+                .set(openusd::vt::Value::Token("inherited".into()))
                 .unwrap();
         }
         app.update();
@@ -452,7 +452,7 @@ def Xform "Hidden" {
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("invisible".into()))
+            .set(openusd::vt::Value::Token("invisible".into()))
             .unwrap();
         app.update();
         assert!(app.world().get::<Mesh3d>(entity).is_none());
@@ -597,7 +597,7 @@ def Xform "Hidden" {
             .attribute("/Hidden/M.points")
             .unwrap()
             .set_at(
-                openusd::sdf::Value::Vec3fVec(vec![
+                openusd::vt::Value::Vec3fVec(vec![
                     [0.0, 0.0, 0.0].into(),
                     [7.0, 0.0, 0.0].into(),
                     [0.0, 7.0, 0.0].into(),
@@ -610,7 +610,7 @@ def Xform "Hidden" {
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("inherited".into()))
+            .set(openusd::vt::Value::Token("inherited".into()))
             .unwrap();
         app.update();
         let handle = app.world().get::<Mesh3d>(entities[0]).unwrap().0.clone();
@@ -627,7 +627,7 @@ def Xform "Hidden" {
             stage
                 .attribute("/Hidden.visibility")
                 .unwrap()
-                .set(openusd::sdf::Value::Token(value.into()))
+                .set(openusd::vt::Value::Token(value.into()))
                 .unwrap();
             app.update();
             assert_eq!(app.world().get::<Mesh3d>(entities[0]).unwrap().0, handle);
@@ -651,12 +651,12 @@ def Xform "Hidden" {
         stage
             .create_attribute(openusd::sdf::path("/Hidden.purpose").unwrap(), "token")
             .unwrap()
-            .set(openusd::sdf::Value::Token("guide".into()))
+            .set(openusd::vt::Value::Token("guide".into()))
             .unwrap();
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("inherited".into()))
+            .set(openusd::vt::Value::Token("inherited".into()))
             .unwrap();
         app.update();
         assert!(app.world().get::<Mesh3d>(mesh_entity(&app, root)).is_none());
@@ -742,7 +742,7 @@ def Xform "Hidden" {
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("inherited".into()))
+            .set(openusd::vt::Value::Token("inherited".into()))
             .unwrap();
         app.update();
         let handle = &app.world().get::<Mesh3d>(entity).unwrap().0;
@@ -775,7 +775,7 @@ def Xform "Hidden" {
                 .attribute("/Hidden.visibility")
                 .unwrap()
                 .set_at(
-                    openusd::sdf::Value::Token(value.into()),
+                    openusd::vt::Value::Token(value.into()),
                     openusd::usd::TimeCode::new(time),
                 )
                 .unwrap();

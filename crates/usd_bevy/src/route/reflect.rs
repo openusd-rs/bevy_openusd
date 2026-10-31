@@ -38,7 +38,7 @@ use bevy::reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
 use bevy::reflect::structs::DynamicStruct;
 use bevy::reflect::tuple::DynamicTuple;
 use bevy::reflect::{GetPath, PartialReflect, ReflectRef, TypeInfo, std_traits::ReflectDefault};
-use openusd::sdf::Value;
+use openusd::vt::Value;
 
 use super::{PrimRoute, RouteCtx};
 

@@ -16,7 +16,7 @@ fn content_hash(stage: &Stage, id: &str) -> Option<blake3::Hash> {
         hash.update(&(fields.len() as u64).to_le_bytes());
         for field in fields {
             hash_part(&mut hash, field.as_bytes());
-            let value = data.get_field(&path, &field).ok()?;
+            let value = data.field(&path, &field).ok()?;
             let kind: &'static str = value.as_ref().into();
             hash_part(&mut hash, kind.as_bytes());
             if let Some(bytes) = numeric_array_bytes(&value) {
@@ -39,8 +39,8 @@ fn hash_part(hash: &mut blake3::Hasher, bytes: &[u8]) {
     hash.update(bytes);
 }
 
-fn numeric_array_bytes(value: &openusd::sdf::Value) -> Option<&[u8]> {
-    use openusd::sdf::Value;
+fn numeric_array_bytes(value: &openusd::vt::Value) -> Option<&[u8]> {
+    use openusd::vt::Value;
     macro_rules! arrays {
         ($($kind:ident),*) => { match value {
             $(Value::$kind(values) => Some(bytemuck::cast_slice(values)),)*

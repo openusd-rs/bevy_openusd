@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use openusd::sdf::Value;
+use openusd::vt::Value;
 use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot, UsdSource, editor::EditorEdit};
 
 #[derive(Component)]

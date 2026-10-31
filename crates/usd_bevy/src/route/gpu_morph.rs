@@ -366,13 +366,13 @@ mod tests {
         ] {
             attribute
                 .clone()
-                .set_metadata("interpolation", openusd::sdf::Value::Token(mode.into()))
+                .set_metadata("interpolation", openusd::vt::Value::Token(mode.into()))
                 .unwrap();
             stage
                 .prim(&path)
                 .unwrap()
                 .attribute("primvars:normals:indices")
-                .set(openusd::sdf::Value::IntVec(indices))
+                .set(openusd::vt::Value::IntVec(indices))
                 .unwrap();
             for time in [0.0, 5.0, 10.0] {
                 let ctx = RouteCtx::at(&stage, &path, Some(time));
@@ -441,7 +441,7 @@ mod tests {
         stage
             .attribute("/Test/Skel/Anim.scales")
             .unwrap()
-            .set(openusd::sdf::Value::Vec3hVec(vec![
+            .set(openusd::vt::Value::Vec3hVec(vec![
                 [0.0, 1.0, 1.0].map(openusd::gf::f16::from_f32).into(),
             ]))
             .unwrap();

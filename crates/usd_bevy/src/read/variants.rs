@@ -14,7 +14,7 @@ pub fn variant_selections(stage: &Stage, prim: &Path) -> anyhow::Result<Vec<(Str
         .prim(prim.clone())
         .expect("validated USD path")
         .variant_sets()
-        .get_all_variant_selections()?)
+        .selections()?)
 }
 
 /// The names of the variant sets that currently contribute a selection to
@@ -25,12 +25,12 @@ pub fn variant_set_names(stage: &Stage, prim: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The variants `set` offers on `prim`, strongest site first.
+/// The variants `set` offers on `prim`, sorted.
 pub fn variant_options(stage: &Stage, prim: &Path, set: &str) -> Vec<String> {
     stage
         .prim(prim.clone())
         .ok()
-        .and_then(|prim| prim.variant_sets().variant_names(set).ok())
+        .and_then(|prim| prim.variant_sets().get(set).names().ok())
         .unwrap_or_default()
 }
 

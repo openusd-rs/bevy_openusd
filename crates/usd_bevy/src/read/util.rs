@@ -7,8 +7,8 @@
 //! returns the decoded value (`None` when unauthored or a type mismatch),
 //! mirroring the old `usd_schema` reader plumbing it replaces.
 
-use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
+use openusd::{sdf::Path, vt::Value};
 
 /// Raw composed `default` value of attribute `name` on `prim`.
 fn attr_default(stage: &Stage, prim: &Path, name: &str) -> anyhow::Result<Option<Value>> {
@@ -262,7 +262,7 @@ pub fn read_int_metadata(
             .prim(prim.clone())
             .expect("validated USD path")
             .attribute(attr)
-            .get_metadata::<Value>(key)?
+            .metadata::<Value>(key)?
         {
             Some(Value::Int(n)) => Some(n),
             Some(Value::Int64(n)) => Some(n as i32),

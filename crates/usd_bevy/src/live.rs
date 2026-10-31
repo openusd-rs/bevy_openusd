@@ -553,7 +553,7 @@ fn to_bevy_transform(t: crate::read::xform::Transform3) -> Transform {
 pub(crate) fn stage_up_axis(stage: &Stage) -> Quat {
     let is_z = matches!(
         stage.stage_metadata("upAxis").ok().flatten(),
-        Some(openusd::sdf::Value::Token(t)) if t.as_str() == "Z"
+        Some(openusd::vt::Value::Token(t)) if t.as_str() == "Z"
     );
     if is_z {
         Quat::from_rotation_x(-core::f32::consts::FRAC_PI_2)
@@ -565,8 +565,8 @@ pub(crate) fn stage_up_axis(stage: &Stage) -> Quat {
 /// Meters per stage unit, defaulting to USD's centimeters.
 pub(crate) fn stage_meters_per_unit(stage: &Stage) -> f32 {
     match stage.stage_metadata("metersPerUnit").ok().flatten() {
-        Some(openusd::sdf::Value::Double(meters)) => meters as f32,
-        Some(openusd::sdf::Value::Float(meters)) => meters,
+        Some(openusd::vt::Value::Double(meters)) => meters as f32,
+        Some(openusd::vt::Value::Float(meters)) => meters,
         _ => 0.01,
     }
 }
@@ -831,7 +831,7 @@ pub fn project_stage_under(world: &mut World, stage: &Stage, parent: Entity) -> 
 pub struct ProjectionJob {
     root: Entity,
     /// The walk still to project; `None` once it is done.
-    traversal: Option<openusd::usd::Traversal>,
+    traversal: Option<std::iter::Peekable<openusd::usd::PrimRange>>,
     done: usize,
     materials: Option<crate::route::material::ProjectionMaterials>,
     /// A subtree root that is already projected and is not spawned again.
@@ -857,9 +857,12 @@ impl ProjectionJob {
             .id();
         map.insert("/", root);
         let traversal = stage
-            .traversal(openusd::sdf::Path::abs_root(), traverse_predicate())
+            .prim(openusd::sdf::Path::abs_root())
+            .map_err(openusd::Error::from)
+            .and_then(|root| root.filtered_descendants(traverse_predicate()))
             .inspect_err(|error| warn!("USD projection skipped: {error}"))
-            .ok();
+            .ok()
+            .map(Iterator::peekable);
         let materials = Some(crate::route::material::ProjectionMaterials::new(stage));
         (
             Self {
@@ -879,9 +882,12 @@ impl ProjectionJob {
     /// material memo the caller has installed, if any.
     pub(crate) fn subtree(stage: &Stage, path: &openusd::sdf::Path, root: Entity) -> Self {
         let traversal = stage
-            .traversal(path.clone(), traverse_predicate())
+            .prim(path.clone())
+            .map_err(openusd::Error::from)
+            .and_then(|prim| prim.filtered_subtree(traverse_predicate()))
             .inspect_err(|error| warn!("USD projection of {path} skipped: {error}"))
-            .ok();
+            .ok()
+            .map(Iterator::peekable);
         Self {
             root,
             traversal,
@@ -938,10 +944,10 @@ impl ProjectionJob {
         let started = bevy::platform::time::Instant::now();
         let _primvars = crate::read::geom::PrimvarScope::begin(stage);
         let finished = loop {
-            let path = match traversal.next(stage) {
-                Ok(Some(path)) => path,
-                Ok(None) => break true,
-                Err(error) => {
+            let path = match traversal.next() {
+                Some(Ok(prim)) => prim.path().clone(),
+                None => break true,
+                Some(Err(error)) => {
                     warn!("USD projection stopped early: {error}");
                     break true;
                 }
@@ -966,7 +972,7 @@ impl ProjectionJob {
                 projected.push(path);
             }
             if started.elapsed() >= budget {
-                break traversal.pending() == 0;
+                break traversal.peek().is_none();
             }
         };
         if finished {
@@ -988,7 +994,7 @@ impl ProjectionJob {
     /// Prims projected so far and a lower bound on the total, which grows as
     /// the walk discovers more of the stage.
     pub fn progress(&self) -> (usize, usize) {
-        let pending = self.traversal.as_ref().map_or(0, |walk| walk.pending());
+        let pending = self.traversal.as_ref().map_or(0, |walk| walk.size_hint().0);
         (self.done, self.done + pending)
     }
 }
@@ -1391,9 +1397,11 @@ fn present_prims(
         if scopes.iter().any(|outer| inside(scope, outer)) {
             continue;
         }
-        let mut traversal = stage.traversal(openusd::sdf::path(scope)?, traverse_predicate())?;
-        while let Some(path) = traversal.next(stage)? {
-            current.insert(path.as_str().to_string());
+        let walk = stage
+            .prim(openusd::sdf::path(scope)?)?
+            .filtered_subtree(traverse_predicate())?;
+        for prim in walk {
+            current.insert(prim?.path().as_str().to_string());
         }
     }
     for prim in exact {
@@ -1402,9 +1410,11 @@ fn present_prims(
         }
         let path = openusd::sdf::path(prim)?;
         if stage
-            .traversal(path.clone(), traverse_predicate())?
-            .next(stage)?
-            .is_some_and(|first| first == path)
+            .prim(path.clone())?
+            .filtered_subtree(traverse_predicate())?
+            .next()
+            .transpose()?
+            .is_some_and(|first| *first.path() == path)
         {
             current.insert(prim.clone());
         }
@@ -1511,17 +1521,14 @@ fn collect_variant_specs(
         .flatten()
         .map(|value| value.into_owned())
     {
-        Some(openusd::sdf::Value::TokenVec(children)) => children,
+        Some(openusd::vt::Value::TokenVec(children)) => children,
         _ => return,
     };
     for child in children {
         let Ok(child_path) = spec_path.append_path(child.as_str()) else {
             continue;
         };
-        let prim = child_path
-            .strip_all_variant_selections()
-            .as_str()
-            .to_string();
+        let prim = child_path.strip_variant_selections().as_str().to_string();
         let specifier = data
             .try_field(&child_path, "specifier")
             .ok()
@@ -1529,9 +1536,7 @@ fn collect_variant_specs(
             .map(|value| value.into_owned());
         if matches!(
             specifier,
-            Some(openusd::sdf::Value::Specifier(
-                openusd::sdf::Specifier::Over
-            ))
+            Some(openusd::vt::Value::Specifier(openusd::sdf::Specifier::Over))
         ) {
             exact.push(prim);
             collect_variant_specs(data, &child_path, subtrees, exact);
@@ -1853,7 +1858,7 @@ pub fn author_transform(
     prim_path: &str,
     transform: &Transform,
 ) -> anyhow::Result<()> {
-    use openusd::sdf::Value;
+    use openusd::vt::Value;
     let prim = openusd::sdf::path(prim_path)?;
     let cols = Mat4::from_scale_rotation_translation(
         transform.scale,
@@ -1866,7 +1871,7 @@ pub fn author_transform(
     let xop = prim.append_property("xformOp:transform")?;
     stage
         .create_attribute(xop, "matrix4d")?
-        .set(Value::Matrix4d(openusd::gf::Matrix4d(m)))?;
+        .set(Value::Matrix4d(openusd::gf::Mat4d(m)))?;
     let order = prim.append_property("xformOpOrder")?;
     stage
         .create_attribute(order, "token[]")?
@@ -1923,7 +1928,7 @@ def Xform "Group" {
         def Cube "Child" {}
     }
 }
-def Xform "Bindings" {
+def Xform "Bindings" (prepend apiSchemas = ["CollectionAPI:paint"]) {
     rel collection:paint:includes = </Bindings/Painted>
     rel material:binding:collection:paint = [</Bindings.collection:paint>, </Mat>]
     def Cube "Painted" {}
@@ -2342,7 +2347,7 @@ def NodeGraph "Graph" {}
             "kitchen packaged meshes should resolve, got {meshes}"
         );
     }
-    use openusd::sdf::Value;
+    use openusd::vt::Value;
 
     fn tx(stage: &Stage, prim: &str) -> Option<Vec3> {
         current_transform(stage, prim).map(|t| t.translation)

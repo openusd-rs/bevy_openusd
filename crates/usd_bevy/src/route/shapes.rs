@@ -15,7 +15,7 @@ use openusd_schemas::geom::PlaneSchema;
 use openusd_schemas::geom::SphereSchema;
 use std::f32::consts::FRAC_PI_2;
 
-use openusd::sdf::Value;
+use openusd::vt::Value;
 use openusd_schemas::geom::{Capsule, Cone, Cube, Cylinder, Plane, Sphere};
 
 use super::{PrimRoute, RouteCtx};

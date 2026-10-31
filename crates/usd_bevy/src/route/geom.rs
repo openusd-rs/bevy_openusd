@@ -565,7 +565,7 @@ mod purpose_tests {
                 stage
                     .create_attribute(format!("{path}.purpose").as_str(), "token")
                     .unwrap()
-                    .set(openusd::sdf::Value::Token(p.into()))
+                    .set(openusd::vt::Value::Token(p.into()))
                     .unwrap();
             }
         };
@@ -582,7 +582,7 @@ mod purpose_tests {
         stage
             .create_attribute("/Grp.purpose", "token")
             .unwrap()
-            .set(openusd::sdf::Value::Token("proxy".into()))
+            .set(openusd::vt::Value::Token("proxy".into()))
             .unwrap();
         stage
             .define_prim("/Grp/Child")

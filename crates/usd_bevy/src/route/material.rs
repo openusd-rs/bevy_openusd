@@ -554,7 +554,7 @@ pub(crate) fn resolve_material(
     world: &mut World,
 ) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>, MaterialColor)>> {
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
-        && memo.stage.ptr_eq(ctx.stage)
+        && memo.stage == *ctx.stage
     {
         memo.rescan();
         if !memo.binds {
@@ -579,7 +579,7 @@ pub(crate) fn resolve_material(
         world.resource_mut::<MaterialResolveTimings>().observe(&key);
     }
     if let Some(memo) = world.get_non_send::<ProjectionMaterials>()
-        && memo.stage.ptr_eq(ctx.stage)
+        && memo.stage == *ctx.stage
         && let Some(resolved) = memo.resolved.get(&key)
     {
         let resolved = resolved.clone();
@@ -591,7 +591,7 @@ pub(crate) fn resolve_material(
     let started = profiling.then(bevy::platform::time::Instant::now);
     let cached = world
         .get_non_send_mut::<ProjectionMaterialReads>()
-        .filter(|memo| memo.stage.ptr_eq(ctx.stage))
+        .filter(|memo| memo.stage == *ctx.stage)
         .and_then(|mut memo| memo.get(&binding, ctx.time));
     let read_cached = cached.is_some();
     let read = cached.map(Ok).unwrap_or_else(|| material_at(ctx, &binding));
@@ -604,7 +604,7 @@ pub(crate) fn resolve_material(
     let read = read?;
     if !read_cached
         && let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterialReads>()
-        && memo.stage.ptr_eq(ctx.stage)
+        && memo.stage == *ctx.stage
     {
         memo.insert(&binding, ctx.time, &read);
     }
@@ -700,7 +700,7 @@ pub(crate) fn resolve_material(
         world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed();
     }
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
-        && memo.stage.ptr_eq(ctx.stage)
+        && memo.stage == *ctx.stage
     {
         memo.resolved
             .insert(key, (handle.clone(), warnings.clone(), color.clone()));
@@ -1015,12 +1015,7 @@ def Cube "C" { rel material:binding = </Mat> }
         let live = crate::live::LiveStage::new(stage);
         let mut map = crate::live::PrimEntities::default();
         crate::live::project_stage(&mut world, &live, &mut map);
-        assert!(
-            world
-                .non_send::<ProjectionMaterialReads>()
-                .stage
-                .ptr_eq(&surrounding)
-        );
+        assert!(world.non_send::<ProjectionMaterialReads>().stage == surrounding);
         let roughness = |path| {
             let handle = &world
                 .get::<MeshMaterial3d<StandardMaterial>>(map.entity(path).unwrap())
@@ -1101,21 +1096,11 @@ def Cube "B" { rel material:binding = </Mat> }
         let b = world.spawn_empty().id();
         let (mut one, mut map_one) = ProjectionJob::begin(&mut world, &first, a);
         let (mut two, mut map_two) = ProjectionJob::begin(&mut world, &second, b);
-        assert!(
-            world
-                .non_send::<ProjectionMaterials>()
-                .stage
-                .ptr_eq(&surrounding)
-        );
+        assert!(world.non_send::<ProjectionMaterials>().stage == surrounding);
         for _ in 0..16 {
             let done_one = one.step(&mut world, &first, &mut map_one, std::time::Duration::ZERO);
             let done_two = two.step(&mut world, &second, &mut map_two, std::time::Duration::ZERO);
-            assert!(
-                world
-                    .non_send::<ProjectionMaterials>()
-                    .stage
-                    .ptr_eq(&surrounding)
-            );
+            assert!(world.non_send::<ProjectionMaterials>().stage == surrounding);
             if done_one && done_two {
                 break;
             }

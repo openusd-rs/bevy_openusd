@@ -3,8 +3,8 @@
 //! Property paths resolve to their owning prim, matching `Stage::prim`.
 
 use glam::{DMat4, DVec3};
-use openusd::sdf::{Path, Value};
 use openusd::usd::{Stage, TimeCode};
+use openusd::{sdf::Path, vt::Value};
 
 /// Decomposed local transform: translate, rotate (quaternion `xyzw`), scale.
 #[derive(Debug, Clone, Copy)]
@@ -21,7 +21,7 @@ fn attr_value(
     time: Option<TimeCode>,
 ) -> anyhow::Result<Option<Value>> {
     Ok(stage
-        .prim(prim.clone())?
+        .prim(prim.prim_path())?
         .attribute(name)
         .get_at::<Value>(time)?)
 }
@@ -405,7 +405,7 @@ mod tests {
         ] {
             attribute
                 .clone()
-                .set(Value::Matrix4d(openusd::gf::Matrix4d(
+                .set(Value::Matrix4d(openusd::gf::Mat4d(
                     matrix.to_cols_array().map(f64::from),
                 )))
                 .unwrap();
@@ -428,7 +428,7 @@ mod tests {
             );
             attribute
                 .clone()
-                .set(Value::Matrix4d(openusd::gf::Matrix4d(
+                .set(Value::Matrix4d(openusd::gf::Mat4d(
                     matrix.to_cols_array().map(f64::from),
                 )))
                 .unwrap();

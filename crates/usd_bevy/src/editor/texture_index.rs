@@ -91,9 +91,9 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
         stage
             .create_attribute("/Plain.inputs:texture:file", "asset")
             .unwrap()
-            .set(openusd::sdf::Value::AssetPath(
-                openusd::sdf::AssetPath::new("second.exr"),
-            ))
+            .set(openusd::vt::Value::AssetPath(openusd::sdf::AssetPath::new(
+                "second.exr",
+            )))
             .unwrap();
         let second = index.requests(&stage, &changes).unwrap();
         assert_eq!(

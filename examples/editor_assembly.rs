@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use openusd::sdf::{Reference, Value};
+use openusd::{sdf::Reference, vt::Value};
 use openusd_schemas::geom::{Sphere, SphereSchema};
 use usd_bevy::{
     UsdPlugin, UsdSource,

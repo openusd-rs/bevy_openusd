@@ -2,11 +2,11 @@
 --
 --   make            the recipes, with what each of them says it does
 --   make build      the usdview binary
---   make run        usdview, through nixVulkan
+--   make run        usdview, with host graphics on NixOS or nixVulkan elsewhere
 --   make test       the usdview tests
 --
 -- At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
--- The toolchain and the `nixVulkan` wrapper come from `.env.lua`'s dev shell.
+-- The toolchain and the non-NixOS `nixVulkan` wrapper come from `.env.lua`'s dev shell.
 
 local make = oslo.make
 
@@ -56,12 +56,17 @@ make.alias("c", "compile")
 
 make.recipe{
   name = "run",
-  desc = "launch usdview (fresh Wayland detection, nixVulkan wrapper)",
+  desc = "launch usdview (fresh Wayland detection, host graphics on NixOS)",
   params = { { "--args", desc = "passed through to usdview, e.g. a USD scene path" } },
   deps = { "build" },
   run = function(a)
-    sh.sh("-c", fresh_display_env(
-      ("env WINIT_UNIX_BACKEND=$_usd_backend nixVulkan target/debug/%s %s"):format(APP, a.args or "")))
+    sh.sh("-c", fresh_display_env(([[
+set -- target/debug/%s %s
+if [ ! -e /etc/NIXOS ]; then
+  set -- nixVulkan "$@"
+fi
+exec env WINIT_UNIX_BACKEND=$_usd_backend "$@"
+]]):format(APP, a.args or "")))
   end,
 }
 make.alias("r", "run")

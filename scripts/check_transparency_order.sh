@@ -9,8 +9,7 @@ run_example() {
     local example=$1 args
     shift
     printf -v args '%q ' "$@"
-    args=${args//\$/\$\$}
-    make run CARGO='cargo --offline' APP_TARGET="--example $example" ARGS="$args"
+    oslo make run-example --name "$example" --args "$args"
 }
 for mode in prepass oit; do
     for order in '' _reversed; do

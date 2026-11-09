@@ -24,8 +24,7 @@ run_example() {
     local example=$1 args
     shift
     printf -v args '%q ' "$@"
-    args=${args//\$/\$\$}
-    make run CARGO='cargo --offline' APP_TARGET="--example $example" ARGS="$args" "${run_options[@]}"
+    oslo make run-example --name "$example" --args "$args"
 }
 
 for time in "$@"; do
@@ -33,7 +32,6 @@ for time in "$@"; do
     index=$((index + 1))
     result=ok
     for mode in gpu cpu; do
-        run_options=()
         if [[ "$mode" == cpu ]]; then export USD_CPU_SKINNING=1; else unset USD_CPU_SKINNING; fi
         if ! run_example viewer_capture "$asset" "$output/$prefix-$mode.png" "$time" > "$output/$prefix-$mode.log" 2>&1; then
             result=capture_failed
@@ -49,7 +47,6 @@ for time in "$@"; do
     done
     difference=
     if [[ -f "$output/$prefix-gpu.rgba" && -f "$output/$prefix-cpu.rgba" ]]; then
-        run_options=(RUN_WITH=)
         if ! run_example capture_compare "$output/$prefix-gpu.rgba" "$output/$prefix-cpu.rgba" "$tolerance" 1280 "$output/$prefix-diff.png" > "$output/$prefix-compare.log" 2>&1; then
             if [[ "$result" == ok ]]; then result=comparison_failed; fi
         fi

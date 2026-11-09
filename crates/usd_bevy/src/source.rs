@@ -19,12 +19,14 @@ pub(crate) type DiskBaselines = Arc<EditorDisk>;
 /// Reads one dependency by identifier, or `None` when it cannot be read.
 pub(crate) type Fetch = Arc<dyn Fn(&str) -> Option<Arc<[u8]>> + Send + Sync>;
 
+type FetchedDependencies = BTreeMap<String, Option<Arc<[u8]>>>;
+
 /// Reads missing dependencies while a probe composes, so one composition
 /// discovers every file, and keeps what it read for the source.
 #[derive(Clone)]
 pub(crate) struct Fetcher {
     read: Fetch,
-    fetched: Arc<Mutex<BTreeMap<String, Option<Arc<[u8]>>>>>,
+    fetched: Arc<Mutex<FetchedDependencies>>,
 }
 
 impl std::fmt::Debug for Fetcher {
@@ -69,7 +71,7 @@ impl Fetcher {
     }
 
     /// Everything read so far, `None` for reads that failed.
-    pub(crate) fn take(&self) -> BTreeMap<String, Option<Arc<[u8]>>> {
+    pub(crate) fn take(&self) -> FetchedDependencies {
         std::mem::take(&mut *self.fetched.lock().expect("fetched dependencies"))
     }
 }
@@ -121,6 +123,8 @@ impl<'a> IntoIterator for &'a TextureRequests {
     }
 }
 
+type DefaultTextureRequests = (u64, Arc<TextureRequests>);
+
 /// An immutable root-layer snapshot anchored at its source filename.
 #[derive(Clone, Debug)]
 pub struct UsdSource {
@@ -131,7 +135,7 @@ pub struct UsdSource {
     absent: Arc<BTreeSet<String>>,
     filesystem: bool,
     validated_default: Arc<Mutex<Option<u64>>>,
-    default_textures: Arc<Mutex<Option<(u64, Arc<TextureRequests>)>>>,
+    default_textures: Arc<Mutex<Option<DefaultTextureRequests>>>,
     /// Reads files the snapshot lacks when a stage asks for them.
     fetch: Option<Fetcher>,
 }
@@ -360,11 +364,11 @@ impl UsdSource {
             if type_name.as_deref() != Some("Material") {
                 continue;
             }
-            let texture_times = crate::read::shade::material_texture_sample_times(stage, &path)
+            let texture_times = crate::read::shade::material_texture_sample_times(stage, path)
                 .map_err(|error| error.to_string())?;
             for time in std::iter::once(None).chain(texture_times.into_iter().map(Some)) {
                 let Some(material) =
-                    crate::read::shade::read_preview_material_at(stage, &path, time)
+                    crate::read::shade::read_preview_material_at(stage, path, time)
                         .map_err(|error| error.to_string())?
                 else {
                     continue;
@@ -1140,11 +1144,7 @@ impl Resolver for SourceResolver {
     }
 
     fn resolve(&self, path: &str) -> Option<ResolvedPath> {
-        if self.bytes(path).is_some() {
-            Some(ResolvedPath::new(PathBuf::from(path)))
-        } else if self.contains_packaged_path(path) {
-            Some(ResolvedPath::new(PathBuf::from(path)))
-        } else if uncaptured(path) {
+        if self.bytes(path).is_some() || self.contains_packaged_path(path) || uncaptured(path) {
             Some(ResolvedPath::new(PathBuf::from(path)))
         } else if self.source.filesystem {
             self.fallback.resolve(path)
@@ -3163,7 +3163,7 @@ def Scope "Model" (
         let directory = tempfile::tempdir().unwrap();
         let source = |name: &str, bytes: &[u8]| {
             UsdSource::snapshot(
-                &directory.path().canonicalize().unwrap().join(name),
+                directory.path().canonicalize().unwrap().join(name),
                 bytes.to_vec(),
             )
             .unwrap()
@@ -3238,7 +3238,7 @@ def Scope "Model" (
         let directory = tempfile::tempdir().unwrap();
         let source = |name: &str, bytes: &[u8]| {
             UsdSource::snapshot(
-                &directory.path().canonicalize().unwrap().join(name),
+                directory.path().canonicalize().unwrap().join(name),
                 bytes.to_vec(),
             )
             .unwrap()
@@ -3380,7 +3380,7 @@ def Scope "Model" (
         let looks = "/Root/chameleon_mtl/Looks";
         let name = "ui:nodegraph:realitykit:node:attributesShowingChildren";
         let read = |prim: &str| {
-            let path = openusd::sdf::path(&format!("{looks}/{prim}")).unwrap();
+            let path = openusd::sdf::path(format!("{looks}/{prim}")).unwrap();
             crate::read::util::read_authored(&stage, &path, name).unwrap()
         };
         assert_eq!(

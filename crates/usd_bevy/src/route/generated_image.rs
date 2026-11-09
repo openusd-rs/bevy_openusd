@@ -63,10 +63,10 @@ fn intern_hashed(world: &mut World, image: Image, hash: blake3::Hash) -> Handle<
             .then_some(*id)
         })
     });
-    if let Some(id) = candidate {
-        if let Some(handle) = world.resource_mut::<Assets<Image>>().get_strong_handle(id) {
-            return handle;
-        }
+    if let Some(id) = candidate
+        && let Some(handle) = world.resource_mut::<Assets<Image>>().get_strong_handle(id)
+    {
+        return handle;
     }
     let handle = world.resource_mut::<Assets<Image>>().add(image);
     world.init_resource::<GeneratedImages>();

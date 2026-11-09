@@ -1608,6 +1608,7 @@ def SkelRoot "Root"
                 .unwrap()
                 .unwrap();
             let gpu = gpu_skin_sample(&stage, &path, Some(time)).unwrap();
+            assert_eq!(cpu.len(), count);
             for point in 0..count {
                 let expected: bevy::math::Vec3 = (0..4)
                     .map(|lane| {
@@ -1621,11 +1622,9 @@ def SkelRoot "Root"
             poses.push(cpu);
         }
         assert_ne!(poses[0], poses[2]);
-        for point in 0..count {
-            let midpoint = (bevy::math::Vec3::from(poses[0][point])
-                + bevy::math::Vec3::from(poses[2][point]))
-                * 0.5;
-            assert!(midpoint.distance(poses[1][point].into()) < 1e-5);
+        for ((&start, &end), &middle) in poses[0].iter().zip(&poses[2]).zip(&poses[1]) {
+            let midpoint = (bevy::math::Vec3::from(start) + bevy::math::Vec3::from(end)) * 0.5;
+            assert!(midpoint.distance(middle.into()) < 1e-5);
         }
         assert_eq!(poses[0], poses[3]);
         weights
@@ -1676,7 +1675,7 @@ def SkelRoot "Root"
             .unwrap();
         assert_eq!(read.face_vertex_counts, vec![4; 14]);
         let mut edges = std::collections::BTreeMap::<(i32, i32), Vec<(i32, i32)>>::new();
-        for face in read.face_vertex_indices.chunks_exact(4) {
+        for face in read.face_vertex_indices.as_chunks::<4>().0 {
             let points: Vec<_> = face
                 .iter()
                 .map(|&i| Vec3::from_array(read.points[i as usize]))
@@ -1706,7 +1705,9 @@ def SkelRoot "Root"
             };
             let triangles: Vec<_> = mesh.indices().unwrap().iter().collect();
             let volume = triangles
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|triangle| {
                     let a = Vec3::from_array(positions[triangle[0]]);
                     let b = Vec3::from_array(positions[triangle[1]]);

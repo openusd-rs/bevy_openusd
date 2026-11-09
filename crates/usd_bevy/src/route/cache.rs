@@ -28,10 +28,12 @@ fn record_cache(world: &mut World, name: &'static str, value: u64) {
     }
 }
 
+type AssembledMesh = (u64, ReadMesh, Mesh, usize, Option<AssetId<Mesh>>);
+
 /// Bounded geometry-input cache containing immutable assembled meshes.
 #[derive(Resource)]
 pub struct MeshAssemblyCache {
-    entries: std::collections::VecDeque<(u64, ReadMesh, Mesh, usize, Option<AssetId<Mesh>>)>,
+    entries: std::collections::VecDeque<AssembledMesh>,
     payload_bytes: usize,
     byte_budget: usize,
 }
@@ -368,9 +370,7 @@ pub(crate) fn intern_material_with_sheen(
         record_sheen(world, &handle, sheen);
         return handle;
     }
-    let mut hash = FixedHasher.build_hasher();
-    format!("{material:?}{sheen:?}").hash(&mut hash);
-    let signature = hash.finish();
+    let signature = BuildHasher::hash_one(&FixedHasher, format!("{material:?}{sheen:?}"));
     if let Some(candidates) = world.resource::<MaterialCache>().materials.get(&signature) {
         let assets = world.resource::<Assets<StandardMaterial>>();
         for handle in candidates {

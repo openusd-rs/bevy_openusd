@@ -67,7 +67,9 @@ pub(super) fn transformed(
         )?;
         anyhow::ensure!(
             data[..6]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .any(|bytes| half::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32() != 0.5),
             "constant normal becomes zero at float16 precision"
         );
@@ -156,15 +158,15 @@ fn rgba8_transformed(
         _ => return None,
     };
     let pixels = image.data.as_ref()?.get(..count.checked_mul(4)?)?;
-    let mut table = [[[0; 2]; 256]; 4];
-    for byte in 0..256 {
+    let mut table = [[[0; 2]; 4]; 256];
+    for (byte, channels) in table.iter_mut().enumerate() {
         let value = byte as f32 / 255.0;
         let linear = if srgb {
             Color::srgb(value, value, value).to_linear().red
         } else {
             value
         };
-        for channel in 0..4 {
+        for (channel, output) in channels.iter_mut().enumerate() {
             let value = if channel == 3 {
                 value
             } else {
@@ -174,13 +176,13 @@ fn rgba8_transformed(
             if !value.is_finite() {
                 return None;
             }
-            table[channel][byte] = value.to_le_bytes();
+            *output = value.to_le_bytes();
         }
     }
     let mut data = Vec::with_capacity(count.checked_mul(8)?);
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         for channel in 0..4 {
-            data.extend_from_slice(&table[channel][pixel[channel] as usize]);
+            data.extend_from_slice(&table[pixel[channel] as usize][channel]);
         }
     }
     Some(data)
@@ -190,10 +192,9 @@ fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<
     if let Some(handle) = world
         .get_resource::<ColorTextures>()
         .and_then(|cache| cache.images.get(&key))
+        && world.resource::<Assets<Image>>().contains(handle)
     {
-        if world.resource::<Assets<Image>>().contains(handle) {
-            return Ok(handle.clone());
-        }
+        return Ok(handle.clone());
     }
     let image = Image::new(
         Extent3d {

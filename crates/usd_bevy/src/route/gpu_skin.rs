@@ -44,11 +44,18 @@ impl Plugin for UsdGpuSkinningPlugin {
     }
 }
 
+type JointTransformQueries<'w, 's> = (
+    Query<
+        'w,
+        's,
+        (&'static GlobalTransform, &'static UsdGpuSkin),
+        Or<(Changed<GlobalTransform>, Changed<UsdGpuSkin>)>,
+    >,
+    Query<'w, 's, &'static mut GlobalTransform>,
+);
+
 fn update_joint_globals(
-    mut queries: ParamSet<(
-        Query<(&GlobalTransform, &UsdGpuSkin), Or<(Changed<GlobalTransform>, Changed<UsdGpuSkin>)>>,
-        Query<&mut GlobalTransform>,
-    )>,
+    mut queries: ParamSet<JointTransformQueries>,
     timing: Option<ResMut<GpuSkinUpdateTiming>>,
 ) {
     let started = timing

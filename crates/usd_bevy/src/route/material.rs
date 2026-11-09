@@ -148,16 +148,15 @@ fn material_at(
         .ok_or_else(|| anyhow::anyhow!("unsupported material surface at {binding}"))
 }
 
+type ResolvedMaterial = (Handle<StandardMaterial>, Vec<String>, MaterialColor);
+
 /// Materials resolved while one projection job runs. The gprims of a stage
 /// mostly share a few materials, and resolving one packs its textures, so
 /// the job keeps each (binding, time, sidedness) result until it finishes.
 /// Non-send because it pins the stage it belongs to.
 pub(crate) struct ProjectionMaterials {
     stage: openusd::usd::Stage,
-    resolved: std::collections::HashMap<
-        (String, Option<u64>, bool),
-        (Handle<StandardMaterial>, Vec<String>, MaterialColor),
-    >,
+    resolved: std::collections::HashMap<(String, Option<u64>, bool), ResolvedMaterial>,
     /// Whether any layer authors a `material:binding` property; without one
     /// no prim can be bound.
     binds: bool,
@@ -566,7 +565,7 @@ impl MaterialColor {
 pub(crate) fn resolve_material(
     ctx: &RouteCtx,
     world: &mut World,
-) -> anyhow::Result<Option<(Handle<StandardMaterial>, Vec<String>, MaterialColor)>> {
+) -> anyhow::Result<Option<ResolvedMaterial>> {
     if let Some(mut memo) = world.get_non_send_mut::<ProjectionMaterials>()
         && memo.stage == *ctx.stage
     {

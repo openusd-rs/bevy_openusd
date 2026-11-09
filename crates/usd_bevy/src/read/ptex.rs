@@ -165,7 +165,9 @@ impl PtexLayout {
         let info = inflate(&head[info_start..info_start + face_info])?;
         anyhow::ensure!(info.len() >= count * 20, "Ptex face info is short");
         let faces: Vec<(u8, u8, bool)> = info
-            .chunks_exact(20)
+            .as_chunks::<20>()
+            .0
+            .iter()
             .take(count)
             .map(|face| (face[0], face[1], face[3] & 1 != 0))
             .collect();
@@ -377,7 +379,7 @@ impl PtexLayout {
                 }
                 1 => {
                     let mut previous = 0u16;
-                    for pair in data.chunks_exact_mut(2) {
+                    for pair in data.as_chunks_mut::<2>().0 {
                         previous = previous.wrapping_add(u16::from_le_bytes([pair[0], pair[1]]));
                         pair.copy_from_slice(&previous.to_le_bytes());
                     }

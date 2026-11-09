@@ -152,29 +152,33 @@ impl Plugin for EditorPlugin {
     }
 }
 
+type RenderingIssues = (
+    Option<&'static crate::route::subdivision::UsdSubdivisionError>,
+    Option<&'static crate::route::skel::UsdDeformationError>,
+    Option<&'static crate::route::instancer::UsdInstancerWarning>,
+    Option<&'static crate::route::shapes::UsdShapeError>,
+    Option<&'static crate::route::curves::UsdCurveError>,
+    Option<&'static crate::route::xform::UsdTransformError>,
+    Option<&'static crate::route::material::UsdMaterialWarning>,
+    Option<&'static crate::route::subset::UsdSubsetWarning>,
+    Option<&'static crate::route::gpu_skin::UsdCpuSkinFallback>,
+);
+
+type GeneratedProjection = (
+    Option<&'static Children>,
+    Option<&'static crate::route::subset::UsdSubset>,
+    Option<&'static crate::route::instancer::UsdPrototypePart>,
+    Has<crate::route::instancer::UsdInstance>,
+    Option<&'static crate::route::instancer::UsdInstanceId>,
+    Option<&'static crate::route::material::UsdMaterialWarning>,
+);
+
 fn publish_projection_issues(
     bridge: Res<EditorBridge>,
     prims: Option<Res<crate::live::PrimEntities>>,
     issues: Query<&crate::route::reflect::UsdReflectIssues>,
-    rendering: Query<(
-        Option<&crate::route::subdivision::UsdSubdivisionError>,
-        Option<&crate::route::skel::UsdDeformationError>,
-        Option<&crate::route::instancer::UsdInstancerWarning>,
-        Option<&crate::route::shapes::UsdShapeError>,
-        Option<&crate::route::curves::UsdCurveError>,
-        Option<&crate::route::xform::UsdTransformError>,
-        Option<&crate::route::material::UsdMaterialWarning>,
-        Option<&crate::route::subset::UsdSubsetWarning>,
-        Option<&crate::route::gpu_skin::UsdCpuSkinFallback>,
-    )>,
-    generated: Query<(
-        Option<&Children>,
-        Option<&crate::route::subset::UsdSubset>,
-        Option<&crate::route::instancer::UsdPrototypePart>,
-        Has<crate::route::instancer::UsdInstance>,
-        Option<&crate::route::instancer::UsdInstanceId>,
-        Option<&crate::route::material::UsdMaterialWarning>,
-    )>,
+    rendering: Query<RenderingIssues>,
+    generated: Query<GeneratedProjection>,
 ) {
     let Ok(mut state) = bridge.0.lock() else {
         return;
@@ -532,10 +536,10 @@ fn process_commands(world: &mut World) {
                     }
                     profile("textures-decoded");
                     world.remove_non_send::<crate::live::LiveStage>();
-                    if let Some(map) = world.remove_resource::<crate::live::PrimEntities>() {
-                        if let Some(root) = map.entity("/") {
-                            world.despawn(root);
-                        }
+                    if let Some(map) = world.remove_resource::<crate::live::PrimEntities>()
+                        && let Some(root) = map.entity("/")
+                    {
+                        world.despawn(root);
                     }
                     world.insert_resource(crate::live::PrimEntities::default());
                     world.insert_non_send(live);
@@ -680,16 +684,16 @@ fn process_commands(world: &mut World) {
             Err(error) => format!("Failed: {error:#}"),
         };
     }
-    if let Some(editor) = session.as_ref().filter(|_| texture_dirty) {
-        if let Some(source) = &editor.source {
-            match refresh_textures(world, editor.stage(), source) {
-                Ok(()) => {
-                    if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
-                        live.enqueue_resync("/");
-                    }
+    if let Some(editor) = session.as_ref().filter(|_| texture_dirty)
+        && let Some(source) = &editor.source
+    {
+        match refresh_textures(world, editor.stage(), source) {
+            Ok(()) => {
+                if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
+                    live.enqueue_resync("/");
                 }
-                Err(error) => status = format!("Texture loading failed: {error:#}"),
             }
+            Err(error) => status = format!("Texture loading failed: {error:#}"),
         }
     }
     let time = world.resource::<crate::route::StageTime>().current;
@@ -1684,25 +1688,25 @@ impl EditorSession {
             let prim = self.stage.prim(openusd::sdf::path(path)?)?;
             for site in prim.prim_stack()? {
                 let layer = site.layer.try_borrow()?;
-                if let Some(value) = layer.data().try_field(&site.path, "references")? {
-                    if let Value::ReferenceListOp(operation) = value.as_ref() {
-                        snapshot.reference_opinions.push(ReferenceOpinion {
-                            layer: site.layer.identifier().to_owned(),
-                            prim: site.path.clone(),
-                            offset: site.offset,
-                            operation: operation.clone(),
-                        });
-                    }
+                if let Some(value) = layer.data().try_field(&site.path, "references")?
+                    && let Value::ReferenceListOp(operation) = value.as_ref()
+                {
+                    snapshot.reference_opinions.push(ReferenceOpinion {
+                        layer: site.layer.identifier().to_owned(),
+                        prim: site.path.clone(),
+                        offset: site.offset,
+                        operation: operation.clone(),
+                    });
                 }
-                if let Some(value) = layer.data().try_field(&site.path, "payload")? {
-                    if let Value::PayloadListOp(operation) = value.as_ref() {
-                        snapshot.payload_opinions.push(PayloadOpinion {
-                            layer: site.layer.identifier().to_owned(),
-                            prim: site.path,
-                            offset: site.offset,
-                            operation: operation.clone(),
-                        });
-                    }
+                if let Some(value) = layer.data().try_field(&site.path, "payload")?
+                    && let Value::PayloadListOp(operation) = value.as_ref()
+                {
+                    snapshot.payload_opinions.push(PayloadOpinion {
+                        layer: site.layer.identifier().to_owned(),
+                        prim: site.path,
+                        offset: site.offset,
+                        operation: operation.clone(),
+                    });
                 }
             }
             snapshot.asset_info = crate::read::geom::read_asset_info(&self.stage, prim.path())?;
@@ -1802,10 +1806,10 @@ fn variant_choices(
         for name in names {
             let options = sets.entry(name.as_str().to_string()).or_default();
             let set_path = site.path.append_variant_selection(name.as_str(), "")?;
-            if let Some(children) = layer.data().try_field(&set_path, "variantChildren")? {
-                if let Value::TokenVec(children) = children.as_ref() {
-                    options.extend(children.iter().map(|name| name.as_str().to_string()));
-                }
+            if let Some(children) = layer.data().try_field(&set_path, "variantChildren")?
+                && let Value::TokenVec(children) = children.as_ref()
+            {
+                options.extend(children.iter().map(|name| name.as_str().to_string()));
             }
         }
     }
@@ -4202,7 +4206,10 @@ over "Root" {}
         let authored = editor.stage().root_layer().export_to_string().unwrap();
         let before = editor.snapshot().unwrap();
         editor.set_layer_muted(&weak, true).unwrap();
-        assert_eq!(editor.snapshot().unwrap().muted_layers, [weak.clone()]);
+        assert_eq!(
+            editor.snapshot().unwrap().muted_layers.as_slice(),
+            std::slice::from_ref(&weak)
+        );
         assert!(
             !editor
                 .stage()

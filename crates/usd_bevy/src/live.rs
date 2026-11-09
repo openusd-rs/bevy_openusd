@@ -173,10 +173,10 @@ impl LiveStage {
 
 impl Drop for LiveStage {
     fn drop(&mut self) {
-        if let Some(id) = self.sink.take() {
-            if let Err(error) = self.stage.remove_sink(id) {
-                warn!("failed to detach live stage observer: {error}");
-            }
+        if let Some(id) = self.sink.take()
+            && let Err(error) = self.stage.remove_sink(id)
+        {
+            warn!("failed to detach live stage observer: {error}");
         }
     }
 }
@@ -754,7 +754,7 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         if trace_memory {
             crate::route::profiling::memory_event("prim-begin", path, "animation", None);
         }
-        let sampled = profiling && (prim_count <= 8 || prim_count % 1024 == 0);
+        let sampled = profiling && (prim_count <= 8 || prim_count.is_multiple_of(1024));
         if sampled {
             report(
                 "prim-start",
@@ -1387,10 +1387,10 @@ pub(crate) fn remap_namespace(world: &mut World, old: &str, new: &str) {
         }
     }
     for (_, path, entity) in moved {
-        if let Some(parent) = map.entity(parent_path(&path)).or_else(|| map.entity("/")) {
-            if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
-                entity_mut.insert(ChildOf(parent));
-            }
+        if let Some(parent) = map.entity(parent_path(&path)).or_else(|| map.entity("/"))
+            && let Ok(mut entity_mut) = world.get_entity_mut(entity)
+        {
+            entity_mut.insert(ChildOf(parent));
         }
     }
     world.insert_resource(map);
@@ -1649,10 +1649,10 @@ fn reconcile_scoped(
             .entity(path)
             .filter(|entity| world.get_entity(*entity).is_ok())
         {
-            if let Some(parent) = map.entity(parent_path(path)).or(root) {
-                if world.get::<ChildOf>(entity).map(ChildOf::parent) != Some(parent) {
-                    world.entity_mut(entity).insert(ChildOf(parent));
-                }
+            if let Some(parent) = map.entity(parent_path(path)).or(root)
+                && world.get::<ChildOf>(entity).map(ChildOf::parent) != Some(parent)
+            {
+                world.entity_mut(entity).insert(ChildOf(parent));
             }
             registry.patch_prim(stage, &p, world, entity, &[]);
         } else {

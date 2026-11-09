@@ -154,7 +154,7 @@ pub(crate) fn bound_material_is_time_varying(stage: &Stage, prim: &Path) -> bool
 
 pub(crate) fn material_is_time_varying(stage: &Stage, material: &Path) -> bool {
     let mut pending = vec![material.clone()];
-    match resolve_surface_shader(stage, &material) {
+    match resolve_surface_shader(stage, material) {
         Ok(Some((surface, _))) => pending.push(surface),
         Ok(None) => (),
         Err(_) => return true,

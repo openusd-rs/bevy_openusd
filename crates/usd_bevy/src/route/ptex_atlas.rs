@@ -194,7 +194,7 @@ fn assemble(
         })
         .collect();
     let mut indices = Vec::with_capacity(corners.len() / 4 * 6);
-    for quad in corners.chunks_exact(4) {
+    for quad in corners.as_chunks::<4>().0 {
         let [a, b, c, d] = [quad[0], quad[1], quad[2], quad[3]];
         match refined.orientation {
             crate::read::geom::Orientation::LeftHanded => indices.extend([a, c, b, a, d, c]),

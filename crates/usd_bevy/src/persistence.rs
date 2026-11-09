@@ -1380,7 +1380,7 @@ def Scope "Model" (
         }
         let wrapper = b"#usda 1.0\ndef Scope \"Weak\" (\n prepend references = @never-written.USDZ@</Weak>\n) {}\ndef Scope \"Assets\" (\n prepend references = @never-written.USDZ@</Assets>\n) {}\n";
         let mut wrapper_source = crate::UsdSource::snapshot(
-            &directory
+            directory
                 .path()
                 .canonicalize()
                 .unwrap()

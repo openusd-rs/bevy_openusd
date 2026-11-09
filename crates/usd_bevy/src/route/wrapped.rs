@@ -131,7 +131,7 @@ fn attach_matching<E: MaterialExtension>(
             world
                 .resource::<Assets<Wrapped<E>>>()
                 .get(*handle)
-                .is_some_and(|existing| matches(existing))
+                .is_some_and(&matches)
         })
         .cloned();
     let handle = existing.or(cached).unwrap_or_else(|| {

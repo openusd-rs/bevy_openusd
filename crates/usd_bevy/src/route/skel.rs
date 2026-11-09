@@ -105,6 +105,97 @@ fn deformed_mesh_with_kinds(
     Ok(Some(read))
 }
 
+impl PrimRoute for SkinRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        super::gpu_skin::clear(world, entity);
+        world.entity_mut(entity).remove::<(
+            CpuSubsetGeometry,
+            UsdDeformationError,
+            super::gpu_skin::UsdCpuSkinFallback,
+        )>();
+    }
+    fn matches(&self, ctx: &RouteCtx) -> bool {
+        matches!(ctx.type_name.as_deref(), Some("Mesh"))
+    }
+
+    fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
+        world
+            .entity_mut(entity)
+            .remove::<(CpuSubsetGeometry, UsdDeformationError)>();
+        if world.get_resource::<Assets<Mesh>>().is_none() {
+            return;
+        }
+        if super::subdivision::enabled(ctx, world) {
+            return;
+        }
+        let skinned = is_skinned(ctx.stage, ctx.path);
+        let blended = has_blend_shapes(ctx.stage, ctx.path);
+        if !skinned && !blended {
+            super::gpu_morph::clear(world, entity);
+            if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
+                super::gpu_skin::clear(world, entity);
+            }
+            world
+                .entity_mut(entity)
+                .remove::<super::gpu_skin::UsdCpuSkinFallback>();
+            return;
+        }
+        if !crate::read::skel::deformation_is_time_varying(ctx.stage, ctx.path) {
+            bake_static(ctx, world, entity, skinned, blended);
+            return;
+        }
+        if world.contains_resource::<super::gpu_skin::GpuSkinningEnabled>() {
+            let result = if !skinned && blended {
+                if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
+                    super::gpu_skin::clear(world, entity);
+                }
+                super::gpu_morph::attach(ctx, world, entity)
+            } else {
+                if !blended {
+                    super::gpu_morph::clear(world, entity);
+                }
+                super::gpu_skin::attach(ctx, world, entity, blended)
+            };
+            match result {
+                Ok(()) => return,
+                Err(error) => {
+                    super::gpu_skin::clear(world, entity);
+                    world
+                        .entity_mut(entity)
+                        .insert(super::gpu_skin::UsdCpuSkinFallback(error.to_string()));
+                }
+            }
+        } else if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
+            super::gpu_skin::clear(world, entity);
+        }
+        super::gpu_morph::clear(world, entity);
+        let read = match deformed_mesh_with_kinds(ctx, skinned, blended) {
+            Ok(Some(read)) => read,
+            result => {
+                let error = result.err().map_or_else(
+                    || "deformation produced no mesh".into(),
+                    |error| error.to_string(),
+                );
+                world
+                    .entity_mut(entity)
+                    .remove::<Mesh3d>()
+                    .insert(UsdDeformationError(error));
+                return;
+            }
+        };
+        let mesh = crate::mesh::mesh_from_usd(&read);
+        if !read.subsets.is_empty() {
+            world.entity_mut(entity).insert(CpuSubsetGeometry(read));
+        }
+        let handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
+        if let Some(mut m) = world.get_mut::<Mesh3d>(entity) {
+            m.0 = handle;
+        } else if let Ok(mut e) = world.get_entity_mut(entity) {
+            e.insert(Mesh3d(handle));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,97 +374,6 @@ def SkelRoot "Rig" {{
                 gpu
             );
             assert!(app.world().get_entity(runtime_child).is_ok());
-        }
-    }
-}
-
-impl PrimRoute for SkinRoute {
-    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
-        super::gpu_skin::clear(world, entity);
-        world.entity_mut(entity).remove::<(
-            CpuSubsetGeometry,
-            UsdDeformationError,
-            super::gpu_skin::UsdCpuSkinFallback,
-        )>();
-    }
-    fn matches(&self, ctx: &RouteCtx) -> bool {
-        matches!(ctx.type_name.as_deref(), Some("Mesh"))
-    }
-
-    fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        world
-            .entity_mut(entity)
-            .remove::<(CpuSubsetGeometry, UsdDeformationError)>();
-        if world.get_resource::<Assets<Mesh>>().is_none() {
-            return;
-        }
-        if super::subdivision::enabled(ctx, world) {
-            return;
-        }
-        let skinned = is_skinned(ctx.stage, ctx.path);
-        let blended = has_blend_shapes(ctx.stage, ctx.path);
-        if !skinned && !blended {
-            super::gpu_morph::clear(world, entity);
-            if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
-                super::gpu_skin::clear(world, entity);
-            }
-            world
-                .entity_mut(entity)
-                .remove::<super::gpu_skin::UsdCpuSkinFallback>();
-            return;
-        }
-        if !crate::read::skel::deformation_is_time_varying(ctx.stage, ctx.path) {
-            bake_static(ctx, world, entity, skinned, blended);
-            return;
-        }
-        if world.contains_resource::<super::gpu_skin::GpuSkinningEnabled>() {
-            let result = if !skinned && blended {
-                if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
-                    super::gpu_skin::clear(world, entity);
-                }
-                super::gpu_morph::attach(ctx, world, entity)
-            } else {
-                if !blended {
-                    super::gpu_morph::clear(world, entity);
-                }
-                super::gpu_skin::attach(ctx, world, entity, blended)
-            };
-            match result {
-                Ok(()) => return,
-                Err(error) => {
-                    super::gpu_skin::clear(world, entity);
-                    world
-                        .entity_mut(entity)
-                        .insert(super::gpu_skin::UsdCpuSkinFallback(error.to_string()));
-                }
-            }
-        } else if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
-            super::gpu_skin::clear(world, entity);
-        }
-        super::gpu_morph::clear(world, entity);
-        let read = match deformed_mesh_with_kinds(ctx, skinned, blended) {
-            Ok(Some(read)) => read,
-            result => {
-                let error = result.err().map_or_else(
-                    || "deformation produced no mesh".into(),
-                    |error| error.to_string(),
-                );
-                world
-                    .entity_mut(entity)
-                    .remove::<Mesh3d>()
-                    .insert(UsdDeformationError(error));
-                return;
-            }
-        };
-        let mesh = crate::mesh::mesh_from_usd(&read);
-        if !read.subsets.is_empty() {
-            world.entity_mut(entity).insert(CpuSubsetGeometry(read));
-        }
-        let handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
-        if let Some(mut m) = world.get_mut::<Mesh3d>(entity) {
-            m.0 = handle;
-        } else if let Ok(mut e) = world.get_entity_mut(entity) {
-            e.insert(Mesh3d(handle));
         }
     }
 }

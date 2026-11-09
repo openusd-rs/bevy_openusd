@@ -174,7 +174,7 @@ mod tests {
         let transform = GlobalTransform::from(
             Transform::from_xyz(1.6, 0.8, 1.8).looking_at(Vec3::new(0.0, -0.15, 0.0), Vec3::Y),
         );
-        let projection = Mat4::perspective_infinite_reverse_rh(0.7, 16.0 / 9.0, 0.2);
+        let projection = bevy::math::proj::perspective_infinite_reverse(0.7, 16.0 / 9.0, 0.2);
         let report = camera_report(&transform, projection);
         assert!(report.contains("camera_eye=Vec3(1.6, 0.8, 1.8)\n"));
         assert!(report.contains(&format!(

@@ -307,7 +307,7 @@ mod tests {
         let mut image = Image::new_target_texture(3, 2, TextureFormat::Rgba8UnormSrgb, None);
         image.data = Some((0..24).collect());
         let transform = GlobalTransform::from_translation(Vec3::new(2.0, 3.0, 4.0));
-        let projection = Mat4::perspective_infinite_reverse_rh(0.8, 1.5, 0.1);
+        let projection = bevy::math::proj::perspective_infinite_reverse(0.8, 1.5, 0.1);
         let timing = format!(
             "minimum_ready_delay_ms=15000\n{}",
             crate::capture_metadata::camera_report(&transform, projection)

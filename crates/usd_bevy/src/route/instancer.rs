@@ -1016,7 +1016,7 @@ mod tests {
             .is_none()
         );
         assert!(hierarchy_transform(Mat4::from_scale(Vec3::new(0.0, 1.0, 1.0))).is_none());
-        assert!(hierarchy_transform(Mat4::perspective_rh(1.0, 1.0, 0.1, 10.0)).is_none());
+        assert!(hierarchy_transform(bevy::math::proj::perspective(1.0, 1.0, 0.1, 10.0)).is_none());
         assert!(hierarchy_transform(Mat4::from_cols_array(&[f32::NAN; 16])).is_none());
     }
 
@@ -2297,8 +2297,6 @@ def Material "Mat" {
 
     #[test]
     fn inactive_ids_compose_and_preserve_masked_children() {
-        // Virtual layers need an absolute identifier on every platform; `/virtual/...`
-        // is not absolute on Windows.
         let virtual_root = std::path::absolute("virtual/masks/root.usda").unwrap();
         let weak = virtual_root
             .with_file_name("weak.usda")

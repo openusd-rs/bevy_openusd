@@ -475,6 +475,18 @@ fn main() -> AppExit {
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
+    if let Ok(threshold) = std::env::var("USD_CAPTURE_GPU_INSTANCING") {
+        let Ok(threshold) = threshold.parse::<usize>() else {
+            eprintln!("USD_CAPTURE_GPU_INSTANCING must be a non-negative integer");
+            return AppExit::error();
+        };
+        app.insert_resource(usd_bevy::route::gpu_instancing::UsdGpuInstancing {
+            threshold,
+            min_pixels: 0.0,
+            shadows: true,
+        })
+        .add_plugins(usd_bevy::route::gpu_instancing::UsdGpuInstancingPlugin);
+    }
     if let Ok(levels) = std::env::var("USD_SUBDIVISION_LEVELS") {
         let settings = usd_bevy::route::subdivision::UsdSubdivisionSettings::new(
             levels

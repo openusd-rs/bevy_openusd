@@ -27,31 +27,6 @@ pub fn fit_grid(low: Vec3, high: Vec3) -> Option<(f32, f32, f32)> {
     (height.is_finite() && scale.is_finite() && fade.is_finite()).then_some((height, scale, fade))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grid_fits_below_negative_bounds() {
-        let (height, scale, fade) = fit_grid(Vec3::splat(-2.0), Vec3::splat(2.0)).unwrap();
-        assert!(height < -2.0);
-        assert_eq!(scale, 2.0);
-        assert_eq!(fade, 48.0);
-        assert!(fit_grid(Vec3::ONE, Vec3::ZERO).is_none());
-        assert!(fit_grid(Vec3::NAN, Vec3::ONE).is_none());
-        assert!(fit_grid(Vec3::splat(-f32::MAX), Vec3::splat(f32::MAX)).is_none());
-    }
-
-    #[test]
-    fn grid_density_tracks_scene_scale() {
-        for span in [0.001, 0.01, 0.1, 0.9, 1.0, 4.0, 10.0, 1000.0, 1_000_000.0] {
-            let (_, scale, _) = fit_grid(Vec3::ZERO, Vec3::splat(span)).unwrap();
-            let cells = span * scale;
-            assert!((3.0..=8.001).contains(&cells), "span={span} cells={cells}");
-        }
-    }
-}
-
 impl Plugin for ViewerEnvironmentPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(InfiniteGridPlugin)
@@ -116,5 +91,30 @@ fn setup_environment(mut commands: Commands) {
             .build(),
             Transform::from_translation(position).looking_at(Vec3::ZERO, Vec3::Y),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_fits_below_negative_bounds() {
+        let (height, scale, fade) = fit_grid(Vec3::splat(-2.0), Vec3::splat(2.0)).unwrap();
+        assert!(height < -2.0);
+        assert_eq!(scale, 2.0);
+        assert_eq!(fade, 48.0);
+        assert!(fit_grid(Vec3::ONE, Vec3::ZERO).is_none());
+        assert!(fit_grid(Vec3::NAN, Vec3::ONE).is_none());
+        assert!(fit_grid(Vec3::splat(-f32::MAX), Vec3::splat(f32::MAX)).is_none());
+    }
+
+    #[test]
+    fn grid_density_tracks_scene_scale() {
+        for span in [0.001, 0.01, 0.1, 0.9, 1.0, 4.0, 10.0, 1000.0, 1_000_000.0] {
+            let (_, scale, _) = fit_grid(Vec3::ZERO, Vec3::splat(span)).unwrap();
+            let cells = span * scale;
+            assert!((3.0..=8.001).contains(&cells), "span={span} cells={cells}");
+        }
     }
 }

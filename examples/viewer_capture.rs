@@ -551,6 +551,7 @@ fn setup(
     let target = images.add(image);
     let mut camera = commands.spawn((
         Camera3d::default(),
+        bevy::pbr::ScreenSpaceTransmission::default(),
         CaptureCamera,
         capture.msaa,
         capture.exposure,

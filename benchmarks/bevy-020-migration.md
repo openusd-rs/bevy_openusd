@@ -187,7 +187,59 @@ and runs the offscreen capture with native graphics on NixOS.
   `NO_COLOR` as a boolean, whereas the environment supplied `1`. The make recipes
   now use `NO_COLOR=true` (`ed3ef2e`); the release bundle is building.
 
-Next: finish the GPU gate, then run `test-library`, `test-assets`, `test-host`,
-`harden`, `test-native`, watcher tests and the browser/interactive gates. Reuse
-the debug-profile environment above for native test/build commands to avoid
-rebuilding the same dependencies. Keep follow-up commits focused and local.
+## Expanded verification checkpoint
+
+- `test-library` passed without default features (651 passed, 20 ignored) and
+  with all features (659 passed, 29 ignored), including WESL registration and
+  helper-retention regressions. Doctests passed. Log: `/tmp/bevy-020-library.log`.
+  These counts precede the latest hierarchy timing-fixture repair.
+- The Vulkan material gate now captures forward, prepass, deferred and OIT,
+  plus instancing and all three skin/morph render paths without shader errors.
+  Evidence: `/tmp/bevy-020-render-20261109-libraries/`. That run stopped at a
+  tooling mistake: the dome selector needs the authored `/Env` path, not `1`.
+  Corrected it and started a fresh full run at `/tmp/bevy-020-render-final/`.
+  The fresh run also uses the corrected light intensity consistently: USD
+  intensity 1.2 projects to 12,000 lux, not the original fixture's 12 million.
+- `harden` found another two-root fixture assuming projection finishes in one
+  update (`hierarchy_prototypes_share_meshes_and_keep_independent_animation`).
+  Like the earlier baseline failure, its fixture now selects an unlimited
+  projection budget; the production budget and assertions are unchanged.
+  Rerun: `/tmp/bevy-020-harden-rerun.log`.
+- The Mara host's ordinary tests passed 9 with 2 ignored. The explicit GPU
+  tests initially had no camera, so the RGBA test correctly received no image.
+  Camera-equipped tests now exercise actual readback, non-aligned rows, resize
+  and GPU-to-CPU switching, and reject renderer failure rather than silently
+  skipping. Both assertions passed, but the process then crashed with an NVIDIA
+  NVVM error while asynchronous pipeline work remained. This is not a passing
+  gate; a pipeline-completion wait is being checked before test teardown.
+- The wasm release bundle passed: `/tmp/bevy-020-web-build.log`. Chromium WebGL2
+  then loaded both HTTP Kitchen and in-memory scenes, orbited and resized without
+  runtime errors. All three screenshots in `/tmp/bevy-020-browser-basic/` were
+  inspected. The adapter is SwiftShader: this establishes software WebGL2
+  behavior, not hardware browser performance or compute/OIT support. The default
+  Chromium run also selected SwiftShader. A fresh profile needed
+  `--password-store=basic` to avoid navigation hanging in this environment.
+
+### Existing OpenUSD package-export blocker
+
+`test-native` passed 13 export checks but failed
+`native_export_repackages_snapshot_archives` before calling native `usdcat`:
+`unsupported layer extension "usda]"`. Log: `/tmp/bevy-020-native.log`.
+The same test in the preserved Bevy 0.19 baseline executable
+`target/debug/deps/usd_bevy-5fc903b8e07189e3` fails identically:
+`/tmp/bevy-019-native-package-baseline.log`. This is a verified existing failure,
+not evidence of a Bevy 0.20 regression, but the native export gate is not green.
+
+The pinned OpenUSD packager splits a package-relative source path without
+removing its closing bracket. Upstream fixes include
+[`cde477f`](https://github.com/mxpv/openusd/commit/cde477f9d1b23de505ea2fabe8664a6cfa416be3)
+and [`a304ba2`](https://github.com/mxpv/openusd/commit/a304ba2100083a3fa719ee7ea02a844c3f1c03fa).
+Even the first fix is 11 commits past our pin, including the large live-layer
+handle API migration. Keep the OpenUSD pin for this Bevy migration rather than
+silently introducing that separate API migration or a packaging workaround.
+Do not suppress the failing test or describe native export as fully accepted.
+
+Next: finish full GPU and native editor checks, Clippy/all-feature tests,
+watchers, the native deformation oracle and image comparisons. Resolve or
+explicitly scope the existing OpenUSD failure before release approval. Keep
+follow-up commits focused and local; no pushes or remote merges.

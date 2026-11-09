@@ -57,10 +57,19 @@ pub struct LiveStage {
 
 impl LiveStage {
     /// Wrap a stage and install the change sink.
+    ///
+    /// # Panics
+    /// Panics when the stage cannot flush pending edits. Use [`Self::try_new`] for fallible setup.
     pub fn new(stage: Stage) -> Self {
+        Self::try_new(stage).expect("live stage change observer")
+    }
+
+    /// Wraps a stage after flushing pending edits and installing its change sink.
+    pub fn try_new(stage: Stage) -> openusd::Result<Self> {
         let queue: Rc<RefCell<Vec<StageChange>>> = Rc::new(RefCell::new(Vec::new()));
-        let q = queue.clone();
+        let q = Rc::downgrade(&queue);
         let sink = stage.add_sink(move |_stage: &Stage, change: &CommittedChange<'_>| {
+            let Some(q) = q.upgrade() else { return };
             q.borrow_mut().push(StageChange {
                 resynced: change
                     .resynced
@@ -73,13 +82,13 @@ impl LiveStage {
                     .map(|p| p.as_str().to_string())
                     .collect(),
             });
-        });
-        Self {
+        })?;
+        Ok(Self {
             stage,
             queue,
             suppressed: Rc::new(RefCell::new(std::collections::HashSet::new())),
             sink: Some(sink),
-        }
+        })
     }
 
     /// Take and clear all changes recorded since the last drain.
@@ -147,7 +156,9 @@ impl LiveStage {
 impl Drop for LiveStage {
     fn drop(&mut self) {
         if let Some(id) = self.sink.take() {
-            self.stage.remove_sink(id);
+            if let Err(error) = self.stage.remove_sink(id) {
+                warn!("failed to detach live stage observer: {error}");
+            }
         }
     }
 }
@@ -623,7 +634,10 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     let registry = registry_of(world);
     let previous_material_reads =
         world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
-    world.insert_non_send(crate::route::material::ProjectionMaterialReads::new(stage));
+    match crate::route::material::ProjectionMaterialReads::new(stage) {
+        Ok(reads) => world.insert_non_send(reads),
+        Err(error) => warn!("material cache observer unavailable: {error}"),
+    }
     let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
     let memory_profiling = profiling && std::env::var_os("USD_PROFILE_MEMORY").is_some();
     let memory_trace = profiling
@@ -1482,12 +1496,12 @@ pub(crate) fn variant_scopes(
     for (prim, set, was, now) in changes {
         let owner = openusd::sdf::path(prim.as_str()).ok()?;
         let authored = layers.iter().any(|id| {
-            stage.layer(id).is_some_and(|layer| {
+            stage.layer(id).ok().flatten().is_some_and(|layer| {
                 layer
                     .prim(owner.clone())
                     .ok()
                     .flatten()
-                    .is_some_and(|spec| spec.has_field("variantSetNames"))
+                    .is_some_and(|spec| spec.has_field("variantSetNames").unwrap_or(false))
             })
         });
         if !authored {
@@ -1497,7 +1511,8 @@ pub(crate) fn variant_scopes(
         for selection in [was, now].into_iter().flatten() {
             let variant = owner.append_variant_selection(set, selection).ok()?;
             for id in &layers {
-                if let Some(layer) = stage.layer(id) {
+                if let Some(layer) = stage.layer(id).ok()? {
+                    let layer = layer.try_borrow().ok()?;
                     collect_variant_specs(layer.data(), &variant, &mut subtrees, &mut exact);
                 }
             }

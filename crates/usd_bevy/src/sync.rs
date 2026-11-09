@@ -1265,6 +1265,7 @@ def Xform "Instance" (instanceable = true references = </Model>) {}
             stage
                 .layer(&layer)
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap()
                 .contains("bevy:Health:current")
@@ -1297,7 +1298,12 @@ def Xform "Instance" (instanceable = true references = </Model>) {}
             .into_iter()
             .find(|path| path.ends_with("weak.usda"))
             .unwrap();
-        let weak_before = stage.layer(&weak).unwrap().export_to_string().unwrap();
+        let weak_before = stage
+            .layer(&weak)
+            .unwrap()
+            .unwrap()
+            .export_to_string()
+            .unwrap();
         let target = stage
             .layer_identifiers()
             .into_iter()
@@ -1329,6 +1335,7 @@ def Xform "Instance" (instanceable = true references = </Model>) {}
             live.stage
                 .layer(&target)
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap()
                 .contains("bevy:Health")
@@ -1338,7 +1345,12 @@ def Xform "Instance" (instanceable = true references = </Model>) {}
             root_before
         );
         assert_eq!(
-            live.stage.layer(&weak).unwrap().export_to_string().unwrap(),
+            live.stage
+                .layer(&weak)
+                .unwrap()
+                .unwrap()
+                .export_to_string()
+                .unwrap(),
             weak_before
         );
         crate::authoring::clear_attribute(&live.stage, "/Enemy", &names[0]).unwrap();

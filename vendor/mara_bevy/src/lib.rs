@@ -1488,8 +1488,35 @@ mod tests {
         app.add_plugins(GroundGridPlugin);
     }
 
+    #[derive(Resource, Clone, Default)]
+    struct PipelineStatus(Arc<std::sync::Mutex<Option<Result<(), String>>>>);
+
+    fn report_pipelines(
+        cache: Res<bevy::render::render_resource::PipelineCache>,
+        status: Res<PipelineStatus>,
+    ) {
+        use bevy::render::render_resource::CachedPipelineState;
+        let mut ready = true;
+        for pipeline in cache.pipelines() {
+            match &pipeline.state {
+                CachedPipelineState::Ok(_) => (),
+                CachedPipelineState::Err(error) => {
+                    *status.0.lock().unwrap() = Some(Err(error.to_string()));
+                    return;
+                }
+                _ => ready = false,
+            }
+        }
+        *status.0.lock().unwrap() = ready.then_some(Ok(()));
+    }
+
     fn capture_bridge() -> BevyViewportBridge {
         BevyViewportBridge::with_app_config(BevyViewportTexture::new(96, 64), |app| {
+            let status = PipelineStatus::default();
+            app.insert_resource(status.clone());
+            app.sub_app_mut(RenderApp)
+                .insert_resource(status)
+                .add_systems(Render, report_pipelines.in_set(RenderSystems::Cleanup));
             app.insert_resource(ClearColor(Color::srgb(0.2, 0.4, 0.6)))
                 .add_systems(
                     Startup,
@@ -1502,15 +1529,25 @@ mod tests {
         })
     }
 
+    fn pipelines_ready(bridge: &BevyViewportBridge) -> bool {
+        let status = bridge.renderer.as_ref().unwrap().app.world().resource::<PipelineStatus>();
+        match status.0.lock().unwrap().as_ref() {
+            Some(Ok(())) => true,
+            Some(Err(error)) => panic!("pipeline compilation failed: {error}"),
+            None => false,
+        }
+    }
+
     fn capture_frame(bridge: &mut BevyViewportBridge, width: u32, height: u32) -> CapturedBevyFrame {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while std::time::Instant::now() < deadline {
-            if let Some(frame) = bridge.render_frame(width, height, 1.0 / 60.0)
+            if let Some(frame) = bridge.render_frame(width, height, 1.0 / 60.0).cloned()
                 && frame.width == width
                 && frame.height == height
                 && frame.rgba.chunks_exact(4).any(|pixel| pixel[3] != 0)
+                && pipelines_ready(bridge)
             {
-                return frame.clone();
+                return frame;
             }
             assert!(!bridge.renderer_failed(), "native renderer failed");
             std::thread::sleep(std::time::Duration::from_millis(4));

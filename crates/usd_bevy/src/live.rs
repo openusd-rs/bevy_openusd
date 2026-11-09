@@ -57,10 +57,19 @@ pub struct LiveStage {
 
 impl LiveStage {
     /// Wrap a stage and install the change sink.
+    ///
+    /// # Panics
+    /// Panics when the stage cannot flush pending edits. Use [`Self::try_new`] for fallible setup.
     pub fn new(stage: Stage) -> Self {
+        Self::try_new(stage).expect("live stage change observer")
+    }
+
+    /// Wraps a stage after flushing pending edits and installing its change sink.
+    pub fn try_new(stage: Stage) -> openusd::Result<Self> {
         let queue: Rc<RefCell<Vec<StageChange>>> = Rc::new(RefCell::new(Vec::new()));
-        let q = queue.clone();
+        let q = Rc::downgrade(&queue);
         let sink = stage.add_sink(move |_stage: &Stage, change: &CommittedChange<'_>| {
+            let Some(q) = q.upgrade() else { return };
             q.borrow_mut().push(StageChange {
                 resynced: change
                     .resynced
@@ -73,23 +82,41 @@ impl LiveStage {
                     .map(|p| p.as_str().to_string())
                     .collect(),
             });
-        });
-        Self {
+        })?;
+        Ok(Self {
             stage,
             queue,
             suppressed: Rc::new(RefCell::new(std::collections::HashSet::new())),
             sink: Some(sink),
-        }
+        })
     }
 
-    /// Take and clear all changes recorded since the last drain.
+    /// Flush pending layer edits and take recorded changes, deferring on failure.
     pub fn drain_changes(&self) -> Vec<StageChange> {
-        std::mem::take(&mut *self.queue.borrow_mut())
+        self.try_drain_changes().unwrap_or_else(|error| {
+            warn!("failed to flush live stage changes: {error}");
+            Vec::new()
+        })
     }
 
-    /// Whether any change is pending (cheap check before doing work).
+    /// Flush pending layer edits and take recorded changes without losing queued edits on failure.
+    pub fn try_drain_changes(&self) -> openusd::Result<Vec<StageChange>> {
+        self.stage.flush()?;
+        Ok(std::mem::take(&mut *self.queue.borrow_mut()))
+    }
+
+    /// Flush pending layer edits and check the queue, deferring on failure.
     pub fn has_changes(&self) -> bool {
-        !self.queue.borrow().is_empty()
+        self.try_has_changes().unwrap_or_else(|error| {
+            warn!("failed to flush live stage changes: {error}");
+            false
+        })
+    }
+
+    /// Flush pending layer edits and report whether any change is queued.
+    pub fn try_has_changes(&self) -> openusd::Result<bool> {
+        self.stage.flush()?;
+        Ok(!self.queue.borrow().is_empty())
     }
 
     /// Mark `prim` as self-authored: the next change mentioning it (fired by
@@ -147,7 +174,9 @@ impl LiveStage {
 impl Drop for LiveStage {
     fn drop(&mut self) {
         if let Some(id) = self.sink.take() {
-            self.stage.remove_sink(id);
+            if let Err(error) = self.stage.remove_sink(id) {
+                warn!("failed to detach live stage observer: {error}");
+            }
         }
     }
 }
@@ -623,7 +652,10 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
     let registry = registry_of(world);
     let previous_material_reads =
         world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
-    world.insert_non_send(crate::route::material::ProjectionMaterialReads::new(stage));
+    match crate::route::material::ProjectionMaterialReads::new(stage) {
+        Ok(reads) => world.insert_non_send(reads),
+        Err(error) => warn!("material cache observer unavailable: {error}"),
+    }
     let profiling = std::env::var_os("USD_PROFILE_LOADING").is_some();
     let memory_profiling = profiling && std::env::var_os("USD_PROFILE_MEMORY").is_some();
     let memory_trace = profiling
@@ -1482,12 +1514,12 @@ pub(crate) fn variant_scopes(
     for (prim, set, was, now) in changes {
         let owner = openusd::sdf::path(prim.as_str()).ok()?;
         let authored = layers.iter().any(|id| {
-            stage.layer(id).is_some_and(|layer| {
+            stage.layer(id).ok().flatten().is_some_and(|layer| {
                 layer
                     .prim(owner.clone())
                     .ok()
                     .flatten()
-                    .is_some_and(|spec| spec.has_field("variantSetNames"))
+                    .is_some_and(|spec| spec.has_field("variantSetNames").unwrap_or(false))
             })
         });
         if !authored {
@@ -1497,7 +1529,8 @@ pub(crate) fn variant_scopes(
         for selection in [was, now].into_iter().flatten() {
             let variant = owner.append_variant_selection(set, selection).ok()?;
             for id in &layers {
-                if let Some(layer) = stage.layer(id) {
+                if let Some(layer) = stage.layer(id).ok()? {
+                    let layer = layer.try_borrow().ok()?;
                     collect_variant_specs(layer.data(), &variant, &mut subtrees, &mut exact);
                 }
             }
@@ -2348,6 +2381,116 @@ def NodeGraph "Graph" {}
         );
     }
     use openusd::vt::Value;
+
+    #[test]
+    fn direct_layer_edits_reach_live_projection_without_stage_reads() {
+        let stage = Stage::builder().in_memory("direct.usda").unwrap();
+        let live = LiveStage::try_new(stage).unwrap();
+        let mut world = World::new();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let layer = live.stage.root_layer();
+        for name in ["/Direct", "/Drained"] {
+            layer
+                .edit(|layer| {
+                    openusd::sdf::PrimSpec::new(
+                        layer.data_mut(),
+                        name,
+                        openusd::sdf::Specifier::Def,
+                        "Xform",
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            if name == "/Direct" {
+                assert!(live.try_has_changes().unwrap());
+                apply_changes(&mut world, &live, &mut map);
+                assert!(map.entity(name).is_some());
+            } else {
+                assert!(
+                    live.try_drain_changes()
+                        .unwrap()
+                        .iter()
+                        .flat_map(StageChange::paths)
+                        .any(|path| path == name)
+                );
+            }
+            assert!(!live.try_has_changes().unwrap());
+        }
+    }
+
+    #[test]
+    fn shared_registry_edits_reach_the_other_live_stage() {
+        let directory = tempfile::tempdir().unwrap();
+        let filename = directory.path().join("shared.usda");
+        std::fs::write(&filename, "#usda 1.0\n").unwrap();
+        let registry = openusd::sdf::LayerRegistry::default();
+        let open = || {
+            Stage::builder()
+                .registry(registry.clone())
+                .open(filename.to_str().unwrap())
+                .unwrap()
+        };
+        let author = open();
+        let live = LiveStage::try_new(open()).unwrap();
+        let mut world = World::new();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        author
+            .define_prim("/Shared")
+            .unwrap()
+            .set_type_name("Xform")
+            .unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        assert!(map.entity("/Shared").is_some());
+        assert!(!live.try_has_changes().unwrap());
+        author.remove_prim("/Shared").unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        assert!(map.entity("/Shared").is_none());
+        assert!(!live.try_has_changes().unwrap());
+    }
+
+    #[test]
+    fn live_observer_rejects_busy_setup_and_preserves_pending_changes() {
+        let stage = Stage::builder().in_memory("busy.usda").unwrap();
+        let live = LiveStage::try_new(stage.clone()).unwrap();
+        stage.define_prim("/Queued").unwrap();
+        stage
+            .root_layer()
+            .edit(|_| {
+                assert!(LiveStage::try_new(stage.clone()).is_err());
+                assert!(live.try_has_changes().is_err());
+                assert!(live.try_drain_changes().is_err());
+                assert!(!live.queue.borrow().is_empty());
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            live.try_drain_changes()
+                .unwrap()
+                .iter()
+                .flat_map(StageChange::paths)
+                .any(|path| path == "/Queued")
+        );
+        assert!(!live.try_has_changes().unwrap());
+    }
+
+    #[test]
+    fn dropping_live_observer_during_layer_edit_releases_its_queue() {
+        let stage = Stage::builder().in_memory("drop-busy.usda").unwrap();
+        let live = LiveStage::try_new(stage.clone()).unwrap();
+        let queue = Rc::downgrade(&live.queue);
+        stage
+            .root_layer()
+            .edit(|_| {
+                drop(live);
+                assert!(queue.upgrade().is_none());
+                Ok(())
+            })
+            .unwrap();
+        stage.define_prim("/After").unwrap();
+        stage.flush().unwrap();
+    }
 
     fn tx(stage: &Stage, prim: &str) -> Option<Vec3> {
         current_transform(stage, prim).map(|t| t.translation)

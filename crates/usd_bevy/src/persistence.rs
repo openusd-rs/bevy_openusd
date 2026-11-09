@@ -50,15 +50,18 @@ pub(crate) fn export_layer(
 
 /// Copies `layer` with the asset paths it authors anchored to its location.
 /// Asset expressions, tile/sequence patterns and clip templates are refused.
-fn anchored_layer(layer: &openusd::sdf::Layer) -> Result<openusd::sdf::Layer> {
+fn anchored_layer(layer: &openusd::sdf::Layer) -> Result<openusd::sdf::LayerHandle> {
     let root = openusd::sdf::Path::abs_root();
     let mut anchored = openusd::sdf::Layer::new_anonymous("anchored.usda");
     anchored.edit(|edit| {
         openusd::sdf::copy_spec(layer.data(), &root, edit.data_mut(), &root).map(drop)
     })?;
+    let anchored = openusd::sdf::LayerRegistry::default()
+        .adopt(anchored)
+        .map_err(|error| anyhow::anyhow!("adopt relocated layer: {error}"))?;
     let mut unsupported = None;
     openusd::usd_utils::modify_asset_paths(
-        &mut anchored,
+        &anchored,
         |path| {
             if path.contains(['`', '<', '#']) {
                 unsupported.get_or_insert_with(|| path.to_owned());
@@ -426,6 +429,7 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
             .stage()
             .layer(weak.to_str().unwrap())
             .unwrap()
+            .unwrap()
             .export_to_string()
             .unwrap();
         for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
@@ -471,6 +475,7 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
             editor
                 .stage()
                 .layer(weak.to_str().unwrap())
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),
@@ -1467,6 +1472,7 @@ def Scope "Model" (
             .stage()
             .layer(weak.to_str().unwrap())
             .unwrap()
+            .unwrap()
             .export_to_string()
             .unwrap();
         let undo_before = editor.snapshot().unwrap().can_undo;
@@ -1487,6 +1493,7 @@ def Scope "Model" (
             editor
                 .stage()
                 .layer(weak.to_str().unwrap())
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),

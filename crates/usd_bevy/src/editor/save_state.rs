@@ -2,7 +2,8 @@ use openusd::usd::Stage;
 use std::collections::BTreeMap;
 
 fn content_hash(stage: &Stage, id: &str) -> Option<blake3::Hash> {
-    let layer = stage.layer(id)?;
+    let layer = stage.layer(id).ok()??;
+    let layer = layer.try_borrow().ok()?;
     let data = layer.data();
     let mut hash = blake3::Hasher::new();
     for path in data.spec_paths() {
@@ -130,6 +131,8 @@ impl SaveState {
                 && !self.baselines.contains_key(&id)
                 && stage
                     .layer(&id)
+                    .ok()
+                    .flatten()
                     .is_some_and(|layer| layer.resolved_path().is_some())
             {
                 if let Some(hash) = current.1 {
@@ -150,7 +153,9 @@ impl SaveState {
     }
 
     pub fn saved_to_source(&mut self, stage: &Stage, id: &str, filename: &str) {
-        let Some(layer) = stage.layer(id) else { return };
+        let Ok(Some(layer)) = stage.layer(id) else {
+            return;
+        };
         let Some(source) = layer.resolved_path() else {
             return;
         };

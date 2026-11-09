@@ -15,6 +15,11 @@ the default bridge creates only a target, so its readback is correctly empty.
 They require a working adapter, cover RGBA row padding and resize, and exercise
 switching from direct GPU textures to CPU readback. They no longer report a
 renderer failure as a successful skipped test. Run `oslo make test-host-gpu`.
+The fixture also waits for asynchronous pipeline compilation through a shared
+render-world status resource before teardown. A nonzero clear-color readback
+can arrive before shader compilation finishes; dropping the short-lived test
+then caused an NVIDIA NVVM crash at process exit. Pipelined rendering moves
+`RenderApp` off the main app, so its cache is read inside the render schedule.
 
 Remove this override when an upstream revision contains both the Bevy 0.20 port
 and the pacing fix, after the embedded viewport and host-capture tests pass.

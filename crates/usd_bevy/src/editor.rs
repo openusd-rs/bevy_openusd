@@ -506,7 +506,8 @@ fn process_commands(world: &mut World) {
                     profile("stage-open");
                     crate::UsdSource::validate_composition(&stage)?;
                     profile("composition-validated");
-                    let mut editor = EditorSession::new(stage.clone());
+                    let mut editor = EditorSession::try_new(stage.clone())?;
+                    let live = crate::live::LiveStage::try_new(stage.clone())?;
                     profile("editor-created");
                     let textures = match prepare_textures(&editor, &source) {
                         Ok(textures) => textures,
@@ -537,7 +538,7 @@ fn process_commands(world: &mut World) {
                         }
                     }
                     world.insert_resource(crate::live::PrimEntities::default());
-                    world.insert_non_send(crate::live::LiveStage::new(stage.clone()));
+                    world.insert_non_send(live);
                     editor.save_state.borrow_mut().disk = Some(disk_baselines);
                     editor
                         .save_state
@@ -1262,10 +1263,19 @@ pub struct EditorSession {
 }
 
 impl EditorSession {
+    /// Creates an editor session for a stage that can flush pending edits.
+    ///
+    /// # Panics
+    /// Panics when change tracking cannot be installed. Use [`Self::try_new`] for fallible setup.
     pub fn new(stage: Stage) -> Self {
+        Self::try_new(stage).expect("editor layer change observer")
+    }
+
+    /// Creates an editor session after installing its layer change observer.
+    pub fn try_new(stage: Stage) -> anyhow::Result<Self> {
         static NEXT_DOCUMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let layer_changes = layer_changes::LayerChanges::new(&stage);
-        Self {
+        let layer_changes = layer_changes::LayerChanges::new(&stage)?;
+        Ok(Self {
             document_id: NEXT_DOCUMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             revision: 0,
             source: None,
@@ -1278,7 +1288,7 @@ impl EditorSession {
             history_revisions: Default::default(),
             save_state: Default::default(),
             texture_index: Default::default(),
-        }
+        })
     }
 
     pub fn stage(&self) -> &Stage {
@@ -1296,7 +1306,7 @@ impl EditorSession {
     pub fn from_source(source: crate::UsdSource) -> anyhow::Result<Self> {
         let (stage, disk) = source.open_stage_for_editor()?;
         crate::UsdSource::validate_composition(&stage)?;
-        let mut editor = Self::new(stage);
+        let mut editor = Self::try_new(stage)?;
         editor.save_state.borrow_mut().disk = Some(disk);
         editor
             .save_state
@@ -1364,7 +1374,7 @@ impl EditorSession {
     pub fn set_layer_muted(&mut self, identifier: &str, muted: bool) -> anyhow::Result<()> {
         self.synchronize_external_edits();
         anyhow::ensure!(
-            self.stage.layer(identifier).is_some() || self.stage.is_layer_muted(identifier),
+            self.stage.layer(identifier)?.is_some() || self.stage.is_layer_muted(identifier),
             "unknown layer"
         );
         if muted {
@@ -1537,6 +1547,10 @@ impl EditorSession {
 
     /// Establishes a new history baseline when edits bypass the command model.
     pub fn synchronize_external_edits(&mut self) -> bool {
+        if let Err(error) = self.stage.flush() {
+            bevy::log::warn!("failed to flush editor changes: {error}");
+            return false;
+        }
         let revisions = self.layer_changes.revisions();
         if self.undo.len() == self.stage.undo_depth() && revisions == self.history_revisions {
             return false;
@@ -1556,18 +1570,17 @@ impl EditorSession {
             .as_ref()
             .and_then(|disk| disk.lock().expect("disk baselines").get(&key).copied());
         let published = match mode {
-            SaveMode::RootLayer => crate::persistence::export_layer(
-                &self.stage,
-                &self.stage.root_layer(),
-                filename,
-                expected,
-            )?,
+            SaveMode::RootLayer => {
+                let layer = self.stage.root_layer().try_borrow()?;
+                crate::persistence::export_layer(&self.stage, &layer, filename, expected)?
+            }
             SaveMode::EditLayer => {
                 let target = self.stage.edit_target();
                 let layer = self
                     .stage
-                    .layer(target.layer_identifier())
+                    .layer(target.layer_identifier())?
                     .ok_or_else(|| anyhow::anyhow!("edit layer is unavailable"))?;
+                let layer = layer.try_borrow()?;
                 crate::persistence::export_layer(&self.stage, &layer, filename, expected)?
             }
             SaveMode::Flattened => {
@@ -1606,6 +1619,7 @@ impl EditorSession {
             time.is_none_or(f64::is_finite),
             "inspection time must be finite"
         );
+        self.stage.flush()?;
         let mut snapshot = EditorSnapshot {
             document_id: self.document_id,
             revision: self.revision,
@@ -1663,14 +1677,11 @@ impl EditorSession {
             }
             let prim = self.stage.prim(openusd::sdf::path(path)?)?;
             for site in prim.prim_stack()? {
-                let layer = self
-                    .stage
-                    .layer(&site.layer)
-                    .ok_or_else(|| anyhow::anyhow!("composition opinion layer is unavailable"))?;
+                let layer = site.layer.try_borrow()?;
                 if let Some(value) = layer.data().try_field(&site.path, "references")? {
                     if let Value::ReferenceListOp(operation) = value.as_ref() {
                         snapshot.reference_opinions.push(ReferenceOpinion {
-                            layer: site.layer.clone(),
+                            layer: site.layer.identifier().to_owned(),
                             prim: site.path.clone(),
                             offset: site.offset,
                             operation: operation.clone(),
@@ -1680,7 +1691,7 @@ impl EditorSession {
                 if let Some(value) = layer.data().try_field(&site.path, "payload")? {
                     if let Value::PayloadListOp(operation) = value.as_ref() {
                         snapshot.payload_opinions.push(PayloadOpinion {
-                            layer: site.layer,
+                            layer: site.layer.identifier().to_owned(),
                             prim: site.path,
                             offset: site.offset,
                             operation: operation.clone(),
@@ -1775,9 +1786,7 @@ fn variant_choices(
     let mut sets: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         Default::default();
     for site in prim.prim_stack()? {
-        let layer = stage
-            .layer(&site.layer)
-            .ok_or_else(|| anyhow::anyhow!("variant layer is unavailable"))?;
+        let layer = site.layer.try_borrow()?;
         let Some(names) = layer.data().try_field(&site.path, "variantSetChildren")? else {
             continue;
         };
@@ -1879,6 +1888,7 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
     fn assert_reference_custom_data(stage: &openusd::usd::Stage) {
         let field = stage
             .root_layer()
+            .borrow()
             .data()
             .try_field(&openusd::sdf::path("/Root").unwrap(), "references")
             .unwrap()
@@ -2082,6 +2092,7 @@ def Xform "Root" ( prepend references = [</A>, </B>] ) {}
             assert_eq!(score(&reopened), expected);
             let field = reopened
                 .root_layer()
+                .borrow()
                 .data()
                 .try_field(&openusd::sdf::path("/Root").unwrap(), "references")
                 .unwrap()
@@ -3043,6 +3054,7 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
                 let text = stage
                     .layer(&identifier)
                     .unwrap()
+                    .unwrap()
                     .export_to_string()
                     .unwrap();
                 (identifier, text)
@@ -3072,7 +3084,7 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
             original
         );
         for (identifier, before) in layers_before {
-            let layer = editor.stage().layer(&identifier).unwrap();
+            let layer = editor.stage().layer(&identifier).unwrap().unwrap();
             assert_eq!(layer.export_to_string().unwrap(), before);
         }
     }
@@ -3130,6 +3142,7 @@ def Xform "M" {}
         assert!(
             !stage
                 .root_layer()
+                .borrow()
                 .data()
                 .has_spec(&path.append_property("xformOp:transform").unwrap())
         );
@@ -3137,6 +3150,7 @@ def Xform "M" {}
         assert!(
             stage
                 .root_layer()
+                .borrow()
                 .data()
                 .has_spec(&source_path.append_property("xformOp:transform").unwrap())
         );
@@ -3262,6 +3276,7 @@ def Xform "M" {}
         assert!(
             !stage
                 .root_layer()
+                .borrow()
                 .data()
                 .has_spec(&openusd::sdf::Path::new("/M.score").unwrap())
         );
@@ -3295,6 +3310,7 @@ def Xform "M" {}
             assert!(
                 !stage
                     .root_layer()
+                    .borrow()
                     .data()
                     .has_spec(&openusd::sdf::Path::new("/Source.newValue").unwrap())
             );
@@ -3876,6 +3892,33 @@ def Xform "Model" (
     }
 
     #[test]
+    fn editor_observer_rejects_busy_setup_and_defers_history_changes() {
+        let stage = Stage::builder().in_memory("busy-editor.usda").unwrap();
+        let mut editor = EditorSession::try_new(stage.clone()).unwrap();
+        stage
+            .root_layer()
+            .edit(|layer| {
+                assert!(EditorSession::try_new(stage.clone()).is_err());
+                assert!(editor.snapshot().is_err());
+                assert!(!editor.synchronize_external_edits());
+                openusd::sdf::PrimSpec::new(
+                    layer.data_mut(),
+                    "/Direct",
+                    openusd::sdf::Specifier::Def,
+                    "Xform",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(editor.synchronize_external_edits());
+        let snapshot = editor.snapshot().unwrap();
+        assert!(snapshot.prims.iter().any(|path| path == "/Direct"));
+        assert!(snapshot.layer_revisions[&snapshot.root_layer] > 0);
+        assert!(!snapshot.can_undo);
+        assert!(!editor.synchronize_external_edits());
+    }
+
+    #[test]
     fn layer_revisions_track_authored_changes_not_runtime_or_exports() {
         let filename = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3971,6 +4014,7 @@ def Xform "Root" { def Cube "Shape" {} }
                     .stage()
                     .layer(id)
                     .unwrap()
+                    .unwrap()
                     .export_to_string()
                     .unwrap()
             })
@@ -3995,6 +4039,7 @@ def Xform "Root" { def Cube "Shape" {} }
                 editor
                     .stage()
                     .layer(id)
+                    .unwrap()
                     .unwrap()
                     .export_to_string()
                     .unwrap(),
@@ -4029,6 +4074,7 @@ def Xform "Root" { def Cube "Shape" {} }
             .stage()
             .layer(&layers[2])
             .unwrap()
+            .unwrap()
             .export_to_string()
             .unwrap();
         editor
@@ -4043,6 +4089,7 @@ def Xform "Root" { def Cube "Shape" {} }
             .stage()
             .layer(&layers[2])
             .unwrap()
+            .unwrap()
             .export_to_string()
             .unwrap();
         editor.set_edit_layer(&layers[0]).unwrap();
@@ -4056,6 +4103,7 @@ def Xform "Root" { def Cube "Shape" {} }
                 .stage()
                 .layer(&layers[2])
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap(),
             edited
@@ -4066,6 +4114,7 @@ def Xform "Root" { def Cube "Shape" {} }
             editor
                 .stage()
                 .layer(&layers[2])
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),
@@ -4082,6 +4131,7 @@ def Xform "Root" { def Cube "Shape" {} }
                 .stage()
                 .layer(&layers[2])
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap(),
             original
@@ -4092,6 +4142,7 @@ def Xform "Root" { def Cube "Shape" {} }
             editor
                 .stage()
                 .layer(&layers[2])
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),
@@ -4401,6 +4452,7 @@ over "Root" {}
             .stage()
             .layer(&weak)
             .unwrap()
+            .unwrap()
             .export_to_string()
             .unwrap();
         editor
@@ -4414,6 +4466,7 @@ over "Root" {}
         let edited = editor
             .stage()
             .layer(&weak)
+            .unwrap()
             .unwrap()
             .export_to_string()
             .unwrap();
@@ -4433,6 +4486,7 @@ over "Root" {}
                 .stage()
                 .layer(&weak)
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap(),
             edited
@@ -4442,6 +4496,7 @@ over "Root" {}
             editor
                 .stage()
                 .layer(&weak)
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),
@@ -4462,6 +4517,7 @@ over "Root" {}
                 .stage()
                 .layer(&weak)
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap(),
             original
@@ -4471,6 +4527,7 @@ over "Root" {}
             editor
                 .stage()
                 .layer(&weak)
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),

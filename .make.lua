@@ -267,6 +267,36 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "test-deformation",
+  desc = "compare CPU and GPU deformation captures at selected time codes",
+  params = {
+    { "--asset", desc = "USD scene (default: skel_morph_blended_normals.usda)" },
+    { "--output", desc = "new evidence directory" },
+    { "--tolerance", desc = "maximum RGB channel difference (default: 1)" },
+    { "--times", desc = "space-separated time codes (default: 0 5 10)" },
+  },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    local times = {}
+    for time in (a.times or "0 5 10"):gmatch("%S+") do times[#times + 1] = time end
+    assert(#times > 0, "provide at least one time code")
+    sh.bash("scripts/compare_deformation.sh",
+            a.asset or "assets/skel_morph_blended_normals.usda", a.output,
+            tostring(a.tolerance or 1), table.unpack(times))
+  end,
+}
+
+make.recipe{
+  name = "test-compact",
+  desc = "compare compact and expanded instancing with culling and edge views",
+  params = { { "--output", desc = "new evidence directory" } },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_compact_instancing.sh", a.output)
+  end,
+}
+
 make.recipe{ name = "fmt", desc = "format the workspace crates (not vendor/)", run = function() fmt() end }
 
 make.recipe{

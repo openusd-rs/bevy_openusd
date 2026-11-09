@@ -45,16 +45,17 @@ fn outer_path(id: &str) -> PathBuf {
         .map_or_else(|| PathBuf::from(id), |(outer, _)| PathBuf::from(outer))
 }
 
-fn layer_files(stage: &Stage) -> BTreeSet<PathBuf> {
-    stage
-        .layer_identifiers()
-        .into_iter()
-        .filter_map(|id| {
-            let layer = stage.layer(&id)?;
-            let path = outer_path(layer.resolved_path()?);
-            Some(crate::persistence::destination_identity(&path).unwrap_or(path))
-        })
-        .collect()
+fn layer_files(stage: &Stage) -> anyhow::Result<BTreeSet<PathBuf>> {
+    let mut paths = BTreeSet::new();
+    for id in stage.layer_identifiers() {
+        if let Some(layer) = stage.layer(&id)?
+            && let Some(path) = layer.resolved_path()
+        {
+            let path = outer_path(path);
+            paths.insert(crate::persistence::destination_identity(&path).unwrap_or(path));
+        }
+    }
+    Ok(paths)
 }
 
 fn changed_file(
@@ -114,7 +115,13 @@ pub(super) fn watch(
     if editor.save_state.borrow().disk.is_none() {
         return;
     }
-    let mut paths = layer_files(editor.stage());
+    let mut paths = match layer_files(editor.stage()) {
+        Ok(paths) => paths,
+        Err(error) => {
+            status.error = Some(format!("cannot inspect reload layers: {error:#}"));
+            return;
+        }
+    };
     if let Some(textures) = textures {
         paths.extend(
             textures
@@ -193,7 +200,7 @@ impl EditorSession {
             );
         }
         let started = profiled.then(Instant::now);
-        let layers = layer_files(self.stage());
+        let layers = layer_files(self.stage())?;
         let mut watched = layers.clone();
         watched.extend(old_requests.iter().map(|(path, _)| outer_path(path)));
         let mut changed = BTreeMap::new();
@@ -236,7 +243,7 @@ impl EditorSession {
         let mut accepted = BTreeSet::new();
         let mut source_bytes = BTreeMap::new();
         for id in self.stage.layer_identifiers() {
-            let Some(layer) = self.stage.layer(&id) else {
+            let Some(layer) = self.stage.layer(&id)? else {
                 continue;
             };
             let Some(path) = layer.resolved_path() else {

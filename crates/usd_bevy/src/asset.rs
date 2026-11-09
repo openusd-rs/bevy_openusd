@@ -669,11 +669,11 @@ pub(crate) fn spawn_usd_scenes(world: &mut World) {
             timed(profiled, &mut timing.textures, || {
                 decode_missing_textures(world, &stage, &source, &mut textures, default_composition)
             })?;
-            Ok(stage)
+            LiveStage::try_new(stage).map_err(anyhow::Error::from)
         });
         timing.failures = usize::from(opened.is_err());
         match opened {
-            Ok(stage) => {
+            Ok(live) => {
                 let retained = instances
                     .roots
                     .remove(&entity)
@@ -691,7 +691,6 @@ pub(crate) fn spawn_usd_scenes(world: &mut World) {
                 let previous_textures = world.remove_resource::<SnapshotTextures>();
                 world.insert_resource(StageTime { current });
                 world.insert_resource(SnapshotTextures(textures.clone()));
-                let live = LiveStage::new(stage);
                 let mut job = None;
                 let map = timed(profiled, &mut timing.projection, || {
                     if let Some(mut runtime) = retained {

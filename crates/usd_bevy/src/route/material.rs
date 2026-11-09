@@ -184,13 +184,17 @@ impl ProjectionMaterials {
         }
         let identifiers = self.stage.layer_identifiers();
         self.binds = identifiers.iter().skip(self.scanned).any(|identifier| {
-            self.stage.layer(identifier).is_some_and(|layer| {
-                layer
-                    .data()
-                    .spec_paths()
-                    .iter()
-                    .any(|path| path.as_str().contains(".material:binding"))
-            })
+            let Ok(Some(layer)) = self.stage.layer(identifier) else {
+                return true;
+            };
+            let Ok(layer) = layer.try_borrow() else {
+                return true;
+            };
+            layer
+                .data()
+                .spec_paths()
+                .iter()
+                .any(|path| path.as_str().contains(".material:binding"))
         });
         self.scanned = identifiers.len();
     }
@@ -207,19 +211,23 @@ pub(crate) struct ProjectionMaterialReads {
 impl ProjectionMaterialReads {
     const CAPACITY: usize = 4096;
 
-    pub(crate) fn new(stage: &openusd::usd::Stage) -> Self {
+    pub(crate) fn new(stage: &openusd::usd::Stage) -> openusd::Result<Self> {
         let dirty = std::rc::Rc::new(std::cell::Cell::new(false));
-        let changed = dirty.clone();
+        let changed = std::rc::Rc::downgrade(&dirty);
         let sink = stage.add_sink(
-            move |_: &openusd::usd::Stage, _: &openusd::usd::CommittedChange<'_>| changed.set(true),
-        );
-        Self {
+            move |_: &openusd::usd::Stage, _: &openusd::usd::CommittedChange<'_>| {
+                if let Some(changed) = changed.upgrade() {
+                    changed.set(true);
+                }
+            },
+        )?;
+        Ok(Self {
             stage: stage.clone(),
             sink,
             dirty,
             values: Default::default(),
             order: Default::default(),
-        }
+        })
     }
 
     fn get(
@@ -227,6 +235,10 @@ impl ProjectionMaterialReads {
         binding: &openusd::sdf::Path,
         time: Option<f64>,
     ) -> Option<ReadPreviewMaterial> {
+        if self.stage.flush().is_err() {
+            self.dirty.set(true);
+            return None;
+        }
         if self.dirty.replace(false) {
             self.values.clear();
             self.order.clear();
@@ -260,7 +272,9 @@ impl ProjectionMaterialReads {
 
 impl Drop for ProjectionMaterialReads {
     fn drop(&mut self) {
-        self.stage.remove_sink(self.sink);
+        if let Err(error) = self.stage.remove_sink(self.sink) {
+            warn!("failed to detach material cache observer: {error}");
+        }
     }
 }
 
@@ -909,7 +923,7 @@ def Cube "C" { rel material:binding = </Mat> }
         world.init_resource::<Assets<StandardMaterial>>();
         world.init_resource::<Assets<Image>>();
         world.init_resource::<MaterialResolveTimings>();
-        world.insert_non_send(ProjectionMaterialReads::new(&stage));
+        world.insert_non_send(ProjectionMaterialReads::new(&stage).unwrap());
         let read = read_preview_material_at(&stage, &openusd::sdf::path("/Mat").unwrap(), None)
             .unwrap()
             .unwrap();
@@ -1011,7 +1025,7 @@ def Cube "C" { rel material:binding = </Mat> }
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<Assets<StandardMaterial>>();
         world.init_resource::<MaterialResolveTimings>();
-        world.insert_non_send(ProjectionMaterialReads::new(&surrounding));
+        world.insert_non_send(ProjectionMaterialReads::new(&surrounding).unwrap());
         let live = crate::live::LiveStage::new(stage);
         let mut map = crate::live::PrimEntities::default();
         crate::live::project_stage(&mut world, &live, &mut map);
@@ -1041,9 +1055,38 @@ def Cube "C" { rel material:binding = </Mat> }
     }
 
     #[test]
+    fn material_read_cache_flushes_direct_layer_edits() {
+        let stage = read_cache_stage();
+        let mut memo = ProjectionMaterialReads::new(&stage).unwrap();
+        let binding = openusd::sdf::path("/M").unwrap();
+        memo.insert(&binding, None, &ReadPreviewMaterial::default());
+        assert!(memo.get(&binding, None).is_some());
+        stage
+            .root_layer()
+            .edit(|layer| {
+                layer.set_default_prim("M")?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(memo.get(&binding, None).is_none());
+        memo.insert(&binding, None, &ReadPreviewMaterial::default());
+        stage
+            .root_layer()
+            .edit(|_| {
+                assert!(ProjectionMaterialReads::new(&stage).is_err());
+                assert!(memo.get(&binding, None).is_none());
+                Ok(())
+            })
+            .unwrap();
+        assert!(memo.get(&binding, None).is_none());
+        memo.insert(&binding, None, &ReadPreviewMaterial::default());
+        assert!(memo.get(&binding, None).is_some());
+    }
+
+    #[test]
     fn material_read_cache_is_bounded_and_detaches_sink() {
         let stage = read_cache_stage();
-        let mut memo = ProjectionMaterialReads::new(&stage);
+        let mut memo = ProjectionMaterialReads::new(&stage).unwrap();
         for index in 0..=ProjectionMaterialReads::CAPACITY {
             memo.insert(
                 &openusd::sdf::path(format!("/M{index}")).unwrap(),

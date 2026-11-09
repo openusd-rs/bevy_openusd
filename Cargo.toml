@@ -44,8 +44,8 @@ png = "0.18"
 # The live USD editor: stage projection, sync, authoring, persistence.
 usd_bevy = { path = "crates/usd_bevy", features = ["skeleton_overlay", "physics_overlay"] }
 # Pure-Rust USD — the viewer opens the live `Stage` directly.
-openusd = { git = "https://github.com/mxpv/openusd", rev = "d10fa4c2838e1e18a5c4fb4aa47534f94fde8995" }
-openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "d10fa4c2838e1e18a5c4fb4aa47534f94fde8995", features = ["geom", "shade"] }
+openusd = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b", features = ["geom", "shade"] }
 
 # mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
 mara = { git = "https://github.com/dave-gray101/mara", rev = "0ba23f4de3971a965d54fbe8cb01deb7b9c76741", default-features = false, features = ["window", "bevy"] }

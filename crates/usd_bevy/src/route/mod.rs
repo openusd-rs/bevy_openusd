@@ -55,6 +55,8 @@ pub mod payload;
 pub mod physics;
 pub mod reflect;
 pub mod residency;
+#[cfg(test)]
+mod shader_fixtures;
 pub mod shapes;
 pub mod sheen_material;
 pub mod skel;

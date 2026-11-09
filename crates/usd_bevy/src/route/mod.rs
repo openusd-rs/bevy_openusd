@@ -51,6 +51,15 @@ pub(crate) fn configure_texture_caches(app: &mut bevy::prelude::App) {
     texture_pack::configure(app);
     sampling::configure(app);
 }
+
+pub(crate) fn configure_materials(app: &mut bevy::prelude::App) {
+    if app.is_plugin_added::<bevy::pbr::PbrPlugin>() {
+        flat_material::configure(app);
+        strand_material::configure(app);
+        medium_material::configure(app);
+        sheen_material::configure(app);
+    }
+}
 pub mod payload;
 pub mod physics;
 pub mod reflect;

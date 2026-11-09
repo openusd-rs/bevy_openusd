@@ -517,12 +517,7 @@ impl Plugin for UsdAssetPlugin {
         if !app.world().contains_resource::<Assets<Image>>() {
             app.init_asset::<Image>();
         }
-        if app.is_plugin_added::<bevy::pbr::PbrPlugin>() {
-            crate::route::flat_material::configure(app);
-            crate::route::strand_material::configure(app);
-            crate::route::medium_material::configure(app);
-            crate::route::sheen_material::configure(app);
-        }
+        crate::route::configure_materials(app);
         let server = app.world().get_resource::<AssetServer>().cloned();
         app.init_asset::<UsdScene>()
             .init_resource::<UsdProjectionBudget>()

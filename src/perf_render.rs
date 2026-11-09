@@ -1,4 +1,5 @@
 use bevy::ecs::message::MessageCursor;
+use bevy::ecs::system::SystemParam;
 use bevy::render::{
     Render, RenderApp, RenderSystems,
     erased_render_asset::ErasedRenderAssets,
@@ -174,30 +175,40 @@ pub fn configure(app: &mut App) {
     draw_probe::configure(app.sub_app_mut(RenderApp));
 }
 
+#[derive(SystemParam)]
+struct UploadAssets<'w> {
+    meshes: Res<'w, Assets<Mesh>>,
+    images: Res<'w, Assets<Image>>,
+    materials: Res<'w, Assets<StandardMaterial>>,
+    flat_materials: Option<Res<'w, Assets<FlatMaterial>>>,
+}
+
+#[derive(SystemParam)]
+struct UploadEvents<'w, 's> {
+    mesh_events: MessageReader<'w, 's, AssetEvent<Mesh>>,
+    image_events: MessageReader<'w, 's, AssetEvent<Image>>,
+    material_events: MessageReader<'w, 's, AssetEvent<StandardMaterial>>,
+    flat_events: Option<Res<'w, Messages<AssetEvent<FlatMaterial>>>>,
+    flat_cursor: Local<'s, MessageCursor<AssetEvent<FlatMaterial>>>,
+}
+
+type UploadRenderable = (
+    Entity,
+    Option<Ref<'static, Mesh3d>>,
+    Option<Ref<'static, MeshMaterial3d<StandardMaterial>>>,
+    Option<Ref<'static, MeshMaterial3d<FlatMaterial>>>,
+);
+type UploadRenderableFilter = Or<(
+    With<Mesh3d>,
+    With<MeshMaterial3d<StandardMaterial>>,
+    With<MeshMaterial3d<FlatMaterial>>,
+)>;
+
 fn collect_manifest(
     session: Option<NonSend<usd_bevy::editor::EditorSession>>,
-    meshes: Res<Assets<Mesh>>,
-    images: Res<Assets<Image>>,
-    materials: Res<Assets<StandardMaterial>>,
-    flat_materials: Option<Res<Assets<FlatMaterial>>>,
-    mut mesh_events: MessageReader<AssetEvent<Mesh>>,
-    mut image_events: MessageReader<AssetEvent<Image>>,
-    mut material_events: MessageReader<AssetEvent<StandardMaterial>>,
-    flat_events: Option<Res<Messages<AssetEvent<FlatMaterial>>>>,
-    mut flat_cursor: Local<MessageCursor<AssetEvent<FlatMaterial>>>,
-    renderables: Query<
-        (
-            Entity,
-            Option<Ref<Mesh3d>>,
-            Option<Ref<MeshMaterial3d<StandardMaterial>>>,
-            Option<Ref<MeshMaterial3d<FlatMaterial>>>,
-        ),
-        Or<(
-            With<Mesh3d>,
-            With<MeshMaterial3d<StandardMaterial>>,
-            With<MeshMaterial3d<FlatMaterial>>,
-        )>,
-    >,
+    assets: UploadAssets,
+    events: UploadEvents,
+    renderables: Query<UploadRenderable, UploadRenderableFilter>,
     mut removed: (
         RemovedComponents<Mesh3d>,
         RemovedComponents<MeshMaterial3d<StandardMaterial>>,
@@ -205,6 +216,19 @@ fn collect_manifest(
     ),
     mut manifest: ResMut<UploadManifest>,
 ) {
+    let UploadAssets {
+        meshes,
+        images,
+        materials,
+        flat_materials,
+    } = assets;
+    let UploadEvents {
+        mut mesh_events,
+        mut image_events,
+        mut material_events,
+        flat_events,
+        mut flat_cursor,
+    } = events;
     let removed =
         removed.0.read().count() + removed.1.read().count() + removed.2.read().count() != 0;
     let mut revised: std::collections::HashSet<_> = mesh_events
@@ -339,6 +363,19 @@ fn expected_view_meshes(
     expected
 }
 
+#[derive(SystemParam)]
+struct ViewRenderResources<'w> {
+    specializations: Res<'w, bevy::pbr::SpecializedMaterialPipelineCache>,
+    pending_queues: Res<'w, bevy::pbr::PendingMeshMaterialQueues>,
+    instances: Res<'w, bevy::pbr::RenderMeshInstances>,
+    material_instances: Res<'w, bevy::pbr::RenderMaterialInstances>,
+    meshes: Res<'w, RenderAssets<RenderMesh>>,
+    materials: Res<'w, ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
+    allocator: Res<'w, bevy::render::mesh::allocator::MeshAllocator>,
+    pipelines: Res<'w, PipelineCache>,
+    draws: Res<'w, draw_probe::DrawProbe>,
+}
+
 fn report_views(
     manifest: Option<Res<UploadManifest>>,
     mut readiness: ResMut<ViewReadiness>,
@@ -350,16 +387,19 @@ fn report_views(
         ),
         With<Camera3d>,
     >,
-    specializations: Res<bevy::pbr::SpecializedMaterialPipelineCache>,
-    pending_queues: Res<bevy::pbr::PendingMeshMaterialQueues>,
-    instances: Res<bevy::pbr::RenderMeshInstances>,
-    material_instances: Res<bevy::pbr::RenderMaterialInstances>,
-    meshes: Res<RenderAssets<RenderMesh>>,
-    materials: Res<ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
-    allocator: Res<bevy::render::mesh::allocator::MeshAllocator>,
-    pipelines: Res<PipelineCache>,
-    draws: Res<draw_probe::DrawProbe>,
+    resources: ViewRenderResources,
 ) {
+    let ViewRenderResources {
+        specializations,
+        pending_queues,
+        instances,
+        material_instances,
+        meshes,
+        materials,
+        allocator,
+        pipelines,
+        draws,
+    } = resources;
     let Some(manifest) = manifest.filter(|manifest| manifest.document.is_some()) else {
         readiness.ready = false;
         readiness.queue_ready = false;
@@ -488,18 +528,32 @@ impl GpuCompletionProbe {
     }
 }
 
+#[derive(SystemParam)]
+struct UploadedResources<'w> {
+    meshes: Res<'w, RenderAssets<RenderMesh>>,
+    images: Res<'w, RenderAssets<GpuImage>>,
+    materials: Res<'w, ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
+    pipelines: Res<'w, PipelineCache>,
+    queue: Res<'w, RenderQueue>,
+}
+
+type UploadProgress = (u64, usize, usize, usize, usize, usize, usize, (bool, bool));
+
 fn report_uploads(
     manifest: Option<Res<UploadManifest>>,
-    meshes: Res<RenderAssets<RenderMesh>>,
-    images: Res<RenderAssets<GpuImage>>,
-    materials: Res<ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
-    pipelines: Res<PipelineCache>,
+    resources: UploadedResources,
     revisions: Res<ExtractedRevisions>,
-    queue: Res<RenderQueue>,
     mut completion: Local<GpuCompletionProbe>,
     view_readiness: Res<ViewReadiness>,
-    mut previous: Local<Option<(u64, usize, usize, usize, usize, usize, usize, (bool, bool))>>,
+    mut previous: Local<Option<UploadProgress>>,
 ) {
+    let UploadedResources {
+        meshes,
+        images,
+        materials,
+        pipelines,
+        queue,
+    } = resources;
     let Some(manifest) = manifest.filter(|manifest| manifest.document.is_some()) else {
         return;
     };

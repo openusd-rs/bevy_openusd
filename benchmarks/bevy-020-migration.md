@@ -303,8 +303,10 @@ all eight new regressions (20/29 intentional ignored checks respectively):
 `/tmp/bevy-020-openusd-library.log`. The added tests cover direct/shared-layer
 projection, busy construction/drain, observer lifetime, editor history, revision
 tracking, material-cache invalidation and save-state recovery. A fresh complete
-run plus native exports is in `/tmp/bevy-020-openusd-verify.log`; do not assume
-that run has passed until its final result is recorded.
+run plus native exports is in `/tmp/bevy-020-openusd-verify.log`. All 14 native
+export tests pass there, including the previously failing archive repackaging
+case. The separate native reference-custom-data check and refreshed no-default
+suite are still running; do not infer their result from the export tests.
 
 The wasm target also checks with the new dependency:
 `/tmp/bevy-020-openusd-web-check.log`. Browser runtime and rendered acceptance
@@ -323,8 +325,11 @@ The Nix shell now supplies `USD_NATIVE_CXX` and matching `USD_NATIVE_CPPFLAGS`,
 `USD_NATIVE_LDFLAGS`, and `USD_NATIVE_LDLIBS`; only the native oracle recipe uses
 them. No global C++ compiler override is applied. Rebuilding with
 `nix develop --command oslo make build-native-deformation` succeeds, and direct
-position/normal samples now exit cleanly. Full numerical checks are pending in
-`/tmp/bevy-020-openusd-native-deformation.log`.
+position/normal samples now exit cleanly. All four native numerical comparison
+tests pass against the new Rust OpenUSD dependency:
+`/tmp/bevy-020-openusd-native-deformation.log`. They cover combined skin/morph
+positions, combined normals, blended joints and animated blended-joint normals
+at five times from 0 through 10.
 
 Next: finish the new-dependency gates, full GPU/native editor checks, strict
 Clippy, watchers, native numerical comparisons and image inspection. Keep

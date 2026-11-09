@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/capture_session.sh"
 runtime=$(mktemp -d /dev/shm/usd-session-test.XXXXXX)

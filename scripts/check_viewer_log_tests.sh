@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 directory=$(mktemp -d)
@@ -7,7 +7,7 @@ log="$directory/viewer log.txt"
 check() {
     local expected=$1 actual=0
     shift
-    /bin/bash "$root/scripts/check_viewer_log.sh" "$@" > "$directory/result" 2>&1 || actual=$?
+    bash "$root/scripts/check_viewer_log.sh" "$@" > "$directory/result" 2>&1 || actual=$?
     [[ "$actual" == "$expected" ]] || { cat "$directory/result" >&2; echo "expected $expected, got $actual" >&2; exit 1; }
 }
 printf 'USD_VIEWER_UI_UPDATED\nINFO normal operation\n' > "$log"

@@ -5,7 +5,7 @@ use bevy::platform::time::Instant;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 #[derive(Resource, Default, Debug)]
@@ -29,11 +29,12 @@ impl Default for EditorReloadSettings {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Resource, Default)]
 pub(super) struct WatchState {
     document: Option<u64>,
     next: Option<Instant>,
-    observed: BTreeMap<PathBuf, Option<(SystemTime, u64)>>,
+    observed: BTreeMap<PathBuf, Option<(std::time::SystemTime, u64)>>,
     pending: BTreeSet<PathBuf>,
     retry: Option<Instant>,
     revision: u64,
@@ -70,6 +71,7 @@ fn changed_file(
     Ok((baseline != Some(&hash)).then_some((bytes, hash)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn watch(
     session: Option<NonSend<EditorSession>>,
     textures: Option<Res<EditorTextureRequests>>,
@@ -490,7 +492,7 @@ impl TexturePublication {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

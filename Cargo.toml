@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/usd_bevy", "crates/usd_macro", "examples/web"]
-exclude = ["xtra", "vendor/bevy_asset"]
+exclude = ["xtra", "vendor/bevy_asset", "vendor/mara_bevy"]
 
 [profile.dev.package.openusd]
 opt-level = 3
@@ -18,10 +18,14 @@ opt-level = 3
 [patch.crates-io]
 bevy_asset = { path = "vendor/bevy_asset" }
 
+[patch."https://github.com/dave-gray101/mara"]
+mara_bevy = { path = "vendor/mara_bevy" }
+
 [package]
 name = "usdview"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.97.1"
 license = "MIT"
 description = "Live OpenUSD editor — mara UI host embedding a Bevy viewport."
 repository = "https://github.com/bresilla/bevy_openusd"
@@ -44,9 +48,7 @@ openusd = { git = "https://github.com/mxpv/openusd", rev = "d10fa4c2838e1e18a5c4
 openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "d10fa4c2838e1e18a5c4fb4aa47534f94fde8995", features = ["geom", "shade"] }
 
 # mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
-mara = { git = "https://github.com/dave-gray101/mara", branch = "feat-bevy-0.20", default-features = false, features = ["window", "bevy"] }
-# Byte casting for GPU storage buffers in the compact-instancing example.
-bytemuck = { version = "1", features = ["derive"] }
+mara = { git = "https://github.com/dave-gray101/mara", rev = "0ba23f4de3971a965d54fbe8cb01deb7b9c76741", default-features = false, features = ["window", "bevy"] }
 # Native "Open USD…" file picker.
 rfd = "0.15"
 # Global allocator for the binary and examples.
@@ -58,7 +60,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Bevy 0.20 — the embedded viewport renders the USD scene
 # offscreen into a mara-provided render target.
-bevy = { version = "0.20.0", default-features = false, features = [
+bevy = { version = "0.20.1", default-features = false, features = [
     "bevy_anti_alias",
     "std",
     "bevy_asset",
@@ -79,6 +81,7 @@ bevy = { version = "0.20.0", default-features = false, features = [
 
 [dev-dependencies]
 tempfile = "3"
+bytemuck = { version = "1", features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11"] }

@@ -123,7 +123,7 @@ impl SaveState {
         for id in stage.layer_identifiers() {
             let revision = revisions.get(&id).copied().unwrap_or_default();
             let current = self.cache.entry(id.clone()).or_insert((u64::MAX, None));
-            if current.0 != revision || revision == u64::MAX {
+            if current.0 != revision || revision == u64::MAX || current.1.is_none() {
                 *current = (revision, content_hash(stage, &id));
             }
             if self.loaded_document
@@ -172,5 +172,36 @@ impl SaveState {
             self.baselines.insert(id.to_string(), hash);
             self.cache.remove(id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_content_hash_is_retried_at_the_same_revision() {
+        let stage = Stage::builder().in_memory("save-state.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        let id = stage.root_layer().identifier().to_owned();
+        let hash = content_hash(&stage, &id).unwrap();
+        let mut state = SaveState::default();
+        state.baselines.insert(id.clone(), hash);
+        let revisions = BTreeMap::new();
+        stage
+            .root_layer()
+            .edit(|_| {
+                assert_eq!(
+                    state.states(&stage, &revisions, 0)[&id],
+                    LayerSaveState::Unknown
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(state.cache[&id], (0, None));
+        assert_eq!(
+            state.states(&stage, &revisions, 0)[&id],
+            LayerSaveState::Clean
+        );
     }
 }

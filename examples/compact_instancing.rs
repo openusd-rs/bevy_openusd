@@ -331,7 +331,7 @@ fn setup(
     let prototype = meshes.add(prototype);
     let limits = device.limits();
     let capacity = batch_capacity(
-        u64::from(limits.max_storage_buffer_binding_size),
+        limits.max_storage_buffer_binding_size,
         limits.max_buffer_size,
         vertices_per_point,
         options.batch_limit,

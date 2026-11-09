@@ -14,7 +14,7 @@ fn fan_report(normals: &[[f32; 3]], indices: &[usize]) -> String {
     }
     let mut parents = (0..indices.len()).collect::<Vec<_>>();
     let mut edges = std::collections::BTreeMap::<[usize; 2], Vec<[usize; 2]>>::new();
-    for (face, triangle) in indices.chunks_exact(3).enumerate() {
+    for (face, triangle) in indices.as_chunks::<3>().0.iter().enumerate() {
         for i in 0..3 {
             let j = (i + 1) % 3;
             let a = triangle[i];
@@ -71,7 +71,9 @@ fn zero_normal_witnesses(points: &[[f32; 3]], normals: &[[f32; 3]], indices: &[u
         .take(8)
     {
         let incident = indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .filter(|t| t.contains(&vertex))
             .collect::<Vec<_>>();
         output.push_str(&format!(
@@ -99,7 +101,7 @@ fn triangle_quality(points: &[[f32; 3]], normals: &[[f32; 3]], indices: &[usize]
     let mut counts = [0usize; 5];
     let mut reversed = [0usize; 5];
     let mut minimum = f64::INFINITY;
-    for t in indices.chunks_exact(3) {
+    for t in indices.as_chunks::<3>().0 {
         let p = [t[0], t[1], t[2]].map(|i| Vec3::from(points[i]).as_dvec3());
         let edges = [p[1] - p[0], p[2] - p[1], p[0] - p[2]];
         let cross = edges[0].cross(-edges[2]);
@@ -129,7 +131,9 @@ fn triangle_quality(points: &[[f32; 3]], normals: &[[f32; 3]], indices: &[usize]
 
 fn filtered_normal_report(points: &[[f32; 3]], normals: &[[f32; 3]], indices: &[usize]) -> String {
     let faces = indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .filter_map(|t| {
             let vertices = [t[0], t[1], t[2]];
             let p = vertices.map(|i| Vec3::from(points[i]).as_dvec3());
@@ -191,7 +195,7 @@ fn filtered_normal_report(points: &[[f32; 3]], normals: &[[f32; 3]], indices: &[
 
 fn area_weighted_normals(points: &[[f32; 3]], indices: &[usize]) -> Vec<[f32; 3]> {
     let mut sums = vec![bevy::math::DVec3::ZERO; points.len()];
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         let p = [triangle[0], triangle[1], triangle[2]].map(|i| Vec3::from(points[i]).as_dvec3());
         let normal = (p[1] - p[0]).cross(p[2] - p[0]);
         for index in triangle {
@@ -226,7 +230,7 @@ fn write_probe(mesh: &Mesh, directory: &Path) -> Result<(), Box<dyn std::error::
         .indices()
         .map(|indices| indices.iter().collect::<Vec<_>>())
         .unwrap_or_else(|| (0..points.len()).collect());
-    if indices.len() % 3 != 0 || indices.iter().any(|i| *i >= points.len()) {
+    if !indices.len().is_multiple_of(3) || indices.iter().any(|i| *i >= points.len()) {
         return Err("invalid triangle indices".into());
     }
     println!("{}", triangle_quality(points, normals, &indices));

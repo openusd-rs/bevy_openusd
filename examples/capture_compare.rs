@@ -11,13 +11,13 @@ struct Difference {
 }
 
 fn compare(a: &[u8], b: &[u8], tolerance: u8) -> Result<Difference, String> {
-    if a.is_empty() || a.len() != b.len() || a.len() % 4 != 0 {
+    if a.is_empty() || a.len() != b.len() || !a.len().is_multiple_of(4) {
         return Err("captures must have equal nonzero RGBA8 byte lengths".into());
     }
     let mut changed = 0;
     let mut maximum = 0;
     let mut total = 0_u64;
-    for (a, b) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (a, b) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         let errors = [
             a[0].abs_diff(b[0]),
             a[1].abs_diff(b[1]),
@@ -78,21 +78,29 @@ fn run(args: &[String]) -> Result<bool, String> {
     Ok(difference.changed == 0)
 }
 
+type DifferenceImage = (Vec<u8>, u32, Option<[u32; 4]>);
+
 fn difference_image(
     a: &[u8],
     b: &[u8],
     tolerance: u8,
     width: u32,
-) -> Result<(Vec<u8>, u32, Option<[u32; 4]>), String> {
+) -> Result<DifferenceImage, String> {
     compare(a, b, tolerance)?;
     let count = a.len() / 4;
-    if width == 0 || count % width as usize != 0 {
+    if width == 0 || !count.is_multiple_of(width as usize) {
         return Err("width must be nonzero and divide the pixel count".into());
     }
     let height = u32::try_from(count / width as usize).map_err(|_| "image is too tall")?;
     let mut bounds: Option<[u32; 4]> = None;
     let mut pixels = Vec::with_capacity(a.len());
-    for (index, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+    for (index, (a, b)) in a
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .enumerate()
+    {
         let maximum = (0..3)
             .map(|channel| a[channel].abs_diff(b[channel]))
             .max()

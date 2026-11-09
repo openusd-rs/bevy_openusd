@@ -353,11 +353,11 @@ fn main() -> AppExit {
         }
     };
     capture.camera_path = std::env::var("USD_CAPTURE_CAMERA").ok();
-    if let Ok(times) = std::env::var("USD_CAPTURE_INSTANCE_TIMES") {
-        if let Err(error) = capture.set_instance_times(&times) {
-            eprintln!("{error}");
-            return AppExit::error();
-        }
+    if let Ok(times) = std::env::var("USD_CAPTURE_INSTANCE_TIMES")
+        && let Err(error) = capture.set_instance_times(&times)
+    {
+        eprintln!("{error}");
+        return AppExit::error();
     }
     match std::env::var("USD_CAPTURE_INSTANCE_SPACING") {
         Ok(value) => {

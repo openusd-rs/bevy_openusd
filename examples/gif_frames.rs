@@ -581,7 +581,7 @@ fn scene_lighting(
                 FrameSun,
                 DirectionalLight {
                     shadow_maps_enabled: true,
-                    ..directional.clone()
+                    ..*directional
                 },
             ));
             return;

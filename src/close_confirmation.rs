@@ -63,7 +63,7 @@ impl CloseConfirmation {
             .map(|view| (view.document.document_id, view.document.revision));
         let mut cancel = false;
         let mut discard = false;
-        let response = egui::Modal::new(egui::Id::new("usd.close.confirmation")).show(ctx, |ui| {
+        let response = egui::Modal::new(egui::Id::unique("usd.close.confirmation")).show(ctx, |ui| {
             ui.set_max_width(420.);
             ui.heading("Close USD viewer?");
             ui.label("Changes you have not saved will be lost. Cancel to export the layers you need first.");
@@ -107,8 +107,7 @@ impl egui::Plugin for OutputFilter {
 }
 
 #[cfg(test)]
-/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
-/// never upload textures, so drop the delta explicitly.
+/// Runs a headless UI pass and clears its texture deltas.
 fn run_pass(
     ctx: &egui::Context,
     input: egui::RawInput,

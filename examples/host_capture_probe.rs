@@ -110,8 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
-/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
-/// never upload textures, so drop the delta explicitly.
+/// Runs a headless UI pass and clears its texture deltas.
 fn run_pass(
     ctx: &egui::Context,
     input: egui::RawInput,

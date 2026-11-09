@@ -1,8 +1,7 @@
 use eframe::egui;
 use std::time::Duration;
 
-/// egui 0.37 no longer subtracts predicted_dt from requested repaint delays (0.34 did),
-/// so the frame period is requested as-is; adding the prediction would overshoot a frame.
+/// Returns the repaint interval for 60 Hz updates.
 fn periodic_delay() -> Duration {
     Duration::from_secs_f64(1.0 / 60.0)
 }
@@ -12,8 +11,7 @@ pub fn request(ctx: &egui::Context) {
 }
 
 #[cfg(test)]
-/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
-/// never upload textures, so drop the delta explicitly.
+/// Runs a headless UI pass and clears its texture deltas.
 fn run_pass(
     ctx: &egui::Context,
     input: egui::RawInput,

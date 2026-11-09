@@ -1,13 +1,27 @@
 use eframe::egui;
 use std::time::Duration;
 
-fn periodic_delay(predicted_dt: f32) -> Duration {
+/// egui 0.37 no longer subtracts predicted_dt from requested repaint delays (0.34 did),
+/// so the frame period is requested as-is; adding the prediction would overshoot a frame.
+fn periodic_delay() -> Duration {
     Duration::from_secs_f64(1.0 / 60.0)
-        + Duration::try_from_secs_f32(predicted_dt).unwrap_or_default()
 }
 
 pub fn request(ctx: &egui::Context) {
-    ctx.request_repaint_after(periodic_delay(ctx.input(|input| input.predicted_dt)));
+    ctx.request_repaint_after(periodic_delay());
+}
+
+#[cfg(test)]
+/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
+/// never upload textures, so drop the delta explicitly.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
 }
 
 #[cfg(test)]
@@ -20,7 +34,8 @@ mod tests {
             let ctx = egui::Context::default();
             let mut output = egui::FullOutput::default();
             for _ in 0..5 {
-                output = ctx.run_ui(
+                output = run_pass(
+                    &ctx,
                     egui::RawInput {
                         predicted_dt: predicted,
                         ..Default::default()
@@ -33,9 +48,6 @@ mod tests {
                 delay >= Duration::from_millis(16) && delay <= Duration::from_millis(17),
                 "{predicted}: {delay:?}"
             );
-        }
-        for invalid in [f32::NAN, f32::INFINITY, -1.] {
-            assert_eq!(periodic_delay(invalid), Duration::from_secs_f64(1. / 60.));
         }
     }
 }

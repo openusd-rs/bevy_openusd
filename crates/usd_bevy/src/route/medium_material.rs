@@ -16,7 +16,7 @@ pub struct DepthMedium {}
 
 impl MaterialExtension for DepthMedium {
     fn fragment_shader() -> ShaderRef {
-        "embedded://usd_bevy/route/medium_material.wgsl".into()
+        "embedded://usd_bevy/route/medium_material.wesl".into()
     }
 }
 
@@ -24,7 +24,7 @@ pub type MediumMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, DepthMed
 
 pub(crate) fn configure(app: &mut App) {
     if super::wrapped::configure::<DepthMedium>(app) {
-        bevy::asset::embedded_asset!(app, "medium_material.wgsl");
+        bevy::asset::embedded_asset!(app, "medium_material.wesl");
     }
 }
 

@@ -813,7 +813,7 @@ mod tests {
             .resource_mut::<Assets<Mesh>>()
             .get_mut(&second)
             .unwrap()
-            .final_aabb = Some(bevy::math::bounding::Aabb3d::new(Vec3::ZERO, Vec3::ONE));
+            .final_aabb = Some(bevy::shape::Aabb3d::new(Vec3::ZERO, Vec3::ONE));
         let third = intern_assembled_mesh(&mut world, &read, Assembly::Standard);
         assert_ne!(second.id(), third.id());
         world.resource_mut::<Assets<Mesh>>().remove(third.id());

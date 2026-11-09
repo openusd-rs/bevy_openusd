@@ -7,7 +7,7 @@ publish = false
 description = "usd_bevy in the browser: AssetServer over HTTP and in-memory sources."
 
 [dependencies]
-bevy = { version = "0.19.1", default-features = false, features = [
+bevy = { version = "0.20.0", default-features = false, features = [
     "std",
     "async_executor",
     "bevy_asset",

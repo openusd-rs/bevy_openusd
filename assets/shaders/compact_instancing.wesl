@@ -1,4 +1,4 @@
-#import bevy_pbr::{mesh_functions, forward_io::VertexOutput, view_transformations::position_world_to_clip}
+import bevy_pbr::render::{mesh_functions, forward_io::VertexOutput, view_transformations::position_world_to_clip};
 
 struct Point {
     translation: vec4<f32>,
@@ -10,9 +10,9 @@ fn rotate(rotation: vec4<f32>, value: vec3<f32>) -> vec3<f32> {
     return value + 2.0 * cross(rotation.xyz, cross(rotation.xyz, value) + rotation.w * value);
 }
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<storage, read> vertices: array<vec4<f32>>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var<storage, read> points: array<Point>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var<uniform> vertices_per_point: u32;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<storage, read> vertices: array<vec4<f32>>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(101) var<storage, read> points: array<Point>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var<uniform> vertices_per_point: u32;
 
 @vertex
 fn vertex(@builtin(vertex_index) index: u32, @builtin(instance_index) root: u32) -> VertexOutput {
@@ -26,11 +26,7 @@ fn vertex(@builtin(vertex_index) index: u32, @builtin(instance_index) root: u32)
     out.world_position = world_from_local * vec4<f32>(local_position, 1.0);
     out.position = position_world_to_clip(out.world_position.xyz);
     out.world_normal = mesh_functions::mesh_normal_local_to_world(rotate(point.rotation, normal.xyz / point.scale.xyz), root);
-#ifdef VERTEX_UVS_A
-    out.uv = vec2<f32>(position.w, normal.w);
-#endif
-#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
-    out.instance_index = root;
-#endif
+    @if(VERTEX_UVS_A) out.uv = vec2<f32>(position.w, normal.w);
+    @if(VERTEX_OUTPUT_INSTANCE_INDEX) out.instance_index = root;
     return out;
 }

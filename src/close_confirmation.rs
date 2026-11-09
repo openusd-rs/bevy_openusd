@@ -97,7 +97,7 @@ impl egui::Plugin for OutputFilter {
         "usd-close-confirmation"
     }
 
-    fn output_hook(&mut self, output: &mut FullOutput) {
+    fn output_hook(&mut self, _ctx: &egui::Context, output: &mut FullOutput) {
         self.0
             .state
             .lock()
@@ -107,11 +107,24 @@ impl egui::Plugin for OutputFilter {
 }
 
 #[cfg(test)]
+/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
+/// never upload textures, so drop the delta explicitly.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     fn output() -> FullOutput {
-        let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |_| {});
+        let mut output = run_pass(&egui::Context::default(), egui::RawInput::default(), |_| {});
         output
             .viewport_output
             .get_mut(&ViewportId::ROOT)
@@ -130,7 +143,7 @@ mod tests {
         let ctx = egui::Context::default();
         let confirmation = install(&ctx, EditorBridge::default());
         ctx.send_viewport_cmd(ViewportCommand::Close);
-        let output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let output = run_pass(&ctx, egui::RawInput::default(), |_| {});
         assert!(confirmation.state.lock().unwrap().pending);
         assert!(
             !output.viewport_output[&ViewportId::ROOT]
@@ -139,7 +152,7 @@ mod tests {
         );
         let unguarded = egui::Context::default();
         unguarded.send_viewport_cmd(ViewportCommand::Close);
-        let output = unguarded.run_ui(egui::RawInput::default(), |_| {});
+        let output = run_pass(&unguarded, egui::RawInput::default(), |_| {});
         assert!(
             output.viewport_output[&ViewportId::ROOT]
                 .commands
@@ -159,7 +172,7 @@ mod tests {
             events,
             ..Default::default()
         };
-        let first = ctx.run_ui(frame(vec![]), |ui| {
+        let first = run_pass(&ctx, frame(vec![]), |ui| {
             ui.ctx().send_viewport_cmd(ViewportCommand::Close)
         });
         assert!(
@@ -168,13 +181,16 @@ mod tests {
                 .contains(&ViewportCommand::Close)
         );
         for position in [egui::pos2(20., 20.), egui::pos2(720., 460.)] {
-            let output = ctx.run_ui(frame(vec![egui::Event::PointerMoved(position)]), |ui| {
-                confirmation.show(ui.ctx())
-            });
+            let output = run_pass(
+                &ctx,
+                frame(vec![egui::Event::PointerMoved(position)]),
+                |ui| confirmation.show(ui.ctx()),
+            );
             assert!(!output.shapes.is_empty());
             assert!(confirmation.state.lock().unwrap().pending);
         }
-        let output = ctx.run_ui(
+        let output = run_pass(
+            &ctx,
             frame(vec![egui::Event::Key {
                 key: egui::Key::Escape,
                 physical_key: None,
@@ -199,8 +215,12 @@ mod tests {
         guard.filter(&mut blocked, Some((1, 2)));
         assert!(guard.pending);
         assert_eq!(
-            blocked.viewport_output[&ViewportId::ROOT].commands,
-            [ViewportCommand::Maximized(true)]
+            blocked.viewport_output[&ViewportId::ROOT]
+                .commands
+                .iter()
+                .filter(|command| !matches!(command, ViewportCommand::SetTheme(_)))
+                .collect::<Vec<_>>(),
+            [&ViewportCommand::Maximized(true)]
         );
         for current in [Some((2, 2)), Some((1, 3)), None] {
             guard.approved = Some((1, 2));

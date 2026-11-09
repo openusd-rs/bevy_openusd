@@ -1,3 +1,4 @@
+use crate::capture_tools::ScreenshotSlot;
 use eframe::egui;
 use std::{
     io::Write,
@@ -11,7 +12,7 @@ pub struct Capture {
     started: Instant,
     armed: bool,
     requested: Option<Instant>,
-    token: egui::UserData,
+    slot: ScreenshotSlot,
     complete: bool,
 }
 
@@ -50,7 +51,7 @@ fn configure(
         started: Instant::now(),
         armed: false,
         requested: None,
-        token: egui::UserData::new("usdview-host-capture"),
+        slot: ScreenshotSlot::default(),
         complete: false,
     }))
 }
@@ -68,18 +69,7 @@ impl Capture {
             self.started = now;
             self.armed = true;
         }
-        let screenshot = ctx.input(|input| {
-            input.events.iter().find_map(|event| match event {
-                egui::Event::Screenshot {
-                    viewport_id,
-                    user_data,
-                    image,
-                } if *viewport_id == egui::ViewportId::ROOT && *user_data == self.token => {
-                    Some(image.clone())
-                }
-                _ => None,
-            })
-        });
+        let screenshot = self.slot.lock().unwrap().take();
         if self.requested.is_some()
             && let Some(image) = screenshot
         {
@@ -103,7 +93,12 @@ impl Capture {
             }
         } else if now.saturating_duration_since(self.started) >= self.delay {
             self.requested = Some(now);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(self.token.clone()));
+            let sink = self.slot.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                egui::ScreenshotCallback::new(move |image| {
+                    *sink.lock().unwrap() = Some(image);
+                }),
+            ));
             eprintln!("HOST_CAPTURE_REQUESTED {}", self.path.display());
         }
     }
@@ -139,6 +134,19 @@ fn write_png(
 }
 
 #[cfg(test)]
+/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
+/// never upload textures, so drop the delta explicitly.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -150,16 +158,16 @@ mod tests {
             .unwrap();
         let ctx = egui::Context::default();
         let first_ui = capture.started + Duration::from_secs(180);
-        let _ = ctx.run_ui(Default::default(), |ui| {
+        let _ = run_pass(&ctx, Default::default(), |ui| {
             capture.update_at(ui.ctx(), first_ui)
         });
         assert_eq!(capture.started, first_ui);
         assert!(capture.requested.is_none());
-        let _ = ctx.run_ui(Default::default(), |ui| {
+        let _ = run_pass(&ctx, Default::default(), |ui| {
             capture.update_at(ui.ctx(), first_ui + Duration::from_millis(999))
         });
         assert!(capture.requested.is_none());
-        let _ = ctx.run_ui(Default::default(), |ui| {
+        let _ = run_pass(&ctx, Default::default(), |ui| {
             capture.update_at(ui.ctx(), first_ui + Duration::from_secs(1))
         });
         assert!(capture.requested.is_some());
@@ -181,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_correlates_callbacks_and_requests_once() {
+    fn capture_requests_once_and_writes_the_delivered_image() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("host.png");
         let mut capture = configure(Some(path.clone()), Some("1000"))
@@ -189,33 +197,33 @@ mod tests {
             .unwrap();
         let ctx = egui::Context::default();
         let start = capture.started;
-        let _ = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), start));
+        let _ = run_pass(&ctx, Default::default(), |ui| {
+            capture.update_at(ui.ctx(), start)
+        });
         assert!(capture.requested.is_none());
         let now = start + Duration::from_secs(1);
-        let output = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), now));
-        assert_eq!(
-            output.viewport_output[&egui::ViewportId::ROOT]
-                .commands
-                .iter()
-                .filter(|command| matches!(command, egui::ViewportCommand::Screenshot(_)))
-                .count(),
-            1
-        );
+        let output = run_pass(&ctx, Default::default(), |ui| {
+            capture.update_at(ui.ctx(), now)
+        });
+        let callbacks: Vec<_> = output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::ViewportCommand::Screenshot(callback) => Some(callback.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(callbacks.len(), 1);
         let image = std::sync::Arc::new(egui::ColorImage::filled([2, 1], egui::Color32::RED));
-        for token in [egui::UserData::default(), capture.token.clone()] {
-            let _ = ctx.run_ui(
-                egui::RawInput {
-                    events: vec![egui::Event::Screenshot {
-                        viewport_id: egui::ViewportId::ROOT,
-                        user_data: token.clone(),
-                        image: image.clone(),
-                    }],
-                    ..Default::default()
-                },
-                |ui| capture.update_at(ui.ctx(), now),
-            );
-            assert_eq!(path.exists(), token == capture.token);
-        }
+        let _ = run_pass(&ctx, Default::default(), |ui| {
+            capture.update_at(ui.ctx(), now)
+        });
+        assert!(!path.exists());
+        callbacks[0].clone().complete(image.clone());
+        let _ = run_pass(&ctx, Default::default(), |ui| {
+            capture.update_at(ui.ctx(), now)
+        });
+        assert!(path.exists());
         assert!(capture.complete);
         let bytes = std::fs::read(&path).unwrap();
         assert!(write_png(&path, &image).is_err());
@@ -255,8 +263,10 @@ mod tests {
         let mut capture = configure(Some(path.clone()), Some("0")).unwrap().unwrap();
         let ctx = egui::Context::default();
         let start = capture.started;
-        let _ = ctx.run_ui(Default::default(), |ui| capture.update_at(ui.ctx(), start));
-        let _ = ctx.run_ui(Default::default(), |ui| {
+        let _ = run_pass(&ctx, Default::default(), |ui| {
+            capture.update_at(ui.ctx(), start)
+        });
+        let _ = run_pass(&ctx, Default::default(), |ui| {
             capture.update_at(ui.ctx(), start + Duration::from_secs(30))
         });
         assert!(capture.complete);

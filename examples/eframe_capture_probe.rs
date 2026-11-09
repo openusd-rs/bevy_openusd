@@ -1,10 +1,15 @@
 use eframe::egui;
 use std::{
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+/// Receives the image delivered to the readback request's `ScreenshotCallback`.
+type Screenshot = Arc<Mutex<Option<Arc<egui::ColorImage>>>>;
+
 struct Probe {
+    screenshot: Screenshot,
     output: Option<PathBuf>,
     started: Instant,
     requested: bool,
@@ -22,6 +27,7 @@ impl mara::window::WindowApp for MaraProbe {
         Self {
             context: ctx.__internal_egui_ctx().clone(),
             probe: Probe {
+                screenshot: Screenshot::default(),
                 output: std::env::var_os("USD_HOST_PROBE_SCREENSHOT").map(PathBuf::from),
                 started: Instant::now(),
                 requested: false,
@@ -124,24 +130,28 @@ impl Probe {
             egui::FontId::proportional(32.0),
             egui::Color32::WHITE,
         );
-        for event in ui.input(|input| input.events.clone()) {
-            if let egui::Event::Screenshot { image, .. } = event {
-                if let Some(path) = self.output.take() {
-                    match write_capture(&path, &image) {
-                        Ok(()) => eprintln!(
-                            "HOST_READBACK_OK {} {}x{}",
-                            path.display(),
-                            image.size[0],
-                            image.size[1]
-                        ),
-                        Err(error) => eprintln!("HOST_READBACK_ERROR {error}"),
-                    }
-                }
+        let screenshot = self.screenshot.lock().unwrap().take();
+        if let Some(image) = screenshot
+            && let Some(path) = self.output.take()
+        {
+            match write_capture(&path, &image) {
+                Ok(()) => eprintln!(
+                    "HOST_READBACK_OK {} {}x{}",
+                    path.display(),
+                    image.size[0],
+                    image.size[1]
+                ),
+                Err(error) => eprintln!("HOST_READBACK_ERROR {error}"),
             }
         }
         if self.output.is_some() && !self.requested && self.started.elapsed() >= self.delay {
+            let sink = self.screenshot.clone();
             ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                .send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                    egui::ScreenshotCallback::new(move |image| {
+                        *sink.lock().unwrap() = Some(image);
+                    }),
+                ));
             self.requested = true;
             eprintln!("HOST_READBACK_REQUESTED");
         }
@@ -190,7 +200,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             wgpu_options: egui_wgpu::WgpuConfiguration {
-                present_mode,
+                surface: egui_wgpu::SurfaceConfig {
+                    present_mode,
+                    desired_maximum_frame_latency: None,
+                },
                 ..Default::default()
             },
             viewport: egui::ViewportBuilder::default()
@@ -200,6 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Box::new(move |_| {
             Ok(Box::new(Probe {
+                screenshot: Screenshot::default(),
                 output,
                 started: Instant::now(),
                 requested: false,
@@ -211,10 +225,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(test)]
+/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
+/// never upload textures, so drop the delta explicitly.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
 #[test]
 fn readback_request_waits_for_delay_and_is_single_use() {
     let ctx = egui::Context::default();
     let mut probe = Probe {
+        screenshot: Screenshot::default(),
         output: Some(PathBuf::from("unused.png")),
         started: Instant::now(),
         requested: false,
@@ -229,16 +257,16 @@ fn readback_request_waits_for_delay_and_is_single_use() {
             .count()
     };
     assert_eq!(
-        capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))),
+        capture_count(run_pass(&ctx, Default::default(), |ui| probe.paint(ui))),
         0
     );
     probe.delay = Duration::ZERO;
     assert_eq!(
-        capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))),
+        capture_count(run_pass(&ctx, Default::default(), |ui| probe.paint(ui))),
         1
     );
     assert_eq!(
-        capture_count(ctx.run_ui(Default::default(), |ui| probe.paint(ui))),
+        capture_count(run_pass(&ctx, Default::default(), |ui| probe.paint(ui))),
         0
     );
 }

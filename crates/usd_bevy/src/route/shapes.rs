@@ -120,13 +120,13 @@ fn shape_geometry(ctx: &RouteCtx) -> Option<Mesh> {
         "Sphere" => {
             let sphere = Sphere::get(stage, p).ok()??;
             let r = f32_attr(sphere.radius_attr(), 1.0, ctx.time)?;
-            Some(Mesh::from(bevy::math::primitives::Sphere::new(r)))
+            Some(Mesh::from(bevy::shape::Sphere::new(r)))
         }
         "Cylinder" => {
             let cyl = Cylinder::get(stage, p).ok()??;
             let r = f32_attr(cyl.radius_attr(), 1.0, ctx.time)?;
             let h = f32_attr(cyl.height_attr(), 2.0, ctx.time)?;
-            let mesh = Mesh::from(bevy::math::primitives::Cylinder::new(r, h));
+            let mesh = Mesh::from(bevy::shape::Cylinder::new(r, h));
             Some(mesh.rotated_by(axis_rotation(cyl.axis_attr())))
         }
         "Capsule" => {
@@ -140,7 +140,7 @@ fn shape_geometry(ctx: &RouteCtx) -> Option<Mesh> {
             let cone = Cone::get(stage, p).ok()??;
             let r = f32_attr(cone.radius_attr(), 1.0, ctx.time)?;
             let h = f32_attr(cone.height_attr(), 2.0, ctx.time)?;
-            let mesh = Mesh::from(bevy::math::primitives::Cone::new(r, h));
+            let mesh = Mesh::from(bevy::shape::Cone::new(r, h));
             Some(mesh.rotated_by(axis_rotation(cone.axis_attr())))
         }
         "Plane" => {

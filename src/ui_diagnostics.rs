@@ -92,7 +92,7 @@ impl egui::Plugin for Diagnostics {
         }
     }
 
-    fn output_hook(&mut self, output: &mut FullOutput) {
+    fn output_hook(&mut self, _ctx: &egui::Context, output: &mut FullOutput) {
         self.frames = self.frames.saturating_add(1);
         let now = Instant::now();
         if self
@@ -113,6 +113,19 @@ impl egui::Plugin for Diagnostics {
 }
 
 #[cfg(test)]
+/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
+/// never upload textures, so drop the delta explicitly.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use egui::{Plugin, epaint::ClippedShape};
@@ -130,12 +143,17 @@ mod tests {
                     egui::Color32::RED,
                 ),
             ]),
+            transform_after_tessellation: Default::default(),
         });
         output.shapes.push(ClippedShape {
             clip_rect: egui::Rect::from_min_max(egui::pos2(f32::NAN, 0.), egui::pos2(1., 1.)),
             shape: Shape::Noop,
+            transform_after_tessellation: Default::default(),
         });
-        output.textures_delta.free.push(egui::TextureId::Managed(9));
+        output
+            .textures_delta
+            .free
+            .insert(egui::TextureId::Managed(9));
         assert_eq!(
             stats(&output),
             OutputStats {
@@ -155,20 +173,22 @@ mod tests {
             frames: 0,
             previous_causes: Vec::new(),
         };
-        diagnostics.output_hook(&mut output);
+        let ctx = egui::Context::default();
+        diagnostics.output_hook(&ctx, &mut output);
         let last = diagnostics.last;
-        diagnostics.output_hook(&mut output);
+        diagnostics.output_hook(&ctx, &mut output);
         assert_eq!(diagnostics.frames, 2);
         assert_eq!(diagnostics.last, last);
         assert_eq!(format!("{:?}", output.shapes), before);
         assert_eq!(output.textures_delta.free, free);
         assert!(output.textures_delta.set.is_empty());
+        output.textures_delta.clear();
     }
 
     #[test]
     fn diagnostic_reads_previous_pass_repaint_causes() {
         let ctx = egui::Context::default();
-        let _ = ctx.run_ui(Default::default(), |ui| {
+        let _ = run_pass(&ctx, Default::default(), |ui| {
             ui.ctx().request_repaint_after(Duration::from_millis(17))
         });
         let mut diagnostics = Diagnostics {
@@ -177,7 +197,7 @@ mod tests {
             frames: 0,
             previous_causes: Vec::new(),
         };
-        let _ = ctx.run_ui(Default::default(), |ui| diagnostics.on_end_pass(ui));
+        let _ = run_pass(&ctx, Default::default(), |ui| diagnostics.on_end_pass(ui));
         assert!(
             diagnostics
                 .previous_causes

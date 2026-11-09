@@ -113,7 +113,7 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
     #[test]
     fn texture_resolution_is_fresh_without_rebuilding_candidate_paths() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let bytes =
             b"#usda 1.0\ndef DomeLight \"Dome\" { asset inputs:texture:file = @late.exr@ }\n";
         std::fs::write(&root, bytes).unwrap();
@@ -124,7 +124,11 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
         let changes = super::super::layer_changes::LayerChanges::new(&stage);
         let mut index = TextureIndex::default();
         let before = index.requests(&stage, &changes).unwrap();
-        std::fs::write(directory.path().join("late.exr"), b"resolver probe").unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join("late.exr"),
+            b"resolver probe",
+        )
+        .unwrap();
         let after = index.requests(&stage, &changes).unwrap();
         assert_eq!(
             after,

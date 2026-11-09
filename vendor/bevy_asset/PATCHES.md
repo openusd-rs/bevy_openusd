@@ -1,7 +1,9 @@
 # Local Bevy asset patch
 
-Source: crates.io `bevy_asset` 0.19.1, MIT OR Apache-2.0. The original license
-files and registry VCS metadata are retained. This is not a Bevy version upgrade.
+Source: crates.io `bevy_asset` 0.20.0, MIT OR Apache-2.0. The original license
+files and registry VCS metadata are retained. The serialize-loads change below was
+rebased from 0.19.1 onto 0.20.0; upstream 0.20.0 does not contain it (checked
+2026-10-20).
 The root Cargo patch selects this copy for the whole dependency graph.
 
 ## Serialize loads of one source

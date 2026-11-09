@@ -281,9 +281,9 @@ mod tests {
     #[test]
     fn directory_identity_tracks_replacement_and_symlink_targets() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root");
-        let backup = directory.path().join("backup");
-        let link = directory.path().join("link");
+        let root = directory.path().canonicalize().unwrap().join("root");
+        let backup = directory.path().canonicalize().unwrap().join("backup");
+        let link = directory.path().canonicalize().unwrap().join("link");
         assert_eq!(directory_identity(&root), None);
         std::fs::write(&root, b"not a directory").unwrap();
         assert_eq!(directory_identity(&root), None);
@@ -317,8 +317,12 @@ mod tests {
             requested.invalidations(&AssetSourceEvent::AddedFolder("missing".into())),
             [path.to_owned()].into()
         );
-        std::fs::create_dir(directory.path().join("missing")).unwrap();
-        std::fs::write(directory.path().join(path), b"#usda 1.0\n").unwrap();
+        std::fs::create_dir(directory.path().canonicalize().unwrap().join("missing")).unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join(path),
+            b"#usda 1.0\n",
+        )
+        .unwrap();
         assert!(bevy::tasks::block_on(reader.read(path)).is_ok());
         assert_eq!(requested.0.lock().unwrap().len(), 1);
     }

@@ -1,10 +1,10 @@
-#import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
-    mesh_view_bindings as view_bindings,
+    mesh_view_bindings,
     mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
     pbr_types::PbrInput,
     shadows,
-}
+};
 
 // Disney's sheen from each directional light: the light's color, tinted
 // toward the base color's hue, strongest where it grazes past the view.
@@ -15,14 +15,14 @@ fn sheen_light(pbr: PbrInput, weight: f32, tint: f32) -> vec3<f32> {
     let hue = select(vec3(1.0), base / luminance, luminance > 0.0);
     let color = weight * (1.0 - pbr.material.metallic) * mix(vec3(1.0), hue, tint);
     let view_z = dot(vec4(
-        view_bindings::view.view_from_world[0].z,
-        view_bindings::view.view_from_world[1].z,
-        view_bindings::view.view_from_world[2].z,
-        view_bindings::view.view_from_world[3].z
+        mesh_view_bindings::view.view_from_world[0].z,
+        mesh_view_bindings::view.view_from_world[1].z,
+        mesh_view_bindings::view.view_from_world[2].z,
+        mesh_view_bindings::view.view_from_world[3].z
     ), pbr.world_position);
     var light = vec3(0.0);
-    for (var i = 0u; i < view_bindings::lights.n_directional_lights; i++) {
-        let directional = &view_bindings::lights.directional_lights[i];
+    for (var i = 0u; i < mesh_view_bindings::lights.n_directional_lights; i++) {
+        let directional = &mesh_view_bindings::lights.directional_lights[i];
         let to_light = (*directional).direction_to_light;
         let lit = saturate(dot(pbr.N, to_light));
         let grazing = pow(1.0 - saturate(dot(to_light, normalize(to_light + pbr.V))), 5.0);
@@ -33,5 +33,5 @@ fn sheen_light(pbr: PbrInput, weight: f32, tint: f32) -> vec3<f32> {
         }
         light += color * grazing * lit * shadow * (*directional).color.rgb;
     }
-    return light * view_bindings::view.exposure;
+    return light * mesh_view_bindings::view.exposure;
 }

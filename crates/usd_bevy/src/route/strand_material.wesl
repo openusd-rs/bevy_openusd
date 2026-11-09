@@ -1,30 +1,22 @@
-#import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_functions,
     view_transformations::position_world_to_clip,
     forward_io::VertexOutput,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
-}
-#import "embedded://usd_bevy/route/strand_functions.wgsl"::{facing_normal, ribbon, round_normal}
-#ifdef VISIBILITY_RANGE_DITHER
-#import bevy_pbr::pbr_functions::visibility_range_dither
-#endif
+    pbr_types,
+};
+import usd_bevy::route::strand_functions::{facing_normal, ribbon, round_normal};
+@if(VISIBILITY_RANGE_DITHER) import bevy_pbr::render::pbr_functions::visibility_range_dither;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
-#ifdef VERTEX_UVS_A
-    @location(2) uv: vec2<f32>,
-#endif
-#ifdef VERTEX_COLORS
-    @location(5) color: vec4<f32>,
-#endif
+    @if(VERTEX_UVS_A) @location(2) uv: vec2<f32>,
+    @if(VERTEX_COLORS) @location(5) color: vec4<f32>,
     @location(8) width: f32,
     @location(9) tangent: vec4<f32>,
-#ifdef STRAND_NORMALS
-    @location(10) normal: vec4<f32>,
-#endif
+    @if(STRAND_NORMALS) @location(10) normal: vec4<f32>,
 };
 
 struct StrandOutput {
@@ -36,28 +28,17 @@ struct StrandOutput {
 fn vertex(vertex: Vertex) -> VertexOutput {
     var out: VertexOutput;
     let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
-#ifdef STRAND_NORMALS
-    let normal = mesh_functions::mesh_normal_local_to_world(vertex.normal.xyz, vertex.instance_index);
-    let strand = ribbon(world_from_local, vertex.position, vertex.tangent, normal, true, vertex.width, 1.0);
-#else
-    let strand = ribbon(world_from_local, vertex.position, vertex.tangent, vec3(0.0), false, vertex.width, 1.0);
-#endif
+    @if(STRAND_NORMALS) let normal = mesh_functions::mesh_normal_local_to_world(vertex.normal.xyz, vertex.instance_index);
+    @if(STRAND_NORMALS) let strand = ribbon(world_from_local, vertex.position, vertex.tangent, normal, true, vertex.width, 1.0);
+    @else let strand = ribbon(world_from_local, vertex.position, vertex.tangent, vec3(0.0), false, vertex.width, 1.0);
     out.world_normal = strand.normal;
     out.position = position_world_to_clip(strand.world_position);
     // The projected width rides in the unused w for the fragment's coverage.
     out.world_position = vec4(strand.world_position, strand.pixels);
-#ifdef VERTEX_UVS_A
-    out.uv = vertex.uv;
-#endif
-#ifdef VERTEX_COLORS
-    out.color = vertex.color;
-#endif
-#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
-    out.instance_index = vertex.instance_index;
-#endif
-#ifdef VISIBILITY_RANGE_DITHER
-    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(vertex.instance_index, world_from_local[3]);
-#endif
+    @if(VERTEX_UVS_A) out.uv = vertex.uv;
+    @if(VERTEX_COLORS) out.color = vertex.color;
+    @if(VERTEX_OUTPUT_INSTANCE_INDEX) out.instance_index = vertex.instance_index;
+    @if(VISIBILITY_RANGE_DITHER) out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(vertex.instance_index, world_from_local[3]);
     return out;
 }
 
@@ -86,14 +67,9 @@ fn fragment(input: VertexOutput) -> StrandOutput {
     var vertex = input;
     let coverage = clamp(vertex.world_position.w, 0.0, 1.0);
     vertex.world_position.w = 1.0;
-#ifdef STRAND_NORMALS
-    vertex.world_normal = facing_normal(vertex.world_normal, vertex.world_position.xyz);
-#else
-    vertex.world_normal = round_normal(vertex.world_normal, vertex.world_position.xyz);
-#endif
-#ifdef VISIBILITY_RANGE_DITHER
-    visibility_range_dither(vertex.position, vertex.visibility_range_dither);
-#endif
+    @if(STRAND_NORMALS) vertex.world_normal = facing_normal(vertex.world_normal, vertex.world_position.xyz);
+    @else vertex.world_normal = round_normal(vertex.world_normal, vertex.world_position.xyz);
+    @if(VISIBILITY_RANGE_DITHER) visibility_range_dither(vertex.position, vertex.visibility_range_dither);
     // The normal already faces the eye, whichever way the ribbon winds.
     var pbr = pbr_input_from_standard_material(vertex, true);
     var output: StrandOutput;
@@ -102,8 +78,8 @@ fn fragment(input: VertexOutput) -> StrandOutput {
         discard;
     }
     pbr.material.base_color.a = 1.0;
-    pbr.material.base_color = alpha_discard(pbr.material, pbr.material.base_color);
-    if (pbr.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+    pbr.material.base_color = alpha_discard(pbr.material.flags, pbr.material.alpha_cutoff, pbr.material.base_color);
+    if (pbr.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         output.color = apply_pbr_lighting(pbr);
     } else {
         output.color = pbr.material.base_color;

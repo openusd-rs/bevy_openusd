@@ -18,7 +18,7 @@ pub struct SheenLobe {
 
 impl MaterialExtension for SheenLobe {
     fn fragment_shader() -> ShaderRef {
-        "embedded://usd_bevy/route/sheen_material.wgsl".into()
+        "embedded://usd_bevy/route/sheen_material.wesl".into()
     }
 }
 
@@ -26,8 +26,8 @@ pub type SheenMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, SheenLobe
 
 pub(crate) fn configure(app: &mut App) {
     if super::wrapped::configure::<SheenLobe>(app) {
-        bevy::asset::embedded_asset!(app, "sheen_material.wgsl");
-        bevy::asset::embedded_asset!(app, "sheen_functions.wgsl");
+        bevy::asset::embedded_asset!(app, "sheen_material.wesl");
+        bevy::asset::embedded_asset!(app, "sheen_functions.wesl");
     }
 }
 

@@ -256,6 +256,19 @@ impl FileDialogs {
 }
 
 #[cfg(test)]
+/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
+/// never upload textures, so drop the delta explicitly.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -281,7 +294,7 @@ mod tests {
             assert!(
                 matches!(dialogs.pending.as_ref().unwrap().0, Request::Open { document_id: 42, revision: value } if value == revision)
             );
-            let _ = context.run_ui(egui::RawInput::default(), |_| {
+            let _ = run_pass(&context, egui::RawInput::default(), |_| {
                 assert!(dialogs.poll().is_none());
             });
             assert!(dialogs.confirmation.is_some());
@@ -293,13 +306,13 @@ mod tests {
                 repeat: false,
                 modifiers: egui::Modifiers::NONE,
             });
-            let _ = context.run_ui(input, |_| {
+            let _ = run_pass(&context, input, |_| {
                 assert!(dialogs.poll().is_none());
             });
             assert!(dialogs.confirmation.is_none());
             assert!(dialogs.pending.is_none());
             assert!(dialogs.status().is_none());
-            let _ = context.run_ui(egui::RawInput::default(), |_| {
+            let _ = run_pass(&context, egui::RawInput::default(), |_| {
                 assert!(dialogs.poll().is_none());
             });
         }

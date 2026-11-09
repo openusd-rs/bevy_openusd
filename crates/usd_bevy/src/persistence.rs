@@ -194,8 +194,12 @@ mod tests {
     #[test]
     fn atomic_save_rejects_symlink_replacement_during_export() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("scene.usda");
-        let foreign = directory.path().join("foreign.usda");
+        let path = directory.path().canonicalize().unwrap().join("scene.usda");
+        let foreign = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("foreign.usda");
         std::fs::write(&path, "original").unwrap();
         std::fs::write(&foreign, "foreign").unwrap();
         let error = super::write_atomic(path.to_str().unwrap(), None, |staged| {
@@ -218,7 +222,7 @@ mod tests {
             (None, Some("external")),
         ] {
             let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("scene.usda");
+            let path = directory.path().canonicalize().unwrap().join("scene.usda");
             if let Some(original) = original {
                 std::fs::write(&path, original).unwrap();
             }
@@ -247,8 +251,16 @@ mod tests {
     fn check_muted_layer_exports(native: bool) {
         use crate::editor::{EditorSession, SaveMode};
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("layer_muting.usda");
-        let weak = directory.path().join("layer_muting_weak.usda");
+        let root = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("layer_muting.usda");
+        let weak = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("layer_muting_weak.usda");
         let root_bytes = include_bytes!("../../../assets/layer_muting.usda");
         let weak_bytes = include_bytes!("../../../assets/layer_muting_weak.usda");
         std::fs::write(&root, root_bytes).unwrap();
@@ -403,8 +415,12 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
         use openusd::vt::Value;
         let source = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
-        let editor = relocated_fixture(source.path());
-        let weak = source.path().join("layers/weak.usda");
+        let editor = relocated_fixture(&source.path().canonicalize().unwrap());
+        let weak = source
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("layers/weak.usda");
         let root_before = editor.stage().root_layer().export_to_string().unwrap();
         let weak_before = editor
             .stage()
@@ -441,7 +457,7 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
                     panic!()
                 };
                 if matches!(mode, SaveMode::EditLayer) {
-                    assert!(future.authored_path.ends_with("/layers/future.bin"));
+                    assert!(Path::new(&future.authored_path).ends_with("layers/future.bin"));
                 } else {
                     assert_eq!(future.authored_path, "./future.bin");
                 }
@@ -476,8 +492,12 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
             .unwrap_err();
         assert!(format!("{error:#}").contains("unsupported relocated asset"));
         assert_eq!(fs::read(target).unwrap(), b"existing destination");
-        fs::create_dir(source.path().join("layers/alias")).unwrap();
-        let same_directory = source.path().join("layers/alias/../same.usda");
+        fs::create_dir(source.path().canonicalize().unwrap().join("layers/alias")).unwrap();
+        let same_directory = source
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("layers/alias/../same.usda");
         editor
             .save(same_directory.to_str().unwrap(), SaveMode::EditLayer)
             .unwrap();
@@ -488,8 +508,12 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
         );
         #[cfg(unix)]
         {
-            let alias = source.path().join("linked-layers");
-            std::os::unix::fs::symlink(source.path().join("layers"), &alias).unwrap();
+            let alias = source.path().canonicalize().unwrap().join("linked-layers");
+            std::os::unix::fs::symlink(
+                source.path().canonicalize().unwrap().join("layers"),
+                &alias,
+            )
+            .unwrap();
             let path = alias.join("same-linked.usda");
             editor
                 .save(path.to_str().unwrap(), SaveMode::EditLayer)
@@ -915,9 +939,17 @@ def Sphere "Model" {
         use crate::editor::SaveMode;
         let source = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
-        let editor = relocated_fixture(source.path());
+        let editor = relocated_fixture(&source.path().canonicalize().unwrap());
         editor
-            .set_edit_layer(source.path().join("layers/weak.usda").to_str().unwrap())
+            .set_edit_layer(
+                source
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join("layers/weak.usda")
+                    .to_str()
+                    .unwrap(),
+            )
             .unwrap();
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
         for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
@@ -964,7 +996,15 @@ def Sphere "Model" {
                 );
             }
         }
-        fs::write(source.path().join("layers/future.bin"), b"future texture").unwrap();
+        fs::write(
+            source
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("layers/future.bin"),
+            b"future texture",
+        )
+        .unwrap();
         let package = output.path().join("input.usdz");
         editor
             .save(package.to_str().unwrap(), SaveMode::RootLayer)
@@ -1114,7 +1154,7 @@ def Scope "Model" (
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
         let control = Command::new(&native)
             .arg("--flatten")
-            .arg(source.path().join("root.usda"))
+            .arg(source.path().canonicalize().unwrap().join("root.usda"))
             .output()
             .unwrap();
         assert!(
@@ -1254,7 +1294,11 @@ def Scope "Model" (
             .add_layer("textures/pixels.bin", b"packaged payload")
             .unwrap();
         let bytes = archive.finish().unwrap().into_inner();
-        let virtual_path = directory.path().join("never-written.USDZ");
+        let virtual_path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("never-written.USDZ");
         let source = crate::UsdSource::snapshot(&virtual_path, bytes).unwrap();
         let editor = EditorSession::new(source.open_stage().unwrap());
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
@@ -1269,10 +1313,13 @@ def Scope "Model" (
                 "{}",
                 String::from_utf8_lossy(&result.stderr)
             );
-            let stage = crate::UsdSource::new(directory.path().join("native.usda"), result.stdout)
-                .unwrap()
-                .open_stage()
-                .unwrap();
+            let stage = crate::UsdSource::new(
+                directory.path().canonicalize().unwrap().join("native.usda"),
+                result.stdout,
+            )
+            .unwrap()
+            .open_stage()
+            .unwrap();
             assert_eq!(
                 stage
                     .prim("/Weak")
@@ -1306,11 +1353,19 @@ def Scope "Model" (
             ("edit", SaveMode::EditLayer),
             ("flat", SaveMode::Flattened),
         ] {
-            let first = directory.path().join(format!("{name}.usdz"));
+            let first = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("{name}.usdz"));
             editor.save(first.to_str().unwrap(), mode).unwrap();
             check(&first);
             let source = crate::UsdSource::snapshot(&first, fs::read(&first).unwrap()).unwrap();
-            let second = directory.path().join(format!("{name}-repacked.usdz"));
+            let second = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("{name}-repacked.usdz"));
             let second_editor = EditorSession::new(source.open_stage().unwrap());
             fs::remove_file(&first).unwrap();
             second_editor
@@ -1319,14 +1374,24 @@ def Scope "Model" (
             check(&second);
         }
         let wrapper = b"#usda 1.0\ndef Scope \"Weak\" (\n prepend references = @never-written.USDZ@</Weak>\n) {}\ndef Scope \"Assets\" (\n prepend references = @never-written.USDZ@</Assets>\n) {}\n";
-        let mut wrapper_source =
-            crate::UsdSource::snapshot(&directory.path().join("wrapper.usda"), wrapper.to_vec())
-                .unwrap();
+        let mut wrapper_source = crate::UsdSource::snapshot(
+            &directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("wrapper.usda"),
+            wrapper.to_vec(),
+        )
+        .unwrap();
         wrapper_source.insert_dependency(
             virtual_path.to_str().unwrap().into(),
             source.read_asset(source.identifier()).unwrap(),
         );
-        let wrapped = directory.path().join("wrapped.usdz");
+        let wrapped = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("wrapped.usdz");
         crate::authoring::save_stage_as(
             &wrapper_source.open_stage().unwrap(),
             wrapped.to_str().unwrap(),
@@ -1349,8 +1414,16 @@ def Scope "Model" (
         use std::io::Read;
 
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("virtual/root.usda");
-        let weak = directory.path().join("virtual/weak.usda");
+        let root = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("virtual/root.usda");
+        let weak = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("virtual/weak.usda");
         let source_text = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Assets\" {\n asset first = @a/color.png@\n asset second = @b/color.png@\n asset repeated = @a/color.png@\n asset self = @root.usda@\n}\n";
         let mut source = crate::UsdSource::snapshot(&root, source_text.to_vec()).unwrap();
         source.insert_dependency(
@@ -1360,6 +1433,8 @@ def Scope "Model" (
         source.insert_dependency(
             directory
                 .path()
+                .canonicalize()
+                .unwrap()
                 .join("virtual/a/color.png")
                 .to_str()
                 .unwrap()
@@ -1369,6 +1444,8 @@ def Scope "Model" (
         source.insert_dependency(
             directory
                 .path()
+                .canonicalize()
+                .unwrap()
                 .join("virtual/b/color.png")
                 .to_str()
                 .unwrap()
@@ -1393,7 +1470,7 @@ def Scope "Model" (
             .export_to_string()
             .unwrap();
         let undo_before = editor.snapshot().unwrap().can_undo;
-        let output = directory.path().join("saved.USDZ");
+        let output = directory.path().canonicalize().unwrap().join("saved.USDZ");
         editor
             .save(output.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
@@ -1470,11 +1547,11 @@ def Scope "Model" (
     fn missing_package_asset_preserves_destination_and_cleans_staging() {
         let directory = tempfile::tempdir().unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("source.usda"),
+            directory.path().canonicalize().unwrap().join("source.usda"),
             &b"#usda 1.0\ndef Scope \"Assets\" {\n asset texture = @missing.png@\n}\n"[..],
         )
         .unwrap();
-        let output = directory.path().join("saved.usdz");
+        let output = directory.path().canonicalize().unwrap().join("saved.usdz");
         fs::write(&output, b"original").unwrap();
         let error = crate::authoring::save_stage_as(
             &source.open_stage().unwrap(),
@@ -1495,18 +1572,30 @@ def Scope "Model" (
         let source_directory = tempfile::tempdir().unwrap();
         let output_directory = tempfile::tempdir().unwrap();
         fs::write(
-            source_directory.path().join("weak.usda"),
+            source_directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("weak.usda"),
             "#usda 1.0\ndef Scope \"Layered\" {\n double score = 11\n}\n",
         )
         .unwrap();
-        fs::write(source_directory.path().join("model.usda"), "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n asset texture = @paint.bin@\n}\n").unwrap();
+        fs::write(source_directory.path().canonicalize().unwrap().join("model.usda"), "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n asset texture = @paint.bin@\n}\n").unwrap();
         fs::write(
-            source_directory.path().join("paint.bin"),
+            source_directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("paint.bin"),
             b"texture payload",
         )
         .unwrap();
         let source = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Referenced\" (\n prepend references = @model.usda@</Model>\n) {}\n";
-        let original = source_directory.path().join("source.usda");
+        let original = source_directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("source.usda");
         fs::write(&original, source).unwrap();
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
         let control = Command::new(&native)
@@ -1534,6 +1623,8 @@ def Scope "Model" (
                 .save(
                     output_directory
                         .path()
+                        .canonicalize()
+                        .unwrap()
                         .join(format!("{name}.usdz"))
                         .to_str()
                         .unwrap(),
@@ -1545,7 +1636,11 @@ def Scope "Model" (
         source_directory.close().unwrap();
         let mut failures = Vec::new();
         for name in ["root", "edit", "flat"] {
-            let package = output_directory.path().join(format!("{name}.usdz"));
+            let package = output_directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("{name}.usdz"));
             let output = Command::new(&native)
                 .arg("--flatten")
                 .arg(&package)
@@ -1558,11 +1653,17 @@ def Scope "Model" (
                 ));
                 continue;
             }
-            let stage =
-                crate::UsdSource::new(output_directory.path().join("native.usda"), output.stdout)
+            let stage = crate::UsdSource::new(
+                output_directory
+                    .path()
+                    .canonicalize()
                     .unwrap()
-                    .open_stage()
-                    .unwrap();
+                    .join("native.usda"),
+                output.stdout,
+            )
+            .unwrap()
+            .open_stage()
+            .unwrap();
             for (prim, expected) in [("/Layered", 11.0), ("/Referenced", 23.0)] {
                 let value = stage
                     .prim(prim)
@@ -1619,17 +1720,17 @@ def Scope "Model" (
 
         let directory = tempfile::tempdir().unwrap();
         fs::write(
-            directory.path().join("weak.usda"),
+            directory.path().canonicalize().unwrap().join("weak.usda"),
             "#usda 1.0\ndef Scope \"Layered\" {\n double score = 11\n}\n",
         )
         .unwrap();
         fs::write(
-            directory.path().join("model.usda"),
+            directory.path().canonicalize().unwrap().join("model.usda"),
             "#usda 1.0\ndef Scope \"Model\" {\n double score = 23\n}\n",
         )
         .unwrap();
         let source = b"#usda 1.0\n( subLayers = [@weak.usda@] )\ndef Scope \"Referenced\" (\n prepend references = @model.usda@</Model>\n) {}\n";
-        let original = directory.path().join("source.usda");
+        let original = directory.path().canonicalize().unwrap().join("source.usda");
         fs::write(&original, source).unwrap();
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
         let check = |path: &Path| -> Result<()> {
@@ -1643,8 +1744,11 @@ def Scope "Model" (
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let stage = crate::UsdSource::new(directory.path().join("native.usda"), output.stdout)?
-                .open_stage()?;
+            let stage = crate::UsdSource::new(
+                directory.path().canonicalize().unwrap().join("native.usda"),
+                output.stdout,
+            )?
+            .open_stage()?;
             for (prim, expected) in [("/Layered", 11.0), ("/Referenced", 23.0)] {
                 let value = stage.prim(prim)?.attribute("score").get::<f64>()?;
                 ensure!(
@@ -1667,7 +1771,11 @@ def Scope "Model" (
             ("flat", SaveMode::Flattened),
         ] {
             for extension in ["usda", "usdc", "usd", "usdz"] {
-                let destination = directory.path().join(format!("{name}.{extension}"));
+                let destination = directory
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(format!("{name}.{extension}"));
                 editor.save(destination.to_str().unwrap(), mode).unwrap();
                 if let Err(error) = check(&destination) {
                     failures.push(format!("{name}.{extension}: {error:#}"));
@@ -1690,7 +1798,7 @@ def Scope "Model" (
         let directory = tempfile::tempdir().unwrap();
         let source = include_bytes!("../../../assets/native_save.usda");
         let native = std::env::var_os("USD_CAT").unwrap_or_else(|| "usdcat".into());
-        let original = directory.path().join("source.usda");
+        let original = directory.path().canonicalize().unwrap().join("source.usda");
         fs::write(&original, source).unwrap();
         let control = Command::new(&native)
             .arg(&original)
@@ -1713,7 +1821,11 @@ def Scope "Model" (
             ("flat", SaveMode::Flattened),
         ] {
             for extension in ["usda", "usdc", "usd", "usdz"] {
-                let destination = directory.path().join(format!("{name}.{extension}"));
+                let destination = directory
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(format!("{name}.{extension}"));
                 editor.save(destination.to_str().unwrap(), mode).unwrap();
                 let output = Command::new(&native)
                     .arg("--flatten")
@@ -1729,11 +1841,13 @@ def Scope "Model" (
                 }
                 let metadata =
                     String::from_utf8_lossy(&output.stdout).contains("MaterialBindingAPI");
-                let reopened =
-                    crate::UsdSource::new(directory.path().join("native.usda"), output.stdout)
-                        .unwrap()
-                        .open_stage()
-                        .unwrap();
+                let reopened = crate::UsdSource::new(
+                    directory.path().canonicalize().unwrap().join("native.usda"),
+                    output.stdout,
+                )
+                .unwrap()
+                .open_stage()
+                .unwrap();
                 let score = reopened
                     .prim("/Saved")
                     .ok()
@@ -1769,7 +1883,11 @@ def Scope "Model" (
         .open_stage()
         .unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let destination = directory.path().join(format!("scene.{extension}"));
+            let destination = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("scene.{extension}"));
             fs::write(&destination, "old content").unwrap();
             crate::authoring::save_stage_as(&stage, destination.to_str().unwrap()).unwrap();
             let bytes = fs::read(&destination).unwrap();
@@ -1792,7 +1910,11 @@ def Scope "Model" (
                 Some(7.0)
             );
         }
-        let unsupported = directory.path().join("scene.unsupported");
+        let unsupported = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("scene.unsupported");
         fs::write(&unsupported, "retain me").unwrap();
         assert!(crate::authoring::save_stage_as(&stage, unsupported.to_str().unwrap()).is_err());
         assert_eq!(fs::read_to_string(unsupported).unwrap(), "retain me");
@@ -1804,7 +1926,7 @@ def Scope "Model" (
     fn permissions_survive_and_symlinks_and_readonly_targets_are_rejected() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("scene.usda");
+        let target = directory.path().canonicalize().unwrap().join("scene.usda");
         fs::write(&target, "old").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
         write_atomic(target.to_str().unwrap(), None, |temporary| {
@@ -1815,7 +1937,7 @@ def Scope "Model" (
             fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o640
         );
-        let link = directory.path().join("link.usda");
+        let link = directory.path().canonicalize().unwrap().join("link.usda");
         symlink(&target, &link).unwrap();
         assert!(
             write_atomic(link.to_str().unwrap(), None, |_| panic!(
@@ -1838,7 +1960,7 @@ def Scope "Model" (
     #[test]
     fn failed_export_preserves_destination_and_removes_staging_file() {
         let directory = tempfile::tempdir().unwrap();
-        let destination = directory.path().join("scene.usda");
+        let destination = directory.path().canonicalize().unwrap().join("scene.usda");
         fs::write(&destination, "original").unwrap();
         let error = write_atomic(destination.to_str().unwrap(), None, |temporary| {
             fs::write(temporary, "partial export")?;
@@ -1859,7 +1981,7 @@ def Scope "Model" (
     #[test]
     fn conflicting_directory_cleans_up_and_preserves_external_entry() {
         let directory = tempfile::tempdir().unwrap();
-        let destination = directory.path().join("scene.usda");
+        let destination = directory.path().canonicalize().unwrap().join("scene.usda");
         let error = write_atomic(destination.to_str().unwrap(), None, |temporary| {
             fs::write(temporary, "complete export")?;
             fs::create_dir(&destination)?;

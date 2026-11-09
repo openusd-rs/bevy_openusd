@@ -1,4 +1,4 @@
-#import bevy_pbr::{mesh_view_bindings::view, view_transformations::position_world_to_clip}
+import bevy_pbr::render::{mesh_view_bindings::view, view_transformations::position_world_to_clip};
 
 struct Ribbon {
     world_position: vec3<f32>,

@@ -26,7 +26,7 @@ miniz_oxide = "0.8"
 log = "0.4"
 tempfile = "3"
 zip = { version = "8.2.0", default-features = false, features = ["deflate"] }
-bevy = { version = "0.19.1", default-features = false, features = [
+bevy = { version = "0.20.0", default-features = false, features = [
     "std",
     "bevy_asset",
     "bevy_log",
@@ -44,7 +44,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "exr",
     "reflect_auto_register",
 ] }
-bevy_pbr = { version = "0.19.1", default-features = false, features = ["pbr_multi_layer_material_textures"] }
+bevy_pbr = { version = "0.20.0", default-features = false, features = ["pbr_multi_layer_material_textures"] }
 
 [dev-dependencies]
 png = "0.18"

@@ -278,7 +278,54 @@ Do not treat the earlier Bevy-only results as verification of the new dependency
   `/tmp/bevy-020-native-deformation.log`. Investigate the SDK/ABI before claiming
   numerical parity; the separate CPU/GPU image comparisons do not replace it.
 
-Next: finish full GPU and native editor checks, Clippy/all-feature tests,
-watchers, the native deformation oracle and image comparisons, then the upstream
-OpenUSD update. Keep follow-up commits focused and local; no pushes or remote
-merges.
+### Upstream OpenUSD integration
+
+The manifests and lockfile now pin upstream `900ea31591348e3fbf416d4661d703aa8700771b`.
+Persistence, reload, editor inspection and projection use `LayerHandle` and
+short-lived guards. Save-as relocates a copied layer in a separate registry so
+the original stage is neither edited nor held busy by the copy's edits.
+
+Observer installation now uses fallible constructors before publishing a new
+document. Existing `new` constructors retain their public signature and document
+the failure condition; `try_new` exposes the upstream error. Observer closures
+hold weak state references, so even a drop during an active layer edit releases
+the wrapper's data. If upstream refuses removal while busy, the inert weak
+observer remains until stage destruction and the failed removal is logged.
+
+Live queue checks/drains flush upstream notifications before inspecting the
+queue. Fallible variants preserve queued edits when flushing fails. Editor
+snapshots and texture indexing also flush, material reads invalidate on pending
+changes, and failed save-state hashes are retried at the same revision.
+
+`check-all` passed after the API migration. `test-library` passed 651 no-default
+tests before the added observer regressions, then 667 all-feature tests including
+all eight new regressions (20/29 intentional ignored checks respectively):
+`/tmp/bevy-020-openusd-library.log`. The added tests cover direct/shared-layer
+projection, busy construction/drain, observer lifetime, editor history, revision
+tracking, material-cache invalidation and save-state recovery. A fresh complete
+run plus native exports is in `/tmp/bevy-020-openusd-verify.log`; do not assume
+that run has passed until its final result is recorded.
+
+The wasm target also checks with the new dependency:
+`/tmp/bevy-020-openusd-web-check.log`. Browser runtime and rendered acceptance
+still need to be repeated; earlier captures used the previous dependency.
+
+### Native oracle compiler ABI
+
+The native oracle crash was traced to `UsdGeomXformCache` destruction, not a
+numerical discrepancy. OpenUSD 25.05's `arch/defines.h` selects GNU extension hash
+containers for GCC and standard unordered containers for Clang. The shell's
+Clang-built helper therefore disagreed with the GCC-built native SDK's object
+layout, despite using the same libstdc++ and USD headers. Backtrace:
+`/tmp/bevy-020-native-oracle-debug-backtrace.log`.
+
+The Nix shell now supplies `USD_NATIVE_CXX` and matching `USD_NATIVE_CPPFLAGS`,
+`USD_NATIVE_LDFLAGS`, and `USD_NATIVE_LDLIBS`; only the native oracle recipe uses
+them. No global C++ compiler override is applied. Rebuilding with
+`nix develop --command oslo make build-native-deformation` succeeds, and direct
+position/normal samples now exit cleanly. Full numerical checks are pending in
+`/tmp/bevy-020-openusd-native-deformation.log`.
+
+Next: finish the new-dependency gates, full GPU/native editor checks, strict
+Clippy, watchers, native numerical comparisons and image inspection. Keep
+follow-up commits focused and local; no pushes or remote merges.

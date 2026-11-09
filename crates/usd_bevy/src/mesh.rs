@@ -309,10 +309,11 @@ pub(crate) fn assemble_mesh(read: &ReadMesh, face_subset: Option<&[i32]>, tangen
     } else {
         mesh.compute_smooth_normals();
     }
-    if tangents && read.uvs.is_some() {
-        if let Err(e) = mesh.generate_tangents() {
-            bevy::log::debug!("mesh: generate_tangents failed: {e}");
-        }
+    if tangents
+        && read.uvs.is_some()
+        && let Err(e) = mesh.generate_tangents()
+    {
+        bevy::log::debug!("mesh: generate_tangents failed: {e}");
     }
     mesh
 }

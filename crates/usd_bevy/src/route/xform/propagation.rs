@@ -572,10 +572,10 @@ fn propagate(world: &mut World) {
                 .unwrap_or(Mat4::IDENTITY);
             let global =
                 GlobalTransform::from(basis.to_matrix() * transform.to_matrix() * residual);
-            if let Some(mut current) = world.get_mut::<GlobalTransform>(entity) {
-                if *current != global {
-                    *current = global;
-                }
+            if let Some(mut current) = world.get_mut::<GlobalTransform>(entity)
+                && *current != global
+            {
+                *current = global;
             }
             if let Some(children) = world.get::<Children>(entity) {
                 pending.extend(children.iter().map(|child| (child, global)));

@@ -134,10 +134,9 @@ impl SaveState {
                     .ok()
                     .flatten()
                     .is_some_and(|layer| layer.resolved_path().is_some())
+                && let Some(hash) = current.1
             {
-                if let Some(hash) = current.1 {
-                    self.baselines.insert(id.clone(), hash);
-                }
+                self.baselines.insert(id.clone(), hash);
             }
             let state = match (self.baselines.get(&id), current.1) {
                 (Some(baseline), Some(hash)) if *baseline == hash => LayerSaveState::Clean,

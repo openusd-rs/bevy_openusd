@@ -673,10 +673,10 @@ pub(crate) fn spawn_usd_scenes(world: &mut World) {
                     .roots
                     .remove(&entity)
                     .filter(|runtime| runtime.asset == handle.id());
-                if retained.is_none() {
-                    if let Some(subtree) = previous.as_ref().and_then(|old| old.subtree) {
-                        world.despawn(subtree);
-                    }
+                if retained.is_none()
+                    && let Some(subtree) = previous.as_ref().and_then(|old| old.subtree)
+                {
+                    world.despawn(subtree);
                 }
                 let current = world
                     .get::<UsdInstanceTime>(entity)

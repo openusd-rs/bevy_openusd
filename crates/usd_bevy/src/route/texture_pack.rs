@@ -127,10 +127,9 @@ pub(crate) fn base_color_alpha(
     if let Some(handle) = world
         .get_resource::<AlphaTextures>()
         .and_then(|cache| cache.images.get(&key))
+        && world.resource::<Assets<Image>>().contains(handle)
     {
-        if world.resource::<Assets<Image>>().contains(handle) {
-            return Ok(Some(handle.clone()));
-        }
+        return Ok(Some(handle.clone()));
     }
     let image = Image::new(
         Extent3d {
@@ -476,12 +475,12 @@ fn pack(
             .iter()
             .find_map(|(hash, id)| (*hash == fingerprint).then_some(*id))
     });
-    if let Some(id) = candidate {
-        if let Some(handle) = super::generated_image::reuse_if(world, id, &template, |data| {
+    if let Some(id) = candidate
+        && let Some(handle) = super::generated_image::reuse_if(world, id, &template, |data| {
             packed_pixels_match(data, width as usize * height as usize, &key)
-        }) {
-            return Ok(Some(handle));
-        }
+        })
+    {
+        return Ok(Some(handle));
     }
     if let Some(handle) = world
         .get_resource::<PackedTextures>()

@@ -192,10 +192,9 @@ fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<
     if let Some(handle) = world
         .get_resource::<ColorTextures>()
         .and_then(|cache| cache.images.get(&key))
+        && world.resource::<Assets<Image>>().contains(handle)
     {
-        if world.resource::<Assets<Image>>().contains(handle) {
-            return Ok(handle.clone());
-        }
+        return Ok(handle.clone());
     }
     let image = Image::new(
         Extent3d {

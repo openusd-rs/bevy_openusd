@@ -5042,7 +5042,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "openusd"
 version = "0.8.0"
-source = "git+https://github.com/mxpv/openusd?rev=d10fa4c2838e1e18a5c4fb4aa47534f94fde8995#d10fa4c2838e1e18a5c4fb4aa47534f94fde8995"
+source = "git+https://github.com/mxpv/openusd?rev=900ea31591348e3fbf416d4661d703aa8700771b#900ea31591348e3fbf416d4661d703aa8700771b"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -5063,7 +5063,7 @@ dependencies = [
 [[package]]
 name = "openusd-build"
 version = "0.8.0"
-source = "git+https://github.com/mxpv/openusd?rev=d10fa4c2838e1e18a5c4fb4aa47534f94fde8995#d10fa4c2838e1e18a5c4fb4aa47534f94fde8995"
+source = "git+https://github.com/mxpv/openusd?rev=900ea31591348e3fbf416d4661d703aa8700771b#900ea31591348e3fbf416d4661d703aa8700771b"
 dependencies = [
  "openusd",
  "prettyplease",
@@ -5078,7 +5078,7 @@ dependencies = [
 [[package]]
 name = "openusd-schemas"
 version = "0.8.0"
-source = "git+https://github.com/mxpv/openusd?rev=d10fa4c2838e1e18a5c4fb4aa47534f94fde8995#d10fa4c2838e1e18a5c4fb4aa47534f94fde8995"
+source = "git+https://github.com/mxpv/openusd?rev=900ea31591348e3fbf416d4661d703aa8700771b#900ea31591348e3fbf416d4661d703aa8700771b"
 dependencies = [
  "bitflags 2.13.2",
  "derive_more",

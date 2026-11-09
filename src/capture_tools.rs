@@ -16,9 +16,7 @@ pub struct Frame {
     pub rgba: Vec<u8>,
 }
 
-/// Receives the egui screenshot delivered to a request's `ScreenshotCallback`.
-/// Each request owns its own slot, so a late callback from an earlier request
-/// can never complete a newer one.
+/// Stores the screenshot delivered to one request's callback.
 pub(crate) type ScreenshotSlot = Arc<Mutex<Option<Arc<egui::ColorImage>>>>;
 
 #[derive(Clone)]
@@ -279,8 +277,7 @@ impl CaptureTools {
 }
 
 #[cfg(test)]
-/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
-/// never upload textures, so drop the delta explicitly.
+/// Runs a headless UI pass and clears its texture deltas.
 fn run_pass(
     ctx: &egui::Context,
     input: egui::RawInput,
@@ -346,5 +343,47 @@ mod tests {
         });
         let frame = bridge.take().unwrap().unwrap();
         assert_eq!(frame.rgba, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn expired_host_callback_cannot_complete_a_new_request() {
+        let bridge = CaptureBridge::default();
+        let ctx = egui::Context::default();
+        let submit = || {
+            let output = run_pass(&ctx, egui::RawInput::default(), |ui| {
+                bridge.update_host(ui.ctx())
+            });
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::ViewportCommand::Screenshot(callback) => Some(callback.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        bridge.request(true).unwrap();
+        let expired = submit();
+        bridge.0.lock().unwrap().pending.as_mut().unwrap().started =
+            Instant::now() - Duration::from_secs(31);
+        assert_eq!(bridge.take().unwrap().err().unwrap(), "Capture timed out");
+        bridge.request(true).unwrap();
+        let current = submit();
+        expired.complete(Arc::new(egui::ColorImage::filled(
+            [1, 1],
+            egui::Color32::RED,
+        )));
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            bridge.update_host(ui.ctx())
+        });
+        assert!(bridge.take().is_none());
+        current.complete(Arc::new(egui::ColorImage::filled(
+            [1, 1],
+            egui::Color32::GREEN,
+        )));
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            bridge.update_host(ui.ctx())
+        });
+        assert_eq!(bridge.take().unwrap().unwrap().rgba, [0, 255, 0, 255]);
     }
 }

@@ -67,7 +67,9 @@ pub(super) fn transformed(
         )?;
         anyhow::ensure!(
             data[..6]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .any(|bytes| half::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32() != 0.5),
             "constant normal becomes zero at float16 precision"
         );
@@ -178,7 +180,7 @@ fn rgba8_transformed(
         }
     }
     let mut data = Vec::with_capacity(count.checked_mul(8)?);
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         for channel in 0..4 {
             data.extend_from_slice(&table[channel][pixel[channel] as usize]);
         }

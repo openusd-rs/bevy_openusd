@@ -229,7 +229,9 @@ fn rgba8_alpha(color: Option<&Image>, alpha: &[u8]) -> Option<Vec<u8>> {
     });
     Some(
         pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .zip(alpha)
             .flat_map(|(pixel, &alpha)| {
                 [
@@ -339,7 +341,9 @@ fn rgba8_plane(
         *output = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     }
     Ok(Some(
-        data.chunks_exact(4)
+        data.as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| table[pixel[channel] as usize])
             .collect(),
     ))
@@ -542,15 +546,20 @@ fn packed_pixels_match(
     planes: &(Option<Plane>, Option<Plane>, Option<Plane>),
 ) -> bool {
     data.len() == count * 4
-        && data.chunks_exact(4).enumerate().all(|(i, pixel)| {
-            pixel
-                == [
-                    planes.2.as_ref().map_or(255, |p| p.values[i]),
-                    planes.0.as_ref().map_or(255, |p| p.values[i]),
-                    planes.1.as_ref().map_or(255, |p| p.values[i]),
-                    255,
-                ]
-        })
+        && data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .all(|(i, pixel)| {
+                *pixel
+                    == [
+                        planes.2.as_ref().map_or(255, |p| p.values[i]),
+                        planes.0.as_ref().map_or(255, |p| p.values[i]),
+                        planes.1.as_ref().map_or(255, |p| p.values[i]),
+                        255,
+                    ]
+            })
 }
 
 #[cfg(test)]

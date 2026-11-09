@@ -1209,7 +1209,9 @@ pub fn read_extents_hint(
         return Ok(None);
     };
     let boxes = values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .filter(|pair| (0..3).all(|axis| pair[0][axis] <= pair[1][axis]));
     Ok(Some(boxes.fold(
         None,

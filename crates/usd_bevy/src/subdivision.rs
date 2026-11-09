@@ -404,7 +404,9 @@ fn omit_faces(mut mesh: ReadMesh, keep: &[bool]) -> ReadMesh {
         .collect();
     mesh.face_vertex_indices = mesh
         .face_vertex_indices
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .zip(keep)
         .filter(|(_, keep)| **keep)
         .flat_map(|(face, _)| face.iter().copied())
@@ -1059,7 +1061,7 @@ mod tests {
                         mesh.orientation = crate::read::geom::Orientation::LeftHanded;
                     }
                     let expected = if left { -DVec3::Y } else { DVec3::Y };
-                    for face in mesh.face_vertex_indices.chunks_exact(3) {
+                    for face in mesh.face_vertex_indices.as_chunks::<3>().0 {
                         let p = |i: usize| {
                             DVec3::from_array(mesh.points[face[i] as usize].map(f64::from))
                         };
@@ -1142,7 +1144,7 @@ mod tests {
         let mut rules = crate::read::subdivision::read_subdivision_at(&stage, &path, None).unwrap();
         let smooth = refine_mesh(&mesh, &rules, 1).unwrap();
         let mut edges = BTreeSet::new();
-        for face in mesh.face_vertex_indices.chunks_exact(4) {
+        for face in mesh.face_vertex_indices.as_chunks::<4>().0 {
             for i in 0..4 {
                 edges.insert(edge_key(face[i] as usize, face[(i + 1) % 4] as usize));
             }
@@ -1157,7 +1159,9 @@ mod tests {
         assert_eq!(normals.values.len(), hard.face_vertex_indices.len());
         for (face, normals) in hard
             .face_vertex_indices
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .zip(normals.values.chunks_exact(4))
         {
             let p = |i: usize| DVec3::from_array(hard.points[face[i] as usize].map(f64::from));
@@ -1271,7 +1275,9 @@ mod tests {
         rules.crease_sharpnesses = vec![0.25, 0.75];
         let faces = mesh
             .face_vertex_indices
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|face| face.iter().map(|&i| i as usize).collect())
             .collect::<Vec<_>>();
         let edges = Sharpness::read(Some(&rules), &faces).unwrap().edges;

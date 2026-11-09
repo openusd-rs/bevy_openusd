@@ -1676,7 +1676,7 @@ def SkelRoot "Root"
             .unwrap();
         assert_eq!(read.face_vertex_counts, vec![4; 14]);
         let mut edges = std::collections::BTreeMap::<(i32, i32), Vec<(i32, i32)>>::new();
-        for face in read.face_vertex_indices.chunks_exact(4) {
+        for face in read.face_vertex_indices.as_chunks::<4>().0 {
             let points: Vec<_> = face
                 .iter()
                 .map(|&i| Vec3::from_array(read.points[i as usize]))
@@ -1706,7 +1706,9 @@ def SkelRoot "Root"
             };
             let triangles: Vec<_> = mesh.indices().unwrap().iter().collect();
             let volume = triangles
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|triangle| {
                     let a = Vec3::from_array(positions[triangle[0]]);
                     let b = Vec3::from_array(positions[triangle[1]]);

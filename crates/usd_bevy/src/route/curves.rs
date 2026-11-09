@@ -782,7 +782,7 @@ fn ribbons(
         values.iter().flat_map(|value| [*value, *value]).collect()
     }
     let mut tangents = vec![Vec3::ZERO; points.len()];
-    for pair in segments.chunks_exact(2) {
+    for pair in segments.as_chunks::<2>().0 {
         let (a, b) = (pair[0] as usize, pair[1] as usize);
         let direction = (Vec3::from(points[b]) - Vec3::from(points[a])).normalize_or_zero();
         tangents[a] += direction;
@@ -804,7 +804,7 @@ fn ribbons(
     // One strip per run of joined segments, restarted between curves.
     let mut strip = Vec::with_capacity(segments.len() * 2 + 4);
     let mut last = None;
-    for pair in segments.chunks_exact(2) {
+    for pair in segments.as_chunks::<2>().0 {
         if last != Some(pair[0]) {
             if last.is_some() {
                 strip.push(u32::MAX);

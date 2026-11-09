@@ -267,12 +267,16 @@ impl MeshFaceIndices {
 fn select_flat_indices(read: &ReadMesh, triangles: &[u32], subset: Option<&[i32]>) -> Vec<u32> {
     let selected = subset.map(|faces| {
         flat_corner_indices(read, Some(faces))
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|triangle| [triangle[0], triangle[1], triangle[2]])
             .collect::<std::collections::HashSet<_>>()
     });
     triangles
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .enumerate()
         .filter(|(_, triangle)| {
             selected
@@ -585,7 +589,7 @@ pub(crate) fn compute_point_smooth_normals(read: &ReadMesh) -> Vec<[f32; 3]> {
         &read.face_vertex_indices,
         None,
     );
-    for triangle in triangles.chunks_exact(3) {
+    for triangle in triangles.as_chunks::<3>().0 {
         let indices = [
             triangle[0] as usize,
             triangle[1] as usize,
@@ -658,7 +662,7 @@ pub(crate) fn crease_corner_normals(
         offset += count;
     }
     let mut sums = vec![DVec3::ZERO; points.len()];
-    for triangle in flat_corner_indices(read, None).chunks_exact(3) {
+    for triangle in flat_corner_indices(read, None).as_chunks::<3>().0 {
         let corners = [
             triangle[0] as usize,
             triangle[1] as usize,
@@ -703,7 +707,7 @@ fn build_flat(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
     let mut output_normals = Vec::with_capacity(triangles.len());
     let mut output_uvs = Vec::with_capacity(triangles.len());
     let mut output_colors = colors.as_ref().map(|_| Vec::with_capacity(triangles.len()));
-    for triangle in triangles.chunks_exact(3) {
+    for triangle in triangles.as_chunks::<3>().0 {
         let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
         let point = |index: u32| Vec3::from_array(positions[index as usize]).as_dvec3();
         let normal = (point(b) - point(a))
@@ -1758,7 +1762,12 @@ def Mesh "M" {
                 for (vertex, &point) in mapping.iter().enumerate() {
                     assert_eq!(positions[vertex], read.points[point]);
                 }
-                for (triangle, ns) in positions.chunks_exact(3).zip(normals.chunks_exact(3)) {
+                for (triangle, ns) in positions
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .zip(normals.chunks_exact(3))
+                {
                     let normal = (Vec3::from_array(triangle[1]) - Vec3::from_array(triangle[0]))
                         .cross(Vec3::from_array(triangle[2]) - Vec3::from_array(triangle[0]))
                         .normalize();

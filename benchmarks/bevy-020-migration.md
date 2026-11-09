@@ -385,6 +385,10 @@ all-feature Clippy gate as `harden`, retaining `-D warnings`. The current baseli
 reports 68 library errors and 108 library-test errors (including overlapping
 diagnostics), not a passing lint gate. Evidence:
 `/tmp/bevy-020-openusd-clippy.jsonl` and `/tmp/bevy-020-openusd-clippy.log`.
-Fixed-size chunk iteration is being updated first in a separate change; its
-workspace check passes and its library test rerun is still in progress in
-`/tmp/bevy-020-chunks-verify-rerun.log`. No lint rules have been suppressed.
+The first focused cleanup converts fixed-size chunk iteration to array slices,
+preserving the existing handling of incomplete trailing chunks. Its workspace
+check, 661 no-default tests, 669 all-feature tests and doctests pass in
+`/tmp/bevy-020-chunks-verify-rerun.log`. Array references require an explicit
+dereference in the packed-pixel equality check; compilation caught that detail
+before this verification rerun. The strict lint gate still needs another run
+and further cleanup. No lint rules have been suppressed.

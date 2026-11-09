@@ -231,7 +231,7 @@ fn build(ctx: &RouteCtx, steps: usize, sides: usize) -> Result<Option<Mesh>, Str
         }
     }
     let mut sums = vec![DVec3::ZERO; positions.len()];
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         let p: [DVec3; 3] = std::array::from_fn(|i| {
             DVec3::from_array(positions[triangle[i] as usize].map(f64::from))
         });
@@ -400,7 +400,7 @@ mod tests {
         let mut edges = std::collections::HashMap::<(usize, usize), (usize, i32)>::new();
         let indices = mesh.indices().unwrap().iter().collect::<Vec<_>>();
         assert_eq!(indices.len(), 2 * 32 * 12 * 6);
-        for triangle in indices.chunks_exact(3) {
+        for triangle in indices.as_chunks::<3>().0 {
             assert!(
                 triangle
                     .iter()
@@ -465,7 +465,7 @@ mod tests {
         };
         let mut edges = std::collections::HashMap::<(usize, usize), (usize, i32)>::new();
         let indices = mesh.indices().unwrap().iter().collect::<Vec<_>>();
-        for triangle in indices.chunks_exact(3) {
+        for triangle in indices.as_chunks::<3>().0 {
             let [a, b, c] =
                 std::array::from_fn::<_, 3, _>(|i| Vec3::from_array(points[triangle[i]]));
             let face = (b - a).cross(c - a);
@@ -568,14 +568,14 @@ mod tests {
             let mesh = build(&ctx, 8, 12).unwrap().unwrap();
             let points = positions(&mesh);
             assert_eq!(points.len(), 24);
-            for (ring, radius) in points.chunks_exact(12).zip(radii) {
+            for (ring, radius) in points.as_chunks::<12>().0.iter().zip(radii) {
                 let center = ring.iter().map(|p| Vec3::from_array(*p)).sum::<Vec3>() / 12.;
                 for point in ring {
                     assert!((Vec3::from_array(*point).distance(center) - radius).abs() < 1e-6);
                 }
             }
             let indices = mesh.indices().unwrap().iter().collect::<Vec<_>>();
-            for triangle in indices.chunks_exact(3) {
+            for triangle in indices.as_chunks::<3>().0 {
                 let [a, b, c] =
                     std::array::from_fn::<_, 3, _>(|i| Vec3::from_array(points[triangle[i]]));
                 let radial = Vec3::new(
@@ -591,7 +591,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(positions(&mesh).len(), 18);
-        for pair in positions(&mesh).chunks_exact(2) {
+        for pair in positions(&mesh).as_chunks::<2>().0 {
             assert!(
                 (Vec3::from_array(pair[0]).distance(Vec3::from_array(pair[1])) - 0.2).abs() < 1e-6
             );

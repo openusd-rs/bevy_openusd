@@ -1917,7 +1917,7 @@ def Scope "Proto" {}
                 .map(|point| Vec3::from_array(*point))
                 .sum::<Vec3>()
                 / mesh.points.len() as f32;
-            for triangle in mesh.face_vertex_indices.chunks_exact(3) {
+            for triangle in mesh.face_vertex_indices.as_chunks::<3>().0 {
                 let a = Vec3::from_array(mesh.points[triangle[0] as usize]);
                 let b = Vec3::from_array(mesh.points[triangle[1] as usize]);
                 let c = Vec3::from_array(mesh.points[triangle[2] as usize]);

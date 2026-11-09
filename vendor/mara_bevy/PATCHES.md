@@ -10,5 +10,11 @@ already used but the 0.20 draft does not include. Frame rendering time counts
 against the interval instead of being added to the next repaint delay.
 The fix's regression test uses egui 0.37's repaint-delay API.
 
+The ignored GPU smoke tests install a camera and nonzero clear color explicitly;
+the default bridge creates only a target, so its readback is correctly empty.
+They require a working adapter, cover RGBA row padding and resize, and exercise
+switching from direct GPU textures to CPU readback. They no longer report a
+renderer failure as a successful skipped test. Run `oslo make test-host-gpu`.
+
 Remove this override when an upstream revision contains both the Bevy 0.20 port
 and the pacing fix, after the embedded viewport and host-capture tests pass.

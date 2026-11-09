@@ -194,6 +194,14 @@ make.recipe{ name = "test-host", desc = "test the patched Mara Bevy host",
              run = function() sh.cargo("test", "-p", "mara_bevy", "--lib") end }
 
 make.recipe{
+  name = "test-host-gpu",
+  desc = "exercise the Mara host's GPU texture and RGBA readbacks",
+  run = function()
+    sh.sh("-c", [[WGPU_VALIDATION=1 WGPU_DEBUG=1 cargo test -p mara_bevy --lib headless_renderer_produces_ -- --ignored --test-threads=1 --nocapture]])
+  end,
+}
+
+make.recipe{
   name = "test-capture-tools",
   desc = "test capture preflight, process cleanup and log failure detection",
   run = function()

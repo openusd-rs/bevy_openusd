@@ -129,6 +129,14 @@ fn save_readback(image: &Image, output: &Path, timing: &str) -> Result<(), Strin
     rgba.save(output).map_err(|error| error.to_string())
 }
 
+type CaptureCamera = (
+    &'static Camera,
+    &'static RenderTarget,
+    &'static GlobalTransform,
+    Option<&'static bevy::light::EnvironmentMapLight>,
+    Option<&'static usd_bevy::route::dome_environment::UsdDomeEnvironmentState>,
+);
+
 pub fn configure(app: &mut App) {
     let Some(CaptureConfig {
         output,
@@ -142,8 +150,7 @@ pub fn configure(app: &mut App) {
         app.insert_resource(usd_bevy::route::StageTime { current });
     }
     let started = std::time::Instant::now();
-    app.add_systems(Last, move |mut commands: Commands, cameras: Query<(&Camera, &RenderTarget, &GlobalTransform,
-        Option<&bevy::light::EnvironmentMapLight>, Option<&usd_bevy::route::dome_environment::UsdDomeEnvironmentState>), With<Camera3d>>,
+    app.add_systems(Last, move |mut commands: Commands, cameras: Query<CaptureCamera, With<Camera3d>>,
         generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
         diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
         session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>,

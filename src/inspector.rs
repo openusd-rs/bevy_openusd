@@ -5,13 +5,16 @@ use mara::ui::mara_core::{pane::PaneBody, pod::Pod, vocab::Id};
 use openusd::{sdf::ListOpType, vt::Value};
 use usd_bevy::editor::{EditorBridge, EditorCommand, EditorEdit, EditorSnapshot};
 
+type AttributeDraft = (String, String, String);
+type DraftContext = (u64, Option<openusd::usd::EditTarget>);
+
 #[derive(Default, Clone)]
 pub struct Drafts(
-    Arc<Mutex<HashMap<String, (String, String, String)>>>,
+    Arc<Mutex<HashMap<String, AttributeDraft>>>,
     Arc<Mutex<HashMap<String, (String, String)>>>,
     Arc<Mutex<HashMap<String, bool>>>,
     crate::payload_editor::PayloadDraft,
-    Arc<Mutex<Option<(u64, Option<openusd::usd::EditTarget>)>>>,
+    Arc<Mutex<Option<DraftContext>>>,
     Arc<Mutex<HashMap<String, openusd::sdf::Reference>>>,
     Arc<Mutex<String>>,
 );

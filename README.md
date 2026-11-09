@@ -1,8 +1,12 @@
 # bevy_openusd
 
-[OpenUSD](https://openusd.org) as a native scene format for [Bevy](https://bevy.org) 0.19.
+[OpenUSD](https://openusd.org) as a native scene format for [Bevy](https://bevy.org) 0.20.
 `usd_bevy` is the library: it loads and composes USD stages, keeps them live, and
 writes edits back with undo/redo and save. `usdview` is the editor built on it.
+
+The local 0.20 migration is in progress; see the
+[migration audit and acceptance gates](benchmarks/bevy-020-migration.md).
+It requires Rust 1.97.1 or newer and is not yet release-verified.
 
 | ![Hummingbird](media/hummingbird.gif) | ![Chameleon](media/chameleon.gif) | ![Cow](media/cow.gif) |
 | --- | --- | --- |
@@ -40,7 +44,7 @@ UDIM tiles. All seven rendered with `cargo run --example gif_frames`.
 
 ```toml
 [dependencies]
-bevy = "0.19"
+bevy = "0.20.1"
 usd_bevy = { git = "https://github.com/openusd-rs/bevy_openusd" }
 
 [patch.crates-io]

@@ -137,7 +137,7 @@ fn cubemap(
                 let direction = face_direction(face, u, v).normalize();
                 let direction = Vec3::new(direction.x, direction.y, -direction.z);
                 let rgb =
-                    sample(&pixels, size.width, size.height, direction) * Vec3::from_array(tint);
+                    sample(pixels, size.width, size.height, direction) * Vec3::from_array(tint);
                 for value in [rgb.x, rgb.y, rgb.z, 1.0] {
                     anyhow::ensure!(
                         value.is_finite() && value <= 65504.0,

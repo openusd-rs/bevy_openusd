@@ -2164,7 +2164,7 @@ def Material "Mat" {
         world.init_resource::<Assets<Image>>();
         let image = world.resource_mut::<Assets<Image>>().add(Image::default());
         let material_path = openusd::sdf::path("/Mat").unwrap();
-        let read = crate::read::shade::read_preview_material(&stage, &material_path)
+        let read = crate::read::shade::read_preview_material(stage, &material_path)
             .unwrap()
             .unwrap();
         let mut textures = crate::asset::SnapshotTextures::default();
@@ -2202,7 +2202,7 @@ def Material "Mat" {
         assert!(material.double_sided);
         assert!(material.cull_mode.is_none());
         crate::authoring::set_attribute(
-            &stage,
+            stage,
             "/Mat/Surface",
             "inputs:metallic",
             "float",
@@ -2237,7 +2237,7 @@ def Material "Mat" {
             0.3
         );
         crate::authoring::set_attribute(
-            &stage,
+            stage,
             "/Group/Proto",
             "points",
             "point3f[]",
@@ -2261,7 +2261,7 @@ def Material "Mat" {
         };
         assert!(positions.iter().any(|position| position[0] == 4.0));
         crate::authoring::set_relationship_targets(
-            &stage,
+            stage,
             "/Group",
             "material:binding",
             &[openusd::sdf::path("/Missing").unwrap()],
@@ -2277,7 +2277,7 @@ def Material "Mat" {
                     .contains("unsupported material surface")
             );
         }
-        crate::authoring::set_relationship_targets(&stage, "/Group", "material:binding", &[])
+        crate::authoring::set_relationship_targets(stage, "/Group", "material:binding", &[])
             .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert!(

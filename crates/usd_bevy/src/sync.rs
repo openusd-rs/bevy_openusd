@@ -354,7 +354,7 @@ fn component_type_segment(
         "component type `{}` has no unambiguous USD type segment",
         names.path()
     );
-    openusd::sdf::path("/Type")?.append_property(&format!("bevy:{qualified}:field"))?;
+    openusd::sdf::path("/Type")?.append_property(format!("bevy:{qualified}:field"))?;
     Ok(qualified)
 }
 

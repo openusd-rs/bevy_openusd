@@ -501,7 +501,7 @@ def Xform "Instance" {}
             layer_offset: LayerOffset::new(10.0, 2.0),
             ..Default::default()
         };
-        set_references(&stage, "/Instance", &[reference.clone()]).unwrap();
+        set_references(&stage, "/Instance", std::slice::from_ref(&reference)).unwrap();
         for (time, value) in [(10.0, 1.0), (20.0, 2.0), (30.0, 3.0)] {
             assert_eq!(
                 stage

@@ -387,7 +387,7 @@ impl AssetLoader for UsdAssetLoader {
             ));
         }
         let source_id = load_context.path().source().clone_owned();
-        let mut source = UsdSource::snapshot(&root.join(path), bytes)?;
+        let mut source = UsdSource::snapshot(root.join(path), bytes)?;
         if !Path::new(source.identifier()).starts_with(&root) {
             return Err(std::io::Error::other("USD root escapes asset source"));
         }
@@ -1109,7 +1109,7 @@ def Xform "Old" {}
             .clone();
         stage
             .create_attribute(
-                openusd::sdf::path(&format!("{path}.xformOp:translate")).unwrap(),
+                openusd::sdf::path(format!("{path}.xformOp:translate")).unwrap(),
                 "double3",
             )
             .unwrap()
@@ -1120,7 +1120,7 @@ def Xform "Old" {}
             .unwrap();
         stage
             .create_attribute(
-                openusd::sdf::path(&format!("{path}.xformOpOrder")).unwrap(),
+                openusd::sdf::path(format!("{path}.xformOpOrder")).unwrap(),
                 "token[]",
             )
             .unwrap()

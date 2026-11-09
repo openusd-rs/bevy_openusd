@@ -1497,7 +1497,7 @@ def BasisCurves "Curve" {
             ("Vertex", [[0.125, 0.75, 0.125], [0.875, 0.75, 0.125]]),
             ("Varying", [[0.5, 0., 0.5]; 2]),
         ] {
-            let path = openusd::sdf::path(&format!("/{name}")).unwrap();
+            let path = openusd::sdf::path(format!("/{name}")).unwrap();
             let (positions, _, colors) =
                 line_geometry(&RouteCtx::new(&stage, &path), CUBIC_STEPS).unwrap();
             let colors = colors.unwrap();
@@ -1776,8 +1776,8 @@ def BasisCurves "Curve" {
         .unwrap();
         let stage = source.open_stage().unwrap();
         for basis in ["Bspline", "CatmullRom"] {
-            let pinned = openusd::sdf::path(&format!("/Pinned{basis}")).unwrap();
-            let explicit = openusd::sdf::path(&format!("/Explicit{basis}")).unwrap();
+            let pinned = openusd::sdf::path(format!("/Pinned{basis}")).unwrap();
+            let explicit = openusd::sdf::path(format!("/Explicit{basis}")).unwrap();
             let actual = line_geometry(&RouteCtx::new(&stage, &pinned), CUBIC_STEPS).unwrap();
             assert_eq!(
                 actual,

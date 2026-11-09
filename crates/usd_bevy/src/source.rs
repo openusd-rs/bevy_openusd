@@ -360,11 +360,11 @@ impl UsdSource {
             if type_name.as_deref() != Some("Material") {
                 continue;
             }
-            let texture_times = crate::read::shade::material_texture_sample_times(stage, &path)
+            let texture_times = crate::read::shade::material_texture_sample_times(stage, path)
                 .map_err(|error| error.to_string())?;
             for time in std::iter::once(None).chain(texture_times.into_iter().map(Some)) {
                 let Some(material) =
-                    crate::read::shade::read_preview_material_at(stage, &path, time)
+                    crate::read::shade::read_preview_material_at(stage, path, time)
                         .map_err(|error| error.to_string())?
                 else {
                     continue;
@@ -3163,7 +3163,7 @@ def Scope "Model" (
         let directory = tempfile::tempdir().unwrap();
         let source = |name: &str, bytes: &[u8]| {
             UsdSource::snapshot(
-                &directory.path().canonicalize().unwrap().join(name),
+                directory.path().canonicalize().unwrap().join(name),
                 bytes.to_vec(),
             )
             .unwrap()
@@ -3238,7 +3238,7 @@ def Scope "Model" (
         let directory = tempfile::tempdir().unwrap();
         let source = |name: &str, bytes: &[u8]| {
             UsdSource::snapshot(
-                &directory.path().canonicalize().unwrap().join(name),
+                directory.path().canonicalize().unwrap().join(name),
                 bytes.to_vec(),
             )
             .unwrap()
@@ -3380,7 +3380,7 @@ def Scope "Model" (
         let looks = "/Root/chameleon_mtl/Looks";
         let name = "ui:nodegraph:realitykit:node:attributesShowingChildren";
         let read = |prim: &str| {
-            let path = openusd::sdf::path(&format!("{looks}/{prim}")).unwrap();
+            let path = openusd::sdf::path(format!("{looks}/{prim}")).unwrap();
             crate::read::util::read_authored(&stage, &path, name).unwrap()
         };
         assert_eq!(

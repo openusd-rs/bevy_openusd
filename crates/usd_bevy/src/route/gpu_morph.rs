@@ -76,7 +76,7 @@ pub(crate) fn prepare(
 ) -> anyhow::Result<Vec<f32>> {
     let authored = read.normals.is_some();
     anyhow::ensure!(
-        crate::mesh::uses_flat_normals(&read) || authored,
+        crate::mesh::uses_flat_normals(read) || authored,
         "GPU morph normal mode is unsupported"
     );
     let sample = crate::read::skel::morph_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
@@ -84,7 +84,7 @@ pub(crate) fn prepare(
         !sample.targets.is_empty() && sample.targets.len() <= MAX_MORPH_WEIGHTS,
         "unsupported morph target count"
     );
-    let mapping = crate::mesh::vertex_point_indices(&read);
+    let mapping = crate::mesh::vertex_point_indices(read);
     anyhow::ensure!(
         !mapping.is_empty() && mapping.len() == mesh.count_vertices(),
         "invalid morph vertex mapping"

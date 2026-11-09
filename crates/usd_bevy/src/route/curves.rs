@@ -491,13 +491,13 @@ fn emit_polyline(cv: &[[f32; 3]], periodic: bool, out: &mut Vec<[f32; 3]>, idx: 
     }
 }
 
+#[cfg(test)]
+type LineGeometry = (Vec<[f32; 3]>, Vec<u32>, Option<Vec<[f32; 4]>>);
+
 /// Positions + line indices for every curve. Linear curves connect vertices
 /// directly; cubic curves are tessellated through their basis.
 #[cfg(test)]
-fn line_geometry(
-    ctx: &RouteCtx,
-    steps: usize,
-) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<[f32; 4]>>)> {
+fn line_geometry(ctx: &RouteCtx, steps: usize) -> Option<LineGeometry> {
     let geometry = centerlines(ctx, steps)?;
     Some((geometry.points, geometry.indices, geometry.colors))
 }

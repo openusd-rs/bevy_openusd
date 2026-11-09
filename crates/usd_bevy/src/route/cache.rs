@@ -28,10 +28,12 @@ fn record_cache(world: &mut World, name: &'static str, value: u64) {
     }
 }
 
+type AssembledMesh = (u64, ReadMesh, Mesh, usize, Option<AssetId<Mesh>>);
+
 /// Bounded geometry-input cache containing immutable assembled meshes.
 #[derive(Resource)]
 pub struct MeshAssemblyCache {
-    entries: std::collections::VecDeque<(u64, ReadMesh, Mesh, usize, Option<AssetId<Mesh>>)>,
+    entries: std::collections::VecDeque<AssembledMesh>,
     payload_bytes: usize,
     byte_budget: usize,
 }

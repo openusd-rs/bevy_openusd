@@ -54,10 +54,12 @@ fn update_skin(world: &mut World, parent: Entity, flat: bool) {
     }
 }
 
+type PreparedSubset = (String, Handle<Mesh>, Handle<StandardMaterial>, Vec<String>);
+
 #[derive(Clone, Default)]
 pub(crate) struct PreparedSubsets {
     remainder: Option<Handle<Mesh>>,
-    parts: Vec<(String, Handle<Mesh>, Handle<StandardMaterial>, Vec<String>)>,
+    parts: Vec<PreparedSubset>,
     warning: Option<String>,
 }
 

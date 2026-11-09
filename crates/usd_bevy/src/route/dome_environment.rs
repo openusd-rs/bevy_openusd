@@ -166,19 +166,18 @@ fn suppress_recorded(mut commands: Commands, recorded: Query<Entity, With<Filter
     }
 }
 
+type PendingEnvironmentFilters = (
+    With<OwnedGenerator>,
+    With<GeneratorBindGroups>,
+    With<RenderEnvironmentMap>,
+    Without<FilteringRecorded>,
+);
+
 fn record_filtering(
     mut commands: Commands,
     cache: Res<PipelineCache>,
     pipelines: Option<Res<GeneratorPipelines>>,
-    generators: Query<
-        (Entity, MainEntity),
-        (
-            With<OwnedGenerator>,
-            With<GeneratorBindGroups>,
-            With<RenderEnvironmentMap>,
-            Without<FilteringRecorded>,
-        ),
-    >,
+    generators: Query<(Entity, MainEntity), PendingEnvironmentFilters>,
     feedback: Res<FilterFeedback>,
 ) {
     let Some(pipelines) = pipelines else { return };

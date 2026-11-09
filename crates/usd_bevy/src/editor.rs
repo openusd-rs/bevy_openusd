@@ -152,29 +152,33 @@ impl Plugin for EditorPlugin {
     }
 }
 
+type RenderingIssues = (
+    Option<&'static crate::route::subdivision::UsdSubdivisionError>,
+    Option<&'static crate::route::skel::UsdDeformationError>,
+    Option<&'static crate::route::instancer::UsdInstancerWarning>,
+    Option<&'static crate::route::shapes::UsdShapeError>,
+    Option<&'static crate::route::curves::UsdCurveError>,
+    Option<&'static crate::route::xform::UsdTransformError>,
+    Option<&'static crate::route::material::UsdMaterialWarning>,
+    Option<&'static crate::route::subset::UsdSubsetWarning>,
+    Option<&'static crate::route::gpu_skin::UsdCpuSkinFallback>,
+);
+
+type GeneratedProjection = (
+    Option<&'static Children>,
+    Option<&'static crate::route::subset::UsdSubset>,
+    Option<&'static crate::route::instancer::UsdPrototypePart>,
+    Has<crate::route::instancer::UsdInstance>,
+    Option<&'static crate::route::instancer::UsdInstanceId>,
+    Option<&'static crate::route::material::UsdMaterialWarning>,
+);
+
 fn publish_projection_issues(
     bridge: Res<EditorBridge>,
     prims: Option<Res<crate::live::PrimEntities>>,
     issues: Query<&crate::route::reflect::UsdReflectIssues>,
-    rendering: Query<(
-        Option<&crate::route::subdivision::UsdSubdivisionError>,
-        Option<&crate::route::skel::UsdDeformationError>,
-        Option<&crate::route::instancer::UsdInstancerWarning>,
-        Option<&crate::route::shapes::UsdShapeError>,
-        Option<&crate::route::curves::UsdCurveError>,
-        Option<&crate::route::xform::UsdTransformError>,
-        Option<&crate::route::material::UsdMaterialWarning>,
-        Option<&crate::route::subset::UsdSubsetWarning>,
-        Option<&crate::route::gpu_skin::UsdCpuSkinFallback>,
-    )>,
-    generated: Query<(
-        Option<&Children>,
-        Option<&crate::route::subset::UsdSubset>,
-        Option<&crate::route::instancer::UsdPrototypePart>,
-        Has<crate::route::instancer::UsdInstance>,
-        Option<&crate::route::instancer::UsdInstanceId>,
-        Option<&crate::route::material::UsdMaterialWarning>,
-    )>,
+    rendering: Query<RenderingIssues>,
+    generated: Query<GeneratedProjection>,
 ) {
     let Ok(mut state) = bridge.0.lock() else {
         return;

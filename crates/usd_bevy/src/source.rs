@@ -19,12 +19,14 @@ pub(crate) type DiskBaselines = Arc<EditorDisk>;
 /// Reads one dependency by identifier, or `None` when it cannot be read.
 pub(crate) type Fetch = Arc<dyn Fn(&str) -> Option<Arc<[u8]>> + Send + Sync>;
 
+type FetchedDependencies = BTreeMap<String, Option<Arc<[u8]>>>;
+
 /// Reads missing dependencies while a probe composes, so one composition
 /// discovers every file, and keeps what it read for the source.
 #[derive(Clone)]
 pub(crate) struct Fetcher {
     read: Fetch,
-    fetched: Arc<Mutex<BTreeMap<String, Option<Arc<[u8]>>>>>,
+    fetched: Arc<Mutex<FetchedDependencies>>,
 }
 
 impl std::fmt::Debug for Fetcher {
@@ -69,7 +71,7 @@ impl Fetcher {
     }
 
     /// Everything read so far, `None` for reads that failed.
-    pub(crate) fn take(&self) -> BTreeMap<String, Option<Arc<[u8]>>> {
+    pub(crate) fn take(&self) -> FetchedDependencies {
         std::mem::take(&mut *self.fetched.lock().expect("fetched dependencies"))
     }
 }
@@ -121,6 +123,8 @@ impl<'a> IntoIterator for &'a TextureRequests {
     }
 }
 
+type DefaultTextureRequests = (u64, Arc<TextureRequests>);
+
 /// An immutable root-layer snapshot anchored at its source filename.
 #[derive(Clone, Debug)]
 pub struct UsdSource {
@@ -131,7 +135,7 @@ pub struct UsdSource {
     absent: Arc<BTreeSet<String>>,
     filesystem: bool,
     validated_default: Arc<Mutex<Option<u64>>>,
-    default_textures: Arc<Mutex<Option<(u64, Arc<TextureRequests>)>>>,
+    default_textures: Arc<Mutex<Option<DefaultTextureRequests>>>,
     /// Reads files the snapshot lacks when a stage asks for them.
     fetch: Option<Fetcher>,
 }

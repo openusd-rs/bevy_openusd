@@ -12,9 +12,11 @@ struct Plane {
     values: Vec<u8>,
 }
 
+type PackedPlanes = (Option<Plane>, Option<Plane>, Option<Plane>);
+
 #[derive(Resource, Default)]
 pub(crate) struct PackedTextures {
-    images: std::collections::HashMap<(Option<Plane>, Option<Plane>, Option<Plane>), Handle<Image>>,
+    images: std::collections::HashMap<PackedPlanes, Handle<Image>>,
     bytes: usize,
 }
 
@@ -539,11 +541,7 @@ fn pack(
     Ok(Some(handle))
 }
 
-fn packed_pixels_match(
-    data: &[u8],
-    count: usize,
-    planes: &(Option<Plane>, Option<Plane>, Option<Plane>),
-) -> bool {
+fn packed_pixels_match(data: &[u8], count: usize, planes: &PackedPlanes) -> bool {
     data.len() == count * 4
         && data
             .as_chunks::<4>()

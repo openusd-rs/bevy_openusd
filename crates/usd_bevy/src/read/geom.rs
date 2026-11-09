@@ -1247,17 +1247,19 @@ fn vec2f_values(value: Option<Value>) -> Option<Vec<[f32; 2]>> {
     }
 }
 
+type AncestorPrimvars = (Stage, HashMap<(Path, String), bool>);
+
 thread_local! {
     /// Answers of [`authors_primvar`] for ancestors, kept while a
     /// [`PrimvarScope`] is open on this thread.
-    static ANCESTOR_PRIMVARS: std::cell::RefCell<Option<(Stage, HashMap<(Path, String), bool>)>> =
+    static ANCESTOR_PRIMVARS: std::cell::RefCell<Option<AncestorPrimvars>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Shares ancestor primvar lookups between the prims read while it lives, for
 /// a pass that does not edit `stage`.
 pub(crate) struct PrimvarScope {
-    previous: Option<(Stage, HashMap<(Path, String), bool>)>,
+    previous: Option<AncestorPrimvars>,
 }
 
 impl PrimvarScope {

@@ -17,7 +17,7 @@ use bevy::core_pipeline::{Core3d, Core3dSystems};
 use bevy::ecs::{
     query::ROQueryItem,
     system::{
-        SystemParamItem,
+        SystemParam, SystemParamItem,
         lifetimeless::{Read, SRes},
     },
 };
@@ -620,18 +620,30 @@ fn prepare_views(
     queue.write_buffer(cull_views.buffer.as_ref().unwrap(), 0, &bytes);
 }
 
+#[derive(SystemParam)]
+struct InstancingBindResources<'w> {
+    pipeline_cache: Res<'w, PipelineCache>,
+    meshes: Res<'w, RenderAssets<RenderMesh>>,
+    allocator: Res<'w, MeshAllocator>,
+    device: Res<'w, RenderDevice>,
+    queue: Res<'w, RenderQueue>,
+}
+
 fn prepare_bind_groups(
     mut commands: Commands,
     draws: Query<(Entity, &ExtractedDraw, Option<&GpuDraw>)>,
     mut chunks: ResMut<GpuChunks>,
     cull_views: Res<CullViews>,
     pipeline: Option<Res<InstancingPipeline>>,
-    pipeline_cache: Res<PipelineCache>,
-    meshes: Res<RenderAssets<RenderMesh>>,
-    allocator: Res<MeshAllocator>,
-    device: Res<RenderDevice>,
-    queue: Res<RenderQueue>,
+    resources: InstancingBindResources,
 ) {
+    let InstancingBindResources {
+        pipeline_cache,
+        meshes,
+        allocator,
+        device,
+        queue,
+    } = resources;
     let (Some(pipeline), Some(views)) = (pipeline, cull_views.buffer.as_ref()) else {
         return;
     };
@@ -724,17 +736,29 @@ fn prepare_bind_groups(
     }
 }
 
+#[derive(SystemParam)]
+struct InstancingDrawResources<'w> {
+    draw_functions: Res<'w, DrawFunctions<Transparent3d>>,
+    pipeline: Option<Res<'w, InstancingPipeline>>,
+    pipelines: ResMut<'w, SpecializedMeshPipelines<InstancingPipeline>>,
+    pipeline_cache: Res<'w, PipelineCache>,
+    meshes: Res<'w, RenderAssets<RenderMesh>>,
+}
+
 fn queue_draws(
-    draw_functions: Res<DrawFunctions<Transparent3d>>,
-    pipeline: Option<Res<InstancingPipeline>>,
-    mut pipelines: ResMut<SpecializedMeshPipelines<InstancingPipeline>>,
-    pipeline_cache: Res<PipelineCache>,
-    meshes: Res<RenderAssets<RenderMesh>>,
+    resources: InstancingDrawResources,
     draws: Query<&ExtractedDraw, With<GpuDraw>>,
     mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
     view_keys: Res<ViewKeyCache>,
 ) {
+    let InstancingDrawResources {
+        draw_functions,
+        pipeline,
+        mut pipelines,
+        pipeline_cache,
+        meshes,
+    } = resources;
     let Some(pipeline) = pipeline else {
         return;
     };
@@ -786,14 +810,19 @@ fn queue_draws(
 #[derive(Resource, Default)]
 struct QueuedShadows(HashMap<RetainedViewEntity, Vec<MainEntity>>);
 
+#[derive(SystemParam)]
+struct InstancingShadowResources<'w> {
+    draw_functions: Res<'w, DrawFunctions<Shadow>>,
+    pipeline: Option<Res<'w, InstancedShadowPipeline>>,
+    pipelines: ResMut<'w, SpecializedMeshPipelines<InstancedShadowPipeline>>,
+    pipeline_cache: Res<'w, PipelineCache>,
+    meshes: Res<'w, RenderAssets<RenderMesh>>,
+    allocator: Res<'w, MeshAllocator>,
+}
+
 /// Queues the draws each camera sees into its directional shadow cascades.
 fn queue_shadows(
-    draw_functions: Res<DrawFunctions<Shadow>>,
-    pipeline: Option<Res<InstancedShadowPipeline>>,
-    mut pipelines: ResMut<SpecializedMeshPipelines<InstancedShadowPipeline>>,
-    pipeline_cache: Res<PipelineCache>,
-    meshes: Res<RenderAssets<RenderMesh>>,
-    allocator: Res<MeshAllocator>,
+    resources: InstancingShadowResources,
     draws: Query<&ExtractedDraw, With<GpuDraw>>,
     mut phases: ResMut<ViewBinnedRenderPhases<Shadow>>,
     cameras: Query<(&RenderVisibleEntities, &ViewLightEntities)>,
@@ -801,6 +830,14 @@ fn queue_shadows(
     mut queued: ResMut<QueuedShadows>,
     settings: Option<Res<UsdGpuInstancing>>,
 ) {
+    let InstancingShadowResources {
+        draw_functions,
+        pipeline,
+        mut pipelines,
+        pipeline_cache,
+        meshes,
+        allocator,
+    } = resources;
     for (view, entities) in queued.0.drain() {
         if let Some(phase) = phases.get_mut(&view) {
             for entity in entities {

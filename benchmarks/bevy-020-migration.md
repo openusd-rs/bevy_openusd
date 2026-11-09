@@ -361,7 +361,8 @@ The new native UI gate passed with two compositor frames and viewport readback:
 image were inspected: round/oriented strands and the green transmissive medium
 are now visible. Evidence: `/tmp/bevy-020-openusd-native-ui.viewport.png` and
 `/tmp/bevy-020-openusd-native-ui.second.png`. The latest no-default suite passes
-661 tests; its all-feature rerun is still running in
+661 tests; the all-feature suite passes 669 tests, with 20 and 29 explicit skips
+respectively. Doctests also pass. Evidence:
 `/tmp/bevy-020-openusd-material-plugins.log`.
 
 The compact example now marks its authored batch bounds `NoAutoAabb`; otherwise
@@ -369,6 +370,21 @@ Bevy replaces them with prototype-only bounds. Its first new run captured the
 overview but failed the strict log gate on a transient built-in PBR WESL import
 warning: `/tmp/bevy-020-openusd-compact/overview-compact.log`. Bevy classifies
 this as `ShaderImportNotYetAvailable` and retries, but the checker still rejects
-it; it has not been weakened. A second full comparison is running in
-`/tmp/bevy-020-openusd-compact-retry.log`. Do not call this gate accepted until
-the edge views, comparisons, visual inspection and startup warning are resolved.
+it; it has not been weakened. The retry in
+`/tmp/bevy-020-openusd-compact-retry.log` passes both overview captures and their
+comparison (zero changed pixels out of 480,000). The compact edge view restores
+four visible batches and keeps the offscreen batch culled, but its log again
+fails on the startup import warning. The expanded edge capture and comparison
+did not run. This gate remains incomplete until final pipeline readiness,
+both edge views, their comparison and visual inspection are established.
+
+### Strict lint checkpoint
+
+The `lint --format json` recipe exposes the same workspace, all-target and
+all-feature Clippy gate as `harden`, retaining `-D warnings`. The current baseline
+reports 68 library errors and 108 library-test errors (including overlapping
+diagnostics), not a passing lint gate. Evidence:
+`/tmp/bevy-020-openusd-clippy.jsonl` and `/tmp/bevy-020-openusd-clippy.log`.
+Fixed-size chunk iteration is being updated first in a separate change; its
+workspace check passes and its library test rerun is still in progress in
+`/tmp/bevy-020-chunks-verify-rerun.log`. No lint rules have been suppressed.

@@ -768,6 +768,7 @@ fn setup_camera(
     mara_bevy::apply_rig(&chase, &mut transform);
     let mut camera = commands.spawn((
         Camera3d::default(),
+        bevy::pbr::ScreenSpaceTransmission::default(),
         transform,
         AmbientLight {
             color: Color::srgb(0.78, 0.85, 1.0),

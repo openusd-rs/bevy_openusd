@@ -25,17 +25,17 @@ impl<E: MaterialExtension> Default for Cache<E> {
     }
 }
 
-pub(crate) fn configure<E: MaterialExtension>(app: &mut App) -> bool
+pub(crate) fn configure<E: MaterialExtension>(app: &mut App, shaders: impl FnOnce(&mut App))
 where
     <Wrapped<E> as AsBindGroup>::Data: PartialEq + Eq + std::hash::Hash + Clone,
 {
     if app.is_plugin_added::<MaterialPlugin<Wrapped<E>>>() {
-        return false;
+        return;
     }
+    shaders(app);
     app.init_resource::<Cache<E>>();
     app.add_systems(Last, prune_cache::<E>);
     app.add_plugins(MaterialPlugin::<Wrapped<E>>::default());
-    true
 }
 
 fn prune_cache<E: MaterialExtension>(

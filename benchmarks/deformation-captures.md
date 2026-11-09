@@ -109,8 +109,8 @@ Build against an installed OpenUSD SDK, its Python development library and
 compatible TBB headers/library. Set CPPFLAGS, LDFLAGS and LDLIBS for those SDKs:
 
 ```sh
-make --eval='native-sample-build:; @$(CXX) -std=c++17 $(CPPFLAGS) scripts/sample_native_deformation.cpp $(LDFLAGS) $(LDLIBS) -o target/sample-native-deformation' native-sample-build
-USD_NATIVE_DEFORMATION_TOOL="$PWD/target/sample-native-deformation" make test CARGO='cargo --offline' APP_TARGET='-p usd_bevy --lib native_baked_positions_match_combined_skin_and_morph -- --ignored --nocapture'
+oslo make build-native-deformation
+oslo make test-native-deformation
 ```
 
 The ignored integration test directly runs native baking at 0,2.5,5,7.5,10 and

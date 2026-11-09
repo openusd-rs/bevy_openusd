@@ -318,6 +318,7 @@ fn setup(
     };
     let mut camera = commands.spawn((
         Camera3d::default(),
+        bevy::pbr::ScreenSpaceTransmission::default(),
         exposure,
         tonemapping,
         // Media such as water measure the depth behind them from the prepass.

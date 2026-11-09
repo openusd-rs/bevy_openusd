@@ -22,6 +22,6 @@ for mode in forward prepass deferred; do
     capture "morph-$mode" assets/morph_subsets.usda "$mode" 0 2 7 0 1 0
     capture "skel-$mode" assets/skel_morph_subsets.usda "$mode" 0 2 7 0 1 0
 done
-USD_CAPTURE_DOME=1 capture dome assets/dome_directional.usda forward
+USD_CAPTURE_DOME=/Env capture dome assets/dome_directional.usda forward
 bash scripts/check_transparency_order.sh "$output/transparency"
 echo "WESL_RENDER_OK $output (pipeline/readback checks; inspect images separately)"

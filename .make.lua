@@ -22,12 +22,21 @@ local function fresh_display_env(cmd)
   return ([[
 _usd_xdg_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 _usd_wl=""
+case "${USD_WINDOW_BACKEND:-auto}" in
+  auto|wayland|x11) ;;
+  *) echo "USD_WINDOW_BACKEND must be auto, wayland or x11" >&2; exit 2 ;;
+esac
 if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "$_usd_xdg_runtime/$WAYLAND_DISPLAY" ]; then
   _usd_wl="$WAYLAND_DISPLAY"
 elif [ -S "$_usd_xdg_runtime/wayland-0" ]; then
   _usd_wl="wayland-0"
 else
   _usd_wl=$(ls -t "$_usd_xdg_runtime"/wayland-* 2>/dev/null | grep -v '\.lock$' | head -n1 | xargs -r basename)
+fi
+if [ "${USD_WINDOW_BACKEND:-auto}" = x11 ]; then
+  _usd_wl=""
+elif [ "${USD_WINDOW_BACKEND:-auto}" = wayland ] && [ -z "$_usd_wl" ]; then
+  echo "no live Wayland socket" >&2; exit 2
 fi
 if [ -n "$_usd_wl" ]; then
   _usd_backend=wayland
@@ -57,19 +66,36 @@ make.alias("c", "compile")
 make.recipe{
   name = "run",
   desc = "launch usdview (fresh Wayland detection, host graphics on NixOS)",
-  params = { { "--args", desc = "passed through to usdview, e.g. a USD scene path" } },
-  deps = { "build" },
+  params = {
+    { "--args", desc = "passed through to usdview, e.g. a USD scene path" },
+    { "--profile", desc = "debug (default) or release" },
+  },
   run = function(a)
+    local profile = a.profile or "debug"
+    assert(profile == "debug" or profile == "release", "--profile must be debug or release")
+    if profile == "release" then sh.cargo("build", "--release", "--bin", APP)
+    else sh.cargo("build", "--bin", APP) end
     sh.sh("-c", fresh_display_env(([[
-set -- target/debug/%s %s
+set -- target/%s/%s %s
 if [ ! -e /etc/NIXOS ]; then
   set -- nixVulkan "$@"
 fi
-exec env WINIT_UNIX_BACKEND=$_usd_backend "$@"
-]]):format(APP, a.args or "")))
+exec env WGPU_VALIDATION="${USD_WGPU_VALIDATION:-${WGPU_VALIDATION:-0}}" \
+  WGPU_DEBUG="${USD_WGPU_DEBUG:-${WGPU_DEBUG:-0}}" WINIT_UNIX_BACKEND=$_usd_backend "$@"
+]]):format(profile, APP, a.args or "")))
   end,
 }
 make.alias("r", "run")
+
+make.recipe{
+  name = "build-example",
+  desc = "build an example target",
+  params = { { "--name", desc = "example target name" } },
+  run = function(a)
+    assert(type(a.name) == "string" and a.name:match("^[%w_%-]+$"), "provide --name EXAMPLE")
+    sh.cargo("build", "--example", a.name)
+  end,
+}
 
 make.recipe{
   name = "run-example",
@@ -128,6 +154,22 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "build-native-deformation",
+  desc = "build the native OpenUSD point oracle with SDK CPPFLAGS, LDFLAGS and LDLIBS",
+  run = function()
+    sh.sh("-c", [[mkdir -p target && ${CXX:-c++} -std=c++17 ${CPPFLAGS:-} scripts/sample_native_deformation.cpp ${LDFLAGS:-} ${LDLIBS:-} -o target/sample-native-deformation]])
+  end,
+}
+
+make.recipe{
+  name = "test-native-deformation",
+  desc = "compare CPU skinning and morphs with the native OpenUSD oracle",
+  run = function()
+    sh.sh("-c", [[USD_NATIVE_DEFORMATION_TOOL="${USD_NATIVE_DEFORMATION_TOOL:-$PWD/target/sample-native-deformation}" cargo test -p usd_bevy --all-features --lib native_baked_ -- --ignored --nocapture]])
+  end,
+}
+
 make.recipe{ name = "check", desc = "cargo check on the usdview target",
              run = function() sh.cargo("check", "--bin", APP) end }
 make.recipe{ name = "check-all", desc = "cargo check on the full workspace, all targets",
@@ -152,12 +194,56 @@ make.recipe{ name = "test-host", desc = "test the patched Mara Bevy host",
              run = function() sh.cargo("test", "-p", "mara_bevy", "--lib") end }
 
 make.recipe{
+  name = "test-host-gpu",
+  desc = "exercise the Mara host's GPU texture and RGBA readbacks",
+  run = function()
+    sh.sh("-c", [[WGPU_VALIDATION=1 WGPU_DEBUG=1 cargo test -p mara_bevy --lib headless_renderer_produces_ -- --ignored --test-threads=1 --nocapture]])
+  end,
+}
+
+make.recipe{
   name = "test-capture-tools",
   desc = "test capture preflight, process cleanup and log failure detection",
   run = function()
     sh.bash("scripts/check_capture_preflight_tests.sh")
     sh.bash("scripts/check_capture_session.sh")
     sh.bash("scripts/check_viewer_log_tests.sh")
+  end,
+}
+
+make.recipe{
+  name = "test-ui",
+  desc = "capture the native editor in an isolated Weston compositor",
+  params = {
+    { "--asset", desc = "scene path (default: flagship_showcase.usda)" },
+    { "--output", desc = "new PNG path" },
+  },
+  deps = { "build" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW.png")
+    sh.bash("scripts/capture_viewer_ui.sh", a.asset or "assets/flagship_showcase.usda", a.output)
+  end,
+}
+
+make.recipe{
+  name = "build-close-probe",
+  desc = "build the X11 native-window-close probe",
+  run = function()
+    sh.sh("-c", "mkdir -p target && cc -Wall -Wextra -Werror scripts/send_window_close.c -o target/send_window_close $(pkg-config --cflags --libs x11)")
+  end,
+}
+
+make.recipe{
+  name = "test-native-close",
+  desc = "exercise prompt, cancel or discard after an OS close request",
+  params = {
+    { "--output", desc = "new evidence directory" },
+    { "--mode", desc = "prompt (default), cancel or discard" },
+  },
+  deps = { "build", "build-close-probe" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_native_close.sh", a.output, a.mode or "prompt")
   end,
 }
 

@@ -25,10 +25,11 @@ impl MaterialExtension for SheenLobe {
 pub type SheenMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, SheenLobe>;
 
 pub(crate) fn configure(app: &mut App) {
-    if super::wrapped::configure::<SheenLobe>(app) {
+    super::wrapped::configure::<SheenLobe>(app, |app| {
         bevy::asset::embedded_asset!(app, "sheen_material.wesl");
         bevy::asset::embedded_asset!(app, "sheen_functions.wesl");
-    }
+        super::shaders::retain(app, "embedded://usd_bevy/route/sheen_functions.wesl");
+    });
 }
 
 pub(crate) fn clear(world: &mut World, entity: Entity) {

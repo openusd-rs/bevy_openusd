@@ -64,7 +64,7 @@ def Sphere "Prototype" (prepend apiSchemas = ["MaterialBindingAPI"]) {
 }
 
 def DistantLight "Sun" {
-    float inputs:intensity = 1200
+    float inputs:intensity = 1.2
     double3 xformOp:rotateXYZ = (-35,-25,0)
     uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
 }

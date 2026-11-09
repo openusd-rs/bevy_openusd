@@ -1488,52 +1488,69 @@ mod tests {
         app.add_plugins(GroundGridPlugin);
     }
 
+    fn capture_bridge() -> BevyViewportBridge {
+        BevyViewportBridge::with_app_config(BevyViewportTexture::new(96, 64), |app| {
+            app.insert_resource(ClearColor(Color::srgb(0.2, 0.4, 0.6)))
+                .add_systems(
+                    Startup,
+                    (|world: &mut World| {
+                        let target = world.resource::<BevyViewportRenderTarget>().0.clone();
+                        spawn_viewport_camera(world, target);
+                    })
+                    .after(BevyViewportSet::SetupTarget),
+                );
+        })
+    }
+
+    fn capture_frame(bridge: &mut BevyViewportBridge, width: u32, height: u32) -> CapturedBevyFrame {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            if let Some(frame) = bridge.render_frame(width, height, 1.0 / 60.0)
+                && frame.width == width
+                && frame.height == height
+                && frame.rgba.chunks_exact(4).any(|pixel| pixel[3] != 0)
+            {
+                return frame.clone();
+            }
+            assert!(!bridge.renderer_failed(), "native renderer failed");
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        panic!("headless renderer produced no RGBA frame");
+    }
+
     #[test]
     #[ignore = "requires a native wgpu adapter; run manually when validating the embedded viewport"]
     fn headless_renderer_produces_rgba_frame() {
-        let mut bridge = BevyViewportBridge::new(BevyViewportTexture::new(96, 64));
-        let mut captured = None;
-        for _ in 0..120 {
-            if let Some(frame) = bridge.render_frame(96, 64, 1.0 / 60.0)
-                && (frame.rgba.chunks_exact(4).any(|pixel| pixel[3] != 0)
-                    || frame.rgba.iter().any(|&byte| byte != 0))
-            {
-                captured = Some(frame.clone());
-                break;
-            }
-            if bridge.renderer_failed() {
-                eprintln!("skipping embedded renderer smoke test: no native wgpu adapter");
-                return;
-            }
+        let mut bridge = capture_bridge();
+        for (width, height) in [(96, 64), (37, 19)] {
+            let frame = capture_frame(&mut bridge, width, height);
+            assert_eq!(frame.rgba.len(), (width * height * 4) as usize);
+            assert!(frame.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
+            assert!(frame.rgba.chunks_exact(4).all(|pixel| pixel[0] > 0));
         }
-
-        let frame = captured.expect("headless renderer produced a frame");
-        assert_eq!(frame.width, 96);
-        assert_eq!(frame.height, 64);
-        assert_eq!(frame.rgba.len(), 96 * 64 * 4);
-        assert!(frame.rgba.iter().any(|&byte| byte != 0));
     }
 
     #[test]
     #[ignore = "requires a native wgpu adapter; run manually when validating the embedded viewport"]
     fn headless_renderer_produces_gpu_texture() {
-        let mut bridge = BevyViewportBridge::new(BevyViewportTexture::new(96, 64));
+        let mut bridge = capture_bridge();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut captured = None;
-        for _ in 0..120 {
+        while std::time::Instant::now() < deadline {
             if let Some(texture) =
                 bridge.render_texture_with_input(96, 64, 1.0 / 60.0, BevyViewportInput::default())
             {
                 captured = Some(texture);
                 break;
             }
-            if bridge.renderer_failed() {
-                eprintln!("skipping embedded renderer smoke test: no native wgpu adapter");
-                return;
-            }
+            assert!(!bridge.renderer_failed(), "native renderer failed");
+            std::thread::sleep(std::time::Duration::from_millis(4));
         }
 
         let texture = captured.expect("headless renderer produced a GPU texture");
         assert_eq!(texture.width, 96);
         assert_eq!(texture.height, 64);
+        let frame = capture_frame(&mut bridge, 96, 64);
+        assert!(frame.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
     }
 }

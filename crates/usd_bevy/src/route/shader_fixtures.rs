@@ -31,6 +31,13 @@ fn render_fixture_selects_custom_materials_and_gpu_instancing() {
     crate::live::project_stage(world, &live, &mut entities);
     assert_eq!(
         world
+            .get::<DirectionalLight>(entities.entity("/Sun").unwrap())
+            .unwrap()
+            .illuminance,
+        12_000.0
+    );
+    assert_eq!(
+        world
             .query::<&super::gpu_instancing::UsdInstancedDraw>()
             .iter(world)
             .count(),

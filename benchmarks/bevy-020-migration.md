@@ -2,8 +2,8 @@
 
 ## Status and boundaries
 
-Work is local and unverified until the gates below pass. Do not push, merge, or
-release this migration without the user's approval. The library is used by
+Work is local and unverified until the gates below pass. Do not push, merge remote
+PRs, or release this migration without the user's approval. The library is used by
 downstream applications; compiling the editor alone is not acceptance.
 
 Preserve Dave Lee's (`dave-gray101`) original PR commit and author identity in the eventual
@@ -12,11 +12,13 @@ than squashed into a commit attributed to someone else. Keep our follow-up
 fixes separate. No public branch or PR has been changed.
 
 The original commit was fetched locally as `contributor/feat-bevy-0.20`:
-`5cbdee3f4c49912b153d03b6f8f07e51e1605512`. The contributor commit is not yet an
-ancestor of `develop`. Arrange the final integration history to retain it before
-any push. The user requests small, focused local commits throughout the work,
-not one giant final commit. Our independent fixes are being committed separately;
-the contributor-derived migration remains in the worktree pending integration.
+`5cbdee3f4c49912b153d03b6f8f07e51e1605512`. Local merge `cc9c80e` now retains that
+exact commit as a parent; `git merge-base --is-ancestor` confirms its ancestry on
+`develop`. The original author identity and contribution are unchanged. The user
+requests small, focused local commits throughout the work, not one giant final
+commit. Our fixes, dependency pins, regression tests and tooling are separate
+commits. The upstream commit's existing sign-off is untouched; our commits are
+unsigned, title-only conventional commits without trailers.
 
 Starting point: `develop` at `5b3ebbc`, Bevy 0.19.1, OpenUSD revision
 `d10fa4c2838e1e18a5c4fb4aa47534f94fde8995`.
@@ -161,8 +163,83 @@ and runs the offscreen capture with native graphics on NixOS.
   failed-handshake protection and viewer-log rejection checks pass.
   Log: `/tmp/bevy-020-capture-tools.log`. Local commit: `7c21328`.
 - The tested Rust toolchain pin is a separate local commit: `2e9a4ab`.
+- The local contributor merge preserves newer `develop` code and its OpenUSD
+  revision. It also includes the PR's portable filesystem-path tests that were
+  initially excluded from patch application. The conflict for the already-removed
+  package entry-budget test remains resolved as on newer `develop`; no current
+  assertion was removed. The restored portability edits require rerunning tests.
+  Separate follow-ups rebase the patched asset package (`1116902`), retain the
+  Mara host pacing fix (`e6a8b2d`) and pin the dependency graph (`4aaef99`).
+- `test-assets` passed: 110 passed, 0 failed, 1 ignored. Log:
+  `/tmp/bevy-020-assets.log`. Library-specific source ordering tests are also
+  required; this vendored suite alone is not the full ordering regression gate.
+- The first real Vulkan run on the RTX 4080 failed the capture gate: helper WESL
+  modules were embedded but never loaded, and a material shader request could
+  start before its asset registration. Evidence:
+  `/tmp/bevy-020-render-20261109/materials-forward.log`. The repair registers
+  assets before installing material plugins and retains helper shader handles
+  once per app without leaking them. Headless use without shader assets remains
+  supported. New tests cover registration ordering, duplicate setup and retained
+  library loading; GPU revalidation is pending in the `-libraries` evidence run.
+- The wasm32 check now passes without warnings after native polling is excluded
+  from wasm compilation (`0bbb684`): `/tmp/bevy-020-web-check-clean.log`.
+- The browser bundle initially failed before compilation because Trunk parses
+  `NO_COLOR` as a boolean, whereas the environment supplied `1`. The make recipes
+  now use `NO_COLOR=true` (`ed3ef2e`); the release bundle is building.
 
-Next: finish the GPU gate, then run `test-library`, `test-assets`, `test-host`,
-`harden`, `test-native`, watcher tests and the browser/interactive gates. Reuse
-the debug-profile environment above for native test/build commands to avoid
-rebuilding the same dependencies. Keep follow-up commits focused and local.
+## Expanded verification checkpoint
+
+- `test-library` passed without default features (651 passed, 20 ignored) and
+  with all features (659 passed, 29 ignored), including WESL registration and
+  helper-retention regressions. Doctests passed. Log: `/tmp/bevy-020-library.log`.
+  These counts precede the latest hierarchy timing-fixture repair.
+- The Vulkan material gate now captures forward, prepass, deferred and OIT,
+  plus instancing and all three skin/morph render paths without shader errors.
+  Evidence: `/tmp/bevy-020-render-20261109-libraries/`. That run stopped at a
+  tooling mistake: the dome selector needs the authored `/Env` path, not `1`.
+  Corrected it and started a fresh full run at `/tmp/bevy-020-render-final/`.
+  The fresh run also uses the corrected light intensity consistently: USD
+  intensity 1.2 projects to 12,000 lux, not the original fixture's 12 million.
+- `harden` found another two-root fixture assuming projection finishes in one
+  update (`hierarchy_prototypes_share_meshes_and_keep_independent_animation`).
+  Like the earlier baseline failure, its fixture now selects an unlimited
+  projection budget; the production budget and assertions are unchanged.
+  Rerun: `/tmp/bevy-020-harden-rerun.log`.
+- The Mara host's ordinary tests passed 9 with 2 ignored. The explicit GPU
+  tests initially had no camera, so the RGBA test correctly received no image.
+  Camera-equipped tests now exercise actual readback, non-aligned rows, resize
+  and GPU-to-CPU switching, and reject renderer failure rather than silently
+  skipping. Both assertions passed, but the process then crashed with an NVIDIA
+  NVVM error while asynchronous pipeline work remained. This is not a passing
+  gate; a pipeline-completion wait is being checked before test teardown.
+- The wasm release bundle passed: `/tmp/bevy-020-web-build.log`. Chromium WebGL2
+  then loaded both HTTP Kitchen and in-memory scenes, orbited and resized without
+  runtime errors. All three screenshots in `/tmp/bevy-020-browser-basic/` were
+  inspected. The adapter is SwiftShader: this establishes software WebGL2
+  behavior, not hardware browser performance or compute/OIT support. The default
+  Chromium run also selected SwiftShader. A fresh profile needed
+  `--password-store=basic` to avoid navigation hanging in this environment.
+
+### Existing OpenUSD package-export blocker
+
+`test-native` passed 13 export checks but failed
+`native_export_repackages_snapshot_archives` before calling native `usdcat`:
+`unsupported layer extension "usda]"`. Log: `/tmp/bevy-020-native.log`.
+The same test in the preserved Bevy 0.19 baseline executable
+`target/debug/deps/usd_bevy-5fc903b8e07189e3` fails identically:
+`/tmp/bevy-019-native-package-baseline.log`. This is a verified existing failure,
+not evidence of a Bevy 0.20 regression, but the native export gate is not green.
+
+The pinned OpenUSD packager splits a package-relative source path without
+removing its closing bracket. Upstream fixes include
+[`cde477f`](https://github.com/mxpv/openusd/commit/cde477f9d1b23de505ea2fabe8664a6cfa416be3)
+and [`a304ba2`](https://github.com/mxpv/openusd/commit/a304ba2100083a3fa719ee7ea02a844c3f1c03fa).
+Even the first fix is 11 commits past our pin, including the large live-layer
+handle API migration. Keep the OpenUSD pin for this Bevy migration rather than
+silently introducing that separate API migration or a packaging workaround.
+Do not suppress the failing test or describe native export as fully accepted.
+
+Next: finish full GPU and native editor checks, Clippy/all-feature tests,
+watchers, the native deformation oracle and image comparisons. Resolve or
+explicitly scope the existing OpenUSD failure before release approval. Keep
+follow-up commits focused and local; no pushes or remote merges.

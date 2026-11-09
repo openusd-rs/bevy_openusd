@@ -1767,7 +1767,7 @@ def Mesh "M" {
                     .as_chunks::<3>()
                     .0
                     .iter()
-                    .zip(normals.chunks_exact(3))
+                    .zip(normals.as_chunks::<3>().0)
                 {
                     let normal = (Vec3::from_array(triangle[1]) - Vec3::from_array(triangle[0]))
                         .cross(Vec3::from_array(triangle[2]) - Vec3::from_array(triangle[0]))

@@ -4206,7 +4206,10 @@ over "Root" {}
         let authored = editor.stage().root_layer().export_to_string().unwrap();
         let before = editor.snapshot().unwrap();
         editor.set_layer_muted(&weak, true).unwrap();
-        assert_eq!(editor.snapshot().unwrap().muted_layers, [weak.clone()]);
+        assert_eq!(
+            editor.snapshot().unwrap().muted_layers.as_slice(),
+            std::slice::from_ref(&weak)
+        );
         assert!(
             !editor
                 .stage()

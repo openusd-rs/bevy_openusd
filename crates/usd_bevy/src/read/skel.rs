@@ -1608,6 +1608,7 @@ def SkelRoot "Root"
                 .unwrap()
                 .unwrap();
             let gpu = gpu_skin_sample(&stage, &path, Some(time)).unwrap();
+            assert_eq!(cpu.len(), count);
             for point in 0..count {
                 let expected: bevy::math::Vec3 = (0..4)
                     .map(|lane| {
@@ -1621,11 +1622,9 @@ def SkelRoot "Root"
             poses.push(cpu);
         }
         assert_ne!(poses[0], poses[2]);
-        for point in 0..count {
-            let midpoint = (bevy::math::Vec3::from(poses[0][point])
-                + bevy::math::Vec3::from(poses[2][point]))
-                * 0.5;
-            assert!(midpoint.distance(poses[1][point].into()) < 1e-5);
+        for ((&start, &end), &middle) in poses[0].iter().zip(&poses[2]).zip(&poses[1]) {
+            let midpoint = (bevy::math::Vec3::from(start) + bevy::math::Vec3::from(end)) * 0.5;
+            assert!(midpoint.distance(middle.into()) < 1e-5);
         }
         assert_eq!(poses[0], poses[3]);
         weights

@@ -2313,7 +2313,7 @@ over "PI" {}
         )
         .unwrap();
         source.insert_dependency(
-            weak.clone().into(),
+            weak.clone(),
             br#"#usda 1.0
 def PointInstancer "PI" {
     point3f[] positions = [(1,0,0), (2,0,0), (3,0,0)]

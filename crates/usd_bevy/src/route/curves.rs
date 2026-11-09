@@ -1503,12 +1503,12 @@ def BasisCurves "Curve" {
             let colors = colors.unwrap();
             assert_eq!(colors.len(), positions.len());
             assert_eq!(colors.len(), 2 * (CUBIC_STEPS + 1));
-            for curve in 0..2 {
+            for (curve, &midpoint) in midpoints.iter().enumerate() {
                 let base = curve * (CUBIC_STEPS + 1);
                 let actual = colors[base + CUBIC_STEPS / 2];
                 assert!(
                     Vec3::new(actual[0], actual[1], actual[2])
-                        .abs_diff_eq(Vec3::from(midpoints[curve]), 1e-6)
+                        .abs_diff_eq(Vec3::from(midpoint), 1e-6)
                 );
                 assert!((actual[3] - 0.6).abs() < 1e-6);
                 assert_eq!(

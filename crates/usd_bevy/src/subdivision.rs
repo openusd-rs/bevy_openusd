@@ -1162,7 +1162,7 @@ mod tests {
             .as_chunks::<4>()
             .0
             .iter()
-            .zip(normals.values.chunks_exact(4))
+            .zip(normals.values.as_chunks::<4>().0)
         {
             let p = |i: usize| DVec3::from_array(hard.points[face[i] as usize].map(f64::from));
             let expected = (p(1) - p(0))
@@ -2097,7 +2097,7 @@ def Material "Material" {}
             .unwrap();
             let values = mesh.interpolate_face_varying_linear(&uv).unwrap();
             assert_eq!(values.len(), mesh.faces.len() * 4);
-            for (face, corners) in mesh.source_faces.iter().zip(values.chunks_exact(4)) {
+            for (face, corners) in mesh.source_faces.iter().zip(values.as_chunks::<4>().0) {
                 let start = if *face == 0 { 0.0 } else { 10.0 };
                 assert!(
                     corners

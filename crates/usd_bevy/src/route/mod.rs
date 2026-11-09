@@ -57,6 +57,7 @@ pub mod reflect;
 pub mod residency;
 #[cfg(test)]
 mod shader_fixtures;
+mod shaders;
 pub mod shapes;
 pub mod sheen_material;
 pub mod skel;

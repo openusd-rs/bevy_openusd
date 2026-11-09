@@ -23,9 +23,9 @@ impl MaterialExtension for DepthMedium {
 pub type MediumMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, DepthMedium>;
 
 pub(crate) fn configure(app: &mut App) {
-    if super::wrapped::configure::<DepthMedium>(app) {
+    super::wrapped::configure::<DepthMedium>(app, |app| {
         bevy::asset::embedded_asset!(app, "medium_material.wesl");
-    }
+    });
 }
 
 pub(crate) fn clear(world: &mut World, entity: Entity) {

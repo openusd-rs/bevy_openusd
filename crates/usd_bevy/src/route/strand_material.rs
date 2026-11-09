@@ -91,11 +91,12 @@ impl MaterialExtension for StrandCoverage {
 pub type StrandMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, StrandCoverage>;
 
 pub(crate) fn configure(app: &mut App) {
-    if super::wrapped::configure::<StrandCoverage>(app) {
+    super::wrapped::configure::<StrandCoverage>(app, |app| {
         bevy::asset::embedded_asset!(app, "strand_material.wesl");
         bevy::asset::embedded_asset!(app, "strand_prepass.wesl");
         bevy::asset::embedded_asset!(app, "strand_functions.wesl");
-    }
+        super::shaders::retain(app, "embedded://usd_bevy/route/strand_functions.wesl");
+    });
 }
 
 pub(crate) fn clear(world: &mut World, entity: Entity) {

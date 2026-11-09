@@ -73,7 +73,7 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
         )
         .open_stage()
         .unwrap();
-        let changes = super::super::layer_changes::LayerChanges::new(&stage);
+        let changes = super::super::layer_changes::LayerChanges::new(&stage).unwrap();
         let mut index = TextureIndex::default();
         let first = index.requests(&stage, &changes).unwrap();
         assert_eq!(
@@ -121,7 +121,7 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
             .unwrap()
             .open_stage()
             .unwrap();
-        let changes = super::super::layer_changes::LayerChanges::new(&stage);
+        let changes = super::super::layer_changes::LayerChanges::new(&stage).unwrap();
         let mut index = TextureIndex::default();
         let before = index.requests(&stage, &changes).unwrap();
         std::fs::write(
@@ -154,7 +154,7 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
         .with_dependency(&weak)
         .unwrap();
         let stage = root.open_stage().unwrap();
-        let changes = super::super::layer_changes::LayerChanges::new(&stage);
+        let changes = super::super::layer_changes::LayerChanges::new(&stage).unwrap();
         let mut index = TextureIndex::default();
         assert_eq!(index.requests(&stage, &changes).unwrap().len(), 1);
         stage.mute_layer(weak.identifier());
@@ -181,7 +181,7 @@ def Xform "Model" (
         )
         .open_stage()
         .unwrap();
-        let changes = super::super::layer_changes::LayerChanges::new(&stage);
+        let changes = super::super::layer_changes::LayerChanges::new(&stage).unwrap();
         let mut index = TextureIndex::default();
         assert!(index.requests(&stage, &changes).unwrap().is_empty());
         crate::authoring::set_variant(&stage, "/Model", "look", "lit").unwrap();
@@ -191,7 +191,8 @@ def Xform "Model" (
         assert_eq!(index.scans, 3);
         let root = stage.root_layer().identifier().to_owned();
         stage
-            .layer_mut(&root)
+            .layer(&root)
+            .unwrap()
             .unwrap()
             .edit(|layer| {
                 openusd::sdf::PrimSpec::new(

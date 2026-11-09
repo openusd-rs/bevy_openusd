@@ -529,7 +529,7 @@ impl UsdSource {
             self.identifier.ends_with(".usda"),
             "snapshot editing requires a .usda root identifier"
         );
-        let mut editor = crate::editor::EditorSession::new(self.open_stage()?);
+        let mut editor = crate::editor::EditorSession::try_new(self.open_stage()?)?;
         editor.edit(crate::editor::EditorEdit::Batch(edits))?;
         Self::validate_composition(editor.stage())?;
         let mut edited = self.clone();
@@ -902,9 +902,10 @@ impl UsdSource {
             if stage.is_layer_muted(&identifier) {
                 continue;
             }
-            let Some(layer) = stage.layer(&identifier) else {
+            let Some(layer) = stage.layer(&identifier)? else {
                 continue;
             };
+            let layer = layer.try_borrow()?;
             let Some(root) = layer.pseudo_root() else {
                 continue;
             };

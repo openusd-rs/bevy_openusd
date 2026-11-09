@@ -30,14 +30,20 @@ pub(super) struct LayerChanges {
 }
 
 impl LayerChanges {
-    pub fn new(stage: &Stage) -> Self {
+    pub fn new(stage: &Stage) -> openusd::Result<Self> {
         let changes = Changes::default();
-        let sink = stage.add_sink(changes.clone());
-        Self {
+        let revisions = Rc::downgrade(&changes.0);
+        let structure = Rc::downgrade(&changes.1);
+        let sink = stage.add_sink(move |stage: &Stage, change: &CommittedChange<'_>| {
+            if let (Some(revisions), Some(structure)) = (revisions.upgrade(), structure.upgrade()) {
+                Changes(revisions, structure).after_commit(stage, change);
+            }
+        })?;
+        Ok(Self {
             stage: stage.clone(),
             sink,
             changes,
-        }
+        })
     }
 
     pub fn revisions(&self) -> BTreeMap<String, u64> {
@@ -52,7 +58,9 @@ impl LayerChanges {
 
 impl Drop for LayerChanges {
     fn drop(&mut self) {
-        self.stage.remove_sink(self.sink);
+        if let Err(error) = self.stage.remove_sink(self.sink) {
+            bevy::log::warn!("failed to detach layer change observer: {error}");
+        }
     }
 }
 
@@ -63,7 +71,7 @@ mod tests {
     #[test]
     fn dropping_tracker_detaches_sink_from_surviving_stage() {
         let stage = Stage::builder().in_memory("tracking.usda").unwrap();
-        let tracker = LayerChanges::new(&stage);
+        let tracker = LayerChanges::new(&stage).unwrap();
         let changes = tracker.changes.clone();
         drop(tracker);
         assert_eq!(Rc::strong_count(&changes.0), 1);

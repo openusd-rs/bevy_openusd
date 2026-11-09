@@ -239,7 +239,12 @@ handle API migration. Keep the OpenUSD pin for this Bevy migration rather than
 silently introducing that separate API migration or a packaging workaround.
 Do not suppress the failing test or describe native export as fully accepted.
 
+The user subsequently authorized bringing in upstream OpenUSD too. Finish the
+running Bevy checkpoint first, then update OpenUSD separately, adapt the new
+layer APIs and rerun persistence, authoring, undo/reload and all affected gates.
+Do not treat the earlier Bevy-only results as verification of the new dependency.
+
 Next: finish full GPU and native editor checks, Clippy/all-feature tests,
-watchers, the native deformation oracle and image comparisons. Resolve or
-explicitly scope the existing OpenUSD failure before release approval. Keep
-follow-up commits focused and local; no pushes or remote merges.
+watchers, the native deformation oracle and image comparisons, then the upstream
+OpenUSD update. Keep follow-up commits focused and local; no pushes or remote
+merges.

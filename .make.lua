@@ -156,9 +156,9 @@ make.recipe{
 
 make.recipe{
   name = "build-native-deformation",
-  desc = "build the native OpenUSD point oracle with SDK CPPFLAGS, LDFLAGS and LDLIBS",
+  desc = "build the native OpenUSD point oracle with its SDK compiler and flags",
   run = function()
-    sh.sh("-c", [[mkdir -p target && ${CXX:-c++} -std=c++17 ${CPPFLAGS:-} scripts/sample_native_deformation.cpp ${LDFLAGS:-} ${LDLIBS:-} -o target/sample-native-deformation]])
+    sh.sh("-c", [[mkdir -p target && ${USD_NATIVE_CXX:-${CXX:-c++}} -std=c++17 -O2 ${CXXFLAGS:-} ${USD_NATIVE_CPPFLAGS:-} ${CPPFLAGS:-} scripts/sample_native_deformation.cpp ${USD_NATIVE_LDFLAGS:-} ${LDFLAGS:-} ${USD_NATIVE_LDLIBS:-} ${LDLIBS:-} -o target/sample-native-deformation]])
   end,
 }
 

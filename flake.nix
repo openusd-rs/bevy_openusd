@@ -97,6 +97,10 @@
           ] ++ bevyLibs;
 
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+          USD_NATIVE_CXX = "${pkgs.stdenv.cc}/bin/c++";
+          USD_NATIVE_CPPFLAGS = "-I${pkgs.openusd}/include -I${pkgs.onetbb.dev}/include -I${pkgs.python3}/include/python${pkgs.python3.pythonVersion}";
+          USD_NATIVE_LDFLAGS = "-L${pkgs.openusd}/lib -Wl,-rpath,${pkgs.openusd}/lib -L${pkgs.onetbb}/lib -Wl,-rpath,${pkgs.onetbb}/lib -L${pkgs.python3}/lib -Wl,-rpath,${pkgs.python3}/lib";
+          USD_NATIVE_LDLIBS = "-lusd_ms -ltbb -lpython${pkgs.python3.pythonVersion}";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath bevyLibs;
           WGPU_VALIDATION = "0";
           WGPU_DEBUG = "0";

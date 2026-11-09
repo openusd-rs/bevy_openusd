@@ -239,10 +239,44 @@ handle API migration. Keep the OpenUSD pin for this Bevy migration rather than
 silently introducing that separate API migration or a packaging workaround.
 Do not suppress the failing test or describe native export as fully accepted.
 
-The user subsequently authorized bringing in upstream OpenUSD too. Finish the
-running Bevy checkpoint first, then update OpenUSD separately, adapt the new
-layer APIs and rerun persistence, authoring, undo/reload and all affected gates.
+The user subsequently required staying current with upstream OpenUSD, including
+its API changes: update upstream rather than retaining the old pin or adding a
+compatibility workaround. Upstream `mxpv/openusd` main was verified at
+`900ea31591348e3fbf416d4661d703aa8700771b` on 2026-11-09; this is now the selected
+revision across all manifests. Adapt the new layer APIs and rerun persistence,
+authoring, undo/reload and all affected gates.
 Do not treat the earlier Bevy-only results as verification of the new dependency.
+
+### Bevy checkpoint before the OpenUSD update
+
+- Full `test-render` passed, including dome selection and OIT order independence:
+  `/tmp/bevy-020-render-final.log`. OIT reversed triangles are RGB-identical;
+  ordinary blending changes 60,552 pixels as the control requires. Forward,
+  prepass, OIT and dome images were inspected. Remaining images still require
+  visual inspection. The native UI capture displays a functioning shared-GPU
+  viewport, but the material fixture's strands are missing there, unlike the
+  offscreen capture; investigate before native rendering acceptance.
+- GPU/CPU blended-joint deformation is RGB-exact at 0, 5 and 10 with shadows and
+  MSAA off and the authored camera: `/tmp/bevy-020-deformation/results.tsv`.
+- Mara GPU tests pass 2/2 with normal asynchronous, pipelined rendering and clean
+  process exit after the render-world pipeline-status wait:
+  `/tmp/bevy-020-host-gpu-status.log`. Earlier direct access to `RenderApp` from
+  the main app failed because pipelined rendering had moved it to its thread.
+- Native UI compositor and viewport readback checks pass, with two compositor
+  captures: `/tmp/bevy-020-native-ui.log` and `/tmp/bevy-020-native-ui.png`.
+- Compact overview is RGB-exact against expanded instances, and offscreen
+  culling works. The edge-view case fails its restored visibility assertion:
+  `/tmp/bevy-020-compact-final/edge-compact.log`. This gate remains incomplete.
+- Workspace no-default tests pass 653 library and 110 editor tests. `harden`
+  then fails strict Clippy with 107 library-test diagnostics, including new
+  Rust chunk-iterator lints and existing structural lints. All-feature workspace
+  tests were not reached: `/tmp/bevy-020-harden-rerun.log`.
+- Native asset watcher tests pass 5/5; editor texture watcher tests fail 2/4
+  (change-tick preservation and retry/recovery): `/tmp/bevy-020-watchers-oracle.log`.
+- The native deformation C++ oracle builds, but its process aborts with
+  `free(): invalid pointer` in all four Rust integration checks:
+  `/tmp/bevy-020-native-deformation.log`. Investigate the SDK/ABI before claiming
+  numerical parity; the separate CPU/GPU image comparisons do not replace it.
 
 Next: finish full GPU and native editor checks, Clippy/all-feature tests,
 watchers, the native deformation oracle and image comparisons, then the upstream

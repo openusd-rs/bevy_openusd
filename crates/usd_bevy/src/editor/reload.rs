@@ -469,7 +469,8 @@ impl TexturePublication {
 
     pub fn install(self, world: &mut World) {
         let mut textures = world
-            .remove_resource::<crate::asset::SnapshotTextures>()
+            .get_resource::<crate::asset::SnapshotTextures>()
+            .cloned()
             .unwrap_or_default();
         textures.0.retain(|key, _| self.requests.contains(key));
         for (key, image) in self.prepared {
@@ -490,7 +491,12 @@ impl TexturePublication {
             world,
             self.requests.into_iter().map(|(path, _)| path).collect(),
         );
-        world.insert_resource(textures);
+        if world
+            .get_resource::<crate::asset::SnapshotTextures>()
+            .is_none_or(|old| old.0 != textures.0)
+        {
+            world.insert_resource(textures);
+        }
         if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
             for path in self.consumers {
                 live.enqueue_resync(&path);
@@ -502,6 +508,74 @@ impl TexturePublication {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_texture_publication_preserves_resource_tick() {
+        fn publish(world: &mut World, image: Option<Image>, reload: bool) {
+            let prepared: PreparedTextures = image
+                .into_iter()
+                .map(|image| (("pixel.png".into(), false), image))
+                .collect();
+            if reload {
+                TexturePublication {
+                    requests: prepared.iter().map(|(key, _)| key.clone()).collect(),
+                    prepared,
+                    consumers: Vec::new(),
+                }
+                .install(world);
+            } else {
+                install_textures(world, prepared).unwrap();
+            }
+        }
+        for reload in [false, true] {
+            let mut world = World::new();
+            world.insert_resource(Assets::<Image>::default());
+            let image = Image::default();
+            publish(&mut world, Some(image.clone()), reload);
+            let original = world.resource::<crate::asset::SnapshotTextures>().0.clone();
+            let tick = world
+                .get_resource_ref::<crate::asset::SnapshotTextures>()
+                .unwrap()
+                .last_changed();
+            world.increment_change_tick();
+            publish(&mut world, Some(image.clone()), reload);
+            assert_eq!(
+                world
+                    .get_resource_ref::<crate::asset::SnapshotTextures>()
+                    .unwrap()
+                    .last_changed(),
+                tick
+            );
+            assert_eq!(
+                world.resource::<crate::asset::SnapshotTextures>().0,
+                original
+            );
+            assert_eq!(world.resource::<Assets<Image>>().len(), 1);
+            let mut changed = image;
+            changed.data.as_mut().unwrap()[0] ^= 1;
+            world.increment_change_tick();
+            publish(&mut world, Some(changed), reload);
+            assert_ne!(
+                world
+                    .get_resource_ref::<crate::asset::SnapshotTextures>()
+                    .unwrap()
+                    .last_changed(),
+                tick
+            );
+            assert_ne!(
+                world.resource::<crate::asset::SnapshotTextures>().0,
+                original
+            );
+            world.increment_change_tick();
+            publish(&mut world, None, reload);
+            assert!(
+                world
+                    .resource::<crate::asset::SnapshotTextures>()
+                    .0
+                    .is_empty()
+            );
+        }
+    }
 
     #[test]
     fn streaming_checks_detect_same_size_changes_and_return_matching_snapshot_hashes() {

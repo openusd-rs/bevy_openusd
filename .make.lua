@@ -156,9 +156,9 @@ make.recipe{
 
 make.recipe{
   name = "build-native-deformation",
-  desc = "build the native OpenUSD point oracle with SDK CPPFLAGS, LDFLAGS and LDLIBS",
+  desc = "build the native OpenUSD point oracle with its SDK compiler and flags",
   run = function()
-    sh.sh("-c", [[mkdir -p target && ${CXX:-c++} -std=c++17 ${CPPFLAGS:-} scripts/sample_native_deformation.cpp ${LDFLAGS:-} ${LDLIBS:-} -o target/sample-native-deformation]])
+    sh.sh("-c", [[mkdir -p target && ${USD_NATIVE_CXX:-${CXX:-c++}} -std=c++17 -O2 ${CXXFLAGS:-} ${USD_NATIVE_CPPFLAGS:-} ${CPPFLAGS:-} scripts/sample_native_deformation.cpp ${USD_NATIVE_LDFLAGS:-} ${LDFLAGS:-} ${USD_NATIVE_LDLIBS:-} ${LDLIBS:-} -o target/sample-native-deformation]])
   end,
 }
 
@@ -298,6 +298,18 @@ make.recipe{
 }
 
 make.recipe{ name = "fmt", desc = "format the workspace crates (not vendor/)", run = function() fmt() end }
+
+make.recipe{
+  name = "lint",
+  desc = "strict Clippy checks for all workspace targets and features",
+  params = { { "--format", desc = "diagnostic format: human (default) or json" } },
+  run = function(a)
+    local format = a.format or "human"
+    assert(format == "human" or format == "json", "--format must be human or json")
+    sh.cargo("clippy", "--workspace", "--all-targets", "--all-features",
+             "--message-format", format, "--", "-D", "warnings")
+  end,
+}
 
 make.recipe{
   name = "harden",

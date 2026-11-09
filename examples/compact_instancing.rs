@@ -5,6 +5,7 @@ use bevy::{
     camera::{
         RenderTarget,
         primitives::{Aabb, MeshAabb},
+        visibility::NoAutoAabb,
     },
     core_pipeline::core_3d::Opaque3d,
     ecs::{
@@ -395,6 +396,7 @@ fn setup(
                     root,
                     RootPose(root),
                     *bounds,
+                    NoAutoAabb,
                     VirtualVertices(vertices_per_point.checked_mul(*count as u32).unwrap()),
                     NoAutomaticBatching,
                 ));

@@ -868,7 +868,8 @@ fn install_textures(world: &mut World, prepared: PreparedTextures) -> anyhow::Re
         prepared.iter().map(|((path, _), _)| path.clone()).collect(),
     );
     let old = world
-        .remove_resource::<crate::asset::SnapshotTextures>()
+        .get_resource::<crate::asset::SnapshotTextures>()
+        .cloned()
         .unwrap_or_default();
     let mut textures = crate::asset::SnapshotTextures::default();
     for (key, image) in prepared {
@@ -888,7 +889,12 @@ fn install_textures(world: &mut World, prepared: PreparedTextures) -> anyhow::Re
             .0
             .insert(key, reused.unwrap_or_else(|| assets.add(image)));
     }
-    world.insert_resource(textures);
+    if world
+        .get_resource::<crate::asset::SnapshotTextures>()
+        .is_none_or(|old| old.0 != textures.0)
+    {
+        world.insert_resource(textures);
+    }
     Ok(())
 }
 

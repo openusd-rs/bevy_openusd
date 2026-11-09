@@ -21,6 +21,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_projection_plugin_installs_all_custom_materials() {
+        use super::super::{
+            flat_material::FlatMaterial, medium_material::MediumMaterial,
+            sheen_material::SheenMaterial, strand_material::StrandMaterial,
+        };
+        use bevy::pbr::{MaterialPlugin, PbrPlugin};
+        for entry in 0..3 {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+            app.init_asset::<Shader>()
+                .init_asset_loader::<bevy::shader::ShaderLoader>()
+                .init_asset::<Image>()
+                .init_asset::<Mesh>();
+            app.add_plugins(PbrPlugin::default());
+            match entry {
+                0 => {
+                    app.add_plugins(crate::UsdPlugin);
+                }
+                1 => {
+                    app.add_plugins(crate::live::LiveStagePlugin);
+                }
+                _ => {
+                    app.add_plugins(crate::UsdAssetPlugin);
+                }
+            }
+            assert!(app.is_plugin_added::<MaterialPlugin<FlatMaterial>>());
+            assert!(app.is_plugin_added::<MaterialPlugin<StrandMaterial>>());
+            assert!(app.is_plugin_added::<MaterialPlugin<MediumMaterial>>());
+            assert!(app.is_plugin_added::<MaterialPlugin<SheenMaterial>>());
+            super::super::configure_materials(&mut app);
+            let libraries = &app.world().resource::<Libraries>().0;
+            assert_eq!(libraries.len(), 3);
+            for name in ["flat_functions", "strand_functions", "sheen_functions"] {
+                assert!(
+                    libraries
+                        .keys()
+                        .any(|path| path.ends_with(&format!("/{name}.wesl")))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn shader_registration_precedes_material_plugin_and_runs_once() {
         use super::super::{
             flat_material::{FlatMaterial, FlatNormals},

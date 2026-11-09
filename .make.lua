@@ -2,11 +2,11 @@
 --
 --   make            the recipes, with what each of them says it does
 --   make build      the usdview binary
---   make run        usdview, through nixVulkan
+--   make run        usdview, with host graphics on NixOS or nixVulkan elsewhere
 --   make test       the usdview tests
 --
 -- At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
--- The toolchain and the `nixVulkan` wrapper come from `.env.lua`'s dev shell.
+-- The toolchain and the non-NixOS `nixVulkan` wrapper come from `.env.lua`'s dev shell.
 
 local make = oslo.make
 
@@ -56,15 +56,41 @@ make.alias("c", "compile")
 
 make.recipe{
   name = "run",
-  desc = "launch usdview (fresh Wayland detection, nixVulkan wrapper)",
+  desc = "launch usdview (fresh Wayland detection, host graphics on NixOS)",
   params = { { "--args", desc = "passed through to usdview, e.g. a USD scene path" } },
   deps = { "build" },
   run = function(a)
-    sh.sh("-c", fresh_display_env(
-      ("env WINIT_UNIX_BACKEND=$_usd_backend nixVulkan target/debug/%s %s"):format(APP, a.args or "")))
+    sh.sh("-c", fresh_display_env(([[
+set -- target/debug/%s %s
+if [ ! -e /etc/NIXOS ]; then
+  set -- nixVulkan "$@"
+fi
+exec env WINIT_UNIX_BACKEND=$_usd_backend "$@"
+]]):format(APP, a.args or "")))
   end,
 }
 make.alias("r", "run")
+
+make.recipe{
+  name = "run-example",
+  desc = "build and run an example with host graphics on NixOS",
+  params = {
+    { "--name", desc = "example target name" },
+    { "--args", desc = "arguments passed through to the example" },
+  },
+  run = function(a)
+    assert(type(a.name) == "string" and a.name:match("^[%w_%-]+$"), "provide --name EXAMPLE")
+    sh.cargo("build", "--example", a.name)
+    sh.sh("-c", fresh_display_env(([[
+set -- target/debug/examples/%s %s
+if [ ! -e /etc/NIXOS ]; then
+  set -- nixVulkan "$@"
+fi
+exec env WGPU_VALIDATION="${USD_WGPU_VALIDATION:-${WGPU_VALIDATION:-0}}" \
+  WGPU_DEBUG="${USD_WGPU_DEBUG:-${WGPU_DEBUG:-0}}" WINIT_UNIX_BACKEND=$_usd_backend "$@"
+]]):format(a.name, a.args or "")))
+  end,
+}
 
 make.recipe{
   name = "capture-reference",
@@ -87,12 +113,73 @@ make.recipe{ name = "test-native", desc = "check editor exports with native Open
              run = function()
                sh.cargo("test", "--workspace", "--lib", "persistence::tests::native_export",
                         "--", "--ignored", "--nocapture")
+               sh.cargo("test", "-p", "usd_bevy", "native_reference_custom_data_round_trip",
+                        "--", "--ignored", "--nocapture")
              end }
+
+make.recipe{
+  name = "test-watchers",
+  desc = "test native filesystem events with the file watcher enabled",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--all-features", "asset::tests::native_",
+             "--", "--ignored", "--test-threads=1", "--nocapture")
+    sh.cargo("test", "-p", "usd_bevy", "--all-features", "editor::texture_watch::tests::native",
+             "--", "--ignored", "--test-threads=1", "--nocapture")
+  end,
+}
 
 make.recipe{ name = "check", desc = "cargo check on the usdview target",
              run = function() sh.cargo("check", "--bin", APP) end }
 make.recipe{ name = "check-all", desc = "cargo check on the full workspace, all targets",
              run = function() sh.cargo("check", "--workspace", "--all-targets") end }
+
+make.recipe{ name = "check-web", desc = "check the browser target on wasm32",
+             run = function() sh.cargo("check", "-p", "usd_web", "--target", "wasm32-unknown-unknown") end }
+
+make.recipe{
+  name = "test-library",
+  desc = "test the library without editor feature unification, then with all features",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--no-default-features")
+    sh.cargo("test", "-p", "usd_bevy", "--all-features")
+  end,
+}
+
+make.recipe{ name = "test-assets", desc = "test the patched Bevy asset loader",
+             run = function() sh.cargo("test", "-p", "bevy_asset", "--lib") end }
+
+make.recipe{ name = "test-host", desc = "test the patched Mara Bevy host",
+             run = function() sh.cargo("test", "-p", "mara_bevy", "--lib") end }
+
+make.recipe{
+  name = "test-capture-tools",
+  desc = "test capture preflight, process cleanup and log failure detection",
+  run = function()
+    sh.bash("scripts/check_capture_preflight_tests.sh")
+    sh.bash("scripts/check_capture_session.sh")
+    sh.bash("scripts/check_viewer_log_tests.sh")
+  end,
+}
+
+make.recipe{
+  name = "test-transparency",
+  desc = "capture and compare ordinary blending and OIT ordering",
+  params = { { "--output", desc = "new directory for capture evidence" } },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_transparency_order.sh", a.output)
+  end,
+}
+
+make.recipe{
+  name = "test-render",
+  desc = "capture WESL material, deformation, instancing and OIT fixtures",
+  params = { { "--output", desc = "new directory for capture evidence" } },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_wesl_render.sh", a.output)
+  end,
+}
 
 make.recipe{ name = "fmt", desc = "format the workspace crates (not vendor/)", run = function() fmt() end }
 

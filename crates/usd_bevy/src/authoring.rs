@@ -7,8 +7,8 @@
 //! entities. The UI panels are a thin presentation layer on top of these;
 //! these functions are headless and fully testable without a window.
 
-use openusd::sdf::Value;
 use openusd::usd::{NamespaceEditor, Stage};
+use openusd::vt::Value;
 
 type Result<T> = anyhow::Result<T>;
 
@@ -23,8 +23,8 @@ pub fn set_relationship_targets(
         anyhow::ensure!(
             target.as_str().starts_with('/')
                 && target.as_str() != "/"
-                && (target.is_prim_path() || target.is_property_path())
-                && !target.contains_prim_variant_selection(),
+                && (target.is_prim() || target.is_property())
+                && !target.has_variant_selection(),
             "relationship target must be an absolute prim or property path"
         );
     }
@@ -67,21 +67,21 @@ pub fn set_reference_list_op(
     operation: &openusd::sdf::ReferenceListOp,
 ) -> Result<()> {
     let nonexplicit = [
-        &operation.prepended_items,
-        &operation.appended_items,
-        &operation.added_items,
-        &operation.deleted_items,
-        &operation.ordered_items,
+        operation.prepended_items(),
+        operation.appended_items(),
+        operation.added_items(),
+        operation.deleted_items(),
+        operation.ordered_items(),
     ];
     anyhow::ensure!(
-        !operation.explicit || nonexplicit.iter().all(|items| items.is_empty()),
+        !operation.is_explicit() || nonexplicit.iter().all(|items| items.is_empty()),
         "explicit reference operation cannot contain non-explicit items"
     );
     anyhow::ensure!(
-        operation.explicit || operation.explicit_items.is_empty(),
+        operation.is_explicit() || operation.explicit_items().is_empty(),
         "non-explicit reference operation cannot contain explicit items"
     );
-    for reference in std::iter::once(&operation.explicit_items)
+    for reference in std::iter::once(operation.explicit_items())
         .chain(nonexplicit)
         .flatten()
     {
@@ -92,8 +92,8 @@ pub fn set_reference_list_op(
         anyhow::ensure!(
             reference.prim_path.is_empty()
                 || (reference.prim_path.as_str().starts_with('/')
-                    && reference.prim_path.is_prim_path()
-                    && !reference.prim_path.contains_prim_variant_selection()
+                    && reference.prim_path.is_prim()
+                    && !reference.prim_path.has_variant_selection()
                     && reference.prim_path.as_str() != "/"),
             "reference target must be an absolute prim path or empty for defaultPrim"
         );
@@ -134,21 +134,21 @@ pub fn set_payload_list_op(
     operation: &openusd::sdf::PayloadListOp,
 ) -> Result<()> {
     let nonexplicit = [
-        &operation.prepended_items,
-        &operation.appended_items,
-        &operation.added_items,
-        &operation.deleted_items,
-        &operation.ordered_items,
+        operation.prepended_items(),
+        operation.appended_items(),
+        operation.added_items(),
+        operation.deleted_items(),
+        operation.ordered_items(),
     ];
     anyhow::ensure!(
-        !operation.explicit || nonexplicit.iter().all(|items| items.is_empty()),
+        !operation.is_explicit() || nonexplicit.iter().all(|items| items.is_empty()),
         "explicit payload operation cannot contain non-explicit items"
     );
     anyhow::ensure!(
-        operation.explicit || operation.explicit_items.is_empty(),
+        operation.is_explicit() || operation.explicit_items().is_empty(),
         "non-explicit payload operation cannot contain explicit items"
     );
-    for payload in std::iter::once(&operation.explicit_items)
+    for payload in std::iter::once(operation.explicit_items())
         .chain(nonexplicit)
         .flatten()
     {
@@ -159,17 +159,15 @@ pub fn set_payload_list_op(
         anyhow::ensure!(
             payload.prim_path.is_empty()
                 || (payload.prim_path.as_str().starts_with('/')
-                    && payload.prim_path.is_prim_path()
-                    && !payload.prim_path.contains_prim_variant_selection()
+                    && payload.prim_path.is_prim()
+                    && !payload.prim_path.has_variant_selection()
                     && payload.prim_path.as_str() != "/"),
             "payload target must be an absolute prim path or empty for defaultPrim"
         );
         anyhow::ensure!(
-            payload
-                .layer_offset
-                .is_none_or(|offset| offset.offset.is_finite()
-                    && offset.scale.is_finite()
-                    && offset.scale > 0.0),
+            payload.layer_offset.offset.is_finite()
+                && payload.layer_offset.scale.is_finite()
+                && payload.layer_offset.scale > 0.0,
             "payload time mapping must have a finite offset and positive finite scale"
         );
     }
@@ -362,37 +360,33 @@ mod tests {
 
     #[test]
     fn malformed_reference_list_ops_reject_before_mutation() {
-        use openusd::sdf::{Reference, ReferenceListOp};
+        use openusd::sdf::{ListOpType, Reference, ReferenceListOp};
         let stage = stage_with("/Root");
         let valid = Reference {
             prim_path: openusd::sdf::path("/Root").unwrap(),
             ..Default::default()
         };
         let before = stage.root_layer().export_to_string().unwrap();
+        let mut explicit_with_prepended = ReferenceListOp::prepended([valid.clone()]);
+        explicit_with_prepended.set_explicit(true);
+        let mut edit_with_explicit = ReferenceListOp::explicit([valid.clone()]);
+        edit_with_explicit.set_explicit(false);
         for operation in [
-            ReferenceListOp {
-                explicit: true,
-                prepended_items: vec![valid.clone()],
-                ..Default::default()
-            },
-            ReferenceListOp {
-                explicit_items: vec![valid.clone()],
-                ..Default::default()
-            },
+            explicit_with_prepended,
+            edit_with_explicit,
             ReferenceListOp::deleted([Reference::default()]),
             ReferenceListOp::ordered([Reference {
                 prim_path: openusd::sdf::path("/Root.property").unwrap(),
                 ..Default::default()
             }]),
-            ReferenceListOp {
-                prepended_items: vec![valid],
-                appended_items: vec![Reference {
+            ReferenceListOp::prepended([valid]).with(
+                ListOpType::Appended,
+                [Reference {
                     asset_path: "part.usda".into(),
                     layer_offset: openusd::sdf::LayerOffset::new(0., f64::NAN),
                     ..Default::default()
                 }],
-                ..Default::default()
-            },
+            ),
         ] {
             assert!(set_reference_list_op(&stage, "/Root", &operation).is_err());
             assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
@@ -401,37 +395,33 @@ mod tests {
 
     #[test]
     fn malformed_payload_list_ops_reject_before_mutation() {
-        use openusd::sdf::{Payload, PayloadListOp};
+        use openusd::sdf::{ListOpType, Payload, PayloadListOp};
         let stage = stage_with("/Root");
         let valid = Payload {
             prim_path: openusd::sdf::path("/Root").unwrap(),
             ..Default::default()
         };
         let before = stage.root_layer().export_to_string().unwrap();
+        let mut explicit_with_prepended = PayloadListOp::prepended([valid.clone()]);
+        explicit_with_prepended.set_explicit(true);
+        let mut edit_with_explicit = PayloadListOp::explicit([valid.clone()]);
+        edit_with_explicit.set_explicit(false);
         for operation in [
-            PayloadListOp {
-                explicit: true,
-                prepended_items: vec![valid.clone()],
-                ..Default::default()
-            },
-            PayloadListOp {
-                explicit_items: vec![valid.clone()],
-                ..Default::default()
-            },
+            explicit_with_prepended,
+            edit_with_explicit,
             PayloadListOp::deleted([Payload::default()]),
             PayloadListOp::ordered([Payload {
                 prim_path: openusd::sdf::path("relative").unwrap(),
                 ..Default::default()
             }]),
-            PayloadListOp {
-                prepended_items: vec![valid],
-                appended_items: vec![Payload {
+            PayloadListOp::prepended([valid]).with(
+                ListOpType::Appended,
+                [Payload {
                     asset_path: "part.usda".into(),
-                    layer_offset: Some(openusd::sdf::LayerOffset::new(0., -1.)),
+                    layer_offset: openusd::sdf::LayerOffset::new(0., -1.),
                     ..Default::default()
                 }],
-                ..Default::default()
-            },
+            ),
         ] {
             assert!(set_payload_list_op(&stage, "/Root", &operation).is_err());
             assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
@@ -483,7 +473,7 @@ def Xform "Instance" ( prepend payload = </Model> ) {}
         assert!(set_payloads(&stage, "/Absent", &[]).is_err());
         let invalid = openusd::sdf::Payload {
             prim_path: openusd::sdf::path("/Model").unwrap(),
-            layer_offset: Some(openusd::sdf::LayerOffset::new(f64::INFINITY, 1.)),
+            layer_offset: openusd::sdf::LayerOffset::new(f64::INFINITY, 1.),
             ..Default::default()
         };
         assert!(set_payloads(&stage, "/Instance", &[invalid]).is_err());

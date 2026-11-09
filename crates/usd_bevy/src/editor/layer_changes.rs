@@ -10,7 +10,7 @@ struct Changes(Rc<RefCell<BTreeMap<String, u64>>>, Rc<Cell<u64>>);
 
 impl StageSink for Changes {
     fn after_commit(&self, _stage: &Stage, change: &CommittedChange<'_>) {
-        if change.resynced.iter().any(|path| path.is_prim_path()) {
+        if change.resynced.iter().any(|path| path.is_prim()) {
             self.1.set(self.1.get().saturating_add(1));
         }
         let mut revisions = self.0.borrow_mut();

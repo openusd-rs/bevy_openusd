@@ -242,7 +242,7 @@ def SkelRoot "Rig" {{
             let scales = stage.attribute("/Test/Skel/Anim.scales").unwrap();
             scales
                 .clone()
-                .set(openusd::sdf::Value::Vec3hVec(vec![
+                .set(openusd::vt::Value::Vec3hVec(vec![
                     [0.0, 1.0, 1.0].map(openusd::gf::f16::from_f32).into(),
                 ]))
                 .unwrap();
@@ -268,7 +268,7 @@ def SkelRoot "Rig" {{
             );
             assert!(app.world().get_entity(runtime_child).is_ok());
             scales
-                .set(openusd::sdf::Value::Vec3hVec(vec![
+                .set(openusd::vt::Value::Vec3hVec(vec![
                     [2.0, 1.0, 0.5].map(openusd::gf::f16::from_f32).into(),
                 ]))
                 .unwrap();

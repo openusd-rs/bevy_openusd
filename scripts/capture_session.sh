@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 capture_session_stop() {
     local pid_file=$1 waiter=${2:-} leader= attempt
@@ -24,5 +24,5 @@ capture_session_stop() {
 capture_session_run() {
     local pid_file=$1
     shift
-    exec setsid --fork --wait /bin/bash -c 'set -e; printf "%s\n" "$$" > "$1"; printf "CAPTURE_SESSION_LEADER=%s\n" "$$" >&2; shift; exec "$@"' capture-session "$pid_file" "$@"
+    exec setsid --fork --wait bash -c 'set -e; printf "%s\n" "$$" > "$1"; printf "CAPTURE_SESSION_LEADER=%s\n" "$$" >&2; shift; exec "$@"' capture-session "$pid_file" "$@"
 }

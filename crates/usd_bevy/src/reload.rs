@@ -17,10 +17,7 @@ impl LayerReload {
     /// Parses replacement bytes and validates composition without modifying `stage`.
     pub fn prepare(stage: &Stage, replacements: &[(String, Vec<u8>)]) -> anyhow::Result<Self> {
         Self::prepare_decoded(stage, replacements, |id, bytes| {
-            Ok(openusd::sdf::LayerRegistry::read_bytes(
-                std::borrow::Cow::Owned(bytes.clone()),
-                id,
-            )?)
+            Ok(openusd::sdf::LayerRegistry::read_bytes(bytes.clone().into(), id)?.0)
         })
     }
 
@@ -29,10 +26,7 @@ impl LayerReload {
         replacements: &[(String, std::sync::Arc<[u8]>)],
     ) -> anyhow::Result<Self> {
         Self::prepare_decoded(stage, replacements, |id, bytes| {
-            Ok(openusd::sdf::LayerRegistry::read_shared_bytes(
-                bytes.clone(),
-                id,
-            )?)
+            Ok(openusd::sdf::LayerRegistry::read_bytes(bytes.clone().into(), id)?.0)
         })
     }
 
@@ -105,7 +99,7 @@ impl LayerReload {
         }
         let (candidate, disk) = source.open_stage_for_editor()?;
         candidate.set_load_rules(stage.load_rules());
-        candidate.set_interpolation_type(stage.interpolation_type());
+        candidate.set_interpolation(stage.interpolation());
         for id in stage.muted_layers() {
             candidate.mute_layer(id);
         }
@@ -183,7 +177,7 @@ fn patch(target: &mut dyn AbstractData, source: &Data) {
         }
         for field in source.list_fields(&path).unwrap_or_default() {
             let value = source
-                .get_field(&path, &field)
+                .field(&path, &field)
                 .expect("materialized layer data");
             if target.try_field(&path, &field).ok().flatten().as_deref() != Some(value.as_ref()) {
                 target.set_field(&path, &field, value.into_owned());
@@ -333,7 +327,7 @@ mod tests {
         let source = crate::UsdSource::new("deferred-reload.usda", text.as_slice()).unwrap();
         let stage = source.open_stage().unwrap();
         stage.set_load_rules(openusd::pcp::LoadRules::none());
-        stage.set_interpolation_type(openusd::usd::InterpolationType::Held);
+        stage.set_interpolation(openusd::usd::InterpolationType::Held);
         crate::UsdSource::validate_composition(&stage).unwrap();
         let replacement = String::from_utf8(text.to_vec())
             .unwrap()
@@ -345,7 +339,7 @@ mod tests {
         .unwrap();
         assert_eq!(plan.candidate().load_rules(), stage.load_rules());
         assert_eq!(
-            plan.candidate().interpolation_type(),
+            plan.candidate().interpolation(),
             openusd::usd::InterpolationType::Held
         );
         plan.apply(&stage).unwrap();

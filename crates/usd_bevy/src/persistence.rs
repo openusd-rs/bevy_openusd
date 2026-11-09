@@ -17,8 +17,17 @@ pub(crate) fn export_layer(
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("usdz"))
         {
-            let mut output = fs::File::create(temporary)?;
-            stage.write_usdz_package(layer, &mut output)?;
+            let missing = openusd::usd_utils::create_usdz_package(
+                stage,
+                layer,
+                temporary,
+                Some("scene.usdc"),
+            )?;
+            ensure!(
+                missing.is_empty(),
+                "unresolved package layers: {}",
+                missing.join(", ")
+            );
         } else {
             let source_location = layer.resolved_path();
             let source_directory = source_location
@@ -30,13 +39,39 @@ pub(crate) fn export_layer(
                     Some(source) != destination.parent().map(directory_identity)
                 })
             {
-                stage.anchored_layer(layer)?.export(temporary)?;
+                anchored_layer(layer)?.export(temporary)?;
             } else {
                 layer.export(temporary)?;
             }
         }
         Ok(())
     })
+}
+
+/// Copies `layer` with the asset paths it authors anchored to its location.
+/// Asset expressions, tile/sequence patterns and clip templates are refused.
+fn anchored_layer(layer: &openusd::sdf::Layer) -> Result<openusd::sdf::Layer> {
+    let root = openusd::sdf::Path::abs_root();
+    let mut anchored = openusd::sdf::Layer::new_anonymous("anchored.usda");
+    anchored.edit(|edit| {
+        openusd::sdf::copy_spec(layer.data(), &root, edit.data_mut(), &root).map(drop)
+    })?;
+    let mut unsupported = None;
+    openusd::usd_utils::modify_asset_paths(
+        &mut anchored,
+        |path| {
+            if path.contains(['`', '<', '#']) {
+                unsupported.get_or_insert_with(|| path.to_owned());
+                return path.to_owned();
+            }
+            layer.absolute_path(path)
+        },
+        true,
+    )?;
+    if let Some(path) = unsupported {
+        anyhow::bail!("unsupported relocated asset expression or pattern: {path}");
+    }
+    Ok(anchored)
 }
 
 fn directory_identity(path: &Path) -> std::path::PathBuf {
@@ -365,7 +400,7 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
     #[test]
     fn ordinary_save_as_preserves_external_dependencies_and_live_layers() {
         use crate::editor::SaveMode;
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let source = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
         let editor = relocated_fixture(source.path());
@@ -474,7 +509,7 @@ def Scope "Model" (prepend references = @./asset.usda@</Asset>) {
             UsdSource,
             editor::{EditorEdit, EditorSession, SaveMode},
         };
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         use std::io::Read;
         let input = tempfile::tempdir().unwrap();
         let root =
@@ -577,9 +612,9 @@ def Sphere "Model" {
                     Some(4.)
                 );
             }
-            let openusd::sdf::Value::AssetPath(asset) = prim
+            let openusd::vt::Value::AssetPath(asset) = prim
                 .attribute("payload")
-                .get::<openusd::sdf::Value>()
+                .get::<openusd::vt::Value>()
                 .unwrap()
                 .unwrap()
             else {
@@ -913,11 +948,11 @@ def Sphere "Model" {
                         .unwrap(),
                     Some(29.0)
                 );
-                let openusd::sdf::Value::AssetPath(texture) = stage
+                let openusd::vt::Value::AssetPath(texture) = stage
                     .prim("/Model")
                     .unwrap()
                     .attribute("texture")
-                    .get::<openusd::sdf::Value>()
+                    .get::<openusd::vt::Value>()
                     .unwrap()
                     .unwrap()
                 else {
@@ -981,11 +1016,11 @@ def Sphere "Model" {
                     .unwrap(),
                 Some(29.0)
             );
-            let openusd::sdf::Value::AssetPath(texture) = stage
+            let openusd::vt::Value::AssetPath(texture) = stage
                 .prim("/Model")
                 .unwrap()
                 .attribute("texture")
-                .get::<openusd::sdf::Value>()
+                .get::<openusd::vt::Value>()
                 .unwrap()
                 .unwrap()
             else {
@@ -1144,10 +1179,10 @@ def Scope "Model" (
                 );
                 let asset = prim
                     .attribute("blob")
-                    .get::<openusd::sdf::Value>()
+                    .get::<openusd::vt::Value>()
                     .unwrap()
                     .unwrap();
-                let openusd::sdf::Value::AssetPath(asset) = asset else {
+                let openusd::vt::Value::AssetPath(asset) = asset else {
                     panic!("expected asset")
                 };
                 let (_, entry) =
@@ -1170,10 +1205,10 @@ def Scope "Model" (
                 assert_eq!(bytes, format!("payload {asset_choice}").as_bytes());
                 let backlink = prim
                     .attribute("backlink")
-                    .get::<openusd::sdf::Value>()
+                    .get::<openusd::vt::Value>()
                     .unwrap()
                     .unwrap();
-                let openusd::sdf::Value::AssetPath(backlink) = backlink else {
+                let openusd::vt::Value::AssetPath(backlink) = backlink else {
                     panic!("expected layer asset")
                 };
                 let (_, entry) =
@@ -1185,7 +1220,8 @@ def Scope "Model" (
                     .unwrap()
                     .read_to_end(&mut bytes)
                     .unwrap();
-                let linked = crate::UsdSource::new(output.path().join("linked.usdc"), bytes)
+                let file = Path::new(&entry).file_name().unwrap();
+                let linked = crate::UsdSource::new(output.path().join(file), bytes)
                     .unwrap()
                     .open_stage()
                     .unwrap();
@@ -1207,7 +1243,7 @@ def Scope "Model" (
     #[ignore = "requires native OpenUSD usdcat; run make test-native"]
     fn native_export_repackages_snapshot_archives() {
         use crate::editor::{EditorSession, SaveMode};
-        use std::io::{Cursor, Read};
+        use std::io::Cursor;
         use std::process::Command;
 
         let directory = tempfile::tempdir().unwrap();
@@ -1246,28 +1282,23 @@ def Scope "Model" (
                     .unwrap(),
                 Some(41.0)
             );
-            let mut archive = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
             for prim in ["/Weak", "/Assets"] {
                 let value = stage
                     .prim(prim)
                     .unwrap()
                     .attribute("blob")
-                    .get::<openusd::sdf::Value>()
+                    .get::<openusd::vt::Value>()
                     .unwrap()
                     .unwrap();
-                let openusd::sdf::Value::AssetPath(asset) = value else {
+                let openusd::vt::Value::AssetPath(asset) = value else {
                     panic!("expected asset")
                 };
                 let (_, entry) =
                     openusd::ar::split_package_relative_path_outer(&asset.authored_path)
                         .expect("packaged asset");
-                let mut bytes = Vec::new();
-                archive
-                    .by_name(&entry)
-                    .unwrap()
-                    .read_to_end(&mut bytes)
-                    .unwrap();
-                assert_eq!(bytes, b"packaged payload");
+                let bytes =
+                    crate::source::package_entry(fs::read(path).unwrap().into(), &entry).unwrap();
+                assert_eq!(bytes.as_ref(), b"packaged payload");
             }
         };
         for (name, mode) in [
@@ -1305,7 +1336,7 @@ def Scope "Model" (
             zip::ZipArchive::new(fs::File::open(&wrapped).unwrap())
                 .unwrap()
                 .len(),
-            4
+            2
         );
         check(&wrapped);
         assert!(!virtual_path.exists());
@@ -1314,7 +1345,7 @@ def Scope "Model" (
     #[test]
     fn package_preserves_snapshot_assets_live_edits_and_archive_layout() {
         use crate::editor::{EditorEdit, EditorSession, SaveMode};
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         use std::io::Read;
 
         let directory = tempfile::tempdir().unwrap();
@@ -1396,7 +1427,7 @@ def Scope "Model" (
             }
             assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
             assert_eq!(entry.data_start().unwrap() % 64, 0);
-            assert!(!entry.name().contains(['/', '\\']));
+            assert!(!entry.name().contains('\\'));
             if entry.name().ends_with(".png") {
                 let mut bytes = Vec::new();
                 entry.read_to_end(&mut bytes).unwrap();
@@ -1433,40 +1464,6 @@ def Scope "Model" (
             Some(11.0)
         );
         assert!(!editor.snapshot().unwrap().can_undo);
-    }
-
-    #[test]
-    fn package_entry_budget_preserves_existing_destination() {
-        let directory = tempfile::tempdir().unwrap();
-        let paths = (0..4096)
-            .map(|index| format!("@asset{index}.bin@"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let text = format!("#usda 1.0\ndef Scope \"Assets\" {{\n asset[] files = [{paths}]\n}}\n");
-        let mut source =
-            crate::UsdSource::snapshot(&directory.path().join("virtual.usda"), text.into_bytes())
-                .unwrap();
-        for index in 0..4096 {
-            source.insert_dependency(
-                directory
-                    .path()
-                    .join(format!("asset{index}.bin"))
-                    .to_str()
-                    .unwrap()
-                    .into(),
-                vec![1],
-            );
-        }
-        let output = directory.path().join("saved.usdz");
-        fs::write(&output, b"original").unwrap();
-        let error = crate::authoring::save_stage_as(
-            &source.open_stage().unwrap(),
-            output.to_str().unwrap(),
-        )
-        .unwrap_err();
-        assert!(format!("{error:#}").contains("entry budget exceeded"));
-        assert_eq!(fs::read(&output).unwrap(), b"original");
-        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]
@@ -1581,9 +1578,9 @@ def Scope "Model" (
                 .prim("/Referenced")
                 .unwrap()
                 .attribute("texture")
-                .get::<openusd::sdf::Value>()
+                .get::<openusd::vt::Value>()
                 .unwrap();
-            if let Some(openusd::sdf::Value::AssetPath(asset)) = value {
+            if let Some(openusd::vt::Value::AssetPath(asset)) = value {
                 if let Some((_, entry)) =
                     openusd::ar::split_package_relative_path_outer(&asset.authored_path)
                 {

@@ -261,7 +261,7 @@ mod tests {
                 prim: "/Root".into(),
                 name: "score".into(),
                 type_name: "double".into(),
-                value: openusd::sdf::Value::Double(17.0),
+                value: openusd::vt::Value::Double(17.0),
             }))
             .unwrap();
         app.update();
@@ -365,7 +365,7 @@ def Material "Mat" {
                     prim: "/Mat".into(),
                     name: "score".into(),
                     type_name: "double".into(),
-                    value: openusd::sdf::Value::Double(17.0),
+                    value: openusd::vt::Value::Double(17.0),
                 }))
                 .unwrap();
             app.update();
@@ -638,7 +638,7 @@ def Material "Mat" {
                 prim: "/Mat/Texture".into(),
                 name: "inputs:file".into(),
                 type_name: "asset".into(),
-                value: openusd::sdf::Value::AssetPath(openusd::sdf::AssetPath::new(
+                value: openusd::vt::Value::AssetPath(openusd::sdf::AssetPath::new(
                     "new-images/later.png",
                 )),
             }))
@@ -779,7 +779,7 @@ def Material "Mat" {
                 prim: "/Mat/Surface".into(),
                 name: "inputs:ior".into(),
                 type_name: "float".into(),
-                value: openusd::sdf::Value::Float(1.7),
+                value: openusd::vt::Value::Float(1.7),
             }))
             .unwrap();
         app.update();

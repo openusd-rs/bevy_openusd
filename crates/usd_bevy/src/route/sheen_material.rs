@@ -64,16 +64,17 @@ def Mesh "Sand" (prepend apiSchemas = ["MaterialBindingAPI"]) {
     point3f[] points = [(0,0,0), (1,0,0), (0,0,1)]
     int[] faceVertexCounts = [3]
     int[] faceVertexIndices = [0,1,2]
-    rel material:binding = </Sand>
+    rel material:binding = </Looks/Sand>
 }
 def Mesh "Soil" (prepend apiSchemas = ["MaterialBindingAPI"]) {
     point3f[] points = [(0,0,0), (1,0,0), (0,0,1)]
     int[] faceVertexCounts = [3]
     int[] faceVertexIndices = [0,1,2]
-    rel material:binding = </Soil>
+    rel material:binding = </Looks/Soil>
 }
+def Scope "Looks" {
 def Material "Sand" {
-    token outputs:ri:surface.connect = </Sand/Disney.outputs:bxdf_out>
+    token outputs:ri:surface.connect = </Looks/Sand/Disney.outputs:bxdf_out>
     def Shader "Disney" {
         uniform token info:id = "PxrDisneyBsdf"
         color3f inputs:baseColor = (0.6, 0.5, 0.4)
@@ -83,12 +84,13 @@ def Material "Sand" {
     }
 }
 def Material "Soil" {
-    token outputs:ri:surface.connect = </Soil/Disney.outputs:bxdf_out>
+    token outputs:ri:surface.connect = </Looks/Soil/Disney.outputs:bxdf_out>
     def Shader "Disney" {
         uniform token info:id = "PxrDisneyBsdf"
         color3f inputs:baseColor = (0.6, 0.5, 0.4)
         token outputs:bxdf_out
     }
+}
 }
 "#,
         )

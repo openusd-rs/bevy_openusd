@@ -61,8 +61,8 @@ pub(crate) fn enabled(ctx: &RouteCtx, world: &World) -> bool {
     world.contains_resource::<UsdSubdivisionSettings>()
         && ctx.type_name.as_deref() == Some("Mesh")
         && !matches!(ctx.stage.prim(ctx.path.clone()).ok().and_then(|prim|
-            prim.attribute("subdivisionScheme").get_at::<openusd::sdf::Value>(ctx.time.map(openusd::usd::TimeCode::new)).ok().flatten()),
-            Some(openusd::sdf::Value::Token(token)) if token.as_str() == "none")
+            prim.attribute("subdivisionScheme").get_at::<openusd::vt::Value>(ctx.time.map(openusd::usd::TimeCode::new)).ok().flatten()),
+            Some(openusd::vt::Value::Token(token)) if token.as_str() == "none")
 }
 
 /// Draws unrefined Catmull-Clark meshes at their limit surface, as offline
@@ -326,7 +326,7 @@ def PointInstancer "PI" {{
         sharpness
             .clone()
             .set_at(
-                openusd::sdf::Value::FloatVec(vec![-1.0; 12]),
+                openusd::vt::Value::FloatVec(vec![-1.0; 12]),
                 openusd::usd::TimeCode::new(3.0),
             )
             .unwrap();
@@ -353,7 +353,7 @@ def PointInstancer "PI" {{
         assert_eq!(app.world().get::<Mesh3d>(parents[1]).unwrap().0, unaffected);
         sharpness
             .set_at(
-                openusd::sdf::Value::FloatVec(vec![10.0; 12]),
+                openusd::vt::Value::FloatVec(vec![10.0; 12]),
                 openusd::usd::TimeCode::new(3.0),
             )
             .unwrap();
@@ -547,7 +547,7 @@ def PointInstancer "PI" {
         stage
             .attribute("/Test/Face.subdivisionScheme")
             .unwrap()
-            .set(openusd::sdf::Value::Token("catmullClark".into()))
+            .set(openusd::vt::Value::Token("catmullClark".into()))
             .unwrap();
         let path = openusd::sdf::Path::new("/Test/Face").unwrap();
         for (time, height) in [(0.0, 0.0), (5.0, 0.5), (10.0, 1.0)] {
@@ -729,7 +729,7 @@ def PointInstancer "PI" {
         let holes = stage.create_attribute("/M.holeIndices", "int[]").unwrap();
         holes
             .clone()
-            .set(openusd::sdf::Value::IntVec(vec![1]))
+            .set(openusd::vt::Value::IntVec(vec![1]))
             .unwrap();
         let runtime = app.world_mut().spawn(ChildOf(a)).id();
         app.update();
@@ -753,7 +753,7 @@ def PointInstancer "PI" {
                 .all(|&child| app.world().get::<Mesh3d>(child).is_none())
         );
         check(app.world(), b, 2.0);
-        holes.set(openusd::sdf::Value::IntVec(vec![])).unwrap();
+        holes.set(openusd::vt::Value::IntVec(vec![])).unwrap();
         app.update();
         assert_eq!(lookup(app.world(), first), a);
         assert!(app.world().get::<UsdSubdivisionError>(a).is_none());
@@ -763,7 +763,7 @@ def PointInstancer "PI" {
         let scheme = stage.attribute("/M.subdivisionScheme").unwrap();
         scheme
             .clone()
-            .set(openusd::sdf::Value::Token("unknown".into()))
+            .set(openusd::vt::Value::Token("unknown".into()))
             .unwrap();
         app.update();
         assert!(
@@ -775,7 +775,7 @@ def PointInstancer "PI" {
         );
         assert!(app.world().get::<Mesh3d>(a).is_none());
         scheme
-            .set(openusd::sdf::Value::Token("none".into()))
+            .set(openusd::vt::Value::Token("none".into()))
             .unwrap();
         app.update();
         assert!(app.world().get::<UsdSubdivisionError>(a).is_none());

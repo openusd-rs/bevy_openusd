@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
+use openusd::{sdf::Path, vt::Value};
 
 // ── Enums ─────────────────────────────────────────────────────────────────
 
@@ -902,10 +902,7 @@ pub fn read_custom_attrs(
             .prim(prim.clone())
             .expect("validated USD path")
             .attribute(&name);
-        let is_custom = matches!(
-            attr.get_metadata::<bool>("custom").ok().flatten(),
-            Some(true)
-        );
+        let is_custom = matches!(attr.metadata::<bool>("custom").ok().flatten(), Some(true));
         if !is_custom {
             continue;
         }
@@ -991,7 +988,7 @@ fn value_to_custom(v: Value) -> CustomAttrValue {
     }
 }
 
-fn dict_from_value_map(map: std::collections::HashMap<String, Value>) -> CustomDict {
+fn dict_from_value_map(map: openusd::vt::Dictionary) -> CustomDict {
     let mut entries: Vec<(String, CustomAttrValue)> = map
         .into_iter()
         .map(|(k, v)| (k, value_to_custom(v)))
@@ -1015,16 +1012,14 @@ pub fn read_custom_data(stage: &Stage, prim: &Path) -> anyhow::Result<Option<Cus
         stage
             .prim(prim.clone())
             .expect("validated USD path")
-            .custom_data()?,
+            .metadata::<Value>("customData")?,
     ))
 }
 
 /// Composed `assetInfo` dictionary on a prim.
 pub fn read_asset_info(stage: &Stage, prim: &Path) -> anyhow::Result<Option<CustomDict>> {
     Ok(dict_from_value(
-        stage
-            .prim(prim.clone())?
-            .get_metadata::<Value>("assetInfo")?,
+        stage.prim(prim.clone())?.metadata::<Value>("assetInfo")?,
     ))
 }
 
@@ -1286,7 +1281,7 @@ fn authors_primvar(stage: &Stage, prim: &Path, path: &Path, name: &str) -> anyho
         && let Some(hit) = ANCESTOR_PRIMVARS.with(|memo| {
             memo.borrow()
                 .as_ref()
-                .filter(|(owner, _)| owner.ptr_eq(stage))
+                .filter(|(owner, _)| owner == stage)
                 .and_then(|(_, answers)| answers.get(&key).copied())
         })
     {
@@ -1301,7 +1296,7 @@ fn authors_primvar(stage: &Stage, prim: &Path, path: &Path, name: &str) -> anyho
     if ancestor {
         ANCESTOR_PRIMVARS.with(|memo| {
             if let Some((owner, answers)) = memo.borrow_mut().as_mut()
-                && owner.ptr_eq(stage)
+                && *owner == *stage
             {
                 answers.insert(key, authors);
             }
@@ -1382,7 +1377,7 @@ pub(crate) fn read_primvar_interpolation(
         .prim(prim.clone())
         .expect("validated USD path")
         .attribute(name)
-        .get_metadata::<Value>("interpolation")?;
+        .metadata::<Value>("interpolation")?;
     if let Some(s) = raw.and_then(|v| match v {
         Value::Token(t) => Some(t.as_str().to_string()),
         Value::String(s) => Some(s),

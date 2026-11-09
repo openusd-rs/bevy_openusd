@@ -1,17 +1,17 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 directory=$(mktemp -d)
 trap 'rm -rf -- "$directory"' EXIT
 mkdir "$directory/bin"
 for command in weston weston-screenshooter; do
-    printf '#!/bin/bash\nexit 90\n' > "$directory/bin/$command"
+    printf '#!/usr/bin/env bash\nexit 90\n' > "$directory/bin/$command"
     chmod +x "$directory/bin/$command"
 done
 export PATH="$directory/bin:$PATH"
 reject() {
     local status=0
-    /bin/bash "$root/scripts/capture_viewer_ui.sh" "$root/assets/numeric_array.usda" "$1" > "$directory/result" 2>&1 || status=$?
+    bash "$root/scripts/capture_viewer_ui.sh" "$root/assets/numeric_array.usda" "$1" > "$directory/result" 2>&1 || status=$?
     [[ "$status" == 2 ]] || { cat "$directory/result" >&2; echo "expected preflight exit 2, got $status" >&2; exit 1; }
     grep -q 'must be.*new' "$directory/result"
 }

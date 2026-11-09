@@ -1120,7 +1120,7 @@ def Xform "Old" {}
             )
             .unwrap()
             .set_at(
-                openusd::sdf::Value::Vec3d([7.0, 0.0, 0.0].into()),
+                openusd::vt::Value::Vec3d([7.0, 0.0, 0.0].into()),
                 openusd::usd::TimeCode::new(0.0),
             )
             .unwrap();
@@ -1130,7 +1130,7 @@ def Xform "Old" {}
                 "token[]",
             )
             .unwrap()
-            .set(openusd::sdf::Value::TokenVec(vec![
+            .set(openusd::vt::Value::TokenVec(vec![
                 "xformOp:translate".into(),
             ]))
             .unwrap();
@@ -1275,7 +1275,7 @@ def Xform "Old" {}
                         prim: "/Old".into(),
                         name: "visibility".into(),
                         type_name: "token".into(),
-                        value: openusd::sdf::Value::Token("invisible".into()),
+                        value: openusd::vt::Value::Token("invisible".into()),
                     }],
                     ..default()
                 },
@@ -1686,7 +1686,7 @@ def Xform "Model" (
                         prim: "/Model".into(),
                         name: "visibility".into(),
                         type_name: "token".into(),
-                        value: openusd::sdf::Value::Token("invisible".into()),
+                        value: openusd::vt::Value::Token("invisible".into()),
                     }],
                 },
             ))
@@ -1806,13 +1806,7 @@ def Xform "Model" (
             ..default()
         });
         spawn_usd_scenes(&mut world);
-        assert!(
-            world
-                .non_send::<UsdInstances>()
-                .stage(root)
-                .unwrap()
-                .ptr_eq(&before)
-        );
+        assert!(world.non_send::<UsdInstances>().stage(root).unwrap() == &before);
         instance_entity(&world, root, "/Model/Loader");
     }
 
@@ -2470,7 +2464,7 @@ def Xform "Hidden" {{
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("inherited".into()))
+            .set(openusd::vt::Value::Token("inherited".into()))
             .unwrap();
         tick_until(&mut app, |world| world.get::<Mesh3d>(entities[0]).is_some());
         let mesh = app
@@ -3458,9 +3452,9 @@ def Mesh "Body" {
         let value = stage
             .attribute("/Mat.inputs:surfaceMap")
             .unwrap()
-            .get::<openusd::sdf::Value>()
+            .get::<openusd::vt::Value>()
             .unwrap();
-        let Some(openusd::sdf::Value::AssetPath(path)) = value else {
+        let Some(openusd::vt::Value::AssetPath(path)) = value else {
             panic!("surfaceMap is not an asset: {value:?}")
         };
         assert!(

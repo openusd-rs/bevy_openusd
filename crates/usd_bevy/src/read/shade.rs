@@ -3,8 +3,8 @@
 //! [`ReadPreviewMaterial`], following connections through `UsdUVTexture` and
 //! the MaterialX node graph. Reads through openusd only.
 
-use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
+use openusd::{sdf::Path, vt::Value};
 
 use super::util::{connections_at, read_asset_path, read_bool, read_token_or_string};
 
@@ -60,10 +60,55 @@ pub struct ReadPreviewMaterial {
     pub color_texture_transforms: std::collections::BTreeMap<String, [[f32; 3]; 2]>,
     /// Signed tangent-space RGB transform for Preview Surface UsdUVTexture normals.
     pub normal_texture_transform: Option<[[f32; 3]; 2]>,
+    /// How each texture file wraps along S and T, as its texture node says.
+    pub texture_wraps: std::collections::BTreeMap<String, [TextureWrap; 2]>,
     pub warnings: Vec<String>,
 
     /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
     pub uv_transform: Option<bevy::math::Affine2>,
+}
+
+/// How a texture continues past its edges. Unauthored and `useMetadata`
+/// wraps repeat, as DCC exports expect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextureWrap {
+    #[default]
+    Repeat,
+    Mirror,
+    Clamp,
+    Black,
+}
+
+/// The S and T wraps of a texture node: UsdUVTexture's `wrapS`/`wrapT`, or
+/// MaterialX's `uaddressmode`/`vaddressmode`.
+fn read_texture_wrap(
+    stage: &Stage,
+    tex_prim: &Path,
+    time: Option<f64>,
+) -> anyhow::Result<[TextureWrap; 2]> {
+    let mut wrap = [TextureWrap::Repeat; 2];
+    for (axis, names) in [["wrapS", "uaddressmode"], ["wrapT", "vaddressmode"]]
+        .into_iter()
+        .enumerate()
+    {
+        for name in names {
+            let Some(attribute) = texture_input_attribute(stage, tex_prim, name)? else {
+                continue;
+            };
+            let value = match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+                Some(Value::Token(value)) => value.as_str().to_owned(),
+                Some(Value::String(value)) => value,
+                _ => continue,
+            };
+            wrap[axis] = match value.as_str() {
+                "mirror" => TextureWrap::Mirror,
+                "clamp" => TextureWrap::Clamp,
+                "black" | "constant" => TextureWrap::Black,
+                _ => TextureWrap::Repeat,
+            };
+        }
+    }
+    Ok(wrap)
 }
 
 /// Resolves preview-purpose material binding, falling back to all-purpose and
@@ -82,8 +127,13 @@ pub fn read_material_binding_for_purpose(
     purpose: &str,
 ) -> anyhow::Result<Option<Path>> {
     Ok(
-        openusd_schemas::shade::MaterialBindingAPI::new(stage.prim(prim.clone())?)
-            .compute_bound_material(purpose)?,
+        openusd_schemas::shade::MaterialBindingAPI::from_prim_unchecked(stage.prim(prim.clone())?)
+            .resolve_binding(
+                purpose,
+                true,
+                &mut openusd_schemas::shade::BindingCache::default(),
+            )?
+            .map(|binding| binding.material_path().clone()),
     )
 }
 
@@ -259,6 +309,8 @@ pub fn read_preview_material_at(
             if !textures.contains(&tex.3) {
                 textures.push(tex.3.clone());
             }
+            out.texture_wraps
+                .insert(tex.0.clone(), read_texture_wrap(stage, &tex.3, time)?);
             bind_texture(&mut out, tex);
         }
         match value {
@@ -334,13 +386,13 @@ fn texture_rgba_transform(
         return Ok([[1.0; 4], [0.0; 4]]);
     }
     let mut result = [[1.0; 4], [0.0; 4]];
-    let shader = Shader::new(stage.prim(prim)?);
+    let shader = Shader::from_prim_unchecked(stage.prim(prim)?);
     for (index, name) in ["scale", "bias"].into_iter().enumerate() {
         let input = shader.input(name);
         let path = input.path();
         let connections = input.connected_sources()?;
         anyhow::ensure!(
-            connections.invalid_source_paths().is_empty(),
+            connections.invalid_paths().is_empty(),
             "connected texture scale/bias has invalid sources at {path}"
         );
         let producers = input.value_producing_attributes(ProducerFilter::Any)?;
@@ -1636,10 +1688,10 @@ pub(super) fn texture_input_attribute(
     name: &str,
 ) -> anyhow::Result<Option<openusd::usd::Attribute>> {
     use openusd_schemas::shade::{Connectable, ProducerFilter, Shader};
-    let input = Shader::new(stage.prim(tex_prim)?).input(name);
+    let input = Shader::from_prim_unchecked(stage.prim(tex_prim)?).input(name);
     let connections = input.connected_sources()?;
     anyhow::ensure!(
-        connections.invalid_source_paths().is_empty(),
+        connections.invalid_paths().is_empty(),
         "invalid texture {name} connection at {}",
         input.path()
     );
@@ -1939,7 +1991,7 @@ def Material "Mat" {
 
     #[test]
     fn texture_times_follow_each_material_graph_and_surface_fallback() {
-        use openusd::sdf::{Path, Value};
+        use openusd::{sdf::Path, vt::Value};
         let stage = openusd::usd::Stage::builder()
             .in_memory("texture-graphs.usda")
             .unwrap();
@@ -2113,8 +2165,8 @@ def Material "Mat" {
         )
         .unwrap();
         let stage = source.open_stage().unwrap();
-        let parent = MaterialBindingAPI::new(stage.prim("/Set").unwrap());
-        let child = MaterialBindingAPI::new(stage.prim("/Set/Child").unwrap());
+        let parent = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set").unwrap());
+        let child = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set/Child").unwrap());
         let path = Path::new("/Set/Child").unwrap();
         parent.bind("/Inherited").unwrap();
         assert_eq!(
@@ -2133,7 +2185,11 @@ def Material "Mat" {
             "/Local"
         );
         parent
-            .bind_for_purpose("", "/Strong", BindingStrength::StrongerThanDescendants)
+            .bind_for_purpose(
+                "",
+                "/Strong",
+                Some(BindingStrength::StrongerThanDescendants),
+            )
             .unwrap();
         assert_eq!(
             read_material_binding(&stage, &path)
@@ -2146,7 +2202,7 @@ def Material "Mat" {
             .bind_for_purpose(
                 "preview",
                 "/Preview",
-                BindingStrength::WeakerThanDescendants,
+                Some(BindingStrength::WeakerThanDescendants),
             )
             .unwrap();
         let before = stage.root_layer().export_to_string().unwrap();
@@ -2178,8 +2234,12 @@ def Material "Mat" {
         let stage = source.open_stage().unwrap();
         let path = Path::new("/Hair").unwrap();
         assert!(read_material_binding(&stage, &path).unwrap().is_none());
-        MaterialBindingAPI::new(stage.prim("/Hair").unwrap())
-            .bind_for_purpose("full", "/Full", BindingStrength::WeakerThanDescendants)
+        MaterialBindingAPI::from_prim_unchecked(stage.prim("/Hair").unwrap())
+            .bind_for_purpose(
+                "full",
+                "/Full",
+                Some(BindingStrength::WeakerThanDescendants),
+            )
             .unwrap();
         assert_eq!(
             read_material_binding(&stage, &path)
@@ -2202,17 +2262,17 @@ def Material "Mat" {
         let collection =
             openusd::usd::apply_collection(&stage, Path::new("/Set").unwrap(), "selected").unwrap();
         collection
-            .include_path(&stage, Path::new("/Set/A").unwrap())
+            .include_path(Path::new("/Set/A").unwrap())
             .unwrap();
-        let binding = MaterialBindingAPI::new(stage.prim("/Set").unwrap());
+        let binding = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set").unwrap());
         binding.bind("/Default").unwrap();
         binding
             .bind_collection(
                 "selected",
-                Path::new("/Set.collection:selected").unwrap(),
+                &collection,
                 Path::new("/Collection").unwrap(),
                 "",
-                BindingStrength::WeakerThanDescendants,
+                Some(BindingStrength::WeakerThanDescendants),
             )
             .unwrap();
         assert_eq!(

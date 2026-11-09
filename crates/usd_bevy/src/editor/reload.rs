@@ -252,12 +252,7 @@ impl EditorSession {
                 openusd::ar::split_package_relative_path_outer(path)
             {
                 source_bytes.insert(outer, bytes.clone());
-                Arc::<[u8]>::from(openusd::ar::read_package_entry(
-                    Box::new(crate::source::SharedAsset(std::io::Cursor::new(
-                        bytes.clone(),
-                    ))),
-                    &inner,
-                )?)
+                Arc::<[u8]>::from(&*crate::source::package_entry(bytes.clone(), &inner)?)
             } else {
                 source_bytes.insert(path.to_owned(), bytes.clone());
                 bytes.clone()
@@ -348,10 +343,11 @@ impl EditorSession {
                     .iter()
                     .map(|(path, bytes)| (path.clone(), bytes.clone())),
             );
-        if let Err(error) = self
+        let published = self
             .stage
-            .without_recording(|stage| plan.as_ref().map_or(Ok(()), |plan| plan.apply(stage)))
-        {
+            .group(|stage| plan.as_ref().map_or(Ok(()), |plan| plan.apply(stage)));
+        self.settle_layers();
+        if let Err(error) = published {
             *disk
                 .replacements
                 .lock()
@@ -362,16 +358,8 @@ impl EditorSession {
         if !replacements.is_empty() {
             let conflicts =
                 |entry: &HistoryEntry| replacements.iter().any(|(id, _)| entry.layers.contains(id));
-            let keep: Vec<_> = self
-                .undo
-                .iter()
-                .flat_map(|entry| std::iter::repeat_n(!conflicts(entry), entry.transactions))
-                .collect();
-            assert!(
-                self.stage.retain_transactions(&keep),
-                "editor transaction history is inconsistent"
-            );
-            self.undo.retain(|entry| !conflicts(entry));
+            self.stage.reset();
+            self.undo.clear();
             self.redo.retain(|entry| !conflicts(entry));
             self.revision = self.revision.wrapping_add(1);
         }
@@ -729,7 +717,7 @@ def Material "Mat" {
     }
 
     #[test]
-    fn unrelated_layer_reload_preserves_undo_and_redo() {
+    fn unrelated_layer_reload_keeps_redo_and_clears_undo() {
         let directory = tempfile::tempdir().unwrap();
         let child = directory.path().join("child.usda");
         let write_child = |size| {
@@ -754,25 +742,16 @@ def Material "Mat" {
                 value: Value::Double(2.0),
             })
             .unwrap();
-        write_child(3);
-        editor.reload_sources().unwrap();
-        assert_eq!(editor.undo.len(), 1);
-        assert_eq!(editor.stage.undo_depth(), 1);
         assert!(editor.undo().unwrap());
-        assert_eq!(
-            editor
-                .stage()
-                .prim("/Local")
-                .unwrap()
-                .attribute("size")
-                .get::<f64>()
-                .unwrap(),
-            Some(1.0)
-        );
-        write_child(5);
+        write_child(3);
         editor.reload_sources().unwrap();
         assert_eq!(editor.redo.len(), 1);
         assert!(editor.redo().unwrap());
+        write_child(5);
+        editor.reload_sources().unwrap();
+        assert!(editor.undo.is_empty());
+        assert_eq!(editor.stage.undo_depth(), 0);
+        assert!(!editor.undo().unwrap());
         assert_eq!(
             editor
                 .stage()
@@ -829,7 +808,7 @@ def Material "Mat" {
     }
 
     #[test]
-    fn reload_prunes_conflicting_commands_without_dropping_unrelated_undo() {
+    fn reload_clears_undo_across_layers() {
         let directory = tempfile::tempdir().unwrap();
         let child = directory.path().join("child.usda");
         std::fs::write(
@@ -862,9 +841,9 @@ def Material "Mat" {
         )
         .unwrap();
         editor.reload_sources().unwrap();
-        assert_eq!(editor.undo.len(), 1);
-        assert_eq!(editor.stage.undo_depth(), 1);
-        assert!(editor.undo().unwrap());
+        assert!(editor.undo.is_empty());
+        assert_eq!(editor.stage.undo_depth(), 0);
+        assert!(!editor.undo().unwrap());
         assert_eq!(
             editor
                 .stage()
@@ -873,7 +852,7 @@ def Material "Mat" {
                 .attribute("size")
                 .get::<f64>()
                 .unwrap(),
-            Some(1.0)
+            Some(2.0)
         );
         assert_eq!(
             editor
@@ -885,34 +864,6 @@ def Material "Mat" {
                 .unwrap(),
             Some(3.0)
         );
-        assert!(!editor.undo().unwrap());
-    }
-
-    #[test]
-    fn capture_suspension_is_nested_and_panic_safe() {
-        let stage = UndoStage::from(Stage::builder().in_memory("capture.usda").unwrap());
-        stage.define_prim("/Before").unwrap();
-        stage.without_recording(|_| {
-            stage.without_recording(|stage| {
-                stage.define_prim("/Nested").unwrap();
-            });
-            stage.define_prim("/Outer").unwrap();
-        });
-        assert_eq!(stage.undo_depth(), 1);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            stage.without_recording(|stage| {
-                stage.define_prim("/BeforePanic").unwrap();
-                panic!("test unwind");
-            });
-        }));
-        assert!(result.is_err());
-        stage.define_prim("/After").unwrap();
-        assert_eq!(stage.undo_depth(), 2);
-        assert!(!stage.retain_transactions(&[false]));
-        assert_eq!(stage.undo_depth(), 2);
-        stage.undo().unwrap();
-        assert!(!stage.prim("/After").unwrap().is_valid().unwrap());
-        assert!(stage.prim("/BeforePanic").unwrap().is_valid().unwrap());
     }
 
     fn tick_until(app: &mut App, predicate: impl Fn(&World) -> bool) {

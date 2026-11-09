@@ -6,13 +6,14 @@
 
 use openusd::gf;
 use openusd::sdf::Path;
-use openusd::usd::{Stage, TimeCode};
+use openusd::usd::{Attribute, SchemaBase, Stage, TimeCode};
 use openusd_schemas::skel::skinning::{
-    BlendShapeWeighted, InbetweenRef, apply_blend_shapes, resolve_blend_shape_offsets,
+    BlendShapeWeighted, InbetweenRef, SubShape, apply_blend_shapes, joint_local_to_skel_space,
+    resolve_blend_shape_offsets, skinning_transforms, sub_shape_weights,
 };
 use openusd_schemas::skel::{
-    BindingAPI as SkelBindingAPI, BlendShape, SkelAnimQuery, SkelBinding, Skeleton,
-    SkeletonResolver, SkinningResolver,
+    AnimMapper, AnimQuery, Animation, BindingAPI as SkelBindingAPI, BindingProperties, BlendShape,
+    BlendShapeSchema, Pose, Root, Skeleton, SkeletonQuery, SkinningMethod, SkinningQuery,
 };
 
 use super::util::{read_float_vec, read_rel_first_target};
@@ -37,32 +38,44 @@ fn influences_are_time_varying(stage: &Stage, path: &Path) -> bool {
     })
 }
 
-fn sampled_influences(
-    stage: &Stage,
-    path: &Path,
-    time: Option<f64>,
-) -> anyhow::Result<(Vec<i32>, Vec<f32>)> {
-    let prim = stage.prim(path.clone())?;
-    let time = time.map(TimeCode::new);
-    let indices = prim
-        .attribute("primvars:skel:jointIndices")
-        .get_at::<Vec<i32>>(time)?
-        .unwrap_or_default();
-    let weights = prim
-        .attribute("primvars:skel:jointWeights")
-        .get_at::<Vec<f32>>(time)?
-        .unwrap_or_default();
-    Ok((indices, weights))
-}
-
 /// Whether `prim` binds any blend shapes (`skel:blendShapes`).
 pub fn has_blend_shapes(stage: &Stage, prim: &Path) -> bool {
     SkelBindingAPI::get(stage, prim.clone())
         .ok()
         .flatten()
-        .and_then(|b| b.blend_shapes().ok())
+        .and_then(|b| b.blend_shapes().ok().flatten())
         .map(|v| !v.is_empty())
         .unwrap_or(false)
+}
+
+/// `skel:blendShapes` as authored on `binding`, empty when unauthored.
+fn blend_shape_names(binding: &SkelBindingAPI) -> anyhow::Result<Vec<String>> {
+    Ok(binding
+        .blend_shapes_attr()
+        .cast::<Vec<String>>()?
+        .unwrap_or_default())
+}
+
+/// The animation's blend-shape weights at `time`, mapped by name onto
+/// `names`; a name the animation does not drive weighs zero.
+fn blend_shape_weights(
+    animation: &AnimQuery,
+    names: &[String],
+    time: Option<f64>,
+) -> anyhow::Result<Vec<f32>> {
+    let order = animation.blend_shape_order();
+    let weights = animation
+        .blend_shape_weights(TimeCode::new(time.unwrap_or(0.0)))?
+        .filter(|weights| weights.len() == order.len())
+        .unwrap_or_else(|| vec![0.0; order.len()]);
+    Ok(AnimMapper::new(order, names).remap(&weights, 0.0))
+}
+
+/// Whether any of `attributes` authors a default or time samples.
+fn any_authored(attributes: &[Attribute]) -> bool {
+    attributes
+        .iter()
+        .any(|attribute| attribute.has_authored_value().unwrap_or(false))
 }
 
 /// Whether the mesh's bound blend-shape *weights* may vary over time (so the
@@ -78,8 +91,8 @@ pub fn blend_is_time_varying(stage: &Stage, mesh_path: &Path) -> bool {
         return false;
     };
     matches!(
-        SkelAnimQuery::new(stage, anim_path),
-        Ok(Some(anim)) if anim.blend_shape_weights_might_be_time_varying()
+        anim_query(stage, &anim_path),
+        Ok(Some(anim)) if any_authored(&anim.blend_shape_weight_attributes())
     )
 }
 
@@ -111,35 +124,27 @@ pub(crate) fn morph_sample_with_mesh(
         .ok_or_else(|| anyhow::anyhow!("missing morph skeleton"))?;
     let animation = animation_source(stage, &skeleton, &binding)
         .ok_or_else(|| anyhow::anyhow!("missing morph animation"))?;
-    let animation = SkelAnimQuery::new(stage, animation)?
-        .ok_or_else(|| anyhow::anyhow!("invalid morph animation"))?;
-    let weights =
-        animation.compute_blend_shape_weights(stage, TimeCode::new(time.unwrap_or(0.0)))?;
-    let names = binding.binding.blend_shapes()?;
+    let animation =
+        anim_query(stage, &animation)?.ok_or_else(|| anyhow::anyhow!("invalid morph animation"))?;
+    let names = blend_shape_names(&binding.binding)?;
     let paths = binding.binding.blend_shape_targets()?;
     anyhow::ensure!(
         names.len() == paths.len(),
         "blend shape name/target count mismatch"
     );
+    let weights = blend_shape_weights(&animation, &names, time)?;
     let mut result = MorphSample {
         targets: Vec::new(),
         normal_targets: Vec::new(),
         weights: Vec::new(),
     };
-    for (name, path) in names.iter().zip(paths) {
-        let weight = animation
-            .blend_shape_order()
-            .iter()
-            .position(|value| value == name)
-            .and_then(|index| weights.get(index))
-            .copied()
-            .unwrap_or(0.0);
+    for (path, weight) in paths.into_iter().zip(weights) {
         anyhow::ensure!(weight.is_finite(), "nonfinite blend shape weight");
         let shape = BlendShape::get(stage, path)?
             .ok_or_else(|| anyhow::anyhow!("invalid blend shape target"))?;
-        let indices = shape.point_indices()?;
-        let primary = shape.offsets()?;
-        let primary_normals = shape.normal_offsets()?;
+        let indices = shape.point_indices()?.unwrap_or_default();
+        let primary = shape.offsets()?.unwrap_or_default();
+        let primary_normals = shape.normal_offsets()?.unwrap_or_default();
         let normal_target = |offsets: &[gf::Vec3f]| -> anyhow::Result<Vec<[f32; 3]>> {
             if offsets.is_empty() {
                 Ok(vec![[0.0; 3]; mesh.points.len()])
@@ -148,24 +153,24 @@ pub(crate) fn morph_sample_with_mesh(
             }
         };
         let inbetweens = shape.inbetweens()?;
-        let mut breakpoints = Vec::new();
+        let first = result.targets.len();
+        let mut inbetween_weights = Vec::with_capacity(inbetweens.len());
         for inbetween in &inbetweens {
             let at = inbetween
-                .weight
+                .weight()?
                 .ok_or_else(|| anyhow::anyhow!("inbetween has no weight"))?;
+            let offsets = inbetween.offsets()?.unwrap_or_default();
             anyhow::ensure!(
-                at.is_finite() && inbetween.offsets.len() == primary.len(),
+                at.is_finite() && offsets.len() == primary.len(),
                 "invalid inbetween offsets or weight"
             );
-            breakpoints.push((at, result.targets.len()));
-            result.targets.push(dense_morph_offsets(
-                &inbetween.offsets,
-                &indices,
-                mesh.points.len(),
-            )?);
+            inbetween_weights.push(at);
             result
-                .normal_targets
-                .push(normal_target(&inbetween.normal_offsets)?);
+                .targets
+                .push(dense_morph_offsets(&offsets, &indices, mesh.points.len())?);
+            result.normal_targets.push(normal_target(
+                &inbetween.normal_offsets()?.unwrap_or_default(),
+            )?);
             result.weights.push(0.0);
         }
         let primary_index = result.targets.len();
@@ -174,33 +179,17 @@ pub(crate) fn morph_sample_with_mesh(
             .push(dense_morph_offsets(&primary, &indices, mesh.points.len())?);
         result.normal_targets.push(normal_target(&primary_normals)?);
         result.weights.push(0.0);
-        if inbetweens.is_empty() {
-            result.weights[primary_index] = weight;
-            continue;
-        }
-        breakpoints.push((1.0, primary_index));
-        breakpoints.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let weight = weight.clamp(0.0, 1.0);
-        let mut lower = (0.0, None);
-        let mut resolved = false;
-        for (at, index) in breakpoints {
-            if weight <= at {
-                let factor = if at > lower.0 {
-                    (weight - lower.0) / (at - lower.0)
-                } else {
-                    0.0
-                };
-                result.weights[index] = factor;
-                if let Some(index) = lower.1 {
-                    result.weights[index] = 1.0 - factor;
-                }
-                resolved = true;
-                break;
-            }
-            lower = (at, Some(index));
-        }
-        if !resolved {
-            result.weights[primary_index] = 1.0;
+        let weight = if inbetweens.is_empty() {
+            weight
+        } else {
+            weight.clamp(0.0, 1.0)
+        };
+        for (sub_shape, share) in sub_shape_weights(weight, &inbetween_weights) {
+            let index = match sub_shape {
+                SubShape::Primary => primary_index,
+                SubShape::Inbetween(index) => first + index,
+            };
+            result.weights[index] = share;
         }
     }
     Ok(result)
@@ -356,34 +345,25 @@ pub(crate) fn skin_normals(
     source_points: &[usize],
     point_count: usize,
 ) -> anyhow::Result<()> {
-    let binding =
-        binding_of(stage, path).ok_or_else(|| anyhow::anyhow!("missing normal skin binding"))?;
-    let skeleton_path = binding
-        .skeleton
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("missing normal skeleton"))?;
-    let skeleton = Skeleton::get(stage, skeleton_path.clone())?
-        .ok_or_else(|| anyhow::anyhow!("invalid normal skeleton"))?;
-    let joints = skeleton.joints()?;
-    let skin = SkinningResolver::from_binding(&binding.binding, &joints)?;
-    let resolver = SkeletonResolver::from_skeleton(&skeleton)?;
-    let locals = sample_joint_locals(stage, &skeleton_path, &binding, &joints, &resolver, time)?;
-    let transforms =
-        resolver.compute_skinning_transforms_from_local(&locals, gf::Matrix4d::IDENTITY);
-    let transforms = skin.remap_skinning_xforms(&transforms);
-    let (indices, weights) = sampled_influences(stage, path, time)?;
-    SkinNormalSample {
-        skin,
-        transforms,
-        indices,
-        weights,
-    }
-    .apply(normals, source_points, point_count)
+    let skin =
+        bound_skin(stage, path)?.ok_or_else(|| anyhow::anyhow!("missing normal skin binding"))?;
+    let transforms = skin
+        .pose_transforms(time)?
+        .ok_or_else(|| anyhow::anyhow!("missing normal bind pose"))?;
+    let transforms = skin.mesh_transforms(&transforms);
+    let (indices, weights) = skin
+        .skinning
+        .joint_influences(time.map(TimeCode::new))?
+        .ok_or_else(|| anyhow::anyhow!("invalid normal influence count"))?;
+    skin.normal_sample(transforms, indices, weights, time)?
+        .apply(normals, source_points, point_count)
 }
 
 pub(crate) struct SkinNormalSample {
-    skin: SkinningResolver,
-    transforms: Vec<gf::Matrix4d>,
+    rigid: bool,
+    stride: usize,
+    geom_bind_transform: gf::Mat4d,
+    transforms: Vec<gf::Mat4d>,
     indices: Vec<i32>,
     weights: Vec<f32>,
 }
@@ -397,27 +377,21 @@ impl SkinNormalSample {
     ) -> anyhow::Result<()> {
         use bevy::math::{Mat4, Vec3};
         let Self {
-            skin,
+            rigid,
+            stride,
+            geom_bind_transform,
             transforms,
             indices,
             weights,
         } = self;
+        let (rigid, stride) = (*rigid, *stride);
         let transforms: Vec<_> = transforms
             .iter()
             .map(|matrix| {
-                Mat4::from_cols_array(
-                    &(skin.geom_bind_transform() * *matrix)
-                        .0
-                        .map(|value| value as f32),
-                )
+                Mat4::from_cols_array(&(*geom_bind_transform * *matrix).0.map(|value| value as f32))
             })
             .collect();
-        let stride = skin.num_influences_per_component();
-        let count = if skin.is_rigidly_deformed() {
-            1
-        } else {
-            point_count
-        };
+        let count = if rigid { 1 } else { point_count };
         anyhow::ensure!(
             source_points.len() == normals.values.len()
                 && source_points.iter().all(|point| *point < point_count),
@@ -439,12 +413,8 @@ impl SkinNormalSample {
         let mut normal_palette = vec![None; transforms.len()];
         let mut rigid_normal = None;
         for (&point, normal) in source_points.iter().zip(&mut normals.values) {
-            let start = if skin.is_rigidly_deformed() {
-                0
-            } else {
-                point * stride
-            };
-            let normal_matrix = if skin.is_rigidly_deformed() {
+            let start = if rigid { 0 } else { point * stride };
+            let normal_matrix = if rigid {
                 if let Some(matrix) = rigid_normal {
                     matrix
                 } else {
@@ -517,7 +487,7 @@ pub(crate) fn blend_shape_deform(
     time: Option<f64>,
 ) -> Option<Vec<[f32; 3]>> {
     let api = SkelBindingAPI::get(stage, mesh_path.clone()).ok()??;
-    let names = api.blend_shapes().ok()?;
+    let names = blend_shape_names(&api).ok()?;
     let targets = api.blend_shape_targets().ok()?;
     if names.is_empty() {
         return None;
@@ -527,46 +497,36 @@ pub(crate) fn blend_shape_deform(
     let binding = binding_of(stage, mesh_path)?;
     let skel_path = binding.skeleton.clone()?;
     let anim_path = animation_source(stage, &skel_path, &binding)?;
-    let anim = SkelAnimQuery::new(stage, anim_path).ok()??;
-    let order = anim.blend_shape_order();
-    let weights = anim
-        .compute_blend_shape_weights(stage, TimeCode::new(time.unwrap_or(0.0)))
-        .ok()?;
-    let weight_of = |name: &str| -> f32 {
-        order
-            .iter()
-            .position(|n| n == name)
-            .and_then(|i| weights.get(i).copied())
-            .unwrap_or(0.0)
-    };
+    let anim = anim_query(stage, &anim_path).ok()??;
+    let weights = blend_shape_weights(&anim, &names, time).ok()?;
 
     // Collect owned per-shape offset/index data so the `BlendShapeWeighted`
     // slices below can borrow it.
     let mut owned: Vec<(f32, Vec<gf::Vec3f>, Vec<i32>)> = Vec::new();
-    for (i, name) in names.iter().enumerate() {
-        let w = weight_of(name);
+    for (target, &w) in targets.iter().zip(&weights) {
         if w == 0.0 {
             continue;
         }
-        let Some(target) = targets.get(i) else {
-            continue;
-        };
         let Ok(Some(bs)) = BlendShape::get(stage, target.clone()) else {
             continue;
         };
-        let primary = bs.offsets().unwrap_or_default();
-        let point_indices = bs.point_indices().unwrap_or_default();
+        let primary = bs.offsets().ok().flatten().unwrap_or_default();
+        let point_indices = bs.point_indices().ok().flatten().unwrap_or_default();
         let inbetweens = bs.inbetweens().unwrap_or_default();
         if inbetweens.is_empty() {
             owned.push((w, primary, point_indices));
         } else {
-            // Resolve inbetweens → effective offsets at `w`; apply at weight 1.
+            // Resolve inbetweens → effective offsets at `w` clamped to [0, 1];
+            // apply at weight 1.
             let ib: Vec<(f32, Vec<gf::Vec3f>)> = inbetweens
                 .iter()
-                .filter_map(|ib| Some((ib.weight?, ib.offsets.clone())))
+                .filter_map(|ib| Some((ib.weight().ok()??, ib.offsets().ok()?.unwrap_or_default())))
                 .collect();
             let ib_refs: Vec<InbetweenRef> = ib.iter().map(|(w, o)| (*w, o.as_slice())).collect();
-            let resolved = resolve_blend_shape_offsets(w, &ib_refs, &primary);
+            let Some(resolved) = resolve_blend_shape_offsets(w.clamp(0.0, 1.0), &ib_refs, &primary)
+            else {
+                continue;
+            };
             owned.push((1.0, resolved, point_indices));
         }
     }
@@ -583,7 +543,7 @@ pub(crate) fn blend_shape_deform(
         })
         .collect();
     let pts: Vec<gf::Vec3f> = rest.iter().map(|p| gf::Vec3f::from(*p)).collect();
-    let morphed = apply_blend_shapes(&pts, &shapes);
+    let morphed = apply_blend_shapes(&pts, &shapes)?;
     Some(morphed.into_iter().map(|v| [v.x, v.y, v.z]).collect())
 }
 
@@ -619,56 +579,48 @@ fn inherited_rel(stage: &Stage, prim: &Path, rel: &str) -> Option<String> {
 /// authored on the *skeleton* (or inherited to it), not necessarily in the
 /// mesh's own namespace — so resolve from the skeleton first, then fall back to
 /// the mesh's binding.
-fn animation_source(stage: &Stage, skel_path: &Path, mesh_binding: &SkelBinding) -> Option<Path> {
+fn animation_source(stage: &Stage, skel_path: &Path, mesh_binding: &MeshBinding) -> Option<Path> {
     inherited_rel(stage, skel_path, "skel:animationSource")
         .and_then(|s| openusd::sdf::path(&s).ok())
         .or_else(|| mesh_binding.animation_source.clone())
 }
 
-fn sample_joint_locals(
-    stage: &Stage,
-    skeleton: &Path,
-    binding: &SkelBinding,
-    joints: &[String],
-    resolver: &SkeletonResolver,
-    time: Option<f64>,
-) -> anyhow::Result<Vec<gf::Matrix4d>> {
-    let animation = animation_source(stage, skeleton, binding);
-    sample_animation_locals(stage, animation, joints, resolver, time)
+/// The query over the `SkelAnimation` at `path`, or `None` where it is none.
+fn anim_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<AnimQuery>> {
+    Ok(Animation::get(stage, path.clone())?
+        .map(AnimQuery::new)
+        .transpose()?)
 }
 
-fn sample_animation_locals(
-    stage: &Stage,
-    animation: Option<Path>,
-    joints: &[String],
-    resolver: &SkeletonResolver,
+/// Joint-local transforms at `time` in skeleton order: the animation's where
+/// it maps a joint, else the joint's rest transform.
+fn joint_locals(
+    skeleton: &SkeletonQuery,
+    animation: Option<&AnimQuery>,
     time: Option<f64>,
-) -> anyhow::Result<Vec<gf::Matrix4d>> {
-    let rest = resolver.rest_pose_local();
-    anyhow::ensure!(
-        rest.len() == joints.len(),
-        "skeleton rest-pose count does not match joint order"
-    );
-    let Some(path) = animation else {
-        return Ok(rest.to_vec());
+) -> anyhow::Result<Vec<gf::Mat4d>> {
+    let mut locals = skeleton
+        .rest_local_transforms()
+        .ok_or_else(|| anyhow::anyhow!("skeleton rest-pose count does not match joint order"))?
+        .to_vec();
+    let Some(animation) = animation else {
+        return Ok(locals);
     };
-    let Some(animation) = SkelAnimQuery::new(stage, path)? else {
-        return Ok(rest.to_vec());
+    let Some(values) = animation.joint_local_transforms(TimeCode::new(time.unwrap_or(0.0)))? else {
+        return Ok(locals);
     };
-    let values =
-        animation.compute_joint_local_transforms(stage, TimeCode::new(time.unwrap_or(0.0)))?;
+    let mapper = AnimMapper::new(animation.joint_order(), skeleton.joint_order());
     anyhow::ensure!(
-        values.len() == animation.joint_order().len(),
+        mapper.remap_into(&values, &mut locals),
         "animation transform count does not match joint order"
     );
-    let mapper = openusd_schemas::skel::AnimMapper::new(animation.joint_order(), joints);
-    Ok((0..joints.len())
-        .map(|joint| {
-            mapper
-                .source_index(joint)
-                .map_or(rest[joint], |index| values[index])
-        })
-        .collect())
+    Ok(locals)
+}
+
+/// Compose joint-local transforms into skeleton space.
+fn skel_space(skeleton: &SkeletonQuery, locals: &[gf::Mat4d]) -> anyhow::Result<Vec<gf::Mat4d>> {
+    joint_local_to_skel_space(locals, skeleton.topology(), None)
+        .ok_or_else(|| anyhow::anyhow!("joint pose does not match skeleton topology"))
 }
 
 /// A skeleton's posed joints in skeleton space, with each joint's parent.
@@ -687,18 +639,23 @@ pub fn skeleton_pose(
     let Some(prim) = Skeleton::get(stage, skeleton.clone())? else {
         return Ok(None);
     };
-    let joints = prim.joints()?;
-    let resolver = SkeletonResolver::from_skeleton(&prim)?;
-    let animation = inherited_rel(stage, skeleton, "skel:animationSource")
-        .and_then(|path| openusd::sdf::path(&path).ok());
-    let locals = sample_animation_locals(stage, animation, &joints, &resolver, time)?;
-    let skel = resolver.joint_local_to_skel_space(&locals);
+    let Some(query) = SkeletonQuery::new(&prim)? else {
+        return Ok(None);
+    };
+    let animation = match inherited_rel(stage, skeleton, "skel:animationSource")
+        .and_then(|path| openusd::sdf::path(&path).ok())
+    {
+        Some(path) => anim_query(stage, &path)?,
+        None => None,
+    };
+    let locals = joint_locals(&query, animation.as_ref(), time)?;
+    let skel = skel_space(&query, &locals)?;
     Ok(Some(SkeletonPose {
         joints: skel
             .iter()
             .map(|matrix| bevy::math::Mat4::from_cols_array(&matrix.0.map(|value| value as f32)))
             .collect(),
-        parents: resolver
+        parents: query
             .topology()
             .parents()
             .iter()
@@ -707,40 +664,117 @@ pub fn skeleton_pose(
     }))
 }
 
-/// The enclosing `SkelRoot` of `prim` (walking up, inclusive), which scopes
-/// UsdSkel binding resolution.
-fn enclosing_skel_root(stage: &Stage, prim: &Path) -> Option<Path> {
-    let mut cur = Some(prim.clone());
-    while let Some(p) = cur {
-        let is_root = stage
-            .prim(p.clone())
-            .expect("validated USD path")
-            .type_name()
-            .ok()
-            .flatten()
-            .as_deref()
-            == Some("SkelRoot");
-        if is_root {
-            return Some(p);
-        }
-        cur = p.parent();
-    }
-    None
+/// A mesh's `SkelBindingAPI` with the skeleton and animation targets it inherits.
+struct MeshBinding {
+    binding: SkelBindingAPI,
+    skeleton: Option<Path>,
+    animation_source: Option<Path>,
 }
 
-/// Resolve a mesh's binding and inherited skeleton / animation targets.
-fn binding_of(stage: &Stage, mesh_path: &Path) -> Option<SkelBinding> {
-    enclosing_skel_root(stage, mesh_path)?;
+/// Resolve a mesh's binding and inherited skeleton / animation targets; only a
+/// mesh inside a `SkelRoot` is bound.
+fn binding_of(stage: &Stage, mesh_path: &Path) -> Option<MeshBinding> {
     let binding = SkelBindingAPI::get(stage, mesh_path.clone()).ok()??;
+    Root::find(binding.prim()).ok()??;
     let target = |name| {
         inherited_rel(stage, mesh_path, name).and_then(|path| openusd::sdf::path(&path).ok())
     };
-    Some(SkelBinding {
-        prim: mesh_path.as_str().to_string(),
+    Some(MeshBinding {
         skeleton: target("skel:skeleton"),
         animation_source: target("skel:animationSource"),
         binding,
     })
+}
+
+/// A skinned mesh resolved against its skeleton and that skeleton's animation.
+struct BoundSkin {
+    skinning: SkinningQuery,
+    skeleton: SkeletonQuery,
+    animation: Option<AnimQuery>,
+}
+
+/// Resolve the skinning query, skeleton and animation bound to `mesh_path`,
+/// over the influence properties the mesh authors itself.
+fn bound_skin(stage: &Stage, mesh_path: &Path) -> anyhow::Result<Option<BoundSkin>> {
+    let Some(binding) = binding_of(stage, mesh_path) else {
+        return Ok(None);
+    };
+    let Some(skel_path) = binding.skeleton.clone() else {
+        return Ok(None);
+    };
+    let Some(skeleton) = Skeleton::get(stage, skel_path.clone())? else {
+        return Ok(None);
+    };
+    let Some(skeleton) = SkeletonQuery::new(&skeleton)? else {
+        return Ok(None);
+    };
+    let animation = match animation_source(stage, &skel_path, &binding) {
+        Some(path) => anim_query(stage, &path)?,
+        None => None,
+    };
+    let authored = |attribute: Attribute| -> anyhow::Result<Option<Attribute>> {
+        Ok(attribute.has_authored_value()?.then_some(attribute))
+    };
+    let api = &binding.binding;
+    let properties = BindingProperties {
+        joint_indices: authored(api.joint_indices_attr())?,
+        joint_weights: authored(api.joint_weights_attr())?,
+        skinning_method: authored(api.skinning_method_attr())?,
+        geom_bind_transform: authored(api.geom_bind_transform_attr())?,
+        joints: authored(api.joints_attr())?,
+        ..BindingProperties::default()
+    };
+    let skinning = SkinningQuery::new(
+        api.prim().clone(),
+        properties,
+        skeleton.joint_order().to_vec(),
+        Vec::<String>::new(),
+    )?;
+    Ok(Some(BoundSkin {
+        skinning,
+        skeleton,
+        animation,
+    }))
+}
+
+impl BoundSkin {
+    /// Skinning transforms at `time` in skeleton joint order, or `None` when
+    /// the skeleton has no bind pose.
+    fn pose_transforms(&self, time: Option<f64>) -> anyhow::Result<Option<Vec<gf::Mat4d>>> {
+        let locals = joint_locals(&self.skeleton, self.animation.as_ref(), time)?;
+        let skel = skel_space(&self.skeleton, &locals)?;
+        Ok(self
+            .skeleton
+            .inverse_bind_transforms()
+            .and_then(|inverse| skinning_transforms(&skel, inverse)))
+    }
+
+    /// Skeleton-order `transforms` in the mesh's `skel:joints` order, with the
+    /// identity for a joint the skeleton lacks.
+    fn mesh_transforms(&self, transforms: &[gf::Mat4d]) -> Vec<gf::Mat4d> {
+        match self.skinning.joint_mapper() {
+            Some(mapper) if !mapper.is_identity() => mapper.remap(transforms, gf::Mat4d::IDENTITY),
+            _ => transforms.to_vec(),
+        }
+    }
+
+    /// Normal-skinning inputs from mesh-order `transforms` and influences.
+    fn normal_sample(
+        &self,
+        transforms: Vec<gf::Mat4d>,
+        indices: Vec<i32>,
+        weights: Vec<f32>,
+        time: Option<f64>,
+    ) -> anyhow::Result<SkinNormalSample> {
+        Ok(SkinNormalSample {
+            rigid: self.skinning.is_rigidly_deformed(),
+            stride: self.skinning.influences_per_component(),
+            geom_bind_transform: self.skinning.geom_bind_transform(time.map(TimeCode::new))?,
+            transforms,
+            indices,
+            weights,
+        })
+    }
 }
 
 /// Whether the skinned mesh's bound SkelAnimation may vary over time (so the
@@ -759,8 +793,8 @@ pub fn skin_is_time_varying(stage: &Stage, mesh_path: &Path) -> bool {
         return false;
     };
     matches!(
-        SkelAnimQuery::new(stage, anim_path),
-        Ok(Some(anim)) if anim.joint_transforms_might_be_time_varying()
+        anim_query(stage, &anim_path),
+        Ok(Some(anim)) if any_authored(&anim.joint_transform_attributes())
     )
 }
 
@@ -778,8 +812,9 @@ pub(crate) fn deformation_is_time_varying(stage: &Stage, mesh_path: &Path) -> bo
     let Some(animation) = animation_source(stage, &skeleton, &binding) else {
         return false;
     };
-    matches!(SkelAnimQuery::new(stage, animation), Ok(Some(animation))
-        if animation.joint_transforms_might_be_time_varying() || animation.blend_shape_weights_might_be_time_varying())
+    matches!(anim_query(stage, &animation), Ok(Some(animation))
+        if any_authored(&animation.joint_transform_attributes())
+            || any_authored(&animation.blend_shape_weight_attributes()))
 }
 
 /// The skinned mesh points for `mesh_path` at `time` (`None` = rest/default),
@@ -813,41 +848,33 @@ pub(crate) fn cpu_skin_sample(
     time: Option<f64>,
     mesh: Option<&super::geom::ReadMesh>,
 ) -> anyhow::Result<Option<CpuSkinSample>> {
-    let Some(binding) = binding_of(stage, mesh_path) else {
+    let Some(skin) = bound_skin(stage, mesh_path)? else {
         return Ok(None);
     };
+    let at = time.map(TimeCode::new);
 
     // Skip absent or mismatched influence arrays.
-    let (indices, weights) = sampled_influences(stage, mesh_path, time)?;
-    let n_indices = indices.len();
-    let n_weights = weights.len();
-    if n_indices == 0 || n_indices != n_weights {
-        if n_indices != n_weights {
+    let Some((indices, weights)) = skin.skinning.joint_influences(at)? else {
+        if skin.skinning.has_joint_influences() {
             log::warn!(
-                "usd_bevy::skel: {}: jointIndices ({n_indices}) / jointWeights ({n_weights}) \
-                 length mismatch — showing the mesh un-skinned",
+                "usd_bevy::skel: {}: jointIndices / jointWeights length mismatch — showing \
+                 the mesh un-skinned",
                 mesh_path.as_str()
             );
         }
         return Ok(None);
-    }
-
-    let Some(skel_path) = binding.skeleton.clone() else {
-        return Ok(None);
     };
-    let Some(skeleton) = Skeleton::get(stage, skel_path.clone())? else {
-        return Ok(None);
-    };
-    let joints = skeleton.joints()?;
-    let skinning = SkinningResolver::from_binding(&binding.binding, &joints)?;
-    let resolver = SkeletonResolver::from_skeleton(&skeleton)?;
 
-    // Joint-local transforms at `time`: from the bound SkelAnimation, else the
+    // Skinning transforms at `time`: from the bound SkelAnimation, else the
     // skeleton's rest pose (which yields the undeformed mesh).
-    let locals = sample_joint_locals(stage, &skel_path, &binding, &joints, &resolver, time)?;
-
-    let skel_xforms =
-        resolver.compute_skinning_transforms_from_local(&locals, gf::Matrix4d::IDENTITY);
+    let Some(skel_xforms) = skin.pose_transforms(time)? else {
+        log::warn!(
+            "usd_bevy::skel: {}: skeleton has no bind pose; showing un-skinned mesh",
+            mesh_path.as_str()
+        );
+        return Ok(None);
+    };
+    let transforms = skin.mesh_transforms(&skel_xforms);
 
     let decoded;
     let mesh = match mesh {
@@ -864,16 +891,14 @@ pub(crate) fn cpu_skin_sample(
     let morphed = blend_shape_deform(stage, mesh_path, &mesh.points, time);
     let rest = morphed.as_deref().unwrap_or(&mesh.points);
     let pts: Vec<gf::Vec3f> = rest.iter().map(|p| gf::Vec3f::from(*p)).collect();
-    let components = if skinning.is_rigidly_deformed() {
+    let components = if skin.skinning.is_rigidly_deformed() {
         1
     } else {
         pts.len()
     };
-    let expected = components.checked_mul(skinning.num_influences_per_component());
-    let transforms = skinning.remap_skinning_xforms(&skel_xforms);
+    let expected = components.checked_mul(skin.skinning.influences_per_component());
     let joint_count = transforms.len();
     if expected != Some(indices.len())
-        || indices.len() != weights.len()
         || indices.iter().any(|&i| i < 0 || i as usize >= joint_count)
         || weights
             .iter()
@@ -885,35 +910,19 @@ pub(crate) fn cpu_skin_sample(
         );
         return Ok(None);
     }
-    let deformed = if skinning.is_rigidly_deformed() {
-        let transform = openusd_schemas::skel::skinning::rigid_skinning_transform(
-            &indices,
-            &weights,
-            skinning.num_influences_per_component(),
-            skinning.geom_bind_transform(),
-            &transforms,
+    let Some(deformed) = skin
+        .skinning
+        .skinned_points(&Pose::from(skel_xforms), &pts, at)?
+    else {
+        log::warn!(
+            "usd_bevy::skel: {}: unknown skinning method; showing un-skinned mesh",
+            mesh_path.as_str()
         );
-        pts.into_iter()
-            .map(|point| transform.transform_point(point))
-            .collect()
-    } else {
-        openusd_schemas::skel::skinning::skin_points_lbs(
-            &pts,
-            &indices,
-            &weights,
-            skinning.num_influences_per_component(),
-            skinning.geom_bind_transform(),
-            &transforms,
-        )
+        return Ok(None);
     };
     Ok(Some(CpuSkinSample {
         points: deformed.into_iter().map(|v| [v.x, v.y, v.z]).collect(),
-        normals: SkinNormalSample {
-            skin: skinning,
-            transforms,
-            indices,
-            weights,
-        },
+        normals: skin.normal_sample(transforms, indices, weights, time)?,
     }))
 }
 
@@ -941,37 +950,31 @@ pub(crate) fn gpu_skin_sample_with_mesh(
     time: Option<f64>,
     mesh: &super::geom::ReadMesh,
 ) -> anyhow::Result<GpuSkinSample> {
-    let binding =
-        binding_of(stage, mesh_path).ok_or_else(|| anyhow::anyhow!("missing skin binding"))?;
-    let skeleton_path = binding
-        .skeleton
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("missing skeleton"))?;
-    let skeleton = Skeleton::get(stage, skeleton_path.clone())?
-        .ok_or_else(|| anyhow::anyhow!("invalid skeleton"))?;
-    let joints = skeleton.joints()?;
-    let skin = SkinningResolver::from_binding(&binding.binding, &joints)?;
+    let skin =
+        bound_skin(stage, mesh_path)?.ok_or_else(|| anyhow::anyhow!("missing skin binding"))?;
     anyhow::ensure!(
         matches!(
-            skin.skinning_method(),
-            openusd_schemas::skel::SkinningMethod::ClassicLinear
+            skin.skinning.skinning_method()?,
+            Some(SkinningMethod::ClassicLinear)
         ),
         "GPU dual-quaternion skinning is unsupported"
     );
-    let stride = skin.num_influences_per_component();
+    let stride = skin.skinning.influences_per_component();
     anyhow::ensure!(
         (1..=4).contains(&stride),
         "GPU skinning requires 1–4 influences"
     );
-    let resolver = SkeletonResolver::from_skeleton(&skeleton)?;
-    let locals = sample_joint_locals(stage, &skeleton_path, &binding, &joints, &resolver, time)?;
-    let transforms =
-        resolver.compute_skinning_transforms_from_local(&locals, gf::Matrix4d::IDENTITY);
+    let at = time.map(TimeCode::new);
+    let rigid = skin.skinning.is_rigidly_deformed();
+    let transforms = skin
+        .pose_transforms(time)?
+        .ok_or_else(|| anyhow::anyhow!("missing skeleton bind pose"))?;
+    let geom_bind_transform = skin.skinning.geom_bind_transform(at)?;
     let matrices: Vec<_> = skin
-        .remap_skinning_xforms(&transforms)
+        .mesh_transforms(&transforms)
         .iter()
         .map(|matrix| {
-            let combined = skin.geom_bind_transform() * *matrix;
+            let combined = geom_bind_transform * *matrix;
             bevy::math::Mat4::from_cols_array(&combined.0.map(|value| value as f32))
         })
         .collect();
@@ -983,14 +986,13 @@ pub(crate) fn gpu_skin_sample_with_mesh(
         matrices.iter().all(|matrix| matrix.is_finite()),
         "nonfinite skinning matrix"
     );
-    let (indices, weights) = sampled_influences(stage, mesh_path, time)?;
-    let components = if skin.is_rigidly_deformed() {
-        1
-    } else {
-        mesh.points.len()
-    };
+    let (indices, weights) = skin
+        .skinning
+        .joint_influences(at)?
+        .ok_or_else(|| anyhow::anyhow!("invalid influence count"))?;
+    let components = if rigid { 1 } else { mesh.points.len() };
     anyhow::ensure!(
-        components.checked_mul(stride) == Some(indices.len()) && indices.len() == weights.len(),
+        components.checked_mul(stride) == Some(indices.len()),
         "invalid influence count"
     );
     anyhow::ensure!(
@@ -1038,7 +1040,7 @@ pub(crate) fn gpu_skin_sample_with_mesh(
                     matrix + matrices[index as usize] * weight
                 });
             normal_skin_matrix(blended)?;
-            if !skin.is_rigidly_deformed() {
+            if !rigid {
                 let mut native_normal = bevy::math::Mat3::ZERO;
                 for (&index, &weight) in indices.iter().zip(weights) {
                     if weight != 0.0 {
@@ -1064,7 +1066,7 @@ pub(crate) fn gpu_skin_sample_with_mesh(
         packed_indices.push(packed_i);
         packed_weights.push(packed_w);
     }
-    if skin.is_rigidly_deformed() {
+    if rigid {
         packed_indices.resize(mesh.points.len(), packed_indices[0]);
         packed_weights.resize(mesh.points.len(), packed_weights[0]);
         normal_corrections.resize(mesh.points.len(), normal_corrections[0]);
@@ -1208,7 +1210,7 @@ def SkelRoot "Root"
             stage
                 .attribute("/Test/Face.primvars:skel:jointWeights")
                 .unwrap()
-                .set(openusd::sdf::Value::FloatVec(weights.to_vec()))
+                .set(openusd::vt::Value::FloatVec(weights.to_vec()))
                 .unwrap();
             for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
                 let sample = gpu_skin_sample(&stage, &path, Some(time)).unwrap();
@@ -1534,10 +1536,7 @@ def SkelRoot "Root"
         constant
             .attribute("/Test/Bar.primvars:skel:jointWeights")
             .unwrap()
-            .set_at(
-                openusd::sdf::Value::FloatVec(vec![1.0]),
-                TimeCode::new(20.0),
-            )
+            .set_at(openusd::vt::Value::FloatVec(vec![1.0]), TimeCode::new(20.0))
             .unwrap();
         assert!(
             skinned_points_at(&constant, &path, Some(20.0))
@@ -1550,7 +1549,7 @@ def SkelRoot "Root"
 
     #[test]
     fn sampled_influences_without_defaults_drive_cpu_and_gpu() {
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let stage = fixture();
         let path = openusd::sdf::path("/Test/Bar").unwrap();
         let rotations = stage.attribute("/Test/Skel/Anim.rotations").unwrap();
@@ -1735,12 +1734,12 @@ def SkelRoot "Root"
             stage
                 .attribute("/Test/Bar.primvars:skel:jointIndices")
                 .unwrap()
-                .set(openusd::sdf::Value::IntVec(indices))
+                .set(openusd::vt::Value::IntVec(indices))
                 .unwrap();
             stage
                 .attribute("/Test/Bar.primvars:skel:jointWeights")
                 .unwrap()
-                .set(openusd::sdf::Value::FloatVec(weights))
+                .set(openusd::vt::Value::FloatVec(weights))
                 .unwrap();
             assert!(
                 skinned_points_at(&stage, &mesh, Some(0.0))
@@ -1770,7 +1769,7 @@ def SkelRoot "Root"
         stage
             .create_attribute("/Root/Skel.joints", "token[]")
             .unwrap()
-            .set(openusd::sdf::Value::TokenVec(vec!["J".into()]))
+            .set(openusd::vt::Value::TokenVec(vec!["J".into()]))
             .unwrap();
         let mesh = stage.define_prim("/Root/Mesh").unwrap();
         mesh.set_type_name("Mesh")
@@ -1788,28 +1787,28 @@ def SkelRoot "Root"
         stage
             .create_attribute("/Root/Mesh.points", "point3f[]")
             .unwrap()
-            .set(openusd::sdf::Value::Vec3fVec(vec![[0.0, 0.0, 0.0].into()]))
+            .set(openusd::vt::Value::Vec3fVec(vec![[0.0, 0.0, 0.0].into()]))
             .unwrap();
         stage
             .create_attribute("/Root/Mesh.faceVertexCounts", "int[]")
             .unwrap()
-            .set(openusd::sdf::Value::IntVec(vec![]))
+            .set(openusd::vt::Value::IntVec(vec![]))
             .unwrap();
         stage
             .create_attribute("/Root/Mesh.faceVertexIndices", "int[]")
             .unwrap()
-            .set(openusd::sdf::Value::IntVec(vec![]))
+            .set(openusd::vt::Value::IntVec(vec![]))
             .unwrap();
         // Deliberately mismatched: 4 indices, 1 weight.
         stage
             .create_attribute("/Root/Mesh.primvars:skel:jointIndices", "int[]")
             .unwrap()
-            .set(openusd::sdf::Value::IntVec(vec![0, 0, 0, 0]))
+            .set(openusd::vt::Value::IntVec(vec![0, 0, 0, 0]))
             .unwrap();
         stage
             .create_attribute("/Root/Mesh.primvars:skel:jointWeights", "float[]")
             .unwrap()
-            .set(openusd::sdf::Value::FloatVec(vec![1.0]))
+            .set(openusd::vt::Value::FloatVec(vec![1.0]))
             .unwrap();
 
         let mesh_path = openusd::sdf::path("/Root/Mesh").unwrap();
@@ -1865,7 +1864,7 @@ def SkelRoot "Root"
 
     #[test]
     fn linear_morph_channels_match_cpu_inbetweens_without_changing_targets() {
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let stage = blend_fixture();
         let path = openusd::sdf::path("/Test/Face").unwrap();
         stage
@@ -1941,7 +1940,7 @@ def SkelRoot "Root"
                 .unwrap()
                 .attribute("points")
                 .set_at(
-                    openusd::sdf::Value::Vec3fVec(
+                    openusd::vt::Value::Vec3fVec(
                         rest.iter()
                             .map(|point| [point[0], point[1], point[2] + z].into())
                             .collect(),

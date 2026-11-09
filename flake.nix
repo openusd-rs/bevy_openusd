@@ -75,7 +75,7 @@
       {
         devShells.default = pkgs.mkShell {
           packages = [
-            (pkgs.rust-bin.stable.latest.default.override {
+            (pkgs.rust-bin.stable."1.98.1".default.override {
               extensions = [ "rust-src" "rustfmt" "clippy" ];
               targets = [ "wasm32-unknown-unknown" ];
             })

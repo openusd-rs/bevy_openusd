@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/usd_bevy", "crates/usd_macro", "examples/web"]
-exclude = ["xtra", "vendor/openusd", "vendor/bevy_asset"]
+exclude = ["xtra", "vendor/bevy_asset"]
 
 [profile.dev.package.openusd]
 opt-level = 3
@@ -17,11 +17,6 @@ opt-level = 3
 
 [patch.crates-io]
 bevy_asset = { path = "vendor/bevy_asset" }
-
-[patch."https://github.com/mxpv/openusd"]
-openusd = { path = "vendor/openusd/crates/openusd" }
-openusd-build = { path = "vendor/openusd/crates/openusd-build" }
-openusd-schemas = { path = "vendor/openusd/crates/openusd-schemas" }
 
 [package]
 name = "usdview"
@@ -45,8 +40,8 @@ png = "0.18"
 # The live USD editor: stage projection, sync, authoring, persistence.
 usd_bevy = { path = "crates/usd_bevy", features = ["skeleton_overlay", "physics_overlay"] }
 # Pure-Rust USD — the viewer opens the live `Stage` directly.
-openusd = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0" }
-openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0", features = ["geom", "shade"] }
+openusd = { git = "https://github.com/mxpv/openusd", rev = "d10fa4c2838e1e18a5c4fb4aa47534f94fde8995" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "d10fa4c2838e1e18a5c4fb4aa47534f94fde8995", features = ["geom", "shade"] }
 
 # mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
 mara = { git = "https://github.com/bresilla/mara", branch = "main", default-features = false, features = ["window", "bevy"] }

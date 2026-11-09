@@ -80,7 +80,7 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
         "/First",
         "radius",
         "double",
-        openusd::sdf::Value::Double(2.0),
+        openusd::vt::Value::Double(2.0),
     )?;
     app.update();
     let instances = app
@@ -128,7 +128,7 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
                 prim: "/First".into(),
                 name: "radius".into(),
                 type_name: "double".into(),
-                value: openusd::sdf::Value::Double(4.0),
+                value: openusd::vt::Value::Double(4.0),
             }],
             ..default()
         });

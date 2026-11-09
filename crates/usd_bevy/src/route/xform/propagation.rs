@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn live_malformed_matrix_edits_keep_last_pose_and_recover() {
         use crate::live::{LiveStage, PrimEntities, apply_changes, project_stage};
-        use openusd::{gf::Matrix4d, sdf::Value, usd::Stage};
+        use openusd::{gf::Mat4d, usd::Stage, vt::Value};
         let stage = Stage::builder()
             .schema_registry(openusd_schemas::schema_registry())
             .in_memory("affine-recovery.usda")
@@ -221,7 +221,7 @@ mod tests {
             .create_attribute("/Foo.xformOp:transform", "matrix4d")
             .unwrap();
         matrix
-            .set(Value::Matrix4d(Matrix4d(
+            .set(Value::Matrix4d(Mat4d(
                 shear().to_cols_array().map(f64::from),
             )))
             .unwrap();
@@ -249,9 +249,7 @@ mod tests {
             live.stage
                 .attribute("/Foo.xformOp:transform")
                 .unwrap()
-                .set(Value::Matrix4d(Matrix4d(
-                    bad.to_cols_array().map(f64::from),
-                )))
+                .set(Value::Matrix4d(Mat4d(bad.to_cols_array().map(f64::from))))
                 .unwrap();
             apply_changes(app.world_mut(), &live, &mut map);
             app.update();
@@ -265,7 +263,7 @@ mod tests {
         live.stage
             .attribute("/Foo.xformOp:transform")
             .unwrap()
-            .set(Value::Matrix4d(Matrix4d(
+            .set(Value::Matrix4d(Mat4d(
                 recovered.to_cols_array().map(f64::from),
             )))
             .unwrap();
@@ -288,7 +286,7 @@ mod tests {
     fn editor_history_reprojects_affine_reset_without_replacing_entities() {
         use crate::editor::{EditorEdit, EditorSession};
         use crate::live::{LiveStage, PrimEntities, apply_changes, project_stage};
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let stage = openusd::usd::Stage::builder()
             .schema_registry(openusd_schemas::schema_registry())
             .in_memory("history-projection.usda")
@@ -308,7 +306,7 @@ mod tests {
         stage
             .create_attribute("/Parent/Child.xformOp:transform", "matrix4d")
             .unwrap()
-            .set(Value::Matrix4d(openusd::gf::Matrix4d(
+            .set(Value::Matrix4d(openusd::gf::Mat4d(
                 shear().to_cols_array().map(f64::from),
             )))
             .unwrap();

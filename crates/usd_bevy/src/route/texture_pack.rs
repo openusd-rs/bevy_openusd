@@ -114,8 +114,8 @@ pub(crate) fn base_color_alpha(
             "diffuse and opacity textures have different resolutions"
         );
         anyhow::ensure!(
-            matches!(image.sampler, bevy::image::ImageSampler::Default),
-            "alpha packing requires a shared default sampler"
+            super::sampling::derivable(&image.sampler),
+            "alpha packing requires a shared material sampler"
         );
         Some(image)
     } else {
@@ -274,8 +274,8 @@ fn plane(
         "scalar packing requires a 2D image"
     );
     anyhow::ensure!(
-        matches!(image.sampler, bevy::image::ImageSampler::Default),
-        "scalar packing requires a shared default sampler"
+        super::sampling::derivable(&image.sampler),
+        "scalar packing requires a shared material sampler"
     );
     let count = u64::from(size.width) * u64::from(size.height);
     anyhow::ensure!(

@@ -115,8 +115,8 @@ pub(super) fn transformed(
         "color transform requires a 2D image"
     );
     anyhow::ensure!(
-        matches!(image.sampler, bevy::image::ImageSampler::Default),
-        "color transform requires a shared default sampler"
+        super::sampling::derivable(&image.sampler),
+        "color transform requires a shared material sampler"
     );
     let count = u64::from(size.width) * u64::from(size.height);
     anyhow::ensure!(

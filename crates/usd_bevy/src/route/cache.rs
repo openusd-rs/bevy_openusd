@@ -1260,7 +1260,7 @@ mod tests {
             "/Template/Shape",
             "size",
             "double",
-            openusd::sdf::Value::Double(4.0),
+            openusd::vt::Value::Double(4.0),
         )
         .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
@@ -1384,7 +1384,7 @@ mod tests {
             stage
                 .create_attribute(format!("{name}.size").as_str(), "double")
                 .unwrap()
-                .set(openusd::sdf::Value::Double(size as f64))
+                .set(openusd::vt::Value::Double(size as f64))
                 .unwrap();
         }
 

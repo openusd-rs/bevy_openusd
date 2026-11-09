@@ -1,8 +1,8 @@
 //! Composition-aware editor state over one authoritative live stage.
 
 use bevy::prelude::*;
-use openusd::sdf::Value;
 use openusd::usd::{EditTarget, Stage, UndoStage};
+use openusd::vt::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -1028,7 +1028,7 @@ impl EditorEdit {
                 let attribute = stage.create_attribute(path, "matrix4d")?;
                 attribute
                     .clear()?
-                    .set(Value::Matrix4d(openusd::gf::Matrix4d(*matrix)))?;
+                    .set(Value::Matrix4d(openusd::gf::Mat4d(*matrix)))?;
                 let mut order = Vec::new();
                 if *reset {
                     order.push("!resetXformStack!".into());
@@ -1155,7 +1155,6 @@ struct HistoryEntry {
     edit: EditorEdit,
     target: EditTarget,
     local_target: bool,
-    transactions: usize,
     layers: std::collections::BTreeSet<String>,
     selection_before: Option<String>,
     selection_after: Option<String>,
@@ -1243,6 +1242,8 @@ impl EditorSnapshot {
     }
 }
 
+const DEFAULT_HISTORY_LIMIT: usize = 128;
+
 /// Main-thread editor model. Clone `stage()` into `LiveStage` to project the
 /// same document; route undoable authoring through `edit()`.
 pub struct EditorSession {
@@ -1255,6 +1256,7 @@ pub struct EditorSession {
     redo: Vec<HistoryEntry>,
     history_limit: usize,
     layer_changes: layer_changes::LayerChanges,
+    history_revisions: std::collections::BTreeMap<String, u64>,
     save_state: std::cell::RefCell<save_state::SaveState>,
     texture_index: std::cell::RefCell<texture_index::TextureIndex>,
 }
@@ -1267,12 +1269,13 @@ impl EditorSession {
             document_id: NEXT_DOCUMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             revision: 0,
             source: None,
-            stage: UndoStage::with_capacity(stage, usize::MAX),
+            stage: UndoStage::with_capacity(stage, DEFAULT_HISTORY_LIMIT),
             selected: None,
             undo: Vec::new(),
             redo: Vec::new(),
-            history_limit: 128,
+            history_limit: DEFAULT_HISTORY_LIMIT,
             layer_changes,
+            history_revisions: Default::default(),
             save_state: Default::default(),
             texture_index: Default::default(),
         }
@@ -1312,22 +1315,25 @@ impl EditorSession {
         self.history_limit
     }
 
-    /// Retains newest undo commands, then nearest redo commands. Zero disables history.
+    /// Discards undo commands and retains the nearest redo commands. Zero disables history.
     /// Limits command count, not diff bytes or transactions inside an active command.
     pub fn set_history_limit(&mut self, limit: usize) {
         self.synchronize_external_edits();
+        if limit == self.history_limit {
+            return;
+        }
         self.history_limit = limit;
+        self.stage = UndoStage::with_capacity(Stage::clone(&self.stage), limit);
+        self.undo.clear();
         self.trim_history();
     }
 
     fn trim_history(&mut self) {
         let excess = self.undo.len().saturating_sub(self.history_limit);
-        let transactions = self
-            .undo
-            .drain(..excess)
-            .map(|entry| entry.transactions)
-            .sum();
-        self.stage.discard_oldest(transactions);
+        self.undo.drain(..excess);
+        if self.history_limit == 0 {
+            self.stage.reset();
+        }
         let excess = (self.undo.len() + self.redo.len()).saturating_sub(self.history_limit);
         self.redo.drain(..excess);
     }
@@ -1424,24 +1430,17 @@ impl EditorSession {
             .layer_stack()
             .iter()
             .any(|layer| layer == target.layer_identifier());
-        let before = self.stage.undo_depth();
-        if let Err(error) = edit.apply(&self.stage) {
-            while self.stage.undo_depth() > before {
-                self.stage.undo()?;
-            }
-            return Err(error);
-        }
-        let transactions = self.stage.undo_depth() - before;
-        if transactions > 0 {
+        let result = self.stage.group(|stage| edit.apply(stage));
+        let layers = self.settle_layers();
+        result?;
+        if !layers.is_empty() {
             self.revision = self.revision.wrapping_add(1);
             let selection_before = self.selected.clone();
             self.selected = edit.selection_after(self.selected.as_deref());
-            let layers = self.stage.recent_layer_identifiers(transactions);
             self.undo.push(HistoryEntry {
                 edit,
                 target,
                 local_target,
-                transactions,
                 layers,
                 selection_before,
                 selection_after: self.selected.clone(),
@@ -1454,7 +1453,7 @@ impl EditorSession {
 
     pub fn undo(&mut self) -> anyhow::Result<bool> {
         self.synchronize_external_edits();
-        let Some(entry) = self.undo.last_mut() else {
+        let Some(entry) = self.undo.last() else {
             return Ok(false);
         };
         anyhow::ensure!(
@@ -1472,14 +1471,10 @@ impl EditorSession {
             "restore layer participation for {} before undo",
             entry.target.layer_identifier()
         );
-        while entry.transactions > 0 {
-            anyhow::ensure!(
-                self.stage.undo()?,
-                "editor transaction history is inconsistent"
-            );
-            entry.transactions -= 1;
-            self.revision = self.revision.wrapping_add(1);
-        }
+        let undone = self.stage.undo();
+        self.history_revisions = self.layer_changes.revisions();
+        anyhow::ensure!(undone?, "editor transaction history is inconsistent");
+        self.revision = self.revision.wrapping_add(1);
         if entry.selection_before != entry.selection_after {
             self.selected = entry.selection_before.clone();
         }
@@ -1509,33 +1504,44 @@ impl EditorSession {
         );
         let target = self.stage.edit_target();
         self.stage.set_edit_target(entry.target.clone())?;
-        let before = self.stage.undo_depth();
-        let result = entry.edit.apply(&self.stage);
-        if result.is_err() {
-            while self.stage.undo_depth() > before {
-                self.stage.undo()?;
-            }
-        }
+        let result = self.stage.group(|stage| entry.edit.apply(stage));
+        let layers = self.settle_layers();
         self.stage.set_edit_target(target)?;
         result?;
         let mut entry = self.redo.pop().unwrap();
-        entry.transactions = self.stage.undo_depth() - before;
-        entry.layers = self.stage.recent_layer_identifiers(entry.transactions);
         if entry.selection_before != entry.selection_after {
             self.selected = entry.selection_after.clone();
         }
-        self.undo.push(entry);
+        // A redo that changes nothing records no step, so it leaves no entry.
+        if !layers.is_empty() {
+            entry.layers = layers;
+            self.undo.push(entry);
+        }
         self.revision = self.revision.wrapping_add(1);
         self.trim_history();
         Ok(true)
     }
 
+    /// Moves the external-edit baseline past the editor's own commits and
+    /// returns the layers they changed.
+    fn settle_layers(&mut self) -> std::collections::BTreeSet<String> {
+        let revisions = self.layer_changes.revisions();
+        let layers = revisions
+            .iter()
+            .filter(|(layer, revision)| self.history_revisions.get(*layer) != Some(*revision))
+            .map(|(layer, _)| layer.clone())
+            .collect();
+        self.history_revisions = revisions;
+        layers
+    }
+
     /// Establishes a new history baseline when edits bypass the command model.
     pub fn synchronize_external_edits(&mut self) -> bool {
-        let tracked: usize = self.undo.iter().map(|entry| entry.transactions).sum();
-        if tracked == self.stage.undo_depth() {
+        let revisions = self.layer_changes.revisions();
+        if self.undo.len() == self.stage.undo_depth() && revisions == self.history_revisions {
             return false;
         }
+        self.history_revisions = revisions;
         self.revision = self.revision.wrapping_add(1);
         self.stage.reset();
         self.undo.clear();
@@ -1699,7 +1705,7 @@ impl EditorSession {
                         .push(format!("Material read failed: {error:#}")),
                 }
             }
-            snapshot.variants = prim.variant_sets().get_all_variant_selections()?;
+            snapshot.variants = prim.variant_sets().selections()?;
             snapshot.variant_choices = variant_choices(&self.stage, path)?;
             snapshot.selected_loaded = Some(prim.is_loaded()?);
             for relationship in prim.relationships()? {
@@ -1832,21 +1838,23 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         assert_eq!(opinions[0].prim.as_str(), "/Root");
         assert_eq!(opinions[0].offset, openusd::sdf::LayerOffset::default());
         assert_eq!(
-            opinions[0].operation.prepended_items[0].asset_path,
+            opinions[0].operation.prepended_items()[0].asset_path,
             "weak.usda"
         );
         assert!(opinions[1].layer.ends_with("weak.usda"));
         assert_eq!(opinions[1].prim.as_str(), "/Source{choice=a}");
         assert_eq!(opinions[1].offset, openusd::sdf::LayerOffset::new(10., 2.));
         assert_eq!(
-            opinions[1].operation.prepended_items[0].prim_path.as_str(),
+            opinions[1].operation.prepended_items()[0]
+                .prim_path
+                .as_str(),
             "/Model"
         );
         assert_eq!(
-            opinions[1].operation.prepended_items[0]
+            opinions[1].operation.prepended_items()[0]
                 .custom_data
                 .get("label"),
-            Some(&openusd::sdf::Value::String("inner".into()))
+            Some(&openusd::vt::Value::String("inner".into()))
         );
         editor
             .edit(EditorEdit::References {
@@ -1856,8 +1864,8 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
             .unwrap();
         let blocked = editor.snapshot().unwrap().reference_opinions;
         assert_eq!(blocked.len(), 1);
-        assert!(blocked[0].operation.explicit);
-        assert!(blocked[0].operation.explicit_items.is_empty());
+        assert!(blocked[0].operation.is_explicit());
+        assert!(blocked[0].operation.explicit_items().is_empty());
         editor.undo().unwrap();
         assert_eq!(editor.snapshot().unwrap().reference_opinions.len(), 2);
         assert_eq!(
@@ -1876,18 +1884,18 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
             .unwrap()
             .unwrap()
             .into_owned();
-        let openusd::sdf::Value::ReferenceListOp(op) = field else {
+        let openusd::vt::Value::ReferenceListOp(op) = field else {
             panic!("reference list op")
         };
         assert_eq!(
-            op.prepended_items[0].custom_data.get("label"),
-            Some(&openusd::sdf::Value::String("retained".into()))
+            op.prepended_items()[0].custom_data.get("label"),
+            Some(&openusd::vt::Value::String("retained".into()))
         );
         assert!(
-            matches!(op.prepended_items[0].custom_data.get("settings"), Some(openusd::sdf::Value::Dictionary(values)) if values.get("version") == Some(&openusd::sdf::Value::Int(3)))
+            matches!(op.prepended_items()[0].custom_data.get("settings"), Some(openusd::vt::Value::Dictionary(values)) if values.get("version") == Some(&openusd::vt::Value::Int(3)))
         );
         assert_eq!(
-            op.prepended_items[0].layer_offset,
+            op.prepended_items()[0].layer_offset,
             openusd::sdf::LayerOffset::new(10., 2.)
         );
         assert_eq!(
@@ -2027,7 +2035,7 @@ def Xform "Root" ( prepend references = [</A>, </B>] ) {}
         let mut annotated = reference("/C");
         annotated.custom_data.insert(
             "label".into(),
-            openusd::sdf::Value::String("retained".into()),
+            openusd::vt::Value::String("retained".into()),
         );
         for (operation, expected) in [
             (ReferenceListOp::prepended([annotated]), Some(3.)),
@@ -2040,11 +2048,8 @@ def Xform "Root" ( prepend references = [</A>, </B>] ) {}
             ),
             (ReferenceListOp::explicit([]), None),
             (
-                ReferenceListOp {
-                    deleted_items: vec![reference("/A")],
-                    prepended_items: vec![reference("/C")],
-                    ..Default::default()
-                },
+                ReferenceListOp::deleted([reference("/A")])
+                    .with(openusd::sdf::ListOpType::Prepended, [reference("/C")]),
                 Some(3.),
             ),
         ] {
@@ -2070,7 +2075,7 @@ def Xform "Root" ( prepend references = [</A>, </B>] ) {}
                 .unwrap()
                 .unwrap()
                 .into_owned();
-            assert_eq!(field, openusd::sdf::Value::ReferenceListOp(operation));
+            assert_eq!(field, openusd::vt::Value::ReferenceListOp(operation));
             editor.undo().unwrap();
             assert_eq!(
                 editor.stage().root_layer().export_to_string().unwrap(),
@@ -2144,7 +2149,7 @@ def Xform "Root" ( prepend payload = [</A>, </B>] ) {}
             (PayloadListOp::deleted([payload("/A")]), Some(2.)),
             (
                 PayloadListOp::deleted([Payload {
-                    layer_offset: Some(openusd::sdf::LayerOffset::default()),
+                    layer_offset: openusd::sdf::LayerOffset::default(),
                     ..payload("/A")
                 }]),
                 Some(2.),
@@ -2156,7 +2161,7 @@ def Xform "Root" ( prepend payload = [</A>, </B>] ) {}
             (
                 PayloadListOp::ordered([
                     Payload {
-                        layer_offset: Some(openusd::sdf::LayerOffset::default()),
+                        layer_offset: openusd::sdf::LayerOffset::default(),
                         ..payload("/B")
                     },
                     payload("/A"),
@@ -2165,11 +2170,8 @@ def Xform "Root" ( prepend payload = [</A>, </B>] ) {}
             ),
             (PayloadListOp::explicit([]), None),
             (
-                PayloadListOp {
-                    deleted_items: vec![payload("/A")],
-                    prepended_items: vec![payload("/C")],
-                    ..Default::default()
-                },
+                PayloadListOp::deleted([payload("/A")])
+                    .with(openusd::sdf::ListOpType::Prepended, [payload("/C")]),
                 Some(3.),
             ),
         ] {
@@ -2242,7 +2244,9 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         assert_eq!(opinions[0].prim.as_str(), "/Source{choice=a}");
         assert_eq!(opinions[0].offset, openusd::sdf::LayerOffset::new(10., 2.));
         assert_eq!(
-            opinions[0].operation.prepended_items[0].prim_path.as_str(),
+            opinions[0].operation.prepended_items()[0]
+                .prim_path
+                .as_str(),
             "/Model"
         );
     }
@@ -2261,13 +2265,15 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         assert_eq!(original.len(), 1);
         assert!(original[0].layer.ends_with("payload_authoring_weak.usda"));
         assert_eq!(original[0].prim.as_str(), "/Root");
-        assert!(!original[0].operation.explicit);
+        assert!(!original[0].operation.is_explicit());
         assert_eq!(
-            original[0].operation.prepended_items[0].asset_path,
+            original[0].operation.prepended_items()[0].asset_path,
             "payload_authoring_content.usda"
         );
         assert_eq!(
-            original[0].operation.prepended_items[0].prim_path.as_str(),
+            original[0].operation.prepended_items()[0]
+                .prim_path
+                .as_str(),
             "/Box"
         );
         editor
@@ -2279,8 +2285,8 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         let blocked = editor.snapshot().unwrap().payload_opinions;
         assert_eq!(blocked.len(), 2);
         assert!(blocked[0].layer.ends_with("payload_authoring.usda"));
-        assert!(blocked[0].operation.explicit);
-        assert!(blocked[0].operation.explicit_items.is_empty());
+        assert!(blocked[0].operation.is_explicit());
+        assert!(blocked[0].operation.explicit_items().is_empty());
         assert_eq!(blocked[1].operation, original[0].operation);
         editor
             .edit(EditorEdit::ClearPayloads {
@@ -2411,7 +2417,7 @@ def Xform "Instance" {}
         let before = stage.root_layer().export_to_string().unwrap();
         let payload = openusd::sdf::Payload {
             prim_path: openusd::sdf::path("/Model").unwrap(),
-            layer_offset: Some(openusd::sdf::LayerOffset::new(10., 2.)),
+            layer_offset: openusd::sdf::LayerOffset::new(10., 2.),
             ..Default::default()
         };
         editor
@@ -2438,7 +2444,7 @@ def Xform "Instance" {}
         assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
         for scale in [0., -1., f64::NAN, f64::INFINITY] {
             let invalid = openusd::sdf::Payload {
-                layer_offset: Some(openusd::sdf::LayerOffset::new(0., scale)),
+                layer_offset: openusd::sdf::LayerOffset::new(0., scale),
                 ..payload.clone()
             };
             assert!(
@@ -2510,7 +2516,7 @@ def Xform "Instance" {}
         assert!(editor.snapshot().unwrap().revision > undone);
     }
     #[test]
-    fn default_history_limit_bounds_retained_transactions() {
+    fn default_history_limit_bounds_retained_steps() {
         use super::*;
         let stage = Stage::builder()
             .in_memory("history-retention.usda")
@@ -2527,14 +2533,7 @@ def Xform "Instance" {}
                 })
                 .unwrap();
             assert!(editor.undo.len() <= 128);
-            assert_eq!(
-                editor.stage.undo_depth(),
-                editor
-                    .undo
-                    .iter()
-                    .map(|entry| entry.transactions)
-                    .sum::<usize>()
-            );
+            assert_eq!(editor.stage.undo_depth(), editor.undo.len());
         }
         assert_eq!(editor.undo.len(), 128);
         for _ in 0..128 {
@@ -2579,7 +2578,7 @@ def Xform "Instance" {}
         editor
             .edit(EditorEdit::Batch(vec![define("/A"), define("/B")]))
             .unwrap();
-        assert!(editor.undo.last().unwrap().transactions > 1);
+        assert_eq!(editor.stage.undo_depth(), 2, "the batch is one step");
         editor.edit(define("/Newest")).unwrap();
         assert_eq!(editor.undo.len(), 2);
         assert!(editor.undo().unwrap());
@@ -2593,6 +2592,8 @@ def Xform "Instance" {}
         assert!(editor.redo().unwrap());
         assert!(!editor.redo().unwrap());
         editor.set_history_limit(1);
+        assert!(!editor.undo().unwrap());
+        editor.edit(define("/Retained")).unwrap();
         let before = stage.root_layer().export_to_string().unwrap();
         let depth = editor.stage.undo_depth();
         let mut edits = (0..32)
@@ -2607,6 +2608,7 @@ def Xform "Instance" {}
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
         assert_eq!(editor.stage.undo_depth(), depth);
         assert_eq!(editor.undo.len(), 1);
+        assert!(!editor.synchronize_external_edits());
         editor.set_history_limit(0);
         assert!(!editor.undo().unwrap());
         assert!(!editor.redo().unwrap());
@@ -2635,18 +2637,42 @@ def Xform "Instance" {}
             assert!(editor.undo().unwrap());
         }
         editor.set_history_limit(2);
-        assert_eq!(editor.redo.len(), 1);
+        assert!(editor.undo.is_empty());
+        assert_eq!(editor.redo.len(), 2);
+        assert!(editor.redo().unwrap());
         assert!(editor.redo().unwrap());
         assert!(!editor.redo().unwrap());
-        assert!(stage.prim("/B").unwrap().is_valid().unwrap());
-        assert!(!stage.prim("/C").unwrap().is_valid().unwrap());
+        assert!(stage.prim("/C").unwrap().is_valid().unwrap());
+        assert!(!stage.prim("/D").unwrap().is_valid().unwrap());
         stage.define_prim("/External").unwrap();
         editor.set_history_limit(1);
         assert!(!editor.undo().unwrap());
         editor.edit(define("/Recent")).unwrap();
         assert!(editor.undo().unwrap());
         assert!(stage.prim("/External").unwrap().is_valid().unwrap());
-        assert!(stage.prim("/B").unwrap().is_valid().unwrap());
+        assert!(stage.prim("/C").unwrap().is_valid().unwrap());
+    }
+
+    #[test]
+    fn full_history_still_sees_noops_and_external_edits() {
+        use super::*;
+        let stage = Stage::builder().in_memory("full-history.usda").unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        editor.set_history_limit(2);
+        let define = |path: &str| EditorEdit::Define {
+            path: path.into(),
+            type_name: "Xform".into(),
+        };
+        editor.edit(define("/A")).unwrap();
+        editor.edit(define("/B")).unwrap();
+        assert_eq!(editor.stage.undo_depth(), 2);
+        editor.edit(EditorEdit::Batch(Vec::new())).unwrap();
+        assert_eq!(editor.undo.len(), 2);
+        stage.define_prim("/External").unwrap();
+        assert_eq!(editor.stage.undo_depth(), 2);
+        assert!(editor.synchronize_external_edits());
+        assert!(!editor.undo().unwrap());
+        assert!(stage.prim("/External").unwrap().is_valid().unwrap());
     }
     #[test]
     fn visibility_commands_edit_samples_or_defaults_and_undo() {
@@ -3354,7 +3380,7 @@ def Xform "M" { double score = 2 }
         );
         assert_eq!(
             attribute
-                .get_metadata::<String>("documentation")
+                .metadata::<String>("documentation")
                 .unwrap()
                 .as_deref(),
             Some("keep this metadata")
@@ -6019,7 +6045,7 @@ def Xform "Asset" (prepend variantSets = "shape") {
             reopened
                 .prim("/Root")
                 .unwrap()
-                .get_metadata::<Value>("payload")
+                .metadata::<Value>("payload")
                 .unwrap(),
             Some(Value::PayloadListOp(_))
         ));

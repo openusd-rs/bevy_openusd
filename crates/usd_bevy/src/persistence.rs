@@ -58,7 +58,7 @@ fn anchored_layer(layer: &openusd::sdf::Layer) -> Result<openusd::sdf::LayerHand
     })?;
     let anchored = openusd::sdf::LayerRegistry::default()
         .adopt(anchored)
-        .map_err(|error| anyhow::anyhow!("adopt relocated layer: {error}"))?;
+        .map_err(openusd::sdf::LayerError::from)?;
     let mut unsupported = None;
     openusd::usd_utils::modify_asset_paths(
         &anchored,

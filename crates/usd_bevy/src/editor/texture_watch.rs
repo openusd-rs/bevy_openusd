@@ -610,6 +610,9 @@ def Material "Mat" {
         };
         assert_eq!(pixels(app.world()), [255, 0, 0, 255]);
         assert!(app.world().resource::<WatchState>().watchers.is_empty());
+        app.world_mut()
+            .resource_mut::<super::super::reload::EditorReloadSettings>()
+            .enabled = false;
         std::fs::remove_file(&file).unwrap();
         std::fs::remove_dir(&images).unwrap();
         app.update();

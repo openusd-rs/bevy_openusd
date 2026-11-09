@@ -154,6 +154,22 @@ make.recipe{
   end,
 }
 
+make.recipe{
+  name = "build-native-deformation",
+  desc = "build the native OpenUSD point oracle with SDK CPPFLAGS, LDFLAGS and LDLIBS",
+  run = function()
+    sh.sh("-c", [[mkdir -p target && ${CXX:-c++} -std=c++17 ${CPPFLAGS:-} scripts/sample_native_deformation.cpp ${LDFLAGS:-} ${LDLIBS:-} -o target/sample-native-deformation]])
+  end,
+}
+
+make.recipe{
+  name = "test-native-deformation",
+  desc = "compare CPU skinning and morphs with the native OpenUSD oracle",
+  run = function()
+    sh.sh("-c", [[USD_NATIVE_DEFORMATION_TOOL="${USD_NATIVE_DEFORMATION_TOOL:-$PWD/target/sample-native-deformation}" cargo test -p usd_bevy --all-features --lib native_baked_ -- --ignored --nocapture]])
+  end,
+}
+
 make.recipe{ name = "check", desc = "cargo check on the usdview target",
              run = function() sh.cargo("check", "--bin", APP) end }
 make.recipe{ name = "check-all", desc = "cargo check on the full workspace, all targets",

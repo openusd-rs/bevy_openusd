@@ -392,3 +392,32 @@ check, 661 no-default tests, 669 all-feature tests and doctests pass in
 dereference in the packed-pixel equality check; compilation caught that detail
 before this verification rerun. The strict lint gate still needs another run
 and further cleanup. No lint rules have been suppressed.
+
+### Library and viewer lint cleanup
+
+The strict gate now checks every target with `--keep-going`, so an example
+failure no longer hides diagnostics from the other examples. The library and
+viewer (including their test targets) have no remaining diagnostics in
+`/tmp/bevy-020-lint-viewer.jsonl`. The workspace gate still exits nonzero: fifteen
+diagnostics remain across `viewer_capture`, `gif_frames`, `compact_instancing`
+and `editor_assembly`. These are not a passing workspace lint result.
+
+Focused commits remove redundant references, flatten guarded branches, name
+query/cache types and group Bevy system parameters without changing their
+resource access. The outliner shares one traversal context and no longer needs
+its previous argument-count allowance. No new lint allowances were added.
+The texture conversion table is indexed by byte then channel; its existing
+exhaustive linear/sRGB regression checks all byte values, transforms and edits.
+The sun threshold retains rejection of unordered floating-point comparisons.
+The material hash uses the `BuildHasher` trait's single-value operation.
+
+The post-cleanup library rerun passes 661 no-default and 669 all-feature tests,
+with 20 and 29 explicit skips respectively, and passes doctests:
+`/tmp/bevy-020-lint-library-tests.log`. The viewer refactors still require the
+full workspace tests and fresh native interaction/render checks. Native ignored
+tests, wasm/browser runtime and rendering acceptance remain separate gates.
+
+The compact edge image from the earlier retry was inspected and contains the
+expected visible blue boxes: `/tmp/bevy-020-openusd-compact-retry/edge-compact.png`.
+This does not replace the missing expanded-edge comparison or resolve its
+startup shader-warning failure. Nothing has been pushed.

@@ -1,0 +1,50 @@
+[package]
+name = "mara_bevy"
+version = "0.4.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/bresilla/mara"
+description = "Embedded Bevy viewport for Mara hosts"
+
+[dependencies]
+egui = { version = "0.37", default-features = false }
+egui-wgpu = { version = "0.37", default-features = false }
+wgpu = { version = "30", default-features = false }
+crossbeam-channel = "0.5"
+mara_gpu = { git = "https://github.com/dave-gray101/mara", rev = "0ba23f4de3971a965d54fbe8cb01deb7b9c76741" }
+mara_core = { git = "https://github.com/dave-gray101/mara", rev = "0ba23f4de3971a965d54fbe8cb01deb7b9c76741" }
+mara_backend_egui = { git = "https://github.com/dave-gray101/mara", rev = "0ba23f4de3971a965d54fbe8cb01deb7b9c76741" }
+bevy = { version = "0.20.1", default-features = false, features = [
+    "std",
+    "async_executor",
+    "multi_threaded",
+    "bevy_asset",
+    "bevy_state",
+    "bevy_log",
+    "bevy_window",
+    "bevy_winit",
+    "bevy_input_focus",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_light",
+    "bevy_mesh",
+    "bevy_camera",
+    "bevy_image",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_scene",
+    "default_font",
+    "tonemapping_luts",
+    "smaa_luts",
+    "ktx2",
+    "zstd_rust",
+    "png",
+    "reflect_auto_register",
+] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+bevy = { version = "0.20.1", default-features = false, features = ["x11", "wayland"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+bevy = { version = "0.20.1", default-features = false, features = ["android-native-activity"] }

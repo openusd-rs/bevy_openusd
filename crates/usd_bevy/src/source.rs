@@ -1144,11 +1144,7 @@ impl Resolver for SourceResolver {
     }
 
     fn resolve(&self, path: &str) -> Option<ResolvedPath> {
-        if self.bytes(path).is_some() {
-            Some(ResolvedPath::new(PathBuf::from(path)))
-        } else if self.contains_packaged_path(path) {
-            Some(ResolvedPath::new(PathBuf::from(path)))
-        } else if uncaptured(path) {
+        if self.bytes(path).is_some() || self.contains_packaged_path(path) || uncaptured(path) {
             Some(ResolvedPath::new(PathBuf::from(path)))
         } else if self.source.filesystem {
             self.fallback.resolve(path)

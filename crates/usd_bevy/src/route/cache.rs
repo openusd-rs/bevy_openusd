@@ -370,9 +370,7 @@ pub(crate) fn intern_material_with_sheen(
         record_sheen(world, &handle, sheen);
         return handle;
     }
-    let mut hash = FixedHasher.build_hasher();
-    format!("{material:?}{sheen:?}").hash(&mut hash);
-    let signature = hash.finish();
+    let signature = BuildHasher::hash_one(&FixedHasher, format!("{material:?}{sheen:?}"));
     if let Some(candidates) = world.resource::<MaterialCache>().materials.get(&signature) {
         let assets = world.resource::<Assets<StandardMaterial>>();
         for handle in candidates {

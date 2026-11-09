@@ -158,15 +158,15 @@ fn rgba8_transformed(
         _ => return None,
     };
     let pixels = image.data.as_ref()?.get(..count.checked_mul(4)?)?;
-    let mut table = [[[0; 2]; 256]; 4];
-    for byte in 0..256 {
+    let mut table = [[[0; 2]; 4]; 256];
+    for (byte, channels) in table.iter_mut().enumerate() {
         let value = byte as f32 / 255.0;
         let linear = if srgb {
             Color::srgb(value, value, value).to_linear().red
         } else {
             value
         };
-        for channel in 0..4 {
+        for (channel, output) in channels.iter_mut().enumerate() {
             let value = if channel == 3 {
                 value
             } else {
@@ -176,13 +176,13 @@ fn rgba8_transformed(
             if !value.is_finite() {
                 return None;
             }
-            table[channel][byte] = value.to_le_bytes();
+            *output = value.to_le_bytes();
         }
     }
     let mut data = Vec::with_capacity(count.checked_mul(8)?);
     for pixel in pixels.as_chunks::<4>().0 {
         for channel in 0..4 {
-            data.extend_from_slice(&table[channel][pixel[channel] as usize]);
+            data.extend_from_slice(&table[pixel[channel] as usize][channel]);
         }
     }
     Some(data)

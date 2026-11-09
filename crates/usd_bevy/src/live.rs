@@ -754,7 +754,7 @@ pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities
         if trace_memory {
             crate::route::profiling::memory_event("prim-begin", path, "animation", None);
         }
-        let sampled = profiling && (prim_count <= 8 || prim_count % 1024 == 0);
+        let sampled = profiling && (prim_count <= 8 || prim_count.is_multiple_of(1024));
         if sampled {
             report(
                 "prim-start",

@@ -99,10 +99,10 @@ fn rearm_replaced_directories(state: &mut WatchState, now: Instant) -> Option<us
     let replaced: BTreeSet<_> = state
         .watchers
         .iter()
-        .filter_map(|(parent, _, _)| {
-            (directory_identity(parent).as_ref() != state.identities.get(parent))
-                .then(|| parent.clone())
+        .filter(|(parent, _, _)| {
+            directory_identity(parent).as_ref() != state.identities.get(parent)
         })
+        .map(|(parent, _, _)| parent.clone())
         .collect();
     if replaced.is_empty() {
         return None;

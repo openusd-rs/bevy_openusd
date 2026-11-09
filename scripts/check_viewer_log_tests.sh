@@ -15,7 +15,10 @@ check 0 "$log"
 for message in "thread 'main' panicked at source.rs:3:4:" "thread '<unnamed>' (123) panicked at source.rs:3:4:" \
     'Encountered a panic in system `example`!' 'thread caused non-unwinding panic. aborting.' 'fatal runtime error: stack overflow' \
     '2026-09-12T13:54:43Z ERROR bevy_render::error_handler: Caught rendering error: Out of Memory' \
-    '2026-09-12T13:54:43Z ERROR bevy_render::error_handler: Caught rendering error: Validation Error'; do
+    '2026-09-12T13:54:43Z ERROR bevy_render::error_handler: Caught rendering error: Validation Error' \
+    '2026-11-09T22:15:39Z ERROR bevy_asset::server: Path not found: usd_bevy/route/strand_material.wesl' \
+    '2026-11-09T22:15:42Z WARN bevy_shader::shader_cache: Shader `embedded://usd_bevy/route/strand_prepass.wesl` has an unresolved import:' \
+    '2026-11-09T22:15:42Z ERROR bevy_render::render_resource::pipeline_cache: failed to compile shader'; do
     printf '%s\nUSD_VIEWER_UI_UPDATED\n' "$message" > "$log"
     check 1 "$log"
     ! grep -q 'VIEWER_LOG_OK' "$directory/result"

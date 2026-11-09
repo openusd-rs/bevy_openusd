@@ -6,7 +6,7 @@ if [[ $# != 1 || ! -f "$1" || ! -r "$1" ]]; then
     exit 2
 fi
 status=0
-grep -E "^thread .* panicked at|^Encountered a panic in system|^thread caused non-unwinding panic|^fatal runtime error:|ERROR .*bevy_render::error_handler: Caught rendering error:" -- "$1" >/dev/null || status=$?
+grep -E "^thread .* panicked at|^Encountered a panic in system|^thread caused non-unwinding panic|^fatal runtime error:|ERROR .*bevy_render::error_handler: Caught rendering error:|ERROR .*bevy_render::render_resource::pipeline_cache:|bevy_shader::shader_cache: Shader .* has an unresolved import:|ERROR .*bevy_asset::server: Path not found: usd_bevy/route/.*\\.wesl" -- "$1" >/dev/null || status=$?
 case "$status" in
     0) echo "viewer log contains a runtime panic or rendering failure; artifacts retained: $1" >&2; exit 1 ;;
     1) echo "VIEWER_LOG_OK $1 (known panic and rendering-error markers only)" ;;

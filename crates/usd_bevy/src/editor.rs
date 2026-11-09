@@ -1547,6 +1547,10 @@ impl EditorSession {
 
     /// Establishes a new history baseline when edits bypass the command model.
     pub fn synchronize_external_edits(&mut self) -> bool {
+        if let Err(error) = self.stage.flush() {
+            bevy::log::warn!("failed to flush editor changes: {error}");
+            return false;
+        }
         let revisions = self.layer_changes.revisions();
         if self.undo.len() == self.stage.undo_depth() && revisions == self.history_revisions {
             return false;
@@ -1615,6 +1619,7 @@ impl EditorSession {
             time.is_none_or(f64::is_finite),
             "inspection time must be finite"
         );
+        self.stage.flush()?;
         let mut snapshot = EditorSnapshot {
             document_id: self.document_id,
             revision: self.revision,
@@ -3884,6 +3889,33 @@ def Xform "Model" (
             ]))
             .unwrap();
         assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Clean);
+    }
+
+    #[test]
+    fn editor_observer_rejects_busy_setup_and_defers_history_changes() {
+        let stage = Stage::builder().in_memory("busy-editor.usda").unwrap();
+        let mut editor = EditorSession::try_new(stage.clone()).unwrap();
+        stage
+            .root_layer()
+            .edit(|layer| {
+                assert!(EditorSession::try_new(stage.clone()).is_err());
+                assert!(editor.snapshot().is_err());
+                assert!(!editor.synchronize_external_edits());
+                openusd::sdf::PrimSpec::new(
+                    layer.data_mut(),
+                    "/Direct",
+                    openusd::sdf::Specifier::Def,
+                    "Xform",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(editor.synchronize_external_edits());
+        let snapshot = editor.snapshot().unwrap();
+        assert!(snapshot.prims.iter().any(|path| path == "/Direct"));
+        assert!(snapshot.layer_revisions[&snapshot.root_layer] > 0);
+        assert!(!snapshot.can_undo);
+        assert!(!editor.synchronize_external_edits());
     }
 
     #[test]

@@ -69,6 +69,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_layer_edits_advance_revisions_without_composed_reads() {
+        let stage = Stage::builder().in_memory("direct-tracking.usda").unwrap();
+        let tracker = LayerChanges::new(&stage).unwrap();
+        let layer = stage.root_layer();
+        layer
+            .edit(|layer| {
+                openusd::sdf::PrimSpec::new(
+                    layer.data_mut(),
+                    "/Direct",
+                    openusd::sdf::Specifier::Def,
+                    "Xform",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(tracker.revisions()[layer.identifier()], 1);
+        assert!(tracker.structural_revision() > 0);
+        assert_eq!(tracker.revisions()[layer.identifier()], 1);
+    }
+
+    #[test]
     fn dropping_tracker_detaches_sink_from_surviving_stage() {
         let stage = Stage::builder().in_memory("tracking.usda").unwrap();
         let tracker = LayerChanges::new(&stage).unwrap();

@@ -235,6 +235,10 @@ impl ProjectionMaterialReads {
         binding: &openusd::sdf::Path,
         time: Option<f64>,
     ) -> Option<ReadPreviewMaterial> {
+        if self.stage.flush().is_err() {
+            self.dirty.set(true);
+            return None;
+        }
         if self.dirty.replace(false) {
             self.values.clear();
             self.order.clear();
@@ -1048,6 +1052,35 @@ def Cube "C" { rel material:binding = </Mat> }
         let mut map = crate::live::PrimEntities::default();
         crate::live::project_stage(&mut world, &live, &mut map);
         assert!(world.get_non_send::<ProjectionMaterialReads>().is_none());
+    }
+
+    #[test]
+    fn material_read_cache_flushes_direct_layer_edits() {
+        let stage = read_cache_stage();
+        let mut memo = ProjectionMaterialReads::new(&stage).unwrap();
+        let binding = openusd::sdf::path("/M").unwrap();
+        memo.insert(&binding, None, &ReadPreviewMaterial::default());
+        assert!(memo.get(&binding, None).is_some());
+        stage
+            .root_layer()
+            .edit(|layer| {
+                layer.set_default_prim("M")?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(memo.get(&binding, None).is_none());
+        memo.insert(&binding, None, &ReadPreviewMaterial::default());
+        stage
+            .root_layer()
+            .edit(|_| {
+                assert!(ProjectionMaterialReads::new(&stage).is_err());
+                assert!(memo.get(&binding, None).is_none());
+                Ok(())
+            })
+            .unwrap();
+        assert!(memo.get(&binding, None).is_none());
+        memo.insert(&binding, None, &ReadPreviewMaterial::default());
+        assert!(memo.get(&binding, None).is_some());
     }
 
     #[test]

@@ -43,6 +43,7 @@ impl TextureIndex {
         stage: &Stage,
         changes: &super::layer_changes::LayerChanges,
     ) -> Result<crate::source::TextureRequests, String> {
+        stage.flush().map_err(|error| error.to_string())?;
         let revision = Revision::read(stage, changes);
         if !revision.reusable() || self.revision.as_ref() != Some(&revision) {
             self.revision = None;

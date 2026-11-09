@@ -300,6 +300,18 @@ make.recipe{
 make.recipe{ name = "fmt", desc = "format the workspace crates (not vendor/)", run = function() fmt() end }
 
 make.recipe{
+  name = "lint",
+  desc = "strict Clippy checks for all workspace targets and features",
+  params = { { "--format", desc = "diagnostic format: human (default) or json" } },
+  run = function(a)
+    local format = a.format or "human"
+    assert(format == "human" or format == "json", "--format must be human or json")
+    sh.cargo("clippy", "--workspace", "--all-targets", "--all-features",
+             "--message-format", format, "--", "-D", "warnings")
+  end,
+}
+
+make.recipe{
   name = "harden",
   desc = "diff whitespace, fmt, no-default-features check/test, strict clippy, all-feature tests",
   run = function()

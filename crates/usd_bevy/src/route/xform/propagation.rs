@@ -57,6 +57,74 @@ fn representation(matrix: Mat4) -> Option<(Transform, Mat4)> {
     ))
 }
 
+fn parent(world: &World, entity: Entity) -> Option<Entity> {
+    world.get::<ChildOf>(entity).map(ChildOf::parent)
+}
+
+fn scene_basis(world: &World, mut entity: Entity) -> GlobalTransform {
+    while let Some(ancestor) = parent(world, entity) {
+        if world
+            .get::<UsdPrimRef>(ancestor)
+            .is_some_and(|prim| prim.path == "/")
+        {
+            return world
+                .get::<GlobalTransform>(ancestor)
+                .copied()
+                .unwrap_or_default();
+        }
+        entity = ancestor;
+    }
+    GlobalTransform::IDENTITY
+}
+
+fn propagate(world: &mut World) {
+    let roots: Vec<_> = world
+        .query_filtered::<Entity, With<UsdTransformOverride>>()
+        .iter(world)
+        .filter(|&entity| {
+            let mut ancestor = parent(world, entity);
+            while let Some(entity) = ancestor {
+                if world.get::<UsdTransformOverride>(entity).is_some() {
+                    return false;
+                }
+                ancestor = parent(world, entity);
+            }
+            true
+        })
+        .collect();
+    for root in roots {
+        let basis = parent(world, root)
+            .and_then(|parent| world.get::<GlobalTransform>(parent))
+            .copied()
+            .unwrap_or_default();
+        let mut pending = vec![(root, basis)];
+        while let Some((entity, mut basis)) = pending.pop() {
+            let Some(transform) = world.get::<Transform>(entity).copied() else {
+                continue;
+            };
+            let residual = world
+                .get::<UsdTransformOverride>(entity)
+                .map(|state| {
+                    if state.reset {
+                        basis = scene_basis(world, entity);
+                    }
+                    state.residual
+                })
+                .unwrap_or(Mat4::IDENTITY);
+            let global =
+                GlobalTransform::from(basis.to_matrix() * transform.to_matrix() * residual);
+            if let Some(mut current) = world.get_mut::<GlobalTransform>(entity)
+                && *current != global
+            {
+                *current = global;
+            }
+            if let Some(children) = world.get::<Children>(entity) {
+                pending.extend(children.iter().map(|child| (child, global)));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,74 +580,6 @@ mod tests {
                     .to_matrix()
                     .abs_diff_eq(scene_global * child_local.to_matrix(), 1e-5)
             );
-        }
-    }
-}
-
-fn parent(world: &World, entity: Entity) -> Option<Entity> {
-    world.get::<ChildOf>(entity).map(ChildOf::parent)
-}
-
-fn scene_basis(world: &World, mut entity: Entity) -> GlobalTransform {
-    while let Some(ancestor) = parent(world, entity) {
-        if world
-            .get::<UsdPrimRef>(ancestor)
-            .is_some_and(|prim| prim.path == "/")
-        {
-            return world
-                .get::<GlobalTransform>(ancestor)
-                .copied()
-                .unwrap_or_default();
-        }
-        entity = ancestor;
-    }
-    GlobalTransform::IDENTITY
-}
-
-fn propagate(world: &mut World) {
-    let roots: Vec<_> = world
-        .query_filtered::<Entity, With<UsdTransformOverride>>()
-        .iter(world)
-        .filter(|&entity| {
-            let mut ancestor = parent(world, entity);
-            while let Some(entity) = ancestor {
-                if world.get::<UsdTransformOverride>(entity).is_some() {
-                    return false;
-                }
-                ancestor = parent(world, entity);
-            }
-            true
-        })
-        .collect();
-    for root in roots {
-        let basis = parent(world, root)
-            .and_then(|parent| world.get::<GlobalTransform>(parent))
-            .copied()
-            .unwrap_or_default();
-        let mut pending = vec![(root, basis)];
-        while let Some((entity, mut basis)) = pending.pop() {
-            let Some(transform) = world.get::<Transform>(entity).copied() else {
-                continue;
-            };
-            let residual = world
-                .get::<UsdTransformOverride>(entity)
-                .map(|state| {
-                    if state.reset {
-                        basis = scene_basis(world, entity);
-                    }
-                    state.residual
-                })
-                .unwrap_or(Mat4::IDENTITY);
-            let global =
-                GlobalTransform::from(basis.to_matrix() * transform.to_matrix() * residual);
-            if let Some(mut current) = world.get_mut::<GlobalTransform>(entity)
-                && *current != global
-            {
-                *current = global;
-            }
-            if let Some(children) = world.get::<Children>(entity) {
-                pending.extend(children.iter().map(|child| (child, global)));
-            }
         }
     }
 }

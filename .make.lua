@@ -100,9 +100,9 @@ make.recipe{
 }
 
 make.recipe{ name = "serve-web", desc = "serve the usd_bevy web example in a browser (trunk, wasm32)",
-             run = function() sh.sh("-c", "cd examples/web && trunk serve --release --open") end }
+             run = function() sh.sh("-c", "cd examples/web && NO_COLOR=true trunk serve --release --open") end }
 make.recipe{ name = "build-web", desc = "build the web example's wasm bundle to examples/web/dist",
-             run = function() sh.sh("-c", "cd examples/web && trunk build --release") end }
+             run = function() sh.sh("-c", "cd examples/web && NO_COLOR=true trunk build --release") end }
 
 make.recipe{ name = "test", desc = "test the usdview target",
              run = function() sh.cargo("test", "--bin", APP) end }

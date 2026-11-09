@@ -306,7 +306,7 @@ make.recipe{
   run = function(a)
     local format = a.format or "human"
     assert(format == "human" or format == "json", "--format must be human or json")
-    sh.cargo("clippy", "--workspace", "--all-targets", "--all-features",
+    sh.cargo("clippy", "--workspace", "--all-targets", "--all-features", "--keep-going",
              "--message-format", format, "--", "-D", "warnings")
   end,
 }

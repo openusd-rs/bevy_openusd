@@ -243,7 +243,7 @@ mod tests {
         app.update();
         let original = *app.world().get::<GlobalTransform>(entity).unwrap();
         for bad in [
-            Mat4::perspective_rh(1.0, 1.0, 0.1, 10.0),
+            bevy::math::proj::perspective(1.0, 1.0, 0.1, 10.0),
             Mat4::from_scale(Vec3::splat(f32::NAN)),
         ] {
             live.stage
@@ -448,7 +448,7 @@ mod tests {
             ))
             .is_none()
         );
-        assert!(representation(Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0)).is_none());
+        assert!(representation(bevy::math::proj::perspective(1.0, 1.0, 0.1, 100.0)).is_none());
     }
 
     #[test]

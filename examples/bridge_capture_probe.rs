@@ -74,7 +74,7 @@ impl WindowApp for Probe {
         );
         let painter = self.context.layer_painter(eframe::egui::LayerId::new(
             eframe::egui::Order::Foreground,
-            eframe::egui::Id::new("bridge-probe-label"),
+            eframe::egui::Id::unique("bridge-probe-label"),
         ));
         painter.text(
             eframe::egui::pos2(32.0, 32.0),

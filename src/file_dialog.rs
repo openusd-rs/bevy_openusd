@@ -207,7 +207,7 @@ impl FileDialogs {
     pub fn poll(&mut self) -> Option<EditorCommand> {
         if let Some(answer) = self.confirmation.clone() {
             let mut choice = None;
-            let response = egui::Modal::new(egui::Id::new("usd.open.confirmation")).show(&self.context, |ui| {
+            let response = egui::Modal::new(egui::Id::unique("usd.open.confirmation")).show(&self.context, |ui| {
                 ui.set_max_width(420.);
                 ui.heading("Replace current USD document?");
                 ui.label("Opening another document replaces the current scene. Any changes you have not saved will be lost.");
@@ -256,8 +256,7 @@ impl FileDialogs {
 }
 
 #[cfg(test)]
-/// egui 0.37 panics when a pass's texture uploads are dropped unapplied. These tests
-/// never upload textures, so drop the delta explicitly.
+/// Runs a headless UI pass and clears its texture deltas.
 fn run_pass(
     ctx: &egui::Context,
     input: egui::RawInput,

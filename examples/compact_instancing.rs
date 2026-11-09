@@ -513,6 +513,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn typed_point_buffer_matches_the_shader_layout() {
+        assert_eq!(std::mem::size_of::<Point>(), 48);
+        assert_eq!(std::mem::offset_of!(Point, translation), 0);
+        assert_eq!(std::mem::offset_of!(Point, rotation), 16);
+        assert_eq!(std::mem::offset_of!(Point, scale), 32);
+        let point = Point::from(Transform::from_xyz(1.0, 2.0, 3.0));
+        let buffer = ShaderBuffer::from(vec![point]);
+        assert_eq!(buffer.buffer_size(), 48);
+        let uploaded = buffer.cast_slice::<Point>().unwrap();
+        assert_eq!(uploaded.len(), 1);
+        assert_eq!(uploaded[0].translation, point.translation);
+        assert_eq!(uploaded[0].rotation, point.rotation);
+        assert_eq!(uploaded[0].scale, point.scale);
+    }
+
+    #[test]
     fn batch_bounds_enclose_transformed_prototype_corners() {
         let prototype = Aabb::from_min_max(Vec3::new(-0.2, -0.4, 0.5), Vec3::new(0.7, 0.6, 1.2));
         assert!(batch_bounds(prototype, &[]).is_none());

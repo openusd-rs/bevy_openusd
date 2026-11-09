@@ -115,7 +115,13 @@ mod tests {
             )
             .is_none()
         );
-        assert!(bake(&mut mesh.clone(), Mat4::perspective_rh(1.0, 1.0, 0.1, 10.0)).is_none());
+        assert!(
+            bake(
+                &mut mesh.clone(),
+                bevy::math::proj::perspective(1.0, 1.0, 0.1, 10.0)
+            )
+            .is_none()
+        );
         assert!(bake(&mut mesh, Mat4::from_cols_array(&[f32::NAN; 16])).is_none());
     }
 }

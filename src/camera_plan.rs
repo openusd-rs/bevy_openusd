@@ -32,22 +32,12 @@ impl Waypoint {
     }
 }
 
+#[derive(Default)]
 struct State {
     points: Vec<Waypoint>,
     current: Option<Waypoint>,
     jump: Option<usize>,
     elapsed: Option<f32>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            points: vec![],
-            current: None,
-            jump: None,
-            elapsed: None,
-        }
-    }
 }
 
 #[derive(Resource, Clone, Default)]

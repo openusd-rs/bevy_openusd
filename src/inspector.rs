@@ -554,13 +554,12 @@ pub fn show(
                     return;
                 }
                 let mut loaded = None;
-                if let Some((time, matrix)) = sampled_time.zip(attribute.sampled_matrix) {
-                    if ui.button(&format!("Load sampled matrix at {time}")).clicked {
-                        draft.1 =
-                            editable_text(&Value::Matrix4d(openusd::gf::Mat4d(matrix))).unwrap();
-                        draft.2.clear();
-                        loaded = Some(time);
-                    }
+                if let Some((time, matrix)) = sampled_time.zip(attribute.sampled_matrix)
+                    && ui.button(&format!("Load sampled matrix at {time}")).clicked
+                {
+                    draft.1 = editable_text(&Value::Matrix4d(openusd::gf::Mat4d(matrix))).unwrap();
+                    draft.2.clear();
+                    loaded = Some(time);
                 }
                 ui.label("USD rows; translation is in row 4");
                 let mut rows: Vec<String> = draft.1.split('\n').map(str::to_owned).collect();
@@ -570,10 +569,10 @@ pub fn show(
                 }
                 draft.1 = rows.join("\n");
                 drop(state);
-                if let Some(time) = loaded {
-                    if let Ok(mut times) = drafts.1.lock() {
-                        times.insert(key.clone(), (time.to_string(), String::new()));
-                    }
+                if let Some(time) = loaded
+                    && let Ok(mut times) = drafts.1.lock()
+                {
+                    times.insert(key.clone(), (time.to_string(), String::new()));
                 }
             }
             ui.label("Source");
@@ -587,10 +586,9 @@ pub fn show(
                     "Show source details"
                 })
                 .clicked
+                && let Ok(mut states) = drafts.2.lock()
             {
-                if let Ok(mut states) = drafts.2.lock() {
-                    states.insert(key.clone(), !expanded);
-                }
+                states.insert(key.clone(), !expanded);
             }
             if expanded {
                 for line in source_lines {
@@ -1008,10 +1006,9 @@ fn reference_creation_pod(
                     "Create local reference entry"
                 })
                 .clicked
+                && let Ok(mut expanded) = drafts.2.lock()
             {
-                if let Ok(mut expanded) = drafts.2.lock() {
-                    expanded.insert(key.clone(), !open);
-                }
+                expanded.insert(key.clone(), !open);
             }
             if !open {
                 return;
@@ -1692,7 +1689,9 @@ fn editable_text(value: &Value) -> Option<String> {
         Value::Vec3f(v) => format!("{} {} {}", v.x, v.y, v.z),
         Value::Vec3d(v) => format!("{} {} {}", v.x, v.y, v.z),
         Value::Matrix4d(v) => {
-            v.0.chunks_exact(4)
+            v.0.as_chunks::<4>()
+                .0
+                .iter()
                 .map(|row| {
                     row.iter()
                         .map(ToString::to_string)
@@ -1730,7 +1729,9 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
             }
             Value::Vec3fVec(
                 values
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|v| [v[0], v[1], v[2]].into())
                     .collect(),
             )
@@ -1742,7 +1743,9 @@ fn parse_value(template: &Value, input: &str) -> Result<Value, String> {
             }
             Value::Vec3dVec(
                 values
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|v| [v[0], v[1], v[2]].into())
                     .collect(),
             )
@@ -2023,8 +2026,8 @@ mod tests {
             for to in modes.into_iter().filter(|mode| *mode != from) {
                 let changed = move_reference_bucket(&source, from, 0, to).unwrap();
                 assert!(bucket(&changed, from).is_empty());
-                assert_eq!(bucket(&changed, to), &[reference.clone()]);
-                assert_eq!(bucket(&source, from), &[reference.clone()]);
+                assert_eq!(bucket(&changed, to), std::slice::from_ref(&reference));
+                assert_eq!(bucket(&source, from), std::slice::from_ref(&reference));
                 assert!(!changed.is_explicit());
             }
         }

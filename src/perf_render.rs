@@ -615,8 +615,10 @@ mod tests {
                 .map(|entity| (entity, mesh.id()))
                 .collect(),
         );
-        let mut class = RenderVisibleEntitiesClass::default();
-        class.entities_cpu_culling = vec![(cpu, cpu.into()), (unsupported, unsupported.into())];
+        let mut class = RenderVisibleEntitiesClass {
+            entities_cpu_culling: vec![(cpu, cpu.into()), (unsupported, unsupported.into())],
+            ..default()
+        };
         class.entities_gpu_culling.insert(cpu.into(), cpu);
         class.entities_gpu_culling.insert(gpu.into(), gpu);
         let mut visible = RenderVisibleEntities::default();
@@ -667,8 +669,10 @@ mod tests {
         app.add_systems(
             Update,
             (move |mut commands: Commands| {
-                let mut manifest = UploadManifest::default();
-                manifest.meshes = Arc::from([id]);
+                let mut manifest = UploadManifest {
+                    meshes: Arc::from([id]),
+                    ..default()
+                };
                 Arc::make_mut(&mut manifest.revisions).insert(id.untyped(), 7);
                 commands.insert_resource(manifest);
                 let mut extracted =

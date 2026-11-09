@@ -400,17 +400,17 @@ pub fn pod(snapshot: &EditorSnapshot, bridge: &EditorBridge, draft: &PayloadDraf
                         super::send(&bridge, command);
                     }
                 }
-                if let Some(operation) = &local {
-                    if ui.button("Discard draft and load local opinion").clicked {
-                        match rows_from_operation(operation) {
-                            Ok(rows) => {
-                                state.rows = rows;
-                                state.baseline = Some(operation.clone());
-                                state.touched = true;
-                                state.error.clear();
-                            }
-                            Err(error) => state.error = error,
+                if let Some(operation) = &local
+                    && ui.button("Discard draft and load local opinion").clicked
+                {
+                    match rows_from_operation(operation) {
+                        Ok(rows) => {
+                            state.rows = rows;
+                            state.baseline = Some(operation.clone());
+                            state.touched = true;
+                            state.error.clear();
                         }
+                        Err(error) => state.error = error,
                     }
                 }
                 if !state.error.is_empty() {

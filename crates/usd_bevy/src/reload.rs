@@ -1,7 +1,7 @@
 //! Transactional, field-level updates of layers in an existing stage.
 
 use openusd::{
-    sdf::{AbstractData, Data, Layer},
+    sdf::{AbstractData, Data, LayerHandle},
     usd::Stage,
 };
 
@@ -38,19 +38,16 @@ impl LayerReload {
         let mut layers = Vec::new();
         let mut expected = Vec::new();
         for (id, bytes) in replacements {
-            anyhow::ensure!(
-                stage.layer(id).is_some(),
-                "reload layer is not in the stage: {id}"
-            );
+            let layer = stage
+                .layer(id)?
+                .ok_or_else(|| anyhow::anyhow!("reload layer is not in the stage: {id}"))?;
             anyhow::ensure!(
                 !layers.iter().any(|(existing, _)| existing == id),
                 "duplicate reload layer: {id}"
             );
             let data = decode(id, bytes)?;
             layers.push((id.clone(), Data::from_abstract(data.as_ref())?));
-            expected.push(blake3::hash(
-                stage.layer(id).unwrap().export_to_string()?.as_bytes(),
-            ));
+            expected.push(blake3::hash(layer.export_to_string()?.as_bytes()));
         }
         let root = stage.root_layer();
         let root_id = root.identifier().to_owned();
@@ -93,7 +90,12 @@ impl LayerReload {
             if id != root_id {
                 source.insert_dependency(
                     id.clone(),
-                    layer_snapshot(&stage.layer(&id).unwrap(), &id)?,
+                    layer_snapshot(
+                        &stage
+                            .layer(&id)?
+                            .ok_or_else(|| anyhow::anyhow!("reload layer disappeared: {id}"))?,
+                        &id,
+                    )?,
                 );
             }
         }
@@ -123,7 +125,7 @@ impl LayerReload {
     pub fn apply(&self, stage: &Stage) -> anyhow::Result<()> {
         for ((id, _), expected) in self.layers.iter().zip(&self.expected) {
             let layer = stage
-                .layer(id)
+                .layer(id)?
                 .ok_or_else(|| anyhow::anyhow!("reload layer disappeared: {id}"))?;
             anyhow::ensure!(
                 blake3::hash(layer.export_to_string()?.as_bytes()) == *expected,
@@ -141,8 +143,9 @@ impl LayerReload {
     }
 }
 
-fn layer_snapshot(layer: &Layer, format_path: &str) -> anyhow::Result<Vec<u8>> {
+fn layer_snapshot(layer: &LayerHandle, format_path: &str) -> anyhow::Result<Vec<u8>> {
     use openusd::sdf::FileFormat;
+    let layer = layer.try_borrow()?;
     let packaged = openusd::ar::split_package_relative_path_inner(format_path);
     let path = packaged
         .as_ref()
@@ -189,6 +192,7 @@ fn patch(target: &mut dyn AbstractData, source: &Data) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openusd::sdf::Layer;
 
     fn binary_reload_case(kind: &str) {
         use openusd::sdf::FileFormat;

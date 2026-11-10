@@ -140,3 +140,17 @@ correct readiness reporting.
   passes (791 no-default / 884 all-feature tests, strict Clippy), as do nine native
   watcher tests and wasm compilation. See [texture verification](benchmarks/texture-reload.md)
   for measurements, evidence and remaining animation/native-rendering limits.
+- Skinning checkpoint: `e66e070` retains warmup timings, `dc89bfb` separates GPU
+  preparation phases, and `69708b6` reports exact CPU fallback reasons. `739deac`
+  reuses only the current mesh binding inside a read-only projection pass;
+  authored influences, deformation and eager residency are unchanged. Default
+  tests pass (881 / 20 ignored), hardening passes (793 no-default / 887 all-feature
+  tests and strict Clippy), as do four native deformation checks, nine watcher
+  checks, 15 native export checks and wasm compilation. All 16 alternating release
+  processes pass with matching final geometry/image payload and peak asset counts.
+  Bird tangent-deformation time falls, but host load prevents a reliable
+  whole-frame speedup claim. Five before/after renders are pixel-identical; the
+  cow's unavailable MDL diagnostic remains. See
+  [skinning preparation](benchmarks/skinning-preparation.md) for exact evidence,
+  memory/measurement limits and unresolved CPU/GPU fidelity checks. Larger tangent
+  assembly, CPU fallback, native cadence and the full workstreams remain open.

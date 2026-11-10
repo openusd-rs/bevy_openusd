@@ -86,7 +86,9 @@ must not be used as a second first-seek speedup measurement. Logs still confirm
 five false changes before versus zero after, matching final geometry/image
 payload, reduced peak asset counts, and process peaks around 814 MB before versus
 553–554 MB after. Bird timing is noisy; this is not final performance acceptance.
-Future benchmark instrumentation should retain warmup timings and counters too.
+The follow-up in `e66e070` retains warmup timings and counters separately; see
+[skinning preparation and warmup accounting](skinning-preparation.md). It does
+not retroactively supply the missing warmup measurements in this older run.
 
 ## Verification gates
 

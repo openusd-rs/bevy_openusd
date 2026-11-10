@@ -604,6 +604,22 @@ pub(crate) fn generate_cached_deformed_tangents(world: &mut World, mesh: &mut Me
 }
 
 fn generate_tangents_cached(world: &mut World, mesh: &mut Mesh, deformed: bool) {
+    if let Some(ticket) = prepare_tangents(world, mesh, deformed) {
+        let result = mesh.generate_tangents();
+        finish_tangents(world, mesh, ticket, result);
+    }
+}
+
+pub(super) struct TangentTicket {
+    signature: u64,
+    admit: bool,
+}
+
+pub(super) fn prepare_tangents(
+    world: &mut World,
+    mesh: &mut Mesh,
+    deformed: bool,
+) -> Option<TangentTicket> {
     world.init_resource::<MeshTangentCache>();
     let signature = mesh_signature(mesh);
     let hit = world
@@ -620,7 +636,7 @@ fn generate_tangents_cached(world: &mut World, mesh: &mut Mesh, deformed: bool) 
         if deformed {
             record_cache(world, "deformed_tangent_hits", 1);
         }
-        return;
+        return None;
     }
     record_cache(world, "tangent_misses", 1);
     let admit = if deformed {
@@ -644,7 +660,16 @@ fn generate_tangents_cached(world: &mut World, mesh: &mut Mesh, deformed: bool) 
     } else {
         true
     };
-    if let Err(error) = mesh.generate_tangents() {
+    Some(TangentTicket { signature, admit })
+}
+
+pub(super) fn finish_tangents(
+    world: &mut World,
+    mesh: &Mesh,
+    ticket: TangentTicket,
+    result: Result<(), bevy::mesh::GenerateTangentsError>,
+) {
+    if let Err(error) = result {
         record_cache(world, "tangent_failures", 1);
         bevy::log::debug!("mesh: generate_tangents failed: {error}");
         return;
@@ -652,7 +677,7 @@ fn generate_tangents_cached(world: &mut World, mesh: &mut Mesh, deformed: bool) 
     let Some(tangents) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT) else {
         return;
     };
-    if !admit {
+    if !ticket.admit {
         record_cache(world, "tangent_admission_skips", 1);
         return;
     }
@@ -675,7 +700,9 @@ fn generate_tangents_cached(world: &mut World, mesh: &mut Mesh, deformed: bool) 
     let tangents = tangents.clone();
     let mut input = mesh.clone();
     input.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
-    cache.entries.push_back((signature, input, tangents, bytes));
+    cache
+        .entries
+        .push_back((ticket.signature, input, tangents, bytes));
     cache.payload_bytes += bytes;
     record_cache(world, "tangent_insertions", 1);
     record_cache(world, "tangent_inserted_bytes", bytes as u64);

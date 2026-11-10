@@ -1216,7 +1216,7 @@ mod tests {
                         .unwrap();
                 let path = openusd::sdf::path(prim).unwrap();
                 stage
-                    .create_attribute(&format!("{prim}.primvars:skel:skinningMethod"), "token")
+                    .create_attribute(format!("{prim}.primvars:skel:skinningMethod"), "token")
                     .unwrap()
                     .set(Value::Token(method.into()))
                     .unwrap();
@@ -1229,7 +1229,7 @@ mod tests {
                 ];
                 for order in orders {
                     stage
-                        .create_attribute(&format!("{prim}.skel:joints"), "token[]")
+                        .create_attribute(format!("{prim}.skel:joints"), "token[]")
                         .unwrap()
                         .set(Value::TokenVec(order.into_iter().map(Into::into).collect()))
                         .unwrap();
@@ -1240,7 +1240,7 @@ mod tests {
                     {
                         if iteration == 10 {
                             let weights = stage
-                                .attribute(&format!("{prim}.primvars:skel:jointWeights"))
+                                .attribute(format!("{prim}.primvars:skel:jointWeights"))
                                 .unwrap();
                             let count = if original.skinning.is_rigidly_deformed() {
                                 2
@@ -1262,7 +1262,7 @@ mod tests {
                             );
                             stage
                                 .create_attribute(
-                                    &format!("{prim}.primvars:skel:geomBindTransform"),
+                                    format!("{prim}.primvars:skel:geomBindTransform"),
                                     "matrix4d",
                                 )
                                 .unwrap()

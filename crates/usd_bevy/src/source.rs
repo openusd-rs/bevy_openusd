@@ -15,6 +15,7 @@ static NEXT_SOURCE: AtomicU64 = AtomicU64::new(0);
 const MEMORY_ROOT: &str = "__usd_memory__";
 
 pub(crate) type DiskBaselines = Arc<EditorDisk>;
+pub(crate) type DiskHashes = BTreeMap<PathBuf, blake3::Hash>;
 
 /// Reads one dependency by identifier, or `None` when it cannot be read.
 pub(crate) type Fetch = Arc<dyn Fn(&str) -> Option<Arc<[u8]>> + Send + Sync>;
@@ -78,15 +79,24 @@ impl Fetcher {
 
 #[derive(Default)]
 pub(crate) struct EditorDisk {
-    hashes: Mutex<BTreeMap<PathBuf, blake3::Hash>>,
+    hashes: Mutex<DiskHashes>,
     pub replacements: Mutex<BTreeMap<String, Arc<[u8]>>>,
     pub snapshots: Mutex<BTreeMap<String, Arc<[u8]>>>,
 }
 
 impl std::ops::Deref for EditorDisk {
-    type Target = Mutex<BTreeMap<PathBuf, blake3::Hash>>;
+    type Target = Mutex<DiskHashes>;
     fn deref(&self) -> &Self::Target {
         &self.hashes
+    }
+}
+
+impl EditorDisk {
+    pub(crate) fn record_reads(&self, reads: DiskHashes) {
+        let mut hashes = self.hashes.lock().expect("disk baselines");
+        for (path, hash) in reads {
+            hashes.entry(path).or_insert(hash);
+        }
     }
 }
 
@@ -237,6 +247,33 @@ impl UsdSource {
         }
         .open_asset(&ResolvedPath::new(identifier))?
         .read_all()
+    }
+
+    pub(crate) fn read_asset_tracked(
+        &self,
+        identifier: &str,
+        baselines: &mut DiskHashes,
+    ) -> io::Result<Vec<u8>> {
+        if !self.filesystem || !rooted(Path::new(identifier)) {
+            return self.read_asset(identifier);
+        }
+        let packaged = openusd::ar::split_package_relative_path_outer(identifier);
+        let outer = packaged
+            .as_ref()
+            .map_or(identifier, |(outer, _)| outer.as_str());
+        let key = crate::persistence::destination_identity(Path::new(outer))?;
+        if baselines.contains_key(&key) {
+            return self.read_asset(identifier);
+        }
+        let bytes = self.read_asset(outer)?;
+        let hash = blake3::hash(&bytes);
+        let bytes = if let Some((_, inner)) = packaged {
+            package_entry(Arc::from(bytes), &inner)?.to_vec()
+        } else {
+            bytes
+        };
+        baselines.insert(key, hash);
+        Ok(bytes)
     }
 
     /// `default_composition` requires a freshly opened stage without overrides or edits.
@@ -2203,6 +2240,92 @@ def Xform "Root" {}
             .is_err()
         );
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn tracked_asset_reads_preserve_first_read_and_snapshot_provenance() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
+        let texture = directory.path().canonicalize().unwrap().join("pixel.png");
+        let mut source = UsdSource::new(&root, b"#usda 1.0\n".as_slice()).unwrap();
+        let mut baselines = super::DiskHashes::default();
+        std::fs::write(&texture, b"original").unwrap();
+        assert_eq!(
+            source
+                .read_asset_tracked(texture.to_str().unwrap(), &mut baselines)
+                .unwrap(),
+            b"original"
+        );
+        std::fs::write(&texture, b"modified").unwrap();
+        assert_eq!(
+            source
+                .read_asset_tracked(texture.to_str().unwrap(), &mut baselines)
+                .unwrap(),
+            b"modified"
+        );
+        assert_eq!(baselines[&texture], blake3::hash(b"original"));
+        source.replace_file_bytes(
+            texture.to_string_lossy().into_owned(),
+            b"snapshot".as_slice(),
+        );
+        baselines.clear();
+        assert_eq!(
+            source
+                .read_asset_tracked(texture.to_str().unwrap(), &mut baselines)
+                .unwrap(),
+            b"snapshot"
+        );
+        assert_eq!(baselines[&texture], blake3::hash(b"snapshot"));
+        let missing = directory.path().join("missing.png");
+        assert!(
+            source
+                .read_asset_tracked(missing.to_str().unwrap(), &mut baselines)
+                .is_err()
+        );
+        assert_eq!(baselines.len(), 1);
+        let closed = UsdSource::snapshot(&texture, b"closed".as_slice()).unwrap();
+        baselines.clear();
+        assert_eq!(
+            closed
+                .read_asset_tracked(closed.identifier(), &mut baselines)
+                .unwrap(),
+            b"closed"
+        );
+        assert!(baselines.is_empty());
+    }
+
+    #[test]
+    fn tracked_package_reads_hash_the_outer_snapshot() {
+        use super::*;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("textures.usdz");
+        let mut inner = openusd::usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
+        inner.add_layer("pixel.png", b"pixels").unwrap();
+        let inner = inner.finish().unwrap().into_inner();
+        let mut outer = openusd::usdz::ArchiveWriter::new(Cursor::new(Vec::new()));
+        outer.add_layer("inner.usdz", &inner).unwrap();
+        let bytes = outer.finish().unwrap().into_inner();
+        std::fs::write(&path, &bytes).unwrap();
+        let source = UsdSource::from_file(&path).unwrap();
+        std::fs::write(&path, b"replaced after snapshot").unwrap();
+        let identifier = format!("{}[inner.usdz[pixel.png]]", source.identifier());
+        let mut baselines = DiskHashes::default();
+        assert_eq!(
+            source
+                .read_asset_tracked(&identifier, &mut baselines)
+                .unwrap(),
+            b"pixels"
+        );
+        assert_eq!(baselines, [(path.clone(), blake3::hash(&bytes))].into());
+        let disk = EditorDisk::default();
+        disk.record_reads(baselines);
+        disk.record_reads([(path.clone(), blake3::hash(b"different"))].into());
+        assert_eq!(disk.lock().unwrap()[&path], blake3::hash(&bytes));
+        assert!(disk.snapshots.lock().unwrap().is_empty());
     }
 
     #[test]

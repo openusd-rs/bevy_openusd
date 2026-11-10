@@ -543,6 +543,30 @@ fn measure(
         .iter(app.world())
         .count();
     result.mesh_entities = app.world_mut().query::<&Mesh3d>().iter(app.world()).count();
+    if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        let mut fallbacks = app.world_mut().query::<(
+            &usd_bevy::UsdPrimRef,
+            &usd_bevy::route::gpu_skin::UsdCpuSkinFallback,
+            &Mesh3d,
+            Option<&Visibility>,
+        )>();
+        let count = fallbacks.iter(app.world()).count();
+        eprintln!(
+            "cpu_skin_fallback_total count={count} shown={}",
+            count.min(16)
+        );
+        for (prim, fallback, mesh, visibility) in fallbacks.iter(app.world()).take(16) {
+            let vertices = app
+                .world()
+                .resource::<Assets<Mesh>>()
+                .get(&mesh.0)
+                .map_or(0, Mesh::count_vertices);
+            eprintln!(
+                "cpu_skin_fallback path={:?} own_visibility={visibility:?} vertices={vertices} reason={:?}",
+                prim.path, fallback.0
+            );
+        }
+    }
     result.subset_entities = app
         .world_mut()
         .query::<&usd_bevy::route::subset::UsdSubset>()

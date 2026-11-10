@@ -19,6 +19,16 @@ enum SeekMode {
     Timeline,
 }
 
+const SEEK_WARMUP: usize = 4;
+
+fn seek_sample_phase(iteration: usize) -> (&'static str, usize) {
+    if iteration < SEEK_WARMUP {
+        ("seek_warmup", iteration)
+    } else {
+        ("seek", iteration - SEEK_WARMUP)
+    }
+}
+
 impl SeekMode {
     fn samples(self) -> usize {
         match self {
@@ -29,8 +39,8 @@ impl SeekMode {
         }
     }
     fn clock(self, iteration: usize) -> f64 {
-        if matches!(self, Self::Unique | Self::Timeline) && iteration >= 4 {
-            (iteration - 3) as f64 * 10.0 / self.samples() as f64
+        if matches!(self, Self::Unique | Self::Timeline) && iteration >= SEEK_WARMUP {
+            (iteration - SEEK_WARMUP + 1) as f64 * 10.0 / self.samples() as f64
         } else {
             [0.0, 5.0, 10.0, 5.0][iteration % 4]
         }
@@ -385,8 +395,16 @@ fn measure(
             );
         }
         let mut timings = Vec::with_capacity(seek.samples());
-        for iteration in 0..seek.samples() + 4 {
-            if iteration == 4 {
+        let mut warmup = [Duration::ZERO; SEEK_WARMUP];
+        for iteration in 0..seek.samples() + SEEK_WARMUP {
+            if iteration == SEEK_WARMUP {
+                println!(
+                    "seek_warmup_summary samples={} total_ns={} max_ns={}",
+                    warmup.len(),
+                    warmup.iter().sum::<Duration>().as_nanos(),
+                    warmup.iter().max().unwrap().as_nanos()
+                );
+                report_routes(app.world(), "after-seek-warmup", SEEK_WARMUP);
                 if let Some(mut timing) = app
                     .world_mut()
                     .get_resource_mut::<usd_bevy::route::TextureSamplingTiming>()
@@ -442,26 +460,27 @@ fn measure(
                     format!("seek did not preserve document and clock: {}", state.status).into(),
                 );
             }
-            if iteration >= 4 {
+            if iteration >= SEEK_WARMUP {
                 timings.push(elapsed);
-                if raw_samples {
+            } else {
+                warmup[iteration] = elapsed;
+            }
+            if raw_samples {
+                let (prefix, index) = seek_sample_phase(iteration);
+                println!(
+                    "{prefix}_sample index={index} clock={time:.17} update_ns={}",
+                    elapsed.as_nanos()
+                );
+                if let Some((elapsed, images, appended)) = texture_before {
+                    let timing = app
+                        .world()
+                        .resource::<usd_bevy::route::TextureSamplingTiming>();
                     println!(
-                        "seek_sample index={} clock={time:.17} update_ns={}",
-                        iteration - 4,
-                        elapsed.as_nanos()
+                        "{prefix}_texture_sample index={index} finalize_ns={} images={} appended_bytes={}",
+                        (timing.elapsed - elapsed).as_nanos(),
+                        timing.images - images,
+                        timing.appended_bytes - appended
                     );
-                    if let Some((elapsed, images, appended)) = texture_before {
-                        let timing = app
-                            .world()
-                            .resource::<usd_bevy::route::TextureSamplingTiming>();
-                        println!(
-                            "seek_texture_sample index={} finalize_ns={} images={} appended_bytes={}",
-                            iteration - 4,
-                            (timing.elapsed - elapsed).as_nanos(),
-                            timing.images - images,
-                            timing.appended_bytes - appended
-                        );
-                    }
                 }
             }
             for (peak, current) in result
@@ -642,7 +661,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             "0,5,10,5"
         },
-        if seek == SeekMode::Idle { 0 } else { 4 },
+        if seek == SeekMode::Idle {
+            0
+        } else {
+            SEEK_WARMUP
+        },
         seek.samples(),
         if seek != SeekMode::Idle {
             "after-seeks"
@@ -691,6 +714,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     Ok(())
+}
+
+#[test]
+fn raw_seek_phases_include_warmup_without_reindexing_samples() {
+    for iteration in 0..SEEK_WARMUP {
+        assert_eq!(seek_sample_phase(iteration), ("seek_warmup", iteration));
+    }
+    for iteration in 0..SeekMode::Repeated.samples() {
+        assert_eq!(
+            seek_sample_phase(iteration + SEEK_WARMUP),
+            ("seek", iteration)
+        );
+    }
 }
 
 #[test]

@@ -338,6 +338,25 @@ fn hierarchy_hidden(world: &World, mut entity: Entity) -> Option<bool> {
 }
 
 impl SchemaRegistry {
+    pub(crate) fn with_materials<R>(
+        &self,
+        world: &mut World,
+        stage: &Stage,
+        project: impl FnOnce(&mut World) -> R,
+    ) -> R {
+        if !self.builtin_only {
+            return project(world);
+        }
+        let previous = world.remove_non_send::<material::ProjectionMaterials>();
+        world.insert_non_send(material::ProjectionMaterials::new(stage));
+        let result = project(world);
+        world.remove_non_send::<material::ProjectionMaterials>();
+        if let Some(previous) = previous {
+            world.insert_non_send(previous);
+        }
+        result
+    }
+
     /// An empty registry.
     pub fn new() -> Self {
         Self::default()

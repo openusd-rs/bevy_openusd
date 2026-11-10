@@ -648,6 +648,12 @@ pub(crate) fn registry_of(world: &World) -> SchemaRegistry {
 /// `Transform`), recording the path↔entity bimap. Idempotent only on an
 /// empty world — call once on load.
 pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
+    registry_of(world).with_materials(world, &live.stage, |world| {
+        project_stage_inner(world, live, map);
+    });
+}
+
+fn project_stage_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
     let stage = &live.stage;
     let registry = registry_of(world);
     let previous_material_reads =
@@ -1813,15 +1819,16 @@ fn resample_animation_system(world: &mut World) {
     };
     let map = world.remove_resource::<PrimEntities>().unwrap_or_default();
     let registry = registry_of(world);
-    for path in &animated.0 {
-        if let Some(entity) = map.entity(path)
-            && let Ok(p) = openusd::sdf::path(path)
-        {
-            // patch_prim resolves values at the world's StageTime.
-            registry.patch_prim(&live.stage, &p, world, entity, &[]);
+    registry.with_materials(world, &live.stage, |world| {
+        for path in &animated.0 {
+            if let Some(entity) = map.entity(path)
+                && let Ok(p) = openusd::sdf::path(path)
+            {
+                registry.patch_prim(&live.stage, &p, world, entity, &[]);
+            }
         }
-    }
-    crate::route::residency::materialize(world, &live.stage, &map);
+        crate::route::residency::materialize(world, &live.stage, &map);
+    });
     world.insert_resource(map);
     world.insert_non_send(live);
     if let Some(mut sampled) = world.get_resource_mut::<SampledTime>() {

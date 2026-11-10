@@ -1000,6 +1000,53 @@ def Cube "C" { rel material:binding = </Mat> }
     }
 
     #[test]
+    fn live_material_preparation_is_shared_only_within_builtin_passes() {
+        let stage = read_cache_stage();
+        let surrounding = read_cache_stage();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            crate::UsdPlugin,
+            crate::live::LiveStagePlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<MaterialResolveTimings>();
+        app.world_mut()
+            .insert_non_send(ProjectionMaterials::new(&surrounding));
+        app.world_mut()
+            .insert_non_send(crate::live::LiveStage::new(stage));
+        for (time, expected) in [(0.0, 0.2), (10.0, 0.8), (5.0, 0.5)] {
+            *app.world_mut().resource_mut::<MaterialResolveTimings>() = default();
+            app.world_mut()
+                .resource_mut::<crate::route::StageTime>()
+                .current = time;
+            app.update();
+            let world = app.world();
+            assert!(world.non_send::<ProjectionMaterials>().stage == surrounding);
+            let timings = world.resource::<MaterialResolveTimings>();
+            assert_eq!(timings.bound - timings.cache_hits, 2);
+            assert!(timings.cache_hits > 0);
+            for (path, sidedness) in [("/A", false), ("/B", true), ("/C", false)] {
+                let entity = world
+                    .resource::<crate::live::PrimEntities>()
+                    .entity(path)
+                    .unwrap();
+                let handle = &world
+                    .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                    .unwrap()
+                    .0;
+                let material = world
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(handle)
+                    .unwrap();
+                assert!((material.perceptual_roughness - expected).abs() < 1e-6);
+                assert_eq!(material.double_sided, sidedness);
+            }
+        }
+    }
+
+    #[test]
     fn live_material_reads_invalidate_during_projection_and_restore_scope() {
         struct Edit;
         impl PrimRoute for Edit {

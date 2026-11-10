@@ -4,6 +4,7 @@ use super::{
     sheen_material::SheenMaterial,
     strand_material::{ATTRIBUTE_STRAND_NORMAL, StrandMaterial},
 };
+use bevy::material::OpaqueRendererMethod;
 use bevy::prelude::*;
 
 #[test]
@@ -46,7 +47,16 @@ fn render_fixture_selects_custom_materials_and_gpu_instancing() {
     let flat = entities.entity("/Flat").unwrap();
     assert!(world.get::<MeshMaterial3d<FlatMaterial>>(flat).is_some());
     let sheen = entities.entity("/Sheen").unwrap();
-    assert!(world.get::<MeshMaterial3d<SheenMaterial>>(sheen).is_some());
+    let sheen = &world.get::<MeshMaterial3d<SheenMaterial>>(sheen).unwrap().0;
+    assert_eq!(
+        world
+            .resource::<Assets<SheenMaterial>>()
+            .get(sheen)
+            .unwrap()
+            .base
+            .opaque_render_method,
+        OpaqueRendererMethod::Forward
+    );
     let medium = entities.entity("/Medium").unwrap();
     let material = &world
         .get::<MeshMaterial3d<MediumMaterial>>(medium)
@@ -58,12 +68,24 @@ fn render_fixture_selects_custom_materials_and_gpu_instancing() {
         .unwrap();
     assert!(material.base.specular_transmission > 0.0);
     assert!(material.base.attenuation_distance.is_finite());
+    assert_eq!(
+        material.base.opaque_render_method,
+        OpaqueRendererMethod::Forward
+    );
     for (path, oriented) in [("/RoundStrands", false), ("/OrientedStrands", true)] {
         let entity = entities.entity(path).unwrap();
-        assert!(
+        let material = &world
+            .get::<MeshMaterial3d<StrandMaterial>>(entity)
+            .unwrap()
+            .0;
+        assert_eq!(
             world
-                .get::<MeshMaterial3d<StrandMaterial>>(entity)
-                .is_some()
+                .resource::<Assets<StrandMaterial>>()
+                .get(material)
+                .unwrap()
+                .base
+                .opaque_render_method,
+            OpaqueRendererMethod::Forward
         );
         let mesh = &world.get::<Mesh3d>(entity).unwrap().0;
         let mesh = world.resource::<Assets<Mesh>>().get(mesh).unwrap();

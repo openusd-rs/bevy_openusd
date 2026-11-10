@@ -16,6 +16,11 @@ capture() {
 }
 for mode in forward prepass deferred oit; do
     capture "materials-$mode" assets/wesl_materials.usda "$mode" 0 3 8 0 0.7 0
+    for region in '897 298 5 5' '918 298 5 5'; do
+        oslo make run-example --name capture_inspect \
+            --args "$(printf '%q' "$output/materials-$mode.png") $region 128 100" \
+            >>"$output/materials-$mode-strands.log" 2>&1
+    done
 done
 USD_CAPTURE_GPU_INSTANCING=0 capture instancing assets/wesl_materials.usda forward 0 3 8 0 0.7 0
 for mode in forward prepass deferred; do

@@ -169,8 +169,16 @@ impl PrimRoute for SkinRoute {
             super::gpu_skin::clear(world, entity);
         }
         super::gpu_morph::clear(world, entity);
-        let read = match deformed_mesh_with_kinds(ctx, skinned, blended) {
-            Ok(Some(read)) => read,
+        let prepared = ctx
+            .prepared_deformation
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| {
+                deformed_mesh_with_kinds(ctx, skinned, blended)
+                    .map(|read| read.map(super::preparation::PreparedDeformation::new))
+            });
+        let mut prepared = match prepared {
+            Ok(Some(prepared)) => prepared,
             result => {
                 let error = result.err().map_or_else(
                     || "deformation produced no mesh".into(),
@@ -183,14 +191,13 @@ impl PrimRoute for SkinRoute {
                 return;
             }
         };
-        let mut mesh = crate::mesh::assemble_mesh(&read, None, false);
-        if read.uvs.is_some() {
-            super::cache::generate_cached_deformed_tangents(world, &mut mesh);
+        prepared.generate_tangents(world);
+        if !prepared.read.subsets.is_empty() {
+            world
+                .entity_mut(entity)
+                .insert(CpuSubsetGeometry(prepared.read));
         }
-        if !read.subsets.is_empty() {
-            world.entity_mut(entity).insert(CpuSubsetGeometry(read));
-        }
-        let handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
+        let handle = world.resource_mut::<Assets<Mesh>>().add(prepared.mesh);
         if let Some(mut m) = world.get_mut::<Mesh3d>(entity) {
             m.0 = handle;
         } else if let Ok(mut e) = world.get_entity_mut(entity) {

@@ -167,7 +167,9 @@ fn attach_prepared(
         .ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
     preparation_lap(profile, "mesh-read");
-    let sample = crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
+    let sample = ctx.prepared_skin.borrow_mut().take().unwrap_or_else(|| {
+        crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)
+    })?;
     preparation_lap(profile, "skin-sample");
     let skinned_tangents = read.uvs.is_some()
         && sample
@@ -333,15 +335,20 @@ fn correct_tangents(
     skin: &crate::read::skel::GpuSkinSample,
     profile: &mut Option<PreparationSample>,
 ) -> anyhow::Result<()> {
-    let read = super::skel::deformed_mesh(ctx)?
-        .ok_or_else(|| anyhow::anyhow!("missing tangent deformation"))?;
-    preparation_lap(profile, "tangent-deform");
-    let mut deformed = crate::mesh::assemble_mesh(&read, None, false);
-    preparation_lap(profile, "tangent-assembly");
-    if read.uvs.is_some() {
-        super::cache::generate_cached_deformed_tangents(world, &mut deformed);
-    }
+    let prepared = ctx.prepared_deformation.borrow_mut().take();
+    let mut prepared = if let Some(prepared) = prepared {
+        prepared?.ok_or_else(|| anyhow::anyhow!("missing tangent deformation"))?
+    } else {
+        let read = super::skel::deformed_mesh(ctx)?
+            .ok_or_else(|| anyhow::anyhow!("missing tangent deformation"))?;
+        preparation_lap(profile, "tangent-deform");
+        let prepared = super::preparation::PreparedDeformation::new(read);
+        preparation_lap(profile, "tangent-assembly");
+        prepared
+    };
+    prepared.generate_tangents(world);
     preparation_lap(profile, "tangent-generation");
+    let deformed = prepared.mesh;
     anyhow::ensure!(
         deformed.count_vertices() == mesh.count_vertices(),
         "skinned tangent mapping changed"

@@ -1826,13 +1826,11 @@ fn resample_animation_system(world: &mut World) {
     let map = world.remove_resource::<PrimEntities>().unwrap_or_default();
     let registry = registry_of(world);
     registry.with_materials(world, &live, |world| {
-        for path in &animated.0 {
-            if let Some(entity) = map.entity(path)
-                && let Ok(p) = openusd::sdf::path(path)
-            {
-                registry.patch_prim(&live.stage, &p, world, entity, &[]);
-            }
-        }
+        let prims = animated
+            .0
+            .iter()
+            .filter_map(|path| Some((openusd::sdf::path(path).ok()?, map.entity(path)?)));
+        registry.patch_animation(&live.stage, prims, world);
         crate::route::residency::materialize(world, &live.stage, &map);
     });
     world.insert_resource(map);

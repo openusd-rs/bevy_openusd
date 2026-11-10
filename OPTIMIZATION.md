@@ -169,3 +169,16 @@ correct readiness reporting.
   for timings, memory, trial failures and exact evidence. Cow unique-time
   preparation remains roughly 83 ms/update; this is not 60 Hz native playback
   acceptance or completion of the workstreams above.
+- CPU-input checkpoint: `c9006b3` reuses resolved influences and mesh-order
+  transforms through upstream classic-linear math; `8e9001f` repairs test-only
+  lint errors. Default tests pass (886 / 20 ignored), hardening passes (798
+  no-default / 892 all-feature tests and strict Clippy), as do native deformation,
+  watcher/export and wasm checks. Eight before/after renders remain pixel-exact;
+  the same cow diagnostic and strict bird mismatch remain open. The final
+  timeline matrix has 28 successful processes and one preserved invalid-control
+  attempt. Raw hybrid-PMU probes show small instruction reductions for the
+  classic-linear cases and a 0.210% DQ increase; neither these counters nor the
+  noisy timing ranges prove native FPS acceptance. See
+  [CPU skinning inputs](benchmarks/cpu-skin-inputs.md). The next larger target is
+  bounded parallel pure-mesh preparation while preserving stage/thread, route,
+  visibility, instance and lifecycle contracts.

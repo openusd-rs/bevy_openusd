@@ -16,8 +16,10 @@ use std::{
 };
 use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot};
 
+type PipelineStatus = (usize, Vec<String>);
+
 #[derive(Resource, Clone, Default)]
-struct PipelineProgress(std::sync::Arc<std::sync::Mutex<Option<(usize, Vec<String>)>>>);
+struct PipelineProgress(std::sync::Arc<std::sync::Mutex<Option<PipelineStatus>>>);
 
 fn pipeline_progress(
     cache: Res<bevy::render::render_resource::PipelineCache>,
@@ -610,18 +612,20 @@ fn setup(
     }
 }
 
+type SceneMeshBounds = (
+    &'static Mesh3d,
+    Option<&'static bevy::camera::primitives::Aabb>,
+    &'static GlobalTransform,
+    &'static InheritedVisibility,
+    Option<&'static bevy::mesh::skinning::SkinnedMesh>,
+    Option<&'static bevy::mesh::morph::MeshMorphWeights>,
+);
+
 fn fit_capture_grid(
     capture: Res<Capture>,
     states: Query<&usd_bevy::asset::UsdSceneState, With<CaptureInstance>>,
     mut fitted: Local<Option<Vec<u64>>>,
-    meshes: Query<(
-        &Mesh3d,
-        Option<&bevy::camera::primitives::Aabb>,
-        &GlobalTransform,
-        &InheritedVisibility,
-        Option<&bevy::mesh::skinning::SkinnedMesh>,
-        Option<&bevy::mesh::morph::MeshMorphWeights>,
-    )>,
+    meshes: Query<SceneMeshBounds>,
     mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
     mut grids: Query<
         (
@@ -674,10 +678,16 @@ fn fit_capture_grid(
     }
 }
 
+type AuthoredCamera = (
+    &'static usd_bevy::UsdPrimRef,
+    &'static GlobalTransform,
+    &'static Projection,
+);
+
 fn select_authored_camera(
     mut capture: ResMut<Capture>,
     sources: Query<
-        (&usd_bevy::UsdPrimRef, &GlobalTransform, &Projection),
+        AuthoredCamera,
         (
             With<usd_bevy::route::camera::UsdCamera>,
             Without<CaptureCamera>,
@@ -702,58 +712,112 @@ fn select_authored_camera(
     capture.camera_ready = true;
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct CaptureTiming<'w, 's> {
+    diagnostics: Res<'w, bevy::diagnostic::DiagnosticsStore>,
+    timing: ResMut<'w, gpu_timing::GpuTiming>,
+    progress: Res<'w, PipelineProgress>,
+    mesh_assets: Res<'w, Assets<Mesh>>,
+    mesh_references: Query<'w, 's, (&'static Mesh3d, &'static InheritedVisibility)>,
+}
+
+type CaptureMeshData = (
+    Entity,
+    &'static InheritedVisibility,
+    Option<&'static bevy::mesh::skinning::SkinnedMesh>,
+    Option<&'static usd_bevy::route::gpu_skin::UsdCpuSkinFallback>,
+    Option<&'static usd_bevy::route::gpu_morph::UsdGpuMorph>,
+    Option<&'static MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>,
+);
+
+type CaptureGeometryIssues = (
+    &'static usd_bevy::UsdPrimRef,
+    Option<&'static usd_bevy::route::shapes::UsdShapeError>,
+    Option<&'static usd_bevy::route::curves::UsdCurveError>,
+    Option<&'static usd_bevy::route::xform::UsdTransformError>,
+);
+
+#[derive(bevy::ecs::system::SystemParam)]
+struct CaptureScene<'w, 's> {
+    states: Query<'w, 's, &'static usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
+    meshes: Query<'w, 's, CaptureMeshData, With<Mesh3d>>,
+    camera: Query<
+        'w,
+        's,
+        (
+            &'static RenderTarget,
+            &'static GlobalTransform,
+            &'static Camera,
+        ),
+        With<CaptureCamera>,
+    >,
+    environments: Query<
+        'w,
+        's,
+        &'static usd_bevy::route::dome_environment::UsdDomeEnvironmentState,
+        With<CaptureCamera>,
+    >,
+    environment_lights:
+        Query<'w, 's, &'static bevy::light::EnvironmentMapLight, With<CaptureCamera>>,
+    generators: Query<'w, 's, (), With<bevy::light::GeneratedEnvironmentMapLight>>,
+    dome_diagnostics:
+        Option<Res<'w, usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
+    studio_lights: Query<'w, 's, &'static environment::StudioLight>,
+    deformation_errors: Query<
+        'w,
+        's,
+        (
+            &'static usd_bevy::UsdPrimRef,
+            &'static usd_bevy::route::skel::UsdDeformationError,
+        ),
+    >,
+    subdivision_errors: Query<
+        'w,
+        's,
+        (
+            &'static usd_bevy::UsdPrimRef,
+            &'static usd_bevy::route::subdivision::UsdSubdivisionError,
+        ),
+    >,
+    instancer_errors: Query<
+        'w,
+        's,
+        (
+            &'static usd_bevy::UsdPrimRef,
+            &'static usd_bevy::route::instancer::UsdInstancerWarning,
+        ),
+    >,
+    geometry_errors: Query<'w, 's, CaptureGeometryIssues>,
+}
+
 fn capture_frame(
     mut commands: Commands,
     mut capture: ResMut<Capture>,
-    timing: (
-        Res<bevy::diagnostic::DiagnosticsStore>,
-        ResMut<gpu_timing::GpuTiming>,
-        Res<PipelineProgress>,
-        Res<Assets<Mesh>>,
-        Query<(&Mesh3d, &InheritedVisibility)>,
-    ),
-    states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
-    meshes: Query<
-        (
-            Entity,
-            &InheritedVisibility,
-            Option<&bevy::mesh::skinning::SkinnedMesh>,
-            Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>,
-            Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>,
-            Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>,
-        ),
-        With<Mesh3d>,
-    >,
-    camera: Query<(&RenderTarget, &GlobalTransform, &Camera), With<CaptureCamera>>,
-    environments: Query<
-        &usd_bevy::route::dome_environment::UsdDomeEnvironmentState,
-        With<CaptureCamera>,
-    >,
-    environment_lights: Query<&bevy::light::EnvironmentMapLight, With<CaptureCamera>>,
-    generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
-    dome_diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
-    studio_lights: Query<&environment::StudioLight>,
-    deformation_errors: Query<(
-        &usd_bevy::UsdPrimRef,
-        &usd_bevy::route::skel::UsdDeformationError,
-    )>,
-    subdivision_errors: Query<(
-        &usd_bevy::UsdPrimRef,
-        &usd_bevy::route::subdivision::UsdSubdivisionError,
-    )>,
-    instancer_errors: Query<(
-        &usd_bevy::UsdPrimRef,
-        &usd_bevy::route::instancer::UsdInstancerWarning,
-    )>,
-    geometry_errors: Query<(
-        &usd_bevy::UsdPrimRef,
-        Option<&usd_bevy::route::shapes::UsdShapeError>,
-        Option<&usd_bevy::route::curves::UsdCurveError>,
-        Option<&usd_bevy::route::xform::UsdTransformError>,
-    )>,
+    timing: CaptureTiming,
+    scene: CaptureScene,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let (diagnostics, mut timing, progress, mesh_assets, mesh_references) = timing;
+    let CaptureTiming {
+        diagnostics,
+        mut timing,
+        progress,
+        mesh_assets,
+        mesh_references,
+    } = timing;
+    let CaptureScene {
+        states,
+        meshes,
+        camera,
+        environments,
+        environment_lights,
+        generators,
+        dome_diagnostics,
+        studio_lights,
+        deformation_errors,
+        subdivision_errors,
+        instancer_errors,
+        geometry_errors,
+    } = scene;
     if capture.started.elapsed() > capture.timeout {
         eprintln!(
             "capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}",

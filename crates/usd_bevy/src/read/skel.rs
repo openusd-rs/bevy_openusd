@@ -18,6 +18,65 @@ use openusd_schemas::skel::{
 
 use super::util::{read_float_vec, read_rel_first_target};
 
+type PoseKey = (Path, Option<Path>, Option<u64>);
+
+struct SkelSamples {
+    stage: Stage,
+    skeletons: std::collections::HashMap<Path, Option<SkeletonQuery>>,
+    animations: std::collections::HashMap<Path, Option<AnimQuery>>,
+    poses: std::collections::HashMap<PoseKey, Option<Vec<gf::Mat4d>>>,
+}
+
+thread_local! {
+    static SKEL_SAMPLES: std::cell::RefCell<Option<SkelSamples>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Shares skeleton definitions and poses during a read-only projection pass.
+pub(crate) struct SkelSampleScope(Option<SkelSamples>);
+
+impl SkelSampleScope {
+    pub(crate) fn begin(stage: &Stage) -> Self {
+        Self(SKEL_SAMPLES.with(|cache| {
+            cache.replace(Some(SkelSamples {
+                stage: stage.clone(),
+                skeletons: Default::default(),
+                animations: Default::default(),
+                poses: Default::default(),
+            }))
+        }))
+    }
+}
+
+impl Drop for SkelSampleScope {
+    fn drop(&mut self) {
+        SKEL_SAMPLES.with(|cache| *cache.borrow_mut() = self.0.take());
+    }
+}
+
+fn with_samples<R>(stage: &Stage, read: impl FnOnce(&mut SkelSamples) -> R) -> Option<R> {
+    SKEL_SAMPLES.with(|cache| {
+        cache
+            .borrow_mut()
+            .as_mut()
+            .filter(|cache| cache.stage == *stage)
+            .map(read)
+    })
+}
+
+fn skeleton_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<SkeletonQuery>> {
+    if let Some(value) = with_samples(stage, |cache| cache.skeletons.get(path).cloned()).flatten() {
+        return Ok(value);
+    }
+    let value = Skeleton::get(stage, path.clone())?
+        .map(|skeleton| SkeletonQuery::new(&skeleton))
+        .transpose()?
+        .flatten();
+    with_samples(stage, |cache| {
+        cache.skeletons.insert(path.clone(), value.clone());
+    });
+    Ok(value)
+}
+
 /// Whether `prim` carries skinning influences (i.e. is a skinned mesh).
 pub fn is_skinned(stage: &Stage, prim: &Path) -> bool {
     read_float_vec(stage, prim, "primvars:skel:jointWeights")
@@ -587,9 +646,17 @@ fn animation_source(stage: &Stage, skel_path: &Path, mesh_binding: &MeshBinding)
 
 /// The query over the `SkelAnimation` at `path`, or `None` where it is none.
 fn anim_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<AnimQuery>> {
-    Ok(Animation::get(stage, path.clone())?
+    if let Some(value) = with_samples(stage, |cache| cache.animations.get(path).cloned()).flatten()
+    {
+        return Ok(value);
+    }
+    let value = Animation::get(stage, path.clone())?
         .map(AnimQuery::new)
-        .transpose()?)
+        .transpose()?;
+    with_samples(stage, |cache| {
+        cache.animations.insert(path.clone(), value.clone());
+    });
+    Ok(value)
 }
 
 /// Joint-local transforms at `time` in skeleton order: the animation's where
@@ -636,10 +703,7 @@ pub fn skeleton_pose(
     skeleton: &Path,
     time: Option<f64>,
 ) -> anyhow::Result<Option<SkeletonPose>> {
-    let Some(prim) = Skeleton::get(stage, skeleton.clone())? else {
-        return Ok(None);
-    };
-    let Some(query) = SkeletonQuery::new(&prim)? else {
+    let Some(query) = skeleton_query(stage, skeleton)? else {
         return Ok(None);
     };
     let animation = match inherited_rel(stage, skeleton, "skel:animationSource")
@@ -688,6 +752,9 @@ fn binding_of(stage: &Stage, mesh_path: &Path) -> Option<MeshBinding> {
 
 /// A skinned mesh resolved against its skeleton and that skeleton's animation.
 struct BoundSkin {
+    stage: Stage,
+    skeleton_path: Path,
+    animation_path: Option<Path>,
     skinning: SkinningQuery,
     skeleton: SkeletonQuery,
     animation: Option<AnimQuery>,
@@ -702,14 +769,12 @@ fn bound_skin(stage: &Stage, mesh_path: &Path) -> anyhow::Result<Option<BoundSki
     let Some(skel_path) = binding.skeleton.clone() else {
         return Ok(None);
     };
-    let Some(skeleton) = Skeleton::get(stage, skel_path.clone())? else {
+    let Some(skeleton) = skeleton_query(stage, &skel_path)? else {
         return Ok(None);
     };
-    let Some(skeleton) = SkeletonQuery::new(&skeleton)? else {
-        return Ok(None);
-    };
-    let animation = match animation_source(stage, &skel_path, &binding) {
-        Some(path) => anim_query(stage, &path)?,
+    let animation_path = animation_source(stage, &skel_path, &binding);
+    let animation = match &animation_path {
+        Some(path) => anim_query(stage, path)?,
         None => None,
     };
     let authored = |attribute: Attribute| -> anyhow::Result<Option<Attribute>> {
@@ -731,6 +796,9 @@ fn bound_skin(stage: &Stage, mesh_path: &Path) -> anyhow::Result<Option<BoundSki
         Vec::<String>::new(),
     )?;
     Ok(Some(BoundSkin {
+        stage: stage.clone(),
+        skeleton_path: skel_path,
+        animation_path,
         skinning,
         skeleton,
         animation,
@@ -741,12 +809,26 @@ impl BoundSkin {
     /// Skinning transforms at `time` in skeleton joint order, or `None` when
     /// the skeleton has no bind pose.
     fn pose_transforms(&self, time: Option<f64>) -> anyhow::Result<Option<Vec<gf::Mat4d>>> {
+        let key = (
+            self.skeleton_path.clone(),
+            self.animation_path.clone(),
+            time.map(f64::to_bits),
+        );
+        if let Some(value) =
+            with_samples(&self.stage, |cache| cache.poses.get(&key).cloned()).flatten()
+        {
+            return Ok(value);
+        }
         let locals = joint_locals(&self.skeleton, self.animation.as_ref(), time)?;
         let skel = skel_space(&self.skeleton, &locals)?;
-        Ok(self
+        let value = self
             .skeleton
             .inverse_bind_transforms()
-            .and_then(|inverse| skinning_transforms(&skel, inverse)))
+            .and_then(|inverse| skinning_transforms(&skel, inverse));
+        with_samples(&self.stage, |cache| {
+            cache.poses.insert(key, value.clone());
+        });
+        Ok(value)
     }
 
     /// Skeleton-order `transforms` in the mesh's `skel:joints` order, with the
@@ -1081,6 +1163,80 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sample_scopes_share_queries_and_isolate_stages_times_and_edits() {
+        let stage = fixture();
+        let other = fixture();
+        let mesh = openusd::sdf::path("/Test/Bar").unwrap();
+        let expected: Vec<_> = [0.0, 30.0]
+            .into_iter()
+            .map(|time| {
+                skinned_points_at(&stage, &mesh, Some(time))
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect();
+        {
+            let _scope = SkelSampleScope::begin(&stage);
+            for _ in 0..3 {
+                for (time, expected) in [0.0, 30.0].into_iter().zip(&expected) {
+                    assert_eq!(
+                        &skinned_points_at(&stage, &mesh, Some(time))
+                            .unwrap()
+                            .unwrap(),
+                        expected
+                    );
+                }
+            }
+            assert_eq!(
+                with_samples(&stage, |cache| (
+                    cache.skeletons.len(),
+                    cache.animations.len(),
+                    cache.poses.len()
+                )),
+                Some((1, 1, 2))
+            );
+            {
+                let _nested = SkelSampleScope::begin(&other);
+                assert!(with_samples(&stage, |_| ()).is_none());
+                assert_eq!(
+                    skinned_points_at(&other, &mesh, Some(0.0))
+                        .unwrap()
+                        .unwrap(),
+                    expected[0]
+                );
+            }
+            assert_eq!(with_samples(&stage, |cache| cache.poses.len()), Some(2));
+        }
+        assert!(with_samples(&stage, |_| ()).is_none());
+        stage
+            .prim("/Test/Skel/Anim")
+            .unwrap()
+            .attribute("translations")
+            .set(vec![
+                gf::Vec3f::from([2.0, 0.0, 0.0]),
+                gf::Vec3f::from([0.0, 1.0, 0.0]),
+            ])
+            .unwrap();
+        let edited = skinned_points_at(&stage, &mesh, Some(0.0))
+            .unwrap()
+            .unwrap();
+        assert_ne!(edited, expected[0]);
+        let _scope = SkelSampleScope::begin(&stage);
+        assert_eq!(
+            skinned_points_at(&stage, &mesh, Some(0.0))
+                .unwrap()
+                .unwrap(),
+            edited
+        );
+        assert_eq!(
+            skinned_points_at(&other, &mesh, Some(0.0))
+                .unwrap()
+                .unwrap(),
+            expected[0]
+        );
+    }
+
     #[test]
     fn skeleton_pose_follows_the_animation_with_joint_parents() {
         let file = concat!(

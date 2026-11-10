@@ -6,7 +6,7 @@
 //! `UsdPreviewSurface` (and Omni/MaterialX equivalents) via [`read::shade`].
 //! Texture channels use snapshot image handles or the AssetServer.
 
-use bevy::prelude::*;
+use bevy::{asset::VisitAssetDependencies, prelude::*};
 
 use super::{PrimRoute, RouteCtx};
 use crate::read::shade::{ReadPreviewMaterial, read_material_binding, read_preview_material_at};
@@ -150,18 +150,19 @@ fn material_at(
 
 type ResolvedMaterial = (Handle<StandardMaterial>, Vec<String>, MaterialColor);
 
-/// Materials resolved while one projection job runs. The gprims of a stage
-/// mostly share a few materials, and resolving one packs its textures, so
-/// the job keeps each (binding, time, sidedness) result until it finishes.
-/// Non-send because it pins the stage it belongs to.
+/// Stage-local prepared materials, shared across clocks for static bindings.
 pub(crate) struct ProjectionMaterials {
     stage: openusd::usd::Stage,
     resolved: std::collections::HashMap<(String, Option<u64>, bool), ResolvedMaterial>,
+    expected: std::collections::HashMap<bevy::asset::AssetId<StandardMaterial>, StandardMaterial>,
     /// Whether any layer authors a `material:binding` property; without one
     /// no prim can be bound.
     binds: bool,
     /// How many of the stage's layers `binds` has looked at.
     scanned: usize,
+    animated: std::collections::HashMap<openusd::sdf::Path, bool>,
+    textures: std::collections::HashMap<(String, bool), bevy::asset::AssetId<Image>>,
+    image_events: bevy::ecs::message::MessageCursor<bevy::asset::AssetEvent<Image>>,
 }
 
 impl ProjectionMaterials {
@@ -169,11 +170,106 @@ impl ProjectionMaterials {
         let mut memo = Self {
             stage: stage.clone(),
             resolved: Default::default(),
+            expected: Default::default(),
             binds: false,
             scanned: 0,
+            animated: Default::default(),
+            textures: Default::default(),
+            image_events: Default::default(),
         };
         memo.rescan();
         memo
+    }
+
+    pub(crate) fn prepare_sample(&mut self, world: &World) {
+        let textures = world
+            .get_resource::<crate::asset::SnapshotTextures>()
+            .into_iter()
+            .flat_map(|textures| &textures.0)
+            .map(|(key, handle)| (key.clone(), handle.id()))
+            .collect();
+        if self.textures != textures {
+            self.resolved.clear();
+            self.expected.clear();
+            self.textures = textures;
+        }
+        let mut dependencies: std::collections::HashSet<_> =
+            self.textures.values().copied().collect();
+        for material in self.expected.values() {
+            material.visit_dependencies(&mut |id| {
+                if let Ok(id) = bevy::asset::AssetId::<Image>::try_from(id) {
+                    dependencies.insert(id);
+                }
+            });
+        }
+        let changed = world
+            .get_resource::<Messages<bevy::asset::AssetEvent<Image>>>()
+            .map_or(!dependencies.is_empty(), |events| {
+                let missed = self.image_events.missed_messages(events) != 0;
+                self.image_events.read(events).fold(missed, |dirty, event| {
+                    use bevy::asset::AssetEvent::*;
+                    dirty
+                        | match event {
+                            Added { id }
+                            | Modified { id }
+                            | Removed { id }
+                            | LoadedWithDependencies { id } => dependencies.contains(id),
+                            Unused { .. } => false,
+                        }
+                })
+            });
+        if changed {
+            self.resolved.clear();
+            self.expected.clear();
+        }
+        self.resolved.retain(|(_, time, _), (handle, warnings, _)| {
+            time.is_none()
+                && warnings.is_empty()
+                && world
+                    .get_resource::<Assets<StandardMaterial>>()
+                    .and_then(|assets| assets.get(handle.id()))
+                    .is_some_and(|material| {
+                        let mut ready = self.expected.get(&handle.id()).is_some_and(|expected| {
+                            material.cull_mode == expected.cull_mode
+                                && material.reflect_partial_eq(expected) == Some(true)
+                        });
+                        material.visit_dependencies(&mut |id| {
+                            if let Ok(id) = bevy::asset::AssetId::<Image>::try_from(id) {
+                                ready &= world
+                                    .get_resource::<Assets<Image>>()
+                                    .is_some_and(|images| images.contains(id));
+                            }
+                        });
+                        ready
+                    })
+        });
+        let retained: std::collections::HashSet<_> = self
+            .resolved
+            .values()
+            .map(|(handle, _, _)| handle.id())
+            .collect();
+        self.expected.retain(|id, _| retained.contains(id));
+    }
+
+    fn sample_key(
+        &mut self,
+        ctx: &RouteCtx,
+        binding: &openusd::sdf::Path,
+    ) -> (String, Option<u64>, bool) {
+        if self.animated.len() >= 4096 || self.resolved.len() >= 4096 {
+            self.animated.clear();
+            self.resolved.clear();
+            self.expected.clear();
+        }
+        let animated = *self
+            .animated
+            .entry(binding.clone())
+            .or_insert_with(|| crate::read::shade::material_is_time_varying(ctx.stage, binding));
+        let mut key = memo_key(ctx, binding);
+        if !animated {
+            key.1 = None;
+        }
+        key
     }
 
     /// Looks for bindings in layers loaded since the last scan.
@@ -587,7 +683,13 @@ pub(crate) fn resolve_material(
     let Some(binding) = binding? else {
         return Ok(None);
     };
-    let key = memo_key(ctx, &binding);
+    let key = world
+        .get_non_send_mut::<ProjectionMaterials>()
+        .filter(|memo| memo.stage == *ctx.stage)
+        .map_or_else(
+            || memo_key(ctx, &binding),
+            |mut memo| memo.sample_key(ctx, &binding),
+        );
     if profiling {
         world.resource_mut::<MaterialResolveTimings>().observe(&key);
     }
@@ -708,6 +810,9 @@ pub(crate) fn resolve_material(
             weight,
             tint: read.sheen_tint.unwrap_or(0.5),
         });
+    let expected = world
+        .get_non_send::<ProjectionMaterials>()
+        .map(|_| material.clone());
     let handle = super::cache::intern_material_with_sheen(world, material, sheen);
     if let Some(started) = started {
         world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed();
@@ -717,6 +822,9 @@ pub(crate) fn resolve_material(
     {
         memo.resolved
             .insert(key, (handle.clone(), warnings.clone(), color.clone()));
+        if let Some(expected) = expected {
+            memo.expected.insert(handle.id(), expected);
+        }
     }
     Ok(Some((handle, warnings, color)))
 }
@@ -997,6 +1105,249 @@ def Cube "C" { rel material:binding = </Mat> }
                 .perceptual_roughness,
             0.6
         );
+    }
+
+    fn static_texture_stage() -> openusd::usd::Stage {
+        crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        float inputs:roughness = 0.3
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @albedo.png@
+        float3 outputs:rgb
+    }
+}
+def Cube "A" { rel material:binding = </Mat> }
+"#,
+        )
+        .open_stage()
+        .unwrap()
+    }
+
+    #[test]
+    fn static_material_samples_invalidate_on_edits_and_texture_replacement() {
+        use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+        let stage = static_texture_stage();
+        let live = crate::live::LiveStage::new(stage);
+        let registry = crate::route::SchemaRegistry::builtin();
+        let mut world = World::new();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<MaterialResolveTimings>();
+        world.init_resource::<Messages<bevy::asset::AssetEvent<Image>>>();
+        let image = || {
+            Image::new(
+                Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                vec![255; 4],
+                TextureFormat::Rgba8UnormSrgb,
+                default(),
+            )
+        };
+        let first = world.resource_mut::<Assets<Image>>().add(image());
+        let second = world.resource_mut::<Assets<Image>>().add(image());
+        let mut textures = crate::asset::SnapshotTextures::default();
+        textures
+            .0
+            .insert(("albedo.png".into(), true), first.clone());
+        world.insert_resource(textures);
+        let sample = |world: &mut World, time| {
+            registry.with_materials(world, &live, |world| {
+                resolved_sample(&live.stage, world, "/A", Some(time)).unwrap()
+            })
+        };
+        for time in [0.0, 1.0, 2.0] {
+            let material = sample(&mut world, time);
+            assert_eq!(material.base_color_texture, Some(first.clone()));
+            assert_eq!(material.perceptual_roughness, 0.3);
+        }
+        assert_eq!(world.resource::<MaterialResolveTimings>().cache_hits, 2);
+        live.stage
+            .prim("/Mat/Shader")
+            .unwrap()
+            .attribute("inputs:roughness")
+            .set(0.7_f32)
+            .unwrap();
+        assert_eq!(sample(&mut world, 3.0).perceptual_roughness, 0.7);
+        live.drain_changes();
+        world
+            .resource_mut::<crate::asset::SnapshotTextures>()
+            .0
+            .insert(("albedo.png".into(), true), second.clone());
+        assert_eq!(
+            sample(&mut world, 4.0).base_color_texture,
+            Some(second.clone())
+        );
+        assert_eq!(world.resource::<MaterialResolveTimings>().cache_hits, 2);
+        let id = world
+            .resource::<Assets<StandardMaterial>>()
+            .iter()
+            .find(|(_, material)| material.base_color_texture == Some(second.clone()))
+            .unwrap()
+            .0;
+        world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .get_mut(id)
+            .unwrap()
+            .cull_mode = None;
+        assert_eq!(
+            sample(&mut world, 5.0).cull_mode,
+            Some(bevy::render::render_resource::Face::Back)
+        );
+        assert_eq!(world.resource::<MaterialResolveTimings>().cache_hits, 2);
+    }
+
+    #[test]
+    fn static_material_samples_follow_in_place_texture_edits_and_missed_events() {
+        use bevy::asset::AssetEvent;
+        let stage = static_texture_stage();
+        stage
+            .create_attribute("/Mat/Tex.inputs:scale", "float4")
+            .unwrap()
+            .set(openusd::gf::Vec4f::from([0.5, 1.0, 1.0, 1.0]))
+            .unwrap();
+        let live = crate::live::LiveStage::new(stage);
+        let registry = crate::route::SchemaRegistry::builtin();
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<MaterialResolveTimings>();
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::default());
+        app.world_mut()
+            .insert_resource(crate::asset::SnapshotTextures(
+                [(("albedo.png".into(), true), source.clone())].into(),
+            ));
+        let sample = |world: &mut World| {
+            registry.with_materials(world, &live, |world| {
+                let material = resolved_sample(&live.stage, world, "/A", Some(0.0)).unwrap();
+                let handle = material.base_color_texture.unwrap();
+                let image = world.resource::<Assets<Image>>().get(&handle).unwrap();
+                (handle, image.data.clone().unwrap())
+            })
+        };
+        let (first, original) = sample(app.world_mut());
+        assert_ne!(first, source);
+        app.update();
+        sample(app.world_mut());
+        let hits = app.world().resource::<MaterialResolveTimings>().cache_hits;
+        assert_eq!(sample(app.world_mut()).1, original);
+        assert_eq!(
+            app.world().resource::<MaterialResolveTimings>().cache_hits,
+            hits + 1
+        );
+        for (value, missed) in [(64, false), (128, true)] {
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .get_mut(&source)
+                .unwrap()
+                .data
+                .as_mut()
+                .unwrap()[0] = value;
+            app.update();
+            if missed {
+                let mut events = app
+                    .world_mut()
+                    .resource_mut::<Messages<AssetEvent<Image>>>();
+                events.update();
+                events.update();
+            }
+            let (_, pixels) = sample(app.world_mut());
+            assert_ne!(pixels, original);
+            let oracle = resolved_sample(&live.stage, app.world_mut(), "/A", Some(0.0)).unwrap();
+            assert_eq!(
+                &pixels,
+                app.world()
+                    .resource::<Assets<Image>>()
+                    .get(oracle.base_color_texture.as_ref().unwrap())
+                    .unwrap()
+                    .data
+                    .as_ref()
+                    .unwrap()
+            );
+        }
+        let (generated, expected) = sample(app.world_mut());
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .get_mut(&generated)
+            .unwrap()
+            .data
+            .as_mut()
+            .unwrap()[0] ^= 255;
+        app.update();
+        let (repaired, actual) = sample(app.world_mut());
+        assert_ne!(repaired, generated);
+        assert_eq!(actual, expected);
+        app.world_mut()
+            .remove_resource::<Messages<AssetEvent<Image>>>();
+        let hits = app.world().resource::<MaterialResolveTimings>().cache_hits;
+        sample(app.world_mut());
+        sample(app.world_mut());
+        assert_eq!(
+            app.world().resource::<MaterialResolveTimings>().cache_hits,
+            hits
+        );
+    }
+
+    #[test]
+    fn live_material_preparation_is_shared_only_within_builtin_passes() {
+        let stage = read_cache_stage();
+        let surrounding = read_cache_stage();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            crate::UsdPlugin,
+            crate::live::LiveStagePlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<MaterialResolveTimings>();
+        app.world_mut()
+            .insert_non_send(ProjectionMaterials::new(&surrounding));
+        app.world_mut()
+            .insert_non_send(crate::live::LiveStage::new(stage));
+        for (time, expected) in [(0.0, 0.2), (10.0, 0.8), (5.0, 0.5)] {
+            *app.world_mut().resource_mut::<MaterialResolveTimings>() = default();
+            app.world_mut()
+                .resource_mut::<crate::route::StageTime>()
+                .current = time;
+            app.update();
+            let world = app.world();
+            assert!(world.non_send::<ProjectionMaterials>().stage == surrounding);
+            let timings = world.resource::<MaterialResolveTimings>();
+            assert_eq!(timings.bound - timings.cache_hits, 2);
+            assert!(timings.cache_hits > 0);
+            for (path, sidedness) in [("/A", false), ("/B", true), ("/C", false)] {
+                let entity = world
+                    .resource::<crate::live::PrimEntities>()
+                    .entity(path)
+                    .unwrap();
+                let handle = &world
+                    .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                    .unwrap()
+                    .0;
+                let material = world
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(handle)
+                    .unwrap();
+                assert!((material.perceptual_roughness - expected).abs() < 1e-6);
+                assert_eq!(material.double_sided, sidedness);
+            }
+        }
     }
 
     #[test]
@@ -1582,6 +1933,7 @@ def Material "Bumped" {{
             .init_resource::<Assets<StandardMaterial>>()
             .init_resource::<Assets<FlatMaterial>>()
             .init_resource::<Assets<Image>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let source = crate::UsdSource::snapshot("flat.usda", text.as_bytes()).unwrap();
         let handle = app
             .world_mut()

@@ -6,6 +6,9 @@ exclude = ["xtra", "vendor/bevy_asset", "vendor/mara_bevy"]
 [profile.dev.package.openusd]
 opt-level = 3
 
+[profile.dev.package.openusd-schemas]
+opt-level = 3
+
 [profile.dev.package.usd_bevy]
 opt-level = 3
 

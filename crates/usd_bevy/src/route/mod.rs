@@ -338,6 +338,36 @@ fn hierarchy_hidden(world: &World, mut entity: Entity) -> Option<bool> {
 }
 
 impl SchemaRegistry {
+    pub(crate) fn with_materials<R>(
+        &self,
+        world: &mut World,
+        live: &crate::live::LiveStage,
+        project: impl FnOnce(&mut World) -> R,
+    ) -> R {
+        if !self.builtin_only {
+            live.materials.borrow_mut().take();
+            return project(world);
+        }
+        let _skin_samples = crate::read::skel::SkelSampleScope::begin(&live.stage);
+        if live.try_has_changes().unwrap_or(true) {
+            live.materials.borrow_mut().take();
+        }
+        let mut materials = live
+            .materials
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| material::ProjectionMaterials::new(&live.stage));
+        materials.prepare_sample(world);
+        let previous = world.remove_non_send::<material::ProjectionMaterials>();
+        world.insert_non_send(materials);
+        let result = project(world);
+        *live.materials.borrow_mut() = world.remove_non_send::<material::ProjectionMaterials>();
+        if let Some(previous) = previous {
+            world.insert_non_send(previous);
+        }
+        result
+    }
+
     /// An empty registry.
     pub fn new() -> Self {
         Self::default()

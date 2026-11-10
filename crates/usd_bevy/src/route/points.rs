@@ -113,6 +113,7 @@ mod tests {
         ));
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()

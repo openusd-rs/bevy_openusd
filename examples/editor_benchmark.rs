@@ -38,9 +38,13 @@ impl SeekMode {
 }
 
 fn parse_rss(status: &str) -> Option<usize> {
+    parse_status_bytes(status, "VmRSS:")
+}
+
+fn parse_status_bytes(status: &str, field: &str) -> Option<usize> {
     let mut value = status
         .lines()
-        .find(|line| line.starts_with("VmRSS:"))?
+        .find(|line| line.split_whitespace().next() == Some(field))?
         .split_whitespace();
     value.next()?;
     let kib = value.next()?.parse::<usize>().ok()?;
@@ -52,6 +56,13 @@ fn parse_rss(status: &str) -> Option<usize> {
 
 fn resident_bytes() -> Option<usize> {
     parse_rss(&std::fs::read_to_string("/proc/self/status").ok()?)
+}
+
+fn peak_resident_bytes() -> Option<usize> {
+    parse_status_bytes(
+        &std::fs::read_to_string("/proc/self/status").ok()?,
+        "VmHWM:",
+    )
 }
 
 fn asset_counts(world: &World) -> [usize; 3] {
@@ -273,6 +284,7 @@ struct Measurement {
     peak_asset_counts: [usize; 3],
     rss_before_seeks: Option<usize>,
     rss_after_seeks: Option<usize>,
+    rss_process_peak: Option<usize>,
     cached_meshes: usize,
     cached_mesh_payload_bytes: usize,
     cached_tangent_payload_bytes: usize,
@@ -347,6 +359,7 @@ fn measure(
         ..default()
     };
     if seek != SeekMode::Idle {
+        let raw_samples = std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some();
         if seek == SeekMode::Timeline {
             if !view.timeline.start.is_finite()
                 || !view.timeline.end.is_finite()
@@ -410,6 +423,13 @@ fn measure(
             }
             if iteration >= 4 {
                 timings.push(elapsed);
+                if raw_samples {
+                    println!(
+                        "seek_sample index={} clock={time:.17} update_ns={}",
+                        iteration - 4,
+                        elapsed.as_nanos()
+                    );
+                }
             }
             for (peak, current) in result
                 .peak_asset_counts
@@ -426,6 +446,7 @@ fn measure(
         report_routes(app.world(), "measured-seeks", seek.samples());
     }
     result.rss_after_seeks = resident_bytes();
+    result.rss_process_peak = peak_resident_bytes();
     if let Some(cache) = app
         .world()
         .get_resource::<usd_bevy::route::cache::ProjectionCache>()
@@ -597,15 +618,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     println!(
-        "rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks peak_assets=sampled-after-updates-not-allocation-counts"
+        "rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks rss_peak=VmHWM-process-lifetime-including-prior-samples-or-NA peak_assets=sampled-after-updates-not-allocation-counts"
     );
     println!(
-        "sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes,cached_assembly_payload_bytes"
+        "sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes,cached_assembly_payload_bytes,rss_process_peak"
     );
     for sample in 0..samples {
+        if std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some() {
+            println!("sample_begin={sample}");
+        }
         let m = measure(&path, gpu_prepared, seek)?;
         println!(
-            "{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{}",
+            "{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
             m.open.as_secs_f64() * 1000.0,
             m.idle.as_secs_f64() * 1_000_000.0,
             m.mesh_entities,
@@ -629,7 +653,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             m.cached_meshes,
             m.cached_mesh_payload_bytes,
             m.cached_tangent_payload_bytes,
-            m.cached_assembly_payload_bytes
+            m.cached_assembly_payload_bytes,
+            m.rss_process_peak.map_or("NA".into(), |v| v.to_string())
         );
     }
     Ok(())
@@ -680,6 +705,12 @@ fn unique_seek_schedule_and_resident_measurement_are_explicit() {
     assert_eq!(parse_rss("VmRSS: missing kB"), None);
     assert_eq!(parse_rss("Name: probe"), None);
     assert_eq!(parse_rss(&format!("VmRSS: {} kB", usize::MAX)), None);
+    assert_eq!(parse_rss("VmRSS:extra 123 kB"), None);
+    assert_eq!(
+        parse_status_bytes("VmRSS: 123 kB\nVmHWM: 456 kB", "VmHWM:"),
+        Some(456 * 1024)
+    );
+    assert_eq!(parse_status_bytes("VmHWM: 123 MB", "VmHWM:"), None);
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/morph_tangent_normals.usda");
     for gpu_prepared in [false, true] {
         let result = measure(&path, gpu_prepared, SeekMode::Unique).unwrap();

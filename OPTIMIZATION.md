@@ -154,3 +154,18 @@ correct readiness reporting.
   [skinning preparation](benchmarks/skinning-preparation.md) for exact evidence,
   memory/measurement limits and unresolved CPU/GPU fidelity checks. Larger tangent
   assembly, CPU fallback, native cadence and the full workstreams remain open.
+- Tangent checkpoint: `edb462c` separates assembly/generation timing, `6e71684`
+  retains recently used entries within the existing 16 MiB budget, and `bc9963f`
+  reuses exact deformed tangent inputs only after recurrence. Default tests pass
+  (885 / 20 ignored), hardening passes (797 no-default / 891 all-feature tests,
+  strict Clippy), as do native deformation, watcher/export and wasm checks. All
+  32 final alternating processes pass with matching final geometry/image payload
+  and peak asset counts. Unique-time cow preparation avoids about 5.7 GB of
+  cumulative unnecessary tangent-cache copies from the rejected unconditional
+  trial; warmup data remains retained and total tangent payload is higher than
+  the pre-integration baseline. Eight before/after renders, including explicit
+  CPU controls, are pixel-identical. Cow MDL warnings and the strict bird CPU/GPU
+  discrepancy remain failing gates. See [tangent reuse](benchmarks/tangent-reuse.md)
+  for timings, memory, trial failures and exact evidence. Cow unique-time
+  preparation remains roughly 83 ms/update; this is not 60 Hz native playback
+  acceptance or completion of the workstreams above.

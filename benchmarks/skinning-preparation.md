@@ -148,8 +148,8 @@ does not turn the existing CPU/GPU discrepancy into a passing fidelity check.
 
 The full objective remains in [`OPTIMIZATION.md`](../OPTIMIZATION.md). Native
 cadence, eager CPU fallback cost, tangent construction, lifecycle/platform
-acceptance and existing render diagnostics remain unresolved. The larger tangent
-construction phase still needs separating assembly from tangent generation
-before choosing an algorithmic change. Test any preparation-cache proposal on
-unique live clocks as well as repeated seeks; repeated-time cache hits alone do
-not establish a playback improvement.
+acceptance and existing render diagnostics remain unresolved. The follow-up
+[tangent investigation](tangent-reuse.md) separates assembly from generation,
+tests bounded exact reuse with repeat-only admission, and records unique-clock
+and repeated-seek comparisons plus current regression/render checks.
+Repeated-time cache hits alone do not establish a playback improvement.

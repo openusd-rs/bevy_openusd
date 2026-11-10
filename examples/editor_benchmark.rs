@@ -238,6 +238,19 @@ fn report_routes(world: &World, phase: &str, samples: usize) {
         );
     }
     if let Some(timing) =
+        world.get_resource::<usd_bevy::route::preparation::MeshPreparationTiming>()
+    {
+        eprintln!(
+            "mesh_preparation_profile phase={phase} batches={} jobs={} cache_hits={} peak_jobs={} peak_input_bytes={} elapsed_ms={:.3}",
+            timing.batches,
+            timing.jobs,
+            timing.cache_hits,
+            timing.peak_jobs,
+            timing.peak_input_bytes,
+            timing.elapsed.as_secs_f64() * 1000.0
+        );
+    }
+    if let Some(timing) =
         world.get_resource::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>()
     {
         for (step, elapsed) in &timing.phases {
@@ -355,6 +368,7 @@ fn measure(
         app.init_resource::<usd_bevy::route::material::MaterialResolveTimings>();
         app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
         app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>();
+        app.init_resource::<usd_bevy::route::preparation::MeshPreparationTiming>();
         app.init_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>();
         app.init_resource::<usd_bevy::route::ProjectionTimings>();
         if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
@@ -418,6 +432,12 @@ fn measure(
                     warmup.iter().max().unwrap().as_nanos()
                 );
                 report_routes(app.world(), "after-seek-warmup", SEEK_WARMUP);
+                if let Some(mut timing) =
+                    app.world_mut()
+                        .get_resource_mut::<usd_bevy::route::preparation::MeshPreparationTiming>()
+                {
+                    *timing = default();
+                }
                 if let Some(mut timing) =
                     app.world_mut()
                         .get_resource_mut::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>()

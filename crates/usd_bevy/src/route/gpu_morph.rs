@@ -52,7 +52,8 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     let read = ctx
         .read_mesh()?
         .ok_or_else(|| anyhow::anyhow!("missing morph mesh"))?;
-    let mut mesh = crate::mesh::assemble_mesh(read, None, false);
+    let mut mesh =
+        super::cache::assemble_cached_mesh(world, read, super::cache::Assembly::Standard);
     let weights = prepare(ctx, read, &mut mesh, true)?;
     let handle = super::cache::intern_mesh(world, mesh);
     set_weights(world, entity, weights);

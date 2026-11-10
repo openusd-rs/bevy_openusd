@@ -185,9 +185,9 @@ pub(crate) fn intern_assembled_mesh(
     handle
 }
 
-pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
-    let (signature, hit) = lookup_assembly(world, read, Assembly::StandardTangents);
-    assemble_after_lookup(world, read, signature, hit, Assembly::StandardTangents).0
+pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh, assembly: Assembly) -> Mesh {
+    let (signature, hit) = lookup_assembly(world, read, assembly);
+    assemble_after_lookup(world, read, signature, hit, assembly).0
 }
 
 /// `mesh` with tangents, interned, when `material` has a normal map that
@@ -871,7 +871,7 @@ mod tests {
             .unwrap();
         let mut world = World::new();
         let expected = crate::mesh::assemble_mesh(&read, None, true);
-        let mut first = assemble_cached_mesh(&mut world, &read);
+        let mut first = assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents);
         assert!(meshes_equal(&first, &expected));
         first.insert_attribute(
             Mesh::ATTRIBUTE_POSITION,
@@ -880,7 +880,7 @@ mod tests {
         read.subsets.clear();
         read.double_sided = !read.double_sided;
         assert!(meshes_equal(
-            &assemble_cached_mesh(&mut world, &read),
+            &assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents),
             &expected
         ));
         assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 1);
@@ -892,7 +892,7 @@ mod tests {
             }
             let reference = crate::mesh::assemble_mesh(&read, None, true);
             assert!(meshes_equal(
-                &assemble_cached_mesh(&mut world, &read),
+                &assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents),
                 &reference
             ));
         }
@@ -901,7 +901,7 @@ mod tests {
         world.insert_resource(MeshAssemblyCache::with_byte_budget(budget));
         for offset in [1.0, 2.0, 3.0] {
             read.points[0][0] = offset;
-            assemble_cached_mesh(&mut world, &read);
+            assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents);
             assert!(
                 world
                     .resource::<MeshAssemblyCache>()
@@ -912,9 +912,66 @@ mod tests {
         }
         world.insert_resource(MeshAssemblyCache::with_byte_budget(0));
         assert!(meshes_equal(
-            &assemble_cached_mesh(&mut world, &read),
+            &assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents),
             &crate::mesh::assemble_mesh(&read, None, true)
         ));
+        assert!(world.resource::<MeshAssemblyCache>().entries.is_empty());
+    }
+
+    #[test]
+    fn assembly_cache_separates_modes_and_returns_independent_meshes() {
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/material_subsets.usda"
+        );
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let read =
+            crate::read::geom::read_mesh_at(&stage, &openusd::sdf::path("/Panels").unwrap(), None)
+                .unwrap()
+                .unwrap();
+        let mut world = World::new();
+        world.init_resource::<MeshCacheMetrics>();
+        for _ in 0..3 {
+            for assembly in [
+                Assembly::Standard,
+                Assembly::StandardTangents,
+                Assembly::FlatShared,
+            ] {
+                let expected = assembly.build(&mut world, &read);
+                let mut mesh = assemble_cached_mesh(&mut world, &read, assembly);
+                assert!(meshes_equal(&mesh, &expected));
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_POSITION,
+                    vec![[9.0; 3]; mesh.count_vertices()],
+                );
+                mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+                assert!(meshes_equal(
+                    &assemble_cached_mesh(&mut world, &read, assembly),
+                    &expected
+                ));
+            }
+        }
+        assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 3);
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["assembly_builds"], 3);
+        assert_eq!(
+            world.resource::<MeshCacheMetrics>().0["assembly_clone_hits"],
+            15
+        );
+        world.insert_resource(MeshAssemblyCache::with_byte_budget(0));
+        for assembly in [
+            Assembly::Standard,
+            Assembly::StandardTangents,
+            Assembly::FlatShared,
+        ] {
+            let expected = assembly.build(&mut world, &read);
+            assert!(meshes_equal(
+                &assemble_cached_mesh(&mut world, &read, assembly),
+                &expected
+            ));
+        }
         assert!(world.resource::<MeshAssemblyCache>().entries.is_empty());
     }
 

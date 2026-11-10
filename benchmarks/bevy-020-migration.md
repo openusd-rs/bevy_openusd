@@ -96,15 +96,15 @@ The existing regression tests are part of the migration gate.
 - [x] Workspace tests with default, no-default and all features; doctests.
 - [x] Vendored asset tests and source ordering/failure/repair regressions.
 - [x] Native OpenUSD export/reopen checks and filesystem watcher tests.
-- [ ] wasm32 check and browser bundle; distinguish build from browser acceptance.
-- [ ] Real GPU shader/pipeline checks: flat forward/prepass/deferred/OIT, sheen,
+- [x] wasm32 check and browser bundle; distinguish build from browser acceptance.
+- [x] Real GPU shader/pipeline checks: flat forward/prepass/deferred/OIT, sheen,
   medium/transmission, strands with/without authored normals, GPU instancing,
   culling and shadows, skinning/morphs, dome lighting and compact instancing.
-- [ ] Inspect captured images and compare deformation/transparency reference
+- [x] Inspect captured images and compare deformation/transparency reference
   fixtures; pipeline compilation alone does not prove rendering equivalence.
-- [ ] Native editor window, shared-GPU viewport, resize, capture, close/save
+- [x] Native editor window, shared-GPU viewport, resize, capture, close/save
   protection and interactive editing smoke tests.
-- [ ] Record downstream integration and platform coverage limitations. Linux
+- [x] Record downstream integration and platform coverage limitations. Linux
   results do not establish Windows/macOS or browser runtime acceptance.
 
 ## Commands
@@ -537,3 +537,61 @@ An earlier render/deformation chain was deliberately stopped after its native
 edit capture because the queued camera path was incorrect; the corrected
 deformation camera is `/ReferenceCamera`. Retained partial evidence is in
 `/tmp/bevy-020-edit-render-final.log` and `/tmp/bevy-020-full-render-final/`.
+
+### Forward-only extensions and final visual proof
+
+The new route assertion fails before the fix (`Auto` instead of `Forward`), and
+the strand-region check rejects the dark prepass image with 0/25 lit pixels:
+`/tmp/bevy-020-forward-regression-before.log` and
+`/tmp/bevy-020-strand-region-before.log`. The former also exposes another
+independent-clock fixture assuming complete projection within one update. Its
+opacity fixture now selects unlimited projection and asserts ready roots;
+the production budget is unchanged (`aff2dc9`).
+
+`d44b534` keeps extensions with a custom forward fragment but no custom deferred
+fragment in the forward pass, including on deferred cameras. Flat materials
+retain their deferred implementation. The original standard material is not
+mutated; tests cover source preservation, cache reuse, shared handles, edits
+and restoration for Auto, Deferred and Forward inputs. Strand specialization
+uses its fragment normals rather than loading another surface's prepass normals.
+Stochastic coverage, prepass exclusion and shadow geometry are unchanged.
+
+Isolated library tests pass 662 no-default and 670 all-feature tests, with 20/29
+explicit skips, plus doctests. Strict workspace/all-target/all-feature Clippy
+passes: `/tmp/bevy-020-forward-regression-fixed.log`.
+
+The complete GPU gate exits zero in `/tmp/bevy-020-render-forward-fixed.log`.
+Both authored-normal and round-strand regions pass 25/25 lit pixels in all four
+renderer modes. The corrected prepass, deferred-camera and OIT images were
+inspected. Forward materials, instancing, all six skin/morph images, dome and
+all transparency controls are byte-identical RGBA to the inspected images in
+the preceding run. OIT remains RGB-exact under reversed triangle ordering;
+ordinary blending differs at 60,552 pixels. The preceding deformation comparison
+also reports RGB-exact GPU/CPU images at 0, 5 and 10; all three GPU images were
+inspected. Its enclosing shell returned 143 after writing the three results,
+so a clean independent gate remains part of final verification.
+
+The release browser bundle was rebuilt after this fix
+(`/tmp/bevy-020-web-build-forward.log`), and the software WebGL2 smoke passes
+again at `/tmp/bevy-020-browser-forward/`; initial, orbit and resized images
+were inspected. Upstream main was rechecked on 2026-11-10 and remains `900ea315`.
+
+### Coverage limits
+
+- Native runtime evidence is NixOS/Linux on an NVIDIA RTX 4080 with Vulkan.
+  Windows and macOS were not exercised.
+- Browser runtime evidence is Chromium SwiftShader WebGL2. Hardware browser
+  rendering, compute/OIT browser support and browser performance are not claimed.
+- The optional Moana dataset is absent at `/pkg/datasets/moana`; its dataset-
+  dependent Ptex check remains skipped. Synthetic Ptex tests run in the library
+  suite. Ordinary ignored native export, watcher and deformation checks are
+  exercised by their explicit recipes rather than counted as ordinary passes.
+- Repository examples, isolated library features and native USD interoperability
+  were tested. The user's separate downstream application checkouts were not
+  changed or validated; those integrations remain a release consideration.
+- No push, public merge, tag or release has been performed. Local contributor
+  ancestry still includes Dave Lee's original commit unchanged.
+
+A fresh `harden`, default workspace test and wasm-check chain is running at
+`/tmp/bevy-020-final-workspace.log`; do not treat the final checkpoint as complete
+until it and the independent deformation gate have exited successfully.

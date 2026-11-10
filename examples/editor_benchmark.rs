@@ -195,6 +195,16 @@ fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(timing) = world.get_resource::<usd_bevy::route::TextureSamplingTiming>() {
+        eprintln!(
+            "texture_sampling_profile phase={phase} images={} input_bytes={} appended_bytes={} elapsed_ms={:.3} slowest_ms={:.3}",
+            timing.images,
+            timing.input_bytes,
+            timing.appended_bytes,
+            timing.elapsed.as_secs_f64() * 1000.0,
+            timing.slowest.as_secs_f64() * 1000.0
+        );
+    }
     if let Some(timing) =
         world.get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>()
     {
@@ -319,6 +329,7 @@ fn measure(
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::route::TextureSamplingTiming>();
         app.init_resource::<usd_bevy::route::material::MaterialResolveTimings>();
         app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
         app.init_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>();
@@ -376,6 +387,12 @@ fn measure(
         let mut timings = Vec::with_capacity(seek.samples());
         for iteration in 0..seek.samples() + 4 {
             if iteration == 4 {
+                if let Some(mut timing) = app
+                    .world_mut()
+                    .get_resource_mut::<usd_bevy::route::TextureSamplingTiming>()
+                {
+                    *timing = default();
+                }
                 if let Some(mut timings) = app
                     .world_mut()
                     .get_resource_mut::<usd_bevy::route::ProjectionTimings>()
@@ -409,6 +426,10 @@ fn measure(
                 normalized
             };
             bridge.send(EditorCommand::Seek(time))?;
+            let texture_before = app
+                .world()
+                .get_resource::<usd_bevy::route::TextureSamplingTiming>()
+                .map(|timing| (timing.elapsed, timing.images, timing.appended_bytes));
             let start = Instant::now();
             app.update();
             let elapsed = start.elapsed();
@@ -429,6 +450,18 @@ fn measure(
                         iteration - 4,
                         elapsed.as_nanos()
                     );
+                    if let Some((elapsed, images, appended)) = texture_before {
+                        let timing = app
+                            .world()
+                            .resource::<usd_bevy::route::TextureSamplingTiming>();
+                        println!(
+                            "seek_texture_sample index={} finalize_ns={} images={} appended_bytes={}",
+                            iteration - 4,
+                            (timing.elapsed - elapsed).as_nanos(),
+                            timing.images - images,
+                            timing.appended_bytes - appended
+                        );
+                    }
                 }
             }
             for (peak, current) in result

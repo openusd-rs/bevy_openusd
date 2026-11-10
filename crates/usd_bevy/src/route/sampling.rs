@@ -21,6 +21,16 @@ struct TextureSampling {
     done: HashMap<AssetId<Image>, [TextureWrap; 2]>,
 }
 
+/// Opt-in cumulative CPU texture-finalization counters, including mip generation.
+#[derive(Resource, Default)]
+pub struct TextureSamplingTiming {
+    pub images: usize,
+    pub input_bytes: usize,
+    pub appended_bytes: usize,
+    pub elapsed: std::time::Duration,
+    pub slowest: std::time::Duration,
+}
+
 pub(super) fn configure(app: &mut App) {
     app.init_resource::<TextureSampling>()
         .add_systems(PostUpdate, finalise);
@@ -76,6 +86,7 @@ fn finalise(
     mut sampling: ResMut<TextureSampling>,
     images: Option<ResMut<Assets<Image>>>,
     mut generated: Option<ResMut<super::generated_image::GeneratedImages>>,
+    mut timing: Option<ResMut<TextureSamplingTiming>>,
 ) {
     let Some(mut images) = images else { return };
     if sampling.pending.is_empty() {
@@ -87,6 +98,9 @@ fn finalise(
         let Some(mut image) = images.get_mut(id) else {
             continue;
         };
+        let started = timing
+            .as_ref()
+            .map(|_| bevy::platform::time::Instant::now());
         let source = super::generated_image::layout(&image);
         let base_len = image.data.as_ref().map_or(0, Vec::len);
         add_mips(&mut image);
@@ -95,6 +109,14 @@ fn finalise(
             generated.record_finalized(id, source, base_len, &image);
         }
         sampling.done.insert(id, wrap);
+        if let (Some(started), Some(timing)) = (started, timing.as_deref_mut()) {
+            let elapsed = started.elapsed();
+            timing.images += 1;
+            timing.input_bytes += base_len;
+            timing.appended_bytes += image.data.as_ref().map_or(0, Vec::len) - base_len;
+            timing.elapsed += elapsed;
+            timing.slowest = timing.slowest.max(elapsed);
+        }
     }
 }
 
@@ -254,6 +276,53 @@ mod tests {
             format,
             RenderAssetUsages::default(),
         )
+    }
+
+    #[test]
+    fn finalization_metrics_count_only_loaded_pending_images() {
+        let mut app = App::new();
+        configure(&mut app);
+        app.init_resource::<Assets<Image>>()
+            .init_resource::<TextureSamplingTiming>();
+        let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image(
+            4,
+            2,
+            TextureFormat::Rgba8Unorm,
+            vec![127; 32],
+        ));
+        let missing = Handle::<Image>::default().id();
+        app.world_mut()
+            .resource_mut::<TextureSampling>()
+            .pending
+            .extend([
+                (handle.id(), [TextureWrap::Repeat; 2]),
+                (missing, [TextureWrap::Repeat; 2]),
+            ]);
+        app.update();
+        let timing = app.world().resource::<TextureSamplingTiming>();
+        assert_eq!(
+            (timing.images, timing.input_bytes, timing.appended_bytes),
+            (1, 32, 12)
+        );
+        assert_eq!(timing.elapsed, timing.slowest);
+        let elapsed = timing.elapsed;
+        app.update();
+        let timing = app.world().resource::<TextureSamplingTiming>();
+        assert_eq!(timing.images, 1);
+        assert_eq!(timing.elapsed, elapsed);
+        app.world_mut().remove_resource::<TextureSamplingTiming>();
+        app.world_mut()
+            .resource_mut::<TextureSampling>()
+            .pending
+            .insert(handle.id(), [TextureWrap::Clamp; 2]);
+        app.update();
+        let image = app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&handle)
+            .unwrap();
+        assert_eq!(image.sampler, sampler([TextureWrap::Clamp; 2]));
+        assert_eq!(image.data.as_ref().unwrap().len(), 44);
     }
 
     #[test]

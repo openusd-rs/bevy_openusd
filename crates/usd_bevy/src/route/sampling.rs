@@ -458,7 +458,7 @@ mod tests {
                     })
                     .collect();
                 if let Kind::Half = kind {
-                    for value in data.chunks_exact_mut(2) {
+                    for value in data.as_chunks_mut::<2>().0 {
                         let bits = u16::from_le_bytes([value[0], value[1]]);
                         if !half::f16::from_bits(bits).is_finite() {
                             value.copy_from_slice(&(bits & !0x0400).to_le_bytes());
@@ -496,8 +496,10 @@ mod tests {
         assert_eq!(actual.len(), expected.len());
         assert_eq!(texture.texture_descriptor.mip_level_count, levels);
         for (index, (a, b)) in actual
-            .chunks_exact(2)
-            .zip(expected.chunks_exact(2))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(expected.as_chunks::<2>().0)
             .enumerate()
         {
             let a = half::f16::from_le_bytes([a[0], a[1]]);

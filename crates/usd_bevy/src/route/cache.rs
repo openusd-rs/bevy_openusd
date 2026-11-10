@@ -570,6 +570,8 @@ pub struct MeshTangentCache {
     byte_budget: usize,
 }
 
+const MAX_TANGENT_ENTRIES: usize = 128;
+
 impl Default for MeshTangentCache {
     fn default() -> Self {
         Self::with_byte_budget(16 * 1024 * 1024)
@@ -593,16 +595,22 @@ impl MeshTangentCache {
 pub(crate) fn generate_cached_tangents(world: &mut World, mesh: &mut Mesh) {
     world.init_resource::<MeshTangentCache>();
     let signature = mesh_signature(mesh);
-    if let Some((_, _, tangents, _)) = world
+    let hit = world
         .resource::<MeshTangentCache>()
         .entries
         .iter()
-        .find(|(key, input, _, _)| *key == signature && meshes_equal(input, mesh))
-    {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.clone());
+        .position(|(key, input, _, _)| *key == signature && meshes_equal(input, mesh));
+    if let Some(index) = hit {
+        let mut cache = world.resource_mut::<MeshTangentCache>();
+        let entry = cache.entries.remove(index).unwrap();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, entry.2.clone());
+        cache.entries.push_back(entry);
+        record_cache(world, "tangent_hits", 1);
         return;
     }
+    record_cache(world, "tangent_misses", 1);
     if let Err(error) = mesh.generate_tangents() {
+        record_cache(world, "tangent_failures", 1);
         bevy::log::debug!("mesh: generate_tangents failed: {error}");
         return;
     }
@@ -614,18 +622,28 @@ pub(crate) fn generate_cached_tangents(world: &mut World, mesh: &mut Mesh) {
     if bytes > cache.byte_budget {
         return;
     }
-    while cache.entries.len() >= 32 || bytes > cache.byte_budget.saturating_sub(cache.payload_bytes)
+    let mut evicted = (0, 0);
+    while cache.entries.len() >= MAX_TANGENT_ENTRIES
+        || bytes > cache.byte_budget.saturating_sub(cache.payload_bytes)
     {
         let Some((_, _, _, removed)) = cache.entries.pop_front() else {
             break;
         };
         cache.payload_bytes -= removed;
+        evicted.0 += 1;
+        evicted.1 += removed as u64;
     }
     let tangents = tangents.clone();
     let mut input = mesh.clone();
     input.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
     cache.entries.push_back((signature, input, tangents, bytes));
     cache.payload_bytes += bytes;
+    record_cache(world, "tangent_insertions", 1);
+    record_cache(world, "tangent_inserted_bytes", bytes as u64);
+    if evicted.0 != 0 {
+        record_cache(world, "tangent_evicted_entries", evicted.0);
+        record_cache(world, "tangent_evicted_bytes", evicted.1);
+    }
 }
 
 pub(crate) fn mesh_payload_bytes(mesh: &Mesh) -> usize {
@@ -1045,6 +1063,63 @@ mod tests {
         generate_cached_tangents(&mut world, &mut invalid);
         assert!(invalid.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
         assert_eq!(world.resource::<MeshTangentCache>().entries.len(), 1);
+    }
+
+    #[test]
+    fn tangent_cache_bounds_unique_samples_and_preserves_exact_outputs() {
+        let input = Mesh::from(Rectangle::default());
+        let mut reference = input.clone();
+        reference.generate_tangents().unwrap();
+        let size = mesh_payload_bytes(&reference);
+        for budget in [0, size * 3, usize::MAX] {
+            let mut world = World::new();
+            world.insert_resource(MeshTangentCache::with_byte_budget(budget));
+            for sample in 0..1000 {
+                let mut mesh = Mesh::from(Rectangle::new(1.0 + sample as f32 * 0.001, 1.0));
+                let mut reference = mesh.clone();
+                reference.generate_tangents().unwrap();
+                generate_cached_tangents(&mut world, &mut mesh);
+                assert!(meshes_equal(&mesh, &reference));
+                let cache = world.resource::<MeshTangentCache>();
+                assert!(cache.entries.len() <= MAX_TANGENT_ENTRIES);
+                assert!(cache.payload_bytes <= budget);
+                assert_eq!(cache.payload_bytes, cache.entries.len() * size);
+            }
+        }
+    }
+
+    #[test]
+    fn tangent_cache_keeps_a_working_set_and_refreshes_recent_hits() {
+        let mut world = World::new();
+        world.init_resource::<MeshCacheMetrics>();
+        for _ in 0..3 {
+            for index in 0..80 {
+                generate_cached_tangents(
+                    &mut world,
+                    &mut Mesh::from(Rectangle::new(index as f32 + 1.0, 1.0)),
+                );
+            }
+        }
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["tangent_misses"], 80);
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["tangent_hits"], 160);
+        let size = mesh_payload_bytes(&world.resource::<MeshTangentCache>().entries[0].1)
+            + 4 * std::mem::size_of::<[f32; 4]>();
+        world.insert_resource(MeshTangentCache::with_byte_budget(size * 3));
+        world.resource_mut::<MeshCacheMetrics>().0.clear();
+        for cold in 2..102 {
+            for index in [0, 1, cold] {
+                generate_cached_tangents(
+                    &mut world,
+                    &mut Mesh::from(Rectangle::new(index as f32 + 1.0, 1.0)),
+                );
+            }
+        }
+        assert_eq!(
+            world.resource::<MeshCacheMetrics>().0["tangent_misses"],
+            102
+        );
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["tangent_hits"], 198);
+        assert_eq!(world.resource::<MeshTangentCache>().entries.len(), 3);
     }
 
     #[test]

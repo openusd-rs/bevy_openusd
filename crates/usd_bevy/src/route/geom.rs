@@ -340,6 +340,7 @@ def PointInstancer "PI" {
         ));
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::asset::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -362,6 +363,12 @@ def PointInstancer "PI" {
             ))
             .id();
         app.update();
+        for root in [first, second] {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready)
+            );
+        }
         let entities = |world: &World, root| {
             let instances = world.get_non_send::<UsdInstances>().unwrap();
             let mesh = instances.entity(root, "/Mesh").unwrap();

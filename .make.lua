@@ -308,6 +308,14 @@ make.recipe{
 }
 
 make.recipe{
+  name = "build-compact-tools",
+  desc = "build both compact-instancing capture and comparison tools",
+  run = function()
+    sh.cargo("build", "--example", "compact_instancing", "--example", "capture_compare")
+  end,
+}
+
+make.recipe{
   name = "test-compact",
   desc = "compare compact and expanded instancing with culling and edge views",
   params = { { "--output", desc = "new evidence directory" } },

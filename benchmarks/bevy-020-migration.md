@@ -445,3 +445,31 @@ fail even with subsequent proof markers. Capture unit tests, probe state tests,
 preflight, process cleanup and log-checker regressions pass in
 `/tmp/bevy-020-pipeline-probe-checks.jsonl`. GPU integration is the next gate;
 these checks alone do not establish rendering acceptance.
+
+### Compact GPU acceptance and workspace rerun
+
+The first probe-backed compact run was terminated with status 143 while its
+final expanded capture was waiting for Cargo's build lock. Its compact edge
+capture had already recovered the built-in import warning and reported 23
+compiled pipelines. The gate now builds both tools once and snapshots the
+executables into its evidence directory, with SHA-256 identities, before any
+capture. Paired captures no longer reacquire Cargo's lock or change binaries.
+
+The complete retry passes all four capture/log checks and both comparisons:
+`/tmp/bevy-020-compact-pipeline-final.jsonl` and
+`/tmp/bevy-020-compact-pipeline-final/`. Both views have zero pixels outside the
+existing RGB tolerance of 1, over 480,000 pixels each. Overview RGB is exact;
+edge maximum RGB error is 1. The overview and both edge images were inspected.
+Offscreen geometry is fully culled; compact visibility restores 8 overview
+batches and 4 edge batches. Both compact runs recovered actual import warnings
+before recording their 23-pipeline proof and successful readback. This accepts
+the compact forward-PBR fixture, not the separate USD/shadow/deformation gates.
+
+The broader `harden` run passed its no-default workspace tests (663 library,
+110 viewer, plus doctests), then strict Clippy. Its all-feature library phase
+found four fixtures reading incomplete scene projections after one update:
+`/tmp/bevy-020-full-verification.log`. Those geometry fixtures now explicitly
+request unlimited projection and assert `UsdSceneState::Ready` before inspecting
+their entities. The production 10 ms budget, finite-budget tests and geometry
+assertions are unchanged. Full workspace verification must be rerun; later
+commands in the failed verification chain did not execute.

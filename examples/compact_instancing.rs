@@ -293,16 +293,28 @@ fn main() {
         .run();
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct FixtureAssets<'w> {
+    meshes: ResMut<'w, Assets<Mesh>>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
+    pulling: ResMut<'w, Assets<ExtendedMaterial<StandardMaterial, Pulling>>>,
+    buffers: ResMut<'w, Assets<ShaderBuffer>>,
+    images: ResMut<'w, Assets<Image>>,
+}
+
 fn setup(
     mut commands: Commands,
     options: Res<Options>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut pulling: ResMut<Assets<ExtendedMaterial<StandardMaterial, Pulling>>>,
-    mut buffers: ResMut<Assets<ShaderBuffer>>,
-    mut images: ResMut<Assets<Image>>,
+    assets: FixtureAssets,
     device: Res<RenderDevice>,
 ) {
+    let FixtureAssets {
+        mut meshes,
+        mut materials,
+        mut pulling,
+        mut buffers,
+        mut images,
+    } = assets;
     let mut prototype = Mesh::from(Cuboid::new(0.28, 0.4, 0.22));
     prototype.duplicate_vertices();
     let VertexAttributeValues::Float32x3(positions) =

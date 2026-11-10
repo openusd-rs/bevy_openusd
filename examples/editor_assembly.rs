@@ -138,7 +138,7 @@ fn verify(output: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         editor.save(output, SaveMode::Flattened)?;
         let reopened = UsdSource::new(output, std::fs::read(output)?)?.open_stage()?;
         for name in ["Warm", "Cool"] {
-            let path = openusd::sdf::path(&format!("/Assembly/{name}"))?;
+            let path = openusd::sdf::path(format!("/Assembly/{name}"))?;
             assert_eq!(
                 reopened
                     .prim(path.clone())?

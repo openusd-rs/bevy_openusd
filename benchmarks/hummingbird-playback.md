@@ -165,6 +165,17 @@ waive the tolerance or describe this additional check as passing. The captured
 time-zero and time-ten poses visibly differ, demonstrating deformation rather
 than just an advancing clock, but not smooth live playback.
 
+A source-grounded hypothesis to test is transparent depth sorting. The pinned
+Bevy 0.20.1 `bevy_pbr/src/material.rs` queues transparent meshes using the world
+transform of the render mesh asset's `aabb_center`. Its infinite-grid renderer
+uses `TransparentSortingInfo3d::Sorted` with a zero center. GPU skinning retains
+rest positions in the mesh asset, whereas the CPU route publishes deformed
+positions; `gpu_skin::attach` currently supplies no posed `final_aabb` override.
+This can produce different sort keys, but has not yet been proven to cause the
+observed pixels. Compare actual phase order and posed bounds before choosing a
+fix. Any repair must preserve independently timed instance sharing and must not
+hide the grid or relax the image tolerance.
+
 Smooth-playback acceptance and the real-asset image comparison remain outstanding.
 The open interactive viewer was built at the
 `c3bbdee` code state; the later image-invalidation correction is covered by the

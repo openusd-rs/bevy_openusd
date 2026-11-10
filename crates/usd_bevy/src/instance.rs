@@ -510,14 +510,12 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
         if current != runtime.sampled {
             let registry = world.resource::<SchemaRegistry>().clone();
             registry.with_materials(world, &runtime.live, |world| {
-                for (path, entity) in runtime.map.iter() {
-                    let Ok(path) = openusd::sdf::path(path) else {
-                        continue;
-                    };
-                    if path.as_str() != "/" && prim_is_animated(&runtime.live.stage, &path) {
-                        registry.patch_prim(&runtime.live.stage, &path, world, entity, &[]);
-                    }
-                }
+                let prims = runtime.map.iter().filter_map(|(path, entity)| {
+                    let path = openusd::sdf::path(path).ok()?;
+                    (path.as_str() != "/" && prim_is_animated(&runtime.live.stage, &path))
+                        .then_some((path, entity))
+                });
+                registry.patch_animation(&runtime.live.stage, prims, world);
             });
             runtime.sampled = current;
             crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);

@@ -39,6 +39,7 @@ pub mod medium_material;
 pub mod meta;
 pub mod native;
 pub mod points;
+pub mod preparation;
 pub(crate) mod profiling;
 pub(crate) mod ptex;
 pub mod ptex_atlas;
@@ -148,6 +149,9 @@ pub struct RouteCtx<'a> {
     /// The time code to resolve animated attributes at (`None` = default time).
     pub time: Option<f64>,
     decoded_mesh: std::cell::OnceCell<anyhow::Result<Option<crate::read::geom::ReadMesh>>>,
+    prepared_deformation:
+        std::cell::RefCell<Option<anyhow::Result<Option<preparation::PreparedDeformation>>>>,
+    prepared_skin: std::cell::RefCell<Option<anyhow::Result<crate::read::skel::GpuSkinSample>>>,
     read_timing: std::cell::Cell<Option<MeshReadTiming>>,
     trace_memory: bool,
 }
@@ -173,6 +177,8 @@ impl<'a> RouteCtx<'a> {
             type_name,
             time,
             decoded_mesh: Default::default(),
+            prepared_deformation: Default::default(),
+            prepared_skin: Default::default(),
             read_timing: Default::default(),
             trace_memory: false,
         }
@@ -471,6 +477,66 @@ impl SchemaRegistry {
         }
         self.apply_routes(&ctx, world, entity, Some(changed));
         ctx.report_read_timing(world);
+    }
+
+    pub(crate) fn patch_animation(
+        &self,
+        stage: &Stage,
+        prims: impl IntoIterator<Item = (Path, Entity)>,
+        world: &mut World,
+    ) {
+        let pool = bevy::tasks::ComputeTaskPool::try_get().map(|pool| &**pool);
+        self.patch_animation_with_pool(stage, prims, world, pool);
+    }
+
+    fn patch_animation_with_pool(
+        &self,
+        stage: &Stage,
+        prims: impl IntoIterator<Item = (Path, Entity)>,
+        world: &mut World,
+        pool: Option<&bevy::tasks::TaskPool>,
+    ) {
+        let settings = world
+            .get_resource::<preparation::ParallelMeshPreparation>()
+            .copied()
+            .unwrap_or_default();
+        let pool = pool.filter(|pool| {
+            pool.thread_num() > 1
+                && self.builtin_only
+                && settings.max_jobs > 1
+                && settings.max_input_bytes > 0
+                && world.contains_resource::<bevy::prelude::Assets<bevy::prelude::Mesh>>()
+                && !world.contains_resource::<residency::DeferHiddenMeshes>()
+                && !world.contains_resource::<residency::UsdResidencyBudget>()
+        });
+        let Some(pool) = pool else {
+            for (path, entity) in prims {
+                self.patch_prim(stage, &path, world, entity, &[]);
+            }
+            return;
+        };
+        let mut prims = prims.into_iter();
+        loop {
+            let batch: Vec<_> = prims.by_ref().take(preparation::MAX_BATCH_PRIMS).collect();
+            if batch.is_empty() {
+                break;
+            }
+            let contexts: Vec<_> = batch
+                .iter()
+                .map(|(path, _)| {
+                    let ctx = RouteCtx::at(stage, path, time_of(world));
+                    if world.contains_resource::<MeshReadTiming>() {
+                        ctx.read_timing.set(Some(MeshReadTiming::default()));
+                    }
+                    ctx
+                })
+                .collect();
+            preparation::prepare_batch(&contexts, world, pool, settings);
+            for (ctx, (_, entity)) in contexts.iter().zip(&batch) {
+                self.apply_routes(ctx, world, *entity, Some(&[]));
+                ctx.report_read_timing(world);
+            }
+        }
     }
 
     fn apply_routes(

@@ -128,6 +128,20 @@ exec env WGPU_VALIDATION="${USD_WGPU_VALIDATION:-${WGPU_VALIDATION:-0}}" \
 }
 
 make.recipe{
+  name = "run-headless-benchmark",
+  desc = "run a saved benchmark executable without rebuilding it",
+  params = {
+    { "--binary", desc = "path to the recorded benchmark executable" },
+    { "--args", desc = "arguments passed through to the benchmark" },
+  },
+  run = function(a)
+    assert(type(a.binary) == "string" and #a.binary > 0, "provide --binary PATH")
+    local binary = "'" .. a.binary:gsub("'", "'\\''") .. "'"
+    sh.sh("-c", "exec " .. binary .. " " .. (a.args or ""))
+  end,
+}
+
+make.recipe{
   name = "capture-reference",
   desc = "render a reference image with native usdrecord",
   params = { { "--args", desc = "arguments passed through to usdrecord" } },

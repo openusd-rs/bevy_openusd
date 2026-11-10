@@ -183,7 +183,10 @@ impl PrimRoute for SkinRoute {
                 return;
             }
         };
-        let mesh = crate::mesh::mesh_from_usd(&read);
+        let mut mesh = crate::mesh::assemble_mesh(&read, None, false);
+        if read.uvs.is_some() {
+            super::cache::generate_cached_deformed_tangents(world, &mut mesh);
+        }
         if !read.subsets.is_empty() {
             world.entity_mut(entity).insert(CpuSubsetGeometry(read));
         }
@@ -200,6 +203,98 @@ impl PrimRoute for SkinRoute {
 mod tests {
     use super::*;
     use crate::instance::UsdInstances;
+
+    #[test]
+    fn cached_cpu_tangents_follow_unique_clocks_and_mesh_edits() {
+        use super::super::cache::{MeshCacheMetrics, MeshTangentCache};
+        use super::super::gpu_skin::{GpuSkinningEnabled, UsdCpuSkinFallback};
+        use openusd::vt::Value;
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/skel_morph_blended_animated.usda"
+        );
+        for (gpu, budget) in [(false, 0), (false, 4096), (true, 0), (true, 4096)] {
+            let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap())
+                .unwrap()
+                .open_stage()
+                .unwrap();
+            let path = openusd::sdf::path("/Test/Face").unwrap();
+            stage
+                .attribute("/Test/Face.primvars:skel:jointWeights")
+                .unwrap()
+                .set(Value::FloatVec(vec![0.8; 8]))
+                .unwrap();
+            let mut world = World::new();
+            world.init_resource::<Assets<Mesh>>();
+            world.init_resource::<MeshCacheMetrics>();
+            world.insert_resource(MeshTangentCache::with_byte_budget(budget));
+            if gpu {
+                world.init_resource::<GpuSkinningEnabled>();
+            }
+            let entity = world.spawn_empty().id();
+            for (iteration, time) in (0..=40)
+                .map(|step| step as f64 * 0.25)
+                .chain([5.0, 0.0, 10.0, 5.0])
+                .enumerate()
+            {
+                let edit = match iteration {
+                    10 => Some((
+                        "primvars:st",
+                        Value::Vec2fVec(
+                            [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+                                .map(Into::into)
+                                .to_vec(),
+                        ),
+                    )),
+                    20 => Some(("normals", Value::Vec3fVec(vec![[0.0, 1.0, 1.0].into(); 4]))),
+                    30 => Some(("orientation", Value::Token("leftHanded".into()))),
+                    _ => None,
+                };
+                if let Some((name, value)) = edit {
+                    stage
+                        .prim(path.clone())
+                        .unwrap()
+                        .attribute(name)
+                        .set(value)
+                        .unwrap();
+                }
+                let ctx = RouteCtx::at(&stage, &path, Some(time));
+                let read = deformed_mesh(&ctx).unwrap().unwrap();
+                let expected = crate::mesh::mesh_from_usd(&read);
+                for _ in 0..3 {
+                    SkinRoute.project(&ctx, &mut world, entity);
+                    assert_eq!(world.get::<UsdCpuSkinFallback>(entity).is_some(), gpu);
+                    let handle = &world.get::<Mesh3d>(entity).unwrap().0;
+                    let actual = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+                    assert_eq!(
+                        actual.get_index_buffer_bytes(),
+                        expected.get_index_buffer_bytes()
+                    );
+                    assert_eq!(actual.attributes().count(), expected.attributes().count());
+                    for (attribute, values) in expected.attributes() {
+                        assert_eq!(
+                            actual.attribute(attribute.id).unwrap().get_bytes(),
+                            values.get_bytes(),
+                            "gpu={gpu}, budget={budget}, time={time}, attribute={}",
+                            attribute.name
+                        );
+                    }
+                }
+                assert!(
+                    world
+                        .resource::<MeshTangentCache>()
+                        .retained_payload_bytes()
+                        <= budget
+                );
+            }
+            let metrics = &world.resource::<MeshCacheMetrics>().0;
+            assert!(metrics["tangent_misses"] > 0);
+            assert_eq!(
+                metrics.get("tangent_hits").copied().unwrap_or(0) > 0,
+                budget > 0
+            );
+        }
+    }
 
     #[test]
     fn unanimated_skins_bake_once_and_share_their_mesh() {

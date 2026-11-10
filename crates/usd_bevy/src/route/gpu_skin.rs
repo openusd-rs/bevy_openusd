@@ -206,7 +206,7 @@ fn attach_prepared(
     )?;
     preparation_lap(profile, "normal-correction");
     if skinned_tangents {
-        correct_tangents(ctx, &mut mesh, &source_points, &sample, profile)?;
+        correct_tangents(ctx, world, &mut mesh, &source_points, &sample, profile)?;
     }
     let indices: Vec<_> = source_points
         .iter()
@@ -327,6 +327,7 @@ fn correct_normals(
 
 fn correct_tangents(
     ctx: &RouteCtx,
+    world: &mut World,
     mesh: &mut Mesh,
     mapping: &[usize],
     skin: &crate::read::skel::GpuSkinSample,
@@ -338,7 +339,7 @@ fn correct_tangents(
     let mut deformed = crate::mesh::assemble_mesh(&read, None, false);
     preparation_lap(profile, "tangent-assembly");
     if read.uvs.is_some() {
-        crate::mesh::generate_tangents(&mut deformed);
+        super::cache::generate_cached_deformed_tangents(world, &mut deformed);
     }
     preparation_lap(profile, "tangent-generation");
     anyhow::ensure!(
@@ -504,6 +505,7 @@ mod tests {
             .open_stage()
             .unwrap();
         let path = openusd::sdf::path("/Test/Face").unwrap();
+        let mut world = World::new();
         for (joint_weights, time) in [[0.5; 8], [1.0, 0.0, 0.75, 0.25, 0.25, 0.75, 0.0, 1.0]]
             .into_iter()
             .flat_map(|weights| {
@@ -527,13 +529,21 @@ mod tests {
             assert!(gpu.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
             let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu, false).unwrap();
             correct_normals(&mut gpu, &mapping, &skin.normal_corrections, &weights).unwrap();
-            correct_tangents(&ctx, &mut gpu, &mapping, &skin, &mut None).unwrap();
+            correct_tangents(&ctx, &mut world, &mut gpu, &mapping, &skin, &mut None).unwrap();
             let mut profiled = gpu.clone();
             let mut profile = Some(PreparationSample {
                 since: bevy::platform::time::Instant::now(),
                 phases: Default::default(),
             });
-            correct_tangents(&ctx, &mut profiled, &mapping, &skin, &mut profile).unwrap();
+            correct_tangents(
+                &ctx,
+                &mut world,
+                &mut profiled,
+                &mapping,
+                &skin,
+                &mut profile,
+            )
+            .unwrap();
             assert_eq!(
                 profiled.attribute(Mesh::ATTRIBUTE_TANGENT),
                 gpu.attribute(Mesh::ATTRIBUTE_TANGENT)
@@ -541,6 +551,12 @@ mod tests {
             let phases = &profile.unwrap().phases;
             assert!(phases.contains_key("tangent-assembly"));
             assert!(phases.contains_key("tangent-generation"));
+            let mut cached = gpu.clone();
+            correct_tangents(&ctx, &mut world, &mut cached, &mapping, &skin, &mut None).unwrap();
+            assert_eq!(
+                cached.attribute(Mesh::ATTRIBUTE_TANGENT),
+                gpu.attribute(Mesh::ATTRIBUTE_TANGENT)
+            );
             let morph = crate::read::skel::morph_sample(&stage, &path, Some(time)).unwrap();
             let (mut normals, points) = crate::read::skel::morph_normals(&read, &morph).unwrap();
             crate::read::skel::skin_normals(

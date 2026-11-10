@@ -235,6 +235,25 @@ make.recipe{
 }
 
 make.recipe{
+  name = "build-resize-probe",
+  desc = "build the X11 native-window-resize probe",
+  run = function()
+    sh.sh("-c", "mkdir -p target && cc -Wall -Wextra -Werror scripts/resize_window.c -o target/resize_window $(pkg-config --cflags --libs x11)")
+  end,
+}
+
+make.recipe{
+  name = "test-oit-resize",
+  desc = "verify OIT budget handling across oversized native-window resizes",
+  params = { { "--output", desc = "new evidence directory" } },
+  deps = { "build" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_oit_resize.sh", a.output)
+  end,
+}
+
+make.recipe{
   name = "test-native-close",
   desc = "exercise prompt, cancel or discard after an OS close request",
   params = {
@@ -285,6 +304,14 @@ make.recipe{
     sh.bash("scripts/compare_deformation.sh",
             a.asset or "assets/skel_morph_blended_normals.usda", a.output,
             tostring(a.tolerance or 1), table.unpack(times))
+  end,
+}
+
+make.recipe{
+  name = "build-compact-tools",
+  desc = "build both compact-instancing capture and comparison tools",
+  run = function()
+    sh.cargo("build", "--example", "compact_instancing", "--example", "capture_compare")
   end,
 }
 

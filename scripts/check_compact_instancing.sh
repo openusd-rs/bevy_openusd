@@ -5,11 +5,19 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 output=$(realpath -m "$1")
 mkdir "$output"
 cd "$root"
+oslo make build-compact-tools > "$output/build.log" 2>&1
+mkdir "$output/tools"
+for name in compact_instancing capture_compare; do
+    cp --reflink=auto "target/debug/examples/$name" "$output/tools/$name"
+done
+sha256sum "$output/tools/compact_instancing" "$output/tools/capture_compare" > "$output/binaries.sha256"
 run_example() {
-    local name=$1 args
+    local name=$1
     shift
-    printf -v args '%q ' "$@"
-    oslo make run-example --name "$name" --args "$args"
+    local command=("$output/tools/$name" "$@")
+    if [[ ! -e /etc/NIXOS ]]; then command=(nixVulkan "${command[@]}"); fi
+    env WGPU_VALIDATION="${USD_WGPU_VALIDATION:-${WGPU_VALIDATION:-0}}" \
+        WGPU_DEBUG="${USD_WGPU_DEBUG:-${WGPU_DEBUG:-0}}" "${command[@]}"
 }
 for view in overview edge; do
     for mode in compact expanded; do

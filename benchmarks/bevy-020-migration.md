@@ -2,9 +2,12 @@
 
 ## Status and boundaries
 
-Work is local and unverified until the gates below pass. Do not push, merge remote
-PRs, or release this migration without the user's approval. The library is used by
-downstream applications; compiling the editor alone is not acceptance.
+The local Bevy 0.20.1/WESL and current upstream OpenUSD migration passes the
+recorded Linux/Vulkan and software-WebGL2 acceptance gates. Known skips and
+untested platforms/downstream applications are listed under Coverage limits.
+Do not push, merge remote PRs, or release without the user's approval. The
+library is used by downstream applications; this is not a downstream release
+signoff.
 
 Preserve Dave Lee's (`dave-gray101`) original PR commit and author identity in the eventual
 merged history. The user explicitly wants his contribution credited, rather
@@ -92,19 +95,19 @@ The existing regression tests are part of the migration gate.
 ## Acceptance gates
 
 - [x] Record pre-migration workspace test results (one failure; see below).
-- [ ] Workspace/all-target checks, formatting and strict all-feature Clippy.
-- [ ] Workspace tests with default, no-default and all features; doctests.
-- [ ] Vendored asset tests and source ordering/failure/repair regressions.
-- [ ] Native OpenUSD export/reopen checks and filesystem watcher tests.
-- [ ] wasm32 check and browser bundle; distinguish build from browser acceptance.
-- [ ] Real GPU shader/pipeline checks: flat forward/prepass/deferred/OIT, sheen,
+- [x] Workspace/all-target checks, formatting and strict all-feature Clippy.
+- [x] Workspace tests with default, no-default and all features; doctests.
+- [x] Vendored asset tests and source ordering/failure/repair regressions.
+- [x] Native OpenUSD export/reopen checks and filesystem watcher tests.
+- [x] wasm32 check and browser bundle; distinguish build from browser acceptance.
+- [x] Real GPU shader/pipeline checks: flat forward/prepass/deferred/OIT, sheen,
   medium/transmission, strands with/without authored normals, GPU instancing,
   culling and shadows, skinning/morphs, dome lighting and compact instancing.
-- [ ] Inspect captured images and compare deformation/transparency reference
+- [x] Inspect captured images and compare deformation/transparency reference
   fixtures; pipeline compilation alone does not prove rendering equivalence.
-- [ ] Native editor window, shared-GPU viewport, resize, capture, close/save
+- [x] Native editor window, shared-GPU viewport, resize, capture, close/save
   protection and interactive editing smoke tests.
-- [ ] Record downstream integration and platform coverage limitations. Linux
+- [x] Record downstream integration and platform coverage limitations. Linux
   results do not establish Windows/macOS or browser runtime acceptance.
 
 ## Commands
@@ -445,3 +448,184 @@ fail even with subsequent proof markers. Capture unit tests, probe state tests,
 preflight, process cleanup and log-checker regressions pass in
 `/tmp/bevy-020-pipeline-probe-checks.jsonl`. GPU integration is the next gate;
 these checks alone do not establish rendering acceptance.
+
+### Compact GPU acceptance and workspace rerun
+
+The first probe-backed compact run was terminated with status 143 while its
+final expanded capture was waiting for Cargo's build lock. Its compact edge
+capture had already recovered the built-in import warning and reported 23
+compiled pipelines. The gate now builds both tools once and snapshots the
+executables into its evidence directory, with SHA-256 identities, before any
+capture. Paired captures no longer reacquire Cargo's lock or change binaries.
+
+The complete retry passes all four capture/log checks and both comparisons:
+`/tmp/bevy-020-compact-pipeline-final.jsonl` and
+`/tmp/bevy-020-compact-pipeline-final/`. Both views have zero pixels outside the
+existing RGB tolerance of 1, over 480,000 pixels each. Overview RGB is exact;
+edge maximum RGB error is 1. The overview and both edge images were inspected.
+Offscreen geometry is fully culled; compact visibility restores 8 overview
+batches and 4 edge batches. Both compact runs recovered actual import warnings
+before recording their 23-pipeline proof and successful readback. This accepts
+the compact forward-PBR fixture, not the separate USD/shadow/deformation gates.
+
+The broader `harden` run passed its no-default workspace tests (663 library,
+110 viewer, plus doctests), then strict Clippy. Its all-feature library phase
+found four fixtures reading incomplete scene projections after one update:
+`/tmp/bevy-020-full-verification.log`. Those geometry fixtures now explicitly
+request unlimited projection and assert `UsdSceneState::Ready` before inspecting
+their entities. The production 10 ms budget, finite-budget tests and geometry
+assertions are unchanged. Full workspace verification must be rerun; later
+commands in the failed verification chain did not execute.
+
+### Full verification after the fixture repair
+
+The complete sequential rerun exits successfully:
+`/tmp/bevy-020-full-verification-rerun.log`. `harden` passes formatting,
+no-default workspace tests (773 passed, 21 ignored), strict all-target/all-feature
+Clippy, and all-feature/all-target tests (865 passed, 29 ignored). Default
+workspace/all-target tests pass 859 with 20 ignored. These overlapping suites
+must not be summed into a count of unique tests.
+
+The same chain passes vendored asset tests (110 passed, 1 ignored), ordinary
+Mara host tests (9 passed, 2 ignored), native export/custom-reference tests
+(15 passed), filesystem watchers (9 passed), native deformation comparisons
+(4 passed), and warning-free wasm compilation. The native tests explicitly run
+their ignored cases; passing the ordinary suites alone would not cover them.
+
+A fresh isolated library check passes 661 no-default and 669 all-feature tests,
+plus doctests. Both explicit Mara GPU tests pass with validation enabled and
+clean process exit. Evidence: `/tmp/bevy-020-final-native-gates.log`. The following
+native resize gate stops at tool preflight because `xwininfo` is unavailable;
+it does not reach the application and subsequent UI commands do not execute.
+
+The Linux development shell now declares Weston, Xwayland and xwininfo rather
+than depending on manually added store paths. All three resolve in a fresh
+shell (`/tmp/bevy-020-ui-tools.log`). Close and resize preflights name missing
+commands. Their native runtime rerun is separate from this environment check.
+Browser runtime, full scene rendering and native interaction remain pending.
+
+### Native and browser acceptance; visual render failure
+
+The native UI chain passes after adding the missing tools:
+`/tmp/bevy-020-native-ui-final.log`. The oversized-window capture shows OIT
+disabled at its 128 MiB budget and a working scene after restoring 1440x920.
+The OS-close prompt and cancel images were inspected; the prompt is present
+before cancellation and absent afterward, while discard exits cleanly. WESL
+material compositor and viewport captures show flat geometry, sheen, the
+transmissive medium and both strand types. The second compositor capture also
+passes the image checks.
+
+The actual numeric-array edit replay passes with `USD_VIEWER_PANE=inspector`
+and `/Root` selected: `/tmp/bevy-020-final-native-edit-inspector.png`. The image
+shows the edited orange cube, `1 0.3 0.05`, and one modified layer. The first
+attempt omitted the inspector setting; its inputs zoomed the viewport instead
+and are not editing acceptance. The source asset remains unchanged on disk.
+
+The fresh wasm release bundle passes (`/tmp/bevy-020-web-build-final.log`).
+Browser smoke passes for both HTTP and in-memory roots, orbit and resize:
+`/tmp/bevy-020-browser-final-retry/result.json`. All three images were inspected.
+The adapter is SwiftShader WebGL2, not hardware browser coverage. A first launch
+failed before opening Chromium because an old store path was absent; the retry
+resolves Chromium and Node from the pinned Nixpkgs input.
+
+Visual inspection of `/tmp/bevy-020-full-render-final-retry/` finds missing
+strands under a deferred camera and dark strands with normal-prepass/OIT modes,
+despite successful pipeline checks. The generic wrapper lets forward-only
+extensions inherit the deferred default, and strand fragments load normals
+from a prepass they do not participate in. Sheen also has only a forward
+fragment shader. New material-route assertions and two fixed interior-strand
+image regions cover these failures. This render gate is not accepted yet.
+
+An earlier render/deformation chain was deliberately stopped after its native
+edit capture because the queued camera path was incorrect; the corrected
+deformation camera is `/ReferenceCamera`. Retained partial evidence is in
+`/tmp/bevy-020-edit-render-final.log` and `/tmp/bevy-020-full-render-final/`.
+
+### Forward-only extensions and final visual proof
+
+The new route assertion fails before the fix (`Auto` instead of `Forward`), and
+the strand-region check rejects the dark prepass image with 0/25 lit pixels:
+`/tmp/bevy-020-forward-regression-before.log` and
+`/tmp/bevy-020-strand-region-before.log`. The former also exposes another
+independent-clock fixture assuming complete projection within one update. Its
+opacity fixture now selects unlimited projection and asserts ready roots;
+the production budget is unchanged (`aff2dc9`).
+
+`d44b534` keeps extensions with a custom forward fragment but no custom deferred
+fragment in the forward pass, including on deferred cameras. Flat materials
+retain their deferred implementation. The original standard material is not
+mutated; tests cover source preservation, cache reuse, shared handles, edits
+and restoration for Auto, Deferred and Forward inputs. Strand specialization
+uses its fragment normals rather than loading another surface's prepass normals.
+Stochastic coverage, prepass exclusion and shadow geometry are unchanged.
+
+Isolated library tests pass 662 no-default and 670 all-feature tests, with 20/29
+explicit skips, plus doctests. Strict workspace/all-target/all-feature Clippy
+passes: `/tmp/bevy-020-forward-regression-fixed.log`.
+
+The complete GPU gate exits zero in `/tmp/bevy-020-render-forward-fixed.log`.
+Both authored-normal and round-strand regions pass 25/25 lit pixels in all four
+renderer modes. The corrected prepass, deferred-camera and OIT images were
+inspected. Forward materials, instancing, all six skin/morph images, dome and
+all transparency controls are byte-identical RGBA to the inspected images in
+the preceding run. OIT remains RGB-exact under reversed triangle ordering;
+ordinary blending differs at 60,552 pixels. The preceding deformation comparison
+also reports RGB-exact GPU/CPU images at 0, 5 and 10; all three GPU images were
+inspected. Its enclosing shell returned 143 after writing the three results,
+so a clean independent gate remains part of final verification.
+
+The release browser bundle was rebuilt after this fix
+(`/tmp/bevy-020-web-build-forward.log`), and the software WebGL2 smoke passes
+again at `/tmp/bevy-020-browser-forward/`; initial, orbit and resized images
+were inspected. Upstream main was rechecked on 2026-11-10 and remains `900ea315`.
+
+### Coverage limits
+
+- Native runtime evidence is NixOS/Linux on an NVIDIA RTX 4080 with Vulkan.
+  Windows and macOS were not exercised.
+- Browser runtime evidence is Chromium SwiftShader WebGL2. Hardware browser
+  rendering, compute/OIT browser support and browser performance are not claimed.
+- The optional Moana dataset is absent at `/pkg/datasets/moana`; its dataset-
+  dependent Ptex check remains skipped. Synthetic Ptex tests run in the library
+  suite. Ordinary ignored native export, watcher and deformation checks are
+  exercised by their explicit recipes rather than counted as ordinary passes.
+- Bevy's unchanged vendored `handle_try_apply_verifies_type_id` test remains
+  ignored upstream for issue #24111. The macro crate's illustrative doctest is
+  also marked ignored. These are not counted as passing tests.
+- Repository examples, isolated library features and native USD interoperability
+  were tested. The user's separate downstream application checkouts were not
+  changed or validated; those integrations remain a release consideration.
+- No push, public merge, tag or release has been performed. Local contributor
+  ancestry still includes Dave Lee's original commit unchanged.
+
+### Final verification checkpoint
+
+The final `harden`, default workspace test and wasm-check chain exits zero:
+`/tmp/bevy-020-final-workspace.log`. No-default workspace tests pass 774 with
+21 ignored (including the illustrative doctest); all-feature/all-target tests
+pass 866 with 29 ignored; default all-target tests pass 860 with 20 ignored.
+Formatting, workspace checks, strict Clippy and wasm compilation all pass.
+Do not sum these overlapping suites as unique tests.
+
+The independent deformation recipe now exits zero:
+`/tmp/bevy-020-deformation-accepted.log`. GPU/CPU pairs are RGB-exact at all three
+time codes and byte-identical to the previously inspected captures. The final
+integration chain also exits zero (`/tmp/bevy-020-final-integration.log`):
+15 native export/reference checks, 9 watcher checks, 4 native numerical
+deformation checks, 2 explicit host GPU checks, 110 vendored asset tests and
+9 ordinary host tests pass. The two GPU tests' ordinary-suite skips are covered
+by their explicit run; the upstream asset skip remains as documented above.
+
+The published Bevy 0.20.1 asset source was compared again with the vendored tree:
+only `src/server/mod.rs`, containing the local load-order patch, differs.
+Contributor ancestry and the current upstream OpenUSD pin were rechecked.
+The final capture-tool/compact/native-window chain exits zero:
+`/tmp/bevy-020-final-capture-native.log`. It passes 31 capture/probe unit tests,
+shell preflight/process cleanup/log-checker regressions, compact comparisons and
+native compositor/viewport readbacks. The compact overview and edge captures
+are byte-identical to the inspected earlier images; overview RGB is exact and
+edge maximum RGB error remains 1 against expanded instances. Both final native
+material images were inspected at `/tmp/bevy-020-native-accepted.png` and its
+`.viewport.png` companion. The second compositor capture also passes. The local
+migration checkpoint is complete within the documented coverage; nothing has
+been pushed, tagged, released or merged remotely.

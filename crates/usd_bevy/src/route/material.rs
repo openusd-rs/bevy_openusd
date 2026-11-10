@@ -1345,6 +1345,7 @@ def Material "Mat" {{
                     .unwrap(),
             );
             let source = crate::UsdSource::snapshot("normal.usda", text.as_bytes()).unwrap();
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             let handle = app
                 .world_mut()
                 .resource_mut::<Assets<crate::UsdScene>>()
@@ -1352,8 +1353,12 @@ def Material "Mat" {{
                     source,
                     textures: default(),
                 });
-            app.world_mut().spawn(crate::UsdSceneRoot(handle));
+            let root = app.world_mut().spawn(crate::UsdSceneRoot(handle)).id();
             app.update();
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready)
+            );
             let mut count = 0;
             let mut tangents = 0;
             let mut query = app.world_mut().query::<(
@@ -1642,6 +1647,7 @@ def Material "Bumped" {{
         ] {
             let source = crate::UsdSource::new("opacity.usda", bytes).unwrap();
             let mut app = App::new();
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             app.add_plugins((
                 MinimalPlugins,
                 bevy::asset::AssetPlugin::default(),
@@ -1674,6 +1680,10 @@ def Material "Bumped" {{
                 }
                 app.update();
                 for (root, time) in roots.into_iter().zip(times) {
+                    assert_eq!(
+                        app.world().get::<crate::UsdSceneState>(root),
+                        Some(&crate::UsdSceneState::Ready)
+                    );
                     let instances = app.world().get_non_send::<UsdInstances>().unwrap();
                     let cube = instances.entity(root, "/Scene/Cube").unwrap();
                     let mesh = instances.entity(root, "/Scene/Mesh").unwrap();

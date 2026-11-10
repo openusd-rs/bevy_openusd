@@ -49,7 +49,7 @@ impl MaterialExtension for StrandCoverage {
     fn alpha_mode() -> Option<AlphaMode> {
         Some(AlphaMode::Opaque)
     }
-    // A depth prepass would draw strands at full coverage and hide those behind.
+    // Depth prepasses exclude stochastic-coverage strands.
     fn enable_prepass() -> bool {
         false
     }
@@ -75,6 +75,18 @@ impl MaterialExtension for StrandCoverage {
             .vertex
             .shader_defs
             .contains(&"PREPASS_PIPELINE".into());
+        if !prepass {
+            let load_prepass_normals = "LOAD_PREPASS_NORMALS".into();
+            descriptor
+                .vertex
+                .shader_defs
+                .retain(|definition| definition != &load_prepass_normals);
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment
+                    .shader_defs
+                    .retain(|definition| definition != &load_prepass_normals);
+            }
+        }
         if !prepass && layout.0.contains(Mesh::ATTRIBUTE_COLOR) {
             attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
         }

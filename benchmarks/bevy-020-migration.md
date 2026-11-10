@@ -92,10 +92,10 @@ The existing regression tests are part of the migration gate.
 ## Acceptance gates
 
 - [x] Record pre-migration workspace test results (one failure; see below).
-- [ ] Workspace/all-target checks, formatting and strict all-feature Clippy.
-- [ ] Workspace tests with default, no-default and all features; doctests.
-- [ ] Vendored asset tests and source ordering/failure/repair regressions.
-- [ ] Native OpenUSD export/reopen checks and filesystem watcher tests.
+- [x] Workspace/all-target checks, formatting and strict all-feature Clippy.
+- [x] Workspace tests with default, no-default and all features; doctests.
+- [x] Vendored asset tests and source ordering/failure/repair regressions.
+- [x] Native OpenUSD export/reopen checks and filesystem watcher tests.
 - [ ] wasm32 check and browser bundle; distinguish build from browser acceptance.
 - [ ] Real GPU shader/pipeline checks: flat forward/prepass/deferred/OIT, sheen,
   medium/transmission, strands with/without authored normals, GPU instancing,
@@ -473,3 +473,30 @@ request unlimited projection and assert `UsdSceneState::Ready` before inspecting
 their entities. The production 10 ms budget, finite-budget tests and geometry
 assertions are unchanged. Full workspace verification must be rerun; later
 commands in the failed verification chain did not execute.
+
+### Full verification after the fixture repair
+
+The complete sequential rerun exits successfully:
+`/tmp/bevy-020-full-verification-rerun.log`. `harden` passes formatting,
+no-default workspace tests (773 passed, 21 ignored), strict all-target/all-feature
+Clippy, and all-feature/all-target tests (865 passed, 29 ignored). Default
+workspace/all-target tests pass 859 with 20 ignored. These overlapping suites
+must not be summed into a count of unique tests.
+
+The same chain passes vendored asset tests (110 passed, 1 ignored), ordinary
+Mara host tests (9 passed, 2 ignored), native export/custom-reference tests
+(15 passed), filesystem watchers (9 passed), native deformation comparisons
+(4 passed), and warning-free wasm compilation. The native tests explicitly run
+their ignored cases; passing the ordinary suites alone would not cover them.
+
+A fresh isolated library check passes 661 no-default and 669 all-feature tests,
+plus doctests. Both explicit Mara GPU tests pass with validation enabled and
+clean process exit. Evidence: `/tmp/bevy-020-final-native-gates.log`. The following
+native resize gate stops at tool preflight because `xwininfo` is unavailable;
+it does not reach the application and subsequent UI commands do not execute.
+
+The Linux development shell now declares Weston, Xwayland and xwininfo rather
+than depending on manually added store paths. All three resolve in a fresh
+shell (`/tmp/bevy-020-ui-tools.log`). Close and resize preflights name missing
+commands. Their native runtime rerun is separate from this environment check.
+Browser runtime, full scene rendering and native interaction remain pending.

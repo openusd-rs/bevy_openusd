@@ -8,7 +8,7 @@
 use crate::read::shade::{ReadPreviewMaterial, TextureWrap};
 use bevy::asset::AssetId;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::platform::collections::{HashMap, HashSet};
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::render_resource::{TextureDimension, TextureFormat};
 
@@ -18,7 +18,7 @@ const ANISOTROPY: u16 = 16;
 #[derive(Resource, Default)]
 struct TextureSampling {
     pending: HashMap<AssetId<Image>, [TextureWrap; 2]>,
-    done: HashSet<AssetId<Image>>,
+    done: HashMap<AssetId<Image>, [TextureWrap; 2]>,
 }
 
 pub(super) fn configure(app: &mut App) {
@@ -65,17 +65,21 @@ pub(super) fn note(world: &mut World, material: &StandardMaterial, read: &ReadPr
     };
     for (handle, wrap) in slots {
         if let Some(handle) = handle
-            && !sampling.done.contains(&handle.id())
+            && sampling.done.get(&handle.id()) != Some(&wrap)
         {
             sampling.pending.insert(handle.id(), wrap);
         }
     }
 }
 
-fn finalise(mut sampling: ResMut<TextureSampling>, images: Option<ResMut<Assets<Image>>>) {
+fn finalise(
+    mut sampling: ResMut<TextureSampling>,
+    images: Option<ResMut<Assets<Image>>>,
+    mut generated: Option<ResMut<super::generated_image::GeneratedImages>>,
+) {
     let Some(mut images) = images else { return };
     if sampling.pending.is_empty() {
-        sampling.done.retain(|id| images.contains(*id));
+        sampling.done.retain(|id, _| images.contains(*id));
         return;
     }
     let pending: Vec<_> = sampling.pending.drain().collect();
@@ -83,9 +87,14 @@ fn finalise(mut sampling: ResMut<TextureSampling>, images: Option<ResMut<Assets<
         let Some(mut image) = images.get_mut(id) else {
             continue;
         };
+        let source = super::generated_image::layout(&image);
+        let base_len = image.data.as_ref().map_or(0, Vec::len);
         add_mips(&mut image);
         image.sampler = sampler(wrap);
-        sampling.done.insert(id);
+        if let Some(generated) = &mut generated {
+            generated.record_finalized(id, source, base_len, &image);
+        }
+        sampling.done.insert(id, wrap);
     }
 }
 

@@ -39,6 +39,10 @@ use bevy::{
 };
 use std::collections::HashMap;
 
+#[path = "support/pipeline_probe.rs"]
+mod pipeline_probe;
+use pipeline_probe::PipelineProbe;
+
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
 struct Pulling {
     #[storage(100, read_only)]
@@ -288,6 +292,7 @@ fn main() {
         .resource::<DrawFunctions<Opaque3d>>()
         .write()
         .add_with::<DrawMaterial, _>(state);
+    pipeline_probe::configure(&mut app);
     app.add_systems(Startup, setup)
         .add_systems(Update, capture)
         .run();
@@ -472,38 +477,67 @@ fn setup(
     );
 }
 
+#[derive(Default)]
+struct CaptureProgress {
+    frames: u32,
+    ready_frames: u32,
+    requested: bool,
+    started: Option<std::time::Instant>,
+}
+
 fn capture(
     mut commands: Commands,
-    mut frames: Local<u32>,
+    mut progress: Local<CaptureProgress>,
     camera: Query<&RenderTarget, With<Camera3d>>,
     options: Res<Options>,
     mut roots: Query<(&mut Transform, &RootPose)>,
     visible: Query<&ViewVisibility, With<Mesh3d>>,
+    pipelines: Res<PipelineProbe>,
 ) {
-    *frames += 1;
+    assert!(
+        progress
+            .started
+            .get_or_insert_with(std::time::Instant::now)
+            .elapsed()
+            < std::time::Duration::from_secs(60),
+        "compact capture timed out; pipeline status: {:?}",
+        pipelines.snapshot()
+    );
+    progress.frames += 1;
+    let frames = progress.frames;
     if options.cull_check {
-        if matches!(*frames, 40 | 80) {
+        if matches!(frames, 40 | 80) {
             for (mut transform, original) in &mut roots {
                 *transform = original.0;
-                if *frames == 40 {
+                if frames == 40 {
                     transform.translation.x += 10_000.0;
                 }
             }
         }
-        if *frames == 70 {
+        if frames == 70 {
             let visible = visible.iter().filter(|visibility| visibility.get()).count();
             assert_eq!(visible, 0, "offscreen roots must be culled");
             println!("COMPACT_CULL_CHECK offscreen_visible={visible}");
         }
     }
-    if *frames != 120 {
+    if frames < 120 || progress.requested {
+        return;
+    }
+    if pipelines.ready_count().is_none() {
+        progress.ready_frames = 0;
+        return;
+    }
+    progress.ready_frames += 1;
+    if progress.ready_frames < 3 {
         return;
     }
     let visible = visible.iter().filter(|visibility| visibility.get()).count();
     assert!(visible > 0, "visible point batches must survive culling");
     println!("COMPACT_VISIBLE restored_visible={visible}");
+    progress.requested = true;
     commands.spawn(Screenshot(camera.single().unwrap().clone())).observe(
-        |event: On<ScreenshotCaptured>, options: Res<Options>, report: Res<BatchReport>, meshes: Query<&Mesh3d>, mut exit: MessageWriter<AppExit>| {
+        |event: On<ScreenshotCaptured>, options: Res<Options>, report: Res<BatchReport>, meshes: Query<&Mesh3d>, pipelines: Res<PipelineProbe>, mut exit: MessageWriter<AppExit>| {
+            let compiled = pipelines.ready_count().expect("capture pipelines must remain ready at readback");
             let count = meshes.iter().count();
             assert_eq!(count, report.render_entities);
             let memory = std::fs::read_to_string("/proc/self/status").unwrap_or_default().lines()
@@ -516,7 +550,7 @@ fn capture(
                     image.save(&options.output).map_err(|error| error.to_string())
                 });
             match result {
-                Ok(()) => { println!("CAPTURE_OK {}", options.output); exit.write(AppExit::Success); }
+                Ok(()) => { println!("CAPTURE_PIPELINES_READY compiled={compiled}"); println!("CAPTURE_OK {}", options.output); exit.write(AppExit::Success); }
                 Err(error) => { eprintln!("CAPTURE_FAILED {error}"); exit.write(AppExit::error()); }
             }
         });

@@ -22,7 +22,26 @@ for message in "thread 'main' panicked at source.rs:3:4:" "thread '<unnamed>' (1
     printf '%s\nUSD_VIEWER_UI_UPDATED\n' "$message" > "$log"
     check 1 "$log"
     ! grep -q 'VIEWER_LOG_OK' "$directory/result"
+    printf 'CAPTURE_PIPELINES_READY compiled=12\nCAPTURE_OK frame.png\n' >> "$log"
+    if [[ "$message" == *'WARN bevy_shader::shader_cache:'* ]]; then check 0 "$log";
+    else check 1 "$log"; fi
 done
+warning='WARN bevy_shader::shader_cache: Shader `embedded://bevy_pbr/render/pbr.wesl` has an unresolved import:'
+for proof in 'CAPTURE_PIPELINES_READY compiled=0' 'CAPTURE_PIPELINES_READY compiled=-1' \
+    'CAPTURE_PIPELINES_READY compiled=12 pending=1' 'CAPTURE_PIPELINES_READY compiled=12 errors=1'; do
+    printf '%s\n%s\nCAPTURE_OK frame.png\n' "$warning" "$proof" > "$log"
+    check 1 "$log"
+done
+printf 'CAPTURE_PIPELINES_READY compiled=12\n%s\nCAPTURE_OK frame.png\n' "$warning" > "$log"
+check 1 "$log"
+printf '%s\nCAPTURE_OK frame.png\nCAPTURE_PIPELINES_READY compiled=12\n' "$warning" > "$log"
+check 1 "$log"
+printf '%s\nCAPTURE_PIPELINES_READY compiled=12\n' "$warning" > "$log"
+check 1 "$log"
+printf '%s\nCAPTURE_PIPELINES_READY compiled=12\nCAPTURE_OK frame.png\n%s\n' "$warning" "$warning" > "$log"
+check 1 "$log"
+printf 'ERROR bevy_shader::shader_cache: Shader `broken.wesl` has an unresolved import:\nCAPTURE_PIPELINES_READY compiled=12\nCAPTURE_OK frame.png\n' > "$log"
+check 1 "$log"
 printf 'INFO no panic detected\nINFO discussing panicked at as text\nWARN egui_winit::clipboard: Failed to initialize arboard clipboard\n' > "$log"
 check 0 "$log"
 : > "$log"

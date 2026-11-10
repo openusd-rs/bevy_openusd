@@ -421,3 +421,27 @@ The compact edge image from the earlier retry was inspected and contains the
 expected visible blue boxes: `/tmp/bevy-020-openusd-compact-retry/edge-compact.png`.
 This does not replace the missing expanded-edge comparison or resolve its
 startup shader-warning failure. Nothing has been pushed.
+
+### Strict lint and pipeline-readiness checkpoint
+
+Strict workspace/all-target/all-feature Clippy now passes, first in
+`/tmp/bevy-020-lint-examples.log`, then again with the new capture probe in
+`/tmp/bevy-020-pipeline-probe-checks.log`. No rules were suppressed. Upstream
+OpenUSD `main` was rechecked with `git ls-remote` on 2026-11-10 and still resolves
+to the pinned `900ea31591348e3fbf416d4661d703aa8700771b`.
+
+Both capture examples now collect pipeline state in the render world after
+rendering, require a nonempty fully compiled cache, and recheck it when the
+screenshot readback arrives. Queued pipelines and retryable missing imports
+prevent readiness, as do permanent shader errors. Compact capture waits for
+three ready updates after the culling cycle and has a 60-second bound; the
+viewer retains its existing 60-ready-update and timeout requirements.
+
+The log checker distinguishes recovered import warnings from permanent errors.
+A warning requires a later positive compiled-pipeline count followed by a
+successful capture. Missing, malformed, zero-count, stale or out-of-order proof
+fails, and a later warning invalidates earlier proof. Permanent failures still
+fail even with subsequent proof markers. Capture unit tests, probe state tests,
+preflight, process cleanup and log-checker regressions pass in
+`/tmp/bevy-020-pipeline-probe-checks.jsonl`. GPU integration is the next gate;
+these checks alone do not establish rendering acceptance.

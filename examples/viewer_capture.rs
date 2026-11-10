@@ -16,27 +16,9 @@ use std::{
 };
 use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot};
 
-type PipelineStatus = (usize, Vec<String>);
-
-#[derive(Resource, Clone, Default)]
-struct PipelineProgress(std::sync::Arc<std::sync::Mutex<Option<PipelineStatus>>>);
-
-fn pipeline_progress(
-    cache: Res<bevy::render::render_resource::PipelineCache>,
-    progress: Res<PipelineProgress>,
-) {
-    use bevy::render::render_resource::CachedPipelineState;
-    let mut waiting = 0;
-    let mut errors = Vec::new();
-    for pipeline in cache.pipelines() {
-        match &pipeline.state {
-            CachedPipelineState::Ok(_) => (),
-            CachedPipelineState::Err(error) => errors.push(error.to_string()),
-            _ => waiting += 1,
-        }
-    }
-    *progress.0.lock().unwrap() = Some((waiting, errors));
-}
+#[path = "support/pipeline_probe.rs"]
+mod pipeline_probe;
+use pipeline_probe::PipelineProbe;
 
 #[path = "../src/capture_metadata.rs"]
 mod capture_metadata;
@@ -414,8 +396,6 @@ fn main() -> AppExit {
     if capture.renderer == CaptureRenderer::Deferred {
         app.insert_resource(bevy::pbr::DefaultOpaqueRendererMethod::deferred());
     }
-    let progress = PipelineProgress::default();
-    app.insert_resource(progress.clone());
     app.insert_resource(capture)
         .add_plugins(
             DefaultPlugins
@@ -468,12 +448,7 @@ fn main() -> AppExit {
     if timing_enabled {
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
     }
-    app.sub_app_mut(bevy::render::RenderApp)
-        .insert_resource(progress)
-        .add_systems(
-            bevy::render::Render,
-            pipeline_progress.after(bevy::render::RenderSystems::Render),
-        );
+    pipeline_probe::configure(&mut app);
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
@@ -716,7 +691,7 @@ fn select_authored_camera(
 struct CaptureTiming<'w, 's> {
     diagnostics: Res<'w, bevy::diagnostic::DiagnosticsStore>,
     timing: ResMut<'w, gpu_timing::GpuTiming>,
-    progress: Res<'w, PipelineProgress>,
+    progress: Res<'w, PipelineProbe>,
     mesh_assets: Res<'w, Assets<Mesh>>,
     mesh_references: Query<'w, 's, (&'static Mesh3d, &'static InheritedVisibility)>,
 }
@@ -823,7 +798,7 @@ fn capture_frame(
             "capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}",
             capture.camera_path,
             capture.camera_ready,
-            progress.0.lock().unwrap()
+            progress.snapshot()
         );
         exit.write(AppExit::error());
         return;
@@ -907,13 +882,7 @@ fn capture_frame(
             return;
         }
     }
-    if !progress
-        .0
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|(waiting, errors)| *waiting == 0 && errors.is_empty())
-    {
+    if progress.ready_count().is_none() {
         capture.ready_frames = 0;
         return;
     }
@@ -1013,7 +982,8 @@ fn capture_frame(
     capture.requested = true;
     commands.spawn(Screenshot(target.clone())).observe(
         |event: On<ScreenshotCaptured>, capture: Res<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>,
-         visibility: Option<Res<usd_bevy::route::ProjectionVisibilityTimings>>, mut exit: MessageWriter<AppExit>| {
+         visibility: Option<Res<usd_bevy::route::ProjectionVisibilityTimings>>, progress: Res<PipelineProbe>, mut exit: MessageWriter<AppExit>| {
+            let compiled = progress.ready_count().expect("capture pipelines must remain ready at readback");
             if let Some(timings) = visibility {
                 for ((route, hidden), row) in &timings.0 {
                     let hierarchy = match hidden { Some(true) => "hidden", Some(false) => "visible", None => "unknown" };
@@ -1027,7 +997,7 @@ fn capture_frame(
                     timings.validation.as_secs_f64()*1000.0, timings.projection.as_secs_f64()*1000.0);
             }
             match save(&event.image, &capture) {
-                Ok(()) => { println!("CAPTURE_OK {output}", output = capture.output.display()); exit.write(AppExit::Success); }
+                Ok(()) => { println!("CAPTURE_PIPELINES_READY compiled={compiled}"); println!("CAPTURE_OK {output}", output = capture.output.display()); exit.write(AppExit::Success); }
                 Err(error) => { eprintln!("CAPTURE_FAILED {error}"); exit.write(AppExit::error()); }
             }
         });

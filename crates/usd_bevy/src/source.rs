@@ -258,6 +258,11 @@ impl UsdSource {
             return self.read_asset(identifier);
         }
         let packaged = openusd::ar::split_package_relative_path_outer(identifier);
+        if packaged.is_some()
+            && (identifier == self.identifier || self.files.contains_key(identifier))
+        {
+            return self.read_asset(identifier);
+        }
         let outer = packaged
             .as_ref()
             .map_or(identifier, |(outer, _)| outer.as_str());
@@ -2310,7 +2315,7 @@ def Xform "Root" {}
         outer.add_layer("inner.usdz", &inner).unwrap();
         let bytes = outer.finish().unwrap().into_inner();
         std::fs::write(&path, &bytes).unwrap();
-        let source = UsdSource::from_file(&path).unwrap();
+        let mut source = UsdSource::from_file(&path).unwrap();
         std::fs::write(&path, b"replaced after snapshot").unwrap();
         let identifier = format!("{}[inner.usdz[pixel.png]]", source.identifier());
         let mut baselines = DiskHashes::default();
@@ -2326,6 +2331,15 @@ def Xform "Root" {}
         disk.record_reads([(path.clone(), blake3::hash(b"different"))].into());
         assert_eq!(disk.lock().unwrap()[&path], blake3::hash(&bytes));
         assert!(disk.snapshots.lock().unwrap().is_empty());
+        source.replace_file_bytes(identifier.clone(), b"entry override".as_slice());
+        let mut baselines = DiskHashes::default();
+        assert_eq!(
+            source
+                .read_asset_tracked(&identifier, &mut baselines)
+                .unwrap(),
+            b"entry override"
+        );
+        assert!(baselines.is_empty());
     }
 
     #[test]

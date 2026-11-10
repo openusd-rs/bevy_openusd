@@ -56,6 +56,15 @@ local function need(tool, why)
   assert(oslo.run{ "sh", "-c", "command -v " .. tool, capture = true }.ok, why)
 end
 
+local function build_example(a)
+  assert(type(a.name) == "string" and a.name:match("^[%w_%-]+$"), "provide --name EXAMPLE")
+  local profile = a.profile or "debug"
+  assert(profile == "debug" or profile == "release", "--profile must be debug or release")
+  if profile == "release" then sh.cargo("build", "--release", "--example", a.name)
+  else sh.cargo("build", "--example", a.name) end
+  return ("target/%s/examples/%s"):format(profile, a.name)
+end
+
 make.recipe{ name = "build", desc = "build the usdview binary",
              run = function() sh.cargo("build", "--bin", APP) end }
 make.alias("b", "build")
@@ -90,11 +99,11 @@ make.alias("r", "run")
 make.recipe{
   name = "build-example",
   desc = "build an example target",
-  params = { { "--name", desc = "example target name" } },
-  run = function(a)
-    assert(type(a.name) == "string" and a.name:match("^[%w_%-]+$"), "provide --name EXAMPLE")
-    sh.cargo("build", "--example", a.name)
-  end,
+  params = {
+    { "--name", desc = "example target name" },
+    { "--profile", desc = "debug (default) or release" },
+  },
+  run = function(a) build_example(a) end,
 }
 
 make.recipe{
@@ -103,18 +112,18 @@ make.recipe{
   params = {
     { "--name", desc = "example target name" },
     { "--args", desc = "arguments passed through to the example" },
+    { "--profile", desc = "debug (default) or release" },
   },
   run = function(a)
-    assert(type(a.name) == "string" and a.name:match("^[%w_%-]+$"), "provide --name EXAMPLE")
-    sh.cargo("build", "--example", a.name)
+    local executable = build_example(a)
     sh.sh("-c", fresh_display_env(([[
-set -- target/debug/examples/%s %s
+set -- %s %s
 if [ ! -e /etc/NIXOS ]; then
   set -- nixVulkan "$@"
 fi
 exec env WGPU_VALIDATION="${USD_WGPU_VALIDATION:-${WGPU_VALIDATION:-0}}" \
   WGPU_DEBUG="${USD_WGPU_DEBUG:-${WGPU_DEBUG:-0}}" WINIT_UNIX_BACKEND=$_usd_backend "$@"
-]]):format(a.name, a.args or "")))
+]]):format(executable, a.args or "")))
   end,
 }
 

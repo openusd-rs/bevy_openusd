@@ -2,9 +2,12 @@
 
 ## Status and boundaries
 
-Work is local and unverified until the gates below pass. Do not push, merge remote
-PRs, or release this migration without the user's approval. The library is used by
-downstream applications; compiling the editor alone is not acceptance.
+The local Bevy 0.20.1/WESL and current upstream OpenUSD migration passes the
+recorded Linux/Vulkan and software-WebGL2 acceptance gates. Known skips and
+untested platforms/downstream applications are listed under Coverage limits.
+Do not push, merge remote PRs, or release without the user's approval. The
+library is used by downstream applications; this is not a downstream release
+signoff.
 
 Preserve Dave Lee's (`dave-gray101`) original PR commit and author identity in the eventual
 merged history. The user explicitly wants his contribution credited, rather
@@ -586,12 +589,43 @@ were inspected. Upstream main was rechecked on 2026-11-10 and remains `900ea315`
   dependent Ptex check remains skipped. Synthetic Ptex tests run in the library
   suite. Ordinary ignored native export, watcher and deformation checks are
   exercised by their explicit recipes rather than counted as ordinary passes.
+- Bevy's unchanged vendored `handle_try_apply_verifies_type_id` test remains
+  ignored upstream for issue #24111. The macro crate's illustrative doctest is
+  also marked ignored. These are not counted as passing tests.
 - Repository examples, isolated library features and native USD interoperability
   were tested. The user's separate downstream application checkouts were not
   changed or validated; those integrations remain a release consideration.
 - No push, public merge, tag or release has been performed. Local contributor
   ancestry still includes Dave Lee's original commit unchanged.
 
-A fresh `harden`, default workspace test and wasm-check chain is running at
-`/tmp/bevy-020-final-workspace.log`; do not treat the final checkpoint as complete
-until it and the independent deformation gate have exited successfully.
+### Final verification checkpoint
+
+The final `harden`, default workspace test and wasm-check chain exits zero:
+`/tmp/bevy-020-final-workspace.log`. No-default workspace tests pass 774 with
+21 ignored (including the illustrative doctest); all-feature/all-target tests
+pass 866 with 29 ignored; default all-target tests pass 860 with 20 ignored.
+Formatting, workspace checks, strict Clippy and wasm compilation all pass.
+Do not sum these overlapping suites as unique tests.
+
+The independent deformation recipe now exits zero:
+`/tmp/bevy-020-deformation-accepted.log`. GPU/CPU pairs are RGB-exact at all three
+time codes and byte-identical to the previously inspected captures. The final
+integration chain also exits zero (`/tmp/bevy-020-final-integration.log`):
+15 native export/reference checks, 9 watcher checks, 4 native numerical
+deformation checks, 2 explicit host GPU checks, 110 vendored asset tests and
+9 ordinary host tests pass. The two GPU tests' ordinary-suite skips are covered
+by their explicit run; the upstream asset skip remains as documented above.
+
+The published Bevy 0.20.1 asset source was compared again with the vendored tree:
+only `src/server/mod.rs`, containing the local load-order patch, differs.
+Contributor ancestry and the current upstream OpenUSD pin were rechecked.
+The final capture-tool/compact/native-window chain exits zero:
+`/tmp/bevy-020-final-capture-native.log`. It passes 31 capture/probe unit tests,
+shell preflight/process cleanup/log-checker regressions, compact comparisons and
+native compositor/viewport readbacks. The compact overview and edge captures
+are byte-identical to the inspected earlier images; overview RGB is exact and
+edge maximum RGB error remains 1 against expanded instances. Both final native
+material images were inspected at `/tmp/bevy-020-native-accepted.png` and its
+`.viewport.png` companion. The second compositor capture also passes. The local
+migration checkpoint is complete within the documented coverage; nothing has
+been pushed, tagged, released or merged remotely.

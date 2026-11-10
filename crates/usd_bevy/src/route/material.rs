@@ -1802,6 +1802,7 @@ def Material "Bumped" {{
             .init_resource::<Assets<StandardMaterial>>()
             .init_resource::<Assets<FlatMaterial>>()
             .init_resource::<Assets<Image>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let source = crate::UsdSource::snapshot("flat.usda", text.as_bytes()).unwrap();
         let handle = app
             .world_mut()

@@ -175,29 +175,24 @@ fn add_mips(image: &mut Image) {
     let Some(data) = image.data.as_mut() else {
         return;
     };
-    if w < 2 && h < 2 || data.len() != w * h * size {
+    if w == 0
+        || h == 0
+        || w < 2 && h < 2
+        || w.checked_mul(h).and_then(|pixels| pixels.checked_mul(size)) != Some(data.len())
+    {
         return;
     }
-    let mut level: Vec<f32> = data
-        .chunks_exact(kind.bytes())
-        .enumerate()
-        .map(|(i, v)| kind.decode(v, i % channels == 3))
-        .collect();
+    let mut level = Vec::new();
     let mut levels = 1;
     while w > 1 || h > 1 {
         let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
-        let mut next = vec![0.0f32; nw * nh * channels];
-        for y in 0..nh {
-            for x in 0..nw {
-                let (x0, y0) = ((2 * x).min(w - 1), (2 * y).min(h - 1));
-                let (x1, y1) = ((2 * x + 1).min(w - 1), (2 * y + 1).min(h - 1));
-                for c in 0..channels {
-                    let at = |px: usize, py: usize| level[(py * w + px) * channels + c];
-                    next[(y * nw + x) * channels + c] =
-                        0.25 * (at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1));
-                }
-            }
-        }
+        let next = if levels == 1 {
+            downsample(w, h, channels, |i| {
+                kind.decode(&data[i * kind.bytes()..], i % channels == 3)
+            })
+        } else {
+            downsample(w, h, channels, |i| level[i])
+        };
         for (i, v) in next.iter().enumerate() {
             kind.encode(*v, i % channels == 3, data);
         }
@@ -207,6 +202,26 @@ fn add_mips(image: &mut Image) {
     }
     image.texture_descriptor.mip_level_count = levels;
 }
+
+fn downsample(w: usize, h: usize, channels: usize, read: impl Fn(usize) -> f32) -> Vec<f32> {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut next = vec![0.0; nw * nh * channels];
+    for y in 0..nh {
+        for x in 0..nw {
+            let (x0, y0) = ((2 * x).min(w - 1), (2 * y).min(h - 1));
+            let (x1, y1) = ((2 * x + 1).min(w - 1), (2 * y + 1).min(h - 1));
+            for c in 0..channels {
+                let at = |px: usize, py: usize| read((py * w + px) * channels + c);
+                next[(y * nw + x) * channels + c] =
+                    0.25 * (at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1));
+            }
+        }
+    }
+    next
+}
+
+static SRGB_TO_LINEAR: std::sync::LazyLock<[f32; 256]> =
+    std::sync::LazyLock::new(|| std::array::from_fn(|value| srgb_to_linear(value as f32 / 255.0)));
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -225,7 +240,7 @@ impl Kind {
 
     fn decode(self, v: &[u8], alpha: bool) -> f32 {
         match self {
-            Kind::Srgb8 if !alpha => srgb_to_linear(v[0] as f32 / 255.0),
+            Kind::Srgb8 if !alpha => SRGB_TO_LINEAR[v[0] as usize],
             Kind::Srgb8 | Kind::Unorm8 => v[0] as f32 / 255.0,
             Kind::Half => half::f16::from_le_bytes([v[0], v[1]]).to_f32(),
         }
@@ -354,6 +369,175 @@ mod tests {
         add_mips(&mut texels);
         // Half the light of white is code value 188, not 128.
         assert_eq!(texels.data.unwrap()[8], 188);
+    }
+
+    #[test]
+    fn decoded_srgb_table_matches_every_code_and_keeps_alpha_linear() {
+        for code in 0..=255u8 {
+            assert_eq!(
+                Kind::Srgb8.decode(&[code], false).to_bits(),
+                srgb_to_linear(code as f32 / 255.0).to_bits()
+            );
+            assert_eq!(
+                Kind::Srgb8.decode(&[code], true).to_bits(),
+                (code as f32 / 255.0).to_bits()
+            );
+        }
+    }
+
+    fn scalar_mips(
+        mut w: usize,
+        mut h: usize,
+        channels: usize,
+        kind: Kind,
+        mut data: Vec<u8>,
+    ) -> (Vec<u8>, u32) {
+        let mut level: Vec<f32> = data
+            .chunks_exact(kind.bytes())
+            .enumerate()
+            .map(|(i, value)| match kind {
+                Kind::Srgb8 if i % channels != 3 => srgb_to_linear(value[0] as f32 / 255.0),
+                Kind::Srgb8 | Kind::Unorm8 => value[0] as f32 / 255.0,
+                Kind::Half => half::f16::from_le_bytes([value[0], value[1]]).to_f32(),
+            })
+            .collect();
+        let mut levels = 1;
+        while w > 1 || h > 1 {
+            let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+            let mut next = vec![0.0; nw * nh * channels];
+            for y in 0..nh {
+                for x in 0..nw {
+                    for c in 0..channels {
+                        let at = |x: usize, y: usize| {
+                            level[(y.min(h - 1) * w + x.min(w - 1)) * channels + c]
+                        };
+                        next[(y * nw + x) * channels + c] = 0.25
+                            * (at(2 * x, 2 * y)
+                                + at(2 * x + 1, 2 * y)
+                                + at(2 * x, 2 * y + 1)
+                                + at(2 * x + 1, 2 * y + 1));
+                    }
+                }
+            }
+            for (i, value) in next.iter().enumerate() {
+                kind.encode(*value, i % channels == 3, &mut data);
+            }
+            level = next;
+            (w, h) = (nw, nh);
+            levels += 1;
+        }
+        (data, levels)
+    }
+
+    #[test]
+    fn streamed_mips_match_full_precision_scalar_reference() {
+        let dimensions = [
+            (1, 1),
+            (1, 9),
+            (9, 1),
+            (2, 2),
+            (3, 5),
+            (4, 8),
+            (7, 16),
+            (64, 37),
+            (127, 129),
+        ];
+        for (format, channels, kind) in [
+            (TextureFormat::Rgba8UnormSrgb, 4, Kind::Srgb8),
+            (TextureFormat::Rgba8Unorm, 4, Kind::Unorm8),
+            (TextureFormat::Rg8Unorm, 2, Kind::Unorm8),
+            (TextureFormat::R8Unorm, 1, Kind::Unorm8),
+            (TextureFormat::Rgba16Float, 4, Kind::Half),
+        ] {
+            for (w, h) in dimensions {
+                let mut seed = 0x1234_5678u32;
+                let mut data: Vec<u8> = (0..w * h * channels * kind.bytes())
+                    .map(|_| {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        (seed >> 24) as u8
+                    })
+                    .collect();
+                if let Kind::Half = kind {
+                    for value in data.chunks_exact_mut(2) {
+                        let bits = u16::from_le_bytes([value[0], value[1]]);
+                        if !half::f16::from_bits(bits).is_finite() {
+                            value.copy_from_slice(&(bits & !0x0400).to_le_bytes());
+                        }
+                    }
+                }
+                let (expected, levels) = scalar_mips(w, h, channels, kind, data.clone());
+                let mut texture = image(w as u32, h as u32, format, data);
+                add_mips(&mut texture);
+                let actual = texture.data.as_ref().unwrap();
+                assert_eq!(actual.len(), expected.len());
+                assert_eq!(
+                    actual.iter().zip(&expected).position(|(a, b)| a != b),
+                    None,
+                    "{format:?} {w}x{h}"
+                );
+                assert_eq!(texture.texture_descriptor.mip_level_count, levels);
+                add_mips(&mut texture);
+                assert_eq!(texture.data.as_ref().unwrap(), &expected);
+                assert_eq!(texture.texture_descriptor.mip_level_count, levels);
+            }
+        }
+    }
+
+    #[test]
+    fn half_mips_preserve_nonfinite_values_and_original_texels() {
+        let data: Vec<u8> = (0..64 * 37 * 4u32)
+            .flat_map(|i| (i.wrapping_mul(7_919) as u16).to_le_bytes())
+            .collect();
+        let (expected, levels) = scalar_mips(64, 37, 4, Kind::Half, data.clone());
+        let mut texture = image(64, 37, TextureFormat::Rgba16Float, data.clone());
+        add_mips(&mut texture);
+        let actual = texture.data.unwrap();
+        assert_eq!(&actual[..data.len()], &data);
+        assert_eq!(actual.len(), expected.len());
+        assert_eq!(texture.texture_descriptor.mip_level_count, levels);
+        for (index, (a, b)) in actual
+            .chunks_exact(2)
+            .zip(expected.chunks_exact(2))
+            .enumerate()
+        {
+            let a = half::f16::from_le_bytes([a[0], a[1]]);
+            let b = half::f16::from_le_bytes([b[0], b[1]]);
+            assert!(
+                a.to_bits() == b.to_bits() || a.is_nan() && b.is_nan(),
+                "half texel {index}: {a:?} != {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_and_unsupported_mip_inputs_are_unchanged() {
+        let template = image(4, 2, TextureFormat::Rgba8Unorm, vec![128; 32]);
+        for case in 0..8 {
+            let mut texture = template.clone();
+            match case {
+                0 => texture.data = None,
+                1 => {
+                    texture.data.as_mut().unwrap().pop();
+                }
+                2 => {
+                    texture.texture_descriptor.size.width = 0;
+                    texture.data.as_mut().unwrap().clear();
+                }
+                3 => texture.texture_descriptor.size.height = 0,
+                4 => {
+                    texture.texture_descriptor.size.width = u32::MAX;
+                    texture.texture_descriptor.size.height = u32::MAX;
+                }
+                5 => texture.texture_descriptor.size.depth_or_array_layers = 2,
+                6 => texture.texture_descriptor.dimension = TextureDimension::D3,
+                _ => texture.texture_descriptor.format = TextureFormat::Rgba32Float,
+            }
+            let expected = texture.clone();
+            add_mips(&mut texture);
+            assert_eq!(texture.data, expected.data);
+            assert_eq!(texture.texture_descriptor, expected.texture_descriptor);
+            assert_eq!(texture.sampler, expected.sampler);
+        }
     }
 
     #[test]

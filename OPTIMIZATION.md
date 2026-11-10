@@ -182,3 +182,15 @@ correct readiness reporting.
   [CPU skinning inputs](benchmarks/cpu-skin-inputs.md). The next larger target is
   bounded parallel pure-mesh preparation while preserving stage/thread, route,
   visibility, instance and lifecycle contracts.
+- Parallel-preparation implementation: `0035a9e` separates tangent-cache
+  lookup/admission from result insertion; `7483e05` batches built-in animation
+  across bounded owned-mesh jobs while keeping USD reads and ordered publication
+  on the main thread. `d740239` reports the complete batch interval rather than
+  hiding moved work in smaller route times. `51da2f4` covers independent root
+  clocks, referenced geometry, subsets, reload, close and hidden residency;
+  `c2e3142` repairs a timing-dependent initial-projection test, not production
+  loading policy. Hardening passes 803 no-default and 897 all-feature tests plus
+  strict Clippy. Release elapsed, native render/oracle and wasm acceptance remain
+  pending for this change. See [parallel preparation](benchmarks/parallel-mesh-preparation.md)
+  for limits, retained failures and the predeclared performance target. No
+  speedup or native cadence result is claimed yet.

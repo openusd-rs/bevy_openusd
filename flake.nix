@@ -91,6 +91,10 @@
             nixVulkanAlias
             nixglPkgs.nixGLIntel
             nixglPkgs.nixVulkanIntel
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.weston
+            pkgs.xwayland
+            pkgs.xwininfo
           ] ++ pkgs.lib.optionals hasNvidia [
             nixglPkgs.nixGLNvidia
             nixglPkgs.nixVulkanNvidia

@@ -8,7 +8,9 @@ cd "$root"
 source "$root/scripts/capture_session.sh"
 output=$(realpath -m "$1")
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'output must be new' >&2; exit 2; }
-for command in weston cc pkg-config setsid; do command -v "$command" >/dev/null; done
+for command in weston cc pkg-config setsid; do
+    command -v "$command" >/dev/null || { echo "missing required command: $command" >&2; exit 2; }
+done
 mkdir -p "$output"
 oslo make build-close-probe
 xpid=; vpid=

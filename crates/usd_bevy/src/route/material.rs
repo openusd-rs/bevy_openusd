@@ -6,7 +6,7 @@
 //! `UsdPreviewSurface` (and Omni/MaterialX equivalents) via [`read::shade`].
 //! Texture channels use snapshot image handles or the AssetServer.
 
-use bevy::prelude::*;
+use bevy::{asset::VisitAssetDependencies, prelude::*};
 
 use super::{PrimRoute, RouteCtx};
 use crate::read::shade::{ReadPreviewMaterial, read_material_binding, read_preview_material_at};
@@ -150,18 +150,18 @@ fn material_at(
 
 type ResolvedMaterial = (Handle<StandardMaterial>, Vec<String>, MaterialColor);
 
-/// Materials resolved while one projection job runs. The gprims of a stage
-/// mostly share a few materials, and resolving one packs its textures, so
-/// the job keeps each (binding, time, sidedness) result until it finishes.
-/// Non-send because it pins the stage it belongs to.
+/// Stage-local prepared materials, shared across clocks for static bindings.
 pub(crate) struct ProjectionMaterials {
     stage: openusd::usd::Stage,
     resolved: std::collections::HashMap<(String, Option<u64>, bool), ResolvedMaterial>,
+    expected: std::collections::HashMap<bevy::asset::AssetId<StandardMaterial>, StandardMaterial>,
     /// Whether any layer authors a `material:binding` property; without one
     /// no prim can be bound.
     binds: bool,
     /// How many of the stage's layers `binds` has looked at.
     scanned: usize,
+    animated: std::collections::HashMap<openusd::sdf::Path, bool>,
+    textures: std::collections::HashMap<(String, bool), bevy::asset::AssetId<Image>>,
 }
 
 impl ProjectionMaterials {
@@ -169,11 +169,76 @@ impl ProjectionMaterials {
         let mut memo = Self {
             stage: stage.clone(),
             resolved: Default::default(),
+            expected: Default::default(),
             binds: false,
             scanned: 0,
+            animated: Default::default(),
+            textures: Default::default(),
         };
         memo.rescan();
         memo
+    }
+
+    pub(crate) fn prepare_sample(&mut self, world: &World) {
+        let textures = world
+            .get_resource::<crate::asset::SnapshotTextures>()
+            .into_iter()
+            .flat_map(|textures| &textures.0)
+            .map(|(key, handle)| (key.clone(), handle.id()))
+            .collect();
+        if self.textures != textures {
+            self.resolved.clear();
+            self.expected.clear();
+            self.textures = textures;
+        }
+        self.resolved.retain(|(_, time, _), (handle, warnings, _)| {
+            time.is_none()
+                && warnings.is_empty()
+                && world
+                    .get_resource::<Assets<StandardMaterial>>()
+                    .and_then(|assets| assets.get(handle.id()))
+                    .is_some_and(|material| {
+                        let mut ready = self.expected.get(&handle.id()).is_some_and(|expected| {
+                            material.cull_mode == expected.cull_mode
+                                && material.reflect_partial_eq(expected) == Some(true)
+                        });
+                        material.visit_dependencies(&mut |id| {
+                            if let Ok(id) = bevy::asset::AssetId::<Image>::try_from(id) {
+                                ready &= world
+                                    .get_resource::<Assets<Image>>()
+                                    .is_some_and(|images| images.contains(id));
+                            }
+                        });
+                        ready
+                    })
+        });
+        let retained: std::collections::HashSet<_> = self
+            .resolved
+            .values()
+            .map(|(handle, _, _)| handle.id())
+            .collect();
+        self.expected.retain(|id, _| retained.contains(id));
+    }
+
+    fn sample_key(
+        &mut self,
+        ctx: &RouteCtx,
+        binding: &openusd::sdf::Path,
+    ) -> (String, Option<u64>, bool) {
+        if self.animated.len() >= 4096 || self.resolved.len() >= 4096 {
+            self.animated.clear();
+            self.resolved.clear();
+            self.expected.clear();
+        }
+        let animated = *self
+            .animated
+            .entry(binding.clone())
+            .or_insert_with(|| crate::read::shade::material_is_time_varying(ctx.stage, binding));
+        let mut key = memo_key(ctx, binding);
+        if !animated {
+            key.1 = None;
+        }
+        key
     }
 
     /// Looks for bindings in layers loaded since the last scan.
@@ -587,7 +652,13 @@ pub(crate) fn resolve_material(
     let Some(binding) = binding? else {
         return Ok(None);
     };
-    let key = memo_key(ctx, &binding);
+    let key = world
+        .get_non_send_mut::<ProjectionMaterials>()
+        .filter(|memo| memo.stage == *ctx.stage)
+        .map_or_else(
+            || memo_key(ctx, &binding),
+            |mut memo| memo.sample_key(ctx, &binding),
+        );
     if profiling {
         world.resource_mut::<MaterialResolveTimings>().observe(&key);
     }
@@ -708,6 +779,9 @@ pub(crate) fn resolve_material(
             weight,
             tint: read.sheen_tint.unwrap_or(0.5),
         });
+    let expected = world
+        .get_non_send::<ProjectionMaterials>()
+        .map(|_| material.clone());
     let handle = super::cache::intern_material_with_sheen(world, material, sheen);
     if let Some(started) = started {
         world.resource_mut::<MaterialResolveTimings>().interning += started.elapsed();
@@ -717,6 +791,9 @@ pub(crate) fn resolve_material(
     {
         memo.resolved
             .insert(key, (handle.clone(), warnings.clone(), color.clone()));
+        if let Some(expected) = expected {
+            memo.expected.insert(handle.id(), expected);
+        }
     }
     Ok(Some((handle, warnings, color)))
 }
@@ -997,6 +1074,102 @@ def Cube "C" { rel material:binding = </Mat> }
                 .perceptual_roughness,
             0.6
         );
+    }
+
+    #[test]
+    fn static_material_samples_invalidate_on_edits_and_texture_replacement() {
+        use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+        let stage = crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Shader.outputs:surface>
+    def Shader "Shader" {
+        uniform token info:id = "UsdPreviewSurface"
+        float inputs:roughness = 0.3
+        color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Tex" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @albedo.png@
+        float3 outputs:rgb
+    }
+}
+def Cube "A" { rel material:binding = </Mat> }
+"#,
+        )
+        .open_stage()
+        .unwrap();
+        let live = crate::live::LiveStage::new(stage);
+        let registry = crate::route::SchemaRegistry::builtin();
+        let mut world = World::new();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<MaterialResolveTimings>();
+        let image = || {
+            Image::new(
+                Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                vec![255; 4],
+                TextureFormat::Rgba8UnormSrgb,
+                default(),
+            )
+        };
+        let first = world.resource_mut::<Assets<Image>>().add(image());
+        let second = world.resource_mut::<Assets<Image>>().add(image());
+        let mut textures = crate::asset::SnapshotTextures::default();
+        textures
+            .0
+            .insert(("albedo.png".into(), true), first.clone());
+        world.insert_resource(textures);
+        let sample = |world: &mut World, time| {
+            registry.with_materials(world, &live, |world| {
+                resolved_sample(&live.stage, world, "/A", Some(time)).unwrap()
+            })
+        };
+        for time in [0.0, 1.0, 2.0] {
+            let material = sample(&mut world, time);
+            assert_eq!(material.base_color_texture, Some(first.clone()));
+            assert_eq!(material.perceptual_roughness, 0.3);
+        }
+        assert_eq!(world.resource::<MaterialResolveTimings>().cache_hits, 2);
+        live.stage
+            .prim("/Mat/Shader")
+            .unwrap()
+            .attribute("inputs:roughness")
+            .set(0.7_f32)
+            .unwrap();
+        assert_eq!(sample(&mut world, 3.0).perceptual_roughness, 0.7);
+        live.drain_changes();
+        world
+            .resource_mut::<crate::asset::SnapshotTextures>()
+            .0
+            .insert(("albedo.png".into(), true), second.clone());
+        assert_eq!(
+            sample(&mut world, 4.0).base_color_texture,
+            Some(second.clone())
+        );
+        assert_eq!(world.resource::<MaterialResolveTimings>().cache_hits, 2);
+        let id = world
+            .resource::<Assets<StandardMaterial>>()
+            .iter()
+            .find(|(_, material)| material.base_color_texture == Some(second.clone()))
+            .unwrap()
+            .0;
+        world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .get_mut(id)
+            .unwrap()
+            .cull_mode = None;
+        assert_eq!(
+            sample(&mut world, 5.0).cull_mode,
+            Some(bevy::render::render_resource::Face::Back)
+        );
+        assert_eq!(world.resource::<MaterialResolveTimings>().cache_hits, 2);
     }
 
     #[test]

@@ -509,7 +509,7 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
         }
         if current != runtime.sampled {
             let registry = world.resource::<SchemaRegistry>().clone();
-            registry.with_materials(world, &runtime.live.stage, |world| {
+            registry.with_materials(world, &runtime.live, |world| {
                 for (path, entity) in runtime.map.iter() {
                     let Ok(path) = openusd::sdf::path(path) else {
                         continue;

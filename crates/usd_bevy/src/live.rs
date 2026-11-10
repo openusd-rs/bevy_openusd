@@ -45,6 +45,7 @@ impl StageChange {
 /// A reprojection system drains the queue once per frame.
 pub struct LiveStage {
     pub stage: Stage,
+    pub(crate) materials: RefCell<Option<crate::route::material::ProjectionMaterials>>,
     queue: Rc<RefCell<Vec<StageChange>>>,
     // Prim paths whose *next* change was caused by our own author-back and
     // should be swallowed once (the echo guard, PLAN P2). Author-back writes
@@ -85,6 +86,7 @@ impl LiveStage {
         })?;
         Ok(Self {
             stage,
+            materials: RefCell::default(),
             queue,
             suppressed: Rc::new(RefCell::new(std::collections::HashSet::new())),
             sink: Some(sink),
@@ -102,7 +104,11 @@ impl LiveStage {
     /// Flush pending layer edits and take recorded changes without losing queued edits on failure.
     pub fn try_drain_changes(&self) -> openusd::Result<Vec<StageChange>> {
         self.stage.flush()?;
-        Ok(std::mem::take(&mut *self.queue.borrow_mut()))
+        let changes = std::mem::take(&mut *self.queue.borrow_mut());
+        if !changes.is_empty() {
+            self.materials.borrow_mut().take();
+        }
+        Ok(changes)
     }
 
     /// Flush pending layer edits and check the queue, deferring on failure.
@@ -648,7 +654,7 @@ pub(crate) fn registry_of(world: &World) -> SchemaRegistry {
 /// `Transform`), recording the path↔entity bimap. Idempotent only on an
 /// empty world — call once on load.
 pub fn project_stage(world: &mut World, live: &LiveStage, map: &mut PrimEntities) {
-    registry_of(world).with_materials(world, &live.stage, |world| {
+    registry_of(world).with_materials(world, live, |world| {
         project_stage_inner(world, live, map);
     });
 }
@@ -1819,7 +1825,7 @@ fn resample_animation_system(world: &mut World) {
     };
     let map = world.remove_resource::<PrimEntities>().unwrap_or_default();
     let registry = registry_of(world);
-    registry.with_materials(world, &live.stage, |world| {
+    registry.with_materials(world, &live, |world| {
         for path in &animated.0 {
             if let Some(entity) = map.entity(path)
                 && let Ok(p) = openusd::sdf::path(path)

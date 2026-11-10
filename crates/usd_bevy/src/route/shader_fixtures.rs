@@ -45,7 +45,16 @@ fn render_fixture_selects_custom_materials_and_gpu_instancing() {
         1
     );
     let flat = entities.entity("/Flat").unwrap();
-    assert!(world.get::<MeshMaterial3d<FlatMaterial>>(flat).is_some());
+    let flat = &world.get::<MeshMaterial3d<FlatMaterial>>(flat).unwrap().0;
+    assert_eq!(
+        world
+            .resource::<Assets<FlatMaterial>>()
+            .get(flat)
+            .unwrap()
+            .base
+            .opaque_render_method,
+        OpaqueRendererMethod::Auto
+    );
     let sheen = entities.entity("/Sheen").unwrap();
     let sheen = &world.get::<MeshMaterial3d<SheenMaterial>>(sheen).unwrap().0;
     assert_eq!(

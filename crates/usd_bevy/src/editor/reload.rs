@@ -661,6 +661,114 @@ def Material "Mat" {
                 .images,
             finalized
         );
+        let next = directory.path().canonicalize().unwrap().join("next.png");
+        let blue = png([0, 0, 255, 255]);
+        std::fs::write(&next, &blue).unwrap();
+        bridge
+            .send(EditorCommand::Edit(EditorEdit::Attribute {
+                prim: "/Mat/Texture".into(),
+                name: "inputs:file".into(),
+                type_name: "asset".into(),
+                value: Value::AssetPath(openusd::sdf::AssetPath::new("next.png")),
+            }))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(disk.lock().unwrap()[&next], blake3::hash(&blue));
+        for (command, path) in [
+            (EditorCommand::Undo, key.0.as_str()),
+            (EditorCommand::Redo, next.to_str().unwrap()),
+        ] {
+            bridge.send(command).unwrap();
+            app.update();
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            let key = (path.to_owned(), true);
+            let handle = app.world().resource::<crate::asset::SnapshotTextures>().0[&key].clone();
+            let tick = app
+                .world()
+                .get_resource_ref::<crate::asset::SnapshotTextures>()
+                .unwrap()
+                .last_changed();
+            let finalized = app
+                .world()
+                .resource::<crate::route::TextureSamplingTiming>()
+                .images;
+            bridge
+                .send(EditorCommand::ReloadSources(vec![path.into()]))
+                .unwrap();
+            app.update();
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            assert_eq!(
+                app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+                handle
+            );
+            assert_eq!(
+                app.world()
+                    .get_resource_ref::<crate::asset::SnapshotTextures>()
+                    .unwrap()
+                    .last_changed(),
+                tick
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<crate::route::TextureSamplingTiming>()
+                    .images,
+                finalized
+            );
+        }
+    }
+
+    #[test]
+    fn failed_texture_refresh_does_not_publish_new_baselines() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
+        let source = crate::UsdSource::new(
+            &root,
+            br#"#usda 1.0
+def DomeLight "A" { asset inputs:texture:file = @a.png@ }
+def DomeLight "B" { asset inputs:texture:file = @b.png@ }
+"#
+            .as_slice(),
+        )
+        .unwrap();
+        let (stage, disk) = source.open_stage_for_editor().unwrap();
+        let original = disk.lock().unwrap().clone();
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255, 0, 0, 255])
+                .unwrap();
+        }
+        let first = directory.path().join("a.png");
+        let second = directory.path().join("b.png");
+        std::fs::write(&first, &bytes).unwrap();
+        std::fs::write(&second, b"broken image").unwrap();
+        let mut world = World::new();
+        world.insert_resource(Assets::<Image>::default());
+        assert!(refresh_textures(&mut world, &stage, &source, Some(&disk)).is_err());
+        assert_eq!(*disk.lock().unwrap(), original);
+        std::fs::write(&second, &bytes).unwrap();
+        world.remove_resource::<Assets<Image>>();
+        assert!(refresh_textures(&mut world, &stage, &source, Some(&disk)).is_err());
+        assert_eq!(*disk.lock().unwrap(), original);
+        world.insert_resource(Assets::<Image>::default());
+        refresh_textures(&mut world, &stage, &source, Some(&disk)).unwrap();
+        let hashes = disk.lock().unwrap();
+        for path in [first, second] {
+            assert_eq!(hashes[&path], blake3::hash(&bytes));
+            assert!(
+                !disk
+                    .snapshots
+                    .lock()
+                    .unwrap()
+                    .contains_key(path.to_str().unwrap())
+            );
+        }
     }
 
     #[test]

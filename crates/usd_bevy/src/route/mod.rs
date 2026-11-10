@@ -348,6 +348,7 @@ impl SchemaRegistry {
             live.materials.borrow_mut().take();
             return project(world);
         }
+        let _skin_samples = crate::read::skel::SkelSampleScope::begin(&live.stage);
         if live.try_has_changes().unwrap_or(true) {
             live.materials.borrow_mut().take();
         }

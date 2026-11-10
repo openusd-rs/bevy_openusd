@@ -500,3 +500,40 @@ than depending on manually added store paths. All three resolve in a fresh
 shell (`/tmp/bevy-020-ui-tools.log`). Close and resize preflights name missing
 commands. Their native runtime rerun is separate from this environment check.
 Browser runtime, full scene rendering and native interaction remain pending.
+
+### Native and browser acceptance; visual render failure
+
+The native UI chain passes after adding the missing tools:
+`/tmp/bevy-020-native-ui-final.log`. The oversized-window capture shows OIT
+disabled at its 128 MiB budget and a working scene after restoring 1440x920.
+The OS-close prompt and cancel images were inspected; the prompt is present
+before cancellation and absent afterward, while discard exits cleanly. WESL
+material compositor and viewport captures show flat geometry, sheen, the
+transmissive medium and both strand types. The second compositor capture also
+passes the image checks.
+
+The actual numeric-array edit replay passes with `USD_VIEWER_PANE=inspector`
+and `/Root` selected: `/tmp/bevy-020-final-native-edit-inspector.png`. The image
+shows the edited orange cube, `1 0.3 0.05`, and one modified layer. The first
+attempt omitted the inspector setting; its inputs zoomed the viewport instead
+and are not editing acceptance. The source asset remains unchanged on disk.
+
+The fresh wasm release bundle passes (`/tmp/bevy-020-web-build-final.log`).
+Browser smoke passes for both HTTP and in-memory roots, orbit and resize:
+`/tmp/bevy-020-browser-final-retry/result.json`. All three images were inspected.
+The adapter is SwiftShader WebGL2, not hardware browser coverage. A first launch
+failed before opening Chromium because an old store path was absent; the retry
+resolves Chromium and Node from the pinned Nixpkgs input.
+
+Visual inspection of `/tmp/bevy-020-full-render-final-retry/` finds missing
+strands under a deferred camera and dark strands with normal-prepass/OIT modes,
+despite successful pipeline checks. The generic wrapper lets forward-only
+extensions inherit the deferred default, and strand fragments load normals
+from a prepass they do not participate in. Sheen also has only a forward
+fragment shader. New material-route assertions and two fixed interior-strand
+image regions cover these failures. This render gate is not accepted yet.
+
+An earlier render/deformation chain was deliberately stopped after its native
+edit capture because the queued camera path was incorrect; the corrected
+deformation camera is `/ReferenceCamera`. Retained partial evidence is in
+`/tmp/bevy-020-edit-render-final.log` and `/tmp/bevy-020-full-render-final/`.

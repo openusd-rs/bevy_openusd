@@ -409,4 +409,261 @@ mod tests {
         }
         assert_eq!(parallel.resource::<MeshPreparationTiming>().batches, 0);
     }
+
+    #[test]
+    fn deferred_hidden_meshes_are_not_decoded_by_preparation() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let stage = stage();
+        stage
+            .attribute("/Test/Face.visibility")
+            .unwrap()
+            .set(Value::Token("invisible".into()))
+            .unwrap();
+        let (mut world, prims) = world(true);
+        world.init_resource::<residency::DeferHiddenMeshes>();
+        world.init_resource::<super::super::MeshReadTiming>();
+        world.insert_resource(StageTime { current: 5.0 });
+        SchemaRegistry::builtin().patch_animation_with_pool(
+            &stage,
+            prims.clone(),
+            &mut world,
+            Some(&pool),
+        );
+        assert_eq!(world.resource::<super::super::MeshReadTiming>().decodes, 0);
+        assert_eq!(world.resource::<MeshPreparationTiming>().batches, 0);
+        for (_, entity) in prims {
+            assert!(world.get::<Mesh3d>(entity).is_none());
+            assert!(world.get::<residency::UsdDeferredMesh>(entity).is_some());
+        }
+    }
+
+    fn instance_source(orientation: &str) -> crate::UsdSource {
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/skel_morph_blended_animated.usda"
+        );
+        crate::UsdSource::new(
+            "parallel-instance.usda",
+            format!(
+                r#"#usda 1.0
+(subLayers = [@{file}@])
+over "Test" {{
+    over "Face" {{
+        uniform token orientation = "{orientation}"
+        def GeomSubset "Part" {{
+            uniform token familyName = "materialBind"
+            uniform token elementType = "face"
+            int[] indices = [0]
+        }}
+    }}
+}}
+def "Copy" (references = @{file}@</Test>) {{}}
+"#
+            )
+            .into_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn instance_app(parallel: bool, gpu: bool) -> (App, Handle<crate::UsdScene>, [Entity; 2]) {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<MeshPreparationTiming>();
+        app.insert_resource(crate::asset::UsdProjectionBudget(std::time::Duration::MAX));
+        if gpu {
+            app.add_plugins(gpu_skin::UsdGpuSkinningPlugin);
+        }
+        if !parallel {
+            app.insert_resource(ParallelMeshPreparation {
+                max_jobs: 0,
+                ..default()
+            });
+        }
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source: instance_source("rightHanded"),
+                textures: default(),
+            });
+        let roots = [0.0, 10.0].map(|current| {
+            app.world_mut()
+                .spawn((
+                    crate::UsdSceneRoot(handle.clone()),
+                    crate::instance::UsdInstanceTime { current },
+                ))
+                .id()
+        });
+        app.update();
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready)
+            );
+        }
+        (app, handle, roots)
+    }
+
+    fn check_instances(serial: &App, a: [Entity; 2], parallel: &App, b: [Entity; 2]) {
+        use super::super::subset::UsdSubset;
+        use crate::instance::UsdInstances;
+        for (ar, br) in a.into_iter().zip(b) {
+            for path in ["/Test/Face", "/Copy/Face"] {
+                let ae = serial
+                    .world()
+                    .non_send::<UsdInstances>()
+                    .entity(ar, path)
+                    .unwrap();
+                let be = parallel
+                    .world()
+                    .non_send::<UsdInstances>()
+                    .entity(br, path)
+                    .unwrap();
+                same_entities(serial.world(), ae, parallel.world(), be);
+                let subsets = |world: &World, entity| {
+                    let mut children: Vec<_> = world
+                        .get::<Children>(entity)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|child| {
+                            world
+                                .get::<UsdSubset>(*child)
+                                .map(|part| (part.0.clone(), *child))
+                        })
+                        .collect();
+                    children.sort_by(|a, b| a.0.cmp(&b.0));
+                    children
+                };
+                let ac = subsets(serial.world(), ae);
+                let bc = subsets(parallel.world(), be);
+                assert_eq!(ac.len(), bc.len());
+                if path == "/Test/Face" {
+                    assert_eq!(ac.len(), 1);
+                }
+                for ((an, ae), (bn, be)) in ac.into_iter().zip(bc) {
+                    assert_eq!(an, bn);
+                    same_entities(serial.world(), ae, parallel.world(), be);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn asset_plugin_preparation_preserves_root_clocks_reload_and_close() {
+        use crate::instance::{UsdInstanceTime, UsdInstances};
+        for gpu in [false, true] {
+            let (mut serial, ah, a) = instance_app(false, gpu);
+            let (mut parallel, bh, b) = instance_app(true, gpu);
+            let mut previous = None;
+            for clocks in [[2.0, 8.0], [8.0, 2.0], [5.0, 5.0], [0.0, 10.0]] {
+                for index in 0..2 {
+                    serial
+                        .world_mut()
+                        .get_mut::<UsdInstanceTime>(a[index])
+                        .unwrap()
+                        .current = clocks[index];
+                    parallel
+                        .world_mut()
+                        .get_mut::<UsdInstanceTime>(b[index])
+                        .unwrap()
+                        .current = clocks[index];
+                }
+                serial.update();
+                parallel.update();
+                check_instances(&serial, a, &parallel, b);
+                let meshes: Vec<_> = b
+                    .iter()
+                    .map(|root| {
+                        let entity = parallel
+                            .world()
+                            .non_send::<UsdInstances>()
+                            .entity(*root, "/Test/Face")
+                            .unwrap();
+                        let mesh = &parallel.world().get::<Mesh3d>(entity).unwrap().0;
+                        let skin = parallel
+                            .world()
+                            .get::<gpu_skin::UsdGpuSkin>(entity)
+                            .map(|skin| skin.matrices.clone());
+                        (mesh.clone(), skin)
+                    })
+                    .collect();
+                if let Some(previous) = previous {
+                    assert_ne!(meshes, previous);
+                }
+                previous = Some(meshes);
+            }
+            for (app, handle) in [(&mut serial, &ah), (&mut parallel, &bh)] {
+                app.world_mut()
+                    .resource_mut::<Assets<crate::UsdScene>>()
+                    .get_mut(handle)
+                    .unwrap()
+                    .source = instance_source("leftHanded");
+                app.update();
+                app.update();
+            }
+            check_instances(&serial, a, &parallel, b);
+            let face = parallel
+                .world()
+                .non_send::<UsdInstances>()
+                .entity(b[0], "/Test/Face")
+                .unwrap();
+            assert_eq!(
+                parallel
+                    .world()
+                    .non_send::<UsdInstances>()
+                    .stage(b[0])
+                    .unwrap()
+                    .attribute("/Test/Face.orientation")
+                    .unwrap()
+                    .get::<Value>()
+                    .unwrap(),
+                Some(Value::Token("leftHanded".into()))
+            );
+            if bevy::tasks::ComputeTaskPool::get().thread_num() > 1 {
+                assert!(parallel.world().resource::<MeshPreparationTiming>().jobs > 0);
+            }
+            assert_eq!(serial.world().resource::<MeshPreparationTiming>().jobs, 0);
+            parallel
+                .world_mut()
+                .entity_mut(b[0])
+                .remove::<crate::UsdSceneRoot>();
+            parallel.update();
+            assert!(parallel.world().get_entity(face).is_err());
+            assert_eq!(parallel.world().non_send::<UsdInstances>().len(), 1);
+            assert!(
+                parallel
+                    .world()
+                    .non_send::<UsdInstances>()
+                    .entity(b[1], "/Test/Face")
+                    .is_some()
+            );
+            parallel.world_mut().despawn(b[1]);
+            parallel.update();
+            assert!(parallel.world().non_send::<UsdInstances>().is_empty());
+            let jobs = parallel.world().resource::<MeshPreparationTiming>().jobs;
+            for _ in 0..3 {
+                parallel.update();
+            }
+            assert_eq!(
+                parallel.world().resource::<MeshPreparationTiming>().jobs,
+                jobs
+            );
+            assert_eq!(
+                parallel
+                    .world_mut()
+                    .query::<&gpu_skin::UsdGpuSkin>()
+                    .iter(parallel.world())
+                    .count(),
+                0
+            );
+        }
+    }
 }

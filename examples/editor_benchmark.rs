@@ -14,6 +14,7 @@ use usd_bevy::{
 enum SeekMode {
     Idle,
     Repeated,
+    Quick,
     Unique,
     Timeline,
 }
@@ -23,6 +24,7 @@ impl SeekMode {
         match self {
             Self::Idle => 0,
             Self::Repeated => 100,
+            Self::Quick => 8,
             Self::Unique | Self::Timeline => 1000,
         }
     }
@@ -531,7 +533,7 @@ fn measure(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if !(1..=4).contains(&args.len()) {
-        return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-unique|seek-timeline]".into());
+        return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-quick|seek-unique|seek-timeline]".into());
     }
     let path = std::fs::canonicalize(&args[0])?;
     let samples = args
@@ -545,9 +547,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seek = match args.get(3).map(String::as_str) {
         None => SeekMode::Idle,
         Some("seek") => SeekMode::Repeated,
+        Some("seek-quick") => SeekMode::Quick,
         Some("seek-unique") => SeekMode::Unique,
         Some("seek-timeline") => SeekMode::Timeline,
-        _ => return Err("fourth argument must be seek, seek-unique or seek-timeline".into()),
+        _ => {
+            return Err(
+                "fourth argument must be seek, seek-quick, seek-unique or seek-timeline".into(),
+            );
+        }
     };
     let gpu_prepared = match args.get(2).map(String::as_str) {
         None | Some("cpu") => false,
@@ -626,6 +633,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     Ok(())
+}
+
+#[test]
+fn quick_seek_uses_eight_samples_after_warmup() {
+    assert_eq!(SeekMode::Quick.samples(), 8);
+    for index in 0..12 {
+        assert_eq!(
+            SeekMode::Quick.clock(index),
+            SeekMode::Repeated.clock(index)
+        );
+    }
 }
 
 #[test]

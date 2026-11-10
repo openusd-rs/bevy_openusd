@@ -7,6 +7,10 @@ is not complete. These measurements establish CPU/update and retained-payload
 baselines, not displayed frame rate, GPU memory, browser performance or smooth
 interactive playback. The workstream checklist is in [`OPTIMIZATION.md`](../OPTIMIZATION.md).
 
+The subsequent [texture-finalization step](texture-finalization.md) reduces
+opening time and peak RSS; its paired measurements supersede these older loading
+figures when describing that newer checkpoint.
+
 All work remains local. The strict real-bird CPU/GPU image comparison is still
 failing as recorded in [the playback investigation](hummingbird-playback.md).
 

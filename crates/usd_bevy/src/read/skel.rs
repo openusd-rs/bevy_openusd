@@ -25,6 +25,7 @@ struct SkelSamples {
     skeletons: std::collections::HashMap<Path, Option<SkeletonQuery>>,
     animations: std::collections::HashMap<Path, Option<AnimQuery>>,
     poses: std::collections::HashMap<PoseKey, Option<Vec<gf::Mat4d>>>,
+    binding: Option<(Path, Option<std::rc::Rc<BoundSkin>>)>,
 }
 
 thread_local! {
@@ -42,6 +43,7 @@ impl SkelSampleScope {
                 skeletons: Default::default(),
                 animations: Default::default(),
                 poses: Default::default(),
+                binding: None,
             }))
         }))
     }
@@ -762,7 +764,25 @@ struct BoundSkin {
 
 /// Resolve the skinning query, skeleton and animation bound to `mesh_path`,
 /// over the influence properties the mesh authors itself.
-fn bound_skin(stage: &Stage, mesh_path: &Path) -> anyhow::Result<Option<BoundSkin>> {
+fn bound_skin(stage: &Stage, mesh_path: &Path) -> anyhow::Result<Option<std::rc::Rc<BoundSkin>>> {
+    if let Some(cached) = with_samples(stage, |cache| {
+        cache
+            .binding
+            .as_ref()
+            .and_then(|(path, binding)| (path == mesh_path).then(|| binding.clone()))
+    })
+    .flatten()
+    {
+        return Ok(cached);
+    }
+    let binding = resolve_bound_skin(stage, mesh_path)?.map(std::rc::Rc::new);
+    with_samples(stage, |cache| {
+        cache.binding = Some((mesh_path.clone(), binding.clone()));
+    });
+    Ok(binding)
+}
+
+fn resolve_bound_skin(stage: &Stage, mesh_path: &Path) -> anyhow::Result<Option<BoundSkin>> {
     let Some(binding) = binding_of(stage, mesh_path) else {
         return Ok(None);
     };
@@ -1163,6 +1183,71 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sample_scope_retains_only_the_last_binding_and_observes_later_edits() {
+        use std::rc::Rc;
+        let stage = fixture();
+        let other = fixture();
+        let path = openusd::sdf::path("/Test/Bar").unwrap();
+        let outside = bound_skin(&stage, &path).unwrap().unwrap();
+        assert!(!Rc::ptr_eq(
+            &outside,
+            &bound_skin(&stage, &path).unwrap().unwrap()
+        ));
+        let expired;
+        {
+            let _scope = SkelSampleScope::begin(&stage);
+            let first = bound_skin(&stage, &path).unwrap().unwrap();
+            assert!(Rc::ptr_eq(
+                &first,
+                &bound_skin(&stage, &path).unwrap().unwrap()
+            ));
+            {
+                let _nested = SkelSampleScope::begin(&other);
+                assert!(!Rc::ptr_eq(
+                    &first,
+                    &bound_skin(&other, &path).unwrap().unwrap()
+                ));
+            }
+            assert!(Rc::ptr_eq(
+                &first,
+                &bound_skin(&stage, &path).unwrap().unwrap()
+            ));
+            let missing = openusd::sdf::path("/Missing").unwrap();
+            assert!(bound_skin(&stage, &missing).unwrap().is_none());
+            let second = bound_skin(&stage, &path).unwrap().unwrap();
+            assert!(!Rc::ptr_eq(&first, &second));
+            expired = Rc::downgrade(&second);
+        }
+        assert!(expired.upgrade().is_none());
+        let stride = outside.skinning.influences_per_component();
+        for name in ["primvars:skel:jointIndices", "primvars:skel:jointWeights"] {
+            stage
+                .prim(path.clone())
+                .unwrap()
+                .attribute(name)
+                .set_metadata("elementSize", openusd::vt::Value::Int((stride + 1) as i32))
+                .unwrap();
+        }
+        let _scope = SkelSampleScope::begin(&stage);
+        assert_eq!(
+            bound_skin(&stage, &path)
+                .unwrap()
+                .unwrap()
+                .skinning
+                .influences_per_component(),
+            stride + 1
+        );
+        assert_eq!(
+            bound_skin(&other, &path)
+                .unwrap()
+                .unwrap()
+                .skinning
+                .influences_per_component(),
+            stride
+        );
+    }
+
     #[test]
     fn sample_scopes_share_queries_and_isolate_stages_times_and_edits() {
         let stage = fixture();

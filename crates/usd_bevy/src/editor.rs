@@ -513,7 +513,7 @@ fn process_commands(world: &mut World) {
                     let mut editor = EditorSession::try_new(stage.clone())?;
                     let live = crate::live::LiveStage::try_new(stage.clone())?;
                     profile("editor-created");
-                    let textures = match prepare_textures(&editor, &source) {
+                    let textures = match prepare_textures(&editor, &source, &disk_baselines) {
                         Ok(textures) => textures,
                         Err(error) => {
                             if session.is_none() {
@@ -598,7 +598,14 @@ fn process_commands(world: &mut World) {
                     .source
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("document has no source snapshot"))
-                    .and_then(|source| refresh_textures(world, editor.stage(), source))
+                    .and_then(|source| {
+                        refresh_textures(
+                            world,
+                            editor.stage(),
+                            source,
+                            editor.save_state.borrow().disk.as_ref(),
+                        )
+                    })
                     .map(|_| {
                         if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
                             live.enqueue_resync("/");
@@ -687,7 +694,12 @@ fn process_commands(world: &mut World) {
     if let Some(editor) = session.as_ref().filter(|_| texture_dirty)
         && let Some(source) = &editor.source
     {
-        match refresh_textures(world, editor.stage(), source) {
+        match refresh_textures(
+            world,
+            editor.stage(),
+            source,
+            editor.save_state.borrow().disk.as_ref(),
+        ) {
             Ok(()) => {
                 if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
                     live.enqueue_resync("/");
@@ -786,11 +798,22 @@ fn refresh_textures(
     world: &mut World,
     stage: &Stage,
     source: &crate::UsdSource,
+    disk: Option<&crate::source::DiskBaselines>,
 ) -> anyhow::Result<()> {
     let requests = crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?;
     set_texture_requests(world, texture_request_paths(stage, &requests));
-    let textures = decode_textures(source, requests.textures, &requests.environment_only)?;
-    install_textures(world, textures)
+    let mut baselines = disk.map(|disk| disk.lock().expect("disk baselines").clone());
+    let textures = decode_textures(
+        source,
+        requests.textures,
+        &requests.environment_only,
+        baselines.as_mut(),
+    )?;
+    install_textures(world, textures)?;
+    if let Some((disk, baselines)) = disk.zip(baselines) {
+        disk.record_reads(baselines);
+    }
+    Ok(())
 }
 
 fn texture_request_paths(
@@ -821,15 +844,25 @@ fn texture_request_paths(
 fn prepare_textures(
     editor: &EditorSession,
     source: &crate::UsdSource,
+    disk: &crate::source::DiskBaselines,
 ) -> anyhow::Result<PreparedTextures> {
     let requests = editor.texture_requests()?;
-    decode_textures(source, requests.textures, &requests.environment_only)
+    let mut baselines = disk.lock().expect("disk baselines").clone();
+    let textures = decode_textures(
+        source,
+        requests.textures,
+        &requests.environment_only,
+        Some(&mut baselines),
+    )?;
+    disk.record_reads(baselines);
+    Ok(textures)
 }
 
 fn decode_textures(
     source: &crate::UsdSource,
     requests: std::collections::BTreeSet<(String, bool)>,
     environment_only: &std::collections::BTreeSet<String>,
+    mut baselines: Option<&mut crate::source::DiskHashes>,
 ) -> anyhow::Result<PreparedTextures> {
     let mut images = Vec::new();
     for (path, srgb) in requests {
@@ -838,9 +871,11 @@ fn decode_textures(
         } else {
             bevy::asset::RenderAssetUsages::default()
         };
-        let bytes = source
-            .read_asset(&path)
-            .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
+        let bytes = match baselines.as_deref_mut() {
+            Some(baselines) => source.read_asset_tracked(&path, baselines),
+            None => source.read_asset(&path),
+        }
+        .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
         let inner = openusd::ar::split_package_relative_path_inner(&path)
             .map(|(_, inner)| inner)
             .unwrap_or_else(|| path.clone());
@@ -2803,7 +2838,7 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
         )
         .unwrap();
         let previous = world.resource::<crate::asset::SnapshotTextures>().0.clone();
-        let error = refresh_textures(&mut world, &stage, &source).unwrap_err();
+        let error = refresh_textures(&mut world, &stage, &source, None).unwrap_err();
         assert!(error.to_string().contains("missing.png"));
         assert_eq!(
             world.resource::<crate::asset::SnapshotTextures>().0,

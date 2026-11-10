@@ -118,7 +118,39 @@ correct readiness reporting.
   tests), as do strict Clippy, four native deformation checks, wasm compilation
   and pixel-exact synthetic CPU/GPU captures at 0, 5 and 10.
 - Next targets: intermediate mesh asset churn and skin/tangent preparation,
-  plus the reproducible roughly three-second first measured cow seek. GPU pass
+  plus the remaining source-verification cost. GPU pass
   samples are now recorded, but native animated frame pacing and full lifecycle
   acceptance remain open. Retain all workstreams above; this is not whole-pipeline
   completion.
+- Texture checkpoint: `d709b52` isolates finalization cost. `e573343` streams the
+  first mip's decode and reuses the exact sRGB code table, reducing paired release
+  bird opening from about 4.9 to 2.9 seconds and cow opening from about 2.5 to
+  1.5 seconds, with lower peak RSS and identical retained payload. Default tests
+  pass; before/after captures are pixel-exact, and hardening passes (787
+  no-default / 880 all-feature tests plus strict Clippy), as do nine native watcher
+  tests and wasm compilation. At this checkpoint, the cow's initial texture reload
+  remained a separate follow-up, with a roughly two-second worst seek. See
+  [texture finalization](benchmarks/texture-finalization.md).
+- Initial texture verification: `9ded82f` records the hashes of decoded source
+  bytes; `4eac681` preserves package-entry overrides; `1eff934` checks edited paths,
+  undo/redo and failed refresh publication. Unchanged external textures no longer
+  trigger image/material/mip regeneration after Open. Production watcher settings
+  and fidelity are unchanged. Default tests pass (878 / 20 ignored) after a
+  test-only projection-budget race repair (`bc95517`). Hardening at `1eff934`
+  passes (791 no-default / 884 all-feature tests, strict Clippy), as do nine native
+  watcher tests and wasm compilation. See [texture verification](benchmarks/texture-reload.md)
+  for measurements, evidence and remaining animation/native-rendering limits.
+- Skinning checkpoint: `e66e070` retains warmup timings, `dc89bfb` separates GPU
+  preparation phases, and `69708b6` reports exact CPU fallback reasons. `739deac`
+  reuses only the current mesh binding inside a read-only projection pass;
+  authored influences, deformation and eager residency are unchanged. Default
+  tests pass (881 / 20 ignored), hardening passes (793 no-default / 887 all-feature
+  tests and strict Clippy), as do four native deformation checks, nine watcher
+  checks, 15 native export checks and wasm compilation. All 16 alternating release
+  processes pass with matching final geometry/image payload and peak asset counts.
+  Bird tangent-deformation time falls, but host load prevents a reliable
+  whole-frame speedup claim. Five before/after renders are pixel-identical; the
+  cow's unavailable MDL diagnostic remains. See
+  [skinning preparation](benchmarks/skinning-preparation.md) for exact evidence,
+  memory/measurement limits and unresolved CPU/GPU fidelity checks. Larger tangent
+  assembly, CPU fallback, native cadence and the full workstreams remain open.

@@ -311,7 +311,8 @@ impl EditorSession {
                 accepted.insert(outer);
             }
         }
-        let prepared = decode_textures(&source, changed_requests, &requests.environment_only)?;
+        let prepared =
+            decode_textures(&source, changed_requests, &requests.environment_only, None)?;
         let mut publication = TexturePublication {
             requests: requests.textures,
             prepared,
@@ -508,6 +509,267 @@ impl TexturePublication {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_texture_verification_preserves_finalized_images() {
+        let directory = tempfile::tempdir().unwrap();
+        let texture = directory.path().canonicalize().unwrap().join("pixel.png");
+        let png = |pixel: [u8; 4]| {
+            let mut bytes = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, 4, 2);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder
+                    .write_header()
+                    .unwrap()
+                    .write_image_data(&pixel.repeat(8))
+                    .unwrap();
+            }
+            bytes
+        };
+        let bytes = png([255, 0, 0, 255]);
+        std::fs::write(&texture, &bytes).unwrap();
+        let root = directory.path().join("root.usda");
+        std::fs::write(
+            &root,
+            r#"#usda 1.0
+def Cube "A" { rel material:binding = </Mat> }
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Texture.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Texture" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @pixel.png@
+        float3 outputs:rgb
+    }
+}
+"#,
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::live::LiveStagePlugin,
+            EditorPlugin,
+        ));
+        app.init_asset::<Image>()
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<crate::route::TextureSamplingTiming>();
+        app.world_mut()
+            .resource_mut::<EditorReloadSettings>()
+            .enabled = false;
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge
+            .send(EditorCommand::Open(root.to_string_lossy().into_owned()))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        let key = (texture.to_string_lossy().into_owned(), true);
+        let before = app.world().resource::<crate::asset::SnapshotTextures>().0[&key].clone();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<Image>>()
+                .get(&before)
+                .unwrap()
+                .texture_descriptor
+                .mip_level_count,
+            3
+        );
+        let finalized = app
+            .world()
+            .resource::<crate::route::TextureSamplingTiming>()
+            .images;
+        bridge
+            .send(EditorCommand::ReloadSources(vec![texture.clone()]))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(
+            app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+            before
+        );
+        assert_eq!(
+            app.world()
+                .resource::<crate::route::TextureSamplingTiming>()
+                .images,
+            finalized
+        );
+        let editor = app.world().get_non_send::<EditorSession>().unwrap();
+        assert_eq!(
+            editor
+                .save_state
+                .borrow()
+                .disk
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .get(&texture),
+            Some(&blake3::hash(&bytes))
+        );
+        let disk = editor.save_state.borrow().disk.clone().unwrap();
+        assert!(!disk.snapshots.lock().unwrap().contains_key(&key.0));
+        std::fs::write(&texture, b"invalid image").unwrap();
+        bridge
+            .send(EditorCommand::ReloadSources(vec![texture.clone()]))
+            .unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed"));
+        assert_eq!(
+            app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+            before
+        );
+        assert_eq!(disk.lock().unwrap()[&texture], blake3::hash(&bytes));
+        let green = png([0, 255, 0, 255]);
+        assert_eq!(green.len(), bytes.len());
+        std::fs::write(&texture, &green).unwrap();
+        bridge
+            .send(EditorCommand::ReloadSources(vec![texture.clone()]))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        let after = app.world().resource::<crate::asset::SnapshotTextures>().0[&key].clone();
+        assert_ne!(after, before);
+        let image = app.world().resource::<Assets<Image>>().get(&after).unwrap();
+        assert_eq!(&image.data.as_ref().unwrap()[..4], &[0, 255, 0, 255]);
+        assert_eq!(image.texture_descriptor.mip_level_count, 3);
+        assert_eq!(disk.lock().unwrap()[&texture], blake3::hash(&green));
+        let finalized = app
+            .world()
+            .resource::<crate::route::TextureSamplingTiming>()
+            .images;
+        bridge
+            .send(EditorCommand::ReloadSources(vec![texture]))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(
+            app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+            after
+        );
+        assert_eq!(
+            app.world()
+                .resource::<crate::route::TextureSamplingTiming>()
+                .images,
+            finalized
+        );
+        let next = directory.path().canonicalize().unwrap().join("next.png");
+        let blue = png([0, 0, 255, 255]);
+        std::fs::write(&next, &blue).unwrap();
+        bridge
+            .send(EditorCommand::Edit(EditorEdit::Attribute {
+                prim: "/Mat/Texture".into(),
+                name: "inputs:file".into(),
+                type_name: "asset".into(),
+                value: Value::AssetPath(openusd::sdf::AssetPath::new("next.png")),
+            }))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(disk.lock().unwrap()[&next], blake3::hash(&blue));
+        for (command, path) in [
+            (EditorCommand::Undo, key.0.as_str()),
+            (EditorCommand::Redo, next.to_str().unwrap()),
+        ] {
+            bridge.send(command).unwrap();
+            app.update();
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            let key = (path.to_owned(), true);
+            let handle = app.world().resource::<crate::asset::SnapshotTextures>().0[&key].clone();
+            let tick = app
+                .world()
+                .get_resource_ref::<crate::asset::SnapshotTextures>()
+                .unwrap()
+                .last_changed();
+            let finalized = app
+                .world()
+                .resource::<crate::route::TextureSamplingTiming>()
+                .images;
+            bridge
+                .send(EditorCommand::ReloadSources(vec![path.into()]))
+                .unwrap();
+            app.update();
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            assert_eq!(
+                app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+                handle
+            );
+            assert_eq!(
+                app.world()
+                    .get_resource_ref::<crate::asset::SnapshotTextures>()
+                    .unwrap()
+                    .last_changed(),
+                tick
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<crate::route::TextureSamplingTiming>()
+                    .images,
+                finalized
+            );
+        }
+    }
+
+    #[test]
+    fn failed_texture_refresh_does_not_publish_new_baselines() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
+        let source = crate::UsdSource::new(
+            &root,
+            br#"#usda 1.0
+def DomeLight "A" { asset inputs:texture:file = @a.png@ }
+def DomeLight "B" { asset inputs:texture:file = @b.png@ }
+"#
+            .as_slice(),
+        )
+        .unwrap();
+        let (stage, disk) = source.open_stage_for_editor().unwrap();
+        let original = disk.lock().unwrap().clone();
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255, 0, 0, 255])
+                .unwrap();
+        }
+        let first = directory.path().join("a.png");
+        let second = directory.path().join("b.png");
+        std::fs::write(&first, &bytes).unwrap();
+        std::fs::write(&second, b"broken image").unwrap();
+        let mut world = World::new();
+        world.insert_resource(Assets::<Image>::default());
+        assert!(refresh_textures(&mut world, &stage, &source, Some(&disk)).is_err());
+        assert_eq!(*disk.lock().unwrap(), original);
+        std::fs::write(&second, &bytes).unwrap();
+        world.remove_resource::<Assets<Image>>();
+        assert!(refresh_textures(&mut world, &stage, &source, Some(&disk)).is_err());
+        assert_eq!(*disk.lock().unwrap(), original);
+        world.insert_resource(Assets::<Image>::default());
+        refresh_textures(&mut world, &stage, &source, Some(&disk)).unwrap();
+        let hashes = disk.lock().unwrap();
+        for path in [first, second] {
+            assert_eq!(hashes[&path], blake3::hash(&bytes));
+            assert!(
+                !disk
+                    .snapshots
+                    .lock()
+                    .unwrap()
+                    .contains_key(path.to_str().unwrap())
+            );
+        }
+    }
 
     #[test]
     fn unchanged_texture_publication_preserves_resource_tick() {

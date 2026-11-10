@@ -237,6 +237,18 @@ fn report_routes(world: &World, phase: &str, samples: usize) {
             timing.elapsed.as_secs_f64() * 1000.0
         );
     }
+    if let Some(timing) =
+        world.get_resource::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>()
+    {
+        for (step, elapsed) in &timing.phases {
+            eprintln!(
+                "gpu_skin_preparation_profile phase={phase} attempts={} failures={} step={step} elapsed_ms={:.3}",
+                timing.attempts,
+                timing.failures,
+                elapsed.as_secs_f64() * 1000.0
+            );
+        }
+    }
     if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionVisibilityTimings>() {
         for ((route, hidden), row) in &timings.0 {
             let visibility = match hidden {
@@ -342,6 +354,7 @@ fn measure(
         app.init_resource::<usd_bevy::route::TextureSamplingTiming>();
         app.init_resource::<usd_bevy::route::material::MaterialResolveTimings>();
         app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
+        app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>();
         app.init_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>();
         app.init_resource::<usd_bevy::route::ProjectionTimings>();
         if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
@@ -405,6 +418,12 @@ fn measure(
                     warmup.iter().max().unwrap().as_nanos()
                 );
                 report_routes(app.world(), "after-seek-warmup", SEEK_WARMUP);
+                if let Some(mut timing) =
+                    app.world_mut()
+                        .get_resource_mut::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>()
+                {
+                    *timing = default();
+                }
                 if let Some(mut timing) = app
                     .world_mut()
                     .get_resource_mut::<usd_bevy::route::TextureSamplingTiming>()

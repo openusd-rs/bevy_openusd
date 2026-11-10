@@ -20,6 +20,27 @@ pub struct GpuSkinUpdateTiming {
     pub elapsed: std::time::Duration,
 }
 
+/// Opt-in CPU preparation counts and non-overlapping phase durations.
+#[derive(Resource, Default)]
+pub struct GpuSkinPreparationTiming {
+    pub attempts: usize,
+    pub failures: usize,
+    pub phases: std::collections::BTreeMap<&'static str, std::time::Duration>,
+}
+
+struct PreparationSample {
+    since: bevy::platform::time::Instant,
+    phases: std::collections::BTreeMap<&'static str, std::time::Duration>,
+}
+
+fn preparation_lap(sample: &mut Option<PreparationSample>, phase: &'static str) {
+    if let Some(sample) = sample {
+        let now = bevy::platform::time::Instant::now();
+        *sample.phases.entry(phase).or_default() += now.duration_since(sample.since);
+        sample.since = now;
+    }
+}
+
 #[derive(Component, Debug)]
 pub struct UsdCpuSkinFallback(pub String);
 
@@ -108,11 +129,46 @@ pub(crate) fn attach(
     entity: Entity,
     has_morphs: bool,
 ) -> anyhow::Result<()> {
+    let mut sample = world
+        .contains_resource::<GpuSkinPreparationTiming>()
+        .then(|| PreparationSample {
+            since: bevy::platform::time::Instant::now(),
+            phases: Default::default(),
+        });
+    let result = attach_prepared(ctx, world, entity, has_morphs, &mut sample);
+    preparation_lap(
+        &mut sample,
+        if result.is_ok() {
+            "publication"
+        } else {
+            "failed-phase"
+        },
+    );
+    if let Some(sample) = sample {
+        let mut timing = world.resource_mut::<GpuSkinPreparationTiming>();
+        timing.attempts += 1;
+        timing.failures += usize::from(result.is_err());
+        for (phase, elapsed) in sample.phases {
+            *timing.phases.entry(phase).or_default() += elapsed;
+        }
+    }
+    result
+}
+
+fn attach_prepared(
+    ctx: &RouteCtx,
+    world: &mut World,
+    entity: Entity,
+    has_morphs: bool,
+    profile: &mut Option<PreparationSample>,
+) -> anyhow::Result<()> {
     let read = ctx
         .read_mesh()?
         .ok_or_else(|| anyhow::anyhow!("missing mesh"))?;
     anyhow::ensure!(!read.points.is_empty(), "cannot skin an empty point array");
+    preparation_lap(profile, "mesh-read");
     let sample = crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
+    preparation_lap(profile, "skin-sample");
     let skinned_tangents = read.uvs.is_some()
         && sample
             .normal_corrections
@@ -124,6 +180,7 @@ pub(crate) fn attach(
         super::cache::Assembly::Standard
     };
     let mut mesh = super::cache::assemble_cached_mesh(world, read, assembly);
+    preparation_lap(profile, "rest-mesh");
     let morph_weights = if has_morphs {
         Some(super::gpu_morph::prepare(
             ctx,
@@ -134,19 +191,22 @@ pub(crate) fn attach(
     } else {
         None
     };
+    preparation_lap(profile, "morphs");
     let source_points = crate::mesh::vertex_point_indices(read);
     anyhow::ensure!(
         source_points.len() == mesh.count_vertices(),
         "skin vertex map does not match render mesh"
     );
+    preparation_lap(profile, "vertex-map");
     correct_normals(
         &mut mesh,
         &source_points,
         &sample.normal_corrections,
         morph_weights.as_deref().unwrap_or(&[]),
     )?;
+    preparation_lap(profile, "normal-correction");
     if skinned_tangents {
-        correct_tangents(ctx, &mut mesh, &source_points, &sample)?;
+        correct_tangents(ctx, &mut mesh, &source_points, &sample, profile)?;
     }
     let indices: Vec<_> = source_points
         .iter()
@@ -161,7 +221,9 @@ pub(crate) fn attach(
         bevy::mesh::VertexAttributeValues::Uint16x4(indices),
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, weights);
+    preparation_lap(profile, "influences");
     let handle = super::cache::intern_mesh(world, mesh);
+    preparation_lap(profile, "intern");
     let reusable = world.get::<UsdGpuSkin>(entity).is_some_and(|skin| {
         skin.joints.len() == sample.matrices.len()
             && skin
@@ -268,10 +330,13 @@ fn correct_tangents(
     mesh: &mut Mesh,
     mapping: &[usize],
     skin: &crate::read::skel::GpuSkinSample,
+    profile: &mut Option<PreparationSample>,
 ) -> anyhow::Result<()> {
     let read = super::skel::deformed_mesh(ctx)?
         .ok_or_else(|| anyhow::anyhow!("missing tangent deformation"))?;
+    preparation_lap(profile, "tangent-deform");
     let deformed = crate::mesh::mesh_from_usd(&read);
+    preparation_lap(profile, "tangent-mesh");
     anyhow::ensure!(
         deformed.count_vertices() == mesh.count_vertices(),
         "skinned tangent mapping changed"
@@ -295,12 +360,49 @@ fn correct_tangents(
         corrected.push([value.x, value.y, value.z, tangent[3]]);
     }
     mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, corrected);
+    preparation_lap(profile, "tangent-correction");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_timing_is_optional_and_accounts_for_failed_attempts() {
+        let stage = stage();
+        let path = openusd::sdf::path("/Test/Bar").unwrap();
+        let ctx = RouteCtx::at(&stage, &path, Some(0.0));
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<SkinnedMeshInverseBindposes>>();
+        world.init_resource::<super::super::cache::ProjectionCache>();
+        let entity = world.spawn_empty().id();
+        attach(&ctx, &mut world, entity, false).unwrap();
+        let original = world.get::<Mesh3d>(entity).unwrap().0.clone();
+        assert!(!world.contains_resource::<GpuSkinPreparationTiming>());
+        world.init_resource::<GpuSkinPreparationTiming>();
+        attach(&ctx, &mut world, entity, false).unwrap();
+        assert_eq!(world.get::<Mesh3d>(entity).unwrap().0, original);
+        let timing = world.resource::<GpuSkinPreparationTiming>();
+        assert_eq!((timing.attempts, timing.failures), (1, 0));
+        assert!(timing.phases.contains_key("skin-sample"));
+        assert!(timing.phases.contains_key("intern"));
+        assert!(timing.phases.contains_key("publication"));
+        let missing = openusd::sdf::path("/Missing").unwrap();
+        assert!(
+            attach(
+                &RouteCtx::at(&stage, &missing, None),
+                &mut world,
+                entity,
+                false
+            )
+            .is_err()
+        );
+        let timing = world.resource::<GpuSkinPreparationTiming>();
+        assert_eq!((timing.attempts, timing.failures), (2, 1));
+        assert!(timing.phases.contains_key("failed-phase"));
+    }
 
     #[test]
     fn joint_globals_only_resample_changed_placement_or_pose() {
@@ -421,7 +523,7 @@ mod tests {
             assert!(gpu.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
             let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu, false).unwrap();
             correct_normals(&mut gpu, &mapping, &skin.normal_corrections, &weights).unwrap();
-            correct_tangents(&ctx, &mut gpu, &mapping, &skin).unwrap();
+            correct_tangents(&ctx, &mut gpu, &mapping, &skin, &mut None).unwrap();
             let morph = crate::read::skel::morph_sample(&stage, &path, Some(time)).unwrap();
             let (mut normals, points) = crate::read::skel::morph_normals(&read, &morph).unwrap();
             crate::read::skel::skin_normals(

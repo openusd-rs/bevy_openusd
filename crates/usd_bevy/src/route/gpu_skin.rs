@@ -118,11 +118,12 @@ pub(crate) fn attach(
             .normal_corrections
             .iter()
             .any(|matrix| *matrix != Mat3::IDENTITY);
-    let mut mesh = if !skinned_tangents && !has_morphs {
-        super::cache::assemble_cached_mesh(world, read)
+    let assembly = if !skinned_tangents && !has_morphs {
+        super::cache::Assembly::StandardTangents
     } else {
-        crate::mesh::assemble_mesh(read, None, false)
+        super::cache::Assembly::Standard
     };
+    let mut mesh = super::cache::assemble_cached_mesh(world, read, assembly);
     let morph_weights = if has_morphs {
         Some(super::gpu_morph::prepare(
             ctx,

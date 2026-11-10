@@ -38,9 +38,13 @@ impl SeekMode {
 }
 
 fn parse_rss(status: &str) -> Option<usize> {
+    parse_status_bytes(status, "VmRSS:")
+}
+
+fn parse_status_bytes(status: &str, field: &str) -> Option<usize> {
     let mut value = status
         .lines()
-        .find(|line| line.starts_with("VmRSS:"))?
+        .find(|line| line.split_whitespace().next() == Some(field))?
         .split_whitespace();
     value.next()?;
     let kib = value.next()?.parse::<usize>().ok()?;
@@ -52,6 +56,13 @@ fn parse_rss(status: &str) -> Option<usize> {
 
 fn resident_bytes() -> Option<usize> {
     parse_rss(&std::fs::read_to_string("/proc/self/status").ok()?)
+}
+
+fn peak_resident_bytes() -> Option<usize> {
+    parse_status_bytes(
+        &std::fs::read_to_string("/proc/self/status").ok()?,
+        "VmHWM:",
+    )
 }
 
 fn asset_counts(world: &World) -> [usize; 3] {
@@ -184,6 +195,16 @@ fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(timing) = world.get_resource::<usd_bevy::route::TextureSamplingTiming>() {
+        eprintln!(
+            "texture_sampling_profile phase={phase} images={} input_bytes={} appended_bytes={} elapsed_ms={:.3} slowest_ms={:.3}",
+            timing.images,
+            timing.input_bytes,
+            timing.appended_bytes,
+            timing.elapsed.as_secs_f64() * 1000.0,
+            timing.slowest.as_secs_f64() * 1000.0
+        );
+    }
     if let Some(timing) =
         world.get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>()
     {
@@ -273,6 +294,7 @@ struct Measurement {
     peak_asset_counts: [usize; 3],
     rss_before_seeks: Option<usize>,
     rss_after_seeks: Option<usize>,
+    rss_process_peak: Option<usize>,
     cached_meshes: usize,
     cached_mesh_payload_bytes: usize,
     cached_tangent_payload_bytes: usize,
@@ -307,6 +329,7 @@ fn measure(
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::route::TextureSamplingTiming>();
         app.init_resource::<usd_bevy::route::material::MaterialResolveTimings>();
         app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
         app.init_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>();
@@ -347,6 +370,7 @@ fn measure(
         ..default()
     };
     if seek != SeekMode::Idle {
+        let raw_samples = std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some();
         if seek == SeekMode::Timeline {
             if !view.timeline.start.is_finite()
                 || !view.timeline.end.is_finite()
@@ -363,6 +387,12 @@ fn measure(
         let mut timings = Vec::with_capacity(seek.samples());
         for iteration in 0..seek.samples() + 4 {
             if iteration == 4 {
+                if let Some(mut timing) = app
+                    .world_mut()
+                    .get_resource_mut::<usd_bevy::route::TextureSamplingTiming>()
+                {
+                    *timing = default();
+                }
                 if let Some(mut timings) = app
                     .world_mut()
                     .get_resource_mut::<usd_bevy::route::ProjectionTimings>()
@@ -396,6 +426,10 @@ fn measure(
                 normalized
             };
             bridge.send(EditorCommand::Seek(time))?;
+            let texture_before = app
+                .world()
+                .get_resource::<usd_bevy::route::TextureSamplingTiming>()
+                .map(|timing| (timing.elapsed, timing.images, timing.appended_bytes));
             let start = Instant::now();
             app.update();
             let elapsed = start.elapsed();
@@ -410,6 +444,25 @@ fn measure(
             }
             if iteration >= 4 {
                 timings.push(elapsed);
+                if raw_samples {
+                    println!(
+                        "seek_sample index={} clock={time:.17} update_ns={}",
+                        iteration - 4,
+                        elapsed.as_nanos()
+                    );
+                    if let Some((elapsed, images, appended)) = texture_before {
+                        let timing = app
+                            .world()
+                            .resource::<usd_bevy::route::TextureSamplingTiming>();
+                        println!(
+                            "seek_texture_sample index={} finalize_ns={} images={} appended_bytes={}",
+                            iteration - 4,
+                            (timing.elapsed - elapsed).as_nanos(),
+                            timing.images - images,
+                            timing.appended_bytes - appended
+                        );
+                    }
+                }
             }
             for (peak, current) in result
                 .peak_asset_counts
@@ -426,6 +479,7 @@ fn measure(
         report_routes(app.world(), "measured-seeks", seek.samples());
     }
     result.rss_after_seeks = resident_bytes();
+    result.rss_process_peak = peak_resident_bytes();
     if let Some(cache) = app
         .world()
         .get_resource::<usd_bevy::route::cache::ProjectionCache>()
@@ -597,15 +651,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     println!(
-        "rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks peak_assets=sampled-after-updates-not-allocation-counts"
+        "rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks rss_peak=VmHWM-process-lifetime-including-prior-samples-or-NA peak_assets=sampled-after-updates-not-allocation-counts"
     );
     println!(
-        "sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes,cached_assembly_payload_bytes"
+        "sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes,cached_assembly_payload_bytes,rss_process_peak"
     );
     for sample in 0..samples {
+        if std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some() {
+            println!("sample_begin={sample}");
+        }
         let m = measure(&path, gpu_prepared, seek)?;
         println!(
-            "{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{}",
+            "{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
             m.open.as_secs_f64() * 1000.0,
             m.idle.as_secs_f64() * 1_000_000.0,
             m.mesh_entities,
@@ -629,7 +686,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             m.cached_meshes,
             m.cached_mesh_payload_bytes,
             m.cached_tangent_payload_bytes,
-            m.cached_assembly_payload_bytes
+            m.cached_assembly_payload_bytes,
+            m.rss_process_peak.map_or("NA".into(), |v| v.to_string())
         );
     }
     Ok(())
@@ -680,6 +738,12 @@ fn unique_seek_schedule_and_resident_measurement_are_explicit() {
     assert_eq!(parse_rss("VmRSS: missing kB"), None);
     assert_eq!(parse_rss("Name: probe"), None);
     assert_eq!(parse_rss(&format!("VmRSS: {} kB", usize::MAX)), None);
+    assert_eq!(parse_rss("VmRSS:extra 123 kB"), None);
+    assert_eq!(
+        parse_status_bytes("VmRSS: 123 kB\nVmHWM: 456 kB", "VmHWM:"),
+        Some(456 * 1024)
+    );
+    assert_eq!(parse_status_bytes("VmHWM: 123 MB", "VmHWM:"), None);
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/morph_tangent_normals.usda");
     for gpu_prepared in [false, true] {
         let result = measure(&path, gpu_prepared, SeekMode::Unique).unwrap();

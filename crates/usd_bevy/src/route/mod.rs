@@ -43,6 +43,7 @@ pub(crate) mod profiling;
 pub(crate) mod ptex;
 pub mod ptex_atlas;
 pub(crate) mod sampling;
+pub use sampling::TextureSamplingTiming;
 mod texture_pack;
 
 pub(crate) fn configure_texture_caches(app: &mut bevy::prelude::App) {

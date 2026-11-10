@@ -78,10 +78,47 @@ correct readiness reporting.
 
 - Local performance repairs and material/image invalidation regressions are
   committed through `d5b87b6`.
-- Final preceding-work hardening/profile and native/web checks are still running;
-  resume their existing handles instead of launching duplicates.
-- No release artifacts currently exist in this checkout's `target/release`.
-  The example runner only supports debug; add profile selection before collecting
-  comparable release baselines through the native workflow.
-- Next: finish recording the preceding checkpoint, establish the release matrix,
-  then optimize the largest measured CPU/retention costs with before/after evidence.
+- Preceding-work hardening passed: 781 no-default tests, 874 all-feature tests,
+  strict Clippy, native deformation and watcher checks, and wasm compilation.
+  The additional hummingbird CPU/GPU image comparison remains failing as recorded.
+- `c804fe1` adds debug/release profile selection to the example build/run recipes.
+  Invalid-profile rejection and both profiles were exercised. The clean release
+  build completed in 17m27s rather than reusing an old Bevy artifact.
+- `5d5d4b6` adds optional raw seek samples (`USD_BENCH_RAW_SAMPLES=1`) and process
+  high-water RSS to `editor_benchmark`. The latter includes prior fresh-App samples
+  in the same process; it is not per-document peak allocation or VRAM. Default
+  workspace/all-target tests pass: 868 passed, 20 ignored. A debug probe emitted
+  eight measured records with clocks, nanoseconds and a separate CSV summary.
+  Logs: `/tmp/bevy-optimization-benchmark-tests.log` and
+  `/tmp/bevy-optimization-raw-probe.log`.
+- Release CPU characterization completed under
+  `/tmp/bevy-optimization-baseline.KRJgwm/`, with revision/toolchain/host metadata,
+  entry-file hashes, per-workload logs, raw seeks and status records. Eight
+  workloads cover bird, cow, arm, showcase, morphs, subsets, kitchen and city.
+  Referenced dependency closures are not yet hashed. This run shares host load.
+  The initial bird case overlapped a one-off probe and was repeated serially;
+  the latter records 56.814–67.931 ms median updates. Cow medians are
+  82.124–106.466 ms with an unexplained 2.915-second outlier. Saved baseline
+  executables and `run-headless-benchmark` (`1ed2f92`) support alternating
+  comparisons without rebuilding. See [the baseline report](benchmarks/whole-pipeline.md).
+  GPU, native cadence and complete lifecycle baselines remain outstanding.
+- Final debug bird profiling through `d5b87b6` records 52.642 ms median and 61.210
+  ms max headless updates. Across eight seeks, skin routes take 278.657 ms, mesh
+  routes 78.715 ms and materials 39.203 ms. Mesh reads take 50.650 ms inside route
+  time, not in addition to it. There are 944 mesh interning misses for 328 mesh
+  projections, inserting 15,448,960 bytes: investigate intermediate/rest geometry
+  construction and upload churn before adding more cross-frame caches.
+- `d2256aa` reuses immutable rest geometry through the existing bounded assembly
+  cache before color/skin/morph mutation. Default tests pass (869 / 20 ignored);
+  all 32 alternating release matrix processes succeed with identical retained
+  asset counts/payloads. Before/after captures are pixel-exact in five cases;
+  cow still warns about its unavailable MDL dependency. Additional cache payload
+  is about 1 MiB for bird and 3.3 MiB for cow. See the baseline report for exact
+  measurements and limits. Hardening passes (782 no-default / 875 all-feature
+  tests), as do strict Clippy, four native deformation checks, wasm compilation
+  and pixel-exact synthetic CPU/GPU captures at 0, 5 and 10.
+- Next targets: intermediate mesh asset churn and skin/tangent preparation,
+  plus the reproducible roughly three-second first measured cow seek. GPU pass
+  samples are now recorded, but native animated frame pacing and full lifecycle
+  acceptance remain open. Retain all workstreams above; this is not whole-pipeline
+  completion.

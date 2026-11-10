@@ -172,7 +172,7 @@ impl MeshRoute {
         let mesh_handle = match (atlas_mesh, color) {
             (Some(mesh), _) => super::cache::intern_mesh(world, mesh),
             (None, Some(color)) => {
-                let mut mesh = assembly.build(world, read);
+                let mut mesh = super::cache::assemble_cached_mesh(world, read, assembly);
                 color.apply(world, &mut mesh, read);
                 super::cache::intern_mesh(world, mesh)
             }

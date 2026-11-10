@@ -335,8 +335,12 @@ fn correct_tangents(
     let read = super::skel::deformed_mesh(ctx)?
         .ok_or_else(|| anyhow::anyhow!("missing tangent deformation"))?;
     preparation_lap(profile, "tangent-deform");
-    let deformed = crate::mesh::mesh_from_usd(&read);
-    preparation_lap(profile, "tangent-mesh");
+    let mut deformed = crate::mesh::assemble_mesh(&read, None, false);
+    preparation_lap(profile, "tangent-assembly");
+    if read.uvs.is_some() {
+        crate::mesh::generate_tangents(&mut deformed);
+    }
+    preparation_lap(profile, "tangent-generation");
     anyhow::ensure!(
         deformed.count_vertices() == mesh.count_vertices(),
         "skinned tangent mapping changed"
@@ -524,6 +528,19 @@ mod tests {
             let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu, false).unwrap();
             correct_normals(&mut gpu, &mapping, &skin.normal_corrections, &weights).unwrap();
             correct_tangents(&ctx, &mut gpu, &mapping, &skin, &mut None).unwrap();
+            let mut profiled = gpu.clone();
+            let mut profile = Some(PreparationSample {
+                since: bevy::platform::time::Instant::now(),
+                phases: Default::default(),
+            });
+            correct_tangents(&ctx, &mut profiled, &mapping, &skin, &mut profile).unwrap();
+            assert_eq!(
+                profiled.attribute(Mesh::ATTRIBUTE_TANGENT),
+                gpu.attribute(Mesh::ATTRIBUTE_TANGENT)
+            );
+            let phases = &profile.unwrap().phases;
+            assert!(phases.contains_key("tangent-assembly"));
+            assert!(phases.contains_key("tangent-generation"));
             let morph = crate::read::skel::morph_sample(&stage, &path, Some(time)).unwrap();
             let (mut normals, points) = crate::read::skel::morph_normals(&read, &morph).unwrap();
             crate::read::skel::skin_normals(

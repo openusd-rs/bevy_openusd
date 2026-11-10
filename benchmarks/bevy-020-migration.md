@@ -392,3 +392,56 @@ check, 661 no-default tests, 669 all-feature tests and doctests pass in
 dereference in the packed-pixel equality check; compilation caught that detail
 before this verification rerun. The strict lint gate still needs another run
 and further cleanup. No lint rules have been suppressed.
+
+### Library and viewer lint cleanup
+
+The strict gate now checks every target with `--keep-going`, so an example
+failure no longer hides diagnostics from the other examples. The library and
+viewer (including their test targets) have no remaining diagnostics in
+`/tmp/bevy-020-lint-viewer.jsonl`. The workspace gate still exits nonzero: fifteen
+diagnostics remain across `viewer_capture`, `gif_frames`, `compact_instancing`
+and `editor_assembly`. These are not a passing workspace lint result.
+
+Focused commits remove redundant references, flatten guarded branches, name
+query/cache types and group Bevy system parameters without changing their
+resource access. The outliner shares one traversal context and no longer needs
+its previous argument-count allowance. No new lint allowances were added.
+The texture conversion table is indexed by byte then channel; its existing
+exhaustive linear/sRGB regression checks all byte values, transforms and edits.
+The sun threshold retains rejection of unordered floating-point comparisons.
+The material hash uses the `BuildHasher` trait's single-value operation.
+
+The post-cleanup library rerun passes 661 no-default and 669 all-feature tests,
+with 20 and 29 explicit skips respectively, and passes doctests:
+`/tmp/bevy-020-lint-library-tests.log`. The viewer refactors still require the
+full workspace tests and fresh native interaction/render checks. Native ignored
+tests, wasm/browser runtime and rendering acceptance remain separate gates.
+
+The compact edge image from the earlier retry was inspected and contains the
+expected visible blue boxes: `/tmp/bevy-020-openusd-compact-retry/edge-compact.png`.
+This does not replace the missing expanded-edge comparison or resolve its
+startup shader-warning failure. Nothing has been pushed.
+
+### Strict lint and pipeline-readiness checkpoint
+
+Strict workspace/all-target/all-feature Clippy now passes, first in
+`/tmp/bevy-020-lint-examples.log`, then again with the new capture probe in
+`/tmp/bevy-020-pipeline-probe-checks.log`. No rules were suppressed. Upstream
+OpenUSD `main` was rechecked with `git ls-remote` on 2026-11-10 and still resolves
+to the pinned `900ea31591348e3fbf416d4661d703aa8700771b`.
+
+Both capture examples now collect pipeline state in the render world after
+rendering, require a nonempty fully compiled cache, and recheck it when the
+screenshot readback arrives. Queued pipelines and retryable missing imports
+prevent readiness, as do permanent shader errors. Compact capture waits for
+three ready updates after the culling cycle and has a 60-second bound; the
+viewer retains its existing 60-ready-update and timeout requirements.
+
+The log checker distinguishes recovered import warnings from permanent errors.
+A warning requires a later positive compiled-pipeline count followed by a
+successful capture. Missing, malformed, zero-count, stale or out-of-order proof
+fails, and a later warning invalidates earlier proof. Permanent failures still
+fail even with subsequent proof markers. Capture unit tests, probe state tests,
+preflight, process cleanup and log-checker regressions pass in
+`/tmp/bevy-020-pipeline-probe-checks.jsonl`. GPU integration is the next gate;
+these checks alone do not establish rendering acceptance.

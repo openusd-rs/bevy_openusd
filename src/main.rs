@@ -575,14 +575,16 @@ fn outliner_pane(
                 .with_tree(7, move |tree| {
                     usd_tree(
                         tree,
-                        tree_root,
-                        accent,
-                        &filter,
-                        &nodes,
                         &roots,
-                        &tree_selected,
-                        &editor,
-                        &visibility,
+                        UsdTreeView {
+                            root_id: tree_root,
+                            accent,
+                            filter: &filter,
+                            nodes: &nodes,
+                            selected: &tree_selected,
+                            editor: &editor,
+                            visibility: &visibility,
+                        },
                     )
                 }),
             Pod::new(MaraId::new(("usd.outliner", "scene", 2usize))).with_readout(
@@ -597,52 +599,43 @@ fn outliner_pane(
     );
 }
 
-fn usd_tree(
-    tree: &mut TreeBody,
+#[derive(Clone, Copy)]
+struct UsdTreeView<'a> {
     root_id: MaraId,
     accent: MaraColor32,
-    filter: &str,
-    nodes: &[UsdNode],
-    roots: &[usize],
-    selected: &str,
-    editor: &EditorBridge,
-    visibility: &std::collections::HashMap<String, bool>,
-) {
+    filter: &'a str,
+    nodes: &'a [UsdNode],
+    selected: &'a str,
+    editor: &'a EditorBridge,
+    visibility: &'a std::collections::HashMap<String, bool>,
+}
+
+fn usd_tree(tree: &mut TreeBody, roots: &[usize], view: UsdTreeView) {
     let mut clicked: Option<String> = None;
     for &r in roots {
-        walk_usd_tree(
-            tree,
-            root_id,
-            nodes,
-            r,
-            0,
-            selected,
-            accent,
-            filter,
-            &mut clicked,
-            editor,
-            visibility,
-        );
+        walk_usd_tree(tree, view, r, 0, &mut clicked);
     }
     if let Some(p) = clicked {
-        send(editor, EditorCommand::Select(Some(p)));
+        send(view.editor, EditorCommand::Select(Some(p)));
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk_usd_tree(
     tree: &mut TreeBody,
-    root_id: MaraId,
-    nodes: &[UsdNode],
+    view: UsdTreeView,
     i: usize,
     depth: u32,
-    selected: &str,
-    accent: MaraColor32,
-    filter: &str,
     clicked: &mut Option<String>,
-    editor: &EditorBridge,
-    visibility: &std::collections::HashMap<String, bool>,
 ) {
+    let UsdTreeView {
+        root_id,
+        accent,
+        filter,
+        nodes,
+        selected,
+        editor,
+        visibility,
+    } = view;
     if !usd_tree_passes(nodes, i, filter) {
         return;
     }
@@ -679,19 +672,7 @@ fn walk_usd_tree(
     }
     if is_branch && expanded {
         for &c in &node.children {
-            walk_usd_tree(
-                tree,
-                root_id,
-                nodes,
-                c,
-                depth + 1,
-                selected,
-                accent,
-                filter,
-                clicked,
-                editor,
-                visibility,
-            );
+            walk_usd_tree(tree, view, c, depth + 1, clicked);
         }
     }
 }

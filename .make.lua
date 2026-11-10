@@ -203,8 +203,9 @@ make.recipe{
 
 make.recipe{
   name = "test-capture-tools",
-  desc = "test capture preflight, process cleanup and log failure detection",
+  desc = "test capture configuration, pipeline probes, process cleanup and log failures",
   run = function()
+    sh.cargo("test", "--example", "viewer_capture", "--example", "compact_instancing")
     sh.bash("scripts/check_capture_preflight_tests.sh")
     sh.bash("scripts/check_capture_session.sh")
     sh.bash("scripts/check_viewer_log_tests.sh")

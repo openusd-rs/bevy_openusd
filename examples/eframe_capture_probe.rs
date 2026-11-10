@@ -176,12 +176,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let present_mode = present_mode(mode.ok().as_deref())?;
     let output = std::env::var_os("USD_HOST_PROBE_SCREENSHOT").map(PathBuf::from);
-    if let Some(path) = &output {
-        if path.extension().is_none_or(|extension| extension != "png")
-            || std::fs::symlink_metadata(path).is_ok()
-        {
-            return Err("USD_HOST_PROBE_SCREENSHOT must be a new .png path".into());
-        }
+    if let Some(path) = &output
+        && (path.extension().is_none_or(|extension| extension != "png")
+            || std::fs::symlink_metadata(path).is_ok())
+    {
+        return Err("USD_HOST_PROBE_SCREENSHOT must be a new .png path".into());
     }
     match std::env::var("USD_HOST_PROBE_RUNNER").as_deref() {
         Ok("mara") => {

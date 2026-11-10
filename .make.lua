@@ -235,6 +235,25 @@ make.recipe{
 }
 
 make.recipe{
+  name = "build-resize-probe",
+  desc = "build the X11 native-window-resize probe",
+  run = function()
+    sh.sh("-c", "mkdir -p target && cc -Wall -Wextra -Werror scripts/resize_window.c -o target/resize_window $(pkg-config --cflags --libs x11)")
+  end,
+}
+
+make.recipe{
+  name = "test-oit-resize",
+  desc = "verify OIT budget handling across oversized native-window resizes",
+  params = { { "--output", desc = "new evidence directory" } },
+  deps = { "build" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_oit_resize.sh", a.output)
+  end,
+}
+
+make.recipe{
   name = "test-native-close",
   desc = "exercise prompt, cancel or discard after an OS close request",
   params = {

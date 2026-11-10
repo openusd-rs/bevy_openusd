@@ -1647,6 +1647,7 @@ def Material "Bumped" {{
         ] {
             let source = crate::UsdSource::new("opacity.usda", bytes).unwrap();
             let mut app = App::new();
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             app.add_plugins((
                 MinimalPlugins,
                 bevy::asset::AssetPlugin::default(),
@@ -1679,6 +1680,10 @@ def Material "Bumped" {{
                 }
                 app.update();
                 for (root, time) in roots.into_iter().zip(times) {
+                    assert_eq!(
+                        app.world().get::<crate::UsdSceneState>(root),
+                        Some(&crate::UsdSceneState::Ready)
+                    );
                     let instances = app.world().get_non_send::<UsdInstances>().unwrap();
                     let cube = instances.entity(root, "/Scene/Cube").unwrap();
                     let mesh = instances.entity(root, "/Scene/Mesh").unwrap();

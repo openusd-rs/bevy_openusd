@@ -82,8 +82,8 @@ correct readiness reporting.
   strict Clippy, native deformation and watcher checks, and wasm compilation.
   The additional hummingbird CPU/GPU image comparison remains failing as recorded.
 - `c804fe1` adds debug/release profile selection to the example build/run recipes.
-  Invalid-profile rejection and the default debug runner were exercised; the first
-  clean release build is running rather than reusing an old Bevy artifact.
+  Invalid-profile rejection and both profiles were exercised. The clean release
+  build completed in 17m27s rather than reusing an old Bevy artifact.
 - `5d5d4b6` adds optional raw seek samples (`USD_BENCH_RAW_SAMPLES=1`) and process
   high-water RSS to `editor_benchmark`. The latter includes prior fresh-App samples
   in the same process; it is not per-document peak allocation or VRAM. Default
@@ -91,21 +91,24 @@ correct readiness reporting.
   eight measured records with clocks, nanoseconds and a separate CSV summary.
   Logs: `/tmp/bevy-optimization-benchmark-tests.log` and
   `/tmp/bevy-optimization-raw-probe.log`.
-- Release characterization is running under
+- Release CPU characterization completed under
   `/tmp/bevy-optimization-baseline.KRJgwm/`, with revision/toolchain/host metadata,
   entry-file hashes, per-workload logs, raw seeks and status records. Eight
   workloads cover bird, cow, arm, showcase, morphs, subsets, kitchen and city.
-  Referenced dependency closures are not yet hashed. This run shares host load;
-  the first bird case may overlap the one-off unprofiled release probe in
-  `/tmp/bevy-optimization-release-hummingbird.log` and must be repeated serially
-  before using it for a before/after claim. Resume existing runs; do not duplicate
-  them simply because compilation is slow.
+  Referenced dependency closures are not yet hashed. This run shares host load.
+  The initial bird case overlapped a one-off probe and was repeated serially;
+  the latter records 56.814–67.931 ms median updates. Cow medians are
+  82.124–106.466 ms with an unexplained 2.915-second outlier. Saved baseline
+  executables and `run-headless-benchmark` (`1ed2f92`) support alternating
+  comparisons without rebuilding. See [the baseline report](benchmarks/whole-pipeline.md).
+  GPU, native cadence and complete lifecycle baselines remain outstanding.
 - Final debug bird profiling through `d5b87b6` records 52.642 ms median and 61.210
   ms max headless updates. Across eight seeks, skin routes take 278.657 ms, mesh
   routes 78.715 ms and materials 39.203 ms. Mesh reads take 50.650 ms inside route
   time, not in addition to it. There are 944 mesh interning misses for 328 mesh
   projections, inserting 15,448,960 bytes: investigate intermediate/rest geometry
   construction and upload churn before adding more cross-frame caches.
-- Next: complete and inspect the release matrix, preserve a reproducible baseline
-  executable/input manifest, then optimize dominant preparation/retention costs.
-  Retain all workstreams above and re-run controlled comparisons after changes.
+- Under evaluation: reuse immutable rest geometry through the existing bounded
+  assembly cache before color/skin/morph mutation. Verify invalidation and exact
+  output, then measure alternating before/after runs and retained memory. Retain
+  all workstreams above; this is not whole-pipeline completion.

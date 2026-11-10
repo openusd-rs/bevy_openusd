@@ -108,7 +108,17 @@ correct readiness reporting.
   time, not in addition to it. There are 944 mesh interning misses for 328 mesh
   projections, inserting 15,448,960 bytes: investigate intermediate/rest geometry
   construction and upload churn before adding more cross-frame caches.
-- Under evaluation: reuse immutable rest geometry through the existing bounded
-  assembly cache before color/skin/morph mutation. Verify invalidation and exact
-  output, then measure alternating before/after runs and retained memory. Retain
-  all workstreams above; this is not whole-pipeline completion.
+- `d2256aa` reuses immutable rest geometry through the existing bounded assembly
+  cache before color/skin/morph mutation. Default tests pass (869 / 20 ignored);
+  all 32 alternating release matrix processes succeed with identical retained
+  asset counts/payloads. Before/after captures are pixel-exact in five cases;
+  cow still warns about its unavailable MDL dependency. Additional cache payload
+  is about 1 MiB for bird and 3.3 MiB for cow. See the baseline report for exact
+  measurements and limits. Hardening passes (782 no-default / 875 all-feature
+  tests), as do strict Clippy, four native deformation checks, wasm compilation
+  and pixel-exact synthetic CPU/GPU captures at 0, 5 and 10.
+- Next targets: intermediate mesh asset churn and skin/tangent preparation,
+  plus the reproducible roughly three-second first measured cow seek. GPU pass
+  samples are now recorded, but native animated frame pacing and full lifecycle
+  acceptance remain open. Retain all workstreams above; this is not whole-pipeline
+  completion.

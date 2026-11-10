@@ -118,7 +118,16 @@ correct readiness reporting.
   tests), as do strict Clippy, four native deformation checks, wasm compilation
   and pixel-exact synthetic CPU/GPU captures at 0, 5 and 10.
 - Next targets: intermediate mesh asset churn and skin/tangent preparation,
-  plus the reproducible roughly three-second first measured cow seek. GPU pass
+  plus the remaining cow first-seek stall. GPU pass
   samples are now recorded, but native animated frame pacing and full lifecycle
   acceptance remain open. Retain all workstreams above; this is not whole-pipeline
   completion.
+- Texture checkpoint: `d709b52` isolates finalization cost. `e573343` streams the
+  first mip's decode and reuses the exact sRGB code table, reducing paired release
+  bird opening from about 4.9 to 2.9 seconds and cow opening from about 2.5 to
+  1.5 seconds, with lower peak RSS and identical retained payload. Default tests
+  pass; before/after captures are pixel-exact, and hardening passes (787
+  no-default / 880 all-feature tests plus strict Clippy), as do nine native watcher
+  tests and wasm compilation. The cow's initial texture reload remains a separate
+  follow-up; its worst measured seek is still about two seconds. See
+  [texture finalization](benchmarks/texture-finalization.md).

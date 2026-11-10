@@ -451,6 +451,7 @@ def Mesh "M" {
         app.init_resource::<Assets<StandardMaterial>>();
         app.init_resource::<Assets<FlatMaterial>>();
         app.init_resource::<GpuSkinningEnabled>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()

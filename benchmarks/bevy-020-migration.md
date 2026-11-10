@@ -9,6 +9,11 @@ Do not push, merge remote PRs, or release without the user's approval. The
 library is used by downstream applications; this is not a downstream release
 signoff.
 
+Follow-up: the user's hummingbird playback check exposed severe frame stalls.
+The [playback investigation](hummingbird-playback.md) records local performance
+fixes and remaining interactive acceptance gaps. The gates below do not establish
+smooth playback for this asset.
+
 Preserve Dave Lee's (`dave-gray101`) original PR commit and author identity in the eventual
 merged history. The user explicitly wants his contribution credited, rather
 than squashed into a commit attributed to someone else. Keep our follow-up

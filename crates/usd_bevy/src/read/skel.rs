@@ -8,8 +8,9 @@ use openusd::gf;
 use openusd::sdf::Path;
 use openusd::usd::{Attribute, SchemaBase, Stage, TimeCode};
 use openusd_schemas::skel::skinning::{
-    BlendShapeWeighted, InbetweenRef, SubShape, apply_blend_shapes, joint_local_to_skel_space,
-    resolve_blend_shape_offsets, skinning_transforms, sub_shape_weights,
+    BlendShapeWeighted, InbetweenRef, Influences, SubShape, apply_blend_shapes,
+    joint_local_to_skel_space, resolve_blend_shape_offsets, skin_points_lbs, skinning_transforms,
+    sub_shape_weights,
 };
 use openusd_schemas::skel::{
     AnimMapper, AnimQuery, Animation, BindingAPI as SkelBindingAPI, BindingProperties, BlendShape,
@@ -1012,10 +1013,23 @@ pub(crate) fn cpu_skin_sample(
         );
         return Ok(None);
     }
-    let Some(deformed) = skin
-        .skinning
-        .skinned_points(&Pose::from(skel_xforms), &pts, at)?
-    else {
+    let deformed = if !skin.skinning.is_rigidly_deformed()
+        && matches!(
+            skin.skinning.skinning_method()?,
+            Some(SkinningMethod::ClassicLinear)
+        ) {
+        skin_points_lbs(
+            &pts,
+            Influences::Split(&indices, &weights),
+            skin.skinning.influences_per_component(),
+            skin.skinning.geom_bind_transform(at)?,
+            &transforms,
+        )
+    } else {
+        skin.skinning
+            .skinned_points(&Pose::from(skel_xforms), &pts, at)?
+    };
+    let Some(deformed) = deformed else {
         log::warn!(
             "usd_bevy::skel: {}: unknown skinning method; showing un-skinned mesh",
             mesh_path.as_str()
@@ -1183,6 +1197,123 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prepared_cpu_points_match_upstream_queries_after_edits() {
+        use openusd::vt::Value;
+        for (file, prim) in [
+            ("skel_influences.usda", "/Test/Bar"),
+            ("skel_constant_influences.usda", "/Test/Bar"),
+            ("skel_morph_blended_animated.usda", "/Test/Face"),
+        ] {
+            for method in ["classicLinear", "dualQuaternion", "unsupported"] {
+                let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../assets")
+                    .join(file);
+                let stage =
+                    crate::UsdSource::new(file.to_str().unwrap(), std::fs::read(&file).unwrap())
+                        .unwrap()
+                        .open_stage()
+                        .unwrap();
+                let path = openusd::sdf::path(prim).unwrap();
+                stage
+                    .create_attribute(&format!("{prim}.primvars:skel:skinningMethod"), "token")
+                    .unwrap()
+                    .set(Value::Token(method.into()))
+                    .unwrap();
+                let original = bound_skin(&stage, &path).unwrap().unwrap();
+                let names = original.skeleton.joint_order().to_vec();
+                let orders = [
+                    names.clone(),
+                    names.iter().rev().cloned().collect(),
+                    vec!["MissingJoint".into(), names[0].clone()],
+                ];
+                for order in orders {
+                    stage
+                        .create_attribute(&format!("{prim}.skel:joints"), "token[]")
+                        .unwrap()
+                        .set(Value::TokenVec(order.into_iter().map(Into::into).collect()))
+                        .unwrap();
+                    for (iteration, time) in (0..=40)
+                        .map(|i| i as f64 * 0.25)
+                        .chain([5.0, 0.0, 10.0, 5.0])
+                        .enumerate()
+                    {
+                        if iteration == 10 {
+                            let weights = stage
+                                .attribute(&format!("{prim}.primvars:skel:jointWeights"))
+                                .unwrap();
+                            let count = if original.skinning.is_rigidly_deformed() {
+                                2
+                            } else {
+                                8
+                            };
+                            for time in [0.0, 10.0] {
+                                weights
+                                    .clone()
+                                    .set_at(Value::FloatVec(vec![0.8; count]), TimeCode::new(time))
+                                    .unwrap();
+                            }
+                        }
+                        if iteration == 20 {
+                            let bind = bevy::math::Mat4::from_scale_rotation_translation(
+                                bevy::math::Vec3::new(1.25, 0.75, 2.0),
+                                bevy::math::Quat::from_rotation_y(0.3),
+                                bevy::math::Vec3::new(0.25, -0.5, 0.75),
+                            );
+                            stage
+                                .create_attribute(
+                                    &format!("{prim}.primvars:skel:geomBindTransform"),
+                                    "matrix4d",
+                                )
+                                .unwrap()
+                                .set(Value::Matrix4d(gf::Mat4d(
+                                    bind.to_cols_array().map(f64::from),
+                                )))
+                                .unwrap();
+                        }
+                        let _scope = SkelSampleScope::begin(&stage);
+                        let mesh = super::super::geom::read_mesh_at(&stage, &path, Some(time))
+                            .unwrap()
+                            .unwrap();
+                        let skin = bound_skin(&stage, &path).unwrap().unwrap();
+                        let morphed = blend_shape_deform(&stage, &path, &mesh.points, Some(time));
+                        let points: Vec<_> = morphed
+                            .as_deref()
+                            .unwrap_or(&mesh.points)
+                            .iter()
+                            .copied()
+                            .map(gf::Vec3f::from)
+                            .collect();
+                        let pose = Pose::from(skin.pose_transforms(Some(time)).unwrap().unwrap());
+                        let expected = skin
+                            .skinning
+                            .skinned_points(&pose, &points, Some(TimeCode::new(time)))
+                            .unwrap()
+                            .map(|points| {
+                                points
+                                    .into_iter()
+                                    .map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
+                                    .collect::<Vec<_>>()
+                            });
+                        let actual = cpu_skin_sample(&stage, &path, Some(time), Some(&mesh))
+                            .unwrap()
+                            .map(|sample| {
+                                sample
+                                    .points
+                                    .into_iter()
+                                    .map(|p| p.map(f32::to_bits))
+                                    .collect::<Vec<_>>()
+                            });
+                        assert_eq!(
+                            actual, expected,
+                            "method={method}, prim={prim}, time={time}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn sample_scope_retains_only_the_last_binding_and_observes_later_edits() {
         use std::rc::Rc;

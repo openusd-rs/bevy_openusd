@@ -118,7 +118,7 @@ correct readiness reporting.
   tests), as do strict Clippy, four native deformation checks, wasm compilation
   and pixel-exact synthetic CPU/GPU captures at 0, 5 and 10.
 - Next targets: intermediate mesh asset churn and skin/tangent preparation,
-  plus the remaining cow first-seek stall. GPU pass
+  plus the remaining source-verification cost. GPU pass
   samples are now recorded, but native animated frame pacing and full lifecycle
   acceptance remain open. Retain all workstreams above; this is not whole-pipeline
   completion.
@@ -128,6 +128,15 @@ correct readiness reporting.
   1.5 seconds, with lower peak RSS and identical retained payload. Default tests
   pass; before/after captures are pixel-exact, and hardening passes (787
   no-default / 880 all-feature tests plus strict Clippy), as do nine native watcher
-  tests and wasm compilation. The cow's initial texture reload remains a separate
-  follow-up; its worst measured seek is still about two seconds. See
+  tests and wasm compilation. At this checkpoint, the cow's initial texture reload
+  remained a separate follow-up, with a roughly two-second worst seek. See
   [texture finalization](benchmarks/texture-finalization.md).
+- Initial texture verification: `9ded82f` records the hashes of decoded source
+  bytes; `4eac681` preserves package-entry overrides; `1eff934` checks edited paths,
+  undo/redo and failed refresh publication. Unchanged external textures no longer
+  trigger image/material/mip regeneration after Open. Production watcher settings
+  and fidelity are unchanged. Default tests pass (878 / 20 ignored) after a
+  test-only projection-budget race repair (`bc95517`). Hardening at `1eff934`
+  passes (791 no-default / 884 all-feature tests, strict Clippy), as do nine native
+  watcher tests and wasm compilation. See [texture verification](benchmarks/texture-reload.md)
+  for measurements, evidence and remaining animation/native-rendering limits.

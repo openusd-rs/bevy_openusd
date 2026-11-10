@@ -126,6 +126,10 @@ at the earlier accepted freeze-repair checkpoint, not silently relaunched.
 
 ## Next investigation
 
+The initial-reload repair and its verification are now recorded in
+[initial texture verification](texture-reload.md). The following items describe
+the investigation that followed this mip-generation checkpoint.
+
 1. Reproduce the initial-reload issue with an external multi-texel texture, an
    editor open and a no-change `ReloadSources` command. Check recorded baselines,
    texture handle stability and finalization counters; a 1x1 fixture can miss

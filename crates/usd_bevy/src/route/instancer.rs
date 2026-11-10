@@ -1037,6 +1037,7 @@ mod tests {
         ));
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -1054,6 +1055,10 @@ mod tests {
         });
         app.update();
         let parents = roots.map(|root| {
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready)
+            );
             app.world()
                 .get_non_send::<UsdInstances>()
                 .unwrap()
@@ -1426,6 +1431,7 @@ mod tests {
             ));
             app.init_resource::<Assets<Mesh>>();
             app.init_resource::<Assets<StandardMaterial>>();
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             let handle = app
                 .world_mut()
                 .resource_mut::<Assets<crate::UsdScene>>()
@@ -1449,6 +1455,10 @@ mod tests {
                 .id();
             app.update();
             let entities = |world: &World, root| {
+                assert_eq!(
+                    world.get::<crate::UsdSceneState>(root),
+                    Some(&crate::UsdSceneState::Ready)
+                );
                 let instances = world.get_non_send::<UsdInstances>().unwrap();
                 let ordinary = instances.entity(root, path).unwrap();
                 let pi = instances.entity(root, "/PI").unwrap();

@@ -511,6 +511,7 @@ mod tests {
         app.init_resource::<Assets<StandardMaterial>>();
         app.init_resource::<Assets<SkinnedMeshInverseBindposes>>();
         app.init_resource::<GpuSkinningEnabled>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -534,6 +535,10 @@ mod tests {
             .id();
         app.update();
         let entity = |world: &World, root| {
+            assert_eq!(
+                world.get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready)
+            );
             world
                 .get_non_send::<UsdInstances>()
                 .unwrap()

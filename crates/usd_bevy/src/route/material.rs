@@ -1345,6 +1345,7 @@ def Material "Mat" {{
                     .unwrap(),
             );
             let source = crate::UsdSource::snapshot("normal.usda", text.as_bytes()).unwrap();
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             let handle = app
                 .world_mut()
                 .resource_mut::<Assets<crate::UsdScene>>()
@@ -1352,8 +1353,12 @@ def Material "Mat" {{
                     source,
                     textures: default(),
                 });
-            app.world_mut().spawn(crate::UsdSceneRoot(handle));
+            let root = app.world_mut().spawn(crate::UsdSceneRoot(handle)).id();
             app.update();
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready)
+            );
             let mut count = 0;
             let mut tangents = 0;
             let mut query = app.world_mut().query::<(

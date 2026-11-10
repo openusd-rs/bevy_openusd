@@ -189,24 +189,26 @@ fn rgba8_transformed(
 }
 
 fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<Image>> {
-    if let Some(handle) = world
-        .get_resource::<ColorTextures>()
-        .and_then(|cache| cache.images.get(&key))
-        && world.resource::<Assets<Image>>().contains(handle)
-    {
-        return Ok(handle.clone());
-    }
-    let image = Image::new(
+    let mut image = Image::new_uninit(
         Extent3d {
             width: key.0,
             height: key.1,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        key.2.clone(),
         TextureFormat::Rgba16Float,
         bevy::asset::RenderAssetUsages::default(),
     );
+    if let Some(id) = world
+        .get_resource::<ColorTextures>()
+        .and_then(|cache| cache.images.get(&key))
+        .map(Handle::id)
+        && let Some(handle) =
+            super::generated_image::reuse_if(world, id, &image, |data| data == key.2.as_slice())
+    {
+        return Ok(handle);
+    }
+    image.data = Some(key.2.clone());
     let handle = super::generated_image::intern(world, image);
     world.init_resource::<ColorTextures>();
     let mut cache = world.resource_mut::<ColorTextures>();
@@ -215,8 +217,7 @@ fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<
         cache.images.clear();
         cache.bytes = 0;
     }
-    if bytes <= 64 * 1024 * 1024 {
-        cache.images.insert(key, handle.clone());
+    if bytes <= 64 * 1024 * 1024 && cache.images.insert(key, handle.clone()).is_none() {
         cache.bytes += bytes;
     }
     Ok(handle)

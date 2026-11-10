@@ -206,6 +206,7 @@ def PointInstancer "PI" {{
         ));
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         app.insert_resource(UsdSubdivisionSettings::new(2).unwrap());
         let handle = app
             .world_mut()

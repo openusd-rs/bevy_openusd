@@ -10,6 +10,9 @@ use usd_bevy::{
     live::LiveStagePlugin,
 };
 
+#[path = "editor_benchmark/paired.rs"]
+mod paired;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SeekMode {
     Idle,
@@ -338,11 +341,11 @@ struct Measurement {
     cached_assembly_payload_bytes: usize,
 }
 
-fn measure(
+fn open_editor(
     path: &Path,
     gpu_prepared: bool,
-    seek: SeekMode,
-) -> Result<Measurement, Box<dyn std::error::Error>> {
+    preparation: Option<usd_bevy::route::preparation::ParallelMeshPreparation>,
+) -> Result<(App, EditorBridge, Measurement), Box<dyn std::error::Error>> {
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
@@ -379,6 +382,9 @@ fn measure(
         app.init_resource::<usd_bevy::route::cache::MeshCacheMetrics>();
         app.init_resource::<usd_bevy::route::MeshReadTiming>();
     }
+    if let Some(preparation) = preparation {
+        app.insert_resource(preparation);
+    }
     app.update();
     let bridge = app.world().resource::<EditorBridge>().clone();
     bridge.send(EditorCommand::Open(
@@ -401,13 +407,44 @@ fn measure(
     if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() {
         promote_deferred(&mut app)?;
     }
-    let mut result = Measurement {
+    let result = Measurement {
         open,
         idle,
         peak_asset_counts: asset_counts(app.world()),
         rss_before_seeks: resident_bytes(),
         ..default()
     };
+    if bridge.view()?.document.document_id != view.document.document_id {
+        return Err("idle updates replaced the editor document".into());
+    }
+    Ok((app, bridge, result))
+}
+
+fn reset_profiles(world: &mut World) {
+    fn reset<T: Resource<Mutability = bevy::ecs::component::Mutable> + Default>(world: &mut World) {
+        if let Some(mut timing) = world.get_resource_mut::<T>() {
+            *timing = default();
+        }
+    }
+    reset::<usd_bevy::route::preparation::MeshPreparationTiming>(world);
+    reset::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>(world);
+    reset::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>(world);
+    reset::<usd_bevy::route::residency::ResidencyPreparationTiming>(world);
+    reset::<usd_bevy::route::material::MaterialResolveTimings>(world);
+    reset::<usd_bevy::route::TextureSamplingTiming>(world);
+    reset::<usd_bevy::route::ProjectionTimings>(world);
+    reset::<usd_bevy::route::ProjectionVisibilityTimings>(world);
+    reset::<usd_bevy::route::cache::MeshCacheMetrics>(world);
+    reset::<usd_bevy::route::MeshReadTiming>(world);
+}
+
+fn measure(
+    path: &Path,
+    gpu_prepared: bool,
+    seek: SeekMode,
+) -> Result<Measurement, Box<dyn std::error::Error>> {
+    let (mut app, bridge, mut result) = open_editor(path, gpu_prepared, None)?;
+    let view = bridge.view()?;
     if seek != SeekMode::Idle {
         let raw_samples = std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some();
         if seek == SeekMode::Timeline {
@@ -434,48 +471,7 @@ fn measure(
                     warmup.iter().max().unwrap().as_nanos()
                 );
                 report_routes(app.world(), "after-seek-warmup", SEEK_WARMUP);
-                if let Some(mut timing) =
-                    app.world_mut()
-                        .get_resource_mut::<usd_bevy::route::preparation::MeshPreparationTiming>()
-                {
-                    *timing = default();
-                }
-                if let Some(mut timing) =
-                    app.world_mut()
-                        .get_resource_mut::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>()
-                {
-                    *timing = default();
-                }
-                if let Some(mut timing) = app
-                    .world_mut()
-                    .get_resource_mut::<usd_bevy::route::TextureSamplingTiming>()
-                {
-                    *timing = default();
-                }
-                if let Some(mut timings) = app
-                    .world_mut()
-                    .get_resource_mut::<usd_bevy::route::ProjectionTimings>()
-                {
-                    timings.0.clear();
-                }
-                if let Some(mut timings) =
-                    app.world_mut()
-                        .get_resource_mut::<usd_bevy::route::ProjectionVisibilityTimings>()
-                {
-                    timings.0.clear();
-                }
-                if let Some(mut metrics) = app
-                    .world_mut()
-                    .get_resource_mut::<usd_bevy::route::cache::MeshCacheMetrics>()
-                {
-                    metrics.0.clear();
-                }
-                if let Some(mut reads) = app
-                    .world_mut()
-                    .get_resource_mut::<usd_bevy::route::MeshReadTiming>()
-                {
-                    *reads = default();
-                }
+                reset_profiles(app.world_mut());
             }
             let normalized = seek.clock(iteration);
             let time = if seek == SeekMode::Timeline {
@@ -538,6 +534,17 @@ fn measure(
         result.seek_max = *timings.last().unwrap();
         report_routes(app.world(), "measured-seeks", seek.samples());
     }
+    measure_payload(&mut app, &mut result)?;
+    if bridge.view()?.document.document_id != view.document.document_id {
+        return Err("updates replaced the editor document".into());
+    }
+    Ok(result)
+}
+
+fn measure_payload(
+    app: &mut App,
+    result: &mut Measurement,
+) -> Result<(), Box<dyn std::error::Error>> {
     result.rss_after_seeks = resident_bytes();
     result.rss_process_peak = peak_resident_bytes();
     if let Some(cache) = app
@@ -662,16 +669,13 @@ fn measure(
             );
         }
     }
-    if bridge.view()?.document.document_id != view.document.document_id {
-        return Err("idle updates replaced the editor document".into());
-    }
-    Ok(result)
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if !(1..=4).contains(&args.len()) {
-        return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-quick|seek-unique|seek-timeline]".into());
+        return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-quick|seek-unique|seek-timeline|seek-timeline-paired]".into());
     }
     let path = std::fs::canonicalize(&args[0])?;
     let samples = args
@@ -687,10 +691,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("seek") => SeekMode::Repeated,
         Some("seek-quick") => SeekMode::Quick,
         Some("seek-unique") => SeekMode::Unique,
-        Some("seek-timeline") => SeekMode::Timeline,
+        Some("seek-timeline" | "seek-timeline-paired") => SeekMode::Timeline,
         _ => {
             return Err(
-                "fourth argument must be seek, seek-quick, seek-unique or seek-timeline".into(),
+                "fourth argument must be seek, seek-quick, seek-unique, seek-timeline or seek-timeline-paired".into(),
             );
         }
     };
@@ -712,6 +716,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "payloads=retained-cpu-bytes excludes=gpu-allocation,asset-handles,allocator-overhead"
     );
+    if args
+        .get(3)
+        .is_some_and(|mode| mode == "seek-timeline-paired")
+    {
+        for sample in 0..samples {
+            println!("paired_sample_begin={sample}");
+            paired::run(&path, gpu_prepared, seek.samples(), sample % 2 != 0)?;
+        }
+        return Ok(());
+    }
     if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() {
         println!(
             "prewarm=all-deferred-after-idle payload_phase_override=after-prewarm-or-seeks idle_phase=before-prewarm"

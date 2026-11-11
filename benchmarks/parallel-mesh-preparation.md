@@ -229,3 +229,31 @@ neither comparison tolerance nor grid visibility was changed.
   do not hide the grid, relax tolerance or mutate shared mesh bounds blindly.
 - Continue the complete loading, editor, memory/lifecycle and platform workstreams
   in `OPTIMIZATION.md`; this checkpoint does not finish the overall objective.
+
+## Tightly paired diagnostic
+
+`editor_benchmark ASSET 2 gpu-prepared seek-timeline-paired` compares the current
+serial control (`ParallelMeshPreparation.max_jobs = 0`) with the default batched
+path in two independent editor apps. Each app owns its document and caches. Both
+receive four warmups followed by the same 1,000 distinct authored-range clocks.
+At every clock the two complete `App::update` intervals run sequentially, with
+the first app balanced serial/batched/batched/serial across each four clocks.
+The second outer sample reverses both app construction and first-update order.
+Raw paired clocks, order and nanoseconds are always retained, including warmup.
+Every seek checks readiness, exact clock and unchanged document identity.
+
+This is a same-binary scheduling diagnostic, not a historical revision comparison
+or native frame-rate measurement. It excludes startup/open/idle from seek timing,
+does not run two app updates concurrently, and reports whole-process RSS for the
+two retained apps together. Payload counts and sampled peak asset counts are
+reported separately; their equality does not establish byte-level geometry or
+render parity. Existing saved-binary comparisons and native rendering gates remain
+required. Eager projection is mandatory: deferred residency/budget overrides are
+rejected rather than silently disabling the parallel control. A single-thread
+compute pool can still take the production serial fallback; recorded job counts
+must establish that a purported parallel experiment actually dispatched work.
+
+The shared benchmark profile reset now also clears GPU palette-update, residency
+and material timing counters after warmup. Previously these optional cumulative
+profiles included open/idle work under the measured-seeks label; whole-update
+samples and acceptance decisions never subtracted those counters.

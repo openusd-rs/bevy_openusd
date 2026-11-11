@@ -241,8 +241,10 @@ fn report_routes(world: &World, phase: &str, samples: usize) {
         world.get_resource::<usd_bevy::route::preparation::MeshPreparationTiming>()
     {
         eprintln!(
-            "mesh_preparation_profile phase={phase} batches={} jobs={} cache_hits={} peak_jobs={} peak_input_bytes={} elapsed_ms={:.3}",
+            "mesh_preparation_profile phase={phase} batches={} parallel_batches={} inline_jobs={} jobs={} cache_hits={} peak_jobs={} peak_input_bytes={} elapsed_ms={:.3}",
             timing.batches,
+            timing.parallel_batches,
+            timing.inline_jobs,
             timing.jobs,
             timing.cache_hits,
             timing.peak_jobs,

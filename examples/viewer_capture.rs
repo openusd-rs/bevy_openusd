@@ -421,6 +421,7 @@ fn main() -> AppExit {
             environment::ViewerEnvironmentPlugin,
         ))
         .insert_resource(usd_bevy::UsdProjectionBudget(Duration::MAX))
+        .init_resource::<usd_bevy::route::preparation::MeshPreparationTiming>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -770,6 +771,7 @@ fn capture_frame(
     mut capture: ResMut<Capture>,
     timing: CaptureTiming,
     scene: CaptureScene,
+    preparation: Option<Res<usd_bevy::route::preparation::MeshPreparationTiming>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let CaptureTiming {
@@ -979,6 +981,11 @@ fn capture_frame(
         "shadow_maps=off\n"
     };
     capture.mesh_report.push_str(shadows);
+    if let Some(preparation) = preparation {
+        capture
+            .mesh_report
+            .push_str(&preparation_report(&preparation));
+    }
     capture.requested = true;
     commands.spawn(Screenshot(target.clone())).observe(
         |event: On<ScreenshotCaptured>, capture: Res<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>,
@@ -1001,6 +1008,19 @@ fn capture_frame(
                 Err(error) => { eprintln!("CAPTURE_FAILED {error}"); exit.write(AppExit::error()); }
             }
         });
+}
+
+fn preparation_report(timing: &usd_bevy::route::preparation::MeshPreparationTiming) -> String {
+    format!(
+        "mesh_preparation_batches={}\nmesh_preparation_parallel_batches={}\nmesh_preparation_inline_jobs={}\nmesh_preparation_jobs={}\nmesh_preparation_peak_jobs={}\nmesh_preparation_peak_input_bytes={}\nmesh_preparation_elapsed_ms={:.3}\n",
+        timing.batches,
+        timing.parallel_batches,
+        timing.inline_jobs,
+        timing.jobs,
+        timing.peak_jobs,
+        timing.peak_input_bytes,
+        timing.elapsed.as_secs_f64() * 1000.0,
+    )
 }
 
 fn save(image: &Image, capture: &Capture) -> Result<(), String> {
@@ -1071,6 +1091,32 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mesh_preparation_metadata_distinguishes_parallel_and_inline_jobs() {
+        let report =
+            super::preparation_report(&usd_bevy::route::preparation::MeshPreparationTiming {
+                batches: 3,
+                parallel_batches: 1,
+                inline_jobs: 1,
+                jobs: 5,
+                peak_jobs: 4,
+                peak_input_bytes: 1024,
+                elapsed: std::time::Duration::from_millis(2),
+                ..Default::default()
+            });
+        for line in [
+            "mesh_preparation_batches=3",
+            "mesh_preparation_parallel_batches=1",
+            "mesh_preparation_inline_jobs=1",
+            "mesh_preparation_jobs=5",
+            "mesh_preparation_peak_jobs=4",
+            "mesh_preparation_peak_input_bytes=1024",
+            "mesh_preparation_elapsed_ms=2.000",
+        ] {
+            assert!(report.lines().any(|actual| actual == line));
+        }
+    }
+
     #[test]
     fn camera_response_defaults_bounds_and_atomic_failure() {
         use super::*;

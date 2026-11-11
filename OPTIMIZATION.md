@@ -76,6 +76,22 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- The broader [viewer deferral policy comparison](benchmarks/viewer-residency.md)
+  (`7184abe`) passes its declared CPU target: cow paired update medians fall
+  approximately 68%, from roughly 57 to 18 ms, and every bird/arm/subset ordering
+  stays within the 5% paired-median regression limit. Eight saved release runs
+  validate 8,000 pairs / 16,000 updates with exact hierarchy-visible geometry at
+  every measured clock, bounded caches/preparation and zero runtime diagnostics.
+  Opening/idle/p95/max observations include regressions and remain documented.
+  Hardening passes 855 / 978 executions; `cf382de` repairs a composed-source
+  example's single-update readiness assumption with default/zero-budget checks.
+  EditorBridge tests cover hidden edits, selection, reveal, history, reload and
+  replacement. This is not native rendering/FPS or accepted viewer-default
+  behavior: both library and viewer stay eager. Next verify native viewport
+  reveal/selection/undo, framing and materials against eager controls. This
+  policy comparison does not retroactively pass the failed incremental scheduler
+  experiment below, or resolve the older visual/platform/lifecycle/60 Hz gates.
+
 - [Resident-only preparation under opt-in deferral](benchmarks/deferred-preparation.md)
   (`d5ad5ab`) preserves eager library/viewer defaults and the original scheduler.
   Hidden nonresident meshes stay on synchronous visibility-aware routing; already

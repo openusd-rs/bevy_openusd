@@ -76,6 +76,17 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Tightly paired scheduling evidence (`79e80bc`): six CPU/GPU-prepared workloads,
+  two independent app pairs each and 1,000 unique clocks per pair complete with
+  equal retained payload counts. Cow GPU median update cost falls 21.9–28.6%,
+  bird GPU 7.2–8.3%; CPU cow/bird also improve, and small controls stay within the
+  5% median-regression limit. Hardening passes 804 no-default / 902 all-feature
+  tests and strict Clippy. This supports the parallel path but is not native
+  60 Hz acceptance or a replacement for saved-revision comparisons. Reopened
+  hash-set prim ordering can change batch partitions. See the paired section in
+  [parallel preparation](benchmarks/parallel-mesh-preparation.md) for raw evidence
+  and unchanged scope/limitations.
+
 - Local performance repairs and material/image invalidation regressions are
   committed through `d5b87b6`.
 - Preceding-work hardening passed: 781 no-default tests, 874 all-feature tests,
@@ -182,3 +193,35 @@ correct readiness reporting.
   [CPU skinning inputs](benchmarks/cpu-skin-inputs.md). The next larger target is
   bounded parallel pure-mesh preparation while preserving stage/thread, route,
   visibility, instance and lifecycle contracts.
+- Parallel-preparation implementation: `0035a9e` separates tangent-cache
+  lookup/admission from result insertion; `7483e05` batches built-in animation
+  across bounded owned-mesh jobs while keeping USD reads and ordered publication
+  on the main thread. `d740239` reports the complete batch interval rather than
+  hiding moved work in smaller route times. `51da2f4` covers independent root
+  clocks, referenced geometry, subsets, reload, close and hidden residency;
+  `c2e3142` repairs a timing-dependent initial-projection test, not production
+  loading policy. Hardening passes 803 no-default and 897 all-feature tests plus
+  strict Clippy. Release elapsed, native render/oracle and wasm acceptance remain
+  pending for this change. See [parallel preparation](benchmarks/parallel-mesh-preparation.md)
+  for limits, retained failures and the predeclared performance target. No
+  speedup or native cadence result is claimed yet.
+- The first parallel matrix completes 24 processes but does not meet the cow
+  GPU target. Sparse groups contain too few meshes (21,000 batches for 13,986
+  tangent jobs), so offloading often adds scheduling without concurrency.
+  `2900832` groups by mesh count, caps lightweight contexts separately, runs
+  single jobs inline and has the caller work alongside workers on larger groups.
+  `8a06876` records this utilization in benchmarks and render captures. The
+  corrected code passes hardening (804 no-default / 899 all-feature tests and
+  strict Clippy), but its release elapsed and render acceptance are still pending.
+  The full workstreams and existing rendering failures remain open.
+- Corrected batching validation: native deformation/watchers/export and wasm
+  compilation pass. Six CPU/GPU-mode before/after captures of independently
+  timed bird, cow and skin/morph roots are pixel-exact after live clock reversal;
+  metadata proves parallel work executes in the bird/cow production-plugin path.
+  The cow MDL warning still fails the combined capture gate. The original strict
+  single-bird CPU/GPU comparison is rerun and still fails at 2,053 pixels, maximum
+  RGB error 33. The corrected cow unique-clock trial averages 85.364 ms before
+  versus 76.856 ms after across per-process medians (9.97% lower), below the
+  predeclared 15% target amid large host-load swings. This is not accepted native
+  playback performance. Next: tighter temporal pairing, remaining performance
+  controls and observed render-order/bounds diagnosis; preserve all workstreams.

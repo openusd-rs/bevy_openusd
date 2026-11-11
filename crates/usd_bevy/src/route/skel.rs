@@ -57,11 +57,16 @@ fn bake_static(ctx: &RouteCtx, world: &mut World, entity: Entity, skinned: bool,
 }
 
 pub(crate) fn deformed_mesh(ctx: &RouteCtx) -> anyhow::Result<Option<crate::read::geom::ReadMesh>> {
-    deformed_mesh_with_kinds(
-        ctx,
-        is_skinned(ctx.stage, ctx.path),
-        has_blend_shapes(ctx.stage, ctx.path),
-    )
+    let (skinned, blended) = ctx.prepared_kinds.get().map_or_else(
+        || {
+            (
+                is_skinned(ctx.stage, ctx.path),
+                has_blend_shapes(ctx.stage, ctx.path),
+            )
+        },
+        |kinds| (kinds.skinned, kinds.blended),
+    );
+    deformed_mesh_with_kinds(ctx, skinned, blended)
 }
 
 fn deformed_mesh_with_kinds(
@@ -128,8 +133,11 @@ impl PrimRoute for SkinRoute {
         if super::subdivision::enabled(ctx, world) {
             return;
         }
-        let skinned = is_skinned(ctx.stage, ctx.path);
-        let blended = has_blend_shapes(ctx.stage, ctx.path);
+        let kinds = ctx
+            .prepared_kinds
+            .get()
+            .unwrap_or_else(|| super::preparation::DeformationKinds::read(ctx));
+        let (skinned, blended) = (kinds.skinned, kinds.blended);
         if !skinned && !blended {
             super::gpu_morph::clear(world, entity);
             if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
@@ -140,7 +148,7 @@ impl PrimRoute for SkinRoute {
                 .remove::<super::gpu_skin::UsdCpuSkinFallback>();
             return;
         }
-        if !crate::read::skel::deformation_is_time_varying(ctx.stage, ctx.path) {
+        if !kinds.varying {
             bake_static(ctx, world, entity, skinned, blended);
             return;
         }

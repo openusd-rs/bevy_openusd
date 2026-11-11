@@ -152,6 +152,7 @@ pub struct RouteCtx<'a> {
     prepared_deformation:
         std::cell::RefCell<Option<anyhow::Result<Option<preparation::PreparedDeformation>>>>,
     prepared_skin: std::cell::RefCell<Option<anyhow::Result<crate::read::skel::GpuSkinSample>>>,
+    prepared_kinds: std::cell::Cell<Option<preparation::DeformationKinds>>,
     read_timing: std::cell::Cell<Option<MeshReadTiming>>,
     trace_memory: bool,
 }
@@ -179,6 +180,7 @@ impl<'a> RouteCtx<'a> {
             decoded_mesh: Default::default(),
             prepared_deformation: Default::default(),
             prepared_skin: Default::default(),
+            prepared_kinds: Default::default(),
             read_timing: Default::default(),
             trace_memory: false,
         }
@@ -531,10 +533,15 @@ impl SchemaRegistry {
                     ctx
                 })
                 .collect();
-            preparation::prepare_batch(&contexts, world, pool, settings);
-            for (ctx, (_, entity)) in contexts.iter().zip(&batch) {
-                self.apply_routes(ctx, world, *entity, Some(&[]));
-                ctx.report_read_timing(world);
+            let mut offset = 0;
+            while offset < contexts.len() {
+                let count = preparation::prepare_batch(&contexts[offset..], world, pool, settings);
+                assert!(count > 0);
+                for index in offset..offset + count {
+                    self.apply_routes(&contexts[index], world, batch[index].1, Some(&[]));
+                    contexts[index].report_read_timing(world);
+                }
+                offset += count;
             }
         }
     }

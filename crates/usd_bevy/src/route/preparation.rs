@@ -5,7 +5,8 @@ use bevy::{prelude::*, tasks::TaskPool};
 use super::{RouteCtx, cache};
 use crate::read::{geom::ReadMesh, skel};
 
-pub(super) const MAX_BATCH_PRIMS: usize = 8;
+pub(super) const MAX_BATCH_PRIMS: usize = 128;
+const MAX_BATCH_MESHES: usize = 8;
 
 /// Limits parallel tangent work per animation batch; zero disables preparation.
 #[derive(Resource, Clone, Copy)]
@@ -29,6 +30,8 @@ impl Default for ParallelMeshPreparation {
 #[derive(Resource, Default)]
 pub struct MeshPreparationTiming {
     pub batches: u64,
+    pub parallel_batches: u64,
+    pub inline_jobs: u64,
     pub jobs: u64,
     pub cache_hits: u64,
     pub peak_jobs: usize,
@@ -40,6 +43,27 @@ pub(super) struct PreparedDeformation {
     pub read: ReadMesh,
     pub mesh: Mesh,
     pub tangents_ready: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct DeformationKinds {
+    pub skinned: bool,
+    pub blended: bool,
+    pub varying: bool,
+}
+
+impl DeformationKinds {
+    pub fn read(ctx: &RouteCtx) -> Self {
+        let skinned = skel::is_skinned(ctx.stage, ctx.path);
+        let blended = skel::has_blend_shapes(ctx.stage, ctx.path);
+        let varying =
+            (skinned || blended) && skel::deformation_is_time_varying(ctx.stage, ctx.path);
+        Self {
+            skinned,
+            blended,
+            varying,
+        }
+    }
 }
 
 impl PreparedDeformation {
@@ -61,10 +85,12 @@ impl PreparedDeformation {
 }
 
 fn needs_deformation(ctx: &RouteCtx, world: &World) -> bool {
-    if ctx.type_name.as_deref() != Some("Mesh")
-        || super::subdivision::enabled(ctx, world)
-        || !skel::deformation_is_time_varying(ctx.stage, ctx.path)
-    {
+    if ctx.type_name.as_deref() != Some("Mesh") || super::subdivision::enabled(ctx, world) {
+        return false;
+    }
+    let kinds = DeformationKinds::read(ctx);
+    ctx.prepared_kinds.set(Some(kinds));
+    if !kinds.varying {
         return false;
     }
     let Ok(Some(read)) = ctx.read_mesh() else {
@@ -76,7 +102,7 @@ fn needs_deformation(ctx: &RouteCtx, world: &World) -> bool {
     if !world.contains_resource::<super::gpu_skin::GpuSkinningEnabled>() {
         return true;
     }
-    if !skel::is_skinned(ctx.stage, ctx.path) {
+    if !kinds.skinned {
         return false;
     }
     let sample = skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read);
@@ -96,7 +122,7 @@ pub(super) fn prepare_batch(
     world: &mut World,
     pool: &TaskPool,
     settings: ParallelMeshPreparation,
-) {
+) -> usize {
     let started = world
         .contains_resource::<MeshPreparationTiming>()
         .then(bevy::platform::time::Instant::now);
@@ -104,10 +130,16 @@ pub(super) fn prepare_batch(
     let mut jobs = Vec::new();
     let mut input_bytes = 0usize;
     let mut cache_hits = 0;
+    let mut mesh_prims = 0;
+    let mut consumed = 0;
     for (index, ctx) in contexts.iter().enumerate() {
-        if jobs.len() >= settings.max_jobs || input_bytes >= settings.max_input_bytes {
+        if mesh_prims >= settings.max_jobs.min(MAX_BATCH_MESHES)
+            || input_bytes >= settings.max_input_bytes
+        {
             break;
         }
+        consumed = index + 1;
+        mesh_prims += usize::from(ctx.type_name.as_deref() == Some("Mesh"));
         if !needs_deformation(ctx, world) {
             continue;
         }
@@ -138,14 +170,25 @@ pub(super) fn prepare_batch(
         }
     }
     let count = jobs.len();
-    let mut results = pool.scope_with_executor(false, None, |scope| {
-        for (index, mut mesh) in jobs {
-            scope.spawn(async move {
-                let result = mesh.generate_tangents();
-                (index, mesh, result)
-            });
-        }
-    });
+    let generate = |(index, mut mesh): (usize, Mesh)| {
+        let result = mesh.generate_tangents();
+        (index, mesh, result)
+    };
+    let mut results = if count < 2 {
+        jobs.into_iter().map(generate).collect()
+    } else {
+        jobs.sort_unstable_by_key(|(_, mesh)| std::cmp::Reverse(mesh.count_vertices()));
+        pool.scope_with_executor(false, None, |scope| {
+            for (position, job) in jobs.into_iter().enumerate() {
+                let task = async move { generate(job) };
+                if position == 0 {
+                    scope.spawn_on_scope(task);
+                } else {
+                    scope.spawn(task);
+                }
+            }
+        })
+    };
     results.sort_unstable_by_key(|(index, _, _)| *index);
     for ((index, mesh, result), (expected, read, ticket)) in results.into_iter().zip(pending) {
         assert_eq!(index, expected);
@@ -159,12 +202,15 @@ pub(super) fn prepare_batch(
     if let Some(started) = started {
         let mut timing = world.resource_mut::<MeshPreparationTiming>();
         timing.batches += 1;
+        timing.parallel_batches += u64::from(count > 1);
+        timing.inline_jobs += u64::from(count == 1);
         timing.jobs += count as u64;
         timing.cache_hits += cache_hits;
         timing.peak_jobs = timing.peak_jobs.max(count);
         timing.peak_input_bytes = timing.peak_input_bytes.max(input_bytes);
         timing.elapsed += started.elapsed();
     }
+    consumed
 }
 
 #[cfg(test)]
@@ -259,10 +305,12 @@ mod tests {
     fn parallel_animation_matches_serial_after_clocks_and_edits() {
         let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
         let registry = SchemaRegistry::builtin();
-        for gpu in [false, true] {
+        for (gpu, budget) in [(false, 0), (false, 4096), (true, 0), (true, 4096)] {
             let stage = stage();
             let (mut serial, a) = world(gpu);
             let (mut parallel, b) = world(gpu);
+            serial.insert_resource(cache::MeshTangentCache::with_byte_budget(budget));
+            parallel.insert_resource(cache::MeshTangentCache::with_byte_budget(budget));
             for (iteration, time) in (0..=20)
                 .map(|step| step as f64 * 0.5)
                 .chain([5.0, 0.0, 10.0, 5.0])
@@ -315,7 +363,7 @@ mod tests {
             let timing = parallel.resource::<MeshPreparationTiming>();
             if pool.thread_num() > 1 {
                 assert!(timing.jobs > 0);
-                assert!(timing.cache_hits > 0);
+                assert_eq!(timing.cache_hits > 0, budget > 0);
                 assert_eq!(timing.peak_jobs, 2);
                 assert!(timing.peak_input_bytes <= 4096);
             }
@@ -324,7 +372,7 @@ mod tests {
                 parallel
                     .resource::<cache::MeshTangentCache>()
                     .retained_payload_bytes()
-                    <= 16 * 1024 * 1024
+                    <= budget
             );
         }
     }
@@ -375,6 +423,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sparse_meshes_share_a_bounded_batch() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let stage = stage();
+        let registry = SchemaRegistry::builtin();
+        for (limit, count, gap, batches) in [(4, 4, 20, 1), (usize::MAX, 11, 8, 2)] {
+            let (mut world, meshes) = world(true);
+            world.insert_resource(StageTime { current: 5.0 });
+            world.insert_resource(cache::MeshTangentCache::with_byte_budget(0));
+            world.resource_mut::<ParallelMeshPreparation>().max_jobs = limit;
+            let mut prims = Vec::new();
+            for mesh in meshes.into_iter().take(count) {
+                for _ in 0..gap {
+                    prims.push((
+                        openusd::sdf::path("/Test").unwrap(),
+                        world.spawn_empty().id(),
+                    ));
+                }
+                prims.push(mesh);
+            }
+            registry.patch_animation_with_pool(&stage, prims.clone(), &mut world, Some(&pool));
+            if pool.thread_num() > 1 {
+                let timing = world.resource::<MeshPreparationTiming>();
+                assert_eq!(timing.batches, batches);
+                assert_eq!(timing.parallel_batches, batches);
+                assert_eq!(timing.inline_jobs, 0);
+                assert_eq!(timing.peak_jobs, limit.min(MAX_BATCH_MESHES));
+                assert!(timing.peak_input_bytes <= 4096);
+            }
+            for (path, entity) in prims {
+                assert_eq!(
+                    world.get::<Mesh3d>(entity).is_some(),
+                    path.as_str() == "/Test/Face"
+                );
+            }
+        }
+    }
+
     struct EditLaterPrim;
 
     impl PrimRoute for EditLaterPrim {
@@ -408,5 +494,262 @@ mod tests {
             same_entities(&serial, *ae, &parallel, *be);
         }
         assert_eq!(parallel.resource::<MeshPreparationTiming>().batches, 0);
+    }
+
+    #[test]
+    fn deferred_hidden_meshes_are_not_decoded_by_preparation() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let stage = stage();
+        stage
+            .attribute("/Test/Face.visibility")
+            .unwrap()
+            .set(Value::Token("invisible".into()))
+            .unwrap();
+        let (mut world, prims) = world(true);
+        world.init_resource::<residency::DeferHiddenMeshes>();
+        world.init_resource::<super::super::MeshReadTiming>();
+        world.insert_resource(StageTime { current: 5.0 });
+        SchemaRegistry::builtin().patch_animation_with_pool(
+            &stage,
+            prims.clone(),
+            &mut world,
+            Some(&pool),
+        );
+        assert_eq!(world.resource::<super::super::MeshReadTiming>().decodes, 0);
+        assert_eq!(world.resource::<MeshPreparationTiming>().batches, 0);
+        for (_, entity) in prims {
+            assert!(world.get::<Mesh3d>(entity).is_none());
+            assert!(world.get::<residency::UsdDeferredMesh>(entity).is_some());
+        }
+    }
+
+    fn instance_source(orientation: &str) -> crate::UsdSource {
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/skel_morph_blended_animated.usda"
+        );
+        crate::UsdSource::new(
+            "parallel-instance.usda",
+            format!(
+                r#"#usda 1.0
+(subLayers = [@{file}@])
+over "Test" {{
+    over "Face" {{
+        uniform token orientation = "{orientation}"
+        def GeomSubset "Part" {{
+            uniform token familyName = "materialBind"
+            uniform token elementType = "face"
+            int[] indices = [0]
+        }}
+    }}
+}}
+def "Copy" (references = @{file}@</Test>) {{}}
+"#
+            )
+            .into_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn instance_app(parallel: bool, gpu: bool) -> (App, Handle<crate::UsdScene>, [Entity; 2]) {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<MeshPreparationTiming>();
+        app.insert_resource(crate::asset::UsdProjectionBudget(std::time::Duration::MAX));
+        if gpu {
+            app.add_plugins(gpu_skin::UsdGpuSkinningPlugin);
+        }
+        if !parallel {
+            app.insert_resource(ParallelMeshPreparation {
+                max_jobs: 0,
+                ..default()
+            });
+        }
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source: instance_source("rightHanded"),
+                textures: default(),
+            });
+        let roots = [0.0, 10.0].map(|current| {
+            app.world_mut()
+                .spawn((
+                    crate::UsdSceneRoot(handle.clone()),
+                    crate::instance::UsdInstanceTime { current },
+                ))
+                .id()
+        });
+        app.update();
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready)
+            );
+        }
+        (app, handle, roots)
+    }
+
+    fn check_instances(serial: &App, a: [Entity; 2], parallel: &App, b: [Entity; 2]) {
+        use super::super::subset::UsdSubset;
+        use crate::instance::UsdInstances;
+        for (ar, br) in a.into_iter().zip(b) {
+            for path in ["/Test/Face", "/Copy/Face"] {
+                let ae = serial
+                    .world()
+                    .non_send::<UsdInstances>()
+                    .entity(ar, path)
+                    .unwrap();
+                let be = parallel
+                    .world()
+                    .non_send::<UsdInstances>()
+                    .entity(br, path)
+                    .unwrap();
+                same_entities(serial.world(), ae, parallel.world(), be);
+                let subsets = |world: &World, entity| {
+                    let mut children: Vec<_> = world
+                        .get::<Children>(entity)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|child| {
+                            world
+                                .get::<UsdSubset>(*child)
+                                .map(|part| (part.0.clone(), *child))
+                        })
+                        .collect();
+                    children.sort_by(|a, b| a.0.cmp(&b.0));
+                    children
+                };
+                let ac = subsets(serial.world(), ae);
+                let bc = subsets(parallel.world(), be);
+                assert_eq!(ac.len(), bc.len());
+                if path == "/Test/Face" {
+                    assert_eq!(ac.len(), 1);
+                }
+                for ((an, ae), (bn, be)) in ac.into_iter().zip(bc) {
+                    assert_eq!(an, bn);
+                    same_entities(serial.world(), ae, parallel.world(), be);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn asset_plugin_preparation_preserves_root_clocks_reload_and_close() {
+        use crate::instance::{UsdInstanceTime, UsdInstances};
+        for gpu in [false, true] {
+            let (mut serial, ah, a) = instance_app(false, gpu);
+            let (mut parallel, bh, b) = instance_app(true, gpu);
+            let mut previous = None;
+            for clocks in [[2.0, 8.0], [8.0, 2.0], [5.0, 5.0], [0.0, 10.0]] {
+                for index in 0..2 {
+                    serial
+                        .world_mut()
+                        .get_mut::<UsdInstanceTime>(a[index])
+                        .unwrap()
+                        .current = clocks[index];
+                    parallel
+                        .world_mut()
+                        .get_mut::<UsdInstanceTime>(b[index])
+                        .unwrap()
+                        .current = clocks[index];
+                }
+                serial.update();
+                parallel.update();
+                check_instances(&serial, a, &parallel, b);
+                let meshes: Vec<_> = b
+                    .iter()
+                    .map(|root| {
+                        let entity = parallel
+                            .world()
+                            .non_send::<UsdInstances>()
+                            .entity(*root, "/Test/Face")
+                            .unwrap();
+                        let mesh = &parallel.world().get::<Mesh3d>(entity).unwrap().0;
+                        let skin = parallel
+                            .world()
+                            .get::<gpu_skin::UsdGpuSkin>(entity)
+                            .map(|skin| skin.matrices.clone());
+                        (mesh.clone(), skin)
+                    })
+                    .collect();
+                if let Some(previous) = previous {
+                    assert_ne!(meshes, previous);
+                }
+                previous = Some(meshes);
+            }
+            for (app, handle) in [(&mut serial, &ah), (&mut parallel, &bh)] {
+                app.world_mut()
+                    .resource_mut::<Assets<crate::UsdScene>>()
+                    .get_mut(handle)
+                    .unwrap()
+                    .source = instance_source("leftHanded");
+                app.update();
+                app.update();
+            }
+            check_instances(&serial, a, &parallel, b);
+            let face = parallel
+                .world()
+                .non_send::<UsdInstances>()
+                .entity(b[0], "/Test/Face")
+                .unwrap();
+            assert_eq!(
+                parallel
+                    .world()
+                    .non_send::<UsdInstances>()
+                    .stage(b[0])
+                    .unwrap()
+                    .attribute("/Test/Face.orientation")
+                    .unwrap()
+                    .get::<Value>()
+                    .unwrap(),
+                Some(Value::Token("leftHanded".into()))
+            );
+            if bevy::tasks::ComputeTaskPool::get().thread_num() > 1 {
+                assert!(parallel.world().resource::<MeshPreparationTiming>().jobs > 0);
+            }
+            assert_eq!(serial.world().resource::<MeshPreparationTiming>().jobs, 0);
+            parallel
+                .world_mut()
+                .entity_mut(b[0])
+                .remove::<crate::UsdSceneRoot>();
+            parallel.update();
+            assert!(parallel.world().get_entity(face).is_err());
+            assert_eq!(parallel.world().non_send::<UsdInstances>().len(), 1);
+            assert!(
+                parallel
+                    .world()
+                    .non_send::<UsdInstances>()
+                    .entity(b[1], "/Test/Face")
+                    .is_some()
+            );
+            parallel.world_mut().despawn(b[1]);
+            parallel.update();
+            assert!(parallel.world().non_send::<UsdInstances>().is_empty());
+            let jobs = parallel.world().resource::<MeshPreparationTiming>().jobs;
+            for _ in 0..3 {
+                parallel.update();
+            }
+            assert_eq!(
+                parallel.world().resource::<MeshPreparationTiming>().jobs,
+                jobs
+            );
+            assert_eq!(
+                parallel
+                    .world_mut()
+                    .query::<&gpu_skin::UsdGpuSkin>()
+                    .iter(parallel.world())
+                    .count(),
+                0
+            );
+        }
     }
 }

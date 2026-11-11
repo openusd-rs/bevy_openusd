@@ -77,7 +77,7 @@ processes and 192 raw warmup/measured updates. Both versions use the same record
 release profile, GPU-prepared CPU editor, profile flags and input assets. This
 does not create a GPU device or measure native-window cadence. There are no
 process warmups; OS page-cache state is uncontrolled. Observed host load varies
-from 8.72 to 23.81.
+from 8.07 to 28.09.
 
 Artifacts: `/tmp/bevy-optimization-animation-order-abba.3nlrQR/`, including logs,
 raw samples, manifest checks, ledger and `analysis.json`. Binary SHA-256:
@@ -119,3 +119,18 @@ Record requested and observed clocks alongside the final image metadata. Use
 owned isolated Weston instances, not desktop input or UI replay. Both saved
 before/after binaries must contain identical capture instrumentation; compare
 the viewport after forward, reverse and repeated seeks, including a CPU control.
+
+The embedded screenshot harness now accepts `USD_CAPTURE_SEEKS=5,10,5,5` only
+when `USD_SCREENSHOT` is configured. It accepts 1..32 finite comma-separated
+clocks, issues one command per update, waits for each clock on a subsequent
+update, resets on document replacement and requires the final clock to remain
+current for the existing 120-update/delay gate. The existing 60-second deadline
+also covers unacknowledged commands. Metadata includes requested/observed clocks
+and the initial time; ordinary screenshot requests still need no sequence.
+Four tests cover bounds, same-clock/reverse seeks, acknowledgement, replacement,
+settling/timeout and actual `EditorPlugin`/`LiveStagePlugin` animated transforms.
+Hardening passes 845 no-default / 962 all-feature/all-target executions, strict
+Clippy and formatting. The first hardening attempt caught a collapsible nested
+conditional; it was corrected before the passing final run. Logs:
+`/tmp/bevy-optimization-live-seek-capture-{harden,final-harden}.log`.
+This harness validation is not yet a rendered-image result.

@@ -31,6 +31,8 @@ mod curve_quality;
 mod environment;
 #[path = "support/gpu_timing.rs"]
 mod gpu_timing;
+#[path = "support/opening_timing.rs"]
+mod opening_timing;
 #[path = "support/playback_timing.rs"]
 mod playback_timing;
 
@@ -60,6 +62,7 @@ struct Capture {
     ready_frames: u32,
     requested: bool,
     mesh_report: String,
+    opening: opening_timing::OpeningTiming,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -179,6 +182,7 @@ impl Capture {
             ready_frames: 0,
             requested: false,
             mesh_report: String::new(),
+            opening: opening_timing::OpeningTiming::new(Instant::now()),
         })
     }
 
@@ -249,6 +253,7 @@ fn reverse_capture_clocks(
 }
 
 fn main() -> AppExit {
+    let started = Instant::now();
     let timing = match std::env::var("USD_CAPTURE_GPU_SAMPLES") {
         Ok(value) => gpu_timing::GpuTiming::parse(Some(&value)),
         Err(std::env::VarError::NotPresent) => gpu_timing::GpuTiming::parse(None),
@@ -298,6 +303,7 @@ fn main() -> AppExit {
             return AppExit::error();
         }
     };
+    capture.opening = opening_timing::OpeningTiming::new(started);
     capture.renderer = match CaptureRenderer::parse(
         &std::env::var("USD_CAPTURE_RENDERER").unwrap_or_else(|_| "forward".into()),
     ) {
@@ -576,7 +582,7 @@ fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     server: Res<AssetServer>,
-    capture: Res<Capture>,
+    mut capture: ResMut<Capture>,
 ) {
     let mut image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
@@ -610,6 +616,7 @@ fn setup(
     if capture.renderer == CaptureRenderer::Oit {
         camera.insert(bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default());
     }
+    capture.opening.request(Instant::now());
     let scene: Handle<UsdScene> = server.load(
         capture
             .asset
@@ -736,6 +743,7 @@ struct CaptureTiming<'w, 's> {
     timing: ResMut<'w, gpu_timing::GpuTiming>,
     playback: Option<ResMut<'w, playback_timing::PlaybackTiming>>,
     progress: Res<'w, PipelineProbe>,
+    render_scene_ready: ResMut<'w, pipeline_probe::PipelineSceneReady>,
     sort_timing: Option<Res<'w, usd_bevy::route::gpu_skin::DeformedSortTiming>>,
     instance_timing: Option<Res<'w, usd_bevy::instance::UsdInstanceAnimationTiming>>,
     preparation_phases: Option<Res<'w, usd_bevy::route::preparation::MeshPreparationPhaseTiming>>,
@@ -826,6 +834,7 @@ fn capture_frame(
         mut timing,
         mut playback,
         progress,
+        mut render_scene_ready,
         sort_timing,
         instance_timing,
         preparation_phases,
@@ -846,6 +855,7 @@ fn capture_frame(
         instancer_errors,
         geometry_errors,
     } = scene;
+    render_scene_ready.0 = false;
     if let Some(playback) = &playback
         && let Some(error) = playback.error()
     {
@@ -863,6 +873,7 @@ fn capture_frame(
         if let Some(playback) = &playback {
             eprintln!("{}", playback.report());
         }
+        eprintln!("{}", capture.opening.report());
         exit.write(AppExit::error());
         return;
     }
@@ -880,6 +891,7 @@ fn capture_frame(
     if states.iter().count() != capture.instance_times.len() || capture.requested {
         return;
     }
+    capture.opening.scene_ready(Instant::now());
     if !capture.camera_ready {
         return;
     }
@@ -944,6 +956,10 @@ fn capture_frame(
             capture.ready_frames = 0;
             return;
         }
+    }
+    render_scene_ready.0 = true;
+    if progress.ready_count_for_scene(true).is_some() {
+        capture.opening.pipelines_observed(Instant::now());
     }
     if progress.ready_count().is_none() {
         capture.ready_frames = 0;
@@ -1078,9 +1094,11 @@ fn capture_frame(
         ));
     }
     capture.requested = true;
+    capture.opening.screenshot_requested(Instant::now());
     commands.spawn(Screenshot(target.clone())).observe(
-        |event: On<ScreenshotCaptured>, capture: Res<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>,
+        |event: On<ScreenshotCaptured>, mut capture: ResMut<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>,
          visibility: Option<Res<usd_bevy::route::ProjectionVisibilityTimings>>, progress: Res<PipelineProbe>, mut exit: MessageWriter<AppExit>| {
+            capture.opening.readback(Instant::now());
             let compiled = progress.ready_count().expect("capture pipelines must remain ready at readback");
             if let Some(timings) = visibility {
                 for ((route, hidden), row) in &timings.0 {
@@ -1090,9 +1108,10 @@ fn capture_frame(
                 }
             }
             if let Some(timings) = timings {
-                eprintln!("capture_source_profile attempts={} failures={} validation_reuses={} open_ms={:.3} validation_ms={:.3} projection_ms={:.3}",
+                eprintln!("capture_source_profile attempts={} failures={} validation_reuses={} open_ms={:.3} validation_ms={:.3} projection_ms={:.3} overrides_ms={:.3} textures_ms={:.3}",
                     timings.attempts, timings.failures, timings.validation_reuses, timings.open.as_secs_f64()*1000.0,
-                    timings.validation.as_secs_f64()*1000.0, timings.projection.as_secs_f64()*1000.0);
+                    timings.validation.as_secs_f64()*1000.0, timings.projection.as_secs_f64()*1000.0,
+                    timings.overrides.as_secs_f64()*1000.0, timings.textures.as_secs_f64()*1000.0);
             }
             match save(&event.image, &capture) {
                 Ok(()) => { println!("CAPTURE_PIPELINES_READY compiled={compiled}"); println!("CAPTURE_OK {output}", output = capture.output.display()); exit.write(AppExit::Success); }
@@ -1188,7 +1207,8 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
             "curve_steps={}\ncurve_surface_sides={:?}\n",
             capture.curve_steps, capture.curve_surface_sides
         )
-        + &capture.mesh_report;
+        + &capture.mesh_report
+        + &capture.opening.report();
     let report = report
         + &format!(
             "exposure_ev100={}\ntonemapping={:?}\n",

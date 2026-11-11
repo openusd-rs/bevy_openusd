@@ -76,6 +76,16 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Wrap-up checkpoint:** the user requested ending the prolonged investigation.
+  The already-running verification finishes at 880 no-default / 1,007
+  all-feature/all-target executions, formatting, strict Clippy and a release
+  diagnostic build. No further real-asset experiment is started. The
+  [skin-influence inventory](benchmarks/skin-influence-reuse.md) is test-only,
+  built but not run on real assets; no production cache or speedup is claimed.
+  Actual performance work remains in bird skin/mesh preparation, cow tangent
+  and hidden-mesh costs, loading regressions and memory/lifecycle validation.
+  Earlier visual, 60 Hz, downstream and platform gates are not marked complete.
+
 - [Independent target checks across reveal, undo and redo](benchmarks/morph-publication.md#independent-target-checks-across-reveal-undo-and-redo)
   reuse the saved `2b4c718` viewer for eight uninjected GPU/CPU controls. State,
   identity, clock, residency and all four visible GPU publication histories pass;

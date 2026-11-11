@@ -1255,6 +1255,9 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 }
 
 #[cfg(test)]
+mod influence_probe;
+
+#[cfg(test)]
 mod tests {
     fn relationship_stage() -> Stage {
         crate::snippet::UsdSnippet::new(

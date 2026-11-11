@@ -126,3 +126,10 @@ bird pixel discrepancy or native-window/browser/lifecycle acceptance.
 Full acceptance remains open. Follow-up must investigate the loading
 observation and remaining kind/mesh/tangent costs with controlled evidence,
 not repeatedly rerun until a favorable result appears.
+
+The subsequent [matched opening comparison](opening-milestones.md#matched-results)
+instruments both production versions with the same request-to-Ready recorder.
+Bird/cow aggregate request-to-Ready regress 16.2%/7.7%, and all four pipeline
+milestones exceed the 5% limit under high variable host load. Its twelve settled
+image comparisons remain pixel-exact. These new failures remain open alongside
+the original partial-phase regression; neither timing scope replaces the other.

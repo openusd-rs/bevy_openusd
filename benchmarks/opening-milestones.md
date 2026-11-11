@@ -114,3 +114,44 @@ bootstrap, request-to-Ready, post-scene pipeline observation, final readback and
 source phases separate. Retain the existing greater-than-5% regression limit
 for the request-to-Ready and pipeline milestones; this additional matrix cannot
 retroactively erase old failed observations or establish windowed acceptance.
+
+### Matched results
+
+`/tmp/bevy-optimization-opening-pair.qBn67r/` records the exact baseline patch,
+source/blob hashes, build logs and sixteen fresh capture processes. The rebuilt
+baseline SHA-256 is
+`838632946bb429a366fd50dca497d032195486e6398d562d4fecb7e0bc33a10d`;
+the candidate is the `c38022b4...` recorder binary above. The current source was
+restored and rebuilt before measurement; its executable is byte-identical to
+the saved candidate. Only `read/skel.rs` differs between the production builds.
+There is no task-owned compilation during captures. Host load is high and
+variable (44.65–81.77), so the comparison does not isolate a causal cache effect.
+
+| Case | Before request-to-Ready, ms | After request-to-Ready, ms | Change of pair means | Before pipeline observation, ms | After pipeline observation, ms | Change of pair means |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bird | 4844.208 / 8540.778 | 6781.802 / 8777.130 | +16.2% | 6416.544 / 10425.129 | 8924.358 / 11281.518 | +20.0% |
+| Cow | 4879.910 / 4963.832 | 5536.860 / 5065.488 | +7.7% | 5969.713 / 5748.353 | 6700.719 / 6351.634 | +11.4% |
+| Arm | 270.478 / 69.355 | 123.339 / 126.814 | -26.4% | 960.443 / 481.896 | 1830.094 / 1682.447 | +143.5% |
+| Subsets | 18.985 / 33.355 | 23.383 / 18.974 | -19.1% | 314.249 / 533.614 | 1030.783 / 879.954 | +125.4% |
+
+Six of eight declared milestone checks exceed the 5% limit. This is a failed
+acceptance matrix, not clearance of the earlier partial loading regression.
+Bird's three-phase partial sum also regresses 18.5%; cow's improves 33.6% even
+though its end-to-end request-to-Ready gets worse. The metrics are not
+interchangeable. The much larger arm/subset pipeline changes occur after their
+source-publication work, confirming a separate startup/render scheduling cost
+that must not be attributed to skeleton relationship reads without evidence.
+
+All sixteen raw milestone sets pass arithmetic/order/configuration checks.
+All twelve comparisons against each case's first baseline image are pixel-exact
+at tolerance zero, including both candidate captures and the second baseline.
+All process/log/source checks pass; cow retains its four MDL warnings. The driver
+and analysis exit 1 for recorded warnings and six performance failures. Full
+JSON data, bootstrap/source phases and images remain in the evidence directory.
+
+The unexplained request-to-Ready interval can also contain main-world texture
+finalization in `PostUpdate`, not just asynchronous IO/decode. The existing
+`TextureSamplingTiming` counter in `route/sampling.rs` already covers this work
+but was only enabled by `editor_benchmark`; expose it in the native capture
+before assigning the residual interval to the loader. Earlier mip optimization
+and retained fidelity evidence are in [texture finalization](texture-finalization.md).

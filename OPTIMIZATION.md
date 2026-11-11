@@ -86,7 +86,11 @@ correct readiness reporting.
   unmeasured loader/scheduling interval. This is instrumentation evidence, not
   a speedup or clearance of opening regressions. The unlimited-projection
   offscreen path and pipeline observation do not establish editor responsiveness
-  or first-visible latency. See [opening milestones](benchmarks/opening-milestones.md).
+  or first-visible latency. A subsequent matched sixteen-process comparison
+  fails six of eight 5% opening milestone gates, including bird/cow
+  request-to-Ready regressions, despite twelve pixel-exact image comparisons.
+  No earlier loading failure is cleared. See
+  [opening milestones](benchmarks/opening-milestones.md).
 
 - Rendered playback baseline (`9f4212f`, `1fad2a5`): a bounded recorder now uses
   production asset-root playback, collecting main intervals, separate published

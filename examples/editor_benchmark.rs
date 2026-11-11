@@ -16,6 +16,9 @@ mod paired;
 #[path = "editor_benchmark/stepped.rs"]
 mod stepped;
 
+#[path = "editor_benchmark/residency.rs"]
+mod residency_probe;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SeekMode {
     Idle,
@@ -367,6 +370,20 @@ fn open_editor(
     gpu_prepared: bool,
     preparation: Option<usd_bevy::route::preparation::ParallelMeshPreparation>,
 ) -> Result<(App, EditorBridge, Measurement), Box<dyn std::error::Error>> {
+    open_editor_with_deferral(
+        path,
+        gpu_prepared,
+        preparation,
+        std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some(),
+    )
+}
+
+fn open_editor_with_deferral(
+    path: &Path,
+    gpu_prepared: bool,
+    preparation: Option<usd_bevy::route::preparation::ParallelMeshPreparation>,
+    defer: bool,
+) -> Result<(App, EditorBridge, Measurement), Box<dyn std::error::Error>> {
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
@@ -378,7 +395,7 @@ fn open_editor(
     app.init_asset::<Mesh>()
         .init_asset::<StandardMaterial>()
         .init_asset::<Image>();
-    if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() {
+    if defer {
         app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>();
     }
     if let Ok(value) = std::env::var("USD_RESIDENCY_BUDGET_MS") {
@@ -722,7 +739,7 @@ fn measure_payload(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if !(1..=4).contains(&args.len()) {
-        return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-quick|seek-unique|seek-timeline|seek-timeline-paired]".into());
+        return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-quick|seek-unique|seek-timeline|seek-timeline-paired|seek-residency-paired]".into());
     }
     let path = std::fs::canonicalize(&args[0])?;
     let samples = args
@@ -738,10 +755,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("seek") => SeekMode::Repeated,
         Some("seek-quick") => SeekMode::Quick,
         Some("seek-unique") => SeekMode::Unique,
-        Some("seek-timeline" | "seek-timeline-paired") => SeekMode::Timeline,
+        Some("seek-timeline" | "seek-timeline-paired" | "seek-residency-paired") => {
+            SeekMode::Timeline
+        }
         _ => {
             return Err(
-                "fourth argument must be seek, seek-quick, seek-unique, seek-timeline or seek-timeline-paired".into(),
+                "fourth argument must be seek, seek-quick, seek-unique, seek-timeline, seek-timeline-paired or seek-residency-paired".into(),
             );
         }
     };
@@ -768,13 +787,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "payloads=retained-cpu-bytes excludes=gpu-allocation,asset-handles,allocator-overhead"
     );
-    if args
-        .get(3)
-        .is_some_and(|mode| mode == "seek-timeline-paired")
-    {
+    if args.get(3).is_some_and(|mode| {
+        matches!(
+            mode.as_str(),
+            "seek-timeline-paired" | "seek-residency-paired"
+        )
+    }) {
+        let reverse =
+            residency_probe::reverse(std::env::var_os("USD_BENCH_PAIR_REVERSE").as_deref())?;
         for sample in 0..samples {
             println!("paired_sample_begin={sample}");
-            paired::run(&path, gpu_prepared, seek.samples(), sample % 2 != 0)?;
+            if args[3] == "seek-residency-paired" {
+                paired::run_residency(
+                    &path,
+                    gpu_prepared,
+                    seek.samples(),
+                    (sample % 2 != 0) ^ reverse,
+                )?;
+            } else {
+                paired::run(
+                    &path,
+                    gpu_prepared,
+                    seek.samples(),
+                    (sample % 2 != 0) ^ reverse,
+                )?;
+            }
         }
         return Ok(());
     }

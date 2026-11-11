@@ -15,6 +15,15 @@ struct Lane {
 
 impl Lane {
     fn open(path: &Path, gpu: bool, serial: bool) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_policy(path, gpu, serial, false)
+    }
+
+    fn open_policy(
+        path: &Path,
+        gpu: bool,
+        serial: bool,
+        defer: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let settings = ParallelMeshPreparation {
             max_jobs: if serial {
                 0
@@ -23,7 +32,8 @@ impl Lane {
             },
             ..default()
         };
-        let (mut app, bridge, measurement) = open_editor(path, gpu, Some(settings))?;
+        let (mut app, bridge, measurement) =
+            open_editor_with_deferral(path, gpu, Some(settings), defer)?;
         app.init_resource::<MeshPreparationTiming>();
         let view = bridge.view()?;
         Ok(Self {
@@ -127,6 +137,25 @@ pub(super) fn run(
     samples: usize,
     reverse: bool,
 ) -> Result<[Measurement; 2], Box<dyn std::error::Error>> {
+    run_policy(path, gpu, samples, reverse, false)
+}
+
+pub(super) fn run_residency(
+    path: &Path,
+    gpu: bool,
+    samples: usize,
+    reverse: bool,
+) -> Result<[Measurement; 2], Box<dyn std::error::Error>> {
+    run_policy(path, gpu, samples, reverse, true)
+}
+
+fn run_policy(
+    path: &Path,
+    gpu: bool,
+    samples: usize,
+    reverse: bool,
+    residency: bool,
+) -> Result<[Measurement; 2], Box<dyn std::error::Error>> {
     if [
         "USD_DEFER_HIDDEN_MESHES",
         "USD_RESIDENCY_BUDGET_MS",
@@ -136,14 +165,26 @@ pub(super) fn run(
     .any(|key| std::env::var_os(key).is_some())
     {
         return Err(
-            "paired preparation probe requires eager meshes without a residency budget".into(),
+            "paired probes reject external deferral, residency budget and prewarm overrides".into(),
         );
     }
-    let mut lanes = if reverse {
-        let batched = Lane::open(path, gpu, false)?;
-        [Lane::open(path, gpu, true)?, batched]
+    let names = if residency {
+        ["eager", "deferred"]
     } else {
-        [Lane::open(path, gpu, true)?, Lane::open(path, gpu, false)?]
+        NAMES
+    };
+    let open = |candidate| {
+        if residency {
+            Lane::open_policy(path, gpu, false, candidate)
+        } else {
+            Lane::open(path, gpu, !candidate)
+        }
+    };
+    let mut lanes = if reverse {
+        let candidate = open(true)?;
+        [open(false)?, candidate]
+    } else {
+        [open(false)?, open(true)?]
     };
     if lanes[0].bounds != lanes[1].bounds || lanes[0].document_id == lanes[1].document_id {
         return Err(
@@ -152,12 +193,13 @@ pub(super) fn run(
     }
     let clocks = clocks(lanes[0].bounds, samples)?;
     println!(
-        "paired_probe scope=same-binary-scheduling-not-native-fps apps=independent updates=sequential order=ABBA reverse={reverse} initial_first={} warmup={SEEK_WARMUP} samples={samples} start={} end={} rss=combined-two-apps-process-lifetime document_ids={},{}",
-        NAMES[usize::from(reverse)],
+        "paired_probe scope=same-binary-policy-not-native-fps residency={residency} apps=independent updates=sequential order=ABBA reverse={reverse} initial_first={} warmup={SEEK_WARMUP} samples={samples} start={} end={} rss=combined-two-apps-process-lifetime document_ids={},{} pool_threads={}",
+        names[usize::from(reverse)],
         lanes[0].bounds[0],
         lanes[0].bounds[1],
         lanes[0].document_id,
-        lanes[1].document_id
+        lanes[1].document_id,
+        bevy::tasks::ComputeTaskPool::get().thread_num()
     );
     let rss_before = resident_bytes();
     for lane in &mut lanes {
@@ -165,7 +207,7 @@ pub(super) fn run(
     }
     for (iteration, time) in clocks.into_iter().enumerate() {
         if iteration == SEEK_WARMUP {
-            for (lane, name) in lanes.iter_mut().zip(NAMES) {
+            for (lane, name) in lanes.iter_mut().zip(names) {
                 println!(
                     "paired_warmup_summary lane={name} total_ns={} max_ns={}",
                     lane.warmup.iter().sum::<Duration>().as_nanos(),
@@ -192,19 +234,29 @@ pub(super) fn run(
             }
         }
         let (phase, index) = seek_sample_phase(iteration);
+        if residency {
+            let (a, b) = lanes.split_at_mut(1);
+            let visible = residency_probe::compare_visible(&mut a[0].app, &mut b[0].app)?;
+            println!(
+                "paired_visible phase={phase} index={index} meshes={visible} exact=true excludes=timer"
+            );
+        }
         println!(
-            "paired_{phase}_sample index={index} clock={time:.17} first={} serial_ns={} batched_ns={}",
-            NAMES[sequence[0]],
+            "paired_{phase}_sample index={index} clock={time:.17} first={} {}_ns={} {}_ns={}",
+            names[sequence[0]],
+            names[0],
             elapsed[0].as_nanos(),
+            names[1],
             elapsed[1].as_nanos()
         );
     }
-    if lanes[0]
-        .app
-        .world()
-        .resource::<MeshPreparationTiming>()
-        .jobs
-        != 0
+    if !residency
+        && lanes[0]
+            .app
+            .world()
+            .resource::<MeshPreparationTiming>()
+            .jobs
+            != 0
     {
         return Err("serial control unexpectedly used preparation jobs".into());
     }
@@ -214,7 +266,7 @@ pub(super) fn run(
         .zip(&lanes[1].timings)
         .filter(|(serial, batched)| batched < serial)
         .count();
-    for (lane, name) in lanes.iter_mut().zip(NAMES) {
+    for (lane, name) in lanes.iter_mut().zip(names) {
         lane.timings.sort_unstable();
         lane.measurement.seek_median = quantile(&lane.timings, 50);
         lane.measurement.seek_p95 = quantile(&lane.timings, 95);
@@ -231,7 +283,8 @@ pub(super) fn run(
         report_routes(lane.app.world(), &format!("{name}-measured-seeks"), samples);
     }
     println!(
-        "paired_comparison batched_wins={batched_wins} samples={samples} payload_counts_equal={} peak_asset_counts_equal={} combined_rss_before={rss_before:?} combined_rss_after={:?} combined_rss_process_peak={:?}",
+        "paired_comparison {}_wins={batched_wins} samples={samples} payload_counts_equal={} peak_asset_counts_equal={} combined_rss_before={rss_before:?} combined_rss_after={:?} combined_rss_process_peak={:?}",
+        names[1],
         payload_counts(&lanes[0].measurement) == payload_counts(&lanes[1].measurement),
         lanes[0].measurement.peak_asset_counts == lanes[1].measurement.peak_asset_counts,
         resident_bytes(),

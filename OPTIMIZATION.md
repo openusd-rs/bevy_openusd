@@ -76,6 +76,16 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Skin correction-cache candidate rejected:** the saved release diagnostic
+  completes five bird clocks with 190 accepted and 15 explicitly rejected GPU
+  samples. A 64-entry model avoids only 5.98% of remaining non-adjacent
+  normal-correction evaluations, below the predeclared 25% opportunity gate;
+  256 entries do no better. No production cache is added. The
+  [inventory results](benchmarks/skin-influence-reuse.md#real-asset-inventory-candidate-rejected)
+  retain all counts, bit-exact checks, unsupported paths and input hashes.
+  Further work must target another measured cost; this is not a speedup and
+  does not clear any outstanding application, visual or release gate.
+
 - **Wrap-up checkpoint:** the user requested ending the prolonged investigation.
   The already-running verification finishes at 880 no-default / 1,007
   all-feature/all-target executions, formatting, strict Clippy and a release

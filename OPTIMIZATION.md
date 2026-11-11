@@ -76,6 +76,18 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Editor hierarchy reuse (`41cb1ce`, `6d4f8ae`): broad profiling identifies
+  repeated complete hierarchy/visibility reads during inspector publication.
+  The editor now retains one bounded current-composition hierarchy, caches
+  constant visibility separately for default/numeric time, and freshly samples
+  animated visibility. Selected properties and complete owned snapshots remain
+  unchanged. Eight new regressions cover clocks, clips, variants, direct edits,
+  payload rules, masks, native proxies, undo/redo, failed/repaired reload and
+  retention bounds. Hardening passes 817 no-default / 916 all-feature tests and
+  strict Clippy. Native gate completion and saved-release performance acceptance
+  are pending; no speedup is claimed yet. See
+  [editor hierarchy sampling](benchmarks/editor-hierarchy.md).
+
 - Posed per-draw sorting (`fe32713`, `291b4af`, `53a34e6`): corrects the observed
   wing/grid order without changing shared mesh AABBs, grid settings or image
   tolerance. The original bird time-zero CPU/GPU comparison now passes (zero

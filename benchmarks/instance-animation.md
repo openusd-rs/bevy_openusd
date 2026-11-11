@@ -90,4 +90,54 @@ render/performance test. The status ledger is
 `/tmp/bevy-optimization-instance-timing-gates.tsv`, with logs
 `/tmp/bevy-optimization-instance-timing-{test-native-deformation,test-watchers,test-native,check-web}.log`.
 
-No production animation-index optimization is implemented at this checkpoint.
+The instrumentation-only checkpoint above does not include classification reuse.
+
+## Classification-reuse candidate
+
+The candidate retains positive and negative classifications in each asset
+runtime, capped at 65,536 paths and 8 MiB of path text, not total allocator/RSS
+usage. It retains no entities, stage handles, asset handles or historical poses.
+The existing live-stage observer increments a saturating composition revision
+for every commit and synthetic resync; draining notices does not reset it.
+Each lookup also checks layer identifiers, load rules, population mask and muted
+layers after flushing. A changed key releases old entries, failed flushes and
+saturated revisions disable retention, and a change during classification
+prevents publishing that result into the cache. Oversized entries use fresh
+classification. New/reloaded runtimes begin empty and teardown drops the cache.
+
+The original lazy traversal/order stays intact. Registries with custom routes
+clear/bypass the cache, preserving fresh classification after preceding route
+callbacks. Reuse counts are separate from actual classification calls; timed
+classification includes lookup/invalidation checks. `967bd89` adds the live
+revision and `c624928` adds the cache and capture reuse counters.
+
+Initial candidate tests exposed a fixture construction error, not an oracle
+disagreement caused by caching: a root with filesystem fallback did not resolve
+relative dependency names that existed only in the supplied snapshots. The
+fixture now uses the explicit snapshot-only root policy and validates its full
+composition before testing payload transitions. Production resolver behavior
+is unchanged. Both failed attempts are retained in
+`/tmp/bevy-optimization-animation-cache-{harden,ready-harden}.log`.
+
+Nine new tests plus the updated optional-timer regression pass. They cover
+fresh-oracle agreement across deformation/clip/prototype fixtures, single-sample
+direct layer edits, drained notices, positive/negative decisions, payloads,
+muting, variants, population masks, material collections/shader changes,
+retention caps, custom callback mutation/order, independent clocks, failed and
+repaired reloads, runtime-component preservation, teardown and revision
+saturation/detachment. Final `harden` passes 829 no-default and 937
+all-feature/all-target tests, strict Clippy, formatting and whitespace checks;
+these are overlapping configurations. The release capture executable builds.
+Logs: `/tmp/bevy-optimization-animation-cache-fixed-harden.log` and
+`/tmp/bevy-optimization-animation-cache-build.log`.
+
+Native before/after performance, full-object render comparisons and refreshed
+native/reload/export/wasm gates remain pending for this candidate.
+
+Before the alternating run, the saved pre-cache executable renders and passes
+pipeline/log/readback checks at the new fixed views. Images under
+`/tmp/bevy-optimization-animation-camera.MFRxtx/` were inspected: the entire arm,
+bird and cow fit the viewport. Eye/target are `(2.4,1.6,3.2)/(0,0.6,0)` for arm,
+`(10,6,14)/(0,1,0)` for bird and `(3,2,4)/(0,0.8,0)` for cow. Both compared
+versions must use those same views; differences from the earlier default-view
+baseline are not attributed to the cache. The cow MDL warning remains present.

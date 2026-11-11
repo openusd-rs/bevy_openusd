@@ -88,3 +88,48 @@ candidate, claim pure microarchitectural causation independent of core load/
 frequency, or infer the unrecorded placement of the original failed run.
 Preserve both classes' full timings, counts, payload and diagnostics. A useful
 result should inform a placement-aware comparison, not waive existing gates.
+
+## Same-binary placement result
+
+The `pinned/` driver and analyzer both exit zero. All eight processes validate
+8,000 measured updates and 32 warmups, matching payload/work counts and zero
+diagnostics. Each child reports exactly its selected one-CPU mask and one
+available processor. Unscaled PMU running-time coverage is complete and 100%
+on the selected class; the other class contributes zero runtime. Only the
+unchanged original executable is run in this experiment.
+
+| Control | Core CPU 0 median ms | Atom CPU 16 median ms | Median change | Task-clock change | Instruction change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| GPU morph | 0.355908 | 0.577999 | +62.40% | +62.44% | +0.0467% |
+| Subsets | 0.165242 | 0.321512 | +94.57% | +92.69% | +0.0321% |
+
+Both atom runs reproduce the slower level: morph medians 576.919 / 579.078 us
+versus 355.596 / 356.219 us on the core CPU; subsets 321.604 / 321.419 us
+versus 160.816 / 169.668 us. All p95/max/opening/idle/RSS metrics, frequency
+snapshots, counters and the exact per-process input identities remain in
+`pinned/analysis.json`, logs and manifests. No candidate speedup is measured
+here. CPU class, individual-core load/frequency and placement are not separated
+from one another, so do not describe this as a pure microarchitecture result.
+
+This establishes that changing placement alone for unchanged code can produce
+large wall-time changes in these controls. It does **not** identify the earlier
+uninstrumented run's placement or clear its failed acceptance gate. The
+one-CPU masks also constrain startup parallelism relative to the default;
+this is not evidence for the normal worker-pool configuration.
+
+## Next controlled comparison
+
+Use the existing stepped editor protocol to initialize both original and
+candidate with their default affinity and normal worker pools. At the first
+ready marker, validate the owned benchmark PID/executable, then bind **only
+its main thread** to the same selected CPU for both versions. Preserve and
+verify every observed non-main thread's original affinity and the reported
+pool-thread counts. Apply this separately on core CPU 0 and atom CPU 16.
+
+Alternate individual equal-clock updates in ABBA order and reverse startup/
+first-update order in a second fresh pair. Retain an identical-binary control,
+all clocks, readiness, payload, per-order results and mask snapshots. Never
+pin unrelated processes or replace this with a globally single-threaded app.
+This can test the implementation with matched main-thread placement while
+preserving normal worker pools. It remains a controlled diagnostic, not an
+automatic waiver of the prior default-affinity failures or proof of native FPS.

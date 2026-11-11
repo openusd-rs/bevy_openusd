@@ -76,6 +76,18 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Control CPU-work/placement diagnosis:** 16 instrumented runs validate
+  16,000 updates, complete counter coverage and zero lost samples. GPU-morph
+  and subset instruction totals differ only -0.0078% / +0.0038%; the earlier
+  large wall-time regressions are not reproduced. Eight separate same-original-
+  binary runs then measure +62.40% / +94.57% median changes between private
+  core/atom placements, with nearly unchanged instruction counts. The
+  [placement evidence](benchmarks/tangent-control-placement.md) preserves all
+  limits: this does not recover the old run's placement, clear its failures,
+  or measure native FPS. Next compare matched main-thread placement after
+  default worker-pool initialization, retaining worker affinities and both CPU
+  classes. Production dependencies and all broader gates remain unchanged.
+
 - **Tangent full-editor gate failed despite cow gain:** 24 processes validate
   24,000 updates and 96 warmups, unchanged payload/work counts and no diagnostics.
   Cow CPU-update median falls 8.34%, but GPU morph and subsets rise 55.57% and

@@ -494,6 +494,52 @@ mod tests {
     }
 
     #[test]
+    fn animation_primvars_match_uncached_meshes_after_inherited_edits() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let registry = SchemaRegistry::builtin();
+        for gpu in [false, true] {
+            for pool in [None, Some(&pool)] {
+                let stage = stage();
+                stage
+                    .create_attribute("/Test.primvars:displayOpacity", "float[]")
+                    .unwrap();
+                let (mut fresh, a) = world(gpu);
+                let (mut scoped, b) = world(gpu);
+                for (iteration, time) in [0.0, 2.5, 10.0, 5.0, 5.0, 0.0].into_iter().enumerate() {
+                    let attribute = stage.attribute("/Test.primvars:displayOpacity").unwrap();
+                    attribute
+                        .clone()
+                        .set(Value::FloatVec(vec![iteration as f32 / 10.0]))
+                        .unwrap();
+                    attribute
+                        .set_metadata(
+                            "interpolation",
+                            Value::Token(
+                                if iteration % 2 == 0 {
+                                    "constant"
+                                } else {
+                                    "vertex"
+                                }
+                                .into(),
+                            ),
+                        )
+                        .unwrap();
+                    fresh.insert_resource(StageTime { current: time });
+                    scoped.insert_resource(StageTime { current: time });
+                    for (path, entity) in &a {
+                        registry.patch_prim(&stage, path, &mut fresh, *entity, &[]);
+                    }
+                    registry.patch_animation_with_pool(&stage, b.clone(), &mut scoped, pool);
+                    for ((_, ae), (_, be)) in a.iter().zip(&b) {
+                        assert!(fresh.get::<Mesh3d>(*ae).is_some());
+                        same_entities(&fresh, *ae, &scoped, *be);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn parallel_animation_matches_serial_after_clocks_and_edits() {
         let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
         let registry = SchemaRegistry::builtin();

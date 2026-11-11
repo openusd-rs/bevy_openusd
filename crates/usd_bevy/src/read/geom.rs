@@ -1247,7 +1247,36 @@ fn vec2f_values(value: Option<Value>) -> Option<Vec<[f32; 2]>> {
     }
 }
 
-type AncestorPrimvars = (Stage, HashMap<(Path, String), bool>);
+struct AncestorPrimvars {
+    stage: Stage,
+    answers: HashMap<(Path, String), bool>,
+    text_bytes: usize,
+    max_entries: usize,
+    max_text_bytes: usize,
+}
+
+impl AncestorPrimvars {
+    fn new(stage: &Stage) -> Self {
+        Self {
+            stage: stage.clone(),
+            answers: HashMap::new(),
+            text_bytes: 0,
+            max_entries: 4096,
+            max_text_bytes: 1024 * 1024,
+        }
+    }
+
+    fn insert(&mut self, key: (Path, String), answer: bool) {
+        let bytes = key.0.as_str().len().saturating_add(key.1.len());
+        if self.answers.len() < self.max_entries
+            && bytes <= self.max_text_bytes.saturating_sub(self.text_bytes)
+            && !self.answers.contains_key(&key)
+        {
+            self.text_bytes += bytes;
+            self.answers.insert(key, answer);
+        }
+    }
+}
 
 thread_local! {
     /// Answers of [`authors_primvar`] for ancestors, kept while a
@@ -1265,7 +1294,7 @@ pub(crate) struct PrimvarScope {
 impl PrimvarScope {
     pub(crate) fn begin(stage: &Stage) -> Self {
         let previous =
-            ANCESTOR_PRIMVARS.with(|memo| memo.replace(Some((stage.clone(), HashMap::new()))));
+            ANCESTOR_PRIMVARS.with(|memo| memo.replace(Some(AncestorPrimvars::new(stage))));
         Self { previous }
     }
 }
@@ -1285,8 +1314,8 @@ fn authors_primvar(stage: &Stage, prim: &Path, path: &Path, name: &str) -> anyho
         && let Some(hit) = ANCESTOR_PRIMVARS.with(|memo| {
             memo.borrow()
                 .as_ref()
-                .filter(|(owner, _)| owner == stage)
-                .and_then(|(_, answers)| answers.get(&key).copied())
+                .filter(|cache| cache.stage == *stage)
+                .and_then(|cache| cache.answers.get(&key).copied())
         })
     {
         return Ok(hit);
@@ -1299,10 +1328,10 @@ fn authors_primvar(stage: &Stage, prim: &Path, path: &Path, name: &str) -> anyho
                 == Interpolation::Constant);
     if ancestor {
         ANCESTOR_PRIMVARS.with(|memo| {
-            if let Some((owner, answers)) = memo.borrow_mut().as_mut()
-                && *owner == *stage
+            if let Some(cache) = memo.borrow_mut().as_mut()
+                && cache.stage == *stage
             {
-                answers.insert(key, authors);
+                cache.insert(key, authors);
             }
         });
     }
@@ -1472,6 +1501,189 @@ pub(crate) fn read_primvar_float(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ownership_stage() -> Stage {
+        crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def Xform "Root" {
+    texCoord2f[] primvars:st = [(0,0)] (interpolation = "constant")
+    color3f[] primvars:displayColor = [(1,0,0)] (interpolation = "constant")
+    def Xform "Parent" {
+        color3f[] primvars:displayColor = [(0,1,0)] (interpolation = "vertex")
+        float[] primvars:displayOpacity = None
+        def Mesh "A" { texCoord2f[] primvars:st = None }
+        def Mesh "B" { float[] primvars:displayOpacity = [0.5] }
+    }
+}
+"#,
+        )
+        .open_stage()
+        .unwrap()
+    }
+
+    fn fresh_owner(stage: &Stage, prim: &Path, name: &str) -> Path {
+        let mut current = Some(prim.clone());
+        while let Some(path) = current {
+            if path.is_abs_root() {
+                break;
+            }
+            let info = stage
+                .prim(path.clone())
+                .unwrap()
+                .attribute(name)
+                .resolve_info()
+                .unwrap();
+            if info.has_authored_value()
+                && !info.value_is_blocked()
+                && (path == *prim
+                    || read_primvar_interpolation(stage, &path, name)
+                        .unwrap()
+                        .unwrap_or(Interpolation::Constant)
+                        == Interpolation::Constant)
+            {
+                return path;
+            }
+            current = path.parent();
+        }
+        prim.clone()
+    }
+
+    #[test]
+    fn bounded_primvar_scopes_match_fresh_walks_and_isolate_stages_and_edits() {
+        let stage = ownership_stage();
+        let other = ownership_stage();
+        let color = "primvars:displayColor";
+        other
+            .attribute("/Root/Parent.primvars:displayColor")
+            .unwrap()
+            .set_metadata("interpolation", Value::Token("constant".into()))
+            .unwrap();
+        let paths = ["/Root", "/Root/Parent", "/Root/Parent/A", "/Root/Parent/B"]
+            .map(|path| openusd::sdf::path(path).unwrap());
+        let names = [
+            "primvars:st",
+            color,
+            "primvars:displayOpacity",
+            "primvars:normals",
+        ];
+        for (max_entries, max_text_bytes) in [(0, 1024), (1, 1024), (4096, 0), (4096, 1024)] {
+            let _scope = PrimvarScope::begin(&stage);
+            ANCESTOR_PRIMVARS.with(|memo| {
+                let mut memo = memo.borrow_mut();
+                let cache = memo.as_mut().unwrap();
+                cache.max_entries = max_entries;
+                cache.max_text_bytes = max_text_bytes;
+            });
+            for path in paths.iter().chain(paths.iter().rev()) {
+                let owners = inherited_primvar_owners(&stage, path, names).unwrap();
+                for (name, owner) in names.into_iter().zip(owners) {
+                    assert_eq!(owner, fresh_owner(&stage, path, name));
+                }
+            }
+            let retained = ANCESTOR_PRIMVARS.with(|memo| {
+                let memo = memo.borrow();
+                let cache = memo.as_ref().unwrap();
+                assert!(cache.answers.len() <= max_entries);
+                assert!(cache.text_bytes <= max_text_bytes);
+                if max_entries == 4096 && max_text_bytes == 1024 {
+                    assert!(cache.answers.values().any(|&answer| answer));
+                    assert!(cache.answers.values().any(|&answer| !answer));
+                }
+                (cache.answers.len(), cache.text_bytes)
+            });
+            for nested in [&other, &stage] {
+                let _nested = PrimvarScope::begin(nested);
+                for owner in [&other, &stage] {
+                    assert_eq!(
+                        inherited_primvar_owner(owner, &paths[2], color).unwrap(),
+                        fresh_owner(owner, &paths[2], color)
+                    );
+                }
+            }
+            ANCESTOR_PRIMVARS.with(|memo| {
+                let memo = memo.borrow();
+                let cache = memo.as_ref().unwrap();
+                assert_eq!((cache.answers.len(), cache.text_bytes), retained);
+            });
+        }
+        ANCESTOR_PRIMVARS.with(|memo| assert!(memo.borrow().is_none()));
+        stage
+            .attribute("/Root/Parent.primvars:displayColor")
+            .unwrap()
+            .set_metadata("interpolation", Value::Token("constant".into()))
+            .unwrap();
+        let _scope = PrimvarScope::begin(&stage);
+        assert_eq!(
+            inherited_primvar_owner(&stage, &paths[2], color).unwrap(),
+            paths[1]
+        );
+    }
+
+    #[test]
+    fn primvar_scope_limits_count_text_once_and_fall_back_for_large_keys() {
+        let stage = ownership_stage();
+        let key = (
+            openusd::sdf::path("/Root").unwrap(),
+            "primvars:st".to_owned(),
+        );
+        let bytes = key.0.as_str().len() + key.1.len();
+        for (entries, limit, expected) in [(0, bytes, 0), (1, bytes - 1, 0), (1, bytes, 1)] {
+            let mut cache = AncestorPrimvars::new(&stage);
+            cache.max_entries = entries;
+            cache.max_text_bytes = limit;
+            cache.insert(key.clone(), true);
+            cache.insert(key.clone(), false);
+            cache.insert((key.0.clone(), "large".repeat(1024)), true);
+            assert_eq!(cache.answers.len(), expected);
+            assert_eq!(cache.text_bytes, bytes * expected);
+            if expected == 1 {
+                assert!(cache.answers[&key]);
+            }
+        }
+    }
+
+    #[test]
+    fn animation_custom_routes_observe_inherited_owner_edits_between_siblings() {
+        use crate::route::{PrimRoute, RouteCtx, SchemaRegistry};
+        use bevy::prelude::*;
+
+        #[derive(Resource, Default)]
+        struct Owners(Vec<Path>);
+        struct ReadAndEdit;
+        impl PrimRoute for ReadAndEdit {
+            fn matches(&self, _: &RouteCtx) -> bool {
+                true
+            }
+            fn project(&self, ctx: &RouteCtx, world: &mut World, _: Entity) {
+                world.resource_mut::<Owners>().0.push(
+                    inherited_primvar_owner(ctx.stage, ctx.path, "primvars:displayColor").unwrap(),
+                );
+                ctx.stage
+                    .attribute("/Root/Parent.primvars:displayColor")
+                    .unwrap()
+                    .set_metadata("interpolation", Value::Token("constant".into()))
+                    .unwrap();
+            }
+        }
+        let stage = ownership_stage();
+        let mut world = World::new();
+        world.init_resource::<Owners>();
+        let prims = ["/Root/Parent/A", "/Root/Parent/B"]
+            .map(|path| (openusd::sdf::path(path).unwrap(), world.spawn_empty().id()));
+        let mut registry = SchemaRegistry::new();
+        registry.register(ReadAndEdit);
+        registry.patch_animation(&stage, prims, &mut world);
+        assert_eq!(
+            world
+                .resource::<Owners>()
+                .0
+                .iter()
+                .map(Path::as_str)
+                .collect::<Vec<_>>(),
+            ["/Root", "/Root/Parent"]
+        );
+        ANCESTOR_PRIMVARS.with(|memo| assert!(memo.borrow().is_none()));
+    }
 
     #[test]
     fn batched_owners_match_independent_walks_before_and_after_edits() {

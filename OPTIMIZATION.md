@@ -81,8 +81,11 @@ correct readiness reporting.
   lifetime, stage isolation, later edits and deformation arithmetic are
   unchanged. Hardening passes 882 / 1,009 executions, plus four native CPU
   deformation-oracle tests, wasm compilation and a release benchmark build.
-  The [alternating CPU comparison](benchmarks/shared-skel-queries.md) is pending;
-  this correctness checkpoint is not a measured application-speedup claim.
+  The [alternating CPU comparison](benchmarks/shared-skel-queries.md#alternating-whole-editor-cpu-comparison)
+  validates 20,000 updates and 80 warmups. Mean-of-medians CPU update costs fall
+  5.54% for bird and 2.19% for cow, but GPU-morph control median rises 25.49%,
+  bird maximum rises 23.10%, and subsets p95 rises 19.87%. These failures remain
+  open; no smooth-native-playback or full performance acceptance is claimed.
 
 - **Skin correction-cache candidate rejected:** the saved release diagnostic
   completes five bird clocks with 190 accepted and 15 explicitly rejected GPU

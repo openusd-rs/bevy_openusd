@@ -83,7 +83,10 @@ correct readiness reporting.
   preparation is restored byte-exactly to `181239d`; no queue speedup is claimed.
   See [the retained trial](benchmarks/tangent-queue.md). Further scheduler changes
   require isolated, tightly paired job evidence rather than another unchanged
-  full-scene timing matrix.
+  full-scene timing matrix. Restored-source hardening passes 852 / 971 executions
+  after `f7ec2cc` repairs three test-only projection-readiness assumptions. The
+  release viewer and benchmark/capture examples rebuild; no new rendered or
+  performance acceptance is claimed for those rebuilt executables.
 
 - Bounded animation primvar ownership reuse (`f3a7501`) now shares ancestor
   resolution within built-in animation passes, with fresh sampled values,

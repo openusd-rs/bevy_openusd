@@ -111,3 +111,26 @@ rendered speedup, platform acceptance or 60 Hz result is claimed here.
 The next scheduler investigation needs tightly paired comparisons of identical
 job payloads, separating queue partitioning, executor contention and generation
 cost. The full remaining work and prior failures in `OPTIMIZATION.md` are intact.
+
+## Restored-source verification
+
+`519d33e` withdraws the scheduler. The first restored hardening run exposes
+three existing geometry fixtures looking up entities before both roots finish
+their shared default projection budget: inherited normals/prototypes, inherited
+UV indices, and independently timed shader dependencies. `f7ec2cc` gives those
+tests an unlimited test-only budget and asserts Ready before their original
+geometry/material checks. Production budgets and assertions are not weakened.
+The failed run remains in `restored-harden.log`.
+
+Current hardening passes 852 no-default and 971 all-feature/all-target executions,
+strict Clippy, formatting and whitespace checks (`restored-harden-fixed.log`).
+The release editor benchmark, capture example and main viewer all rebuild.
+The scheduler source and lockfile match the baseline manifest exactly. Relative
+to `181239d`, the only remaining Rust edits are the nineteen test-only lines.
+
+The rebuilt executables are not byte-identical to the saved baseline after those
+fixture edits; this is recorded rather than claiming binary equivalence. The
+first rebuild driver stopped at that comparison, then resumed only the remaining
+capture/viewer builds. See `restored-build.log`, `restored-binary-comparison.txt`
+and `restored-binaries.sha256`. These fresh builds were not launched or rendered;
+whole-project performance and rendered acceptance remain open.

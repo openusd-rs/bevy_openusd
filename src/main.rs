@@ -15,6 +15,7 @@ mod capture;
 mod capture_metadata;
 mod capture_residency;
 mod capture_tools;
+mod capture_uniforms;
 mod close_confirmation;
 mod control;
 mod curve_quality;

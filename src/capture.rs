@@ -220,6 +220,7 @@ fn save_readback(image: &Image, output: &Path, timing: &str) -> Result<(), Strin
 }
 
 type CaptureCamera = (
+    Entity,
     &'static Camera,
     &'static RenderTarget,
     &'static GlobalTransform,
@@ -250,7 +251,13 @@ pub fn configure(app: &mut App) {
             .as_ref()
             .expect("morph probe requires USD_CAPTURE_RESIDENCY");
         crate::morph_probe::configure(app, config.mesh_path());
+        crate::capture_uniforms::configure(app);
     }
+    let uniforms = morph_probe.then(|| {
+        app.world()
+            .resource::<crate::capture_uniforms::UniformProbe>()
+            .clone()
+    });
     let started = std::time::Instant::now();
     app.add_systems(Last, move |mut commands: Commands, cameras: Query<CaptureCamera, With<Camera3d>>,
         generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
@@ -262,7 +269,7 @@ pub fn configure(app: &mut App) {
         device: Option<Res<bevy::render::renderer::RenderDevice>>,
         adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
         meshes: Res<Assets<Mesh>>, mesh_references: Query<(&Mesh3d, &InheritedVisibility)>| {
-        let active = cameras.iter().find(|(camera, ..)| camera.is_active);
+        let active = cameras.iter().find(|(_, camera, ..)| camera.is_active);
         let document = active.and_then(|_| session.as_ref().map(|session| session.document_id()));
         gate.delay = std::time::Duration::from_millis(delay_ms);
         let elapsed = started.elapsed();
@@ -272,7 +279,7 @@ pub fn configure(app: &mut App) {
         let seek_action = seek_state.advance(document, time.current, &seeks);
         let mut ready_document = (seek_action == SeekAction::Ready).then_some(document).flatten();
         if ready_document.is_some() && let Some(config) = &residency {
-            let (camera, _, transform, ..) = active.expect("residency capture requires a camera");
+            let (_, camera, _, transform, ..) = active.expect("residency capture requires a camera");
             let camera = crate::capture_metadata::camera_report(transform, camera.clip_from_view());
             match residency_state.advance(config, &residency_inputs, &bridge, camera) {
                 Ok(true) => (),
@@ -287,7 +294,7 @@ pub fn configure(app: &mut App) {
         match gate.advance(ready_document, elapsed) {
             CaptureAction::Timeout => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: timed out waiting for an open document, active camera, seek sequence and capture delay"),
             CaptureAction::Request => {
-                let (camera, target, transform, environment, environment_state) = active.expect("capture gate requires an active camera");
+                let (entity, camera, target, transform, environment, environment_state) = active.expect("capture gate requires an active camera");
                 let output = output.clone();
                 let mut timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
@@ -314,16 +321,30 @@ pub fn configure(app: &mut App) {
                     mesh_references.iter().map(|(mesh, visibility)| (mesh.0.id(), visibility.get()))));
                 timing.push_str(&crate::capture_metadata::environment_report(environment, environment_state,
                     diagnostics.as_ref().map_or(0, |value| value.recorded_generations), generators.iter().count(), "Last-at-request"));
-                commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>,
+                let mut screenshot = commands.spawn(Screenshot(target.clone()));
+                if uniforms.is_some() {
+                    screenshot.insert(crate::capture_uniforms::UniformCapture(entity));
+                }
+                let uniforms = uniforms.clone();
+                screenshot.observe(move |event: On<ScreenshotCaptured>,
                     grids: Query<(&GlobalTransform, &bevy::dev_tools::infinite_grid::InfiniteGridSettings)>| {
                     let mut metadata = timing.clone();
+                    let uniform_report = uniforms.as_ref().map(|probe| probe.report(event.entity));
+                    match &uniform_report {
+                        Some(Ok(report)) => metadata.push_str(report),
+                        Some(Err(error)) => metadata.push_str(&format!("gpu_uniform_error={error}\n")),
+                        None => (),
+                    }
                     metadata.push_str("readback_grid_scope=ScreenshotCaptured-main-world\n");
                     for (transform, settings) in &grids {
                         metadata.push_str("readback_");
                         metadata.push_str(&crate::transparent_probe::grid_report(transform, settings));
                     }
                     match save_readback(&event.image, Path::new(&output), &metadata) {
-                        Ok(()) => eprintln!("VIEWPORT_CAPTURE_OK {output}"),
+                        Ok(()) => match uniform_report {
+                            Some(Err(error)) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
+                            _ => eprintln!("VIEWPORT_CAPTURE_OK {output}"),
+                        },
                         Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
                     }
                 });

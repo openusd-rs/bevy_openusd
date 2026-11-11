@@ -80,10 +80,13 @@ correct readiness reporting.
   repeats projection of the same face tangents within a vertex group. A
   [test-only kernel probe](benchmarks/tangent-projected-groups.md) now records
   raw timing/work counts and length-framed output digests without running the
-  withdrawn scheduler. Its original release build and two focused tests pass;
-  full hardening and candidate comparison remain pending. The experimental
-  dependency copy is isolated in the evidence directory, not enabled in
-  production. No speedup, output equality or broader completion is claimed.
+  withdrawn scheduler. Production hardening passes 885 / 1,012 executions,
+  formatting and strict Clippy. The projection-only comparison validates 800
+  clocks and 32 warmups with matching output digests; cow kernel time falls
+  6.35%, missing the predeclared 10% target. That candidate is not integrated.
+  A distinct temporary-member-list reuse candidate keeps the same gates and
+  separate evidence; its comparison is pending. Production dependencies stay
+  unchanged. No whole-app, native FPS or broader completion is claimed.
 
 - **Authored-flag cache withdrawn after measurement:** 20 release processes
   validate 20,000 unique updates and 80 warmups, with unchanged payload/work

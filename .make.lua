@@ -234,6 +234,22 @@ make.recipe{ name = "test-pbr", desc = "test the patched Bevy PBR crate",
              run = function() sh.cargo("test", "-p", "bevy_pbr", "--lib") end }
 
 make.recipe{
+  name = "build-sample-query-probe",
+  desc = "build the upstream animation-attribute query comparison",
+  run = function()
+    sh.cargo("build", "-p", "usd_bevy", "--release", "--example", "sample_query_probe")
+  end,
+}
+
+make.recipe{
+  name = "test-sample-query-probe",
+  desc = "test sample clocks, bit comparisons and upstream query edits",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--example", "sample_query_probe")
+  end,
+}
+
+make.recipe{
   name = "build-tangent-probe",
   desc = "build the release library test executable containing the paired tangent probe",
   run = function()

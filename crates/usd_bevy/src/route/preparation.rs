@@ -39,6 +39,31 @@ pub struct MeshPreparationTiming {
     pub elapsed: std::time::Duration,
 }
 
+/// Opt-in non-overlapping batch phases and overlapping tangent-job wall times.
+#[derive(Resource, Default)]
+pub struct MeshPreparationPhaseTiming {
+    pub batches: u64,
+    pub phases: std::collections::BTreeMap<&'static str, std::time::Duration>,
+    pub tangent_jobs: u64,
+    pub tangent_failures: u64,
+    pub tangent_vertices: u64,
+    pub tangent_elapsed: std::time::Duration,
+    pub tangent_max: std::time::Duration,
+}
+
+struct PhaseSample {
+    since: bevy::platform::time::Instant,
+    timing: MeshPreparationPhaseTiming,
+}
+
+fn phase_lap(sample: &mut Option<PhaseSample>, phase: &'static str) {
+    if let Some(sample) = sample {
+        let now = bevy::platform::time::Instant::now();
+        *sample.timing.phases.entry(phase).or_default() += now.duration_since(sample.since);
+        sample.since = now;
+    }
+}
+
 pub(super) struct PreparedDeformation {
     pub read: ReadMesh,
     pub mesh: Mesh,
@@ -126,6 +151,12 @@ pub(super) fn prepare_batch(
     let started = world
         .contains_resource::<MeshPreparationTiming>()
         .then(bevy::platform::time::Instant::now);
+    let mut phases = world
+        .contains_resource::<MeshPreparationPhaseTiming>()
+        .then(|| PhaseSample {
+            since: bevy::platform::time::Instant::now(),
+            timing: default(),
+        });
     let mut pending = Vec::new();
     let mut jobs = Vec::new();
     let mut input_bytes = 0usize;
@@ -140,10 +171,15 @@ pub(super) fn prepare_batch(
         }
         consumed = index + 1;
         mesh_prims += usize::from(ctx.type_name.as_deref() == Some("Mesh"));
-        if !needs_deformation(ctx, world) {
+        let needed = needs_deformation(ctx, world);
+        phase_lap(&mut phases, "eligibility");
+        if !needed {
             continue;
         }
-        let result = super::skel::deformed_mesh(ctx).map(|read| read.map(PreparedDeformation::new));
+        let result = super::skel::deformed_mesh(ctx);
+        phase_lap(&mut phases, "deformation");
+        let result = result.map(|read| read.map(PreparedDeformation::new));
+        phase_lap(&mut phases, "assembly");
         let mut prepared = match result {
             Ok(Some(prepared)) => prepared,
             other => {
@@ -154,6 +190,7 @@ pub(super) fn prepare_batch(
         let bytes = cache::mesh_payload_bytes(&prepared.mesh);
         if bytes > settings.max_input_bytes.saturating_sub(input_bytes) {
             *ctx.prepared_deformation.borrow_mut() = Some(Ok(Some(prepared)));
+            phase_lap(&mut phases, "cache-lookup");
             break;
         }
         match cache::prepare_tangents(world, &mut prepared.mesh, true) {
@@ -168,11 +205,22 @@ pub(super) fn prepare_batch(
                 cache_hits += 1;
             }
         }
+        phase_lap(&mut phases, "cache-lookup");
     }
+    phase_lap(&mut phases, "traversal");
     let count = jobs.len();
+    let profiled = phases.is_some();
+    if let Some(phases) = phases.as_mut() {
+        phases.timing.tangent_vertices = jobs
+            .iter()
+            .map(|(_, mesh)| mesh.count_vertices() as u64)
+            .sum();
+    }
     let generate = |(index, mut mesh): (usize, Mesh)| {
+        let started = profiled.then(bevy::platform::time::Instant::now);
         let result = mesh.generate_tangents();
-        (index, mesh, result)
+        let elapsed = started.map(|started| started.elapsed());
+        (index, mesh, result, elapsed)
     };
     let mut results = if count < 2 {
         jobs.into_iter().map(generate).collect()
@@ -189,9 +237,18 @@ pub(super) fn prepare_batch(
             }
         })
     };
-    results.sort_unstable_by_key(|(index, _, _)| *index);
-    for ((index, mesh, result), (expected, read, ticket)) in results.into_iter().zip(pending) {
+    phase_lap(&mut phases, "tangent-dispatch-join");
+    results.sort_unstable_by_key(|(index, _, _, _)| *index);
+    for ((index, mesh, result, elapsed), (expected, read, ticket)) in
+        results.into_iter().zip(pending)
+    {
         assert_eq!(index, expected);
+        if let (Some(phases), Some(elapsed)) = (phases.as_mut(), elapsed) {
+            phases.timing.tangent_jobs += 1;
+            phases.timing.tangent_failures += u64::from(result.is_err());
+            phases.timing.tangent_elapsed += elapsed;
+            phases.timing.tangent_max = phases.timing.tangent_max.max(elapsed);
+        }
         cache::finish_tangents(world, &mesh, ticket, result);
         *contexts[index].prepared_deformation.borrow_mut() = Some(Ok(Some(PreparedDeformation {
             read,
@@ -199,6 +256,7 @@ pub(super) fn prepare_batch(
             tangents_ready: true,
         })));
     }
+    phase_lap(&mut phases, "publication");
     if let Some(started) = started {
         let mut timing = world.resource_mut::<MeshPreparationTiming>();
         timing.batches += 1;
@@ -209,6 +267,18 @@ pub(super) fn prepare_batch(
         timing.peak_jobs = timing.peak_jobs.max(count);
         timing.peak_input_bytes = timing.peak_input_bytes.max(input_bytes);
         timing.elapsed += started.elapsed();
+    }
+    if let Some(phases) = phases {
+        let mut timing = world.resource_mut::<MeshPreparationPhaseTiming>();
+        timing.batches += 1;
+        for (phase, elapsed) in phases.timing.phases {
+            *timing.phases.entry(phase).or_default() += elapsed;
+        }
+        timing.tangent_jobs += phases.timing.tangent_jobs;
+        timing.tangent_failures += phases.timing.tangent_failures;
+        timing.tangent_vertices += phases.timing.tangent_vertices;
+        timing.tangent_elapsed += phases.timing.tangent_elapsed;
+        timing.tangent_max = timing.tangent_max.max(phases.timing.tangent_max);
     }
     consumed
 }
@@ -299,6 +369,89 @@ mod tests {
             a.get::<gpu_skin::UsdGpuSkin>(ae).map(|skin| &skin.matrices),
             b.get::<gpu_skin::UsdGpuSkin>(be).map(|skin| &skin.matrices)
         );
+    }
+
+    #[test]
+    fn phase_timing_is_optional_and_preserves_parallel_geometry() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let stage = stage();
+        let registry = SchemaRegistry::builtin();
+        let (mut plain, a) = world(false);
+        let (mut profiled, b) = world(false);
+        profiled.init_resource::<MeshPreparationPhaseTiming>();
+        for time in [0.0, 2.5, 10.0, 5.0, 0.0] {
+            for world in [&mut plain, &mut profiled] {
+                world.insert_resource(StageTime { current: time });
+                world.insert_resource(cache::MeshTangentCache::with_byte_budget(0));
+            }
+            let _scope = skel::SkelSampleScope::begin(&stage);
+            registry.patch_animation_with_pool(&stage, a.clone(), &mut plain, Some(&pool));
+            registry.patch_animation_with_pool(&stage, b.clone(), &mut profiled, Some(&pool));
+            for ((_, ae), (_, be)) in a.iter().zip(&b) {
+                same_entities(&plain, *ae, &profiled, *be);
+            }
+        }
+        assert!(!plain.contains_resource::<MeshPreparationPhaseTiming>());
+        let phases = profiled.resource::<MeshPreparationPhaseTiming>();
+        let complete = profiled.resource::<MeshPreparationTiming>();
+        assert_eq!(phases.batches, complete.batches);
+        assert_eq!(phases.tangent_jobs, complete.jobs);
+        assert_eq!(phases.tangent_failures, 0);
+        if pool.thread_num() > 1 {
+            assert_eq!(phases.tangent_jobs, 55);
+            assert!(phases.tangent_vertices > 0);
+            assert!(phases.tangent_elapsed >= phases.tangent_max);
+            assert!(phases.phases.values().sum::<std::time::Duration>() <= complete.elapsed);
+            for phase in [
+                "eligibility",
+                "deformation",
+                "assembly",
+                "cache-lookup",
+                "traversal",
+                "tangent-dispatch-join",
+                "publication",
+            ] {
+                assert!(phases.phases.contains_key(phase), "{phase}");
+            }
+        }
+        profiled.insert_resource(MeshPreparationPhaseTiming::default());
+        assert_eq!(
+            profiled
+                .resource::<MeshPreparationPhaseTiming>()
+                .tangent_jobs,
+            0
+        );
+    }
+
+    #[test]
+    fn phase_timing_counts_empty_and_failed_batches_without_jobs() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let stage = stage();
+        let (mut world, _) = world(false);
+        world.remove_resource::<MeshPreparationTiming>();
+        world.init_resource::<MeshPreparationPhaseTiming>();
+        assert_eq!(prepare_batch(&[], &mut world, &pool, default()), 0);
+        stage
+            .attribute("/Test/Face.primvars:skel:jointIndices")
+            .unwrap()
+            .set(Value::IntVec(vec![-1; 8]))
+            .unwrap();
+        let path = openusd::sdf::path("/Test/Face").unwrap();
+        let contexts = [RouteCtx::at(&stage, &path, Some(5.0))];
+        assert_eq!(prepare_batch(&contexts, &mut world, &pool, default()), 1);
+        assert!(matches!(
+            contexts[0].prepared_deformation.borrow().as_ref(),
+            Some(Ok(None))
+        ));
+        assert!(!world.contains_resource::<MeshPreparationTiming>());
+        let timing = world.resource::<MeshPreparationPhaseTiming>();
+        assert_eq!(timing.batches, 2);
+        assert_eq!(timing.tangent_jobs, 0);
+        assert_eq!(timing.tangent_vertices, 0);
+        assert_eq!(timing.tangent_elapsed, std::time::Duration::ZERO);
+        for phase in ["eligibility", "deformation", "assembly", "publication"] {
+            assert!(timing.phases.contains_key(phase), "{phase}");
+        }
     }
 
     #[test]

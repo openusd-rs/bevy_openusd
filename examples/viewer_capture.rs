@@ -473,7 +473,8 @@ fn main() -> AppExit {
         app.init_resource::<usd_bevy::asset::UsdSceneTimings>();
     }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
-        app.init_resource::<usd_bevy::instance::UsdInstanceAnimationTiming>();
+        app.init_resource::<usd_bevy::instance::UsdInstanceAnimationTiming>()
+            .init_resource::<usd_bevy::route::preparation::MeshPreparationPhaseTiming>();
     }
     if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() {
         app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>();
@@ -737,6 +738,7 @@ struct CaptureTiming<'w, 's> {
     progress: Res<'w, PipelineProbe>,
     sort_timing: Option<Res<'w, usd_bevy::route::gpu_skin::DeformedSortTiming>>,
     instance_timing: Option<Res<'w, usd_bevy::instance::UsdInstanceAnimationTiming>>,
+    preparation_phases: Option<Res<'w, usd_bevy::route::preparation::MeshPreparationPhaseTiming>>,
     mesh_assets: Res<'w, Assets<Mesh>>,
     mesh_references: Query<'w, 's, (&'static Mesh3d, &'static InheritedVisibility)>,
 }
@@ -826,6 +828,7 @@ fn capture_frame(
         progress,
         sort_timing,
         instance_timing,
+        preparation_phases,
         mesh_assets,
         mesh_references,
     } = timing;
@@ -1062,6 +1065,11 @@ fn capture_frame(
             .mesh_report
             .push_str(&preparation_report(&preparation));
     }
+    if let Some(phases) = preparation_phases {
+        capture
+            .mesh_report
+            .push_str(&preparation_phase_report(&phases));
+    }
     if let Some(timing) = instance_timing {
         capture.mesh_report.push_str(&format!(
             "instance_animation_scope=all-root-time-changes-includes-warmup-classification-included-in-total\ninstance_animation_updates={}\ninstance_animation_classified={}\ninstance_animation_reused={}\ninstance_animation_animated={}\ninstance_animation_classification_ms={:.6}\ninstance_animation_total_ms={:.6}\n",
@@ -1104,6 +1112,27 @@ fn preparation_report(timing: &usd_bevy::route::preparation::MeshPreparationTimi
         timing.peak_input_bytes,
         timing.elapsed.as_secs_f64() * 1000.0,
     )
+}
+
+fn preparation_phase_report(
+    timing: &usd_bevy::route::preparation::MeshPreparationPhaseTiming,
+) -> String {
+    let mut report = format!(
+        "mesh_preparation_phase_scope=all-animation-batches-includes-warmup-nonoverlapping-main-phases\nmesh_preparation_worker_scope=overlapping-job-wall-times-not-thread-cpu-or-additive-to-main-phases\nmesh_preparation_phase_batches={}\nmesh_preparation_tangent_jobs={}\nmesh_preparation_tangent_failures={}\nmesh_preparation_tangent_vertices={}\nmesh_preparation_tangent_worker_ms={:.6}\nmesh_preparation_tangent_worker_max_ms={:.6}\n",
+        timing.batches,
+        timing.tangent_jobs,
+        timing.tangent_failures,
+        timing.tangent_vertices,
+        timing.tangent_elapsed.as_secs_f64() * 1000.0,
+        timing.tangent_max.as_secs_f64() * 1000.0,
+    );
+    for (phase, elapsed) in &timing.phases {
+        report.push_str(&format!(
+            "mesh_preparation_phase_ms[{phase}]={:.6}\n",
+            elapsed.as_secs_f64() * 1000.0,
+        ));
+    }
+    report
 }
 
 fn save(image: &Image, capture: &Capture) -> Result<(), String> {
@@ -1174,6 +1203,35 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mesh_phase_metadata_keeps_overlapping_worker_times_separate() {
+        use std::time::Duration;
+        let report = super::preparation_phase_report(
+            &usd_bevy::route::preparation::MeshPreparationPhaseTiming {
+                batches: 1,
+                phases: [("assembly", Duration::from_millis(3))].into(),
+                tangent_jobs: 2,
+                tangent_failures: 1,
+                tangent_vertices: 8,
+                tangent_elapsed: Duration::from_millis(5),
+                tangent_max: Duration::from_millis(3),
+            },
+        );
+        for line in [
+            "mesh_preparation_phase_batches=1",
+            "mesh_preparation_tangent_jobs=2",
+            "mesh_preparation_tangent_failures=1",
+            "mesh_preparation_tangent_vertices=8",
+            "mesh_preparation_tangent_worker_ms=5.000000",
+            "mesh_preparation_tangent_worker_max_ms=3.000000",
+            "mesh_preparation_phase_ms[assembly]=3.000000",
+        ] {
+            assert!(report.lines().any(|actual| actual == line));
+        }
+        assert!(report.contains("includes-warmup"));
+        assert!(report.contains("not-thread-cpu-or-additive-to-main-phases"));
+    }
+
     #[test]
     fn mesh_preparation_metadata_distinguishes_parallel_and_inline_jobs() {
         let report =

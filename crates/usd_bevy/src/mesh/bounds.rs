@@ -12,8 +12,8 @@ use bevy::{camera::primitives::Aabb, ecs::system::SystemParam, prelude::*};
 pub struct MeshBounds<'w, 's> {
     meshes: Option<Res<'w, Assets<Mesh>>>,
     inverse: Option<Res<'w, Assets<SkinnedMeshInverseBindposes>>>,
-    globals: Query<'w, 's, &'static GlobalTransform>,
-    morphs: Query<'w, 's, &'static MorphWeights>,
+    globals: Query<'w, 's, Ref<'static, GlobalTransform>>,
+    morphs: Query<'w, 's, Ref<'static, MorphWeights>>,
 }
 
 impl MeshBounds<'_, '_> {
@@ -49,9 +49,62 @@ impl MeshBounds<'_, '_> {
             });
             return enclose(points);
         }
+        let (weights, palette) = self.inputs(skin, morph)?;
+        deformed(mesh?, transform.to_matrix(), weights, palette.as_deref())
+    }
+
+    pub(crate) fn pose_changed(
+        &self,
+        skin: Option<&SkinnedMesh>,
+        morph: Option<&MeshMorphWeights>,
+    ) -> bool {
+        skin.is_some_and(|skin| {
+            skin.joints.iter().any(|&joint| {
+                self.globals
+                    .get(joint)
+                    .map_or(true, |global| global.is_changed())
+            })
+        }) || matches!(morph, Some(MeshMorphWeights::Reference(entity))
+            if self.morphs.get(*entity).map_or(true, |weights| weights.is_changed()))
+    }
+
+    /// World transform of the posed mesh-local AABB center, including unreferenced vertices.
+    pub(crate) fn sort_center(
+        &self,
+        handle: &Mesh3d,
+        transform: &GlobalTransform,
+        skin: Option<&SkinnedMesh>,
+        morph: Option<&MeshMorphWeights>,
+    ) -> Option<Vec3> {
+        let mesh = self.meshes.as_ref()?.get(&handle.0)?;
+        let (weights, mut palette) = self.inputs(skin, morph)?;
+        let world_from_mesh = transform.to_matrix();
+        if let Some(palette) = &mut palette {
+            let determinant = world_from_mesh.determinant();
+            if !determinant.is_finite() || determinant == 0.0 {
+                return None;
+            }
+            let mesh_from_world = world_from_mesh.inverse();
+            for matrix in palette {
+                *matrix = mesh_from_world * *matrix;
+            }
+        }
+        let (low, high) =
+            deformed_with_vertices(mesh, Mat4::IDENTITY, weights, palette.as_deref(), false)?;
+        let center = world_from_mesh.transform_point3(low * 0.5 + high * 0.5);
+        center.is_finite().then_some(center)
+    }
+
+    fn inputs<'a>(
+        &'a self,
+        skin: Option<&SkinnedMesh>,
+        morph: Option<&'a MeshMorphWeights>,
+    ) -> Option<(&'a [f32], Option<Vec<Mat4>>)> {
         let weights = match morph {
             Some(MeshMorphWeights::Value { weights }) => weights.as_slice(),
-            Some(MeshMorphWeights::Reference(entity)) => self.morphs.get(*entity).ok()?.weights(),
+            Some(MeshMorphWeights::Reference(entity)) => {
+                self.morphs.get(*entity).ok()?.into_inner().weights()
+            }
             None => &[],
         };
         let palette = if let Some(skin) = skin {
@@ -71,7 +124,7 @@ impl MeshBounds<'_, '_> {
         } else {
             None
         };
-        deformed(mesh?, transform.to_matrix(), weights, palette.as_deref())
+        Some((weights, palette))
     }
 }
 
@@ -92,6 +145,16 @@ fn deformed(
     transform: Mat4,
     weights: &[f32],
     palette: Option<&[Mat4]>,
+) -> Option<(Vec3, Vec3)> {
+    deformed_with_vertices(mesh, transform, weights, palette, true)
+}
+
+fn deformed_with_vertices(
+    mesh: &Mesh,
+    transform: Mat4,
+    weights: &[f32],
+    palette: Option<&[Mat4]>,
+    drawn_only: bool,
 ) -> Option<(Vec3, Vec3)> {
     let VertexAttributeValues::Float32x3(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?
     else {
@@ -138,7 +201,7 @@ fn deformed(
         high = high.max(point);
         Some(())
     };
-    if let Some(indices) = mesh.indices() {
+    if drawn_only && let Some(indices) = mesh.indices() {
         for index in indices.iter() {
             visit(index)?;
         }
@@ -182,6 +245,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, (Vec3::new(3.0, 1.0, 0.0), Vec3::new(3.0, 1.0, 0.0)));
+        let full =
+            deformed_with_vertices(&mesh, Mat4::IDENTITY, &[0.5], Some(&palette), false).unwrap();
+        assert_eq!(full.1, Vec3::new(2001.0, 2001.0, 2000.0));
         assert!(deformed(&mesh, Mat4::IDENTITY, &[f32::NAN], Some(&palette)).is_none());
         assert!(deformed(&mesh, Mat4::IDENTITY, &[0.5], Some(&[])).is_none());
         assert!(deformed(&mesh, Mat4::IDENTITY, &[0.5, 0.5], None).is_none());

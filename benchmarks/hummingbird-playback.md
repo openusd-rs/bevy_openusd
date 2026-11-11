@@ -15,6 +15,13 @@ The user subsequently confirmed: "Animates and window responds." This accepts
 the observed freeze repair, not a measured smooth-playback or frame-rate target.
 The follow-up goal is broader library/viewer optimization.
 
+The subsequent posed-center correction repairs the time-zero transparent
+wing/grid discrepancy without hiding the grid or relaxing image tolerance.
+Times five and ten still fail at one pixel each. See
+[posed sorting centers](deformed-sort-centers.md) for current unit/native gates,
+independent-root captures and remaining acceptance work. Earlier checkpoints
+below retain the original failures and diagnosis history.
+
 ## Reproduction
 
 Asset: `assets/external/hummingbird.usdz`. The live projection reports 84 prims,
@@ -139,7 +146,7 @@ generated-image lifetime and mutated pixels/mips/layouts, sampler-wrap changes,
 tracked in-place image edits and missed events, and nested stage/time-isolated
 skeleton scopes.
 
-### Additional real-asset comparison: not passing
+### Initial additional real-asset comparison: not passing
 
 ```sh
 CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
@@ -176,8 +183,57 @@ observed pixels. Compare actual phase order and posed bounds before choosing a
 fix. Any repair must preserve independently timed instance sharing and must not
 hide the grid or relax the image tolerance.
 
-Smooth-playback acceptance and the real-asset image comparison remain outstanding.
-The open interactive viewer was built at the
+At this initial checkpoint, smooth-playback acceptance and the real-asset image
+comparison remained outstanding. The interactive viewer was built at the
 `c3bbdee` code state; the later image-invalidation correction is covered by the
 library regression rather than that already-running process. No release-profile,
 other-platform or downstream-application performance acceptance is claimed.
+
+## Observed transparent-phase divergence
+
+`4f7987c` adds the opt-in `USD_CAPTURE_PHASE_PROBE=1` diagnostic;
+`431b285` identifies generated material-subset draws through their USD parent.
+It snapshots actual `Transparent3d` items after phase sorting and before batching,
+including order, world sort center, distance and the extracted grid transform/
+settings. This is the latest rendered phase preceding the capture request, not a
+new sorting implementation. Capture poses remain fixed while pipelines settle.
+
+The labelled time-zero comparison is in
+`/tmp/bevy-optimization-phase-captures.Ftu4An/`; the preceding unlabelled run is
+`/tmp/bevy-optimization-phase-captures.ppQXU7/`. Both GPU and CPU captures compile
+pipelines, pass renderer log checks and read back pixels on RTX 4080/Vulkan.
+Each is pixel-identical to its saved pre-probe counterpart at tolerance zero,
+and the asset hash verifies. The strict CPU/GPU comparison still fails at exactly
+2,053 pixels with maximum RGB error 33 at tolerance one.
+
+Actual sorted draw order for the two `rig_skin_hummingbird_alpha_matsg2` subsets:
+
+| Route | First draw | Second draw | Third draw |
+| --- | --- | --- | --- |
+| GPU | `wing_blur_right`, -14.306118 | grid, -10.7276535 | `wing_blur_left`, -10.131304 |
+| CPU | `wing_blur_right`, -14.512754 | `wing_blur_left`, -11.429891 | grid, -10.7276535 |
+
+The grid is identical in both cases: translation `(0, -4.7219234, 0)`, scale
+0.5, fade distance 127.06785, but its queued sort center is world zero. The left
+wing's GPU sort center is `(3.6321964, -0.3148595, -1.8278148)` versus CPU
+`(2.6821704, -0.040070176, -2.9130476)`. Thus the left wing crosses the grid's
+sort key between the two deformation paths. This is observed phase-order evidence
+for the transparency hypothesis, not a completed rendering repair. The affected
+draws are generated subset children, so a parent-mesh-only override would miss
+them.
+
+Do not use a posed `Mesh::final_aabb` as a blind sorting override on shared rest
+geometry: Bevy also uses that asset metadata for compressed positions. The
+projection cache already compares `final_aabb` for equality, but that does not
+make it per-instance metadata. Any correction must preserve instance/clock
+isolation, subset geometry, grid visibility/depth behavior and image tolerance.
+The locally available Bevy 0.19.1 infinite-grid source also queues a zero center;
+these observations do not establish that the migration introduced this behavior.
+
+Probe hardening passes 804 no-default tests, 903 all-feature/all-target tests,
+strict Clippy and formatting. The subset-label refinement additionally passes
+the capture-tool suite and both real captures. This diagnostic checkpoint did
+not change production sorting policy. The subsequent per-draw correction,
+regressions and re-run results are recorded in
+[posed sorting centers](deformed-sort-centers.md); the full 0/5/10 image gate and
+smooth native cadence remain incomplete.

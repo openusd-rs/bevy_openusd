@@ -425,6 +425,7 @@ fn main() -> AppExit {
         ))
         .insert_resource(usd_bevy::UsdProjectionBudget(Duration::MAX))
         .init_resource::<usd_bevy::route::preparation::MeshPreparationTiming>()
+        .init_resource::<usd_bevy::route::gpu_skin::DeformedSortTiming>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -699,6 +700,7 @@ struct CaptureTiming<'w, 's> {
     diagnostics: Res<'w, bevy::diagnostic::DiagnosticsStore>,
     timing: ResMut<'w, gpu_timing::GpuTiming>,
     progress: Res<'w, PipelineProbe>,
+    sort_timing: Option<Res<'w, usd_bevy::route::gpu_skin::DeformedSortTiming>>,
     mesh_assets: Res<'w, Assets<Mesh>>,
     mesh_references: Query<'w, 's, (&'static Mesh3d, &'static InheritedVisibility)>,
 }
@@ -785,6 +787,7 @@ fn capture_frame(
         diagnostics,
         mut timing,
         progress,
+        sort_timing,
         mesh_assets,
         mesh_references,
     } = timing;
@@ -990,6 +993,12 @@ fn capture_frame(
     capture.mesh_report.push_str(shadows);
     if let Some(transparent) = transparent {
         capture.mesh_report.push_str(&transparent.report());
+    }
+    if let Some(timing) = sort_timing {
+        capture.mesh_report.push_str(&format!(
+            "deformed_sort_scope=main-world-dependency-checks-and-posed-center-rebuilds\ndeformed_sort_updates={}\ndeformed_sort_rebuilt={}\ndeformed_sort_vertices={}\ndeformed_sort_elapsed_ns={}\n",
+            timing.updates, timing.rebuilt, timing.vertices, timing.elapsed.as_nanos()
+        ));
     }
     if let Some(preparation) = preparation {
         capture

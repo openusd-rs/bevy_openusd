@@ -23,6 +23,7 @@ mod color_texture;
 pub mod coverage;
 pub mod curves;
 mod deformation;
+mod deformed_sort;
 pub mod dome;
 pub mod dome_environment;
 pub mod environment_map;

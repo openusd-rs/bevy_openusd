@@ -6,6 +6,7 @@ use openusd::vt::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+mod hierarchy;
 mod layer_changes;
 pub mod reload;
 pub mod save_state;
@@ -1305,6 +1306,7 @@ pub struct EditorSession {
     history_revisions: std::collections::BTreeMap<String, u64>,
     save_state: std::cell::RefCell<save_state::SaveState>,
     texture_index: std::cell::RefCell<texture_index::TextureIndex>,
+    hierarchy: std::cell::RefCell<hierarchy::HierarchyCache>,
 }
 
 impl EditorSession {
@@ -1333,6 +1335,7 @@ impl EditorSession {
             history_revisions: Default::default(),
             save_state: Default::default(),
             texture_index: Default::default(),
+            hierarchy: Default::default(),
         })
     }
 
@@ -1695,26 +1698,12 @@ impl EditorSession {
             &snapshot.layer_revisions,
             self.layer_changes.structural_revision(),
         );
-        let predicate = openusd::usd::PrimPredicate::new(
-            openusd::usd::PrimStatus::ACTIVE.union(openusd::usd::PrimStatus::DEFINED),
-            openusd::usd::PrimStatus::ABSTRACT,
-        )
-        .with_instance_proxies(true);
-        self.stage
-            .traverse(predicate, |path: &openusd::sdf::Path| {
-                snapshot.prims.push(path.as_str().to_owned());
-            })?;
-        for path in &snapshot.prims {
-            let value = self
-                .stage
-                .prim(openusd::sdf::path(path)?)?
-                .attribute("visibility")
-                .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?;
-            snapshot.visibility.insert(
-                path.clone(),
-                !matches!(value, Some(Value::Token(token)) if token.as_str() == "invisible"),
-            );
-        }
+        self.hierarchy.borrow_mut().sample(
+            &self.stage,
+            &self.layer_changes,
+            time,
+            &mut snapshot,
+        )?;
         if let Some(path) = &self.selected {
             if !snapshot.prims.contains(path) {
                 snapshot.selected = None;

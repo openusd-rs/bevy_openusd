@@ -29,6 +29,34 @@ pub(super) struct LayerChanges {
     changes: Changes,
 }
 
+#[derive(PartialEq, Eq)]
+pub(super) struct CompositionRevision {
+    layers: Vec<String>,
+    authored: BTreeMap<String, u64>,
+    structure: u64,
+    load_rules: openusd::pcp::LoadRules,
+    mask: openusd::usd::StagePopulationMask,
+    muted: Vec<String>,
+}
+
+impl CompositionRevision {
+    pub(super) fn read(stage: &Stage, changes: &LayerChanges) -> Self {
+        let authored = changes.revisions();
+        Self {
+            layers: stage.layer_identifiers(),
+            authored,
+            structure: changes.structural_revision(),
+            load_rules: stage.load_rules(),
+            mask: stage.mask(),
+            muted: stage.muted_layers(),
+        }
+    }
+
+    pub(super) fn reusable(&self) -> bool {
+        self.structure != u64::MAX && self.authored.values().all(|revision| *revision != u64::MAX)
+    }
+}
+
 impl LayerChanges {
     pub fn new(stage: &Stage) -> openusd::Result<Self> {
         let changes = Changes::default();

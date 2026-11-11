@@ -76,6 +76,31 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Editor hierarchy reuse (`41cb1ce`, `6d4f8ae`): broad profiling identifies
+  repeated complete hierarchy/visibility reads during inspector publication.
+  The editor now retains one bounded current-composition hierarchy, caches
+  constant visibility separately for default/numeric time, and freshly samples
+  animated visibility. Selected properties and complete owned snapshots remain
+  unchanged. Eight new regressions cover clocks, clips, variants, direct edits,
+  payload rules, masks, native proxies, undo/redo, failed/repaired reload and
+  retention bounds. Hardening passes 817 no-default / 916 all-feature tests and
+  strict Clippy. Native gate completion and saved-release performance acceptance
+  are pending; no speedup is claimed yet. See
+  [editor hierarchy sampling](benchmarks/editor-hierarchy.md).
+
+- Posed per-draw sorting (`fe32713`, `291b4af`, `53a34e6`): corrects the observed
+  wing/grid order without changing shared mesh AABBs, grid settings or image
+  tolerance. The original bird time-zero CPU/GPU comparison now passes (zero
+  pixels above RGB tolerance one, previously 2,053); times five and ten retain
+  one failing pixel each. Three independently timed/reversed roots are checked
+  for bird, morph and cow; all CPU before/after controls are pixel-exact. The
+  bird's one-pixel failure and cow's unavailable MDL warning remain recorded.
+  Hardening passes 809 no-default / 908 all-feature tests, strict Clippy and
+  formatting; native deformation/watcher/export gates and wasm compilation pass.
+  Cache invalidation, source reload, subset/instance isolation and cleanup have
+  regression coverage. Sustained native cadence and render-path rebuild cost
+  are still unverified. See [posed sorting centers](benchmarks/deformed-sort-centers.md).
+
 - Tightly paired scheduling evidence (`79e80bc`): six CPU/GPU-prepared workloads,
   two independent app pairs each and 1,000 unique clocks per pair complete with
   equal retained payload counts. Cow GPU median update cost falls 21.9–28.6%,

@@ -63,6 +63,7 @@ pub fn configure(app: &mut App) {
 fn extract_labels(
     mut labels: ResMut<Labels>,
     sources: Extract<SourceLabels>,
+    subsets: Extract<Query<(Entity, &usd_bevy::route::subset::UsdSubset, &ChildOf)>>,
     grids: Extract<
         Query<(
             &GlobalTransform,
@@ -80,6 +81,14 @@ fn extract_labels(
             (entity.into(), label)
         })
         .collect();
+    for (entity, subset, parent) in &subsets {
+        let parent = labels
+            .names
+            .get(&MainEntity::from(parent.parent()))
+            .map_or("<unlabelled>", String::as_str);
+        let label = format!("{parent} [subset:{}]", subset.0);
+        labels.names.insert(entity.into(), label);
+    }
     labels.grids.clear();
     for (transform, settings) in &grids {
         labels.grids.push_str(&format!(

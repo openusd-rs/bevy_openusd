@@ -4,8 +4,8 @@
 
 The [rendered playback baseline](rendered-playback.md) places most of the slow
 playback interval in the main update, including the transform-only robot arm.
-Unlike the live editor's maintained `AnimatedPrims` index, `instance::tick`
-currently scans the entire projected map and calls `live::prim_is_animated`
+Unlike the live editor's maintained `AnimatedPrims` index, the pre-cache
+`instance::tick` scans the entire projected map and calls `live::prim_is_animated`
 again on every changed root clock. That query checks authored samples,
 subsets, deformation inputs, inherited primvars, bound materials and instancer
 prototypes; it is not a cheap lookup of the prim's own sample count.
@@ -131,9 +131,6 @@ these are overlapping configurations. The release capture executable builds.
 Logs: `/tmp/bevy-optimization-animation-cache-fixed-harden.log` and
 `/tmp/bevy-optimization-animation-cache-build.log`.
 
-Native before/after performance, full-object render comparisons and refreshed
-native/reload/export/wasm gates remain pending for this candidate.
-
 Before the alternating run, the saved pre-cache executable renders and passes
 pipeline/log/readback checks at the new fixed views. Images under
 `/tmp/bevy-optimization-animation-camera.MFRxtx/` were inspected: the entire arm,
@@ -141,3 +138,76 @@ bird and cow fit the viewport. Eye/target are `(2.4,1.6,3.2)/(0,0.6,0)` for arm,
 `(10,6,14)/(0,1,0)` for bird and `(3,2,4)/(0,0.8,0)` for cow. Both compared
 versions must use those same views; differences from the earlier default-view
 baseline are not attributed to the cache. The cow MDL warning remains present.
+
+## Native alternating comparison
+
+The 40-process ABBA matrix is complete under
+`/tmp/bevy-optimization-animation-cache-abba.OqgGcj/`. The saved pre-cache binary
+has SHA-256 `18bcd0f09ffe602dd4dc8006fb89a3d88fbb86a52d83759e92cb4256036b71e0`;
+the candidate at `b71fa8f` has
+`5db8900aa0fb0b8763904f5c16f4621b4e96e451fac41e161db6c6b7f4828b6e`.
+Both enable the same route/source instrumentation, Vulkan validation, forward
+renderer, 4x MSAA and 1280x720 target. Each fresh process runs 30 animated-ready
+warmups and 300 measured production-playback updates, or speed-zero idle.
+No task-owned compilation overlaps the run. Unrelated host load is not
+controlled: the recorded one-minute load spans 17.62–85.47. Default CPU affinity
+is unchanged. The full-object cameras above are identical between versions.
+
+Numbers below are the mean of two process medians, not a pooled-frame median.
+The change column compares main-update time; negative is faster.
+
+| Case | Before main, ms | After main, ms | Main change | Before interval, ms | After interval, ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Arm play | 49.764 | 5.653 | -88.6% | 50.608 | 16.738 |
+| Arm idle | 1.825 | 1.826 | +0.002% | 16.728 | 16.727 |
+| Bird play | 92.984 | 29.585 | -68.2% | 94.542 | 30.321 |
+| Bird idle | 6.978 | 1.870 | -73.2% | 17.910 | 16.725 |
+| Cow play | 66.826 | 82.830 | **+23.9%** | 68.564 | 85.002 |
+| Cow idle | 1.403 | 1.281 | -8.6% | 16.725 | 16.725 |
+| Material subsets play | 1.812 | 2.140 | **+18.1%** | 16.726 | 16.722 |
+| Skeleton play | 4.541 | 1.826 | -59.8% | 16.730 | 16.727 |
+| Point hierarchy play | 5.258 | 2.333 | -55.6% | 16.728 | 16.724 |
+| Affine idle | 2.112 | 0.697 | -67.0% | 16.725 | 16.723 |
+
+The arm passes the declared 25% incremental target in both candidate processes:
+main medians are 5.812/5.493 ms versus 55.813/43.715 ms. Classification calls fall
+from 45,540 to 138 per process, with 45,402 hits and the same 2,970 animated
+decisions. Candidate classification averages 0.288/0.202 ms per changed update
+versus 51.274/44.990 ms. This does not establish smooth native-window 60 Hz:
+candidate offscreen interval p95 remains 28.503/20.666 ms.
+
+Cow and material-subset results exceed the regression limit and remain
+unaccepted pending targeted repetition. Cow candidate medians disagree sharply
+(113.240/52.419 ms versus 67.093/66.559 ms before). The unchanged mesh-preparation
+phase also varies substantially, including in the apparently improved bird:
+the full bird speedup cannot be attributed solely to classification removal.
+Neither a favorable average nor host-load variation is grounds to discard a
+failed gate. Bird and cow still miss the 60 Hz playback target.
+
+Partial source timings cover open/validation/projection, not file-to-ready or
+full editor opening. Arm-play partial timings regress 137.6%, while arm-idle
+partial timings improve 55.0%; cow-idle partial timings regress 5.4%. These
+observations do not clear the opening gate or the earlier kitchen/bird opening
+failures. Affine idle likewise does not clear the earlier affine seek failure.
+
+`raw-analysis.json`, produced by `/tmp/analyze-animation-cache.mjs`, independently
+checks all 12,000 raw frame rows, reported median/p95/p99/max values, interval
+threshold counts, effective rates and published CPU/GPU pass arrays. All pass;
+the maximum stage-clock recurrence error is 5.685e-14 time codes. Every playing
+root changes all 300 measured clocks; idle roots never advance. Animated-decision
+counts agree across versions in every case. GPU/CPU pass records are publication
+observations, not exactly paired frames or additive render totals.
+
+All six candidate bird/arm/cow final poses match independent pre-cache renders
+at their exact final clocks with zero changed RGB pixels at tolerance zero.
+All twelve idle comparisons (two candidates and the second baseline against
+the first baseline for arm/bird/cow/affine) also match exactly. Actual candidate
+arm, bird, cow and affine images were inspected with meaningful framing. The
+entry/control/dependency source manifests verify before/after. All 40 processes
+and renderer-log checks pass, but the diagnostic driver intentionally exits 1
+because every cow run retains the missing `OmniPBR.mdl` warning. These comparisons
+do not resolve the separately recorded one-pixel CPU/GPU bird discrepancy or
+prove intermediate-frame/native-window behavior.
+
+Refreshed native deformation/reload/export and wasm gates are running; their
+results and the targeted regression repeats are not yet accepted here.

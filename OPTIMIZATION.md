@@ -86,6 +86,12 @@ correct readiness reporting.
   5.54% for bird and 2.19% for cow, but GPU-morph control median rises 25.49%,
   bird maximum rises 23.10%, and subsets p95 rises 19.87%. These failures remain
   open; no smooth-native-playback or full performance acceptance is claimed.
+  A subsequent [unscaled counter audit](benchmarks/shared-skel-queries.md#counter-audit-of-unstable-small-controls)
+  validates 24,000 updates and complete hybrid-PMU coverage. GPU morph uses
+  0.396% fewer whole-process user-space instructions; timing outliers occur in
+  both binaries, including the unchanged control. This does not establish a
+  scheduling cause or clear the earlier failure. Do not repeat these controls
+  unchanged or make a speculative compensating code change.
 
 - **Skin correction-cache candidate rejected:** the saved release diagnostic
   completes five bird clocks with 190 accepted and 15 explicitly rejected GPU

@@ -100,3 +100,53 @@ RSS observations alongside all raw update samples. Retained payloads are
 unchanged; process RSS variation does not prove memory savings. Native rendered
 comparisons, broader lifecycle/platform/downstream checks and the prior
 intermittent pixel failures remain outside this CPU-only comparison.
+
+## Counter audit of unstable small controls
+
+`/tmp/bevy-optimization-query-counters.hKg7Hi/` adds hardware-counter evidence
+without changing or rebuilding either saved executable. `driver.sh` runs two
+ABBA blocks each for GPU morph, CPU morph and the unchanged subset control,
+with the same authored timeline, profiling flags, eager residency and default
+affinity. All 24 processes and diagnostic scans pass; input and asset hashes
+verify. Load ranges from 6.72 to 9.47, with unrelated host work unchanged.
+
+The pinned `perf` executable records **unscaled** user-space instructions and
+cycles separately on the `cpu_core` and `cpu_atom` PMUs, plus software
+task-clock. Every run's summed hardware running time equals software task-clock
+running time, with matching instruction/cycle coverage on each PMU. The
+analyzer rejects uncovered intervals or missing counters rather than scaling
+each PMU count to the full interval and double-counting migrated work.
+Counter scope includes opening, idle, warmups, seeks, shutdown and inherited
+threads; it is not seek-only or native frame timing.
+
+| Workload | Before mean instructions | After mean instructions | Instruction change | Mean-of-medians update change |
+| --- | ---: | ---: | ---: | ---: |
+| GPU morph | 3,430,593,881 | 3,417,003,618 | -0.396% | -15.29% |
+| CPU morph | 3,190,234,084 | 3,184,031,131 | -0.194% | +16.17% |
+| Material subsets | 1,856,827,320 | 1,854,286,902 | -0.137% | -17.95% |
+
+These averages do not establish equally large positive or negative speedups.
+GPU morph's first seven update medians range from 0.389 to 0.408 ms, while its
+eighth **baseline** run reaches 0.699 ms. CPU morph has a 0.634 ms candidate
+outlier versus 0.349–0.391 ms in the other seven runs. The unchanged subset
+baseline likewise reaches 0.357 ms versus 0.179–0.196 ms otherwise. Instruction
+counts stay close while cycles and task time vary substantially. Per-PMU
+distribution is retained in `counter-runs.tsv`; the slow runs are not explained
+by a single consistent core-type share. Reported context-switch/migration
+counters are user-filtered zero and are not used to infer a scheduling cause
+or an absence of switching.
+
+`analyze.mjs` verifies all 24,000 unique-clock updates and 96 warmups, their
+summaries and percentiles, counter coverage and matching retained payload/asset
+counts. `analysis.json`, `counter-summary.tsv`, `counter-runs.tsv`, raw `.perf`
+files and logs retain every run. The whole-process instruction changes are
+small, with some variation even in the unchanged control; do not attribute
+their full magnitude to query sharing.
+
+This audit does **not** support a large added-instruction regression from the
+query-sharing change. It also does not prove why an individual process was
+slow, erase the original +25.49% GPU-morph result, or clear native pacing and
+tail gates. No compensating code change or rollback is justified by these
+counters alone. Stop unchanged small-control repetitions; retain the timing
+limitation and return to distinct measured playback costs and rendered/lifecycle
+verification. No production source, dependency or policy changes in this audit.

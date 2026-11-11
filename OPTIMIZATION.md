@@ -76,6 +76,15 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Tangent subgroup reuse experiment:** the measured MikkTSpace hotspot
+  repeats projection of the same face tangents within a vertex group. A
+  [test-only kernel probe](benchmarks/tangent-projected-groups.md) now records
+  raw timing/work counts and length-framed output digests without running the
+  withdrawn scheduler. Its original release build and two focused tests pass;
+  full hardening and candidate comparison remain pending. The experimental
+  dependency copy is isolated in the evidence directory, not enabled in
+  production. No speedup, output equality or broader completion is claimed.
+
 - **Authored-flag cache withdrawn after measurement:** 20 release processes
   validate 20,000 unique updates and 80 warmups, with unchanged payload/work
   counters and no application diagnostics. Bird CPU-update mean-of-medians falls

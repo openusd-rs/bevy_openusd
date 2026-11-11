@@ -57,3 +57,30 @@ individual child removals can have the same sibling-list cost.
   greater than 5% small-instancer regression. Keep the original failure and raw
   samples; do not redefine the target afterward or disable validation/instances.
 - This is another workstream in `OPTIMIZATION.md`, not whole-library completion.
+
+## Isolated relationship scaling
+
+`examples/parenting_benchmark.rs` compares the original transform/`ChildOf`
+bundle replacement with transform updates, conditional parent repair and bulk
+order restoration. Each lane owns an independent world. Every update verifies
+the exact child order, inverse parent links and transforms outside the timed
+interval. The lanes alternate execution order, with two warmups and eight
+measured samples per stable/reversed-order case. This does not exercise USD,
+prototype geometry or rendering and is not an end-to-end speedup claim.
+
+Release evidence: `/tmp/bevy-optimization-parenting-probe.5Oyo4w/`. All three
+processes finish successfully without task-owned compilation overlap;
+case-boundary one-minute load averages are 22.62–24.15. The saved editor baseline
+has the hierarchy cache (`6d4f8ae` production), so subsequent city comparisons
+will not conflate that earlier change with parent-link reconciliation.
+
+| Children | Stable reinsert / retain median, ms | Reversed reinsert / bulk median, ms |
+| --- | --- | --- |
+| 1,000 | 0.410 / 0.017 | 0.245 / 0.031 |
+| 10,000 | 36.864 / 0.173 | 18.007 / 0.311 |
+| 40,000 | 625.954 / 0.712 | 320.271 / 1.281 |
+
+The original stable-order path grows approximately quadratically while the
+retained-link path scales approximately linearly over this range. This confirms
+the isolated hook bottleneck and motivates the production repair; the complete
+city route's remaining cost must still be measured independently.

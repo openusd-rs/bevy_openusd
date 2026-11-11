@@ -119,7 +119,11 @@ impl PlaybackTiming {
         if self.frames.len() == self.count {
             if self.speed != 0.0 && self.motion.contains(&0) {
                 self.fail("playback completed without clock movement for every root");
-            } else if self.passes.is_empty() {
+            } else if !self
+                .passes
+                .keys()
+                .any(|path| path.ends_with("/elapsed_gpu"))
+            {
                 self.fail("playback has no fresh GPU timestamp samples");
             } else {
                 self.phase = Phase::Complete;
@@ -184,7 +188,7 @@ impl PlaybackTiming {
         let started = self.started.unwrap();
         for diagnostic in diagnostics.iter() {
             let path = diagnostic.path().to_string();
-            if !path.ends_with("/elapsed_gpu") {
+            if !path.ends_with("/elapsed_gpu") && !path.ends_with("/elapsed_cpu") {
                 continue;
             }
             let Some(measurement) = diagnostic.measurement() else {
@@ -194,11 +198,11 @@ impl PlaybackTiming {
                 continue;
             }
             if !measurement.value.is_finite() || measurement.value < 0.0 {
-                self.fail("playback received an invalid GPU timestamp duration");
+                self.fail("playback received an invalid render diagnostic duration");
                 return;
             }
             if self.passes.len() >= 128 && !self.passes.contains_key(&path) {
-                self.fail("playback exceeded 128 GPU diagnostic paths");
+                self.fail("playback exceeded 128 render diagnostic paths");
                 return;
             }
             let pass = self.passes.entry(path).or_default();
@@ -241,8 +245,16 @@ impl PlaybackTiming {
                 frame.main_ms, frame.interval_ms, frame.delta_seconds, frame.clocks));
         }
         for (path, pass) in &self.passes {
-            output.push_str(&summary(&format!("playback_gpu_ms[{path}]"), &pass.values));
-            output.push_str(&format!("playback_gpu_raw[{path}]={:?}\n", pass.values));
+            let kind = if path.ends_with("/elapsed_gpu") {
+                "gpu"
+            } else {
+                "render_cpu"
+            };
+            output.push_str(&summary(
+                &format!("playback_{kind}_ms[{path}]"),
+                &pass.values,
+            ));
+            output.push_str(&format!("playback_{kind}_raw[{path}]={:?}\n", pass.values));
         }
         output
     }
@@ -297,7 +309,7 @@ fn begin_frame(
             timing.fail("playback has no projected USD instances");
             return;
         };
-        for (entity, instance, _, mut playback) in &mut roots {
+        for (entity, instance, time, mut playback) in &mut roots {
             let Some(stage) = instances.stage(entity) else {
                 timing.fail("playback root has no stage");
                 return;
@@ -320,8 +332,8 @@ fn begin_frame(
                 ..default()
             };
             timing.stage_info.push_str(&format!(
-                "playback_stage[{}]=start:{start},end:{end},rate:{rate}\n",
-                instance.0
+                "playback_stage[{}]=start:{start},end:{end},rate:{rate},initial:{}\n",
+                instance.0, time.current
             ));
         }
     }
@@ -543,6 +555,43 @@ mod tests {
             assert!(!timing.complete(), "{case}");
             assert!(timing.error().is_some(), "{case}");
         }
+    }
+
+    #[test]
+    fn render_cpu_diagnostics_remain_separate_and_cannot_replace_gpu_samples() {
+        let now = Instant::now();
+        let mut timing = PlaybackTiming::parse(Some("1"), None).unwrap().unwrap();
+        let mut store = DiagnosticsStore::default();
+        let path = DiagnosticPath::new("render/pass/elapsed_cpu");
+        store.add(Diagnostic::new(path.clone()));
+        store
+            .get_mut(&path)
+            .unwrap()
+            .add_measurement(DiagnosticMeasurement {
+                time: now,
+                value: 3.0,
+            });
+        ready(&mut timing, now, vec![0.0]);
+        timing.begin(now);
+        timing.end(
+            now + Duration::from_millis(2),
+            true,
+            vec![1.0],
+            0.02,
+            &store,
+        );
+        timing.begin(now + Duration::from_millis(20));
+        assert!(timing.error().unwrap().contains("GPU timestamp"));
+        assert!(
+            timing
+                .report()
+                .contains("playback_render_cpu_raw[render/pass/elapsed_cpu]=[3.0]")
+        );
+        assert!(
+            !timing
+                .report()
+                .contains("playback_gpu_raw[render/pass/elapsed_cpu]")
+        );
     }
 
     #[test]

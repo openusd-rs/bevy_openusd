@@ -4319,6 +4319,7 @@ def PointInstancer "PI" {
                 }
                 mesh
             };
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             for times in [[0.0, 10.0], [10.0, 0.0]] {
                 for (root, time) in roots.into_iter().zip(times) {
                     app.world_mut()
@@ -4328,6 +4329,10 @@ def PointInstancer "PI" {
                 }
                 app.update();
                 for (root, time) in roots.into_iter().zip(times) {
+                    assert_eq!(
+                        app.world().get::<crate::asset::UsdSceneState>(root),
+                        Some(&crate::asset::UsdSceneState::Ready),
+                    );
                     check(
                         &app,
                         root,

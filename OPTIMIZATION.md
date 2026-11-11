@@ -76,6 +76,17 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Tightly paired scheduling evidence (`79e80bc`): six CPU/GPU-prepared workloads,
+  two independent app pairs each and 1,000 unique clocks per pair complete with
+  equal retained payload counts. Cow GPU median update cost falls 21.9–28.6%,
+  bird GPU 7.2–8.3%; CPU cow/bird also improve, and small controls stay within the
+  5% median-regression limit. Hardening passes 804 no-default / 902 all-feature
+  tests and strict Clippy. This supports the parallel path but is not native
+  60 Hz acceptance or a replacement for saved-revision comparisons. Reopened
+  hash-set prim ordering can change batch partitions. See the paired section in
+  [parallel preparation](benchmarks/parallel-mesh-preparation.md) for raw evidence
+  and unchanged scope/limitations.
+
 - Local performance repairs and material/image invalidation regressions are
   committed through `d5b87b6`.
 - Preceding-work hardening passed: 781 no-default tests, 874 all-feature tests,

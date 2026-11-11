@@ -257,3 +257,48 @@ The shared benchmark profile reset now also clears GPU palette-update, residency
 and material timing counters after warmup. Previously these optional cumulative
 profiles included open/idle work under the measured-seeks label; whole-update
 samples and acceptance decisions never subtracted those counters.
+
+### Paired release results
+
+`79e80bc` passes hardening (804 no-default tests, 902 all-feature/all-target
+tests, strict Clippy and formatting). The release matrix completes all six cases
+under `/tmp/bevy-optimization-paired.yeD1V6/`: two independently reopened pairs
+per case, 12,000 measured pairs / 24,000 updates. Source verification passes for
+129 root/package entries and 267 cow-directory entries. Each pair has equal
+final payload counts and sampled peak asset counts. No task-owned compilation
+overlaps; unrelated host work remains untouched. Case-boundary one-minute load
+readings range 6.36–41.48, not a continuously sampled load range.
+
+| Case | Serial medians, ms | Batched medians, ms | Median cost reduction |
+| --- | --- | --- | --- |
+| Cow GPU-prepared | 79.106 / 87.989 | 56.477 / 68.709 | 28.6% / 21.9% |
+| Bird GPU-prepared | 28.414 / 28.128 | 26.057 / 26.095 | 8.3% / 7.2% |
+| Cow CPU | 78.521 / 77.075 | 56.724 / 49.237 | 27.8% / 36.1% |
+| Bird CPU | 26.105 / 26.009 | 24.003 / 23.943 | 8.0% / 7.9% |
+| Morph GPU-prepared | 0.555 / 0.806 | 0.573 / 0.811 | -3.3% / -0.6% |
+| Morph CPU | 0.492 / 0.644 | 0.490 / 0.654 | 0.3% / -1.7% |
+
+Cow GPU batching wins 984/1,000 and 913/1,000 individual pairs. Its benefit
+persists in both first-update order strata and each 250-clock quarter: quarter
+median reductions range 19.1–28.9%. `paired-analysis.tsv` retains these strata,
+means, tails and median paired ratios; raw logs retain every clock and order.
+Both primary paired medians exceed the predeclared 15% threshold, with no
+repeatable >5% median regression in these controls. This supports keeping the
+parallel path as a measured scheduling improvement. It does **not** retroactively
+pass the failed saved-revision trial or establish native 60 Hz playback.
+
+Reopened apps do not necessarily produce identical batch partitions. The second
+cow GPU sample records 2,997 parallel batches plus 1,998 inline jobs, versus
+3,996 parallel batches and no inline jobs in the first. Both process 13,986 jobs.
+`AnimatedPrims` uses a hash set and the batching path preserves incoming prim
+order while chunking lightweight descriptors, so independent app ordering is
+another source of variation, not only host load. Future changes must preserve
+publication semantics rather than silently reordering custom routes. Bird runs
+record 9,980 parallel batches and 998 inline jobs; the one-mesh control uses only
+inline generation. Serial controls record zero preparation jobs.
+
+RSS is combined across two apps and affected by paging. In particular, one cow
+reading drops below retained image payload while its process high-water mark
+exceeds 1 GB; this is not a memory saving. Remaining requirements include
+saved-revision control comparisons, actual native cadence, the unresolved strict
+rendering discrepancy, and the complete workstreams in `OPTIMIZATION.md`.

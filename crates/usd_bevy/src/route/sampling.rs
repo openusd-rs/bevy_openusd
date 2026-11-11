@@ -420,7 +420,17 @@ mod tests {
                 }
             }
             for (i, value) in next.iter().enumerate() {
-                kind.encode(*value, i % channels == 3, &mut data);
+                match kind {
+                    Kind::Srgb8 if i % channels != 3 => {
+                        data.push((linear_to_srgb(*value).clamp(0.0, 1.0) * 255.0).round() as u8)
+                    }
+                    Kind::Srgb8 | Kind::Unorm8 => {
+                        data.push((value.clamp(0.0, 1.0) * 255.0).round() as u8);
+                    }
+                    Kind::Half => {
+                        data.extend_from_slice(&half::f16::from_f32(*value).to_le_bytes())
+                    }
+                }
             }
             level = next;
             (w, h) = (nw, nh);

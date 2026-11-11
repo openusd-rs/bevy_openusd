@@ -12,6 +12,11 @@ The chronological checkpoints below describe the evidence available at each
 step. For the subsequent wing/grid sorting repair and current remaining
 single-pixel image failures, see [posed sorting centers](deformed-sort-centers.md).
 
+The later [deferred preparation](deferred-preparation.md) change allows ahead-of-
+route work for already resident meshes under opt-in deferral. Nonresident meshes
+and shared residency budgets retain synchronous routing; library defaults stay
+eager. Historical all-deferral fallback descriptions below refer to older code.
+
 ## Follow-up phase instrumentation
 
 The asset-root classification-cache comparison and its two targeted repeats

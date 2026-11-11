@@ -147,7 +147,7 @@ fn needs_deformation(ctx: &RouteCtx, world: &World, phases: &mut Option<PhaseSam
 }
 
 pub(super) fn prepare_batch(
-    contexts: &[RouteCtx],
+    contexts: &[(RouteCtx, Entity)],
     world: &mut World,
     pool: &TaskPool,
     settings: ParallelMeshPreparation,
@@ -167,7 +167,8 @@ pub(super) fn prepare_batch(
     let mut cache_hits = 0;
     let mut mesh_prims = 0;
     let mut consumed = 0;
-    for (index, ctx) in contexts.iter().enumerate() {
+    let defer_initial = world.contains_resource::<super::residency::DeferHiddenMeshes>();
+    for (index, (ctx, entity)) in contexts.iter().enumerate() {
         if mesh_prims >= settings.max_jobs.min(MAX_BATCH_MESHES)
             || input_bytes >= settings.max_input_bytes
         {
@@ -175,6 +176,9 @@ pub(super) fn prepare_batch(
         }
         consumed = index + 1;
         mesh_prims += usize::from(ctx.type_name.as_deref() == Some("Mesh"));
+        if defer_initial && world.get::<Mesh3d>(*entity).is_none() {
+            continue;
+        }
         let needed = needs_deformation(ctx, world, &mut phases);
         phase_lap(&mut phases, "eligibility");
         if !needed {
@@ -254,11 +258,12 @@ pub(super) fn prepare_batch(
             phases.timing.tangent_max = phases.timing.tangent_max.max(elapsed);
         }
         cache::finish_tangents(world, &mesh, ticket, result);
-        *contexts[index].prepared_deformation.borrow_mut() = Some(Ok(Some(PreparedDeformation {
-            read,
-            mesh,
-            tangents_ready: true,
-        })));
+        *contexts[index].0.prepared_deformation.borrow_mut() =
+            Some(Ok(Some(PreparedDeformation {
+                read,
+                mesh,
+                tangents_ready: true,
+            })));
     }
     phase_lap(&mut phases, "publication");
     if let Some(started) = started {
@@ -446,10 +451,13 @@ mod tests {
             .set(Value::IntVec(vec![-1; 8]))
             .unwrap();
         let path = openusd::sdf::path("/Test/Face").unwrap();
-        let contexts = [RouteCtx::at(&stage, &path, Some(5.0))];
+        let contexts = [(
+            RouteCtx::at(&stage, &path, Some(5.0)),
+            world.spawn_empty().id(),
+        )];
         assert_eq!(prepare_batch(&contexts, &mut world, &pool, default()), 1);
         assert!(matches!(
-            contexts[0].prepared_deformation.borrow().as_ref(),
+            contexts[0].0.prepared_deformation.borrow().as_ref(),
             Some(Ok(None))
         ));
         assert!(!world.contains_resource::<MeshPreparationTiming>());
@@ -757,10 +765,105 @@ mod tests {
             Some(&pool),
         );
         assert_eq!(world.resource::<super::super::MeshReadTiming>().decodes, 0);
-        assert_eq!(world.resource::<MeshPreparationTiming>().batches, 0);
+        assert_eq!(world.resource::<MeshPreparationTiming>().jobs, 0);
         for (_, entity) in prims {
             assert!(world.get::<Mesh3d>(entity).is_none());
             assert!(world.get::<residency::UsdDeferredMesh>(entity).is_some());
+        }
+    }
+
+    #[test]
+    fn deferred_resident_meshes_prepare_without_decoding_hidden_siblings() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let registry = SchemaRegistry::builtin();
+        for gpu in [false, true] {
+            let stage = stage();
+            let setup = || {
+                let (mut world, prims) = world(gpu);
+                world.init_resource::<residency::DeferHiddenMeshes>();
+                world.init_resource::<super::super::MeshReadTiming>();
+                world.insert_resource(cache::MeshTangentCache::with_byte_budget(0));
+                world.insert_resource(StageTime { current: 0.0 });
+                let parent = world.spawn(Visibility::Hidden).id();
+                for (_, entity) in prims.iter().take(6) {
+                    world.entity_mut(*entity).insert(ChildOf(parent));
+                }
+                registry.patch_animation_with_pool(&stage, prims.clone(), &mut world, None);
+                for (index, (_, entity)) in prims.iter().enumerate() {
+                    assert_eq!(world.get::<Mesh3d>(*entity).is_some(), index >= 6);
+                }
+                (world, prims, parent)
+            };
+            let (mut serial, a, ap) = setup();
+            let (mut parallel, b, bp) = setup();
+            let mut promoted = false;
+            for (clock, reveal) in [
+                (5.0, false),
+                (10.0, false),
+                (3.0, true),
+                (5.0, false),
+                (3.0, true),
+            ] {
+                if clock == 10.0 {
+                    stage
+                        .attribute("/Test/Face.orientation")
+                        .unwrap()
+                        .set(Value::Token("leftHanded".into()))
+                        .unwrap();
+                }
+                let resident_before = b
+                    .iter()
+                    .filter(|(_, entity)| parallel.get::<Mesh3d>(*entity).is_some())
+                    .count();
+                for (world, parent) in [(&mut serial, ap), (&mut parallel, bp)] {
+                    world.entity_mut(parent).insert(if reveal {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    });
+                    world.insert_resource(StageTime { current: clock });
+                    world.insert_resource(MeshPreparationTiming::default());
+                    world.insert_resource(super::super::MeshReadTiming::default());
+                }
+                registry.patch_animation_with_pool(&stage, a.clone(), &mut serial, None);
+                registry.patch_animation_with_pool(&stage, b.clone(), &mut parallel, Some(&pool));
+                promoted |= reveal;
+                for (index, ((_, ae), (_, be))) in a.iter().zip(&b).enumerate() {
+                    same_entities(&serial, *ae, &parallel, *be);
+                    assert_eq!(
+                        parallel.get::<Mesh3d>(*be).is_some(),
+                        promoted || index >= 6
+                    );
+                    assert_eq!(
+                        parallel.get::<residency::UsdDeferredMesh>(*be).is_some(),
+                        !promoted && index < 6
+                    );
+                }
+                assert_eq!(serial.resource::<MeshPreparationTiming>().jobs, 0);
+                let timing = parallel.resource::<MeshPreparationTiming>();
+                if pool.thread_num() > 1 {
+                    assert_eq!(timing.jobs as usize, resident_before);
+                    assert!(timing.peak_jobs <= 2 && timing.peak_input_bytes <= 4096);
+                }
+                assert_eq!(
+                    parallel.resource::<super::super::MeshReadTiming>().decodes,
+                    if promoted { 11 } else { 5 }
+                );
+                assert_eq!(
+                    serial.resource::<super::super::MeshReadTiming>().decodes,
+                    parallel.resource::<super::super::MeshReadTiming>().decodes
+                );
+            }
+            parallel.insert_resource(residency::UsdResidencyBudget(std::time::Duration::ZERO));
+            parallel.insert_resource(MeshPreparationTiming::default());
+            parallel.insert_resource(StageTime { current: 7.0 });
+            serial.insert_resource(StageTime { current: 7.0 });
+            registry.patch_animation_with_pool(&stage, a.clone(), &mut serial, None);
+            registry.patch_animation_with_pool(&stage, b.clone(), &mut parallel, Some(&pool));
+            assert_eq!(parallel.resource::<MeshPreparationTiming>().jobs, 0);
+            for ((_, ae), (_, be)) in a.iter().zip(&b) {
+                same_entities(&serial, *ae, &parallel, *be);
+            }
         }
     }
 
@@ -886,9 +989,13 @@ def "Copy" (references = @{file}@</Test>) {{}}
     #[test]
     fn asset_plugin_preparation_preserves_root_clocks_reload_and_close() {
         use crate::instance::{UsdInstanceTime, UsdInstances};
-        for gpu in [false, true] {
+        for (gpu, defer) in [(false, false), (false, true), (true, false), (true, true)] {
             let (mut serial, ah, a) = instance_app(false, gpu);
             let (mut parallel, bh, b) = instance_app(true, gpu);
+            if defer {
+                serial.init_resource::<residency::DeferHiddenMeshes>();
+                parallel.init_resource::<residency::DeferHiddenMeshes>();
+            }
             let mut previous = None;
             for clocks in [[2.0, 8.0], [8.0, 2.0], [5.0, 5.0], [0.0, 10.0]] {
                 for index in 0..2 {

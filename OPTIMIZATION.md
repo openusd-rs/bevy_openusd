@@ -76,6 +76,19 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Bounded animation primvar ownership reuse (`f3a7501`) now shares ancestor
+  resolution within built-in animation passes, with fresh sampled values,
+  custom-route fallback and 4,096-entry / 1 MiB key-text caps. Hardening passes
+  852 / 971 executions; native deformation/watchers/exports and wasm checks
+  pass. Sixteen release processes validate 16,000 distinct-time updates and
+  unchanged payload/cache/asset counts. Bird mesh-read time falls 37.0% and
+  its aggregate update median 21.5%, but twelve timing checks still fail;
+  this is not full performance acceptance. Four candidate native animations
+  (1,200 measured frames) match independent baseline final poses pixel-exactly.
+  Cow MDL diagnostics remain, and bird/cow still miss 60 Hz. Tangent dispatch
+  remains the dominant cow preparation cost. See
+  [animation primvars](benchmarks/animation-primvars.md).
+
 - Built-in live animation order (`8d22fec`) now sorts borrowed paths per pass,
   preserving public HashSet membership and custom callback order/snapshots.
   Hardening passes 841 no-default / 958 all-feature executions, and native

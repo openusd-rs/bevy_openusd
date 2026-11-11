@@ -11,7 +11,7 @@ const MAX_BATCH_MESHES: usize = 8;
 /// Limits parallel tangent work per animation batch; zero disables preparation.
 #[derive(Resource, Clone, Copy)]
 pub struct ParallelMeshPreparation {
-    /// Concurrent generators; batches buffer up to twice this count, capped at eight.
+    /// Concurrent mesh jobs, capped at eight per batch.
     pub max_jobs: usize,
     /// Worker input mesh payload, excluding USD reads, tangent output and scratch.
     pub max_input_bytes: usize,
@@ -34,7 +34,6 @@ pub struct MeshPreparationTiming {
     pub inline_jobs: u64,
     pub jobs: u64,
     pub cache_hits: u64,
-    /// Maximum buffered jobs in one batch, including sequential jobs within a worker.
     pub peak_jobs: usize,
     pub peak_input_bytes: usize,
     pub elapsed: std::time::Duration,
@@ -147,46 +146,6 @@ fn needs_deformation(ctx: &RouteCtx, world: &World, phases: &mut Option<PhaseSam
     needed
 }
 
-type MeshJob = (usize, Mesh);
-
-fn job_lanes(mut jobs: Vec<MeshJob>, workers: usize) -> Vec<(usize, Vec<MeshJob>)> {
-    let workers = workers.min(jobs.len()).clamp(1, MAX_BATCH_MESHES);
-    let mut lanes: Vec<_> = (0..workers).map(|_| (0usize, Vec::new())).collect();
-    jobs.sort_unstable_by_key(|(_, mesh)| std::cmp::Reverse(mesh.count_vertices()));
-    for job in jobs {
-        let (load, lane) = lanes.iter_mut().min_by_key(|(load, _)| *load).unwrap();
-        *load = load.saturating_add(job.1.count_vertices());
-        lane.push(job);
-    }
-    lanes.sort_unstable_by_key(|(load, _)| std::cmp::Reverse(*load));
-    lanes
-}
-
-fn generate_jobs<T: Send + 'static>(
-    jobs: Vec<MeshJob>,
-    pool: &TaskPool,
-    max_jobs: usize,
-    generate: impl Fn(MeshJob) -> T + Sync,
-) -> Vec<T> {
-    if jobs.len() < 2 || max_jobs < 2 {
-        return jobs.into_iter().map(generate).collect();
-    }
-    let generate = &generate;
-    pool.scope_with_executor(false, None, |scope| {
-        for (position, (_, jobs)) in job_lanes(jobs, max_jobs).into_iter().enumerate() {
-            let task = async move { jobs.into_iter().map(generate).collect::<Vec<_>>() };
-            if position == 0 {
-                scope.spawn_on_scope(task);
-            } else {
-                scope.spawn(task);
-            }
-        }
-    })
-    .into_iter()
-    .flatten()
-    .collect()
-}
-
 pub(super) fn prepare_batch(
     contexts: &[RouteCtx],
     world: &mut World,
@@ -209,7 +168,7 @@ pub(super) fn prepare_batch(
     let mut mesh_prims = 0;
     let mut consumed = 0;
     for (index, ctx) in contexts.iter().enumerate() {
-        if mesh_prims >= settings.max_jobs.saturating_mul(2).min(MAX_BATCH_MESHES)
+        if mesh_prims >= settings.max_jobs.min(MAX_BATCH_MESHES)
             || input_bytes >= settings.max_input_bytes
         {
             break;
@@ -267,7 +226,21 @@ pub(super) fn prepare_batch(
         let elapsed = started.map(|started| started.elapsed());
         (index, mesh, result, elapsed)
     };
-    let mut results = generate_jobs(jobs, pool, settings.max_jobs, generate);
+    let mut results = if count < 2 {
+        jobs.into_iter().map(generate).collect()
+    } else {
+        jobs.sort_unstable_by_key(|(_, mesh)| std::cmp::Reverse(mesh.count_vertices()));
+        pool.scope_with_executor(false, None, |scope| {
+            for (position, job) in jobs.into_iter().enumerate() {
+                let task = async move { generate(job) };
+                if position == 0 {
+                    scope.spawn_on_scope(task);
+                } else {
+                    scope.spawn(task);
+                }
+            }
+        })
+    };
     phase_lap(&mut phases, "tangent-dispatch-join");
     results.sort_unstable_by_key(|(index, _, _, _)| *index);
     for ((index, mesh, result, elapsed), (expected, read, ticket)) in
@@ -320,83 +293,6 @@ mod tests {
     use super::*;
     use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
     use openusd::{sdf::Path, usd::Stage, vt::Value};
-
-    fn sized_jobs(sizes: &[usize]) -> Vec<MeshJob> {
-        sizes
-            .iter()
-            .enumerate()
-            .map(|(index, &vertices)| {
-                let mut mesh = Mesh::new(
-                    bevy::mesh::PrimitiveTopology::TriangleList,
-                    bevy::asset::RenderAssetUsages::default(),
-                );
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; vertices]);
-                (index, mesh)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn queued_jobs_balance_large_meshes_across_bounded_workers() {
-        let sizes = [30, 1, 1, 1, 30, 1, 1, 1];
-        for workers in [1usize, 2, 4, 8, usize::MAX] {
-            let lanes = job_lanes(sized_jobs(&sizes), workers);
-            assert_eq!(lanes.len(), workers.min(MAX_BATCH_MESHES));
-            assert!(lanes.windows(2).all(|pair| pair[0].0 >= pair[1].0));
-            let mut indices = Vec::new();
-            for (load, jobs) in &lanes {
-                assert!(!jobs.is_empty());
-                assert_eq!(
-                    *load,
-                    jobs.iter()
-                        .map(|(_, mesh)| mesh.count_vertices())
-                        .sum::<usize>()
-                );
-                indices.extend(jobs.iter().map(|(index, _)| *index));
-            }
-            indices.sort_unstable();
-            assert_eq!(indices, (0..sizes.len()).collect::<Vec<_>>());
-            if workers == 4 {
-                let old_barriers: usize = sizes
-                    .chunks(4)
-                    .map(|batch| batch.iter().max().unwrap())
-                    .sum();
-                assert_eq!(lanes[0].0, 30);
-                assert_eq!(old_barriers, 60);
-            }
-        }
-    }
-
-    #[test]
-    fn queued_generators_respect_concurrency_and_return_every_job() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
-        for max_jobs in [0usize, 1, 2, 4, usize::MAX] {
-            for count in [0usize, 1, 8] {
-                let active = AtomicUsize::new(0);
-                let peak = AtomicUsize::new(0);
-                let mut results = generate_jobs(
-                    sized_jobs(&vec![3; count]),
-                    &pool,
-                    max_jobs,
-                    |(index, mesh)| {
-                        let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
-                        peak.fetch_max(concurrent, Ordering::SeqCst);
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                        active.fetch_sub(1, Ordering::SeqCst);
-                        assert_eq!(mesh.count_vertices(), 3);
-                        index
-                    },
-                );
-                results.sort_unstable();
-                assert_eq!(results, (0..count).collect::<Vec<_>>());
-                assert_eq!(active.load(Ordering::SeqCst), 0);
-                assert!(
-                    peak.load(Ordering::SeqCst) <= max_jobs.clamp(1, MAX_BATCH_MESHES).min(count)
-                );
-            }
-        }
-    }
 
     fn stage() -> Stage {
         let file = concat!(
@@ -706,7 +602,7 @@ mod tests {
             if pool.thread_num() > 1 {
                 assert!(timing.jobs > 0);
                 assert_eq!(timing.cache_hits > 0, budget > 0);
-                assert_eq!(timing.peak_jobs, 4);
+                assert_eq!(timing.peak_jobs, 2);
                 assert!(timing.peak_input_bytes <= 4096);
             }
             assert_eq!(serial.resource::<MeshPreparationTiming>().jobs, 0);
@@ -770,12 +666,7 @@ mod tests {
         let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
         let stage = stage();
         let registry = SchemaRegistry::builtin();
-        for (limit, count, gap, batches) in [
-            (2, 11, 0, 3),
-            (4, 11, 0, 2),
-            (4, 4, 20, 1),
-            (usize::MAX, 11, 8, 2),
-        ] {
+        for (limit, count, gap, batches) in [(4, 4, 20, 1), (usize::MAX, 11, 8, 2)] {
             let (mut world, meshes) = world(true);
             world.insert_resource(StageTime { current: 5.0 });
             world.insert_resource(cache::MeshTangentCache::with_byte_budget(0));
@@ -796,10 +687,7 @@ mod tests {
                 assert_eq!(timing.batches, batches);
                 assert_eq!(timing.parallel_batches, batches);
                 assert_eq!(timing.inline_jobs, 0);
-                assert_eq!(
-                    timing.peak_jobs,
-                    limit.saturating_mul(2).min(MAX_BATCH_MESHES).min(count)
-                );
+                assert_eq!(timing.peak_jobs, limit.min(MAX_BATCH_MESHES));
                 assert!(timing.peak_input_bytes <= 4096);
             }
             for (path, entity) in prims {

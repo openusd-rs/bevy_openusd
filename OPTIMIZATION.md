@@ -76,6 +76,15 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- The larger tangent-queue trial (`a4fa55d`) is withdrawn: it halves cow batch
+  barriers but fails its primary performance target under severe variable host
+  load. Sixteen processes validate 16,000 updates, unchanged payload/cache/asset
+  counts and bounded input/RSS, yet nine performance checks fail. Production
+  preparation is restored byte-exactly to `181239d`; no queue speedup is claimed.
+  See [the retained trial](benchmarks/tangent-queue.md). Further scheduler changes
+  require isolated, tightly paired job evidence rather than another unchanged
+  full-scene timing matrix.
+
 - Bounded animation primvar ownership reuse (`f3a7501`) now shares ancestor
   resolution within built-in animation passes, with fresh sampled values,
   custom-route fallback and 4,096-entry / 1 MiB key-text caps. Hardening passes

@@ -230,7 +230,39 @@ benchmark executable changes. The interrupted and failed-link logs remain as
 The exact cause of the termination is not established; the clean incremental
 rebuild is verification recovery, not a production optimization.
 
-Targeted regression repeats remain pending. They use the same saved binaries,
-settings and default affinity in two additional ABBA blocks for cow play,
-material-subset play and an arm-idle control, with no task-owned compilation
-overlapping. The original failed observations remain part of acceptance.
+## Targeted regression repetition
+
+Two more ABBA blocks complete under
+`/tmp/bevy-optimization-animation-cache-repeat.34zeTA/round-{1,2}/`, using the
+identical saved binaries, settings and default affinity for cow play,
+material-subset play and an arm-idle control. There are 24 further playback
+processes and no overlapping task-owned compilation. The second round's
+worktree patch includes unbuilt diagnostic phase timers; neither saved binary
+contains them. Raw hashes identify the measured executables independently of
+the working tree.
+
+| Case | First repeat before/after main, ms | First change | Second repeat before/after main, ms | Second change |
+| --- | ---: | ---: | ---: | ---: |
+| Cow play | 80.863 / 122.242 | **+51.2%** | 163.725 / 117.840 | -28.0% |
+| Material subsets play | 2.985 / 1.784 | -40.2% | 2.467 / 3.353 | **+35.9%** |
+| Arm idle | 1.848 / 0.847 | -54.2% | 1.623 / 1.412 | -13.0% |
+
+Each entry again averages two process medians. Both original regressions recur
+in at least one follow-up block; neither is accepted. The opposite-sign blocks
+and arm-idle variability also prohibit attributing the observed changes solely
+to the cache. Host load spans 29.94–55.57 and 28.61–49.93 respectively. Cow
+mesh-preparation wall time rises 72.9% in the first repeat and falls 8.0% in the
+second, despite the same underlying preparation algorithm. Subset enclosing
+animation time improves approximately 29–30% in both repeats even when its
+whole main-update median regresses. The next investigation must distinguish
+preparation phases and scheduling from classification, not repeatedly rerun
+until a favorable average appears.
+
+All 7,200 additional raw frame/clock rows and summary/pass arrays validate.
+All four candidate cow final poses match independent baseline renders exactly
+at tolerance zero. All 24 process/log checks and source manifests pass. Both
+blocks retain the missing cow MDL warning and the combined driver exits 1.
+The first arm-idle partial source total also regresses 54.9%, while the second
+improves 24.4%; these partial phases still do not establish complete opening
+performance. Arm-idle interval p95 worsens 8.5% in the second block, despite
+unchanged median cadence. No original failure is removed by these repeats.

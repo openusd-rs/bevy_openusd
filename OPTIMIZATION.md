@@ -107,8 +107,11 @@ correct readiness reporting.
   rows validate, six exact-clock final poses and twelve idle images are
   pixel-exact at tolerance zero. Full acceptance remains open: cow main cost
   regresses 23.9%, material subsets 18.1%, and partial source phases also show
-  regressions under highly variable host load. Targeted repeats are required;
-  no noise waiver or claim that partial source phases cover complete opening.
+  regressions under highly variable host load. Two targeted ABBA repeats
+  reproduce the cow and subset failures in one block each, with opposite-sign
+  results in the other; neither gate is accepted. Additional phase profiling
+  is needed, not a noise waiver or a claim that partial source phases cover
+  complete opening.
   The bird/cow 60 Hz target, native-window/browser performance and previous
   rendering/loading failures remain open. See
   [asset-root animation](benchmarks/instance-animation.md).

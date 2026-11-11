@@ -140,6 +140,165 @@ fn order(iteration: usize, reverse: bool) -> [usize; 2] {
     [first, 1 - first]
 }
 
+fn output_digest(outputs: &[Output]) -> blake3::Hash {
+    let mut hash = blake3::Hasher::new();
+    let mut write = |bytes: &[u8]| {
+        hash.update(&(bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    };
+    for (index, mesh, result) in outputs {
+        assert!(result.is_ok());
+        write(&(*index as u64).to_le_bytes());
+        write(format!("{:?}", mesh.primitive_topology()).as_bytes());
+        write(format!("{:?}", mesh.indices()).as_bytes());
+        write(&(mesh.attributes().count() as u64).to_le_bytes());
+        for (attribute, values) in mesh.attributes() {
+            write(attribute.name.as_bytes());
+            write(
+                format!(
+                    "{:?}",
+                    bevy::render::render_resource::VertexFormat::from(values)
+                )
+                .as_bytes(),
+            );
+            write(values.get_bytes());
+        }
+        if let Some(targets) = mesh.get_morph_targets() {
+            write(&[1]);
+            write(bytemuck::cast_slice(targets));
+        } else {
+            write(&[0]);
+        }
+    }
+    hash.finalize()
+}
+
+#[test]
+fn tangent_probe_digest_tracks_geometry_and_order() {
+    let triangle = || {
+        let mut mesh = Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0_f32; 3]; 3]);
+        mesh
+    };
+    let original = vec![(0, triangle(), Ok(()))];
+    assert_eq!(output_digest(&original), output_digest(&original));
+    let mut changed = vec![(1, triangle(), Ok(()))];
+    assert_ne!(output_digest(&original), output_digest(&changed));
+    changed[0].0 = 0;
+    changed[0]
+        .1
+        .insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; 3]);
+    assert_ne!(output_digest(&original), output_digest(&changed));
+    changed[0].1.remove_attribute(Mesh::ATTRIBUTE_NORMAL);
+    changed[0]
+        .1
+        .insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[-0.0_f32; 3]; 3]);
+    assert_ne!(output_digest(&original), output_digest(&changed));
+    changed[0]
+        .1
+        .insert_indices(bevy::mesh::Indices::U16(vec![0, 1, 2]));
+    let a = output_digest(&changed);
+    changed[0]
+        .1
+        .insert_indices(bevy::mesh::Indices::U32(vec![0, 1, 2]));
+    assert_ne!(a, output_digest(&changed));
+}
+
+#[test]
+#[ignore = "release diagnostic requiring USD_TANGENT_ASSET"]
+fn real_asset_tangent_kernel() -> anyhow::Result<()> {
+    anyhow::ensure!(!cfg!(debug_assertions), "probe requires release mode");
+    let file = std::fs::canonicalize(std::env::var("USD_TANGENT_ASSET")?)?;
+    let samples = std::env::var("USD_TANGENT_SAMPLES")
+        .unwrap_or_else(|_| "100".into())
+        .parse::<usize>()?;
+    anyhow::ensure!((4..=1000).contains(&samples), "samples must be in 4..1000");
+    let stage = crate::UsdSource::from_file(&file)?.open_stage()?;
+    let (start, end) = (stage.start_time_code(), stage.end_time_code());
+    anyhow::ensure!(
+        start.is_finite() && end.is_finite() && end > start && (end - start).is_finite(),
+        "invalid authored timeline"
+    );
+    let mut paths = Vec::new();
+    stage.traverse(openusd::usd::PrimPredicate::DEFAULT_PROXIES, |path| {
+        paths.push(path.clone())
+    })?;
+    paths.retain(|path| crate::live::prim_is_animated(&stage, path));
+    paths.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let mut world = World::new();
+    world.init_resource::<super::super::gpu_skin::GpuSkinningEnabled>();
+    let pool = bevy::tasks::TaskPoolBuilder::new()
+        .num_threads(WORKERS)
+        .build();
+    anyhow::ensure!(pool.thread_num() == WORKERS, "unexpected pool size");
+    println!(
+        "tangent_kernel asset={} start={start} end={end} samples={samples} warmup={WARMUP} workers={WORKERS} input_budget={INPUT_BUDGET} scope=owned-posed-mesh-kernel-not-app-or-FPS",
+        file.display()
+    );
+    let mut previous = start;
+    let mut timings = Vec::with_capacity(samples);
+    for iteration in 0..samples + WARMUP {
+        let fraction = if iteration < WARMUP {
+            [0.0, 0.5, 1.0, 0.5][iteration]
+        } else {
+            (iteration - WARMUP + 1) as f64 / samples as f64
+        };
+        let clock = start + (end - start) * fraction;
+        if iteration >= WARMUP {
+            anyhow::ensure!(clock.is_finite() && clock > previous, "non-distinct clock");
+            previous = clock;
+        }
+        let input = inputs(&stage, &paths, clock, &world)?;
+        let expected = input.iter().filter(|input| input.mesh.is_some()).count();
+        anyhow::ensure!(expected > 0, "no tangent jobs");
+        let started = Instant::now();
+        let result = run(input, &pool, false, INPUT_BUDGET);
+        let elapsed = started.elapsed();
+        anyhow::ensure!(result.outputs.len() == expected, "lost tangent jobs");
+        anyhow::ensure!(
+            result.outputs.iter().all(|(_, _, value)| value.is_ok()),
+            "failed tangent job"
+        );
+        anyhow::ensure!(
+            result.peak_jobs <= WORKERS && result.peak_bytes <= INPUT_BUDGET,
+            "unbounded work"
+        );
+        let digest = output_digest(&result.outputs);
+        let phase = if iteration < WARMUP {
+            "warmup"
+        } else {
+            "sample"
+        };
+        let index = if iteration < WARMUP {
+            iteration
+        } else {
+            iteration - WARMUP
+        };
+        println!(
+            "tangent_kernel_{phase} index={index} clock={clock:.17} elapsed_ns={} jobs={expected} batches={} peak_jobs={} peak_bytes={} inline={} digest={digest}",
+            elapsed.as_nanos(),
+            result.batches,
+            result.peak_jobs,
+            result.peak_bytes,
+            result.inline_jobs
+        );
+        if iteration >= WARMUP {
+            timings.push(elapsed);
+        }
+    }
+    timings.sort_unstable();
+    println!(
+        "tangent_kernel_summary samples={samples} median_ns={} p95_ns={} max_ns={}",
+        timings[samples.div_ceil(2) - 1].as_nanos(),
+        timings[(samples * 95).div_ceil(100) - 1].as_nanos(),
+        timings.last().unwrap().as_nanos()
+    );
+    Ok(())
+}
+
 fn clone_inputs(input: &[Input], first: usize) -> [Option<Vec<Input>>; 2] {
     let mut copies = [None, None];
     for index in [first, 1 - first] {

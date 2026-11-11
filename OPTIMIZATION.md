@@ -76,6 +76,61 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Tangent full-editor gate failed despite cow gain:** 24 processes validate
+  24,000 updates and 96 warmups, unchanged payload/work counts and no diagnostics.
+  Cow CPU-update median falls 8.34%, but GPU morph and subsets rise 55.57% and
+  27.77%, exceeding the control bound in both pairings. Bird p95 rises 35.29%.
+  The [complete results](benchmarks/tangent-projected-groups.md#full-editor-result-cow-improves-control-gates-fail)
+  retain all tails, opening/idle observations and the failed exit. A new finite
+  corpus passes 3,402 exact full-tangent comparisons and rejects a one-bit
+  negative control; production hardening again passes 885 / 1,012 executions.
+  Those checks do not erase the editor failures. Production dependencies stay
+  unchanged and no new native batch is started. Next measure thread placement
+  and executed CPU work on the failing controls, not another blind rerun or a
+  speculative math/reader fix; all broader workstreams remain open.
+
+- **Tangent subgroup reuse experiment:** the measured MikkTSpace hotspot
+  repeats projection of the same face tangents within a vertex group. A
+  [test-only kernel probe](benchmarks/tangent-projected-groups.md) now records
+  raw timing/work counts and length-framed output digests without running the
+  withdrawn scheduler. Production hardening passes 885 / 1,012 executions,
+  formatting and strict Clippy. The projection-only comparison validates 800
+  clocks and 32 warmups with matching output digests; cow kernel time falls
+  6.35%, missing the predeclared 10% target. That candidate is not integrated.
+  A distinct candidate also reuses the temporary member list: a separate
+  800-clock / 32-warmup comparison passes the same kernel gates, with matching
+  output digests, 16.71% lower cow and 17.73% lower bird kernel medians, and
+  bounded jobs/inputs. Cow maximum rises 0.29%; peak RSS stays within 5%.
+  Production dependencies stay unchanged. Full-editor, adversarial geometry,
+  downstream, platform and rendered integration checks remain pending; no
+  whole-app, native FPS or broader completion is claimed.
+
+- **Authored-flag cache withdrawn after measurement:** 20 release processes
+  validate 20,000 unique updates and 80 warmups, with unchanged payload/work
+  counters and no application diagnostics. Bird CPU-update mean-of-medians falls
+  20.65%, but cow falls only 1.90%, missing the predeclared 5% cow target.
+  Bird maximum rises 38.54%; subset opening, idle and tails also regress.
+  The [complete comparison](benchmarks/animation-authored-flags.md#release-cpu-comparison)
+  retains every workload and the failed acceptance exit. The candidate and its
+  cache-specific tests are withdrawn, restoring the exact pre-candidate
+  `skel.rs`; its passing correctness checks and source remain in local commit
+  `09af584`. No native capture batch was started after this failed gate, no
+  target was relaxed, and no unaccepted speedup is retained in production.
+  Post-withdrawal hardening passes 884 / 1,011 executions, formatting and
+  strict Clippy; the restored release viewer rebuild also passes.
+  Earlier visual, native 60 Hz, lifecycle and platform gates remain open.
+
+- **Remaining CPU costs profiled:** four saved-binary runs validate 4,000 unique
+  updates and 16 warmups, with no lost perf samples. MikkTSpace accounts for
+  roughly 20–22% of bird and 50% of cow whole-process user CPU self samples;
+  allocation/copying and OpenUSD crate decoding are also substantial. Sampled
+  copy callers and the pinned decoder's full time-sample materialization point
+  to a selective-read investigation at the OpenUSD boundary, not another blind
+  cache or queue retry. The [CPU profile](benchmarks/preparation-cpu-profile.md)
+  retains the failed initial stack setup, incomplete deeper unwinds and timing
+  limits. No production change or speedup is claimed; compatibility-changing
+  MikkTSpace options stay disabled and all broader gates remain open.
+
 - **Viewer log traffic:** TRACE is now opt-in via `RUST_LOG`; the default keeps
   application INFO and warnings/errors. Across 32 native bird seeks, log traffic
   falls from 233,118 bytes / 3,842 file calls to 1,393 bytes / 29 calls. The

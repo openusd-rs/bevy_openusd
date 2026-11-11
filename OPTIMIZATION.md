@@ -76,6 +76,22 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- [Resident-only preparation under opt-in deferral](benchmarks/deferred-preparation.md)
+  (`d5ad5ab`) preserves eager library/viewer defaults and the original scheduler.
+  Hidden nonresident meshes stay on synchronous visibility-aware routing; already
+  resident meshes can prepare in parallel. Hardening passes 854 / 976 executions,
+  native deformation/watchers/exports and wasm checks pass. CPU/GPU tests cover
+  hidden edits, current-clock reveal, re-hide, independent roots, reload and close.
+  Sixteen release processes validate 16,000 updates with unchanged payload/cache/
+  asset counts, but six paired and seven whole-run checks fail; the 15% incremental
+  bird target is not met. This remains an unaccepted local optimization checkpoint,
+  not a completed performance gate. Four native animations (1,200 frames) match
+  both eager and deferred pre-change final-pose renders pixel-exactly in all eight
+  comparisons. Cow's MDL warning and 60 Hz misses remain. Any broader viewer policy
+  change needs live reveal/selection/undo/reload acceptance and a paired comparison
+  against current eager defaults; it has not been implemented. Do not rerun the
+  same opt-in incremental comparison unchanged or retroactively pass its failures.
+
 - The corrected [paired tangent diagnostic](benchmarks/tangent-paired.md) passes
   800 identical-input comparisons with balanced clone/execution order: cow kernel
   paired medians improve 19–23%, without bird regression. This is a private-pool,

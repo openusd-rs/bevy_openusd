@@ -76,6 +76,14 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Scoped query sharing:** animation and skeleton cache hits now share private
+  query handles instead of deep-cloning joint-name and mapping vectors. Scope
+  lifetime, stage isolation, later edits and deformation arithmetic are
+  unchanged. Hardening passes 882 / 1,009 executions, plus four native CPU
+  deformation-oracle tests, wasm compilation and a release benchmark build.
+  The [alternating CPU comparison](benchmarks/shared-skel-queries.md) is pending;
+  this correctness checkpoint is not a measured application-speedup claim.
+
 - **Skin correction-cache candidate rejected:** the saved release diagnostic
   completes five bird clocks with 190 accepted and 15 explicitly rejected GPU
   samples. A 64-entry model avoids only 5.98% of remaining non-adjacent

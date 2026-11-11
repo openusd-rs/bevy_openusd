@@ -16,6 +16,7 @@ use openusd_schemas::skel::{
     AnimMapper, AnimQuery, Animation, BindingAPI as SkelBindingAPI, BindingProperties, BlendShape,
     BlendShapeSchema, Pose, Root, Skeleton, SkeletonQuery, SkinningMethod, SkinningQuery,
 };
+use std::rc::Rc;
 
 use super::util::{read_float_vec, read_rel_first_target};
 
@@ -60,8 +61,8 @@ impl RelationshipSamples {
 
 struct SkelSamples {
     stage: Stage,
-    skeletons: std::collections::HashMap<Path, Option<SkeletonQuery>>,
-    animations: std::collections::HashMap<Path, Option<AnimQuery>>,
+    skeletons: std::collections::HashMap<Path, Option<Rc<SkeletonQuery>>>,
+    animations: std::collections::HashMap<Path, Option<Rc<AnimQuery>>>,
     poses: std::collections::HashMap<PoseKey, Option<Vec<gf::Mat4d>>>,
     binding: Option<(Path, Option<std::rc::Rc<BoundSkin>>)>,
     relationships: RelationshipSamples,
@@ -105,14 +106,15 @@ fn with_samples<R>(stage: &Stage, read: impl FnOnce(&mut SkelSamples) -> R) -> O
     })
 }
 
-fn skeleton_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<SkeletonQuery>> {
+fn skeleton_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<Rc<SkeletonQuery>>> {
     if let Some(value) = with_samples(stage, |cache| cache.skeletons.get(path).cloned()).flatten() {
         return Ok(value);
     }
     let value = Skeleton::get(stage, path.clone())?
         .map(|skeleton| SkeletonQuery::new(&skeleton))
         .transpose()?
-        .flatten();
+        .flatten()
+        .map(Rc::new);
     with_samples(stage, |cache| {
         cache.skeletons.insert(path.clone(), value.clone());
     });
@@ -707,14 +709,15 @@ fn animation_source(stage: &Stage, skel_path: &Path, mesh_binding: &MeshBinding)
 }
 
 /// The query over the `SkelAnimation` at `path`, or `None` where it is none.
-fn anim_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<AnimQuery>> {
+fn anim_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<Rc<AnimQuery>>> {
     if let Some(value) = with_samples(stage, |cache| cache.animations.get(path).cloned()).flatten()
     {
         return Ok(value);
     }
     let value = Animation::get(stage, path.clone())?
         .map(AnimQuery::new)
-        .transpose()?;
+        .transpose()?
+        .map(Rc::new);
     with_samples(stage, |cache| {
         cache.animations.insert(path.clone(), value.clone());
     });
@@ -774,7 +777,7 @@ pub fn skeleton_pose(
         Some(path) => anim_query(stage, &path)?,
         None => None,
     };
-    let locals = joint_locals(&query, animation.as_ref(), time)?;
+    let locals = joint_locals(&query, animation.as_deref(), time)?;
     let skel = skel_space(&query, &locals)?;
     Ok(Some(SkeletonPose {
         joints: skel
@@ -818,8 +821,8 @@ struct BoundSkin {
     skeleton_path: Path,
     animation_path: Option<Path>,
     skinning: SkinningQuery,
-    skeleton: SkeletonQuery,
-    animation: Option<AnimQuery>,
+    skeleton: Rc<SkeletonQuery>,
+    animation: Option<Rc<AnimQuery>>,
 }
 
 /// Resolve the skinning query, skeleton and animation bound to `mesh_path`,
@@ -899,7 +902,7 @@ impl BoundSkin {
         {
             return Ok(value);
         }
-        let locals = joint_locals(&self.skeleton, self.animation.as_ref(), time)?;
+        let locals = joint_locals(&self.skeleton, self.animation.as_deref(), time)?;
         let skel = skel_space(&self.skeleton, &locals)?;
         let value = self
             .skeleton
@@ -1602,6 +1605,111 @@ def Scope "Root" {
                 }
             }
         }
+    }
+
+    #[test]
+    fn scoped_query_handles_share_ownership_and_expire_with_the_scope() {
+        let stage = fixture();
+        let other = fixture();
+        let skeleton = openusd::sdf::path("/Test/Skel").unwrap();
+        let animation = openusd::sdf::path("/Test/Skel/Anim").unwrap();
+        let mesh = openusd::sdf::path("/Test/Bar").unwrap();
+        let missing = openusd::sdf::path("/Missing").unwrap();
+        let (expired_skeleton, expired_animation);
+        {
+            let _scope = SkelSampleScope::begin(&stage);
+            let skel = skeleton_query(&stage, &skeleton).unwrap().unwrap();
+            let anim = anim_query(&stage, &animation).unwrap().unwrap();
+            for _ in 0..3 {
+                let skin = bound_skin(&stage, &mesh).unwrap().unwrap();
+                assert!(Rc::ptr_eq(&skin.skeleton, &skel));
+                assert!(Rc::ptr_eq(skin.animation.as_ref().unwrap(), &anim));
+                assert!(bound_skin(&stage, &missing).unwrap().is_none());
+            }
+            for nested_stage in [&stage, &other] {
+                {
+                    let _nested = SkelSampleScope::begin(nested_stage);
+                    assert!(!Rc::ptr_eq(
+                        &skeleton_query(nested_stage, &skeleton).unwrap().unwrap(),
+                        &skel
+                    ));
+                    assert!(!Rc::ptr_eq(
+                        &anim_query(nested_stage, &animation).unwrap().unwrap(),
+                        &anim
+                    ));
+                }
+                assert!(Rc::ptr_eq(
+                    &skeleton_query(&stage, &skeleton).unwrap().unwrap(),
+                    &skel
+                ));
+                assert!(Rc::ptr_eq(
+                    &anim_query(&stage, &animation).unwrap().unwrap(),
+                    &anim
+                ));
+            }
+            assert!(!Rc::ptr_eq(
+                &skeleton_query(&other, &skeleton).unwrap().unwrap(),
+                &skel
+            ));
+            assert!(!Rc::ptr_eq(
+                &anim_query(&other, &animation).unwrap().unwrap(),
+                &anim
+            ));
+            expired_skeleton = Rc::downgrade(&skel);
+            expired_animation = Rc::downgrade(&anim);
+        }
+        assert!(expired_skeleton.upgrade().is_none());
+        assert!(expired_animation.upgrade().is_none());
+        assert!(with_samples(&stage, |_| ()).is_none());
+    }
+
+    #[test]
+    fn query_sharing_preserves_uncached_reads_absence_and_later_edits() {
+        let stage = fixture();
+        let skeleton = openusd::sdf::path("/Test/Skel").unwrap();
+        let animation = openusd::sdf::path("/Test/Skel/Anim").unwrap();
+        let missing = openusd::sdf::path("/Missing").unwrap();
+        let original_skel = skeleton_query(&stage, &skeleton).unwrap().unwrap();
+        let original_anim = anim_query(&stage, &animation).unwrap().unwrap();
+        assert!(!Rc::ptr_eq(
+            &original_skel,
+            &skeleton_query(&stage, &skeleton).unwrap().unwrap()
+        ));
+        assert!(!Rc::ptr_eq(
+            &original_anim,
+            &anim_query(&stage, &animation).unwrap().unwrap()
+        ));
+        {
+            let _scope = SkelSampleScope::begin(&stage);
+            for _ in 0..2 {
+                assert!(skeleton_query(&stage, &missing).unwrap().is_none());
+                assert!(anim_query(&stage, &missing).unwrap().is_none());
+            }
+            with_samples(&stage, |cache| {
+                assert!(matches!(cache.skeletons.get(&missing), Some(None)));
+                assert!(matches!(cache.animations.get(&missing), Some(None)));
+            })
+            .unwrap();
+        }
+        for path in [&skeleton, &animation] {
+            stage
+                .prim(path.clone())
+                .unwrap()
+                .attribute("joints")
+                .set(openusd::vt::Value::TokenVec(
+                    ["Edited", "Edited/Child"].map(Into::into).to_vec(),
+                ))
+                .unwrap();
+        }
+        let _scope = SkelSampleScope::begin(&stage);
+        let edited_skel = skeleton_query(&stage, &skeleton).unwrap().unwrap();
+        let edited_anim = anim_query(&stage, &animation).unwrap().unwrap();
+        assert_eq!(edited_skel.joint_order(), ["Edited", "Edited/Child"]);
+        assert_eq!(edited_anim.joint_order(), ["Edited", "Edited/Child"]);
+        assert_eq!(original_skel.joint_order(), ["Root", "Root/Tip"]);
+        assert_eq!(original_anim.joint_order(), ["Root", "Root/Tip"]);
+        assert!(!Rc::ptr_eq(&original_skel, &edited_skel));
+        assert!(!Rc::ptr_eq(&original_anim, &edited_anim));
     }
 
     #[test]

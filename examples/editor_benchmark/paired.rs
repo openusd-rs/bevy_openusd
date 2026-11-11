@@ -102,7 +102,7 @@ fn quantile(sorted: &[Duration], percent: usize) -> Duration {
     sorted[(sorted.len() * percent).div_ceil(100) - 1]
 }
 
-fn payload_counts(m: &Measurement) -> [usize; 14] {
+pub(super) fn payload_counts(m: &Measurement) -> [usize; 14] {
     [
         m.mesh_entities,
         m.subset_entities,

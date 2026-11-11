@@ -73,6 +73,10 @@ impl Plugin for UsdGpuSkinningPlugin {
         );
         super::deformed_sort::configure(app);
     }
+
+    fn finish(&self, app: &mut App) {
+        super::deformed_sort::configure(app);
+    }
 }
 
 type JointTransformQueries<'w, 's> = (

@@ -25,6 +25,7 @@ mod gpu_limits;
 mod host_capture;
 mod inspector;
 mod lighting;
+mod morph_probe;
 mod payload_editor;
 mod perf_render;
 mod render_settings;

@@ -14,6 +14,10 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn mesh_path(&self) -> &str {
+        &self.mesh
+    }
+
     pub fn parse(value: Option<String>) -> Result<Option<Self>, String> {
         let Some(value) = value else { return Ok(None) };
         if value.len() > 8192 {

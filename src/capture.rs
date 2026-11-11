@@ -9,6 +9,7 @@ pub struct CaptureConfig {
     delay_ms: u64,
     seeks: Vec<f64>,
     residency: Option<crate::capture_residency::Config>,
+    morph_probe: bool,
 }
 
 impl CaptureConfig {
@@ -40,6 +41,7 @@ impl CaptureConfig {
             delay_ms: 0,
             seeks: Vec::new(),
             residency: None,
+            morph_probe: false,
         }))
     }
 
@@ -83,8 +85,21 @@ impl CaptureConfig {
             config.seeks = Self::seeks(read("USD_CAPTURE_SEEKS")?)?;
             config.residency =
                 crate::capture_residency::Config::parse(read("USD_CAPTURE_RESIDENCY")?)?;
+            config.morph_probe =
+                Self::morph_probe(read("USD_CAPTURE_MORPH_PROBE")?, config.residency.is_some())?;
         }
         Ok(config)
+    }
+
+    fn morph_probe(value: Option<String>, has_residency: bool) -> Result<bool, String> {
+        match value.as_deref() {
+            None | Some("0") => Ok(false),
+            Some("1") if has_residency => Ok(true),
+            _ => Err(
+                "USD_CAPTURE_MORPH_PROBE requires 0 or 1, and 1 requires USD_CAPTURE_RESIDENCY"
+                    .into(),
+            ),
+        }
     }
 }
 
@@ -219,6 +234,7 @@ pub fn configure(app: &mut App) {
         delay_ms,
         seeks,
         residency,
+        morph_probe,
     }) = CaptureConfig::from_env().expect("invalid capture configuration")
     else {
         return;
@@ -229,6 +245,12 @@ pub fn configure(app: &mut App) {
     if std::env::var_os("USD_CAPTURE_PHASE_PROBE").is_some() {
         crate::transparent_probe::configure(app);
     }
+    if morph_probe {
+        let config = residency
+            .as_ref()
+            .expect("morph probe requires USD_CAPTURE_RESIDENCY");
+        crate::morph_probe::configure(app, config.mesh_path());
+    }
     let started = std::time::Instant::now();
     app.add_systems(Last, move |mut commands: Commands, cameras: Query<CaptureCamera, With<Camera3d>>,
         generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
@@ -236,7 +258,7 @@ pub fn configure(app: &mut App) {
         session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>,
         bridge: Res<usd_bevy::editor::EditorBridge>, mut seek_state: Local<CaptureSeeks>,
         residency_inputs: crate::capture_residency::Inputs, mut residency_state: Local<crate::capture_residency::State>,
-        transparent: Option<Res<crate::transparent_probe::TransparentProbe>>,
+        (transparent, morph): (Option<Res<crate::transparent_probe::TransparentProbe>>, Option<Res<crate::morph_probe::MorphProbe>>),
         device: Option<Res<bevy::render::renderer::RenderDevice>>,
         adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
         meshes: Res<Assets<Mesh>>, mesh_references: Query<(&Mesh3d, &InheritedVisibility)>| {
@@ -284,6 +306,9 @@ pub fn configure(app: &mut App) {
                 if let Some(probe) = &transparent {
                     timing.push_str(&probe.report());
                 }
+                if let Some(probe) = &morph {
+                    timing.push_str(&probe.report());
+                }
                 timing.push_str(&crate::capture_metadata::camera_report(transform, camera.clip_from_view()));
                 timing.push_str(&crate::capture_metadata::mesh_residency_report(&meshes,
                     mesh_references.iter().map(|(mesh, visibility)| (mesh.0.id(), visibility.get()))));
@@ -318,6 +343,22 @@ pub fn configure(app: &mut App) {
 mod tests {
     use super::*;
     use bevy::render::render_resource::TextureFormat;
+
+    #[test]
+    fn morph_probe_is_explicit_and_requires_residency() {
+        for residency in [false, true] {
+            assert_eq!(CaptureConfig::morph_probe(None, residency), Ok(false));
+            assert_eq!(
+                CaptureConfig::morph_probe(Some("0".into()), residency),
+                Ok(false)
+            );
+            for value in ["", "true", "2"] {
+                assert!(CaptureConfig::morph_probe(Some(value.into()), residency).is_err());
+            }
+        }
+        assert!(CaptureConfig::morph_probe(Some("1".into()), false).is_err());
+        assert_eq!(CaptureConfig::morph_probe(Some("1".into()), true), Ok(true));
+    }
 
     #[test]
     fn capture_seek_options_are_finite_bounded_and_optional() {

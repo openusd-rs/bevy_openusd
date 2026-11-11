@@ -76,14 +76,16 @@ correct readiness reporting.
 
 ## Current checkpoint
 
-- Mip output reservation: checked complete-chain sizing and one exact reserve
+- Mip output reservation (`fdf88b7`): checked complete-chain sizing and one exact reserve
   replace geometric output-buffer growth, without changing encoded payload or
   float reduction. Sixty format/dimension/reservation cases preserve all bytes,
   levels and existing larger reservations. Hardening passes 839 no-default /
   955 all-feature executions; native deformation/watchers/exports and wasm
   compilation pass. The unrelated point/curve fixture now asserts readiness
-  with an unlimited test budget (`86315b2`). Real-asset retained capacity, rendered
-  comparison and timing/RSS remain pending; no prior failure is waived. See
+  with an unlimited test budget (`86315b2`). Four native fixed-pose image pairs
+  remain pixel-exact; the cow's missing-MDL warning still fails the combined
+  diagnostic. Real-asset retained capacity and timing/RSS remain pending;
+  current opening counters report lengths, not capacities. No prior failure is waived. See
   [mip capacity](benchmarks/mip-capacity.md).
 
 - Exact sRGB mip encoding (`05b3106`): a bounded 5124-byte quantizer replaces

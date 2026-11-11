@@ -70,7 +70,37 @@ logs: `/tmp/bevy-optimization-mip-capacity-final-{harden,test-native-deformation
 The earlier hardening log also passes before changing the allocation fixture's
 constant to a finite half-float value.
 
-Native rendered comparison, real-asset retained buffer capacity/timing, RSS and
-window/browser performance remain unverified for this change. Neither the
-smaller fixture capacities nor passing correctness checks clear any earlier
-performance failure or complete the memory/lifecycle workstream.
+Real-asset retained buffer capacity/timing, RSS and window/browser performance
+remain unverified for this change. Neither the smaller fixture capacities nor
+passing correctness checks clear any earlier performance failure or complete the
+memory/lifecycle workstream.
+
+## Native fidelity checkpoint
+
+Candidate `fdf88b7` builds in release and renders bird, cow, arm and subsets at
+their fixed time-zero poses. Artifacts:
+`/tmp/bevy-optimization-mip-capacity-captures.CvNwEi/`; build log:
+`/tmp/bevy-optimization-mip-capacity-build.log`. Candidate executable SHA-256 is
+`732ab79485080feaff84b16ccbd1209b293ae1a4c6e8a18dcc96b2c9d6426707`.
+The reference is `05b3106`'s after-version warmup from the common-path matrix,
+before the capacity change. Dependency lock and asset manifests match.
+
+All four 1280x720 RTX 4080/Vulkan captures are pixel-exact at RGB tolerance zero;
+bird/cow images were inspected. Renderer, camera, scene/visible-mesh counts,
+texture image/input/appended-byte counts and settings agree. Four raw opening
+records validate and Ready/final texture counters agree. Process/log/manifest
+checks pass; the cow retains one missing-MDL warning, so the combined diagnostic
+driver exits 1. This is fixed-pose fidelity evidence, not a performance comparison,
+interactive playback or rendered-browser acceptance. No task-owned compilation
+overlaps the captures.
+
+## Next resource measurement
+
+Current opening counters report payload lengths, not image-buffer capacities.
+Add separate opt-in benchmark accounting for main-world `Assets<Image>` data
+length and capacity, with tests for empty/missing data and pre-reserved buffers.
+Preserve existing benchmark CSV fields and distinguish this retained capacity
+from allocator overhead, process RSS and GPU storage. A matched pre-reservation/
+candidate pair must share that recorder before comparing real-scene capacities
+and timings; the small-fixture result is not a substitute. Retain the full
+optimization scope and all existing failed gates.

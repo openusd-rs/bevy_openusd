@@ -76,6 +76,23 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- [Morph publication tracing and repair](benchmarks/morph-publication.md)
+  establishes the substantial reveal/redo shape failure: Bevy prepared descriptors
+  using previously collected mesh instances, then cached a no-morph sentinel in
+  the newly collected draw inputs. `efa30b7` extracts the mesh asset ID with its
+  weights in a local, provenance-preserving PBR patch. A bounded read-only probe
+  and regression checker reject all three old GPU witnesses and accept all three
+  repaired parent/subset histories from their first collected input. Main-world
+  geometry and palettes are unchanged. Six native captures retain CPU-exact eager,
+  redo and probe-off images, but probed cold reveal differs by one blue-channel
+  value at one mesh pixel; four strict comparisons still fail and host warnings
+  remain. Do not waive them or enable deferral by default. Hardening passes
+  864 / 991 executions; three PBR unit tests, four native CPU-oracle comparisons
+  and the wasm32 compile check pass. Downstream
+  consumers still need the root Cargo patch; nothing is pushed or upstreamed.
+  Full native command-prefix, deformation/platform/lifecycle and performance
+  acceptance remain open.
+
 - [Native residency reveal verification](benchmarks/native-residency.md) exposes
   a real shared-device limit failure: the morph/skin pipeline needs nine vertex
   storage buffers but Mara's device requested eight. `00d9bd6` uses the host's

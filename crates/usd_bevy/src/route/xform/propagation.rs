@@ -155,7 +155,8 @@ mod tests {
             crate::UsdAssetPlugin,
         ));
         app.init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<StandardMaterial>>();
+            .init_resource::<Assets<StandardMaterial>>()
+            .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -172,7 +173,21 @@ mod tests {
                 ))
                 .id()
         });
-        app.update();
+        for _ in 0..8 {
+            app.update();
+            if roots.iter().all(|root| {
+                app.world().get::<crate::asset::UsdSceneState>(*root)
+                    == Some(&crate::asset::UsdSceneState::Ready)
+            }) {
+                break;
+            }
+        }
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready),
+            );
+        }
         let lookup = |world: &World, root, path| {
             world
                 .get_non_send::<UsdInstances>()

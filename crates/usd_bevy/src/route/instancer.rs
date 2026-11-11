@@ -171,15 +171,29 @@ impl PointInstancerRoute {
     /// Despawn instance children this route spawned on a previous project, so a
     /// reproject doesn't stack duplicate batches.
     fn clear_instances(world: &mut World, entity: Entity) {
-        let existing: Vec<Entity> = world
+        let (owned, retained): (Vec<Entity>, Vec<Entity>) = world
             .get::<Children>(entity)
-            .map(|c| c.iter().collect())
-            .unwrap_or_default();
-        for child in existing {
-            if world.get::<UsdInstance>(child).is_some() {
-                world.entity_mut(child).despawn();
-            }
+            .into_iter()
+            .flat_map(|children| children.iter())
+            .partition(|child| world.get::<UsdInstance>(*child).is_some());
+        if owned.is_empty() {
+            return;
         }
+        world.entity_mut(entity).replace_children(&retained);
+        for child in owned {
+            world.despawn(child);
+        }
+    }
+}
+
+fn replace_child_order(world: &mut World, parent: Entity, children: &[Entity]) {
+    if !world
+        .get::<Children>(parent)
+        .into_iter()
+        .flat_map(|children| children.iter())
+        .eq(children.iter().copied())
+    {
+        world.entity_mut(parent).replace_children(children);
     }
 }
 
@@ -291,6 +305,18 @@ impl PrimRoute for PointInstancerRoute {
                 Some((world.get::<UsdInstanceId>(child)?.0, child))
             })
             .collect();
+        let mut ordered: Vec<_> = world
+            .get::<Children>(entity)
+            .into_iter()
+            .flat_map(|children| children.iter())
+            .filter(|child| {
+                world
+                    .get::<UsdInstanceId>(*child)
+                    .and_then(|id| existing.get(&id.0))
+                    != Some(child)
+            })
+            .collect();
+        ordered.reserve(read.positions.len());
 
         let have_assets = world.get_resource::<Assets<Mesh>>().is_some()
             && world.get_resource::<Assets<StandardMaterial>>().is_some();
@@ -325,13 +351,13 @@ impl PrimRoute for PointInstancerRoute {
             } else {
                 Visibility::default()
             };
-            e.insert((
-                UsdInstance,
-                UsdInstanceId(id),
-                xf,
-                visibility,
-                ChildOf(entity),
-            ));
+            let components = (UsdInstance, UsdInstanceId(id), xf, visibility);
+            if e.get::<ChildOf>().map(ChildOf::parent) != Some(entity) {
+                e.insert((components, ChildOf(entity)));
+            } else {
+                e.insert(components);
+            }
+            ordered.push(child);
             match handles {
                 Some(Prototype::Hierarchy(parts)) => {
                     apply_handles(ctx, world, child, None);
@@ -372,6 +398,7 @@ impl PrimRoute for PointInstancerRoute {
                 super::profiling::ecs_snapshot(world, "instancer-spawn-progress");
             }
         }
+        replace_child_order(world, entity, &ordered);
         for child in existing.into_values() {
             world.despawn(child);
         }
@@ -873,6 +900,10 @@ fn bake_mesh(
     let subsets = super::subset::prepare(&proto_ctx, world, &mesh_read, &mesh_handle, &material)?;
     Some((mesh_handle, material, warnings, subsets))
 }
+
+#[cfg(test)]
+#[path = "instancer_parenting_tests.rs"]
+mod parenting_tests;
 
 #[cfg(test)]
 mod tests {

@@ -419,7 +419,8 @@ def PointInstancer "PI" {
                 crate::UsdPlugin,
             ));
             app.init_resource::<Assets<Mesh>>()
-                .init_resource::<Assets<StandardMaterial>>();
+                .init_resource::<Assets<StandardMaterial>>()
+                .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             let mut roots = Vec::new();
             if instanced {
                 app.add_plugins(crate::UsdAssetPlugin);
@@ -444,7 +445,21 @@ def PointInstancer "PI" {
                 app.add_plugins(crate::live::LiveStagePlugin);
                 app.insert_non_send(crate::live::LiveStage::new(source.open_stage().unwrap()));
             }
-            app.update();
+            for _ in 0..8 {
+                app.update();
+                if roots.iter().all(|root| {
+                    app.world().get::<crate::UsdSceneState>(*root)
+                        == Some(&crate::UsdSceneState::Ready)
+                }) {
+                    break;
+                }
+            }
+            for root in &roots {
+                assert_eq!(
+                    app.world().get::<crate::UsdSceneState>(*root),
+                    Some(&crate::UsdSceneState::Ready),
+                );
+            }
             let lookup = |world: &World, path: &str| -> Vec<Entity> {
                 if instanced {
                     roots

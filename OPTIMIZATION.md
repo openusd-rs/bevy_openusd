@@ -76,6 +76,34 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Rendered playback baseline (`9f4212f`, `1fad2a5`): a bounded recorder now uses
+  production asset-root playback, collecting main intervals, separate published
+  render CPU/GPU pass timings and actual stage clocks. All six bird/arm/cow
+  play/idle cases complete 300 samples; all three settled final poses match
+  independent fixed-pose renders exactly. The small-scene playback target is
+  still unmet: play median offscreen intervals are 48.4 / 18.1 / 92.1 ms, versus
+  approximately 16.7 ms at idle, under heavy variable host load. Most interval
+  cost is in the main update. The cow MDL warning keeps the diagnostic driver
+  nonzero; default framing and intermediate-frame/native-window validation are
+  also incomplete. See [rendered playback](benchmarks/rendered-playback.md).
+
+- Point-instancer parent links (`3562782`): isolated ECS scaling confirms
+  quadratic repeated replacement of unchanged `ChildOf` links. Stable instance
+  links are now retained, source-ID order restored in bulk and removed/cleared
+  siblings detached before despawning. Runtime components, unrelated children,
+  stable IDs and last-good validation behavior have explicit regression coverage.
+  Hardening passes 819 no-default / 919 all-feature tests, strict Clippy, native
+  deformation/watcher/export checks and wasm compilation. The 20-process release
+  comparison lowers city seek medians from 864–1,370 ms to 51–54 ms (95.3% by the
+  average-of-medians rule), preserving 40,008 mesh entities and eight mesh assets.
+  City, reversed independent hierarchy roots, affine subsets and deformation
+  renders are all pixel-exact before/after at tolerance zero. Full performance
+  acceptance remains open: the small affine fixture regresses in two noisy
+  default-affinity comparisons; a separate P-core diagnostic puts both affine
+  and an unaffected control within 1%, but does not erase those failures.
+  Prototype-part parenting and sustained native cadence remain separate work.
+  See [instancer parenting](benchmarks/instancer-parenting.md).
+
 - Editor hierarchy reuse (`41cb1ce`, `6d4f8ae`): broad profiling identifies
   repeated complete hierarchy/visibility reads during inspector publication.
   The editor now retains one bounded current-composition hierarchy, caches
@@ -84,8 +112,15 @@ correct readiness reporting.
   unchanged. Eight new regressions cover clocks, clips, variants, direct edits,
   payload rules, masks, native proxies, undo/redo, failed/repaired reload and
   retention bounds. Hardening passes 817 no-default / 916 all-feature tests and
-  strict Clippy. Native gate completion and saved-release performance acceptance
-  are pending; no speedup is claimed yet. See
+  strict Clippy; native deformation/watcher/export checks and wasm compilation
+  also pass. The 28-process saved-release comparison records a 38.0% reduction
+  in the average arm update medians and 89.6% in its snapshot medians. Opening
+  regressions exceed the 5% gate in three noisy workloads, so full acceptance
+  remains open. The completed 36-open follow-up clears the subset regression,
+  but kitchen/bird aggregate opening medians still exceed the limit; first/later
+  App strata show substantial variance. City seeks
+  expose a separate large [point-instancer cost](benchmarks/instancer-parenting.md).
+  See
   [editor hierarchy sampling](benchmarks/editor-hierarchy.md).
 
 - Posed per-draw sorting (`fe32713`, `291b4af`, `53a34e6`): corrects the observed

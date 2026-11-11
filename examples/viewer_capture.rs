@@ -63,6 +63,7 @@ struct Capture {
     requested: bool,
     mesh_report: String,
     opening: opening_timing::OpeningTiming,
+    opening_texture_sampling: Option<(usize, Duration)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -183,6 +184,7 @@ impl Capture {
             requested: false,
             mesh_report: String::new(),
             opening: opening_timing::OpeningTiming::new(Instant::now()),
+            opening_texture_sampling: None,
         })
     }
 
@@ -476,7 +478,8 @@ fn main() -> AppExit {
             .insert_resource(usd_bevy::skeleton_overlay::UsdSkeletonOverlay { visible: true });
     }
     if std::env::var_os("USD_PROFILE_SOURCES").is_some() {
-        app.init_resource::<usd_bevy::asset::UsdSceneTimings>();
+        app.init_resource::<usd_bevy::asset::UsdSceneTimings>()
+            .init_resource::<usd_bevy::route::TextureSamplingTiming>();
     }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
         app.init_resource::<usd_bevy::instance::UsdInstanceAnimationTiming>()
@@ -747,6 +750,7 @@ struct CaptureTiming<'w, 's> {
     sort_timing: Option<Res<'w, usd_bevy::route::gpu_skin::DeformedSortTiming>>,
     instance_timing: Option<Res<'w, usd_bevy::instance::UsdInstanceAnimationTiming>>,
     preparation_phases: Option<Res<'w, usd_bevy::route::preparation::MeshPreparationPhaseTiming>>,
+    texture_sampling: Option<Res<'w, usd_bevy::route::TextureSamplingTiming>>,
     mesh_assets: Res<'w, Assets<Mesh>>,
     mesh_references: Query<'w, 's, (&'static Mesh3d, &'static InheritedVisibility)>,
 }
@@ -838,6 +842,7 @@ fn capture_frame(
         sort_timing,
         instance_timing,
         preparation_phases,
+        texture_sampling,
         mesh_assets,
         mesh_references,
     } = timing;
@@ -892,6 +897,11 @@ fn capture_frame(
         return;
     }
     capture.opening.scene_ready(Instant::now());
+    if capture.opening_texture_sampling.is_none() {
+        capture.opening_texture_sampling = texture_sampling
+            .as_ref()
+            .map(|timing| (timing.images, timing.elapsed));
+    }
     if !capture.camera_ready {
         return;
     }
@@ -1086,6 +1096,11 @@ fn capture_frame(
             .mesh_report
             .push_str(&preparation_phase_report(&phases));
     }
+    if let Some(timing) = texture_sampling {
+        capture
+            .mesh_report
+            .push_str(&texture_sampling_report(&timing));
+    }
     if let Some(timing) = instance_timing {
         capture.mesh_report.push_str(&format!(
             "instance_animation_scope=all-root-time-changes-includes-warmup-classification-included-in-total\ninstance_animation_updates={}\ninstance_animation_classified={}\ninstance_animation_reused={}\ninstance_animation_animated={}\ninstance_animation_classification_ms={:.6}\ninstance_animation_total_ms={:.6}\n",
@@ -1130,6 +1145,17 @@ fn preparation_report(timing: &usd_bevy::route::preparation::MeshPreparationTimi
         timing.peak_jobs,
         timing.peak_input_bytes,
         timing.elapsed.as_secs_f64() * 1000.0,
+    )
+}
+
+fn texture_sampling_report(timing: &usd_bevy::route::TextureSamplingTiming) -> String {
+    format!(
+        "texture_sampling_scope=all-main-world-finalization-includes-mips-sampler-and-generated-image-fingerprints\ntexture_sampling_images={}\ntexture_sampling_input_bytes={}\ntexture_sampling_appended_bytes={}\ntexture_sampling_elapsed_ms={:.6}\ntexture_sampling_slowest_ms={:.6}\n",
+        timing.images,
+        timing.input_bytes,
+        timing.appended_bytes,
+        timing.elapsed.as_secs_f64() * 1000.0,
+        timing.slowest.as_secs_f64() * 1000.0,
     )
 }
 
@@ -1209,6 +1235,16 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
         )
         + &capture.mesh_report
         + &capture.opening.report();
+    let report = match capture.opening_texture_sampling {
+        Some((images, elapsed)) => {
+            report
+                + &format!(
+                    "opening_texture_sampling_scope=first-all-roots-ready-observation\nopening_texture_sampling_images={images}\nopening_texture_sampling_elapsed_ms={:.6}\n",
+                    elapsed.as_secs_f64() * 1000.0,
+                )
+        }
+        None => report,
+    };
     let report = report
         + &format!(
             "exposure_ev100={}\ntonemapping={:?}\n",
@@ -1223,6 +1259,27 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn texture_sampling_metadata_reports_post_projection_work() {
+        let report = super::texture_sampling_report(&usd_bevy::route::TextureSamplingTiming {
+            images: 2,
+            input_bytes: 128,
+            appended_bytes: 32,
+            elapsed: std::time::Duration::from_millis(7),
+            slowest: std::time::Duration::from_millis(4),
+        });
+        for line in [
+            "texture_sampling_images=2",
+            "texture_sampling_input_bytes=128",
+            "texture_sampling_appended_bytes=32",
+            "texture_sampling_elapsed_ms=7.000000",
+            "texture_sampling_slowest_ms=4.000000",
+        ] {
+            assert!(report.lines().any(|actual| actual == line));
+        }
+        assert!(report.contains("includes-mips-sampler-and-generated-image-fingerprints"));
+    }
+
     #[test]
     fn mesh_phase_metadata_keeps_overlapping_worker_times_separate() {
         use std::time::Duration;
@@ -1685,6 +1742,7 @@ mod tests {
         let image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
         for levels in [None, Some(2)] {
             capture.subdivision_levels = levels;
+            capture.opening_texture_sampling = levels.map(|_| (3, Duration::from_millis(7)));
             capture.curve_steps = if levels.is_some() { 32 } else { 8 };
             capture.msaa = if levels.is_some() {
                 Msaa::Off
@@ -1698,6 +1756,12 @@ mod tests {
             assert!(report.contains(&format!("msaa={:?}\n", capture.msaa)));
             assert!(report.contains(&format!("exposure_ev100={}\n", capture.exposure.ev100)));
             assert!(report.contains(&format!("tonemapping={:?}\n", capture.tonemapping)));
+            if levels.is_some() {
+                assert!(report.contains("opening_texture_sampling_images=3\n"));
+                assert!(report.contains("opening_texture_sampling_elapsed_ms=7.000000\n"));
+            } else {
+                assert!(!report.contains("opening_texture_sampling_"));
+            }
             assert!(report.contains("requested_eye=Vec3(6.0, 4.0, 8.0)\n"));
             assert!(!report.contains("\neye="));
             assert_eq!(

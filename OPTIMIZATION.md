@@ -76,6 +76,16 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Mip output reservation: checked complete-chain sizing and one exact reserve
+  replace geometric output-buffer growth, without changing encoded payload or
+  float reduction. Sixty format/dimension/reservation cases preserve all bytes,
+  levels and existing larger reservations. Hardening passes 839 no-default /
+  955 all-feature executions; native deformation/watchers/exports and wasm
+  compilation pass. The unrelated point/curve fixture now asserts readiness
+  with an unlimited test budget (`86315b2`). Real-asset retained capacity, rendered
+  comparison and timing/RSS remain pending; no prior failure is waived. See
+  [mip capacity](benchmarks/mip-capacity.md).
+
 - Exact sRGB mip encoding (`05b3106`): a bounded 5124-byte quantizer replaces
   per-channel power evaluation without changing float mip averages, source
   resolution or output bytes. Linux release comparison covers 107,011,437 float

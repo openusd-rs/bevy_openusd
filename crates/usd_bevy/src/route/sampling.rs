@@ -182,6 +182,10 @@ fn add_mips(image: &mut Image) {
     {
         return;
     }
+    let Some(total_bytes) = mip_chain_bytes(w, h, size) else {
+        return;
+    };
+    data.reserve_exact(total_bytes - data.len());
     let mut level = Vec::new();
     let mut levels = 1;
     while w > 1 || h > 1 {
@@ -201,6 +205,18 @@ fn add_mips(image: &mut Image) {
         levels += 1;
     }
     image.texture_descriptor.mip_level_count = levels;
+}
+
+fn mip_chain_bytes(mut w: usize, mut h: usize, texel_bytes: usize) -> Option<usize> {
+    if w == 0 || h == 0 || texel_bytes == 0 {
+        return None;
+    }
+    let mut bytes = w.checked_mul(h)?.checked_mul(texel_bytes)?;
+    while w > 1 || h > 1 {
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+        bytes = bytes.checked_add(w.checked_mul(h)?.checked_mul(texel_bytes)?)?;
+    }
+    Some(bytes)
 }
 
 fn downsample(w: usize, h: usize, channels: usize, read: impl Fn(usize) -> f32) -> Vec<f32> {
@@ -716,6 +732,64 @@ mod tests {
                 a.to_bits() == b.to_bits() || a.is_nan() && b.is_nan(),
                 "half texel {index}: {a:?} != {b:?}"
             );
+        }
+    }
+
+    #[test]
+    fn mip_chain_sizes_include_narrow_levels_and_reject_overflow() {
+        for (w, h, size, expected) in [
+            (1, 1, 8, 8),
+            (1, 9, 4, 64),
+            (9, 1, 4, 64),
+            (3, 5, 4, 72),
+            (4, 2, 4, 44),
+            (4096, 4096, 4, 89_478_484),
+        ] {
+            assert_eq!(mip_chain_bytes(w, h, size), Some(expected));
+        }
+        for (w, h, size) in [
+            (0, 1, 4),
+            (1, 0, 4),
+            (1, 1, 0),
+            (usize::MAX, 2, 1),
+            (usize::MAX, 1, 2),
+            (usize::MAX, 1, 1),
+        ] {
+            assert_eq!(mip_chain_bytes(w, h, size), None);
+        }
+    }
+
+    #[test]
+    fn mip_output_capacity_tracks_payload_or_existing_reservation() {
+        for (format, channels, kind) in [
+            (TextureFormat::Rgba8UnormSrgb, 4, Kind::Srgb8),
+            (TextureFormat::Rgba8Unorm, 4, Kind::Unorm8),
+            (TextureFormat::Rg8Unorm, 2, Kind::Unorm8),
+            (TextureFormat::R8Unorm, 1, Kind::Unorm8),
+            (TextureFormat::Rgba16Float, 4, Kind::Half),
+        ] {
+            for (w, h) in [(1, 1), (1, 9), (9, 1), (3, 5), (64, 64), (64, 37)] {
+                let source = vec![51; w * h * channels * kind.bytes()];
+                let (expected, levels) = scalar_mips(w, h, channels, kind, source.clone());
+                for extra in [0, expected.len()] {
+                    let mut data = source.clone();
+                    data.reserve_exact(extra);
+                    let initial_capacity = data.capacity();
+                    let mut texture = image(w as u32, h as u32, format, data);
+                    add_mips(&mut texture);
+                    let data = texture.data.as_ref().unwrap();
+                    assert_eq!(data, &expected);
+                    assert_eq!(texture.texture_descriptor.mip_level_count, levels);
+                    assert_eq!(
+                        data.capacity(),
+                        initial_capacity.max(expected.len()),
+                        "{format:?} {w}x{h} extra={extra}"
+                    );
+                    let capacity = data.capacity();
+                    add_mips(&mut texture);
+                    assert_eq!(texture.data.as_ref().unwrap().capacity(), capacity);
+                }
+            }
         }
     }
 

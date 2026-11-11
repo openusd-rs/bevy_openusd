@@ -425,6 +425,7 @@ fn main() -> AppExit {
         ))
         .insert_resource(usd_bevy::UsdProjectionBudget(Duration::MAX))
         .init_resource::<usd_bevy::route::preparation::MeshPreparationTiming>()
+        .init_resource::<usd_bevy::route::gpu_skin::DeformedSortTiming>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -779,6 +780,7 @@ fn capture_frame(
     scene: CaptureScene,
     preparation: Option<Res<usd_bevy::route::preparation::MeshPreparationTiming>>,
     transparent: Option<Res<transparent_probe::TransparentProbe>>,
+    sort_timing: Option<Res<usd_bevy::route::gpu_skin::DeformedSortTiming>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let CaptureTiming {
@@ -990,6 +992,12 @@ fn capture_frame(
     capture.mesh_report.push_str(shadows);
     if let Some(transparent) = transparent {
         capture.mesh_report.push_str(&transparent.report());
+    }
+    if let Some(timing) = sort_timing {
+        capture.mesh_report.push_str(&format!(
+            "deformed_sort_scope=main-world-dependency-checks-and-posed-center-rebuilds\ndeformed_sort_updates={}\ndeformed_sort_rebuilt={}\ndeformed_sort_vertices={}\ndeformed_sort_elapsed_ns={}\n",
+            timing.updates, timing.rebuilt, timing.vertices, timing.elapsed.as_nanos()
+        ));
     }
     if let Some(preparation) = preparation {
         capture

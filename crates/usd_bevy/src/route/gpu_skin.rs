@@ -20,6 +20,15 @@ pub struct GpuSkinUpdateTiming {
     pub elapsed: std::time::Duration,
 }
 
+/// Opt-in main-world posed-sort-center updates, including dependency checks.
+#[derive(Resource, Default)]
+pub struct DeformedSortTiming {
+    pub updates: u64,
+    pub rebuilt: u64,
+    pub vertices: u64,
+    pub elapsed: std::time::Duration,
+}
+
 /// Opt-in CPU preparation counts and non-overlapping phase durations.
 #[derive(Resource, Default)]
 pub struct GpuSkinPreparationTiming {
@@ -62,6 +71,7 @@ impl Plugin for UsdGpuSkinningPlugin {
                 .after(bevy::transform::TransformSystems::Propagate)
                 .after(super::xform::UsdTransformSystems::Propagate),
         );
+        super::deformed_sort::configure(app);
     }
 }
 

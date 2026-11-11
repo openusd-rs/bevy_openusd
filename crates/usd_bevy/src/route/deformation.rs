@@ -6,7 +6,7 @@ pub(crate) const SKIN: u8 = 1;
 pub(crate) const MORPH: u8 = 2;
 
 #[derive(Component)]
-struct CullingOverride {
+pub(super) struct CullingOverride {
     claims: u8,
     previous: bool,
 }
@@ -34,6 +34,7 @@ pub(crate) fn release(world: &mut World, entity: Entity, claim: u8) {
     }
     let previous = state.previous;
     world.entity_mut(entity).remove::<CullingOverride>();
+    super::deformed_sort::clear(world, entity);
     if !previous {
         world.entity_mut(entity).remove::<NoFrustumCulling>();
     }

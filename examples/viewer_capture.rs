@@ -20,6 +20,9 @@ use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot};
 mod pipeline_probe;
 use pipeline_probe::PipelineProbe;
 
+#[path = "support/transparent_probe.rs"]
+mod transparent_probe;
+
 #[path = "../src/capture_metadata.rs"]
 mod capture_metadata;
 #[path = "../src/curve_quality.rs"]
@@ -450,6 +453,9 @@ fn main() -> AppExit {
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
     }
     pipeline_probe::configure(&mut app);
+    if std::env::var_os("USD_CAPTURE_PHASE_PROBE").is_some() {
+        transparent_probe::configure(&mut app);
+    }
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
@@ -772,6 +778,7 @@ fn capture_frame(
     timing: CaptureTiming,
     scene: CaptureScene,
     preparation: Option<Res<usd_bevy::route::preparation::MeshPreparationTiming>>,
+    transparent: Option<Res<transparent_probe::TransparentProbe>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let CaptureTiming {
@@ -981,6 +988,9 @@ fn capture_frame(
         "shadow_maps=off\n"
     };
     capture.mesh_report.push_str(shadows);
+    if let Some(transparent) = transparent {
+        capture.mesh_report.push_str(&transparent.report());
+    }
     if let Some(preparation) = preparation {
         capture
             .mesh_report

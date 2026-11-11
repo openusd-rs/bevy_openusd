@@ -76,6 +76,23 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Actual animation requests traced:** an opt-in, bounded diagnostic records
+  the normal projection's query lookups/builds, joint/weight requests and
+  short-circuited authored-value checks. Two real-asset editor runs validate
+  2,000 measured updates and eight warmups, unchanged payload/work counts and
+  zero diagnostics/dropped/overflowed counters. The
+  [operation trace](benchmarks/animation-access-profile.md) observes one bird
+  animation and two cow animations, not all 150 cow clips. Their three/six
+  candidate component maps hold 1,484,000 / 2,223,228 numeric sample bytes,
+  excluding capacities and other overhead. Query construction already occurs
+  once per used animation per update on average, while authored checks average
+  41 / 14 per update. Hardening passes 887 / 1,017 overlapping executions,
+  formatting and strict Clippy; the release benchmark and wasm check pass.
+  Next establish capacity-aware admission, edit re-admission, stage identity
+  and close/reload ownership for on-demand reuse; the opaque upstream cache
+  remains an accounting constraint. No persistent cache or speedup is enabled,
+  and the withdrawn authored-flag candidate remains withdrawn.
+
 - **Upstream sample-query opportunity measured, not integrated:** the current
   upstream `AttributeQuery` already replays decoded values with revision-stamped
   invalidation. A new example compares it with direct reads without dependency

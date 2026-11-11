@@ -126,3 +126,8 @@ which attributes the existing projection requests and how often, then design
 bounded on-demand reuse with explicit admission, invalidation and close/reload
 ownership. The opaque upstream cache still needs a defensible memory bound.
 Full-editor gains, native fidelity and all broader acceptance gates remain open.
+
+The subsequent [projection-operation trace](animation-access-profile.md) finds
+one requested bird animation and two requested cow animations in the current
+playback paths. Their component-map payloads are substantially smaller than
+this all-authored inventory, without establishing a complete cache memory bound.

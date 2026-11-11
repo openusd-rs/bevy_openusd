@@ -14,6 +14,7 @@ mod camera_plan;
 mod capture;
 mod capture_metadata;
 mod capture_residency;
+mod capture_target;
 mod capture_tools;
 mod capture_uniforms;
 mod close_confirmation;

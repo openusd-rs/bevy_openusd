@@ -12,10 +12,13 @@ use bevy::{
         },
         renderer::{RenderDevice, RenderQueue},
         sync_world::MainEntity,
-        view::{ViewUniform, ViewUniformOffset, ViewUniforms},
+        view::{ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
     },
 };
-use std::sync::{Arc, Mutex, mpsc};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, mpsc},
+};
 
 const BYTE_LIMIT: u64 = 64 * 1024;
 
@@ -57,6 +60,8 @@ struct Debugger {
     enabled: bool,
     active: Option<u32>,
     session: Option<crate::renderdoc_capture::Session>,
+    camera: Option<MainEntity>,
+    output: PathBuf,
 }
 
 impl Debugger {
@@ -72,15 +77,17 @@ impl Debugger {
     }
 }
 
-pub fn configure(app: &mut App, renderdoc: bool) {
+pub fn configure(app: &mut App, renderdoc: bool, output: &Path) {
     let probe = UniformProbe::default();
     app.insert_resource(probe.clone());
     app.sub_app_mut(RenderApp)
         .insert_resource(probe)
         .insert_resource(Debugger {
             enabled: renderdoc,
+            output: output.to_owned(),
             active: None,
             session: None,
+            camera: None,
         })
         .init_resource::<Pending>()
         .add_systems(
@@ -169,7 +176,10 @@ fn capture(
         let mut report = decode_report(request.frame, view.offset, light.offset, &bytes)?;
         if debugger.begin(request.frame)? {
             match crate::renderdoc_capture::Session::start() {
-                Ok(session) => debugger.session = Some(session),
+                Ok(session) => {
+                    debugger.session = Some(session);
+                    debugger.camera = Some(request.camera);
+                }
                 Err(error) => {
                     debugger.active = None;
                     return Err(error);
@@ -188,20 +198,40 @@ fn capture(
     });
 }
 
-fn finish_debugger(mut debugger: ResMut<Debugger>, device: Res<RenderDevice>) {
+fn finish_debugger(
+    mut debugger: ResMut<Debugger>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+    views: Query<(&MainEntity, &ViewTarget)>,
+    probe: Res<UniformProbe>,
+) {
     let Some(frame) = debugger.active.take() else {
         return;
     };
-    let ready = device.poll(PollType::Wait {
-        submission_index: None,
-        timeout: Some(std::time::Duration::from_secs(5)),
-    });
+    let camera = debugger.camera.take();
+    let target = views
+        .iter()
+        .find(|(entity, _)| Some(**entity) == camera)
+        .ok_or_else(|| "captured camera has no final view target".to_owned())
+        .and_then(|(_, target)| {
+            crate::capture_target::save(&device, &queue, target, &debugger.output, frame)
+        });
+    if let Some(captured) = probe.0.lock().unwrap().as_mut() {
+        match &target {
+            Ok(report) => {
+                if let Ok(uniforms) = &mut captured.report {
+                    uniforms.push_str(report);
+                }
+            }
+            Err(error) => captured.report = Err(error.clone()),
+        }
+    }
     let captured = debugger
         .session
         .take()
         .ok_or_else(|| "debugger session missing".to_owned())
         .and_then(|session| session.finish());
-    match ready.map_err(|error| error.to_string()).and(captured) {
+    match target.and(captured) {
         Ok(path) => eprintln!("GPU_DEBUGGER_CAPTURE_OK frame={frame} path={path:?}"),
         Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR debugger frame={frame}: {error}"),
     }

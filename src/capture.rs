@@ -266,7 +266,7 @@ pub fn configure(app: &mut App) {
             .as_ref()
             .expect("morph probe requires USD_CAPTURE_RESIDENCY");
         crate::morph_probe::configure(app, config.mesh_path());
-        crate::capture_uniforms::configure(app, renderdoc);
+        crate::capture_uniforms::configure(app, renderdoc, Path::new(&output));
     }
     let uniforms = morph_probe.then(|| {
         app.world()

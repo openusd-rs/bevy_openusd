@@ -4011,7 +4011,8 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
             crate::UsdAssetPlugin,
         ));
         app.init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<StandardMaterial>>();
+            .init_resource::<Assets<StandardMaterial>>()
+            .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -4028,6 +4029,12 @@ def Cube "Other" { double size.timeSamples = {0: 1, 10: 3} }
                 .id()
         });
         app.update();
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready)
+            );
+        }
         let entities = roots.map(|root| {
             ["/Points", "/Curve"].map(|path| {
                 app.world()

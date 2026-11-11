@@ -76,6 +76,39 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Mip output reservation (`fdf88b7`): checked complete-chain sizing and one exact reserve
+  replace geometric output-buffer growth, without changing encoded payload or
+  float reduction. Sixty format/dimension/reservation cases preserve all bytes,
+  levels and existing larger reservations. Hardening passes 839 no-default /
+  955 all-feature executions; native deformation/watchers/exports and wasm
+  compilation pass. The unrelated point/curve fixture now asserts readiness
+  with an unlimited test budget (`86315b2`). Four native fixed-pose image pairs
+  remain pixel-exact; the cow's missing-MDL warning still fails the combined
+  diagnostic. Real-asset retained capacity and timing/RSS remain pending;
+  current opening counters report lengths, not capacities. No prior failure is waived. See
+  [mip capacity](benchmarks/mip-capacity.md).
+
+- Exact sRGB mip encoding (`05b3106`): a bounded 5124-byte quantizer replaces
+  per-channel power evaluation without changing float mip averages, source
+  resolution or output bytes. Linux release comparison covers 107,011,437 float
+  inputs; the encoder-only kernel takes 75.5% less time. Hardening passes 837
+  no-default / 953 all-feature tests; native deformation/watchers/exports and
+  wasm compilation pass. Twelve native image pairs remain pixel-exact.
+  End-to-end acceptance still fails eight checks: bird texture finalization
+  improves only 9.6%, both bird/cow request-to-Ready improve less than the 5%
+  target, and untouched small controls show large startup regressions. Check
+  byte-identical-binary controls before attributing these differences or making
+  another loading change. Those controls reproduce 65%/162% pipeline-observation
+  differences without any code change; own-process traces find different
+  populated/empty NVIDIA cache files for the executable labels. A common-path,
+  warmed control removes the consistent label penalty but remains variable.
+  A matched common-path run measures 19.3%/29.8% lower bird/cow texture time,
+  with sixteen exact image pairs, but still fails four original thresholds:
+  bird request-to-Ready and subset Ready/pipeline/readback. An interrupted driver
+  was resumed only for the missing subset block; all evidence is retained.
+  These diagnostics do not clear earlier failures. See
+  [mip encoding](benchmarks/mip-encoding.md).
+
 - Native opening recorder (`9cd2119`): asset-request to all-root Ready,
   post-scene render-pipeline observation and settled image readback now have
   separate wall-clock milestones; device/bootstrap time is separate too.

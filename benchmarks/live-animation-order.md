@@ -63,5 +63,59 @@ and suppression of repeated-clock callbacks.
 Workspace hardening passes 841 no-default / 958 all-feature/all-target test
 executions, strict Clippy and formatting. Both new tests pass in both feature
 configurations. Log: `/tmp/bevy-optimization-animation-order-harden.log`.
-Fresh-process cache determinism, native oracle/reload/export, wasm and actual
-live-route rendered fidelity remain pending at this implementation checkpoint.
+Native deformation (4), watcher cases (5 + 4), native exports (14) and custom
+round trip (1) pass, as does wasm compilation. The gate ledger is
+`/tmp/bevy-optimization-animation-order-gates.tsv`; corresponding recipe logs
+use the `/tmp/bevy-optimization-animation-order-` prefix.
+
+## Fresh-process comparison
+
+Candidate `8d22fec` and the preceding capacity/recorder baseline run through the
+same executable path, with no task-owned compilation during measurement. The
+matrix covers bird/cow/arm/subsets, idle and quick seeks, in ABBA order: 32 fresh
+processes and 192 raw warmup/measured updates. Both versions use the same recorder,
+release profile, GPU-prepared CPU editor, profile flags and input assets. This
+does not create a GPU device or measure native-window cadence. There are no
+process warmups; OS page-cache state is uncontrolled. Observed host load varies
+from 8.72 to 23.81.
+
+Artifacts: `/tmp/bevy-optimization-animation-order-abba.3nlrQR/`, including logs,
+raw samples, manifest checks, ledger and `analysis.json`. Binary SHA-256:
+
+- Before: `7bcda02ba5fd391092a9ddf90eebf1d30385aef86f6475171acf0261c0634162`
+- After: `b51bd9e678a4d29abd1546ca6912534ad44c18346e7f908651f221f1431268d2`
+
+All processes, log checks and source/asset/binary manifest checks pass. Geometry,
+image payload/capacity, peak asset counts and non-tangent cache payloads match.
+The ordered candidate repeats its tangent payload within every workload. Quick
+seek retained bytes are:
+
+| Scene | Baseline executions | Ordered executions |
+| --- | ---: | ---: |
+| Bird | 2,738,736 / 3,296,424 | 2,742,864 / 2,742,864 |
+| Cow | 15,574,944 / 16,572,456 | 15,808,584 / 15,808,584 |
+
+All remain below the unchanged 16 MiB tangent-cache limit. Idle payloads repeat
+for both versions; arm/subsets retain zero tangent bytes. This supports the
+ordering hypothesis for these workloads, not determinism for every scene or
+custom registry.
+
+The overall matrix still **fails three predeclared timing checks**: cow quick
+idle +400.143%, arm quick opening +30.876%, and subsets quick opening +26.192%
+(pair means). Candidate cow seek medians range from 34.637 to 90.965 ms; even
+lower pair means do not establish a causal playback improvement or 60 Hz.
+All observed timing changes, RSS values and earlier failures remain recorded.
+There are zero semantic-invariant, candidate-repeatability or diagnostic
+failures; this does not convert the timing failures into passes.
+
+## Next rendered check
+
+Actual live-route rendered fidelity remains pending. Add an opt-in screenshot
+seek sequence to the embedded viewer: bounded finite time codes, real
+`EditorBridge` seek commands on separate updates, observed-clock acknowledgement,
+document-change reset, and final-clock settling through the existing capture
+gate and timeout. Preserve ordinary screenshot behavior when not requested.
+Record requested and observed clocks alongside the final image metadata. Use
+owned isolated Weston instances, not desktop input or UI replay. Both saved
+before/after binaries must contain identical capture instrumentation; compare
+the viewport after forward, reverse and repeated seeks, including a CPU control.

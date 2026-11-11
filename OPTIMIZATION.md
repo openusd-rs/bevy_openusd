@@ -76,6 +76,17 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Built-in live animation order (`8d22fec`) now sorts borrowed paths per pass,
+  preserving public HashSet membership and custom callback order/snapshots.
+  Hardening passes 841 no-default / 958 all-feature executions, and native
+  deformation/watchers/exports plus wasm checks pass. A matched 32-process
+  CPU matrix repeats candidate tangent-cache footprints for every workload;
+  baseline bird/cow quick-seek footprints still vary. Geometry/image payloads,
+  capacity and asset counts match. Three timing checks still fail, so neither
+  a causal speedup nor 60 Hz is established. Actual live-editor rendered seeks
+  remain pending; asset-root screenshots do not exercise this changed path.
+  See [live animation order](benchmarks/live-animation-order.md).
+
 - Mip output reservation (`fdf88b7`): checked complete-chain sizing and one exact reserve
   replace geometric output-buffer growth, without changing encoded payload or
   float reduction. Sixty format/dimension/reservation cases preserve all bytes,
@@ -90,7 +101,7 @@ correct readiness reporting.
   process RSS stays approximately unchanged. Eleven timing comparisons and six
   tangent-cache equality checks still fail, including different cache footprints
   between identical baseline runs. Live animation directly iterates a HashSet;
-  built-in path-order determinism is the next investigation, preserving custom
+  the ordered-traversal checkpoint above tests that cause while preserving custom
   callback ordering and the public resource type. No prior failure is waived. See
   [mip capacity](benchmarks/mip-capacity.md).
 

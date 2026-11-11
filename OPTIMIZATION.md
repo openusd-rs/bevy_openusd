@@ -76,6 +76,17 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Animation authoring checks shared within a pass:** repeated sibling-mesh
+  classification reaches OpenUSD's full time-sample field decoding through
+  `has_authored_value`. Two optional answers now live beside each already-cached
+  animation query, without retaining decoded arrays or crossing frames/edits.
+  Errors remain uncached and custom callbacks retain fresh reads. Hardening
+  passes 887 / 1,014 executions, formatting and strict Clippy; four native CPU
+  deformation tests and wasm compilation also pass. The
+  [candidate and acceptance gates](benchmarks/animation-authored-flags.md)
+  retain initial fixture failures. Release builds and before/after CPU/native
+  comparisons remain pending; no speedup or full completion is claimed.
+
 - **Remaining CPU costs profiled:** four saved-binary runs validate 4,000 unique
   updates and 16 warmups, with no lost perf samples. MikkTSpace accounts for
   roughly 20–22% of bird and 50% of cow whole-process user CPU self samples;

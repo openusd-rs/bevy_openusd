@@ -59,10 +59,21 @@ impl RelationshipSamples {
     }
 }
 
+struct AnimationSample {
+    query: Option<Rc<AnimQuery>>,
+    authored: [Option<bool>; 2],
+}
+
+#[derive(Clone, Copy)]
+enum AnimationInputs {
+    Joints,
+    BlendShapes,
+}
+
 struct SkelSamples {
     stage: Stage,
     skeletons: std::collections::HashMap<Path, Option<Rc<SkeletonQuery>>>,
-    animations: std::collections::HashMap<Path, Option<Rc<AnimQuery>>>,
+    animations: std::collections::HashMap<Path, AnimationSample>,
     poses: std::collections::HashMap<PoseKey, Option<Vec<gf::Mat4d>>>,
     binding: Option<(Path, Option<std::rc::Rc<BoundSkin>>)>,
     relationships: RelationshipSamples,
@@ -174,11 +185,58 @@ fn blend_shape_weights(
     Ok(AnimMapper::new(order, names).remap(&weights, 0.0))
 }
 
-/// Whether any of `attributes` authors a default or time samples.
-fn any_authored(attributes: &[Attribute]) -> bool {
-    attributes
-        .iter()
-        .any(|attribute| attribute.has_authored_value().unwrap_or(false))
+/// Returns authored-value presence and whether every visited query succeeded.
+fn any_authored<E>(answers: impl IntoIterator<Item = Result<bool, E>>) -> (bool, bool) {
+    let mut cacheable = true;
+    for answer in answers {
+        match answer {
+            Ok(true) => return (true, cacheable),
+            Ok(false) => (),
+            Err(_) => cacheable = false,
+        }
+    }
+    (false, cacheable)
+}
+
+fn animation_authors(
+    stage: &Stage,
+    path: &Path,
+    animation: &AnimQuery,
+    inputs: AnimationInputs,
+) -> bool {
+    let slot = inputs as usize;
+    if let Some(value) = with_samples(stage, |cache| {
+        cache
+            .animations
+            .get(path)
+            .and_then(|sample| sample.authored[slot])
+    })
+    .flatten()
+    {
+        return value;
+    }
+    let (value, cacheable) = match inputs {
+        AnimationInputs::Joints => any_authored(
+            animation
+                .joint_transform_attributes()
+                .iter()
+                .map(Attribute::has_authored_value),
+        ),
+        AnimationInputs::BlendShapes => any_authored(
+            animation
+                .blend_shape_weight_attributes()
+                .iter()
+                .map(Attribute::has_authored_value),
+        ),
+    };
+    if cacheable {
+        with_samples(stage, |cache| {
+            if let Some(sample) = cache.animations.get_mut(path) {
+                sample.authored[slot] = Some(value);
+            }
+        });
+    }
+    value
 }
 
 /// Whether the mesh's bound blend-shape *weights* may vary over time (so the
@@ -195,7 +253,7 @@ pub fn blend_is_time_varying(stage: &Stage, mesh_path: &Path) -> bool {
     };
     matches!(
         anim_query(stage, &anim_path),
-        Ok(Some(anim)) if any_authored(&anim.blend_shape_weight_attributes())
+        Ok(Some(anim)) if animation_authors(stage, &anim_path, &anim, AnimationInputs::BlendShapes)
     )
 }
 
@@ -710,7 +768,13 @@ fn animation_source(stage: &Stage, skel_path: &Path, mesh_binding: &MeshBinding)
 
 /// The query over the `SkelAnimation` at `path`, or `None` where it is none.
 fn anim_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<Rc<AnimQuery>>> {
-    if let Some(value) = with_samples(stage, |cache| cache.animations.get(path).cloned()).flatten()
+    if let Some(value) = with_samples(stage, |cache| {
+        cache
+            .animations
+            .get(path)
+            .map(|sample| sample.query.clone())
+    })
+    .flatten()
     {
         return Ok(value);
     }
@@ -719,7 +783,13 @@ fn anim_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<Rc<AnimQuery>
         .transpose()?
         .map(Rc::new);
     with_samples(stage, |cache| {
-        cache.animations.insert(path.clone(), value.clone());
+        cache.animations.insert(
+            path.clone(),
+            AnimationSample {
+                query: value.clone(),
+                authored: [None; 2],
+            },
+        );
     });
     Ok(value)
 }
@@ -959,7 +1029,7 @@ pub fn skin_is_time_varying(stage: &Stage, mesh_path: &Path) -> bool {
     };
     matches!(
         anim_query(stage, &anim_path),
-        Ok(Some(anim)) if any_authored(&anim.joint_transform_attributes())
+        Ok(Some(anim)) if animation_authors(stage, &anim_path, &anim, AnimationInputs::Joints)
     )
 }
 
@@ -977,9 +1047,9 @@ pub(crate) fn deformation_is_time_varying(stage: &Stage, mesh_path: &Path) -> bo
     let Some(animation) = animation_source(stage, &skeleton, &binding) else {
         return false;
     };
-    matches!(anim_query(stage, &animation), Ok(Some(animation))
-        if any_authored(&animation.joint_transform_attributes())
-            || any_authored(&animation.blend_shape_weight_attributes()))
+    matches!(anim_query(stage, &animation), Ok(Some(query))
+        if animation_authors(stage, &animation, &query, AnimationInputs::Joints)
+            || animation_authors(stage, &animation, &query, AnimationInputs::BlendShapes))
 }
 
 /// The skinned mesh points for `mesh_path` at `time` (`None` = rest/default),
@@ -1262,6 +1332,164 @@ mod influence_probe;
 
 #[cfg(test)]
 mod tests {
+    fn authored_flags_stage() -> Stage {
+        crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def SkelRoot "Test" {
+    rel skel:skeleton = </Test/Skel>
+    def Skeleton "Skel" {
+        uniform token[] joints = ["Root"]
+        rel skel:animationSource = </Test/Anim>
+    }
+    def SkelAnimation "Anim" { uniform token[] joints = ["Root"] }
+    def Mesh "A" (prepend apiSchemas = ["SkelBindingAPI"]) {}
+    def Mesh "B" (prepend apiSchemas = ["SkelBindingAPI"]) {}
+}
+"#,
+        )
+        .open_stage()
+        .unwrap()
+    }
+
+    #[test]
+    fn authored_queries_preserve_short_circuit_and_do_not_memoize_errors() {
+        for (answers, expected, calls) in [
+            (vec![Ok(false), Ok(true), Err(())], (true, true), 2),
+            (vec![Ok(false), Ok(false)], (false, true), 2),
+            (vec![Err(()), Ok(true)], (true, false), 2),
+            (vec![Err(()), Ok(false)], (false, false), 2),
+            (vec![Err(())], (false, false), 1),
+        ] {
+            let mut visited = 0;
+            let result = any_authored(answers.into_iter().inspect(|_| visited += 1));
+            assert_eq!(result, expected);
+            assert_eq!(visited, calls);
+        }
+    }
+
+    #[test]
+    fn animation_authored_flags_share_scope_and_observe_later_edits() {
+        let stage = authored_flags_stage();
+        let other = authored_flags_stage();
+        let animation = openusd::sdf::path("/Test/Anim").unwrap();
+        assert!(binding_of(&stage, &openusd::sdf::path("/Test/A").unwrap()).is_some());
+        assert!(anim_query(&stage, &animation).unwrap().is_some());
+        let verify = |stage: &Stage, joints: bool, blends: bool| {
+            for name in ["/Test/A", "/Test/B", "/Test/A"] {
+                let path = openusd::sdf::path(name).unwrap();
+                assert_eq!(skin_is_time_varying(stage, &path), joints);
+                assert_eq!(blend_is_time_varying(stage, &path), blends);
+                assert_eq!(deformation_is_time_varying(stage, &path), joints || blends);
+            }
+        };
+        let flags =
+            |stage: &Stage| with_samples(stage, |cache| cache.animations[&animation].authored);
+        verify(&stage, false, false);
+        assert!(with_samples(&stage, |_| ()).is_none());
+        {
+            let _scope = SkelSampleScope::begin(&stage);
+            verify(&stage, false, false);
+            assert_eq!(flags(&stage), Some([Some(false), Some(false)]));
+            assert_eq!(
+                with_samples(&stage, |cache| cache.animations.len()),
+                Some(1)
+            );
+            {
+                let _nested = SkelSampleScope::begin(&other);
+                verify(&other, false, false);
+                assert_eq!(flags(&other), Some([Some(false), Some(false)]));
+                assert!(with_samples(&stage, |_| ()).is_none());
+            }
+            assert_eq!(flags(&stage), Some([Some(false), Some(false)]));
+        }
+        assert!(with_samples(&stage, |_| ()).is_none());
+        let prim = stage.prim(animation.clone()).unwrap();
+        prim.attribute("translations")
+            .set_at(vec![gf::Vec3f::from([0.0, 0.0, 0.0])], TimeCode::new(0.0))
+            .unwrap()
+            .set_at(vec![gf::Vec3f::from([1.0, 0.0, 0.0])], TimeCode::new(10.0))
+            .unwrap();
+        prim.attribute("blendShapeWeights")
+            .set(vec![0.5_f32])
+            .unwrap();
+        {
+            let _scope = SkelSampleScope::begin(&stage);
+            verify(&stage, true, true);
+            assert_eq!(flags(&stage), Some([Some(true), Some(true)]));
+            verify(&other, false, false);
+            for time in [0.0, 5.0, 10.0, 0.0] {
+                let actual = prim
+                    .attribute("translations")
+                    .get_at(TimeCode::new(time))
+                    .unwrap();
+                assert_eq!(
+                    actual,
+                    Some(openusd::vt::Value::Vec3fVec(vec![gf::Vec3f::from([
+                        time as f32 / 10.0,
+                        0.0,
+                        0.0
+                    ]),]))
+                );
+            }
+        }
+        prim.attribute("translations").block().unwrap();
+        {
+            let _scope = SkelSampleScope::begin(&stage);
+            verify(&stage, false, true);
+            assert_eq!(flags(&stage), Some([Some(false), Some(true)]));
+        }
+        prim.attribute("blendShapeWeights").block().unwrap();
+        verify(&stage, false, false);
+        let _scope = SkelSampleScope::begin(&stage);
+        verify(&stage, false, false);
+        assert_eq!(flags(&stage), Some([Some(false), Some(false)]));
+    }
+
+    #[test]
+    fn custom_routes_observe_authored_animation_edits() {
+        use crate::route::{PrimRoute, RouteCtx, SchemaRegistry};
+        use bevy::prelude::*;
+        #[derive(Resource, Default)]
+        struct Observed(Vec<bool>);
+        struct EditAnimation;
+        impl PrimRoute for EditAnimation {
+            fn matches(&self, _: &RouteCtx) -> bool {
+                true
+            }
+            fn project(&self, ctx: &RouteCtx, world: &mut World, _: Entity) {
+                assert!(with_samples(ctx.stage, |_| ()).is_none());
+                world
+                    .resource_mut::<Observed>()
+                    .0
+                    .push(deformation_is_time_varying(ctx.stage, ctx.path));
+                ctx.stage
+                    .prim("/Test/Anim")
+                    .unwrap()
+                    .attribute("translations")
+                    .set(vec![gf::Vec3f::from([1.0, 0.0, 0.0])])
+                    .unwrap();
+            }
+        }
+        let live = crate::live::LiveStage::new(authored_flags_stage());
+        let mut world = World::new();
+        world.init_resource::<Observed>();
+        let mut registry = SchemaRegistry::new();
+        registry.register(EditAnimation);
+        registry.with_materials(&mut world, &live, |world| {
+            for path in ["/Test/A", "/Test/B"] {
+                let entity = world.spawn_empty().id();
+                registry.patch_prim(
+                    &live.stage,
+                    &openusd::sdf::path(path).unwrap(),
+                    world,
+                    entity,
+                    &[],
+                );
+            }
+        });
+        assert_eq!(world.resource::<Observed>().0, [false, true]);
+    }
+
     fn relationship_stage() -> Stage {
         crate::snippet::UsdSnippet::new(
             r#"#usda 1.0
@@ -1687,7 +1915,13 @@ def Scope "Root" {
             }
             with_samples(&stage, |cache| {
                 assert!(matches!(cache.skeletons.get(&missing), Some(None)));
-                assert!(matches!(cache.animations.get(&missing), Some(None)));
+                assert!(matches!(
+                    cache.animations.get(&missing),
+                    Some(AnimationSample {
+                        query: None,
+                        authored: [None, None]
+                    })
+                ));
             })
             .unwrap();
         }

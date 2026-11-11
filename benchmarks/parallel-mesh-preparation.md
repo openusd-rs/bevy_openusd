@@ -2,10 +2,15 @@
 
 ## Scope and status
 
-Work in progress after `7474920`. This targets the larger tangent-generation
-cost left by the CPU-input reuse checkpoint, not another repeated-pose cache
-optimization. No elapsed-speedup or native-frame-rate result is accepted yet.
-The full objective remains in `OPTIMIZATION.md`.
+This targets the larger tangent-generation cost left by the CPU-input reuse
+checkpoint, not another repeated-pose cache optimization. The tightly paired
+release results below support a scheduling improvement; the earlier failed
+saved-revision trials are retained and are not retroactively passed. Native
+frame-rate acceptance and the full objective in `OPTIMIZATION.md` remain open.
+
+The chronological checkpoints below describe the evidence available at each
+step. For the subsequent wing/grid sorting repair and current remaining
+single-pixel image failures, see [posed sorting centers](deformed-sort-centers.md).
 
 ## Execution contract
 

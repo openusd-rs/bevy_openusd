@@ -160,3 +160,33 @@ The optional posed-center counters record 200 bird rebuilds / 26,460 vertices,
 10 morph rebuilds / 30 vertices and 60 cow rebuilds / 306,720 vertices. Those
 totals include opening and clock reversal, not continuous animated frames. They
 do not establish the cost of the new path during sustained native playback.
+
+## Residual-pixel controls
+
+`/tmp/bevy-optimization-residual-pixels.BTsl5u/` contains twelve additional
+captures from the same final renderer, with fixed camera/pose and separate
+MSAA/shadow controls. All capture, compiled-pipeline, renderer-log and source
+hash checks pass. Each default-quality CPU/GPU image at times five and ten is
+pixel-exact against its saved same-mode counterpart at tolerance zero, despite
+the plugin-registration/test refinements since the initial sorting fix. The
+remaining strict failures are reproducible, not an unverified one-off capture.
+
+| Diagnostic settings | Time 5 pixels over tolerance 1 / max RGB error | Time 10 pixels over tolerance 1 / max RGB error |
+| --- | --- | --- |
+| Original 4x MSAA, scene shadows | 1 / 3 | 1 / 19 |
+| 1x sampling, scene shadows | 1 / 2 | 0 / 1 |
+| 4x MSAA, shadow maps off | 2 / 3 | 1 / 19 |
+
+Both original failing coordinates retain identical GPU and CPU RGB values with
+shadow maps disabled. Shadow-map contribution alone therefore does not explain
+them. Changing sampling removes the time-ten failure, but time five instead
+has a different failing pixel at `(467, 377)`; this is sensitivity to rendering
+configuration, not proof of a specific deformation or floating-point cause.
+`coordinates.tsv` records every failing coordinate and both RGB values, derived
+from the raw RGBA readbacks. No production defaults, source geometry or image
+tolerances changed, and the original 4x-MSAA gate remains failing.
+
+Further image diagnosis should isolate main-pass position/normal/UV differences
+at those pixels rather than treat reduced quality as a repair. Independently,
+sustained rendered-frame profiling and the other complete-library workstreams
+remain required; these static controls supply no new performance acceptance.

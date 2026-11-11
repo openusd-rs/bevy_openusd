@@ -398,6 +398,15 @@ mod tests {
 
     #[test]
     fn independent_clocks_sample_light_intensity() {
+        for budget in [
+            crate::UsdProjectionBudget::default(),
+            crate::UsdProjectionBudget(std::time::Duration::ZERO),
+        ] {
+            independent_light_clocks_with_budget(budget);
+        }
+    }
+
+    fn independent_light_clocks_with_budget(budget: crate::UsdProjectionBudget) {
         use crate::instance::{UsdInstanceTime, UsdInstances};
         let source = crate::UsdSource::new(
             "light-clocks.usda",
@@ -413,6 +422,7 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
             crate::UsdPlugin,
             crate::UsdAssetPlugin,
         ));
+        app.insert_resource(budget);
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -434,7 +444,27 @@ def DistantLight "Sun" { float inputs:intensity.timeSamples = { 0: 1, 10: 3 } }
                 UsdInstanceTime { current: 10.0 },
             ))
             .id();
-        app.update();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.update();
+            let states = [first, second].map(|root| app.world().get::<crate::UsdSceneState>(root));
+            assert!(
+                !states
+                    .iter()
+                    .any(|state| matches!(state, Some(crate::UsdSceneState::Failed(_)))),
+                "light projection failed: {states:?}"
+            );
+            if states
+                .iter()
+                .all(|state| *state == Some(&crate::UsdSceneState::Ready))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "light projection timed out: {states:?}"
+            );
+        }
         let light_for = |world: &World, root| {
             world
                 .get_non_send::<UsdInstances>()

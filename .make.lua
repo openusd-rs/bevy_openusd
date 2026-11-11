@@ -213,6 +213,16 @@ make.recipe{
 make.recipe{ name = "test-assets", desc = "test the patched Bevy asset loader",
              run = function() sh.cargo("test", "-p", "bevy_asset", "--lib") end }
 
+make.recipe{
+  name = "test-texture-encoding",
+  desc = "exhaustively compare release sRGB mip encoding with the scalar formula",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--release", "--lib",
+             "route::sampling::tests::srgb_encoding_", "--",
+             "--ignored", "--test-threads=1", "--nocapture")
+  end,
+}
+
 make.recipe{ name = "test-host", desc = "test the patched Mara Bevy host",
              run = function() sh.cargo("test", "-p", "mara_bevy", "--lib") end }
 

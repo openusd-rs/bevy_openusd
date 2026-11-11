@@ -223,6 +223,76 @@ fn downsample(w: usize, h: usize, channels: usize, read: impl Fn(usize) -> f32) 
 static SRGB_TO_LINEAR: std::sync::LazyLock<[f32; 256]> =
     std::sync::LazyLock::new(|| std::array::from_fn(|value| srgb_to_linear(value as f32 / 255.0)));
 
+static SRGB_ENCODING: std::sync::LazyLock<Option<SrgbEncoding>> =
+    std::sync::LazyLock::new(|| SrgbEncoding::new(scalar_srgb_byte));
+
+struct SrgbEncoding {
+    bins: [u8; 4097],
+    thresholds: [f32; 256],
+}
+
+impl SrgbEncoding {
+    fn new(quantize: impl Fn(f32) -> u8) -> Option<Self> {
+        if quantize(0.0) != 0 || quantize(1.0) != 255 {
+            return None;
+        }
+        let mut thresholds = [f32::INFINITY; 256];
+        for (code, threshold) in thresholds[..255].iter_mut().enumerate() {
+            let (mut low, mut high) = (0, 1.0f32.to_bits());
+            while low < high {
+                let middle = low + (high - low) / 2;
+                if usize::from(quantize(f32::from_bits(middle))) <= code {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            *threshold = f32::from_bits(low);
+            for offset in -8..=8 {
+                let bits = low.saturating_add_signed(offset);
+                let expected = code + usize::from(bits >= low);
+                if usize::from(quantize(f32::from_bits(bits))) != expected {
+                    return None;
+                }
+            }
+        }
+        if thresholds.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return None;
+        }
+        let table = Self {
+            bins: std::array::from_fn(|bin| quantize(bin as f32 / 4096.0)),
+            thresholds,
+        };
+        for bin in 0..4096 {
+            let first = bin as f32 / 4096.0;
+            let last = f32::from_bits(((bin + 1) as f32 / 4096.0).to_bits() - 1);
+            if quantize(last).checked_sub(table.bins[bin])? > 1
+                || table.encode(first) != quantize(first)
+                || table.encode(last) != quantize(last)
+            {
+                return None;
+            }
+        }
+        Some(table)
+    }
+
+    fn encode(&self, value: f32) -> u8 {
+        let value = value.clamp(0.0, 1.0);
+        let code = self.bins[(value * 4096.0) as usize];
+        code + u8::from(value >= self.thresholds[usize::from(code)])
+    }
+}
+
+fn scalar_srgb_byte(value: f32) -> u8 {
+    (linear_to_srgb(value).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn srgb_byte(value: f32) -> u8 {
+    SRGB_ENCODING
+        .as_ref()
+        .map_or_else(|| scalar_srgb_byte(value), |table| table.encode(value))
+}
+
 #[derive(Clone, Copy)]
 enum Kind {
     Srgb8,
@@ -248,9 +318,7 @@ impl Kind {
 
     fn encode(self, v: f32, alpha: bool, out: &mut Vec<u8>) {
         match self {
-            Kind::Srgb8 if !alpha => {
-                out.push((linear_to_srgb(v).clamp(0.0, 1.0) * 255.0).round() as u8)
-            }
+            Kind::Srgb8 if !alpha => out.push(srgb_byte(v)),
             Kind::Srgb8 | Kind::Unorm8 => out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8),
             Kind::Half => out.extend_from_slice(&half::f16::from_f32(v).to_le_bytes()),
         }
@@ -381,6 +449,136 @@ mod tests {
             assert_eq!(
                 Kind::Srgb8.decode(&[code], true).to_bits(),
                 (code as f32 / 255.0).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn encoded_srgb_table_matches_transitions_bins_and_special_values() {
+        let table = SrgbEncoding::new(scalar_srgb_byte).unwrap();
+        assert!(std::mem::size_of::<SrgbEncoding>() <= 5124);
+        let mut encoded = Vec::new();
+        let mut check = |value: f32| {
+            let expected = scalar_srgb_byte(value);
+            assert_eq!(table.encode(value), expected, "value={value:?}");
+            encoded.clear();
+            Kind::Srgb8.encode(value, false, &mut encoded);
+            assert_eq!(encoded, [expected]);
+            encoded.clear();
+            Kind::Srgb8.encode(value, true, &mut encoded);
+            assert_eq!(encoded, [(value.clamp(0.0, 1.0) * 255.0).round() as u8]);
+        };
+        for threshold in &table.thresholds[..255] {
+            for offset in -16..=16 {
+                check(f32::from_bits(
+                    threshold.to_bits().saturating_add_signed(offset),
+                ));
+            }
+        }
+        for bin in 0..=4096 {
+            let boundary = (bin as f32 / 4096.0).to_bits();
+            for offset in -2..=2 {
+                check(f32::from_bits(boundary.saturating_add_signed(offset)));
+            }
+        }
+        for value in [
+            f32::NEG_INFINITY,
+            -f32::MAX,
+            -1.0,
+            -0.0,
+            0.0,
+            f32::from_bits(1),
+            0.003_130_8,
+            1.0,
+            2.0,
+            f32::MAX,
+            f32::INFINITY,
+            f32::NAN,
+            f32::from_bits(0xffc0_0011),
+        ] {
+            check(value);
+        }
+        let mut seed = 0x1234_5678u32;
+        for _ in 0..250_000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            check(f32::from_bits(seed));
+            check(seed as f32 / u32::MAX as f32);
+        }
+    }
+
+    #[test]
+    fn encoded_srgb_table_rejects_missing_or_skipped_transitions() {
+        assert!(SrgbEncoding::new(|_| 0).is_none());
+        assert!(SrgbEncoding::new(|_| 255).is_none());
+        assert!(SrgbEncoding::new(|value| if value < 0.5 { 0 } else { 255 }).is_none());
+    }
+
+    #[test]
+    #[ignore = "release exhaustive f32 sRGB quantization check"]
+    fn srgb_encoding_exhaustive() {
+        if cfg!(debug_assertions) {
+            panic!("use oslo make test-texture-encoding");
+        }
+        let table = SrgbEncoding::new(scalar_srgb_byte).unwrap();
+        let first = table.thresholds[0].to_bits() - 32;
+        let last = 1.0f32.to_bits();
+        let started = std::time::Instant::now();
+        for bits in first..=last {
+            let value = f32::from_bits(bits);
+            assert_eq!(
+                table.encode(value),
+                scalar_srgb_byte(value),
+                "bits={bits:#x}"
+            );
+        }
+        eprintln!(
+            "SRGB_ENCODING_EXHAUSTIVE values={} elapsed_ms={:.3}",
+            last - first + 1,
+            started.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
+
+    #[test]
+    #[ignore = "release paired sRGB encoder wall-time diagnostic"]
+    fn srgb_encoding_kernel() {
+        if cfg!(debug_assertions) {
+            panic!("use oslo make test-texture-encoding");
+        }
+        assert!(SRGB_ENCODING.is_some());
+        let mut seed = 0x1234_5678u32;
+        let mut channel = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            SRGB_TO_LINEAR[(seed >> 24) as usize]
+        };
+        let values: Vec<f32> = (0..1_048_576)
+            .map(|_| 0.25 * (channel() + channel() + channel() + channel()))
+            .collect();
+        let measure = |encode: fn(f32) -> u8| {
+            let started = std::time::Instant::now();
+            let mut checksum = 0u64;
+            for _ in 0..4 {
+                for value in &values {
+                    checksum +=
+                        u64::from(std::hint::black_box(encode(std::hint::black_box(*value))));
+                }
+            }
+            (started.elapsed(), checksum)
+        };
+        let mut expected = None;
+        for (round, candidate) in [false, true, true, false, false, true, true, false]
+            .into_iter()
+            .enumerate()
+        {
+            let (elapsed, checksum) = measure(if candidate {
+                srgb_byte
+            } else {
+                scalar_srgb_byte
+            });
+            assert_eq!(*expected.get_or_insert(checksum), checksum);
+            eprintln!(
+                "SRGB_ENCODING_KERNEL round={round} candidate={candidate} values={} elapsed_ms={:.6} checksum={checksum}",
+                values.len() * 4,
+                elapsed.as_secs_f64() * 1000.0,
             );
         }
     }

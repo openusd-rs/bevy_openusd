@@ -46,3 +46,36 @@ The full-float reference must not call the optimized encoder.
 - Run workspace hardening, native deformation/reload/export and wasm checks.
   This is not a claim of bounded main-thread loading, first-visible latency,
   browser/window acceptance or completion of `OPTIMIZATION.md`.
+
+## Candidate implementation and initial checks
+
+`4940ee6` separates the full-float mip reference from `Kind::encode`; its
+library checks pass 723 no-default / 731 all-feature tests. Log:
+`/tmp/bevy-optimization-mip-encoder-reference.log`. The candidate replaces only
+non-alpha sRGB output encoding. Tables occupy 5124 bytes before lazy-init/option
+bookkeeping; initialization checks endpoint outputs, ordered transitions and
+their neighboring float codes, plus the one-transition-per-bin invariant.
+A rejected table leaves the old scalar encoder active.
+
+Regular tests cover every transition with sixteen neighboring floats on each
+side, every input-bin boundary, special values, 500,000 seeded raw/uniform
+float samples, alpha behavior and malformed quantizers. The independent full-mip
+tests remain byte-exact for all five formats and existing odd/narrow sizes.
+Workspace hardening passes 837 no-default / 953 all-feature/all-target test
+executions, strict Clippy and formatting. Log:
+`/tmp/bevy-optimization-mip-encoding-fixed-harden.log`. These configurations
+overlap. The initial run in `...-mip-encoding-harden.log` failed strict Clippy on
+a constant assertion in the ignored release test; a direct debug-build panic
+guard replaces it without suppressing the lint.
+
+`oslo make test-texture-encoding` builds a release library test executable and
+runs two ignored checks serially: the exhaustive float comparison and an
+alternating scalar/candidate encoder-only wall-time diagnostic. The latter uses
+1,048,576 deterministic four-texel linear averages, four passes per observation,
+and two before/after/after/before blocks. Both paths use the same indirect-call
+and black-box harness and must return identical checksums. Table initialization
+and input generation are outside that kernel interval; native opening includes
+initialization. Kernel results do not replace whole-mip/opening measurements.
+
+Exhaustive release, native rendering/performance, reload/export/deformation and
+wasm acceptance remain pending at this implementation checkpoint.

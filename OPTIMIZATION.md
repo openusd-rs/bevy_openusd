@@ -76,6 +76,79 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Query admission boundary verified:** three new regressions demonstrate that
+  a warmed query can grow from 24 to 98,304 numeric sample bytes after an edit,
+  while the ordinary prim's public index build revision stays unchanged. An
+  instance proxy's visible revision stays `None` through the same growth.
+  Equal root labels also do not identify equal stages, and retaining a query
+  retains its stage. Six focused query-probe tests, formatting and strict
+  workspace Clippy pass. The [admission contract](benchmarks/sample-query-reuse.md#admission-and-lifetime-constraints)
+  records checked source accounting, refresh-time admission, upstream fallback
+  semantics and stage-bound ownership as requirements. Do not implement an
+  opaque persistent cache using the payload inventory or `index_revision` as
+  its budget guard. This needs a bounded upstream API before production
+  adoption, not another unchanged timing run. No runtime/dependency change,
+  new speedup, full hardening rerun or broader acceptance is claimed.
+
+- **Actual animation requests traced:** an opt-in, bounded diagnostic records
+  the normal projection's query lookups/builds, joint/weight requests and
+  short-circuited authored-value checks. Two real-asset editor runs validate
+  2,000 measured updates and eight warmups, unchanged payload/work counts and
+  zero diagnostics/dropped/overflowed counters. The
+  [operation trace](benchmarks/animation-access-profile.md) observes one bird
+  animation and two cow animations, not all 150 cow clips. Their three/six
+  candidate component maps hold 1,484,000 / 2,223,228 numeric sample bytes,
+  excluding capacities and other overhead. Query construction already occurs
+  once per used animation per update on average, while authored checks average
+  41 / 14 per update. Hardening passes 887 / 1,017 overlapping executions,
+  formatting and strict Clippy; the release benchmark and wasm check pass.
+  Next establish capacity-aware admission, edit re-admission, stage identity
+  and close/reload ownership for on-demand reuse; the opaque upstream cache
+  remains an accounting constraint. No persistent cache or speedup is enabled,
+  and the withdrawn authored-flag candidate remains withdrawn.
+
+- **Upstream sample-query opportunity measured, not integrated:** the current
+  upstream `AttributeQuery` already replays decoded values with revision-stamped
+  invalidation. A new example compares it with direct reads without dependency
+  changes. Two bird processes validate 2,000 clocks and eight warmups with exact
+  values; raw animation batches fall from 0.238–0.244 ms to 0.0066–0.0070 ms.
+  This is about 0.23 ms at that kernel, not a whole-editor or native FPS gain.
+  The cow timing exceeds the unchanged 512-attribute resource guard and remains
+  unmeasured. A separate streaming inventory finds 150 animation prims / 600
+  channels and 56,232,988 logical numeric sample bytes. The
+  [complete result](benchmarks/sample-query-reuse.md) retains the failure,
+  original executable, manifests and precise scope; full hardening passes
+  885 / 1,015 overlapping test executions, formatting and strict Clippy.
+  Next identify actually requested animation channels and establish bounded
+  on-demand admission/lifetime before adding a persistent cache. Production
+  runtime code, upstream pin and all broader acceptance gaps remain unchanged.
+
+- **Matched-main-thread diagnostic is inconclusive:** 32 processes validate
+  32,000 updates, 128 warmups, equal payload/work counts and zero diagnostics.
+  All retain 16 compute-pool threads, with 160 snapshots verifying unchanged
+  worker masks after pinning only each owned main thread. The
+  [declared comparison](benchmarks/tangent-control-placement.md#main-thread-only-result-identical-control-fails)
+  nevertheless fails two identical-binary order strata (+5.36% / +5.28%) and
+  six candidate strata. Whole-run medians within 0.71% do not erase those
+  failures; the second-running lane is slower in both identical and candidate
+  pairs. The clock-mismatch negative control correctly fails. The tangent
+  candidate remains unintegrated; do not retry this matrix unchanged or waive
+  the earlier default-affinity gates. Next target another measured cost, such
+  as upstream-compatible sample decoding/copying. Production code/dependencies
+  and the broader rendering, lifecycle, downstream and platform gaps remain.
+
+- **Control CPU-work/placement diagnosis:** 16 instrumented runs validate
+  16,000 updates, complete counter coverage and zero lost samples. GPU-morph
+  and subset instruction totals differ only -0.0078% / +0.0038%; the earlier
+  large wall-time regressions are not reproduced. Eight separate same-original-
+  binary runs then measure +62.40% / +94.57% median changes between private
+  core/atom placements, with nearly unchanged instruction counts. The
+  [placement evidence](benchmarks/tangent-control-placement.md) preserves all
+  limits: this does not recover the old run's placement, clear its failures,
+  or measure native FPS. The subsequent matched-main-thread comparison above
+  retains default worker-pool initialization, worker affinities and both CPU
+  classes. Production dependencies and all broader gates remain unchanged.
+
 - **Tangent full-editor gate failed despite cow gain:** 24 processes validate
   24,000 updates and 96 warmups, unchanged payload/work counts and no diagnostics.
   Cow CPU-update median falls 8.34%, but GPU morph and subsets rise 55.57% and

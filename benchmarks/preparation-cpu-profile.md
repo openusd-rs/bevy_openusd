@@ -91,6 +91,11 @@ cross-frame caches. Preserve layer overrides/tombstones, interpolation,
 malformed-data behavior, value clips, reload/edits and current upstream use.
 No new dependency patch, cache or API change is made at this checkpoint.
 
+A subsequent [sample-query probe](sample-query-reuse.md) identifies an existing
+upstream replay API, `usd::AttributeQuery`, and measures its bird-attribute
+opportunity. It retains complete maps rather than decoding only endpoints; its
+resource and application-integration limits remain explicit in that report.
+
 Bevy MikkTSpace 1.0.0 is built with `default,std`. Its documented
 `corrected-edge-sorting` and `corrected-vertex-welding` options can change
 generated values relative to the original algorithm. They remain disabled;

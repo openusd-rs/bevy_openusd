@@ -18,6 +18,8 @@ use openusd_schemas::skel::{
 };
 use std::rc::Rc;
 
+pub mod access_profile;
+
 use super::util::{read_float_vec, read_rel_first_target};
 
 type PoseKey = (Path, Option<Path>, Option<u64>);
@@ -166,6 +168,8 @@ fn blend_shape_weights(
     names: &[String],
     time: Option<f64>,
 ) -> anyhow::Result<Vec<f32>> {
+    let prim = animation.animation().prim();
+    access_profile::record(prim.stage(), prim.path(), "blend-weights");
     let order = animation.blend_shape_order();
     let weights = animation
         .blend_shape_weights(TimeCode::new(time.unwrap_or(0.0)))?
@@ -176,9 +180,10 @@ fn blend_shape_weights(
 
 /// Whether any of `attributes` authors a default or time samples.
 fn any_authored(attributes: &[Attribute]) -> bool {
-    attributes
-        .iter()
-        .any(|attribute| attribute.has_authored_value().unwrap_or(false))
+    attributes.iter().any(|attribute| {
+        access_profile::record(attribute.stage(), attribute.path(), "authored-check");
+        attribute.has_authored_value().unwrap_or(false)
+    })
 }
 
 /// Whether the mesh's bound blend-shape *weights* may vary over time (so the
@@ -710,10 +715,12 @@ fn animation_source(stage: &Stage, skel_path: &Path, mesh_binding: &MeshBinding)
 
 /// The query over the `SkelAnimation` at `path`, or `None` where it is none.
 fn anim_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<Rc<AnimQuery>>> {
+    access_profile::record(stage, path, "query-lookup");
     if let Some(value) = with_samples(stage, |cache| cache.animations.get(path).cloned()).flatten()
     {
         return Ok(value);
     }
+    access_profile::record(stage, path, "query-build");
     let value = Animation::get(stage, path.clone())?
         .map(AnimQuery::new)
         .transpose()?
@@ -738,6 +745,8 @@ fn joint_locals(
     let Some(animation) = animation else {
         return Ok(locals);
     };
+    let prim = animation.animation().prim();
+    access_profile::record(prim.stage(), prim.path(), "joint-transforms");
     let Some(values) = animation.joint_local_transforms(TimeCode::new(time.unwrap_or(0.0)))? else {
         return Ok(locals);
     };

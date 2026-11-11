@@ -45,6 +45,7 @@ pub(crate) mod profiling;
 pub(crate) mod ptex;
 pub mod ptex_atlas;
 pub(crate) mod sampling;
+pub use crate::read::skel::access_profile::AnimationAccessProfile;
 pub use sampling::TextureSamplingTiming;
 mod texture_pack;
 
@@ -354,6 +355,10 @@ impl SchemaRegistry {
         live: &crate::live::LiveStage,
         project: impl FnOnce(&mut World) -> R,
     ) -> R {
+        let _animation_access = crate::read::skel::access_profile::Scope::begin(
+            &live.stage,
+            world.get_resource::<AnimationAccessProfile>(),
+        );
         if !self.builtin_only {
             live.materials.borrow_mut().take();
             return project(world);

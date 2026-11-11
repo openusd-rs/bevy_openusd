@@ -394,3 +394,70 @@ control. Do not infer that screenshot conversion, shader debug source, grid math
 or the GPU driver caused the retained failure. Avoid another unchanged matrix;
 keep the 215/220-pixel and earlier mesh-pixel failures, and the full performance,
 downstream, resource-lifecycle and platform gates open.
+
+## Independent native readback and publication race repair
+
+`2b4c718` separates `USD_CAPTURE_TARGET_PROBE=0|1` from debugger injection.
+Explicit one requires the existing morph probe but no RenderDoc injection or
+optional debugger feature. When omitted it follows `USD_CAPTURE_RENDERDOC`,
+preserving the previous diagnostic default; explicit zero also permits an
+injected capture without the additional final-target readback. Neither flag
+changes normal viewer/library rendering.
+
+The first uninjected attempt exposed an actual capture-publication race. The
+deferred run produced valid final-target files, but its screenshot observer had
+already cloned the earlier uniform report, so the emitted screenshot metadata
+lacked all final-target fields despite `VIEWPORT_CAPTURE_OK`. The controller
+rejected this incomplete evidence. A successful process and an eventually
+present target file were not accepted as a complete correlated capture.
+
+The repair marks the report pending until requested target readback **and**
+debugger finalization finish. Screenshot delivery retains one image and its
+original metadata in a main-world writer, which polls readiness without blocking
+the render thread. It writes only after completion, or records an explicit error
+after a ten-second deadline. Screenshot identity checks, target/readback and
+debugger errors propagate; a wrong screenshot cannot complete the pending one.
+Tests cover independent flag combinations, pending/wrong/failed completion and
+the writer deadline. Normal captures without those diagnostics do not acquire
+GPU readback waits.
+
+Evidence: `/tmp/bevy-optimization-native-target.BlmySb/`, with final captures in
+`fixed/`. Initial binaries, source hashes, incomplete reports and failed case log
+are retained separately from the repaired run.
+
+- Initial independent-probe hardening passed 877 / 1,004 executions but did not
+  establish correct asynchronous publication. After the repair, hardening passes
+  878 no-default and 1,005 all-feature/all-target executions, formatting and
+  strict Clippy (`harden-race-fix.log`), followed by a successful release build.
+- Final saved viewer SHA-256 is
+  `cc2b573b49545100a212be98e4ed079cfd6dd7b915c7b45cd68bc537d7e20d4e`.
+  Cargo.lock remains `818d95e2…`. `fixed/inputs.sha256` and `source.patch` identify
+  the tested source, including captures performed before the focused local
+  commit. No owned compilation overlaps the native captures; load is 4.09–6.79.
+  Unrelated application work is left alone. These are not performance samples.
+- Eight controls cover eager/deferred policy, debugger injection on/off and
+  final-target readback on/off, using the same saved executable. All native
+  processes, requested outputs, screenshot readbacks and configuration assertions
+  pass. All view counters are 184. Four requested target readbacks carry complete
+  matching metadata; four disabled controls create neither target files nor
+  target-report fields. Four injected cases produce verified RDC files, and four
+  uninjected cases produce none. Host diagnostics remain four without injection
+  and eight with injection; they are not waived.
+- All eight screenshot images and four native main-target images are byte-exact,
+  SHA-256 `091585c7…`. Nineteen comparisons cover same-frame main/screenshot,
+  eager/deferred, readback on/off, injection on/off and cross-run target controls.
+  RGB and alpha are exact. Uploaded typed view/light values also match
+  (`fixed/analysis.json`). This batch does not reproduce the original 215/220-pixel
+  mismatch and therefore does not establish a renderer fix.
+- The earlier failing capture pair also has byte-identical blit vertex and
+  fragment SPIR-V. Its fragment shader only samples the input texture; the
+  upstream blit layout is non-filtering with a default nearest sampler. There
+  is no evidence here for a speculative linear-filter or shader-math change.
+
+The capture-publication race is repaired and the independent probe is verified.
+The intermittent visual issue remains open. Use this probe on previously failing
+undo/reveal command prefixes or inspect remaining recorded render-target/binding
+state, rather than rerunning the unchanged hidden-selection controls or claiming
+these passing images invalidate earlier failures. Full playback performance,
+downstream patch distribution, resource-lifecycle and platform acceptance remain
+unproven.

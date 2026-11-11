@@ -76,6 +76,18 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- [Independent native readback and publication race repair](benchmarks/morph-publication.md#independent-native-readback-and-publication-race-repair)
+  (`2b4c718`) makes final-target readback independent of RenderDoc and fixes a
+  diagnostic race where screenshot success could precede the completed report.
+  Readiness is explicit, screenshot identity checked, and the one-image writer
+  has a bounded deadline. Hardening passes 878 / 1,005 executions. Eight native
+  controls pass configuration checks and 19 exact image comparisons, with equal
+  typed GPU view/light data. The earlier 215/220-pixel rendering failure is not
+  reproduced or repaired. Next use the independent witness on previously failing
+  undo/reveal prefixes or inspect remaining recorded target/binding state; do not
+  repeat unchanged selection controls or alter shader math without evidence.
+  Broad performance, lifecycle, downstream and platform gates remain open.
+
 - [Native final-target witness](benchmarks/morph-publication.md#native-final-target-witness)
   (`08fded6`) adds bounded, same-frame native main-texture readback to the opt-in
   GPU capture. Hardening passes 875 / 1,002 executions. Four new native captures

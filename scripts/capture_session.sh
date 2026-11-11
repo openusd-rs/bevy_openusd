@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 
+capture_session_private_environment() {
+    local runtime=$1
+    export XDG_CONFIG_HOME="$runtime/config" XDG_DATA_HOME="$runtime/data" XDG_CACHE_HOME="$runtime/cache"
+    export XDG_CURRENT_DESKTOP=Weston XDG_SESSION_DESKTOP=weston
+    unset HYPRLAND_INSTANCE_SIGNATURE HYPRLAND_CMD DISPLAY
+    mkdir -p "$XDG_CONFIG_HOME/xdg-desktop-portal" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+    printf '[preferred]\ndefault=gtk\n' > "$XDG_CONFIG_HOME/xdg-desktop-portal/portals.conf"
+}
+
 capture_session_stop() {
     local pid_file=$1 waiter=${2:-} leader= attempt
     for ((attempt=0; attempt<100; ++attempt)); do

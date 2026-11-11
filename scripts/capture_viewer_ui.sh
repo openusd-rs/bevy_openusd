@@ -88,8 +88,7 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 export XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=usd-capture
 if [[ ${USD_UI_CAPTURE_PRIVATE_BUS:-0} == 1 ]]; then
-    export XDG_CONFIG_HOME="$runtime/config" XDG_DATA_HOME="$runtime/data" XDG_CACHE_HOME="$runtime/cache"
-    mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+    capture_session_private_environment "$runtime"
 fi
 unset WAYLAND_SOCKET
 compositor=(weston --backend=headless --renderer="$renderer" --fake-seat --width=1600 --height=1000 --socket="$WAYLAND_DISPLAY" --no-config --debug --idle-time=0)

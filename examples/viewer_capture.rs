@@ -700,6 +700,7 @@ struct CaptureTiming<'w, 's> {
     diagnostics: Res<'w, bevy::diagnostic::DiagnosticsStore>,
     timing: ResMut<'w, gpu_timing::GpuTiming>,
     progress: Res<'w, PipelineProbe>,
+    sort_timing: Option<Res<'w, usd_bevy::route::gpu_skin::DeformedSortTiming>>,
     mesh_assets: Res<'w, Assets<Mesh>>,
     mesh_references: Query<'w, 's, (&'static Mesh3d, &'static InheritedVisibility)>,
 }
@@ -780,13 +781,13 @@ fn capture_frame(
     scene: CaptureScene,
     preparation: Option<Res<usd_bevy::route::preparation::MeshPreparationTiming>>,
     transparent: Option<Res<transparent_probe::TransparentProbe>>,
-    sort_timing: Option<Res<usd_bevy::route::gpu_skin::DeformedSortTiming>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let CaptureTiming {
         diagnostics,
         mut timing,
         progress,
+        sort_timing,
         mesh_assets,
         mesh_references,
     } = timing;

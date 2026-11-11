@@ -86,6 +86,24 @@ fn asset_counts(world: &World) -> [usize; 3] {
     ]
 }
 
+fn image_buffer_report(images: &Assets<Image>) -> String {
+    let (buffers, payload, capacity) = images
+        .iter()
+        .filter_map(|(_, image)| image.data.as_ref())
+        .fold((0usize, 0, 0), |(buffers, payload, capacity), data| {
+            (
+                buffers + 1,
+                payload + data.len(),
+                capacity + data.capacity(),
+            )
+        });
+    format!(
+        "image_buffer_scope=main-world-Assets-Image-data image_assets={} data_buffers={buffers} payload_bytes={payload} capacity_bytes={capacity} spare_bytes={} excludes=source,mesh,handles,allocator-overhead,scratch,gpu",
+        images.len(),
+        capacity - payload
+    )
+}
+
 fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     use usd_bevy::route::residency::{DeferHiddenMeshes, UsdDeferredMesh};
     if !app.world().contains_resource::<DeferHiddenMeshes>() {
@@ -630,6 +648,10 @@ fn measure_payload(
         .sum();
     if std::env::var_os("USD_PROFILE_IMAGES").is_some() {
         use std::hash::{Hash, Hasher};
+        eprintln!(
+            "{}",
+            image_buffer_report(app.world().resource::<Assets<Image>>())
+        );
         let mut groups = std::collections::HashMap::new();
         for (_, image) in app.world().resource::<Assets<Image>>().iter() {
             let Some(data) = &image.data else { continue };
@@ -877,6 +899,55 @@ fn animated_materials_do_not_retain_every_sample() {
         let result = measure(&path, gpu_prepared, SeekMode::Unique).unwrap();
         assert!(result.peak_asset_counts[1] <= 16, "{result:?}");
     }
+}
+
+#[test]
+fn image_buffer_accounting_separates_capacity_from_payload() {
+    use bevy::{asset::RenderAssetUsages, render::render_resource::*};
+    let mut images = Assets::<Image>::default();
+    let empty = image_buffer_report(&images);
+    assert!(
+        empty.contains(
+            "image_assets=0 data_buffers=0 payload_bytes=0 capacity_bytes=0 spare_bytes=0"
+        )
+    );
+    let mut image = Image::new(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        vec![51; 4],
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::default(),
+    );
+    image.data.as_mut().unwrap().reserve_exact(60);
+    let mut no_data = image.clone();
+    no_data.data = None;
+    let mut reserved = image.clone();
+    reserved.data = Some(Vec::with_capacity(32));
+    let capacity =
+        image.data.as_ref().unwrap().capacity() + reserved.data.as_ref().unwrap().capacity();
+    let handles = [images.add(image), images.add(no_data), images.add(reserved)];
+    let report = image_buffer_report(&images);
+    assert!(report.contains(&format!(
+        "image_assets=3 data_buffers=2 payload_bytes=4 capacity_bytes={capacity} spare_bytes={}",
+        capacity - 4
+    )));
+    assert!(report.contains("scope=main-world-Assets-Image-data"));
+    assert!(report.contains("excludes=source,mesh,handles,allocator-overhead,scratch,gpu"));
+    assert!(handles.iter().all(|handle| images.contains(handle.id())));
+    assert_eq!(
+        images
+            .get(&handles[0])
+            .unwrap()
+            .data
+            .as_ref()
+            .unwrap()
+            .len(),
+        4
+    );
 }
 
 #[test]

@@ -104,3 +104,26 @@ from allocator overhead, process RSS and GPU storage. A matched pre-reservation/
 candidate pair must share that recorder before comparing real-scene capacities
 and timings; the small-fixture result is not a substitute. Retain the full
 optimization scope and all existing failed gates.
+
+The recorder adds one `image_buffer_scope` line under `USD_PROFILE_IMAGES=1` in
+`editor_benchmark`. It counts main-world image assets, images with `Some(data)`,
+payload length, capacity and unused capacity. Empty reserved buffers count toward
+capacity; missing buffers do not. Existing CSV columns and image grouping output
+are unchanged. Profiling remains outside the measured update intervals.
+
+The planned matched CPU matrix uses one sample per fresh process, both idle and
+quick-seek modes for bird/cow/arm/subsets, in ABBA order for each case/mode. Quick
+seek retains four warmup and eight measured updates. Both saved release binaries
+share the recorder, dependencies and features; only complete-chain reservation
+differs in production code. Stage both at one owned executable path, with no
+task-owned compilation overlapping measurement. Preserve raw logs, source/binary
+hashes, process status, warnings and host load. Require unchanged payload/asset/
+geometry counts and no capacity increase; report opening/update/RSS observations
+separately and retain greater-than-5% timing regressions rather than averaging
+them away across workloads. This CPU editor matrix is not GPU/window performance.
+
+Recorder hardening passes 839 no-default / 956 all-feature/all-target test
+executions and strict Clippy. The new accounting fixture covers no assets,
+missing data, empty reserved data and a four-byte image with spare capacity.
+Log: `/tmp/bevy-optimization-image-capacity-final-harden.log`. No production
+library code or dependency changed in the recorder step.

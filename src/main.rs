@@ -26,6 +26,7 @@ mod lighting;
 mod payload_editor;
 mod perf_render;
 mod render_settings;
+mod residency_policy;
 mod timeline;
 mod toolbar_icons;
 mod transparent_probe;
@@ -59,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     curve_quality::from_env()?;
+    residency_policy::from_env()?;
     capture::CaptureConfig::from_env()?;
     host_capture::from_env()?;
     render_settings::oit_from_env()?;
@@ -696,6 +698,10 @@ fn usd_tree_passes(nodes: &[UsdNode], i: usize, filter: &str) -> bool {
 
 fn configure_usd_app(app: &mut App, editor: EditorBridge) {
     app.insert_resource(curve_quality::from_env().expect("validated USD_CURVE_STEPS"));
+    residency_policy::configure(
+        app,
+        residency_policy::from_env().expect("validated USD_DEFER_HIDDEN_MESHES"),
+    );
     app.insert_resource(editor);
     app.add_plugins((
         UsdPlugin,

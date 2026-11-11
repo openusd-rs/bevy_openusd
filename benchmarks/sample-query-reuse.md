@@ -1,5 +1,9 @@
 # Upstream animation-query reuse probe
 
+**Status:** the bird attribute kernel passes; the cow timing is incomplete
+because it exceeds the probe's resource guard. No production query cache is
+enabled, and the combined opportunity gate is not passed.
+
 The current OpenUSD pin already provides `usd::AttributeQuery`: a timed read
 memoizes the resolved source and replays it while the upstream prim-revision
 stamp remains valid. Numeric time samples use the same upstream interpolation;
@@ -52,3 +56,73 @@ the reversed cow timing unchanged. Finish only the already-declared second bird
 run. A separate `ASSET inventory 0` mode then inventories the cow one sample
 map at a time without constructing persistent queries or taking performance
 samples. It does not turn the failed cow timing into a passing result.
+
+## Measured result
+
+Evidence: `/tmp/bevy-optimization-sample-query.6c8Dyk/`. The original timing
+executable is `probe`, SHA-256
+`6deaa6a30b81cb598c5208951233b1b0fdbb03e6a5151a879ed3b05d90b83e6f`.
+Its source is retained as `timed-probe-source.rs` and in local commit `f51342b`.
+The initial test build fails because the edit helper consumes an attribute
+handle; the fixture now clones that handle, preserving the query being tested.
+The corrected focused tests and release build pass. Later full hardening,
+including the inventory mode, passes formatting, strict Clippy and 885 / 1,015
+test executions in overlapping no-default and all-feature configurations.
+
+Two bird processes complete 2,000 measured clocks and eight warmups, comparing
+16,064 attribute answers exactly, including option presence, variant and numeric
+bits. Their raw fingerprints, four order-stratum summaries, stage range and
+sample-map inventories match. The signed-zero/kind/presence unit test detects
+alterations, and the query matches direct reads after edits and interpolation
+changes. Unsupported value types still fail rather than disappearing from the
+comparison. Both successful processes have zero application diagnostics.
+
+| Fresh process | First batch | Direct median ms | Query median ms | Change |
+| --- | --- | ---: | ---: | ---: |
+| Bird 0 | Direct | 0.237857 | 0.006575 | -97.24% |
+| Bird 0 | Query | 0.241570 | 0.006669 | -97.24% |
+| Bird 1 | Direct | 0.241801 | 0.007042 | -97.09% |
+| Bird 1 | Query | 0.244149 | 0.006991 | -97.14% |
+
+This exceeds the 25% bird-kernel opportunity target in all four strata. It is
+only about 0.23 ms saved for these batches, not a 97% application improvement or
+a measurement of all OpenUSD decoding. No rendered playback or integrated
+cache is measured. Cold warmups, p95/max and process totals remain in the raw
+logs and `partial-analysis.json`. The bird processes peak at 51,308 / 51,820
+KiB RSS, including both policies, the inventory and the stage; this is not a
+before/after memory comparison.
+
+The first cow process exits one before sampling with `probe attribute limit
+exceeded`. Its reversed timing is not run. The independent partial analyzer
+therefore exits one and explicitly records two successful processes, one failed
+process and one unrun process. Neither the 512-attribute guard nor the timing
+threshold is raised to convert that failure into a pass.
+
+## Inventory and integration boundary
+
+The separately built `inventory-probe` has SHA-256
+`47d68e3e19b365baef266f37c202e499322ba7b77d8d627f351dea0da1b2559c`.
+It completes the cow inventory without constructing persistent queries. The
+analyzer validates every attribute, four channels per animation, exact totals,
+zero diagnostics and unchanged manifests:
+
+| Asset | Animation prims | Attributes | Authored sample entries | Logical numeric sample bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Bird | 2 | 8 | 1,060 | 2,968,000 |
+| Cow | 150 | 600 | 82,058 | 56,232,988 |
+
+The largest single cow attribute contributes 752,640 numeric sample bytes.
+The streaming inventory peaks at 60,844 KiB process RSS; it does not measure
+retaining all 600 query sources. Logical payload excludes map slots, keys,
+capacities, static values, query metadata, the stage and allocator overhead.
+Both phases retain the archive and all 267 cow-directory files in their asset
+manifests; the successful bird reads also report their sole layer identifier.
+The original upstream pin and lockfile are unchanged.
+
+The inventory includes every composed SkelAnimation, not only animations the
+current meshes bind. Do not pre-create a persistent query for every authored
+animation or equate that inventory with actual per-frame reads. Next identify
+which attributes the existing projection requests and how often, then design
+bounded on-demand reuse with explicit admission, invalidation and close/reload
+ownership. The opaque upstream cache still needs a defensible memory bound.
+Full-editor gains, native fidelity and all broader acceptance gates remain open.

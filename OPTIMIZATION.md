@@ -76,6 +76,22 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Upstream sample-query opportunity measured, not integrated:** the current
+  upstream `AttributeQuery` already replays decoded values with revision-stamped
+  invalidation. A new example compares it with direct reads without dependency
+  changes. Two bird processes validate 2,000 clocks and eight warmups with exact
+  values; raw animation batches fall from 0.238–0.244 ms to 0.0066–0.0070 ms.
+  This is about 0.23 ms at that kernel, not a whole-editor or native FPS gain.
+  The cow timing exceeds the unchanged 512-attribute resource guard and remains
+  unmeasured. A separate streaming inventory finds 150 animation prims / 600
+  channels and 56,232,988 logical numeric sample bytes. The
+  [complete result](benchmarks/sample-query-reuse.md) retains the failure,
+  original executable, manifests and precise scope; full hardening passes
+  885 / 1,015 overlapping test executions, formatting and strict Clippy.
+  Next identify actually requested animation channels and establish bounded
+  on-demand admission/lifetime before adding a persistent cache. Production
+  runtime code, upstream pin and all broader acceptance gaps remain unchanged.
+
 - **Matched-main-thread diagnostic is inconclusive:** 32 processes validate
   32,000 updates, 128 warmups, equal payload/work counts and zero diagnostics.
   All retain 16 compute-pool threads, with 160 snapshots verifying unchanged

@@ -76,6 +76,19 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Bounded upstream-query prototype implemented:** an isolated patch adds
+  shared byte/entry admission under the upstream query's private source stamp,
+  checked capacity accounting and RAII release. Ten new tests and 163 existing
+  attribute tests pass on Rust 1.96.1 and 1.98.1; strict core all-target/feature
+  Clippy and rustdoc pass on 1.96.1. The unchanged original reproduces the
+  candidate's 1.98 Clippy failures in upstream hashing code. A fresh patch
+  replay matches every tested file. The [prototype report](benchmarks/bounded-query-prototype.md)
+  defines the retained-storage budget, excluded transient/process allocations,
+  remaining ownership/semantic checks and the next used-channel performance
+  gate. No production dependency or runtime changes, no new speedup and no
+  broader acceptance are claimed. Next measure the budgeted candidate, not an
+  unbounded cache inferred from the sample inventory.
+
 - **Query admission boundary verified:** three new regressions demonstrate that
   a warmed query can grow from 24 to 98,304 numeric sample bytes after an edit,
   while the ordinary prim's public index build revision stays unchanged. An

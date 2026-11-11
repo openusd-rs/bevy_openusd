@@ -243,6 +243,14 @@ make.recipe{
 }
 
 make.recipe{
+  name = "build-skin-probe",
+  desc = "build the release library test executable containing the skin influence inventory",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--release", "--lib", "--no-run")
+  end,
+}
+
+make.recipe{
   name = "test-texture-encoding",
   desc = "exhaustively compare release sRGB mip encoding with the scalar formula",
   run = function()

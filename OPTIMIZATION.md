@@ -76,6 +76,106 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Viewer log traffic:** TRACE is now opt-in via `RUST_LOG`; the default keeps
+  application INFO and warnings/errors. Across 32 native bird seeks, log traffic
+  falls from 233,118 bytes / 3,842 file calls to 1,393 bytes / 29 calls. The
+  rebuilt viewer verifies both default filtering and explicit TRACE. Hardening
+  passes 884 / 1,011 executions, formatting and strict Clippy. Three strict
+  image comparisons pass, including old INFO versus the new default, but two
+  comparisons involving the candidate TRACE capture differ at 207 pixels, max
+  RGB two. Host warnings also remain failures. The
+  [logging evidence](benchmarks/viewer-logging.md) retains all results; this is
+  lower logging I/O, not a native FPS claim or full visual acceptance. This
+  closes the in-progress local change, not the whole optimization roadmap.
+
+- **Scoped query sharing:** animation and skeleton cache hits now share private
+  query handles instead of deep-cloning joint-name and mapping vectors. Scope
+  lifetime, stage isolation, later edits and deformation arithmetic are
+  unchanged. Hardening passes 882 / 1,009 executions, plus four native CPU
+  deformation-oracle tests, wasm compilation and a release benchmark build.
+  The [alternating CPU comparison](benchmarks/shared-skel-queries.md#alternating-whole-editor-cpu-comparison)
+  validates 20,000 updates and 80 warmups. Mean-of-medians CPU update costs fall
+  5.54% for bird and 2.19% for cow, but GPU-morph control median rises 25.49%,
+  bird maximum rises 23.10%, and subsets p95 rises 19.87%. These failures remain
+  open; no smooth-native-playback or full performance acceptance is claimed.
+  A subsequent [unscaled counter audit](benchmarks/shared-skel-queries.md#counter-audit-of-unstable-small-controls)
+  validates 24,000 updates and complete hybrid-PMU coverage. GPU morph uses
+  0.396% fewer whole-process user-space instructions; timing outliers occur in
+  both binaries, including the unchanged control. This does not establish a
+  scheduling cause or clear the earlier failure. Do not repeat these controls
+  unchanged or make a speculative compensating code change.
+  [Native rendered checks](benchmarks/shared-skel-queries.md#native-rendered-beforeafter-checks)
+  now verify six exact before/after RGBA comparisons, including fully framed
+  bird, cow and CPU/GPU deformation fixtures after reverse/repeated seeks.
+  Two unchanged CPU-versus-GPU mesh pixels and host diagnostics remain failures;
+  sampled-pose equality is not native-frame-rate or broad release acceptance.
+
+- **Skin correction-cache candidate rejected:** the saved release diagnostic
+  completes five bird clocks with 190 accepted and 15 explicitly rejected GPU
+  samples. A 64-entry model avoids only 5.98% of remaining non-adjacent
+  normal-correction evaluations, below the predeclared 25% opportunity gate;
+  256 entries do no better. No production cache is added. The
+  [inventory results](benchmarks/skin-influence-reuse.md#real-asset-inventory-candidate-rejected)
+  retain all counts, bit-exact checks, unsupported paths and input hashes.
+  Further work must target another measured cost; this is not a speedup and
+  does not clear any outstanding application, visual or release gate.
+
+- **Earlier wrap-up checkpoint:** the user requested ending the prolonged investigation.
+  The already-running verification finishes at 880 no-default / 1,007
+  all-feature/all-target executions, formatting, strict Clippy and a release
+  diagnostic build. At that checkpoint the
+  [skin-influence inventory](benchmarks/skin-influence-reuse.md) was test-only,
+  built but not run on real assets. Its later measured rejection is recorded
+  above; no production correction cache or speedup is claimed.
+  Actual performance work remains in bird skin/mesh preparation, cow tangent
+  and hidden-mesh costs, loading regressions and memory/lifecycle validation.
+  Earlier visual, 60 Hz, downstream and platform gates are not marked complete.
+
+- [Independent target checks across reveal, undo and redo](benchmarks/morph-publication.md#independent-target-checks-across-reveal-undo-and-redo)
+  reuse the saved `2b4c718` viewer for eight uninjected GPU/CPU controls. State,
+  identity, clock, residency and all four visible GPU publication histories pass;
+  all 28 native main-target/screenshot/policy/history comparisons are exact.
+  Uploaded view/light data match, with frame counters 185/186/187 retained.
+  Four host diagnostics per run still fail the overall driver. The earlier
+  intermittent rendering discrepancies remain unresolved, not waived. Do not
+  repeat these captures unchanged. Return to measured preparation bottlenecks;
+  an independent skin-influence inventory will assess bounded arithmetic reuse
+  before proposing another production optimization. Full workstreams stay open.
+
+- [Independent native readback and publication race repair](benchmarks/morph-publication.md#independent-native-readback-and-publication-race-repair)
+  (`2b4c718`) makes final-target readback independent of RenderDoc and fixes a
+  diagnostic race where screenshot success could precede the completed report.
+  Readiness is explicit, screenshot identity checked, and the one-image writer
+  has a bounded deadline. Hardening passes 878 / 1,005 executions. Eight native
+  controls pass configuration checks and 19 exact image comparisons, with equal
+  typed GPU view/light data. The earlier 215/220-pixel rendering failure is not
+  reproduced or repaired. Next use the independent witness on previously failing
+  undo/reveal prefixes or inspect remaining recorded target/binding state; do not
+  repeat unchanged selection controls or alter shader math without evidence.
+  Broad performance, lifecycle, downstream and platform gates remain open.
+
+- [Native final-target witness](benchmarks/morph-publication.md#native-final-target-witness)
+  (`08fded6`) adds bounded, same-frame native main-texture readback to the opt-in
+  GPU capture. Hardening passes 875 / 1,002 executions. Four new native captures
+  pass ten exact main-target/screenshot/cross-run comparisons; two full GPU
+  replays also match their native bytes. This passing batch verifies the probe,
+  not a fix for the earlier intermittent failure. Next separate native target
+  readback from RenderDoc injection to capture that failure without the injected
+  recorder. All broad workstreams and prior failing evidence remain open.
+
+- [Release GPU capture and shader replacement](benchmarks/morph-publication.md#release-gpu-capture-and-shader-replacement)
+  (`906918b`) now saves verified GPU captures without global debug assertions.
+  The failing native pair has equal typed grid/view data and executable grid
+  shaders; raw view differences are padding and raw fragment differences only
+  embedded debug-source struct order. Swapping both original shaders and their
+  common debug-stripped form in each fixed capture produces 22 exact snapshots,
+  but native eager still differs from its own replay at 215 pixels, max RGB two.
+  Replay is not a native pixel oracle. Next correlate the native final main
+  render target, screenshot and replay, not speculative camera/light/shader math.
+  Hardening passes 872 / 999 executions. All previous strict visual failures,
+  host diagnostics and broad performance/release gates remain open; nothing
+  pushed and no quality, tolerance or policy default changed.
+
 - [Same-frame GPU uniform readback](benchmarks/morph-publication.md#same-frame-gpu-view-and-light-readback)
   (`5241231`) now correlates actual uploaded view/light values with the screenshot,
   with bounded copies, frame/identity checks and explicit failures. Hardening

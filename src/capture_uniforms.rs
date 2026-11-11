@@ -28,6 +28,7 @@ pub struct UniformCapture(pub Entity);
 struct Captured {
     screenshot: Entity,
     report: Result<String, String>,
+    pending: bool,
 }
 
 #[derive(Clone, Default, Resource)]
@@ -42,10 +43,43 @@ impl UniformProbe {
         if captured.screenshot != screenshot {
             return Err("GPU uniform readback belongs to another screenshot".into());
         }
+        if captured.pending {
+            return Err("GPU capture completion pending".into());
+        }
         captured.report.clone()
+    }
+
+    pub fn ready(&self, screenshot: Entity) -> bool {
+        !self
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|captured| captured.screenshot == screenshot && captured.pending)
+    }
+
+    fn finish(&self, screenshot: Entity, report: Result<String, String>) -> Result<(), String> {
+        let mut captured = self.0.lock().unwrap();
+        let captured = captured.as_mut().ok_or("GPU uniform readback missing")?;
+        if captured.screenshot != screenshot {
+            return Err("GPU target readback belongs to another screenshot".into());
+        }
+        captured.pending = false;
+        match report {
+            Ok(report) => captured
+                .report
+                .as_mut()
+                .map(|uniforms| uniforms.push_str(&report))
+                .map_err(|error| error.clone()),
+            Err(error) => {
+                captured.report = Err(error.clone());
+                Err(error)
+            }
+        }
     }
 }
 
+#[derive(Clone, Copy)]
 struct Request {
     screenshot: Entity,
     camera: MainEntity,
@@ -60,7 +94,8 @@ struct Debugger {
     enabled: bool,
     active: Option<u32>,
     session: Option<crate::renderdoc_capture::Session>,
-    camera: Option<MainEntity>,
+    target_enabled: bool,
+    request: Option<Request>,
     output: PathBuf,
 }
 
@@ -77,7 +112,7 @@ impl Debugger {
     }
 }
 
-pub fn configure(app: &mut App, renderdoc: bool, output: &Path) {
+pub fn configure(app: &mut App, renderdoc: bool, target_probe: bool, output: &Path) {
     let probe = UniformProbe::default();
     app.insert_resource(probe.clone());
     app.sub_app_mut(RenderApp)
@@ -87,7 +122,8 @@ pub fn configure(app: &mut App, renderdoc: bool, output: &Path) {
             output: output.to_owned(),
             active: None,
             session: None,
-            camera: None,
+            target_enabled: target_probe,
+            request: None,
         })
         .init_resource::<Pending>()
         .add_systems(
@@ -178,7 +214,6 @@ fn capture(
             match crate::renderdoc_capture::Session::start() {
                 Ok(session) => {
                     debugger.session = Some(session);
-                    debugger.camera = Some(request.camera);
                 }
                 Err(error) => {
                     debugger.active = None;
@@ -190,10 +225,14 @@ fn capture(
                 request.frame
             ));
         }
+        if debugger.target_enabled || debugger.enabled {
+            debugger.request = Some(request);
+        }
         Ok(report)
     })();
     *probe.0.lock().unwrap() = Some(Captured {
         screenshot: request.screenshot,
+        pending: report.is_ok() && debugger.request.is_some(),
         report,
     });
 }
@@ -205,35 +244,58 @@ fn finish_debugger(
     views: Query<(&MainEntity, &ViewTarget)>,
     probe: Res<UniformProbe>,
 ) {
-    let Some(frame) = debugger.active.take() else {
+    let Some(request) = debugger.request.take() else {
         return;
     };
-    let camera = debugger.camera.take();
-    let target = views
-        .iter()
-        .find(|(entity, _)| Some(**entity) == camera)
-        .ok_or_else(|| "captured camera has no final view target".to_owned())
-        .and_then(|(_, target)| {
-            crate::capture_target::save(&device, &queue, target, &debugger.output, frame)
-        });
-    if let Some(captured) = probe.0.lock().unwrap().as_mut() {
-        match &target {
-            Ok(report) => {
-                if let Ok(uniforms) = &mut captured.report {
-                    uniforms.push_str(report);
-                }
-            }
-            Err(error) => captured.report = Err(error.clone()),
+    let target = if debugger.target_enabled {
+        views
+            .iter()
+            .find(|(entity, _)| **entity == request.camera)
+            .ok_or_else(|| "captured camera has no final view target".to_owned())
+            .and_then(|(_, target)| {
+                crate::capture_target::save(
+                    &device,
+                    &queue,
+                    target,
+                    &debugger.output,
+                    request.frame,
+                )
+            })
+    } else {
+        Ok(String::new())
+    };
+    let captured = if let Some(frame) = debugger.active.take() {
+        let ready = device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(5)),
+            })
+            .map_err(|error| error.to_string());
+        let captured = debugger
+            .session
+            .take()
+            .ok_or_else(|| "debugger session missing".to_owned())
+            .and_then(|session| session.finish());
+        if frame != request.frame {
+            Err("debugger completion belongs to another frame".into())
+        } else {
+            ready.and(captured).map(Some)
         }
-    }
-    let captured = debugger
-        .session
-        .take()
-        .ok_or_else(|| "debugger session missing".to_owned())
-        .and_then(|session| session.finish());
-    match target.and(captured) {
-        Ok(path) => eprintln!("GPU_DEBUGGER_CAPTURE_OK frame={frame} path={path:?}"),
-        Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR debugger frame={frame}: {error}"),
+    } else {
+        Ok(None)
+    };
+    let path = captured.as_ref().ok().and_then(|path| path.clone());
+    let report = target.and_then(|report| captured.map(|_| report));
+    match probe.finish(request.screenshot, report) {
+        Ok(()) => {
+            if let Some(path) = path {
+                eprintln!(
+                    "GPU_DEBUGGER_CAPTURE_OK frame={} path={path:?}",
+                    request.frame
+                );
+            }
+        }
+        Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR frame={}: {error}", request.frame),
     }
 }
 
@@ -338,6 +400,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn target_report_matches_screenshot_and_propagates_failure() {
+        let mut world = World::new();
+        let screenshot = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let probe = UniformProbe::default();
+        assert!(probe.finish(screenshot, Ok("target".into())).is_err());
+        *probe.0.lock().unwrap() = Some(Captured {
+            screenshot,
+            report: Ok("uniforms".into()),
+            pending: true,
+        });
+        assert!(!probe.ready(screenshot));
+        assert!(probe.report(screenshot).unwrap_err().contains("pending"));
+        assert!(probe.finish(other, Ok("wrong".into())).is_err());
+        assert!(!probe.ready(screenshot));
+        assert_eq!(probe.finish(screenshot, Ok("target".into())), Ok(()));
+        assert!(probe.ready(screenshot));
+        assert_eq!(probe.report(screenshot), Ok("uniformstarget".into()));
+        assert_eq!(
+            probe.finish(screenshot, Err("failed".into())),
+            Err("failed".into())
+        );
+        assert_eq!(probe.report(screenshot), Err("failed".into()));
+        assert_eq!(
+            probe.finish(screenshot, Ok("late".into())),
+            Err("failed".into())
+        );
+    }
+
+    #[test]
     fn debugger_capture_does_not_overlap_or_start_implicitly() {
         let mut debugger = Debugger::default();
         assert_eq!(debugger.begin(42), Ok(false));
@@ -375,6 +467,7 @@ mod tests {
         *probe.0.lock().unwrap() = Some(Captured {
             screenshot,
             report: Ok("measured".into()),
+            pending: false,
         });
         assert_eq!(probe.report(screenshot), Ok("measured".into()));
         assert!(probe.report(other).is_err());

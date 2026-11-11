@@ -11,6 +11,7 @@ pub struct CaptureConfig {
     residency: Option<crate::capture_residency::Config>,
     morph_probe: bool,
     renderdoc: bool,
+    target_probe: bool,
 }
 
 impl CaptureConfig {
@@ -44,6 +45,7 @@ impl CaptureConfig {
             residency: None,
             morph_probe: false,
             renderdoc: false,
+            target_probe: false,
         }))
     }
 
@@ -90,6 +92,11 @@ impl CaptureConfig {
             config.morph_probe =
                 Self::morph_probe(read("USD_CAPTURE_MORPH_PROBE")?, config.residency.is_some())?;
             config.renderdoc = Self::renderdoc(read("USD_CAPTURE_RENDERDOC")?, config.morph_probe)?;
+            config.target_probe = Self::target_probe(
+                read("USD_CAPTURE_TARGET_PROBE")?,
+                config.morph_probe,
+                config.renderdoc,
+            )?;
         }
         Ok(config)
     }
@@ -111,6 +118,22 @@ impl CaptureConfig {
             Some("1") if morph_probe && cfg!(all(feature = "debugger_capture", target_os = "linux")) => Ok(true),
             _ => Err(
                 "USD_CAPTURE_RENDERDOC requires 0 or 1; 1 requires USD_CAPTURE_MORPH_PROBE=1 and the Linux debugger_capture build"
+                    .into(),
+            ),
+        }
+    }
+
+    fn target_probe(
+        value: Option<String>,
+        morph_probe: bool,
+        renderdoc: bool,
+    ) -> Result<bool, String> {
+        match value.as_deref() {
+            None => Ok(renderdoc),
+            Some("0") => Ok(false),
+            Some("1") if morph_probe => Ok(true),
+            _ => Err(
+                "USD_CAPTURE_TARGET_PROBE requires 0 or 1; 1 requires USD_CAPTURE_MORPH_PROBE=1"
                     .into(),
             ),
         }
@@ -233,6 +256,53 @@ fn save_readback(image: &Image, output: &Path, timing: &str) -> Result<(), Strin
     rgba.save(output).map_err(|error| error.to_string())
 }
 
+struct PendingReadback {
+    image: Image,
+    output: String,
+    metadata: String,
+    uniforms: Option<crate::capture_uniforms::UniformProbe>,
+    screenshot: Entity,
+    received: std::time::Instant,
+}
+
+#[derive(Default, Resource)]
+struct ReadbackWriter(Option<PendingReadback>);
+
+fn wait_for_report(ready: bool, elapsed: std::time::Duration) -> bool {
+    !ready && elapsed < std::time::Duration::from_secs(10)
+}
+
+fn write_pending_readback(mut writer: ResMut<ReadbackWriter>) {
+    let Some(pending) = &writer.0 else { return };
+    let ready = pending
+        .uniforms
+        .as_ref()
+        .is_none_or(|probe| probe.ready(pending.screenshot));
+    if wait_for_report(ready, pending.received.elapsed()) {
+        return;
+    }
+    let mut pending = writer.0.take().unwrap();
+    let report = pending
+        .uniforms
+        .as_ref()
+        .map(|probe| probe.report(pending.screenshot));
+    match &report {
+        Some(Ok(report)) => pending.metadata.push_str(report),
+        Some(Err(error)) => pending
+            .metadata
+            .push_str(&format!("gpu_uniform_error={error}\n")),
+        None => (),
+    }
+    let output = pending.output;
+    match save_readback(&pending.image, Path::new(&output), &pending.metadata) {
+        Ok(()) => match report {
+            Some(Err(error)) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
+            _ => eprintln!("VIEWPORT_CAPTURE_OK {output}"),
+        },
+        Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
+    }
+}
+
 type CaptureCamera = (
     Entity,
     &'static Camera,
@@ -251,10 +321,13 @@ pub fn configure(app: &mut App) {
         residency,
         morph_probe,
         renderdoc,
+        target_probe,
     }) = CaptureConfig::from_env().expect("invalid capture configuration")
     else {
         return;
     };
+    app.init_resource::<ReadbackWriter>()
+        .add_systems(Update, write_pending_readback);
     if let Some(current) = time {
         app.insert_resource(usd_bevy::route::StageTime { current });
     }
@@ -266,7 +339,7 @@ pub fn configure(app: &mut App) {
             .as_ref()
             .expect("morph probe requires USD_CAPTURE_RESIDENCY");
         crate::morph_probe::configure(app, config.mesh_path());
-        crate::capture_uniforms::configure(app, renderdoc, Path::new(&output));
+        crate::capture_uniforms::configure(app, renderdoc, target_probe, Path::new(&output));
     }
     let uniforms = morph_probe.then(|| {
         app.world()
@@ -342,26 +415,23 @@ pub fn configure(app: &mut App) {
                 }
                 let uniforms = uniforms.clone();
                 screenshot.observe(move |event: On<ScreenshotCaptured>,
+                    mut writer: ResMut<ReadbackWriter>,
                     grids: Query<(&GlobalTransform, &bevy::dev_tools::infinite_grid::InfiniteGridSettings)>| {
                     let mut metadata = timing.clone();
-                    let uniform_report = uniforms.as_ref().map(|probe| probe.report(event.entity));
-                    match &uniform_report {
-                        Some(Ok(report)) => metadata.push_str(report),
-                        Some(Err(error)) => metadata.push_str(&format!("gpu_uniform_error={error}\n")),
-                        None => (),
-                    }
                     metadata.push_str("readback_grid_scope=ScreenshotCaptured-main-world\n");
                     for (transform, settings) in &grids {
                         metadata.push_str("readback_");
                         metadata.push_str(&crate::transparent_probe::grid_report(transform, settings));
                     }
-                    match save_readback(&event.image, Path::new(&output), &metadata) {
-                        Ok(()) => match uniform_report {
-                            Some(Err(error)) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
-                            _ => eprintln!("VIEWPORT_CAPTURE_OK {output}"),
-                        },
-                        Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
+                    if writer.0.is_some() {
+                        eprintln!("VIEWPORT_CAPTURE_ERROR {output}: another readback is pending");
+                        return;
                     }
+                    writer.0 = Some(PendingReadback {
+                        image: event.image.clone(), output: output.clone(), metadata,
+                        uniforms: uniforms.clone(), screenshot: event.entity,
+                        received: std::time::Instant::now(),
+                    });
                 });
             }
             CaptureAction::Wait => {
@@ -378,6 +448,35 @@ pub fn configure(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_writer_waits_for_completion_with_a_deadline() {
+        use std::time::Duration;
+        assert!(wait_for_report(false, Duration::ZERO));
+        assert!(wait_for_report(false, Duration::from_millis(9999)));
+        assert!(!wait_for_report(false, Duration::from_secs(10)));
+        assert!(!wait_for_report(true, Duration::ZERO));
+    }
+
+    #[test]
+    fn target_probe_is_independent_of_debugger_injection() {
+        assert_eq!(CaptureConfig::target_probe(None, true, true), Ok(true));
+        assert_eq!(CaptureConfig::target_probe(None, true, false), Ok(false));
+        for debugger in [false, true] {
+            assert_eq!(
+                CaptureConfig::target_probe(Some("0".into()), true, debugger),
+                Ok(false)
+            );
+            assert_eq!(
+                CaptureConfig::target_probe(Some("1".into()), true, debugger),
+                Ok(true)
+            );
+        }
+        assert!(CaptureConfig::target_probe(Some("1".into()), false, false).is_err());
+        for invalid in ["", "true", "2", " 1"] {
+            assert!(CaptureConfig::target_probe(Some(invalid.into()), true, false).is_err());
+        }
+    }
     use bevy::render::render_resource::TextureFormat;
 
     #[test]

@@ -52,11 +52,36 @@ struct Request {
 #[derive(Default, Resource)]
 struct Pending(Option<Request>);
 
-pub fn configure(app: &mut App) {
+#[derive(Default, Resource)]
+struct Debugger {
+    enabled: bool,
+    active: Option<u32>,
+    session: Option<crate::renderdoc_capture::Session>,
+}
+
+impl Debugger {
+    fn begin(&mut self, frame: u32) -> Result<bool, String> {
+        if !self.enabled {
+            return Ok(false);
+        }
+        if self.active.is_some() {
+            return Err("another debugger capture is already active".into());
+        }
+        self.active = Some(frame);
+        Ok(true)
+    }
+}
+
+pub fn configure(app: &mut App, renderdoc: bool) {
     let probe = UniformProbe::default();
     app.insert_resource(probe.clone());
     app.sub_app_mut(RenderApp)
         .insert_resource(probe)
+        .insert_resource(Debugger {
+            enabled: renderdoc,
+            active: None,
+            session: None,
+        })
         .init_resource::<Pending>()
         .add_systems(
             RenderStartup,
@@ -67,9 +92,14 @@ pub fn configure(app: &mut App) {
         .add_systems(ExtractSchedule, extract_request)
         .add_systems(
             Render,
-            capture
-                .after(RenderSystems::Prepare)
-                .before(RenderSystems::Render),
+            (
+                capture
+                    .after(RenderSystems::Prepare)
+                    .before(RenderSystems::Render),
+                finish_debugger
+                    .after(RenderSystems::Render)
+                    .before(RenderSystems::Cleanup),
+            ),
         );
 }
 
@@ -108,8 +138,8 @@ fn capture(
     views: Query<CaptureView, With<ExtractedCamera>>,
     uniforms: Res<ViewUniforms>,
     lights: Res<LightMeta>,
-    device: Res<RenderDevice>,
-    queue: Res<RenderQueue>,
+    (device, queue): (Res<RenderDevice>, Res<RenderQueue>),
+    mut debugger: ResMut<Debugger>,
 ) {
     let Some(request) = pending.0.take() else {
         return;
@@ -136,12 +166,45 @@ fn capture(
                 (light_buffer, u64::from(light.offset), light_size),
             ],
         )?;
-        decode_report(request.frame, view.offset, light.offset, &bytes)
+        let mut report = decode_report(request.frame, view.offset, light.offset, &bytes)?;
+        if debugger.begin(request.frame)? {
+            match crate::renderdoc_capture::Session::start() {
+                Ok(session) => debugger.session = Some(session),
+                Err(error) => {
+                    debugger.active = None;
+                    return Err(error);
+                }
+            }
+            report.push_str(&format!(
+                "gpu_debugger_capture_requested_frame={}\n",
+                request.frame
+            ));
+        }
+        Ok(report)
     })();
     *probe.0.lock().unwrap() = Some(Captured {
         screenshot: request.screenshot,
         report,
     });
+}
+
+fn finish_debugger(mut debugger: ResMut<Debugger>, device: Res<RenderDevice>) {
+    let Some(frame) = debugger.active.take() else {
+        return;
+    };
+    let ready = device.poll(PollType::Wait {
+        submission_index: None,
+        timeout: Some(std::time::Duration::from_secs(5)),
+    });
+    let captured = debugger
+        .session
+        .take()
+        .ok_or_else(|| "debugger session missing".to_owned())
+        .and_then(|session| session.finish());
+    match ready.map_err(|error| error.to_string()).and(captured) {
+        Ok(path) => eprintln!("GPU_DEBUGGER_CAPTURE_OK frame={frame} path={path:?}"),
+        Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR debugger frame={frame}: {error}"),
+    }
 }
 
 fn validate_range(capacity: u64, offset: u64, size: u64) -> Result<(), String> {
@@ -243,6 +306,19 @@ fn decode_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debugger_capture_does_not_overlap_or_start_implicitly() {
+        let mut debugger = Debugger::default();
+        assert_eq!(debugger.begin(42), Ok(false));
+        assert_eq!(debugger.active, None);
+        debugger.enabled = true;
+        assert_eq!(debugger.begin(42), Ok(true));
+        assert!(debugger.begin(43).is_err());
+        assert_eq!(debugger.active.take(), Some(42));
+        assert_eq!(debugger.active.take(), None);
+        assert_eq!(debugger.begin(44), Ok(true));
+    }
 
     #[test]
     fn readback_ranges_are_aligned_bounded_and_overflow_safe() {

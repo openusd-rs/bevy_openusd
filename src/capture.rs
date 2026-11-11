@@ -10,6 +10,7 @@ pub struct CaptureConfig {
     seeks: Vec<f64>,
     residency: Option<crate::capture_residency::Config>,
     morph_probe: bool,
+    renderdoc: bool,
 }
 
 impl CaptureConfig {
@@ -42,6 +43,7 @@ impl CaptureConfig {
             seeks: Vec::new(),
             residency: None,
             morph_probe: false,
+            renderdoc: false,
         }))
     }
 
@@ -87,6 +89,7 @@ impl CaptureConfig {
                 crate::capture_residency::Config::parse(read("USD_CAPTURE_RESIDENCY")?)?;
             config.morph_probe =
                 Self::morph_probe(read("USD_CAPTURE_MORPH_PROBE")?, config.residency.is_some())?;
+            config.renderdoc = Self::renderdoc(read("USD_CAPTURE_RENDERDOC")?, config.morph_probe)?;
         }
         Ok(config)
     }
@@ -97,6 +100,17 @@ impl CaptureConfig {
             Some("1") if has_residency => Ok(true),
             _ => Err(
                 "USD_CAPTURE_MORPH_PROBE requires 0 or 1, and 1 requires USD_CAPTURE_RESIDENCY"
+                    .into(),
+            ),
+        }
+    }
+
+    fn renderdoc(value: Option<String>, morph_probe: bool) -> Result<bool, String> {
+        match value.as_deref() {
+            None | Some("0") => Ok(false),
+            Some("1") if morph_probe && cfg!(all(feature = "debugger_capture", target_os = "linux")) => Ok(true),
+            _ => Err(
+                "USD_CAPTURE_RENDERDOC requires 0 or 1; 1 requires USD_CAPTURE_MORPH_PROBE=1 and the Linux debugger_capture build"
                     .into(),
             ),
         }
@@ -236,6 +250,7 @@ pub fn configure(app: &mut App) {
         seeks,
         residency,
         morph_probe,
+        renderdoc,
     }) = CaptureConfig::from_env().expect("invalid capture configuration")
     else {
         return;
@@ -251,7 +266,7 @@ pub fn configure(app: &mut App) {
             .as_ref()
             .expect("morph probe requires USD_CAPTURE_RESIDENCY");
         crate::morph_probe::configure(app, config.mesh_path());
-        crate::capture_uniforms::configure(app);
+        crate::capture_uniforms::configure(app, renderdoc);
     }
     let uniforms = morph_probe.then(|| {
         app.world()
@@ -364,6 +379,21 @@ pub fn configure(app: &mut App) {
 mod tests {
     use super::*;
     use bevy::render::render_resource::TextureFormat;
+
+    #[test]
+    fn debugger_capture_is_explicit_and_requires_the_frame_probe() {
+        for probe in [false, true] {
+            assert_eq!(CaptureConfig::renderdoc(None, probe), Ok(false));
+            assert_eq!(CaptureConfig::renderdoc(Some("0".into()), probe), Ok(false));
+            assert_eq!(
+                CaptureConfig::renderdoc(Some("1".into()), probe).is_ok(),
+                probe && cfg!(all(feature = "debugger_capture", target_os = "linux"))
+            );
+            for invalid in ["", "true", "2"] {
+                assert!(CaptureConfig::renderdoc(Some(invalid.into()), probe).is_err());
+            }
+        }
+    }
 
     #[test]
     fn morph_probe_is_explicit_and_requires_residency() {

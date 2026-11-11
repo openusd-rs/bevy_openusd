@@ -78,6 +78,14 @@ make.recipe{
 }
 make.alias("b", "build")
 
+make.recipe{
+  name = "build-debugger-capture",
+  desc = "build the release viewer with opt-in RenderDoc capture support",
+  run = function()
+    sh.cargo("build", "--release", "--bin", APP, "--features", "debugger_capture")
+  end,
+}
+
 make.recipe{ name = "compile", desc = "clean, then build", deps = { "clean", "build" } }
 make.alias("c", "compile")
 

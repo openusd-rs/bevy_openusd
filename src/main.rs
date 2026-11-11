@@ -30,6 +30,7 @@ mod morph_probe;
 mod payload_editor;
 mod perf_render;
 mod render_settings;
+mod renderdoc_capture;
 mod residency_policy;
 mod timeline;
 mod toolbar_icons;

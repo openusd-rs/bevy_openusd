@@ -288,6 +288,9 @@ pub(super) fn prepare_batch(
 }
 
 #[cfg(test)]
+mod paired_probe;
+
+#[cfg(test)]
 mod tests {
     use super::super::{PrimRoute, SchemaRegistry, StageTime, gpu_skin, residency};
     use super::*;

@@ -92,6 +92,17 @@ correct readiness reporting.
   both binaries, including the unchanged control. This does not establish a
   scheduling cause or clear the earlier failure. Do not repeat these controls
   unchanged or make a speculative compensating code change.
+  [Native rendered checks](benchmarks/shared-skel-queries.md#native-rendered-beforeafter-checks)
+  now verify six exact before/after RGBA comparisons, including fully framed
+  bird, cow and CPU/GPU deformation fixtures after reverse/repeated seeks.
+  Two unchanged CPU-versus-GPU mesh pixels and host diagnostics remain failures;
+  sampled-pose equality is not native-frame-rate or broad release acceptance.
+
+- **Next measured cost:** `src/main.rs::init_tracing` defaults to
+  `warn,usdview=trace,usd_bevy=trace,openusd=info`; native viewer captures emit
+  route traces, unlike the separate headless CPU benchmark. Assess viewer
+  tracing cost before adding more caches. Preserve warnings/errors and explicit
+  `RUST_LOG` overrides; do not claim logging is a bottleneck without measurement.
 
 - **Skin correction-cache candidate rejected:** the saved release diagnostic
   completes five bird clocks with 190 accepted and 15 explicitly rejected GPU

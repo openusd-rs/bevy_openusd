@@ -150,3 +150,65 @@ tail gates. No compensating code change or rollback is justified by these
 counters alone. Stop unchanged small-control repetitions; retain the timing
 limitation and return to distinct measured playback costs and rendered/lifecycle
 verification. No production source, dependency or policy changes in this audit.
+
+## Native rendered before/after checks
+
+Evidence: `/tmp/bevy-optimization-query-render.COOryT/`, including `reframed/`.
+The freshly built candidate viewer at `c0724f2` contains `26bbf91` and matches
+the saved `2b4c718` pre-change viewer's `debugger_capture` feature selection.
+The optional debugger, morph and independent-target probes are disabled in
+both; there is no RenderDoc injection. The source delta is retained, with no
+other production change between these viewer checkpoints.
+
+- Before viewer SHA-256: `cc2b573b49545100a212be98e4ed079cfd6dd7b915c7b45cd68bc537d7e20d4e`.
+- After viewer SHA-256: `e02bc26c3b07457e59a39f3f464e74e134ff249a37904f19ccbfff93b9dfd254`.
+
+Each capture uses the native viewer in its own private Weston/DBus session,
+validation/debug checks enabled, eager residency, default quality, 1440x920
+viewport readback and at least 120 settled updates / 1,000 ms after the seek
+sequence. No task-owned build overlaps. The bird seeks 0,264,132,132; the cow
+0,288,144,144; the combined morph/skin fixture 0,10,7,7. These are live editor
+seeks, including reversal and repetition, not an animation-frame-rate test.
+
+All twelve capture processes, readbacks, input hashes and entry-asset checks
+pass; the full cow directory verifies before/after. Camera, grid, environment
+and retained-mesh metadata match within every before/after pair. Tracked fixture
+assets have no diff between the recorded revisions; their dependency hashes
+are also retained at the end, not presented as a pre-capture closure manifest.
+
+The initial four before/after comparisons are exact in **all RGBA bytes**.
+Visual inspection shows a fully visible textured bird and cow, but the
+fixture's camera fitted at time zero crops its later pose. That cropped result
+is retained rather than treated as full-object proof. Four further fixture
+captures change only the initial stage time to seven, allowing the opening
+camera to fit that pose, then perform the same 0,10,7,7 seeks. Both CPU and GPU
+fixtures are fully visible on inspection and both additional before/after
+comparisons are exact. No geometry, lighting, quality or tolerance was changed.
+
+| Fully visible comparison | Final time | Changed RGB pixels | Changed alpha pixels |
+| --- | ---: | ---: | ---: |
+| Bird, GPU-prepared | 132 | 0 | 0 |
+| Cow, GPU-prepared | 144 | 0 | 0 |
+| Combined morph/skin, GPU | 7 | 0 | 0 |
+| Combined morph/skin, CPU | 7 | 0 | 0 |
+
+This yields six exact before/after comparisons in total, four with inspected
+full-object framing. `analysis.json` and `reframed/analysis.json` retain the
+metadata and image hashes. This proves unchanged output for these sampled
+poses, not every clock, asset, device or lifecycle path.
+
+Separate CPU-versus-GPU comparisons **fail zero tolerance** in both executables:
+two mesh pixels differ by one RGB level, with identical coordinates and channel
+values before and after query sharing. Initial framing differs at (627,691)
+and (479,896); full framing differs at (591,302) and (871,307). Alpha is exact
+and camera metadata matches across modes. `mode-analysis.json` retains all
+values. The existing mode discrepancy is not fixed or waived, and these pixels
+are not evidence that the earlier intermittent grid discrepancy was repaired.
+
+Both capture drivers exit 1 because diagnostics remain: the initial matrix
+records 32 matching Vulkan-loader/clipboard warning lines, the reframed matrix
+17 matching diagnostics including a 100 ms XDG color-scheme portal timeout.
+Full logs also retain portal/PipeWire messages. Image/state analysis passes,
+but the combined diagnostic gate is not all-green. No production code changes
+were needed for these checks. Native pacing, loading, resource, downstream and
+other-platform acceptance remain open.

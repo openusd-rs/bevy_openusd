@@ -461,3 +461,39 @@ state, rather than rerunning the unchanged hidden-selection controls or claiming
 these passing images invalidate earlier failures. Full playback performance,
 downstream patch distribution, resource-lifecycle and platform acceptance remain
 unproven.
+
+## Independent target checks across reveal, undo and redo
+
+The saved `2b4c718` viewer is reused without rebuilding or RenderDoc injection
+for eight further controls: eager/deferred GPU reveal, undo and redo, plus
+eager/deferred CPU reveal. Target and uniform probes remain explicit. The same
+source, camera, quality, seek sequence and command acknowledgement protocol are
+used; no owned compilation overlaps these captures.
+
+Evidence: `/tmp/bevy-optimization-prefix-target.fb8Yj0/`.
+
+- All eight processes, screenshot/target readbacks and input/asset manifests
+  pass. Selection, clock seven, same entity within each command history,
+  revision, visibility and retained residency assertions pass. Readback frame
+  counters are 185 for reveal, 186 for undo and 187 for redo; the differing
+  counters are recorded rather than normalized away.
+- All eight native main targets equal their corresponding screenshot bytes,
+  including alpha. All twenty further comparisons across policy, CPU/GPU,
+  reveal/redo and prior same-binary selection/undo controls are exact: **28/28**
+  strict comparisons pass (`analysis.json`). Typed GPU view/light data also
+  agree. Hidden images retain SHA-256 `091585c7…`; all six visible images and
+  main targets have SHA-256 `b95afcf9…`. The visible fixture was inspected.
+- The publication checker accepts all four visible GPU histories: 4/4/6/4
+  recorded inputs and two final inputs each. There is no stale descriptor or
+  recurrence of the large wrong-shape failure in these runs.
+- Four host diagnostics remain in every capture. The overall driver exits one
+  with `retained_diagnostics=1`; only the state/byte-comparison analysis exits
+  zero. These results do not waive the earlier 215/220-pixel or mesh-pixel
+  observations, establish their cause, or constitute performance acceptance.
+
+The independent probe now covers the previously failing command prefixes, but
+this batch does not reproduce the intermittent failure. Keep that visual gate
+open instead of repeating unchanged captures. The next performance work returns
+to measured preparation costs; the separate skin-influence inventory evaluates
+a bounded arithmetic-reuse opportunity without changing production behavior or
+reviving the withdrawn tangent scheduler.

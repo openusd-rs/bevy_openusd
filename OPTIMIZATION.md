@@ -76,6 +76,17 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- [Independent target checks across reveal, undo and redo](benchmarks/morph-publication.md#independent-target-checks-across-reveal-undo-and-redo)
+  reuse the saved `2b4c718` viewer for eight uninjected GPU/CPU controls. State,
+  identity, clock, residency and all four visible GPU publication histories pass;
+  all 28 native main-target/screenshot/policy/history comparisons are exact.
+  Uploaded view/light data match, with frame counters 185/186/187 retained.
+  Four host diagnostics per run still fail the overall driver. The earlier
+  intermittent rendering discrepancies remain unresolved, not waived. Do not
+  repeat these captures unchanged. Return to measured preparation bottlenecks;
+  an independent skin-influence inventory will assess bounded arithmetic reuse
+  before proposing another production optimization. Full workstreams stay open.
+
 - [Independent native readback and publication race repair](benchmarks/morph-publication.md#independent-native-readback-and-publication-race-repair)
   (`2b4c718`) makes final-target readback independent of RenderDoc and fixes a
   diagnostic race where screenshot success could precede the completed report.

@@ -76,6 +76,23 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- [Native residency reveal verification](benchmarks/native-residency.md) exposes
+  a real shared-device limit failure: the morph/skin pipeline needs nine vertex
+  storage buffers but Mara's device requested eight. `00d9bd6` uses the host's
+  existing limit hook, bounded by adapter capabilities; native readbacks confirm
+  16 requested buffers and no remaining pipeline validation errors. Hardening
+  passes 860 / 983 executions. `b487f49` exposes explicit viewer deferral for
+  testing, but both library and viewer remain eager by default. Sixteen native
+  command-prefix captures preserve selection, clock, entity, history, visibility,
+  residency and camera; only 16 of 24 exact image comparisons pass. Five failures
+  show a substantial GPU morph/shape discrepancy, and three show 219–220 pixels
+  differing by at most two RGB levels. Broader isolated-host diagnostics also
+  fail and remain recorded. Do not enable the policy by default or rerun this
+  matrix unchanged. Next trace parent/subset deformation state and render-world
+  morph descriptor/index publication across reveal and redo; low-limit adapters
+  still need capability-specific fallback acceptance. Full performance, earlier
+  visual discrepancies, lifecycle and platform gates remain open.
+
 - The broader [viewer deferral policy comparison](benchmarks/viewer-residency.md)
   (`7184abe`) passes its declared CPU target: cow paired update medians fall
   approximately 68%, from roughly 57 to 18 ms, and every bird/arm/subset ordering

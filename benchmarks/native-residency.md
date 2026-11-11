@@ -79,3 +79,59 @@ fixed by this bounded request. Their capability-specific deformation fallback
 and native acceptance remain outstanding. The isolated compositor also reports
 portal/clipboard/unused-ICD warnings; these remain in the diagnostic ledger and
 are not silently waived or suppressed.
+
+## Native result: device failure fixed, image gate still fails
+
+`00d9bd6` builds the corrected viewer. The repeated deferred redo smoke records
+an actual device limit of 16 and adapter limit of 524,288; its viewport readback
+completes without pipeline validation errors. The image was inspected. Corrected
+viewer SHA-256: `ce1592dfff4b6bfb495ac75a17f77668489caef798feb822262aa0f744b73f73`.
+The original failed smoke remains intact. This fixes the observed shared-device
+negotiation failure on this hardware, not low-limit adapter support in general.
+
+The subsequent matrix completes all 16 native processes and readbacks on RTX
+4080/Vulkan, 1440x920, unchanged viewer quality. Every seek and command prefix is
+acknowledged; selected identity, document, clock 7, mesh entity, camera matrices,
+revision/history, authored/inherited visibility and residency transitions verify.
+Source/executable/lockfile manifests verify before/after. No task-owned build
+overlaps rendering; observed one-minute host load ranges from 2.91 to 8.65.
+
+All 16 runtime-render log checks pass: no pipeline validation error or capture
+failure remains. All 16 broader diagnostic checks still fail on isolated-host
+clipboard/unused-ICD warnings, plus one portal timeout. These are not omitted.
+Sixteen of the 24 exact RGB comparisons pass, and eight fail:
+
+| Failed comparison | Changed pixels | Maximum RGB error |
+| --- | ---: | ---: |
+| GPU eager reveal vs deferred reveal | 39,764 | 182 |
+| GPU deferred reveal vs redo | 39,764 | 182 |
+| CPU eager reveal vs deferred reveal | 219 | 2 |
+| CPU deferred reveal vs redo | 219 | 2 |
+| Eager reveal, CPU vs GPU | 39,764 | 182 |
+| Eager redo, CPU vs GPU | 39,764 | 182 |
+| Deferred reveal, CPU vs GPU | 220 | 2 |
+| Deferred redo, CPU vs GPU | 39,764 | 182 |
+
+All hidden/undo images match exactly. Eager/deferred redo also matches within
+each CPU/GPU configuration. However, the eager GPU reveal/redo and deferred GPU
+redo show a visibly different mesh shape from the CPU rendering; the initial
+deferred GPU reveal follows the CPU shape. This is not only the older tiny grid
+discrepancy. The inspected revealed images have a light material on the blue
+backdrop, as authored by the strongest normal-material layer. Reveal changes
+40,782–46,240 pixels, so the test is not comparing two empty images.
+
+These failures keep native policy acceptance open. Do not enable deferral by
+default, relax tolerance, disable GPU morphs, or repeat this matrix unchanged.
+First compare parent/subset mesh, weights and palettes at these exact command
+transitions, then inspect the render-world morph descriptor and cached mesh
+input indices. Bevy 0.20.1 source has `prepare_morph_descriptors` reading
+`RenderMeshInstances` before `collect_meshes_for_gpu_building` publishes newly
+visible instances; the builder stores a sentinel when a descriptor is absent.
+That ordering is a lead, not a proven root cause. A renderer witness and a
+targeted regression are needed before choosing an invalidation/scheduling fix.
+
+Evidence is retained in `/tmp/bevy-optimization-native-residency.tjQ8R6/`:
+`smoke/`, `smoke-fixed/`, 16 native PNG/RGBA/readback reports, process and
+compositor logs, 24 comparison logs, `results.tsv`, `comparisons.tsv`,
+`analysis.json`, `analysis.log`, manifests and the saved driver/analyzer. The
+combined driver exits nonzero; this is not a passed native acceptance gate.

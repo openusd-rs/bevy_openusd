@@ -234,3 +234,54 @@ does not register this opt-in probe. Hardening passes 848 no-default / 967
 all-feature/all-target executions, formatting and strict Clippy; regression
 coverage includes display-setting changes and optional extracted projection
 overrides/jitter. Log: `/tmp/bevy-optimization-live-order-probe-harden.log`.
+
+### Probe controls: the diagnostic changes the comparison
+
+`/tmp/bevy-optimization-live-order-probe.Cx7LdG/` saves rebuilt matched viewers
+with the shared probe and only the same unordered/ordered helper difference.
+The unordered source patch, byte-checked source restoration, build logs, binary
+hashes and input manifests are retained. Both probe-enabled live-seek captures
+finish, acknowledge `[5, 10, 5, 5]`, and match each other exactly. Their extracted
+camera state, grid settings and sorted phase records also match:
+
+- Grid world height `-4.7219234`, scale `0.5`, fade `127.06785`.
+- Camera viewport `1440 x 920`, format `Rgba8UnormSrgb`, no jitter or extracted
+  view-projection override.
+- Transparent order: right wing (`-25.910995`), grid (`-23.03775`), left wing
+  (`-22.865025`); material bias remains zero.
+
+However, the probed unordered image differs from its original saved image by
+the same 203 pixels / maximum RGB error two; the probed ordered image matches
+its original. This is **not a passing replacement for the failed matrix**.
+Further controls keep the common executable path and new private portal setup:
+
+| Control | Original image comparison |
+| --- | --- |
+| Original unordered executable, new isolation, no probe | Exact |
+| Rebuilt unordered executable, probe off | 203 pixels differ from original unordered |
+| Rebuilt ordered executable, probe off | 203 pixels differ from original ordered |
+
+Thus the original saved binary survives the isolation/path control unchanged,
+while rebuilt/probed executions can select either of the two retained images.
+In particular, the same rebuilt ordered binary differs with the probe off/on.
+No causal grid-transform, draw-order, floating-point or driver explanation is
+established by these observations. Probe control logs and `probe-controls.tsv`
+remain in the same directory; all processes succeed but headless warnings still
+fail the combined diagnostics.
+
+`4599ecd` also records grid transform/display settings from the screenshot's
+main-world readback observer, without registering the render-phase probe. This
+metadata explicitly says `ScreenshotCaptured-main-world`; it is not claimed to
+be GPU uniform readback. Hardening still passes 848 / 967 executions, formatting
+and strict Clippy (`/tmp/bevy-optimization-live-order-readback-harden.log`).
+Two same-binary off/on controls in
+`/tmp/bevy-optimization-live-order-readback.qaRhQi/` match the original ordered
+image exactly and report identical grid state. They do not recover or explain
+the original unordered image. Both processes pass and each retains five runtime
+diagnostic records. The original three strict image failures remain open.
+
+The next render diagnosis must preserve an actual failing saved-image case
+while observing pass/uniform state; a probe that changes that image cannot prove
+the original failure repaired. Do not repeat unchanged full matrices or infer a
+specific grid fix from the newer matching images. The independently measured
+CPU timing failures and full optimization workstreams remain open as well.

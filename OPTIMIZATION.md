@@ -91,6 +91,13 @@ correct readiness reporting.
   so the difference is not dismissed as noise. All twenty captures also retain
   headless-environment diagnostic failures. Grid/camera-state diagnosis and the
   full performance workstreams remain open; no acceptance threshold is relaxed.
+  The shared phase probe and readback observer now pass hardening at 848 / 967
+  executions. Unseeked before/after controls match at clocks zero and five.
+  Probed images also match, but the probe/rebuild changes which of two grid
+  images is produced; these results do not replace the original failures.
+  Actual extracted grid/camera/order records match in the probed case, leaving
+  the failing unprobed pass/uniform state to diagnose. Private capture portal
+  selection is now isolated from the user's desktop; capture-tool tests pass.
   See [live animation order](benchmarks/live-animation-order.md).
 
 - Mip output reservation (`fdf88b7`): checked complete-chain sizing and one exact reserve

@@ -27,13 +27,29 @@ and initial GPU skin sampling both use those walks. The existing read-only
 `SkelSampleScope` caches skeleton definitions/poses and one bound mesh, but not
 these relationship reads.
 
-The candidate will memoize successful local first-target reads, including
-absence, only inside that existing stage-specific scope. It will preserve
+The candidate memoizes successful local first-target reads, including
+absence, only inside that existing stage-specific scope. It preserves
 authored target order, parent traversal, empty/blocked fallback behavior and
 uncached errors. Retention is capped at 4,096 entries and 1 MiB of key/target
 text, not total allocator memory. Over-budget entries use fresh reads. No
 historical clocks or persistent stage cache is added; the map is discarded
 with the pass. Custom registries retain their existing uncached path.
+
+`ffb32c6` implements this candidate. Three new regressions compare fresh walks
+with normal/reversed query order, multiple/absent/empty targets, nested and
+independent stages, subsequent edits, zero/entry/text caps, oversized fallback,
+scope cleanup and an actual custom route mutating the next prim's relationship.
+Existing CPU/GPU deformation and source/reload tests remain unchanged.
+`harden` passes 835 no-default and 944 all-feature/all-target tests, strict
+Clippy, formatting and whitespace checks. The configurations overlap; the log
+is `/tmp/bevy-optimization-skel-relations-harden.log`. Refreshed native checks
+pass four deformation-oracle, five asset-watcher, four editor-texture-watcher,
+fourteen export and one custom-data reference round-trip cases. Wasm compilation
+and the release capture build also pass. The ledger is
+`/tmp/bevy-optimization-skel-relations-gates.tsv`, with corresponding
+`skel-relations-{test-native-deformation,test-watchers,test-native,check-web,build}.log`
+files under `/tmp/bevy-optimization-`. Saved-binary performance/render comparison
+is still pending; passing these checks is not elapsed-performance acceptance.
 
 ## Acceptance declared before implementation
 

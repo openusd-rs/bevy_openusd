@@ -84,8 +84,14 @@ correct readiness reporting.
   compilation pass. The unrelated point/curve fixture now asserts readiness
   with an unlimited test budget (`86315b2`). Four native fixed-pose image pairs
   remain pixel-exact; the cow's missing-MDL warning still fails the combined
-  diagnostic. Real-asset retained capacity and timing/RSS remain pending;
-  current opening counters report lengths, not capacities. No prior failure is waived. See
+  diagnostic. Recorder `626198c` passes updated hardening (839 / 956 executions).
+  A matched thirty-two-process CPU matrix confirms 23.8%/28.6% less bird/cow
+  image-buffer capacity, with unchanged payload, both idle and after seeks;
+  process RSS stays approximately unchanged. Eleven timing comparisons and six
+  tangent-cache equality checks still fail, including different cache footprints
+  between identical baseline runs. Live animation directly iterates a HashSet;
+  built-in path-order determinism is the next investigation, preserving custom
+  callback ordering and the public resource type. No prior failure is waived. See
   [mip capacity](benchmarks/mip-capacity.md).
 
 - Exact sRGB mip encoding (`05b3106`): a bounded 5124-byte quantizer replaces

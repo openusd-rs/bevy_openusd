@@ -127,3 +127,84 @@ executions and strict Clippy. The new accounting fixture covers no assets,
 missing data, empty reserved data and a four-byte image with spare capacity.
 Log: `/tmp/bevy-optimization-image-capacity-final-harden.log`. No production
 library code or dependency changed in the recorder step.
+
+## Matched real-scene capacity measurement
+
+`/tmp/bevy-optimization-mip-capacity-abba.VeUwqI/` retains all thirty-two fresh
+processes and their raw records. Both versions use recorder `626198c`. The
+baseline temporarily removes only the reservation call and checked-size helper;
+its production sampling prefix is byte-identical to `86315b2`. The source is
+restored before measurement, and rebuilding the candidate reproduces its saved
+executable byte-for-byte. Source patches, shared-input manifests and all three
+build logs remain with the artifacts. Binary SHA-256 values:
+
+- Before: `000693db33413a9acd58dce6a93f7983d4ec03bf3126f8949093bd2711eddc2b`.
+- After: `7bcda02ba5fd391092a9ddf90eebf1d30385aef86f6475171acf0261c0634162`.
+
+Every case/mode completes ABBA at the same owned executable path, using the
+protocol above. No task-owned compilation overlaps. One-minute host load spans
+16.51–36.42; unrelated applications remain untouched. There is no GPU device or
+explicit process warmup, and OS page-cache state is not controlled.
+
+| Case, both idle and after quick seeks | Images with data | Unchanged payload, bytes | Before capacity, bytes | After capacity, bytes | Capacity change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Bird | 9 | 715,827,876 | 939,524,096 | 715,827,876 | -23.8% |
+| Cow | 6 | 338,340,516 | 473,956,352 | 338,340,516 | -28.6% |
+| Arm / subsets | 0 | 0 | 0 | 0 | not applicable |
+
+All observations agree on those capacities and payloads. The change removes
+223,696,220 / 135,615,836 bytes of unused image-buffer capacity for bird/cow,
+without changing image count or encoded payload. **This is not an equivalent
+RSS reduction.** Bird peak-RSS pair means change +0.02% idle / +0.11% quick;
+cow changes -0.20% in both modes. Physical residency remains approximately
+unchanged in this matrix; allocator and resident-memory effects cannot be inferred
+from `Vec::capacity` alone.
+
+### Remaining comparison failures
+
+The full comparison is not accepted. Eleven timing pair means exceed the declared
+5% regression boundary:
+
+| Case/mode | Observed increases |
+| --- | --- |
+| Bird idle | CPU open +23.7%; idle update +10.4% |
+| Bird quick | CPU open +21.6%; seek median +6.2%; seek p95/max +14.3% |
+| Cow idle | Idle update +21.9% |
+| Cow quick | CPU open +14.5%; idle update +258.7%; seek median +76.3% |
+| Subsets quick | CPU open +14.5% |
+
+These are observed elapsed-time failures, not isolated causal effects of the
+allocation change. The untouched arm quick-seek median also falls 52.1%, and
+the subset median falls 67.2%. No workload or failed observation is removed.
+
+Six retained-cache equality checks also fail, all for quick-seek tangent-cache
+payload. Bird ends at 2,771,400 / 2,743,320 bytes for the two identical baseline
+executables and 2,732,448 / 2,741,568 for candidate. Cow is 16,328,016 / 15,639,852
+before and 16,560,840 / 16,469,532 after. Every value remains below the existing
+16 MiB byte budget; the varying cache state still prevents claiming an otherwise
+identical retained-cache footprint. Geometry, image/peak-asset counts, image
+payload and other recorded cache payloads match in every cohort.
+
+The first analyzer stops at the first cache mismatch; its source and driver
+output are retained as `analyzer-first.mjs` and `driver-first-analysis.log`.
+The follow-up analysis accumulates every mismatch instead of stopping early,
+without removing any failure criterion, and still exits 1. All thirty-two
+records and 192 raw warmup/measured updates validate structurally. Process,
+runtime-log and source/binary manifest checks pass with no CPU-run warnings.
+This does not repair the separately recorded native cow material warning.
+
+### Next animation-order investigation
+
+`live.rs::resample_animation_system` directly iterates the public
+`AnimatedPrims(HashSet<String>)` into animation batching. Its order can differ
+between fresh processes. `PrimEntities` itself is path-ordered, and
+`prepare_batch` already sorts worker results before publication; neither makes
+the incoming animated-path order deterministic. Tangent-cache admission and LRU
+retention depend on visitation order. This is a concrete candidate explanation
+for the cache-footprint variation, not yet an isolated causal proof.
+
+Investigate deterministic path ordering for built-in live routes without changing
+the public `AnimatedPrims` type or custom callback ordering. Verify repeated
+fresh-process cache state, rendered output, edit/reload behavior and update cost
+before accepting such a change. Do not change cache policy merely to silence the
+comparison or treat capacity savings as completion of the broader goal.

@@ -1,0 +1,57 @@
+# Native residency reveal verification
+
+## Contract declared before rendering
+
+The viewer's experimental `USD_DEFER_HIDDEN_MESHES=1` option enables the existing
+library resource. Unset or `0` remains eager; other values fail validation. The
+library default is unchanged. This exposes the policy tested in
+[the paired CPU comparison](viewer-residency.md), not an accepted default switch.
+
+`USD_CAPTURE_RESIDENCY` is an optional JSON capture scenario, used only with
+`USD_SCREENSHOT`. For `assets/residency_reveal.usda`, use
+`{"prim":"/Test","mesh":"/Test/Face","steps":4}`. Steps select the initially
+hidden mesh, reveal its parent, undo visibility and redo visibility. Prefixes
+1..4 allow independent native readbacks of every state. Input is bounded to
+8 KiB, unknown fields are rejected, and no save, Play or arbitrary command is
+available. The fixture retains animated skin/morph normals and material subsets
+and adds a visible blue backdrop for stable initial framing.
+
+After the existing seek sequence, wait 60 updates before issuing the first
+command. Acknowledge each command from the actual editor snapshot and projected
+mesh before issuing the next. Require a pristine hidden initial state, preserved
+document/clock/entity/camera, selected mesh identity, exact revision/history and
+authored/inherited visibility transitions. Deferred geometry stays absent while
+selected and hidden, becomes resident on reveal, and stays resident after undo.
+After the final acknowledgement, the ordinary 120-update/minimum-delay capture
+gate still applies. Record every observed state and the initial camera in the
+readback metadata. Failed commands or unexpected state changes fail the capture.
+
+Use one saved release viewer at a common executable path in owned isolated
+Weston sessions, with private configuration/runtime/bus and no user-desktop or
+input automation. Seek 0,10,7,7 from initial time 0, then capture prefixes 1..4
+for eager/deferred policies with both CPU and GPU-skinning configurations.
+Rendering quality, source assets, camera and resolution must match.
+
+Require zero-RGB-tolerance comparisons for all eight eager/deferred pairs,
+undo-vs-selected and redo-vs-reveal within each mode/policy (eight pairs), and
+CPU-vs-GPU within each policy/prefix (eight pairs). Require visible reveal changes
+in more than 100 pixels, inspect actual images, retain all diagnostics, and
+verify manifests before/after. These are correctness checks, not native-window
+cadence or before/after performance measurements. No task-owned build overlaps
+rendering; unrelated work remains untouched.
+
+Even a complete fixture pass does not clear earlier real-scene grid/CPU-GPU/MDL
+failures, lifecycle/platform acceptance or the 60 Hz target. Library/viewer
+defaults remain eager until the broader policy acceptance is established.
+
+## Harness checkpoint
+
+Hardening passes 859 no-default and 982 all-feature/all-target executions,
+strict Clippy and formatting. Tests validate configuration bounds, wait for
+command acknowledgements, reject document/clock/entity/policy/camera drift and
+exercise all four real commands in CPU/GPU and eager/deferred apps with actual
+transform/visibility propagation. The minimal headless fixture includes Bevy's
+`MeshPlugin`, which supplies the inverse-bind-pose asset resource required by
+visibility's skinned-bounds system. The initial compile/fixture failures and
+passing log are retained in `/tmp/bevy-optimization-native-residency.tjQ8R6/`;
+the successful run is `harden-mesh-plugin.log`.

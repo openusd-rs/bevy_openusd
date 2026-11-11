@@ -8,6 +8,7 @@ pub struct CaptureConfig {
     time: Option<f64>,
     delay_ms: u64,
     seeks: Vec<f64>,
+    residency: Option<crate::capture_residency::Config>,
 }
 
 impl CaptureConfig {
@@ -38,6 +39,7 @@ impl CaptureConfig {
             time,
             delay_ms: 0,
             seeks: Vec::new(),
+            residency: None,
         }))
     }
 
@@ -79,6 +81,8 @@ impl CaptureConfig {
         if let Some(config) = &mut config {
             config.delay_ms = Self::delay(read("USD_CAPTURE_DELAY_MS")?)?;
             config.seeks = Self::seeks(read("USD_CAPTURE_SEEKS")?)?;
+            config.residency =
+                crate::capture_residency::Config::parse(read("USD_CAPTURE_RESIDENCY")?)?;
         }
         Ok(config)
     }
@@ -214,6 +218,7 @@ pub fn configure(app: &mut App) {
         time,
         delay_ms,
         seeks,
+        residency,
     }) = CaptureConfig::from_env().expect("invalid capture configuration")
     else {
         return;
@@ -230,6 +235,7 @@ pub fn configure(app: &mut App) {
         diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
         session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>,
         bridge: Res<usd_bevy::editor::EditorBridge>, mut seek_state: Local<CaptureSeeks>,
+        residency_inputs: crate::capture_residency::Inputs, mut residency_state: Local<crate::capture_residency::State>,
         transparent: Option<Res<crate::transparent_probe::TransparentProbe>>,
         meshes: Res<Assets<Mesh>>, mesh_references: Query<(&Mesh3d, &InheritedVisibility)>| {
         let active = cameras.iter().find(|(camera, ..)| camera.is_active);
@@ -240,7 +246,20 @@ pub fn configure(app: &mut App) {
             return;
         }
         let seek_action = seek_state.advance(document, time.current, &seeks);
-        let ready_document = (seek_action == SeekAction::Ready).then_some(document).flatten();
+        let mut ready_document = (seek_action == SeekAction::Ready).then_some(document).flatten();
+        if ready_document.is_some() && let Some(config) = &residency {
+            let (camera, _, transform, ..) = active.expect("residency capture requires a camera");
+            let camera = crate::capture_metadata::camera_report(transform, camera.clip_from_view());
+            match residency_state.advance(config, &residency_inputs, &bridge, camera) {
+                Ok(true) => (),
+                Ok(false) => ready_document = None,
+                Err(error) => {
+                    gate.finished = true;
+                    eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}");
+                    return;
+                }
+            }
+        }
         match gate.advance(ready_document, elapsed) {
             CaptureAction::Timeout => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: timed out waiting for an open document, active camera, seek sequence and capture delay"),
             CaptureAction::Request => {
@@ -249,6 +268,9 @@ pub fn configure(app: &mut App) {
                 let mut timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
                 timing.push_str(&seek_state.report(&seeks));
+                if let Some(config) = &residency {
+                    timing.push_str(&residency_state.report(config));
+                }
                 if let Some(probe) = &transparent {
                     timing.push_str(&probe.report());
                 }

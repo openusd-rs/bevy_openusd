@@ -1,0 +1,30 @@
+#usda 1.0
+(
+    upAxis = "Y"
+    startTimeCode = 0
+    endTimeCode = 10
+    subLayers = [@skel_morph_blended_animated.usda@]
+)
+over "Test"
+{
+    token visibility = "invisible"
+}
+def Cube "Backdrop"
+{
+    double size = 2
+    double3 xformOp:translate = (0.5, 0.5, -1)
+    double3 xformOp:scale = (2, 1.5, 0.05)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    rel material:binding = </BackdropMaterial>
+}
+def Material "BackdropMaterial"
+{
+    token outputs:surface.connect = </BackdropMaterial/Surface.outputs:surface>
+    def Shader "Surface"
+    {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.04, 0.2, 0.6)
+        float inputs:roughness = 0.7
+        token outputs:surface
+    }
+}

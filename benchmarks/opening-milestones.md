@@ -56,3 +56,61 @@ comparison needs the same recorder built into both compared library revisions;
 old partial sums cannot serve as an end-to-end baseline. First establish that
 the new recorder preserves rendering and reports valid intervals, then construct
 that comparison without changing dependency, quality or scheduling settings.
+
+## Recorder verification
+
+Recorder commit `9cd2119` passes 8 compact-instancing and 40 viewer-capture tests,
+capture preflight/session/log tests, workspace hardening (835 no-default and
+950 all-feature/all-target executions), strict Clippy, formatting and a release
+capture build. These configurations overlap. Logs:
+`/tmp/bevy-optimization-opening-tests-fixed.log`,
+`/tmp/bevy-optimization-opening-harden.log` and
+`/tmp/bevy-optimization-opening-build.log`. The initial compile failure is kept
+in `/tmp/bevy-optimization-opening-tests.log`: the Bevy 0.20 extraction derive
+requires `#[extract_app(RenderApp)]`. The corrected code also tests real
+cross-world resource extraction, not just a manually populated probe.
+
+`/tmp/bevy-optimization-opening-captures.ff6RTX/` retains ten fresh native
+processes: saved pre-recorder/current instrumented captures for bird, cow, arm,
+material subsets and three independently timed subset roots. The binaries are
+SHA-256 `5ff060d6ebd4c3280ca8ea8dcfcbbe477d205bf4c80f29a6716a86d36a2f2003`
+and `c38022b4a5819bc79d62fddcf521a147a141810a0a6c733fcb48ee37893f25c3`.
+Both have the same production library, dependency lock, fixed cameras/poses,
+forward renderer, 4x MSAA, validation and 1280x720 target on RTX 4080/Vulkan.
+No task-owned build overlaps; one-minute host load ranges 19.07–23.04.
+
+All five rendered pairs are pixel-exact at tolerance zero; bird and cow images
+were inspected. All processes and runtime-log checks pass, all source manifests
+verify, and `analysis.json` validates finite/ordered milestones, source phase
+sums and identical instance/visible-mesh configuration. Cow retains one missing
+MDL warning per run; the diagnostic driver therefore exits 1, not an unqualified
+pass. The recorder does not fix that warning or the existing CPU/GPU discrepancy.
+
+| Case | Request to all roots Ready, ms | Request to pipeline observation, ms | Five source phases, ms |
+| --- | ---: | ---: | ---: |
+| Bird | 6074.624 | 7775.170 | 740.021 |
+| Cow | 1535.178 | 1891.458 | 172.452 |
+| Subsets | 18.178 | 606.186 | 0.856 |
+| Arm | 85.224 | 1207.945 | 45.445 |
+| Three subset roots | 21.980 | 697.856 | 3.213 |
+
+This is recorder validation, not an opening speedup comparison. The bird's
+5.335 seconds outside the five source-publication timers includes asynchronous
+loading and scheduling/other main work; it is not attributed to one operation.
+There is also substantial post-scene pipeline-observation delay, including on
+small controls. These results make loader and renderer startup separate next
+investigation targets rather than treating the old partial sum as the entire
+opening cost.
+
+## Matched relationship-cache comparison protocol
+
+Compare the current scoped-relationship library with the identical recorder and
+`crates/usd_bevy/src/read/skel.rs` restored from `9f78ca9`. That is the only
+production-file difference. Save both binaries, source hashes and the exact
+baseline patch; restore and rebuild the current production source before runs.
+Use fresh-process before/after/after/before order for bird, cow, arm and subsets,
+with the same cameras, settings and input manifests as above. Keep main-entry
+bootstrap, request-to-Ready, post-scene pipeline observation, final readback and
+source phases separate. Retain the existing greater-than-5% regression limit
+for the request-to-Ready and pipeline milestones; this additional matrix cannot
+retroactively erase old failed observations or establish windowed acceptance.

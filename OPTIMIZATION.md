@@ -76,6 +76,18 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Native opening recorder (`9cd2119`): asset-request to all-root Ready,
+  post-scene render-pipeline observation and settled image readback now have
+  separate wall-clock milestones; device/bootstrap time is separate too.
+  Hardening passes 835 no-default / 950 all-feature tests and strict Clippy.
+  Five native before/after image pairs are pixel-exact, including independently
+  timed roots. Bird request-to-Ready measures 6075 ms while the five recorded
+  source-publication phases total only 740 ms, exposing a large previously
+  unmeasured loader/scheduling interval. This is instrumentation evidence, not
+  a speedup or clearance of opening regressions. The unlimited-projection
+  offscreen path and pipeline observation do not establish editor responsiveness
+  or first-visible latency. See [opening milestones](benchmarks/opening-milestones.md).
+
 - Rendered playback baseline (`9f4212f`, `1fad2a5`): a bounded recorder now uses
   production asset-root playback, collecting main intervals, separate published
   render CPU/GPU pass timings and actual stage clocks. All six bird/arm/cow

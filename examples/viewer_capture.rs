@@ -1064,8 +1064,8 @@ fn capture_frame(
     }
     if let Some(timing) = instance_timing {
         capture.mesh_report.push_str(&format!(
-            "instance_animation_scope=all-root-time-changes-includes-warmup-classification-included-in-total\ninstance_animation_updates={}\ninstance_animation_classified={}\ninstance_animation_animated={}\ninstance_animation_classification_ms={:.6}\ninstance_animation_total_ms={:.6}\n",
-            timing.updates, timing.classified, timing.animated,
+            "instance_animation_scope=all-root-time-changes-includes-warmup-classification-included-in-total\ninstance_animation_updates={}\ninstance_animation_classified={}\ninstance_animation_reused={}\ninstance_animation_animated={}\ninstance_animation_classification_ms={:.6}\ninstance_animation_total_ms={:.6}\n",
+            timing.updates, timing.classified, timing.reused, timing.animated,
             timing.classification.as_secs_f64() * 1000.0, timing.total.as_secs_f64() * 1000.0,
         ));
     }

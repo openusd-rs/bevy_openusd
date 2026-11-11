@@ -6,8 +6,10 @@ use bevy::prelude::*;
 use openusd::usd::Stage;
 
 use crate::asset::SnapshotTextures;
-use crate::live::{AnimatedPrims, LiveStage, PrimEntities, apply_changes, prim_is_animated};
+use crate::live::{AnimatedPrims, LiveStage, PrimEntities, apply_changes};
 use crate::route::{SchemaRegistry, StageTime};
+
+mod animation;
 
 /// An attribute opinion reapplied after source reloads.
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +140,7 @@ pub struct UsdInstances {
 pub struct UsdInstanceAnimationTiming {
     pub updates: u64,
     pub classified: u64,
+    pub reused: u64,
     pub animated: u64,
     pub classification: std::time::Duration,
     pub total: std::time::Duration,
@@ -186,6 +189,7 @@ pub(crate) struct InstanceRuntime {
     pub map: PrimEntities,
     pub textures: SnapshotTextures,
     pub sampled: f64,
+    pub animation: animation::AnimationCache,
     pub purposes: crate::route::DisplayPurposes,
     pub defer_hidden: bool,
     /// The projection still running for this root, spread over frames.
@@ -281,8 +285,13 @@ def Xform "Mover" {
         app.update();
         let timing = app.world().resource::<UsdInstanceAnimationTiming>();
         assert_eq!(
-            (timing.updates, timing.classified, timing.animated),
-            (2, 4, 2)
+            (
+                timing.updates,
+                timing.classified,
+                timing.reused,
+                timing.animated
+            ),
+            (2, 2, 2, 2)
         );
         assert!(timing.total >= timing.classification);
         for (root, clock) in roots.into_iter().zip([4.0, 7.0]) {
@@ -309,8 +318,13 @@ def Xform "Mover" {
         app.update();
         let timing = app.world().resource::<UsdInstanceAnimationTiming>();
         assert_eq!(
-            (timing.updates, timing.classified, timing.animated),
-            (3, 6, 3)
+            (
+                timing.updates,
+                timing.classified,
+                timing.reused,
+                timing.animated
+            ),
+            (3, 2, 4, 3)
         );
     }
 
@@ -628,9 +642,11 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
                 .contains_resource::<UsdInstanceAnimationTiming>()
                 .then(bevy::platform::time::Instant::now);
             let mut classified = 0;
+            let mut reused = 0;
             let mut animated = 0;
             let mut classification = std::time::Duration::ZERO;
             let registry = world.resource::<SchemaRegistry>().clone();
+            let cacheable = registry.is_builtin_only();
             registry.with_materials(world, &runtime.live, |world| {
                 let prims = runtime.map.iter().filter_map(|(path, entity)| {
                     let path = openusd::sdf::path(path).ok()?;
@@ -638,9 +654,11 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
                         return None;
                     }
                     let begin = started.map(|_| bevy::platform::time::Instant::now());
-                    let varying = prim_is_animated(&runtime.live.stage, &path);
+                    let (varying, cached) =
+                        runtime.animation.sample(&runtime.live, &path, cacheable);
                     if let Some(begin) = begin {
-                        classified += 1;
+                        classified += u64::from(!cached);
+                        reused += u64::from(cached);
                         animated += u64::from(varying);
                         classification += begin.elapsed();
                     }
@@ -653,6 +671,7 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
                 let mut timing = world.resource_mut::<UsdInstanceAnimationTiming>();
                 timing.updates += 1;
                 timing.classified += classified;
+                timing.reused += reused;
                 timing.animated += animated;
                 timing.classification += classification;
                 timing.total += elapsed;

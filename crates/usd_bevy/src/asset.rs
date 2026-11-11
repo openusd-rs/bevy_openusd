@@ -770,6 +770,7 @@ pub(crate) fn spawn_usd_scenes(world: &mut World) {
                         map,
                         textures: SnapshotTextures(textures),
                         sampled: current,
+                        animation: default(),
                         purposes: world
                             .get_resource::<crate::route::DisplayPurposes>()
                             .copied()

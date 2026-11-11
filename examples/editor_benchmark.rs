@@ -232,6 +232,24 @@ fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(profile) = world.get_resource::<usd_bevy::route::AnimationAccessProfile>() {
+        let snapshot = profile.snapshot();
+        eprintln!(
+            "animation_access_totals phase={phase} samples={samples} scopes={} calls={} entries={} key_bytes={} dropped={} saturated={} scope=projection-animation-operations-not-decoder-calls",
+            snapshot.scopes,
+            snapshot.calls,
+            snapshot.records.len(),
+            snapshot.key_bytes,
+            snapshot.dropped,
+            snapshot.saturated
+        );
+        for record in snapshot.records {
+            eprintln!(
+                "animation_access_profile phase={phase} root={:?} path={:?} operation={} calls={}",
+                record.root, record.path, record.operation, record.calls
+            );
+        }
+    }
     if let Some(timing) = world.get_resource::<usd_bevy::route::TextureSamplingTiming>() {
         eprintln!(
             "texture_sampling_profile phase={phase} images={} input_bytes={} appended_bytes={} elapsed_ms={:.3} slowest_ms={:.3}",
@@ -406,6 +424,9 @@ fn open_editor_with_deferral(
     if gpu_prepared {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
+    if std::env::var_os("USD_PROFILE_ANIMATION_READS").is_some() {
+        app.init_resource::<usd_bevy::route::AnimationAccessProfile>();
+    }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
         app.init_resource::<usd_bevy::route::TextureSamplingTiming>();
         app.init_resource::<usd_bevy::route::material::MaterialResolveTimings>();
@@ -464,6 +485,7 @@ fn reset_profiles(world: &mut World) {
             *timing = default();
         }
     }
+    reset::<usd_bevy::route::AnimationAccessProfile>(world);
     reset::<usd_bevy::route::preparation::MeshPreparationTiming>(world);
     reset::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>(world);
     reset::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>(world);

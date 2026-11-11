@@ -198,3 +198,40 @@ and retains two unmeasured warmups per case, one per binary, before measured ABB
 Snapshots and assets are hashed before/after; all raw outputs, failures and
 warnings are retained. The script is `/tmp/bevy-optimization-mip-common-path.sh`.
 Earlier failed gates remain recorded rather than being retroactively passed.
+
+## Matched common-path opening result
+
+`/tmp/bevy-optimization-mip-common-path.1yOCSp/` retains the same baseline and
+candidate binaries and all warmup/measured artifacts. Each case receives one
+unmeasured launch of each binary at the common executable path, followed by
+measured ABBA. The original driver terminates with status 143 after completing
+bird/cow/arm, before the first subset warmup produces any output. Its processes
+were confirmed absent before resuming only the missing subset block at the same
+path. Completed samples were not rerun. The empty interrupted log and resume
+marker remain; the cause of the termination is not established. This is not one
+uninterrupted matrix, and both driver outcomes remain nonzero.
+
+| Case | Before texture finalization, ms | After texture finalization, ms | Change of pair means | Before request-to-Ready, ms | After request-to-Ready, ms | Change of pair means |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bird | 2492.991 / 2507.354 | 1942.666 / 2093.429 | -19.3% | 4786.414 / 4733.645 | 4765.956 / 4327.040 | -4.5% |
+| Cow | 1542.785 / 923.512 | 871.996 / 859.180 | -29.8% | 2563.605 / 1634.538 | 1560.230 / 1588.812 | -25.0% |
+| Arm | 0 / 0 | 0 / 0 | not applicable | 235.211 / 51.443 | 133.154 / 54.088 | -34.7% |
+| Subsets | 0 / 0 | 0 / 0 | not applicable | 18.332 / 38.320 | 45.373 / 61.168 | +88.1% |
+
+The unchanged thresholds still fail four checks: bird request-to-Ready improves
+only 4.486%, and subset Ready/pipeline/readback increase 88.1%/39.8%/6.9%.
+Arm pipeline/readback decrease 1.7%/3.2%. Bird's unchanged source-publication
+phases increase 84.0%, including a 1154 ms candidate observation versus the
+other three at 445–489 ms. Common launch identity does not remove all variation
+or establish the cause of these remaining failures. Host load spans 22.98–39.19;
+there is no task-owned compilation during any sample.
+
+All sixteen opening/phase records validate, image/input/appended-byte counts
+match and Ready/final texture counters agree. All sixteen measured images are
+pixel-exact against their case's baseline warmup, at tolerance zero. Processes,
+runtime-log checks and before/after binary/asset manifests pass. Six cow launches
+retain the missing-MDL warning. The analyzer returns 1 for the four target
+failures; the resumed driver also retains the interruption and warning failures.
+These results strengthen the measured texture-phase improvement but do not
+accept the full change, erase the first matrix or establish cold-start/window
+responsiveness.

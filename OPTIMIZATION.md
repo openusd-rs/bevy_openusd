@@ -90,8 +90,12 @@ correct readiness reporting.
   differences without any code change; own-process traces find different
   populated/empty NVIDIA cache files for the executable labels. A common-path,
   warmed control removes the consistent label penalty but remains variable.
-  Matched common-path baseline/candidate measurement is next; this discovery
-  does not clear earlier failures. See [mip encoding](benchmarks/mip-encoding.md).
+  A matched common-path run measures 19.3%/29.8% lower bird/cow texture time,
+  with sixteen exact image pairs, but still fails four original thresholds:
+  bird request-to-Ready and subset Ready/pipeline/readback. An interrupted driver
+  was resumed only for the missing subset block; all evidence is retained.
+  These diagnostics do not clear earlier failures. See
+  [mip encoding](benchmarks/mip-encoding.md).
 
 - Native opening recorder (`9cd2119`): asset-request to all-root Ready,
   post-scene render-pipeline observation and settled image readback now have

@@ -76,6 +76,19 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Tangent full-editor gate failed despite cow gain:** 24 processes validate
+  24,000 updates and 96 warmups, unchanged payload/work counts and no diagnostics.
+  Cow CPU-update median falls 8.34%, but GPU morph and subsets rise 55.57% and
+  27.77%, exceeding the control bound in both pairings. Bird p95 rises 35.29%.
+  The [complete results](benchmarks/tangent-projected-groups.md#full-editor-result-cow-improves-control-gates-fail)
+  retain all tails, opening/idle observations and the failed exit. A new finite
+  corpus passes 3,402 exact full-tangent comparisons and rejects a one-bit
+  negative control; production hardening again passes 885 / 1,012 executions.
+  Those checks do not erase the editor failures. Production dependencies stay
+  unchanged and no new native batch is started. Next measure thread placement
+  and executed CPU work on the failing controls, not another blind rerun or a
+  speculative math/reader fix; all broader workstreams remain open.
+
 - **Tangent subgroup reuse experiment:** the measured MikkTSpace hotspot
   repeats projection of the same face tangents within a vertex group. A
   [test-only kernel probe](benchmarks/tangent-projected-groups.md) now records

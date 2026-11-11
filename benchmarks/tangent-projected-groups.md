@@ -1,5 +1,9 @@
 # Tangent subgroup projection experiment
 
+**Status:** the combined kernel and finite geometry corpus pass, but the
+full-editor comparison fails two control gates. The optimization is not enabled
+in production; all failed observations below remain open.
+
 ## Hypothesis and boundaries
 
 The retained CPU profiles put approximately half of cow user CPU self samples
@@ -203,6 +207,62 @@ negative-control rejection remain in the evidence directory. Production
 hardening also passes again: 885 / 1,012 executions, formatting and strict
 Clippy. The experimental dependency is not part of that hardening run.
 
-The 24-process editor performance comparison is the next gate. Its results,
-bounded-scratch integration, native rendering, downstream and platform checks
-remain pending at this checkpoint.
+The following comparison completes the next CPU gate. Bounded-scratch
+integration, native rendering, downstream and platform checks remain pending.
+
+## Full-editor result: cow improves, control gates fail
+
+All 24 processes exit zero with zero matched application diagnostics. The
+analyzer verifies 24,000 measured updates and 96 warmups, exact authored clocks,
+nearest-rank summaries, equal geometry/image/cache payload counts and unchanged
+preparation/read work counts per workload. The full available cow and robot
+directory manifests, entry assets, source and saved executable hashes verify
+afterward. No owned build or capture overlaps the measurements.
+
+Values below average the two per-process summaries for each executable.
+
+| Workload | Before median ms | Candidate median ms | Median change | p95 change | Maximum change | Mean peak RSS change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bird | 20.217461 | 20.154678 | -0.31% | +35.29% | +24.06% | -0.07% |
+| Cow | 55.074894 | 50.480325 | -8.34% | -9.97% | -32.54% | -0.08% |
+| Morph CPU | 0.411392 | 0.348278 | -15.34% | -13.30% | -59.88% | -0.26% |
+| Morph GPU-prepared | 0.385161 | 0.599186 | +55.57% | +88.29% | +244.13% | -0.08% |
+| Material subsets | 0.208775 | 0.266758 | +27.77% | +8.21% | +11.01% | -0.18% |
+| Robot arm | 0.730231 | 0.537418 | -26.40% | -26.58% | -33.27% | +0.61% |
+
+| Workload | Opening change | Idle change | Nearby pair 1 median change | Nearby pair 2 median change |
+| --- | ---: | ---: | ---: | ---: |
+| Bird | -0.98% | -12.75% | -4.41% | +3.80% |
+| Cow | +0.29% | -4.24% | -8.51% | -8.19% |
+| Morph CPU | -3.16% | +17.68% | -0.60% | -26.21% |
+| Morph GPU-prepared | +3.04% | +157.30% | +79.65% | +32.11% |
+| Material subsets | -5.44% | -3.32% | +42.75% | +7.37% |
+| Robot arm | -0.25% | -4.51% | -42.42% | +1.53% |
+
+Cow passes its 5% median target in both pairings. GPU morph and subsets both
+exceed the 5% control limit in both pairings, so the full gate fails. Bird's
+regressing p95/maximum and GPU-morph idle/tails also remain failures, not erased
+by cow's gain. Peak RSS stays within its bound, but that does not establish
+lifecycle or worst-case scratch acceptance. `benchmark-status.txt` records
+`driver=0`, `analysis=1`; both control failures are explicit in `analysis.json`.
+All raw samples, full summaries and host load/pressure records are retained.
+
+The GPU-morph run prepares 999 inline tangent jobs plus one cache hit in every
+process. Its unrelated mesh-read interval also rises: 45.015 / 47.121 ms for
+the original versus 71.982 / 58.216 ms for the candidate, at identical 6,000
+requests, 1,000 decodes and 160,000 array bytes. Subsets execute zero tangent
+jobs. These observations do not identify a cause, and do not justify patching
+the reader/subset code or crediting the large arm reduction to tangent math.
+
+ELF `.comment` sections confirm both saved executables use Rust 1.98.1,
+LLD 22.1.8 and GCC 15.2.0; a compiler-version mismatch is not the explanation.
+The host exposes separate core/atom PMUs (logical CPUs 0–15 / 16–23), but this
+run did not record the benchmark thread's core placement. A targeted placement
+and CPU-work diagnostic can distinguish possible scheduling/core-class effects
+from extra executed work. Host load snapshots alone do not prove that cause.
+Do not repeat the same uninstrumented matrix merely to seek a pass, relax the
+gate or make a speculative compensating production change.
+
+Production dependencies are restored and unchanged. No native capture batch
+was started after this failed gate. Kernel/corpus success is retained as useful
+evidence, not full editor acceptance, smooth native playback or release proof.

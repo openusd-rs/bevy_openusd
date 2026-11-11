@@ -1,33 +1,5 @@
+use super::layer_changes::CompositionRevision as Revision;
 use openusd::{sdf::Path, usd::Stage};
-use std::collections::BTreeMap;
-
-#[derive(PartialEq, Eq)]
-struct Revision {
-    layers: Vec<String>,
-    authored: BTreeMap<String, u64>,
-    structure: u64,
-    load_rules: openusd::pcp::LoadRules,
-    mask: openusd::usd::StagePopulationMask,
-    muted: Vec<String>,
-}
-
-impl Revision {
-    fn read(stage: &Stage, changes: &super::layer_changes::LayerChanges) -> Self {
-        let authored = changes.revisions();
-        Self {
-            layers: stage.layer_identifiers(),
-            authored,
-            structure: changes.structural_revision(),
-            load_rules: stage.load_rules(),
-            mask: stage.mask(),
-            muted: stage.muted_layers(),
-        }
-    }
-
-    fn reusable(&self) -> bool {
-        self.structure != u64::MAX && self.authored.values().all(|revision| *revision != u64::MAX)
-    }
-}
 
 #[derive(Default)]
 pub(super) struct TextureIndex {

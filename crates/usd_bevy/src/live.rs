@@ -10,7 +10,7 @@
 //! is a **non-send** resource (main thread only). The path↔entity index
 //! [`PrimEntities`] is plain data and is a normal `Resource`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -47,6 +47,7 @@ pub struct LiveStage {
     pub stage: Stage,
     pub(crate) materials: RefCell<Option<crate::route::material::ProjectionMaterials>>,
     queue: Rc<RefCell<Vec<StageChange>>>,
+    revision: Rc<Cell<u64>>,
     // Prim paths whose *next* change was caused by our own author-back and
     // should be swallowed once (the echo guard, PLAN P2). Author-back writes
     // the value the component already holds, so a re-project would be a no-op
@@ -69,8 +70,13 @@ impl LiveStage {
     pub fn try_new(stage: Stage) -> openusd::Result<Self> {
         let queue: Rc<RefCell<Vec<StageChange>>> = Rc::new(RefCell::new(Vec::new()));
         let q = Rc::downgrade(&queue);
+        let revision = Rc::new(Cell::new(0u64));
+        let generation = Rc::downgrade(&revision);
         let sink = stage.add_sink(move |_stage: &Stage, change: &CommittedChange<'_>| {
             let Some(q) = q.upgrade() else { return };
+            if let Some(generation) = generation.upgrade() {
+                generation.set(generation.get().saturating_add(1));
+            }
             q.borrow_mut().push(StageChange {
                 resynced: change
                     .resynced
@@ -88,6 +94,7 @@ impl LiveStage {
             stage,
             materials: RefCell::default(),
             queue,
+            revision,
             suppressed: Rc::new(RefCell::new(std::collections::HashSet::new())),
             sink: Some(sink),
         })
@@ -123,6 +130,10 @@ impl LiveStage {
     pub fn try_has_changes(&self) -> openusd::Result<bool> {
         self.stage.flush()?;
         Ok(!self.queue.borrow().is_empty())
+    }
+
+    pub(crate) fn composition_revision(&self) -> u64 {
+        self.revision.get()
     }
 
     /// Mark `prim` as self-authored: the next change mentioning it (fired by
@@ -170,6 +181,7 @@ impl LiveStage {
     /// stage load-rule changes, not layer-edit commits), so we synthesize the
     /// notice ourselves — the reconcile then materializes/despawns the subtree.
     pub(crate) fn enqueue_resync(&self, prim: &str) {
+        self.revision.set(self.revision.get().saturating_add(1));
         self.queue.borrow_mut().push(StageChange {
             resynced: vec![prim.to_string()],
             changed_info: Vec::new(),
@@ -1935,6 +1947,28 @@ pub fn current_transform(stage: &Stage, prim_path: &str) -> Option<Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composition_revision_survives_draining_saturates_and_detaches() {
+        let stage = Stage::builder().in_memory("live-revision.usda").unwrap();
+        let live = LiveStage::new(stage.clone());
+        let before = live.composition_revision();
+        stage.define_prim("/A").unwrap();
+        live.try_drain_changes().unwrap();
+        assert!(live.composition_revision() > before);
+        let revision = live.composition_revision();
+        live.try_drain_changes().unwrap();
+        assert_eq!(live.composition_revision(), revision);
+        live.revision.set(u64::MAX - 1);
+        live.enqueue_resync("/A");
+        stage.define_prim("/B").unwrap();
+        assert_eq!(live.composition_revision(), u64::MAX);
+        let observed = live.revision.clone();
+        drop(live);
+        observed.set(0);
+        stage.define_prim("/C").unwrap();
+        assert_eq!(observed.get(), 0);
+    }
 
     #[test]
     fn subtree_holds_descendants_and_not_name_siblings() {

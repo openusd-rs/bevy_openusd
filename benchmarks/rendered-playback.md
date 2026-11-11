@@ -168,5 +168,6 @@ Whole-process `perf record` probes failed before launching the capture because
 sampling events are unavailable with the current host permissions. The failed
 software-event run is retained in
 `/tmp/bevy-optimization-playback-perf.tCJeOm/`; a hardware user-event probe also
-fails. No host security setting was changed. Opt-in in-process asset-root
-classification/total timers are the next diagnostic step.
+fails. No host security setting was changed. The subsequent opt-in in-process
+[asset-root classification profile](instance-animation.md) confirms the scan
+dominates the arm's animation update and is material for bird/cow as well.

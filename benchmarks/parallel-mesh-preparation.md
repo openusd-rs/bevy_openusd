@@ -12,6 +12,48 @@ The chronological checkpoints below describe the evidence available at each
 step. For the subsequent wing/grid sorting repair and current remaining
 single-pixel image failures, see [posed sorting centers](deformed-sort-centers.md).
 
+## Follow-up phase instrumentation
+
+The asset-root classification-cache comparison and its two targeted repeats
+show conflicting cow whole-update results and large changes in the unchanged
+mesh-preparation phase. Those regressions remain unaccepted; see
+[the retained results](instance-animation.md). An opt-in
+`MeshPreparationPhaseTiming` resource separates eligibility/USD sampling,
+CPU deformation, mesh assembly, tangent-cache lookup, traversal bookkeeping,
+tangent dispatch/join and ordered publication. These main-thread phases do not
+overlap. Tangent-job wall times, job failures and vertex counts are separate:
+worker times may overlap one another and must not be added to the main phases
+or described as thread CPU time. The timer retains only aggregate counters and
+a fixed set of phase names, not meshes or per-frame histories.
+
+The existing preparation resource and public settings remain unchanged.
+`USD_PROFILE_ROUTES=1` enables the new resource in `viewer_capture`; reporting
+explicitly includes animation warmups. Dispatch, mesh generation, cache policy
+and publication order are unchanged. The new tests compare profiled/unprofiled
+geometry over changing/reversed clocks and cover empty/failed batches without
+worker jobs; a capture test checks the separate metadata scopes.
+
+The first hardening attempt passes both new library tests but exposes another
+existing subset fixture assuming two roots finish projection in one shared
+10 ms turn. It fails before resolving `/M`, not on any changed geometry
+assertion. The fixture now requests an unlimited test projection budget and
+asserts both roots reach Ready before its original subset/material/independent
+child checks. Production projection budgets are unchanged. The failed run is
+retained in `/tmp/bevy-optimization-mesh-phases-harden.log`. The second attempt
+passes 831 no-default tests but strict Clippy rejects the added eighth capture
+system argument. The optional phase resource now belongs to the existing
+`CaptureTiming` system-parameter group rather than adding a lint suppression.
+That attempt remains in `/tmp/bevy-optimization-mesh-phases-ready-harden.log`.
+
+Final hardening passes 831 no-default and 940 all-feature/all-target tests,
+strict Clippy, formatting and whitespace checks. These configurations overlap.
+The log is `/tmp/bevy-optimization-mesh-phases-final-harden.log`.
+`13fd91a` contains only the fixture readiness correction; `274562f` contains the
+phase resource and capture reporting. The release capture build and wasm
+compilation pass (`/tmp/bevy-optimization-mesh-phases-{build,check-web}.log`).
+Release phase captures remain pending; the timers are diagnostic
+instrumentation, not another production speedup.
+
 ## Execution contract
 
 Only built-in animation batches use preparation. Public single-prim projection

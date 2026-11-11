@@ -87,6 +87,35 @@ correct readiness reporting.
   nonzero; default framing and intermediate-frame/native-window validation are
   also incomplete. See [rendered playback](benchmarks/rendered-playback.md).
 
+- Asset-root scan profiling (`f81d2d2`): opt-in timers confirm repeated animation
+  classification consumes 96.6% of the arm's enclosing animation-update time,
+  26.5% for bird and 24.2% for cow in the instrumented native runs. All three
+  settled poses remain pixel-exact against the saved pre-instrumentation binary.
+  Hardening passes 820 no-default / 928 all-feature tests and strict Clippy.
+  This identifies the classification-reuse optimization below. Invalidation,
+  isolation, bounds and performance acceptance are declared in
+  [asset-root animation](benchmarks/instance-animation.md).
+
+- Asset-root classification reuse (`967bd89`, `c624928`): each root now retains
+  one bounded composition's positive/negative animation decisions. Flushed
+  revision/layer/load/mask/mute keys invalidate it; custom routes stay uncached
+  to preserve callback mutation order. Hardening passes 829 no-default / 937
+  all-feature tests and strict Clippy; refreshed native deformation/watcher/
+  export checks and wasm compilation pass. The 40-process native offscreen ABBA run
+  reduces arm main-update medians by 88.6%, with classification calls falling
+  from 45,540 to 138 and unchanged animated decisions. All 12,000 frame/clock
+  rows validate, six exact-clock final poses and twelve idle images are
+  pixel-exact at tolerance zero. Full acceptance remains open: cow main cost
+  regresses 23.9%, material subsets 18.1%, and partial source phases also show
+  regressions under highly variable host load. Two targeted ABBA repeats
+  reproduce the cow and subset failures in one block each, with opposite-sign
+  results in the other; neither gate is accepted. Additional phase profiling
+  is needed, not a noise waiver or a claim that partial source phases cover
+  complete opening.
+  The bird/cow 60 Hz target, native-window/browser performance and previous
+  rendering/loading failures remain open. See
+  [asset-root animation](benchmarks/instance-animation.md).
+
 - Point-instancer parent links (`3562782`): isolated ECS scaling confirms
   quadratic repeated replacement of unchanged `ChildOf` links. Stable instance
   links are now retained, source-ID order restored in bulk and removed/cleared

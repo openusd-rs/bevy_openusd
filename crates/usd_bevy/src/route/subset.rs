@@ -884,6 +884,7 @@ def Material "Mat" {
         ));
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -905,7 +906,20 @@ def Material "Mat" {
                 UsdInstanceTime { current: 10.0 },
             ))
             .id();
-        app.update();
+        for _ in 0..200 {
+            app.update();
+            if [a, b].iter().all(|root| {
+                app.world().get::<crate::UsdSceneState>(*root) == Some(&crate::UsdSceneState::Ready)
+            }) {
+                break;
+            }
+        }
+        for root in [a, b] {
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready),
+            );
+        }
         let parent = |world: &World, root| {
             world
                 .get_non_send::<UsdInstances>()

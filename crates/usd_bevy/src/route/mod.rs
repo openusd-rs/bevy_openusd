@@ -441,6 +441,10 @@ impl SchemaRegistry {
         self.routes.is_empty()
     }
 
+    pub(crate) fn is_builtin_only(&self) -> bool {
+        self.builtin_only
+    }
+
     /// Run every matching route's [`project`](PrimRoute::project) on `entity`,
     /// resolving animated attributes at the world's [`StageTime`] (if any).
     pub fn project_prim(&self, stage: &Stage, path: &Path, world: &mut World, entity: Entity) {

@@ -131,3 +131,76 @@ The subsequent [projection-operation trace](animation-access-profile.md) finds
 one requested bird animation and two requested cow animations in the current
 playback paths. Their component-map payloads are substantially smaller than
 this all-authored inventory, without establishing a complete cache memory bound.
+
+## Admission and lifetime constraints
+
+Source review is against the pinned `900ea31591348e3fbf416d4661d703aa8700771b`,
+not an assertion about a later upstream revision. `SourceResolver` clones the
+winning sample map; `AttributeQuery` holds it alongside its source site and
+private validity stamp. Public `time_samples()` returns another cloned map,
+retimed in place. Numeric arrays are not expanded by that retiming, but their
+logical payload omits map slots and source-site metadata. Measuring that public
+copy is not inspecting the query's allocations.
+
+Three regression cases in `sample_query_probe` exercise the proposed admission
+boundary, using the unchanged upstream API:
+
+- `query_refresh_can_exceed_initial_sample_budget` warms one query on 24 numeric
+  sample bytes, then grows the same attribute to 98,304 bytes. The same query
+  returns the new 49,152-byte interpolated array and then respects a value block.
+  A one-time 1,024-byte admission test would admit the initial source, not the
+  edited one. The ordinary, non-proxy prim's public `index_revision` also stays
+  unchanged: it reports the index's build revision, not the private value
+  revision that invalidates the query. Query correctness does not enforce that
+  external memory budget.
+- `proxy_path_revision_does_not_guard_query_readmission` performs the same
+  growth through an instance proxy. Its visible prim's `index_revision` stays
+  `None` before and after, while upstream correctly refreshes the query from
+  the changed source. Equality of those public revisions cannot authorize reuse
+  of an old byte charge; the internal stamp also tracks the redirected source
+  and population epoch.
+- `equal_root_labels_do_not_share_query_state_or_lifetime` opens two independent
+  stages with equal root identifiers and attribute paths, then edits only one.
+  The queries remain independent. A weak sentinel owned by the first stage's
+  change sink stays alive after dropping its caller's stage and attribute
+  handles, until its query is dropped. A global query registry would therefore
+  also retain stages unless explicitly cleared; root labels are not identities.
+
+These cases compare exact values at forward, reverse, repeated and out-of-range
+clocks. They do not measure retained query bytes, process memory or playback
+speed, and are not a full reload/lifecycle acceptance suite.
+
+Evidence: `/tmp/bevy-optimization-query-admission.UAtjks/`, with the tests in
+local commit `5e8d4d2`. The first compile fails because the sink closure needs
+explicit argument types. The next run passes five tests but fails an incorrect
+expectation that a value edit changes the public index revision. Inspection of
+upstream `built_revision`, `prim_revision` and `restale_values` confirms separate
+build/value stamps; the regression now asserts the observed stable build stamp
+alongside changed values and sample payload. Both failed logs are preserved.
+The final run passes all six focused tests, formatting and strict workspace
+Clippy with all targets/features. Dependency and upstream-source manifests are
+unchanged. Full hardening, wasm and real-asset timing are not rerun for this
+test-only change; previous performance and acceptance results stand as recorded.
+
+Persistent integration needs a bounded upstream source-cache contract, rather
+than a local copy of USD resolution:
+
+1. Account retained source storage with checked arithmetic, including capacities,
+   map slots and owned source metadata. Unknown accounting must decline caching,
+   not admit an uncharged value. Distinguish retained storage from transient
+   decoding, caller-owned return values, allocator overhead and whole-process RSS.
+2. Enforce admission on every source resolution/refresh under the same validity
+   stamp used by the query, including instance redirection. Release obsolete
+   storage and its charge; an edit cannot silently grow an admitted entry.
+3. Preserve direct-read semantics when admission is refused, including defaults,
+   blocks, clips, offsets, precision casts and interpolation. Do not truncate
+   values, reduce quality or cache an error as an empty answer.
+4. Bound aggregate entries/bytes, bind ownership to the actual stage instance,
+   and release queries on eviction, close and replacement. Do not form a cycle
+   from a stage-owned sink back to a query owning that stage.
+
+The existing API does not provide that accounting/admission contract. Do not
+enable persistent query reuse from the measured payload totals or visible-path
+revision alone. An upstream API change needs its own isolated implementation
+and validation before adoption; the dependency pin and production path remain
+unchanged. Other measured optimization work need not wait on this API boundary.

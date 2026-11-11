@@ -76,6 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Query admission boundary verified:** three new regressions demonstrate that
+  a warmed query can grow from 24 to 98,304 numeric sample bytes after an edit,
+  while the ordinary prim's public index build revision stays unchanged. An
+  instance proxy's visible revision stays `None` through the same growth.
+  Equal root labels also do not identify equal stages, and retaining a query
+  retains its stage. Six focused query-probe tests, formatting and strict
+  workspace Clippy pass. The [admission contract](benchmarks/sample-query-reuse.md#admission-and-lifetime-constraints)
+  records checked source accounting, refresh-time admission, upstream fallback
+  semantics and stage-bound ownership as requirements. Do not implement an
+  opaque persistent cache using the payload inventory or `index_revision` as
+  its budget guard. This needs a bounded upstream API before production
+  adoption, not another unchanged timing run. No runtime/dependency change,
+  new speedup, full hardening rerun or broader acceptance is claimed.
+
 - **Actual animation requests traced:** an opt-in, bounded diagnostic records
   the normal projection's query lookups/builds, joint/weight requests and
   short-circuited authored-value checks. Two real-asset editor runs validate

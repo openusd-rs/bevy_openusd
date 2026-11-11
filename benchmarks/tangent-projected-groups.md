@@ -169,3 +169,40 @@ verify nearest-rank summaries, final payload, executable/source/asset hashes
 and full available cow/robot directory manifests. These remain headless CPU
 updates, not native frame cadence or GPU time. No native/platform/downstream
 acceptance is inferred from this comparison, and no failed gate is waived.
+
+## Finite geometry corpus and editor build
+
+The full-editor evidence directory is
+`/tmp/bevy-optimization-tangent-editor.CznhNw/`. Its candidate release editor
+build passes; executable SHA-256 is
+`efd32f8dff62a0b5eb61870e3ec774185912879de32c445c82e1e66cacc177c1`.
+Production manifests and lockfile are restored after saving that executable.
+The original's source comparison differs only in the `cfg(test)` kernel probe.
+
+`scripts/tangent_corpus.rs`, run through `oslo make test-tangent-corpus`, links
+the original and combined source copies as separate optimized Rust libraries
+with only `std` enabled. It compares all tangent/bitangent components,
+magnitudes, encoded values and orientation by exact float bits, and separately
+tracks unwritten versus explicitly missing outputs. No tolerance is used.
+
+The 567 deterministic geometries at six thresholds give 3,402 passing cases,
+410,550 supported corners (72,252 explicitly missing tangents) and 21,552
+unsupported corners correctly left unwritten. Coverage includes triangles,
+quads and both diagonals, welded/expanded vertices, UV seams and mirroring,
+zero/signed-zero normals, subnormal UVs, collapsed faces, reversed face/winding
+order, finite coordinate scales, seeded mutations and fans up to 1,024 faces.
+This is a finite synthetic corpus, not all float inputs, arbitrary `Geometry`
+implementations, cross-platform proof or rendered acceptance.
+
+Both libraries and the corpus compile with warnings denied; formatting passes.
+The recipe's negative control flips one output bit and must exit 101 at the
+first nonempty fan comparison, which it does. The initial negative-control
+compile failure (one missing nested `Option` pattern) is preserved separately;
+fixing that pattern did not weaken the comparison. Logs, hashes and the expected
+negative-control rejection remain in the evidence directory. Production
+hardening also passes again: 885 / 1,012 executions, formatting and strict
+Clippy. The experimental dependency is not part of that hardening run.
+
+The 24-process editor performance comparison is the next gate. Its results,
+bounded-scratch integration, native rendering, downstream and platform checks
+remain pending at this checkpoint.

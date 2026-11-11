@@ -251,6 +251,38 @@ make.recipe{
 }
 
 make.recipe{
+  name = "test-tangent-corpus",
+  desc = "compare two MikkTSpace source copies on a deterministic geometry corpus",
+  params = {
+    { "--original", desc = "original crate directory" },
+    { "--candidate", desc = "candidate crate directory" },
+  },
+  run = function(a)
+    assert(type(a.original) == "string" and #a.original > 0, "provide --original PATH")
+    assert(type(a.candidate) == "string" and #a.candidate > 0, "provide --candidate PATH")
+    local output = "target/tangent-corpus"
+    sh.mkdir("-p", output)
+    sh.rustfmt("--edition", "2024", "--check", "scripts/tangent_corpus.rs")
+    for _, source in ipairs({ {"original", a.original}, {"candidate", a.candidate} }) do
+      sh.rustc("--crate-name", "tangent_" .. source[1], "--crate-type", "rlib",
+               "--edition=2024", "--cfg", 'feature="std"', "-D", "warnings", "-C", "opt-level=3",
+               source[2] .. "/src/lib.rs", "-o", output .. "/libtangent_" .. source[1] .. ".rlib")
+    end
+    sh.rustc("scripts/tangent_corpus.rs", "--edition=2024", "-D", "warnings", "-C", "opt-level=3",
+             "--extern", "tangent_original=" .. output .. "/libtangent_original.rlib",
+             "--extern", "tangent_candidate=" .. output .. "/libtangent_candidate.rlib",
+             "-o", output .. "/tangent-corpus")
+    sh.sh("-c", output .. "/tangent-corpus")
+    sh.sh("-c", [[
+target/tangent-corpus/tangent-corpus --negative-control > target/tangent-corpus/negative-control.log 2>&1
+status=$?
+test "$status" -eq 101 || exit 1
+grep -q 'case=fan-3-false threshold=-1' target/tangent-corpus/negative-control.log
+]])
+  end,
+}
+
+make.recipe{
   name = "test-texture-encoding",
   desc = "exhaustively compare release sRGB mip encoding with the scalar formula",
   run = function()

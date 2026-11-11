@@ -212,3 +212,69 @@ The remaining next step is correlated prepared/GPU render-input evidence, not
 another unchanged matrix, an unproven light-order fix or threshold relaxation.
 Full deformation, lifecycle, native performance and platform acceptance remain
 open; library and viewer stay eager by default.
+
+## Same-frame GPU view and light readback
+
+`5241231` adds `src/capture_uniforms.rs` to the opt-in morph capture diagnostic.
+It attaches the selected camera to the screenshot entity, extracts that request,
+and copies the camera's actual prepared `ViewUniform` and `GpuLights` buffer
+ranges after preparation and before rendering that frame. The snapshot decodes
+every field, preserves the uploaded frame counter and requires it to match the
+extracted frame. The screenshot observer rejects missing, failed or mismatched
+readbacks. This is no longer an inference from main-world camera settings.
+
+The diagnostic adds `COPY_SRC` only when the probe is installed, bounds the
+combined readback to 64 KiB and GPU polling to five seconds, and runs once per
+capture. It can perturb timing and is not a performance measurement. No normal
+viewer/library setting, rendering quality, light order or shader changes.
+Tests cover invalid/overflowing ranges, screenshot identity, missing/failed
+results, incomplete data, frame mismatches and one-ULP view changes.
+
+Evidence: `/tmp/bevy-optimization-gpu-uniforms.IQkPUy/`, including `hidden/`.
+
+- Saved viewer SHA-256:
+  `2d5c82c7024cfda8228cc63faa1198903c6efa9a0e36a2b763369afd0126efe1`.
+- Cargo.lock remains `41ef4e9e…`; hardening passes 870 no-default and 997
+  all-feature/all-target executions, formatting and strict Clippy
+  (`harden-fixed.log`). The initial formatting and mapped-range API errors
+  remain in `harden.log` and `harden-formatted.log`.
+- Twelve native captures use that one saved binary, unchanged assets/settings,
+  no owned build overlap, and the previous isolated compositor/capture protocol.
+  First-batch load is 3.96–4.48; hidden-batch load is 5.51–8.11. These are not
+  native frame-rate measurements. All process/pipeline/readback and input/asset
+  hash checks pass. Four broader host warnings remain in every capture.
+- The first six-case reveal/redo/probe-control batch passes all six exact image
+  comparisons. Extracted lights, staged palettes and main camera/grid metadata
+  remain equal. The publication checker accepts all three visible GPU histories
+  (4/2/4 recorded inputs, two final inputs each). This batch alone does not fix
+  or invalidate the earlier intermittent failures.
+- The next six cases cover eager/deferred GPU selection and undo, and both CPU
+  selection controls. Only four of seven exact comparisons pass. GPU eager
+  selection differs from deferred selection, eager undo and the CPU control by
+  220 pixels, max RGB error two. All three failures share their coordinates:
+  the earlier 215 positions plus five additional pixels. Main camera/grid
+  metadata and the final hidden state agree. `hidden/pixel-analysis.json`
+  preserves the coordinates and colors; the eager hidden image was inspected.
+- Across all ten probed captures, 5,360 bytes of view/light uniforms are read
+  for the matching screenshot frame. All decoded view fields and the complete
+  decoded light data are equal within each batch. Frame counters are explicitly
+  retained: reveal/CPU 185, redo 187, hidden selection 184, undo 186. Importantly,
+  the failing eager/deferred selection pair has **the same counter, 184**, as
+  well as equal uploaded view/light values. `uniform-analysis.json` and
+  `hidden/uniform-analysis.json` retain the full decoded data and comparisons.
+
+Both drivers exit 1 with the original host diagnostics retained; the hidden
+batch also retains its three image failures. The initial analysis invocation
+failed because the outer shell had no `node` in PATH; the successful analyses
+run the explicit Nix-store Node executable through the make recipe. Their
+initial logs are preserved, and the staging script reports actual batch results
+rather than carrying forward the previous batch's hard-coded failure message.
+
+This rules out a difference in the captured view/light uniform values as the
+explanation for these particular hidden-state failures. It does not establish
+equality of grid/material buffers, compiled shaders, draw bindings, shadow/depth
+textures or intermediate render targets. Inspect those remaining render inputs
+and passes next, rather than changing camera/light math or repeating an unchanged
+capture matrix. The strict visual gate, earlier one-pixel mesh observation,
+downstream patch distribution, low-limit adapters, lifecycle/platform checks and
+full performance acceptance remain open.

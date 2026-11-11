@@ -76,6 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- [Same-frame GPU uniform readback](benchmarks/morph-publication.md#same-frame-gpu-view-and-light-readback)
+  (`5241231`) now correlates actual uploaded view/light values with the screenshot,
+  with bounded copies, frame/identity checks and explicit failures. Hardening
+  passes 870 / 997 executions. Twelve saved-binary native captures pass all
+  process/pipeline/readback checks; six visible/probe comparisons are exact,
+  but three of seven hidden-state comparisons differ at 220 pixels, max RGB two.
+  Those failures include the previous 215 changed positions. Uploaded view/light
+  data are equal even for a failing pair with identical frame counters. Do not
+  patch camera/light math or declare the intermittent visual failure repaired.
+  Next inspect grid/material buffers, compiled shaders, draw bindings and render
+  targets. Host warnings, earlier mesh-pixel differences and the broader
+  performance/lifecycle/platform gates remain open. No defaults or tolerances
+  changed, no push, and these diagnostic captures make no FPS claim.
+
 - The [post-repair matrix and light/skin witness](benchmarks/morph-publication.md#full-command-prefix-replay)
   extend morph verification to all 16 CPU/GPU, eager/deferred command prefixes.
   Every state and pipeline/readback check passes; the large wrong-shape failure

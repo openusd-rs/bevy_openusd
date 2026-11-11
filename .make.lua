@@ -223,6 +223,15 @@ make.recipe{ name = "test-assets", desc = "test the patched Bevy asset loader",
              run = function() sh.cargo("test", "-p", "bevy_asset", "--lib") end }
 
 make.recipe{
+  name = "build-tangent-probe",
+  desc = "build the release library test executable containing the paired tangent probe",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--release", "--lib",
+             "--features", "bevy/multi_threaded", "--no-run")
+  end,
+}
+
+make.recipe{
   name = "test-texture-encoding",
   desc = "exhaustively compare release sRGB mip encoding with the scalar formula",
   run = function()

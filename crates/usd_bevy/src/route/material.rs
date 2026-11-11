@@ -2171,7 +2171,14 @@ def Shader "External" {
                 UsdInstanceTime { current: 10.0 },
             ))
             .id();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         app.update();
+        for root in [first, second] {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready),
+            );
+        }
         let entities = |world: &World, root| {
             let instances = world.get_non_send::<UsdInstances>().unwrap();
             let mesh = instances.entity(root, "/Mesh").unwrap();

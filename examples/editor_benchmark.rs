@@ -13,6 +13,9 @@ use usd_bevy::{
 #[path = "editor_benchmark/paired.rs"]
 mod paired;
 
+#[path = "editor_benchmark/stepped.rs"]
+mod stepped;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SeekMode {
     Idle,
@@ -461,10 +464,22 @@ fn measure(
     gpu_prepared: bool,
     seek: SeekMode,
 ) -> Result<Measurement, Box<dyn std::error::Error>> {
+    measure_with_steps(path, gpu_prepared, seek, None)
+}
+
+fn measure_with_steps(
+    path: &Path,
+    gpu_prepared: bool,
+    seek: SeekMode,
+    mut steps: Option<&mut dyn std::io::BufRead>,
+) -> Result<Measurement, Box<dyn std::error::Error>> {
+    if steps.is_some() && seek != SeekMode::Timeline {
+        return Err("stepped measurements require seek-timeline".into());
+    }
     let (mut app, bridge, mut result) = open_editor(path, gpu_prepared, None)?;
     let view = bridge.view()?;
     if seek != SeekMode::Idle {
-        let raw_samples = std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some();
+        let raw_samples = steps.is_some() || std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some();
         if seek == SeekMode::Timeline {
             if !view.timeline.start.is_finite()
                 || !view.timeline.end.is_finite()
@@ -480,6 +495,13 @@ fn measure(
         }
         let mut timings = Vec::with_capacity(seek.samples());
         let mut warmup = [Duration::ZERO; SEEK_WARMUP];
+        if steps.is_some() {
+            println!(
+                "seek_step_config samples={} warmup={SEEK_WARMUP} pool_threads={} excludes=stdin-wait,stdout,gpu scope=full-headless-editor-update",
+                seek.samples(),
+                bevy::tasks::ComputeTaskPool::get().thread_num()
+            );
+        }
         for iteration in 0..seek.samples() + SEEK_WARMUP {
             if iteration == SEEK_WARMUP {
                 println!(
@@ -498,6 +520,9 @@ fn measure(
             } else {
                 normalized
             };
+            if let Some(reader) = steps.as_deref_mut() {
+                stepped::await_step(reader, &mut std::io::stdout().lock(), iteration)?;
+            }
             bridge.send(EditorCommand::Seek(time))?;
             let texture_before = app
                 .world()
@@ -725,6 +750,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("gpu-prepared") => true,
         _ => return Err("deformation must be cpu or gpu-prepared".into()),
     };
+    let stepped = stepped::configured(
+        std::env::var_os("USD_BENCH_STEPPED").as_deref(),
+        samples,
+        args.get(3).map(String::as_str) == Some("seek-timeline"),
+    )?;
     println!(
         "asset={} profile={} renderer=headless deformation={} excludes=plugin-startup,ui,gpu assets=all-retained-not-visibility-filtered samples={samples}",
         path.display(),
@@ -784,7 +814,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some() {
             println!("sample_begin={sample}");
         }
-        let m = measure(&path, gpu_prepared, seek)?;
+        let m = if stepped {
+            measure_with_steps(
+                &path,
+                gpu_prepared,
+                seek,
+                Some(&mut std::io::stdin().lock()),
+            )?
+        } else {
+            measure(&path, gpu_prepared, seek)?
+        };
         println!(
             "{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
             m.open.as_secs_f64() * 1000.0,

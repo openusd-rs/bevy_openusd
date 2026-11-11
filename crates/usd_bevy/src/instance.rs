@@ -383,7 +383,14 @@ def PointInstancer "PI" {{
                 ))
                 .id()
         });
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         app.update();
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready),
+            );
+        }
         let lookup = |world: &World, root, path| {
             world
                 .get_non_send::<UsdInstances>()

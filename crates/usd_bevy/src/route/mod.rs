@@ -516,7 +516,6 @@ impl SchemaRegistry {
                 && settings.max_jobs > 1
                 && settings.max_input_bytes > 0
                 && world.contains_resource::<bevy::prelude::Assets<bevy::prelude::Mesh>>()
-                && !world.contains_resource::<residency::DeferHiddenMeshes>()
                 && !world.contains_resource::<residency::UsdResidencyBudget>()
         });
         let Some(pool) = pool else {
@@ -533,21 +532,21 @@ impl SchemaRegistry {
             }
             let contexts: Vec<_> = batch
                 .iter()
-                .map(|(path, _)| {
+                .map(|(path, entity)| {
                     let ctx = RouteCtx::at(stage, path, time_of(world));
                     if world.contains_resource::<MeshReadTiming>() {
                         ctx.read_timing.set(Some(MeshReadTiming::default()));
                     }
-                    ctx
+                    (ctx, *entity)
                 })
                 .collect();
             let mut offset = 0;
             while offset < contexts.len() {
                 let count = preparation::prepare_batch(&contexts[offset..], world, pool, settings);
                 assert!(count > 0);
-                for index in offset..offset + count {
-                    self.apply_routes(&contexts[index], world, batch[index].1, Some(&[]));
-                    contexts[index].report_read_timing(world);
+                for (ctx, entity) in &contexts[offset..offset + count] {
+                    self.apply_routes(ctx, world, *entity, Some(&[]));
+                    ctx.report_read_timing(world);
                 }
                 offset += count;
             }

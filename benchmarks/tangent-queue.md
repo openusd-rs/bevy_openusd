@@ -116,6 +116,10 @@ The [balanced owned-job comparison](tangent-paired.md) subsequently passes its
 predeclared kernel thresholds. It does not clear this whole-application failure
 or re-enable the candidate; individual full-editor updates must be paired next.
 
+That [paired full-editor comparison](tangent-stepped.md) is now complete. It
+confirms a smaller 12–13% cow update benefit, still below the unchanged target,
+and retains additional control/tail failures. The queue stays withdrawn.
+
 ## Restored-source verification
 
 `519d33e` withdraws the scheduler. The first restored hardening run exposes

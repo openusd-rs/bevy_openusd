@@ -79,8 +79,16 @@ correct readiness reporting.
 - The corrected [paired tangent diagnostic](benchmarks/tangent-paired.md) passes
   800 identical-input comparisons with balanced clone/execution order: cow kernel
   paired medians improve 19–23%, without bird regression. This is a private-pool,
-  owned-mesh result, not whole-application performance. The production queue stays
-  withdrawn; tightly paired full-editor updates are the next scheduler gate.
+  owned-mesh result, not whole-application performance. The follow-up
+  [paired full-editor test](benchmarks/tangent-stepped.md) validates 16,000
+  updates but finds only 12–13% cow improvement, below its 15% target; seven
+  paired and seven whole-run timing checks fail. Production source and the normal
+  benchmark executable are restored; the queue stays withdrawn. Stop repeating
+  this scheduler experiment. Investigate reducing unnecessary geometry work,
+  including the existing opt-in hidden-mesh path, while retaining eager library
+  defaults and requiring reveal/current-clock/edit/reload and visible-fidelity
+  proof before changing viewer policy. Current-source hardening passes 853 / 975
+  executions and strict Clippy; no new native/platform acceptance is claimed.
 
 - The larger tangent-queue trial (`a4fa55d`) is withdrawn: it halves cow batch
   barriers but fails its primary performance target under severe variable host

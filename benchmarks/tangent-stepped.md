@@ -41,3 +41,81 @@ A passing CPU comparison is not sufficient to enable the candidate: native
 animation poses must still match independent pre-change renders at zero RGB
 tolerance, and native deformation/watchers/export plus wasm checks must pass.
 Existing grid, CPU/GPU, MDL, 60 Hz and whole-project workstreams remain open.
+
+## Harness and identical-binary control
+
+`b0ceb43` passes hardening: 853 no-default and 975 all-feature/all-target
+executions, strict Clippy, formatting and whitespace checks. Three new tests
+cover explicit configuration, flushed bounded commands, missing/wrong indices,
+and a complete 1,000-clock editor comparison against the ordinary harness.
+Both paths retain identical geometry/cache/asset counts and readiness assertions.
+
+The controller first runs four subset processes using the same saved binary
+under both labels. All processes and diagnostics pass; 2,000 paired updates
+validate both starting/opening orders. Paired median ratios range 0.934–1.041,
+within the declared control bound. The old whole-run maximum-time check still
+fails (+16.8%), despite identical executables. This observation exposes timing
+variability; it does not waive the maximum-time gate or authorize a rerun until
+green. Full control evidence is retained in `control/`.
+
+## Full-editor result: candidate remains withdrawn
+
+Evidence directory: `/tmp/bevy-optimization-tangent-stepped.lUpGRT/`.
+The experimental runtime is exactly the earlier `a4fa55d` scheduler, with the
+current test-only paired-probe module retained. It passes hardening separately
+(855 / 977 executions, Clippy and formatting). The runtime source is restored
+byte-exactly before measurement; the normal benchmark executable is restored
+to the baseline copy. No production scheduler change is committed or enabled.
+
+All sixteen processes and diagnostic checks pass. Independent analyzers verify
+16,000 measured updates, four warmups per process, 8,000 sequential pairs,
+authored clocks, raw percentiles and both execution orders. Each editor uses
+the production 16-thread compute pool, not the earlier private four-thread pool.
+Geometry/image/cache payload counts, image capacity and peak asset counts match
+exactly. Peak process RSS changes less than 0.2%; input budgets remain bounded.
+These are count/payload checks, not new rendered comparisons.
+
+| Scene / fresh pair | Legacy-first median ratio | Queue-first median ratio |
+| --- | ---: | ---: |
+| Cow 0 | 0.8786 | 0.8680 |
+| Cow 1 | 0.8804 | 0.8659 |
+| Bird 0 | 0.9975 | 0.9747 |
+| Bird 1 | 0.9945 | 0.9731 |
+| Arm 0 | 1.0821 | 0.9141 |
+| Arm 1 | 1.0352 | 0.9495 |
+| Subsets 0 | 1.0589 | 0.9560 |
+| Subsets 1 | 1.0767 | 0.9504 |
+
+The paired gate has seven failures: all four cow strata miss 15% improvement;
+one arm and two subset strata exceed the 5% regression limit. Whole-run checks
+also have seven failures: cow median target, cow/arm opening and idle, and
+bird/subset maximum update times. Arm/subsets perform zero tangent jobs; their
+order effects and the identical-binary control prevent attributing all variation
+to the queue. Every failed observation remains recorded.
+
+Cow whole-update medians fall from 55.313 / 55.844 ms to 48.328 / 48.885 ms,
+an aggregate 12.5% reduction; preparation totals fall 15.8%. Bird medians improve
+only 1.6%. Counts reproduce the earlier experiment: cow 13,986 jobs / 14 hits,
+bird 40,914 jobs / 82 hits; barriers fall 4,000 to 2,000 and 11,000 to 6,000.
+Default maximum buffered jobs would rise to eight, without meeting the primary
+target. This does not establish 60 Hz or justify re-enabling the candidate.
+
+No task-owned build overlaps timing; unrelated applications/builds are untouched.
+Raw pressure/load records accompany every pair. Asset and dependency-directory
+manifests, lockfile, saved executables and restored source hashes verify before
+and after the run. `driver.mjs`, `analyze-pairs.mjs`, `analyze-blocks.mjs`, raw logs,
+JSONL pairs, JSON analyses and the exact candidate diff are retained together.
+The controller launches through `oslo make run-headless-benchmark`; each version
+executes from the same path using atomically replaced inodes. Only its own child
+process groups are eligible for cleanup on a controller error.
+
+Saved executable SHA-256:
+
+- Before: `6a3ef7cb1995bd583a9121aefbb2dd8d7eb34e6d9ab0da9664d72910f349e800`
+- Candidate: `05958c7bc7c06ddf8639b701a13933f1af5b180ac00a24ca6ee2f7a2e415f408`
+
+This candidate stops before new native captures or platform gates; those were
+not run. Do not repeat this scheduler experiment unchanged. The next useful
+direction is reducing unnecessary geometry work, including the existing
+opt-in hidden-mesh path, while preserving eager library defaults and proving
+current-clock materialization, reveal/edit/reload behavior and visible fidelity.

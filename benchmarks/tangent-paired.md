@@ -102,3 +102,8 @@ versions, rather than compare long blocks under changing host load.
 Raw evidence: `balanced/{harden,build,analysis}.log`, `analysis.json`, four asset
 logs, `progress.log`, `environment.txt` and hash manifests beneath the original
 evidence directory. The original allocation-asymmetric run is retained separately.
+
+The subsequent [individually paired editor comparison](tangent-stepped.md) finds
+only 12–13% cow whole-update improvement, below its 15% target, with additional
+timing failures. The kernel result does not translate into accepted application
+performance. The queue remains withdrawn; this experiment is not repeated.

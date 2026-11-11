@@ -15,6 +15,13 @@ The user subsequently confirmed: "Animates and window responds." This accepts
 the observed freeze repair, not a measured smooth-playback or frame-rate target.
 The follow-up goal is broader library/viewer optimization.
 
+The subsequent posed-center correction repairs the time-zero transparent
+wing/grid discrepancy without hiding the grid or relaxing image tolerance.
+Times five and ten still fail at one pixel each. See
+[posed sorting centers](deformed-sort-centers.md) for current unit/native gates,
+independent-root captures and remaining acceptance work. Earlier checkpoints
+below retain the original failures and diagnosis history.
+
 ## Reproduction
 
 Asset: `assets/external/hummingbird.usdz`. The live projection reports 84 prims,
@@ -139,7 +146,7 @@ generated-image lifetime and mutated pixels/mips/layouts, sampler-wrap changes,
 tracked in-place image edits and missed events, and nested stage/time-isolated
 skeleton scopes.
 
-### Additional real-asset comparison: not passing
+### Initial additional real-asset comparison: not passing
 
 ```sh
 CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
@@ -176,8 +183,8 @@ observed pixels. Compare actual phase order and posed bounds before choosing a
 fix. Any repair must preserve independently timed instance sharing and must not
 hide the grid or relax the image tolerance.
 
-Smooth-playback acceptance and the real-asset image comparison remain outstanding.
-The open interactive viewer was built at the
+At this initial checkpoint, smooth-playback acceptance and the real-asset image
+comparison remained outstanding. The interactive viewer was built at the
 `c3bbdee` code state; the later image-invalidation correction is covered by the
 library regression rather than that already-running process. No release-profile,
 other-platform or downstream-application performance acceptance is claimed.
@@ -225,7 +232,8 @@ these observations do not establish that the migration introduced this behavior.
 
 Probe hardening passes 804 no-default tests, 903 all-feature/all-target tests,
 strict Clippy and formatting. The subset-label refinement additionally passes
-the capture-tool suite and both real captures. No production sorting policy has
-been changed. Next: validate the intended posed-draw/grid ordering with a focused
-regression fixture, then re-run the original real-asset gate at 0/5/10 and the
-independently timed-instance captures after a justified repair.
+the capture-tool suite and both real captures. This diagnostic checkpoint did
+not change production sorting policy. The subsequent per-draw correction,
+regressions and re-run results are recorded in
+[posed sorting centers](deformed-sort-centers.md); the full 0/5/10 image gate and
+smooth native cadence remain incomplete.

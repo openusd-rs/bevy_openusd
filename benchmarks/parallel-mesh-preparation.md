@@ -14,8 +14,8 @@ and patch calls stay synchronous. Custom registries, missing/single-threaded
 compute pools, zero limits, deferred-hidden residency and residency budgets use
 the existing serial route path. Initial scene projection is unchanged.
 
-The main thread reads USD and assembles owned deformed meshes for up to eight
-prim contexts at a time. Default limits admit four tangent jobs and 16 MiB of
+The first implementation reads USD and assembles owned deformed meshes for up
+to eight prim contexts at a time. Default limits admit four tangent jobs and 16 MiB of
 worker input mesh payload per batch. This is not a total-memory bound: decoded
 USD arrays, deformed reads, tangent outputs and MikkTSpace scratch are additional.
 An oversized input stays in its context for serial generation without repeating
@@ -99,3 +99,61 @@ alone does not count: use complete update samples, account for the batch wall
 time and inspect process CPU, retained geometry and peak RSS. Exact outputs and
 bounded worker inputs remain required regardless of elapsed results. Concurrent
 host load must be retained; no task-owned compilation may overlap comparisons.
+
+## Sparse-batch correction
+
+The first saved-binary matrix completes all 24 processes under
+`/tmp/bevy-optimization-parallel-abba.m3FZjw/`: six workloads, ABBA order, four
+warmups and 1,000 unique authored-range clocks per process. Before production is
+`c9006b3`, after production is `7483e05` (recorded HEAD `d4c69a0`). No task-owned
+compilation overlaps. Unrelated host jobs are untouched; load averages range
+20.23–80.51, so timing noise is substantial. All 24 final geometry/image payload
+counts, peak asset counts and retained cache payload counts match within each
+workload (`payload-check.txt`); these counters are not byte-exact image proof.
+Entry/package and cow-directory hashes verify after the run.
+
+| Unique-clock median updates (ms) | Before range | First candidate range |
+| --- | ---: | ---: |
+| Cow GPU | 80.829–187.530 | 147.850–187.296 |
+| Bird GPU | 30.861–43.193 | 30.438–50.026 |
+| Morph GPU | 0.602–0.879 | 0.786–0.934 |
+| Cow CPU | 75.014–100.058 | 76.196–79.273 |
+| Bird CPU | 44.380–45.115 | 30.907–48.654 |
+| Morph CPU | 0.824–0.902 | 0.757–1.478 |
+
+The cow GPU target is not met. Do not accept this version as a speedup or excuse
+the result solely through host load. Raw samples, means, tails, warmups, process
+CPU and peak RSS remain in the logs, `summary.tsv` and `cpu-cache.tsv`. Peak RSS
+is at most 551.805 MB for candidate cow GPU versus 551.150 MB before, and 978.399
+MB for candidate bird GPU versus 974.856 MB before; this is not a memory saving.
+
+The candidate's counters expose a structural problem independent of timing
+noise: 21,000 batches for only 13,986 jobs across 1,000 cow clocks, with at most
+three jobs in any batch. Eight *prims* rarely contain several of the cow's 14
+animated meshes among 164 animated prims. Most nonempty batches therefore move
+serial work onto another thread without providing meaningful concurrency.
+
+`2900832` scans at most 128 lightweight prim contexts and ends
+each publication group after at most four mesh prims by default (hard cap eight).
+Mesh prims count toward that bound even when they fail, hit the cache or need no
+tangents. Worker inputs retain the same byte cap. A single job runs inline; with
+several jobs the caller executes the largest input while other jobs run on the
+pool. It does not execute arbitrary global-pool work on the caller. Result
+publication still follows original prim/route order. A sparse-scene regression
+test requires four meshes separated by 20 non-mesh prims each to share one batch.
+It also checks the eight-mesh hard cap with an unlimited caller job limit and
+zero tangent-cache budget. Parallel and inline generation counts distinguish
+real concurrency from merely moving a single job. Deformation-kind decisions
+are kept within the same read-only context and reused during route publication
+instead of querying those eligibility conditions again.
+
+The correction was not compiled during the first comparison. The saved binaries
+stayed immutable; its hardening/build rerun begins only after all 24 processes
+finish. Hardening passes 804 no-default tests (21 ignored), 899 all-feature/
+all-target tests (29 ignored), strict Clippy, formatting and whitespace:
+`/tmp/bevy-optimization-parallel-grouped-harden.log`. The release benchmark
+build completes too (`parallel-grouped-build.log`). `8a06876` records parallel
+versus inline work in both benchmark and capture metadata, including captures
+that reverse clocks on existing scene roots. No elapsed or render result for
+the correction is accepted yet. Its first release comparison isolates the
+primary cow GPU gate; the other controls remain required afterward.

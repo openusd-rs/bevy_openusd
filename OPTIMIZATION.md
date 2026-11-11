@@ -194,3 +194,12 @@ correct readiness reporting.
   pending for this change. See [parallel preparation](benchmarks/parallel-mesh-preparation.md)
   for limits, retained failures and the predeclared performance target. No
   speedup or native cadence result is claimed yet.
+- The first parallel matrix completes 24 processes but does not meet the cow
+  GPU target. Sparse groups contain too few meshes (21,000 batches for 13,986
+  tangent jobs), so offloading often adds scheduling without concurrency.
+  `2900832` groups by mesh count, caps lightweight contexts separately, runs
+  single jobs inline and has the caller work alongside workers on larger groups.
+  `8a06876` records this utilization in benchmarks and render captures. The
+  corrected code passes hardening (804 no-default / 899 all-feature tests and
+  strict Clippy), but its release elapsed and render acceptance are still pending.
+  The full workstreams and existing rendering failures remain open.

@@ -47,8 +47,7 @@ authorize shipping a dependency fork or clear any existing acceptance failures.
 
 Evidence directory: `/tmp/bevy-optimization-tangent-projection.HLArUU/`.
 Both original and first-candidate release probes build successfully. Two focused
-non-ignored tests
-pass: sparse/oversized scheduling still matches serial tangents, and the digest
+non-ignored tests pass: sparse/oversized scheduling still matches serial tangents, and the digest
 detects index identity, added attributes, signed-zero bytes and index-format
 changes. Both binaries pass these two tests. Two real-asset diagnostics remain
 explicitly ignored in those focused runs. Production manifests and lockfile
@@ -143,3 +142,30 @@ full-editor comparison with the declared cow/bird/control gates, preserving
 the dependency pin and native visual failures. Additional adversarial geometry,
 bounded-scratch, downstream packaging, platform and strict native rendered
 validation remain necessary before accepting a production implementation.
+
+## Full-editor protocol declared before measurement
+
+Build the release `editor_benchmark` against the exact combined dependency
+copy, then restore production manifests/lockfile before measurements. The saved
+original editor (`e18898e1dc35afd923f6edcd1934ede521fdffbc15f1f3733f459437d8673547`)
+has identical runtime library, benchmark and lockfile sources; only the new
+`cfg(test)` probe differs from its source revision. Record the complete source
+diff and executable/input hashes rather than assume equivalence from dates.
+
+Use fresh-process before/after/after/before runs for bird, cow, CPU/GPU morphs,
+material subsets and the robot arm. Each process includes four retained
+warmups and 1,000 distinct authored-range clocks. Keep default eager residency,
+the production pool/job limits, profiling flags and CPU affinity identical.
+Require zero process/diagnostic failures, matching geometry/image/cache payload
+and preparation work counts, at least 5% lower cow mean-of-two CPU-update
+medians, no greater-than-5% bird/control median regression in both nearby
+pairings, and no greater-than-5% mean peak RSS increase in any workload.
+Retain opening, idle, p95, maximum and each pairing even when primary gates
+pass; do not reclassify a tail regression as fixed by the median result.
+
+No owned build or capture may overlap timings; leave unrelated host work
+alone and record load/pressure per process. Preserve raw clocks/samples and
+verify nearest-rank summaries, final payload, executable/source/asset hashes
+and full available cow/robot directory manifests. These remain headless CPU
+updates, not native frame cadence or GPU time. No native/platform/downstream
+acceptance is inferred from this comparison, and no failed gate is waived.

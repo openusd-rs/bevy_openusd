@@ -76,16 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
-- **Animation authoring checks shared within a pass:** repeated sibling-mesh
-  classification reaches OpenUSD's full time-sample field decoding through
-  `has_authored_value`. Two optional answers now live beside each already-cached
-  animation query, without retaining decoded arrays or crossing frames/edits.
-  Errors remain uncached and custom callbacks retain fresh reads. Hardening
-  passes 887 / 1,014 executions, formatting and strict Clippy; four native CPU
-  deformation tests and wasm compilation also pass. The
-  [candidate and acceptance gates](benchmarks/animation-authored-flags.md)
-  retain initial fixture failures. Release builds and before/after CPU/native
-  comparisons remain pending; no speedup or full completion is claimed.
+- **Authored-flag cache withdrawn after measurement:** 20 release processes
+  validate 20,000 unique updates and 80 warmups, with unchanged payload/work
+  counters and no application diagnostics. Bird CPU-update mean-of-medians falls
+  20.65%, but cow falls only 1.90%, missing the predeclared 5% cow target.
+  Bird maximum rises 38.54%; subset opening, idle and tails also regress.
+  The [complete comparison](benchmarks/animation-authored-flags.md#release-cpu-comparison)
+  retains every workload and the failed acceptance exit. The candidate and its
+  cache-specific tests are withdrawn, restoring the exact pre-candidate
+  `skel.rs`; its passing correctness checks and source remain in local commit
+  `09af584`. No native capture batch was started after this failed gate, no
+  target was relaxed, and no unaccepted speedup is retained in production.
+  Post-withdrawal hardening passes 884 / 1,011 executions, formatting and
+  strict Clippy; the restored release viewer rebuild also passes.
+  Earlier visual, native 60 Hz, lifecycle and platform gates remain open.
 
 - **Remaining CPU costs profiled:** four saved-binary runs validate 4,000 unique
   updates and 16 warmups, with no lost perf samples. MikkTSpace accounts for

@@ -51,8 +51,62 @@ The log is `/tmp/bevy-optimization-mesh-phases-final-harden.log`.
 `13fd91a` contains only the fixture readiness correction; `274562f` contains the
 phase resource and capture reporting. The release capture build and wasm
 compilation pass (`/tmp/bevy-optimization-mesh-phases-{build,check-web}.log`).
-Release phase captures remain pending; the timers are diagnostic
-instrumentation, not another production speedup.
+The timers are diagnostic instrumentation, not another production speedup.
+
+### Native phase evidence
+
+`/tmp/bevy-optimization-mesh-phase-captures.IQlaun/` records three release
+production-playback processes at `d8a4dfe`, using the full-object cow/bird views
+from the classification comparison and the default subset view. Each process
+has 30 animated-ready warmups and 300 measured frames, with RTX 4080/Vulkan,
+validation enabled, forward rendering, 4x MSAA and 1280x720. No task-owned build
+overlaps. Recorded load is lower than the preceding comparisons, 4.69–6.38;
+these runs locate costs, not demonstrate a new speedup or clear failed repeats.
+
+The profiled executable SHA-256 is
+`f24a32760a843c84421771b7c80b5c66c01e6d097501423239154fb43f1c65e6`.
+All three settled final poses match the saved pre-phase-cache executable
+`5db8900aa0fb0b8763904f5c16f4621b4e96e451fac41e161db6c6b7f4828b6e`
+at their actual final clocks, with zero changed RGB pixels at tolerance zero.
+The candidate images were inspected. All 900 raw frame/clock rows and published
+pass arrays validate, maximum clock error 5.685e-14. Phase/job counts agree with
+the enclosing instrumentation, no tangent job fails, and non-overlapping phase
+sums fit within the complete batch timer. Raw and phase analyses are retained
+as `raw-analysis.json` and `phase-analysis.json`; asset manifests verify.
+All process/log checks pass, but the missing cow MDL warning still yields
+diagnostic driver status 1.
+
+These phase averages divide all batch durations, including warmup, by the
+330 changed-root updates. They are not medians of the 300-frame measured window.
+
+| Mean per changed update, ms | Cow | Bird | Subsets |
+| --- | ---: | ---: | ---: |
+| Eligibility, USD mesh/skin sampling | 7.775 | 11.568 | 0.024 |
+| CPU deformation | 3.298 | 1.891 | 0 |
+| Assembly | 1.080 | 0.267 | 0 |
+| Tangent-cache lookup | 0.114 | 0.058 | 0 |
+| Tangent dispatch/join | 31.003 | 6.325 | 0.001 |
+| Complete preparation | 43.283 | 20.127 | 0.027 |
+
+Cow dispatch/join is 71.6% of batch time, while bird eligibility is 57.5%.
+This rules out treating tangent generation as the sole next target for both
+assets. Eligibility currently includes deformation-kind queries, decoded mesh
+reads and GPU skin sampling/normal-correction preparation; it must be split
+further before attributing that whole cost to a particular query.
+
+Cow runs 4,620 tangent jobs over 35,374,680 submitted vertices, with 17,266.715 ms
+aggregate worker wall time and 17.268 ms maximum individual job. Bird runs
+13,528 jobs over 5,552,860 vertices, with 2,903.800 ms aggregate worker wall time
+and 8.995 ms maximum job. Those overlapping job times are not thread CPU time,
+not additive to dispatch/join, and do not by themselves isolate scheduling
+overhead. Subsets submit no tangent jobs: their earlier whole-update regression
+cannot be explained by expensive tangent generation.
+
+Measured main median/p95 are 51.150/56.902 ms for cow and 24.547/28.497 ms for
+bird. Their offscreen interval medians are 52.765 and 25.223 ms, so both still
+miss 60 Hz even in this lower-load observation. This does not replace the
+unaccepted alternating comparisons, full opening, native-window pacing,
+browser runtime, lifecycle or strict CPU/GPU image gates.
 
 ## Execution contract
 

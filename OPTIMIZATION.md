@@ -116,6 +116,20 @@ correct readiness reporting.
   rendering/loading failures remain open. See
   [asset-root animation](benchmarks/instance-animation.md).
 
+- Mesh-preparation phase profiling (`274562f`): opt-in non-overlapping main
+  phases and separate overlapping worker-wall counters preserve the existing
+  preparation policy. Hardening passes 831 no-default / 940 all-feature tests,
+  strict Clippy, release capture build and wasm compilation. Three native
+  playback captures validate 900 raw frames and match independent pre-timer
+  final poses exactly. Cow's dominant batch phase is tangent dispatch/join
+  (31.0 ms per changed update); bird's is eligibility/mesh/skin sampling
+  (11.6 ms), not tangents alone. Subsets submit no tangent jobs. These are
+  diagnostics, not another speedup or clearance of the failed regressions.
+  Both real assets still miss 60 Hz under the observed lower host load.
+  Next work must separate bird eligibility costs and reduce actual cow
+  tangent work without changing normal/tangent fidelity. See
+  [parallel preparation](benchmarks/parallel-mesh-preparation.md).
+
 - Point-instancer parent links (`3562782`): isolated ECS scaling confirms
   quadratic repeated replacement of unchanged `ChildOf` links. Stable instance
   links are now retained, source-ID order restored in bulk and removed/cleared

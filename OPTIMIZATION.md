@@ -76,6 +76,17 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Remaining CPU costs profiled:** four saved-binary runs validate 4,000 unique
+  updates and 16 warmups, with no lost perf samples. MikkTSpace accounts for
+  roughly 20–22% of bird and 50% of cow whole-process user CPU self samples;
+  allocation/copying and OpenUSD crate decoding are also substantial. Sampled
+  copy callers and the pinned decoder's full time-sample materialization point
+  to a selective-read investigation at the OpenUSD boundary, not another blind
+  cache or queue retry. The [CPU profile](benchmarks/preparation-cpu-profile.md)
+  retains the failed initial stack setup, incomplete deeper unwinds and timing
+  limits. No production change or speedup is claimed; compatibility-changing
+  MikkTSpace options stay disabled and all broader gates remain open.
+
 - **Viewer log traffic:** TRACE is now opt-in via `RUST_LOG`; the default keeps
   application INFO and warnings/errors. Across 32 native bird seeks, log traffic
   falls from 233,118 bytes / 3,842 file calls to 1,393 bytes / 29 calls. The

@@ -213,6 +213,39 @@ fn apply_centers(
     }
 }
 
+fn restore_centers(
+    mut originals: ResMut<Originals>,
+    transparent: Option<ResMut<ViewSortedRenderPhases<Transparent3d>>>,
+    transmissive: Option<ResMut<ViewSortedRenderPhases<Transmissive3d>>>,
+) {
+    if let Some(mut phases) = transparent {
+        for (view, entity, sorting) in originals.transparent.drain(..) {
+            if let Some(item) = phases
+                .0
+                .get_mut(&view)
+                .and_then(|phase| phase.items.get_mut(&entity))
+            {
+                item.sorting_info = sorting;
+            }
+        }
+    } else {
+        originals.transparent.clear();
+    }
+    if let Some(mut phases) = transmissive {
+        for (view, entity, sorting) in originals.transmissive.drain(..) {
+            if let Some(item) = phases
+                .0
+                .get_mut(&view)
+                .and_then(|phase| phase.items.get_mut(&entity))
+            {
+                item.sorting_info = sorting;
+            }
+        }
+    } else {
+        originals.transmissive.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +286,30 @@ mod tests {
 
     fn center(world: &World, entity: Entity) -> Option<Vec3> {
         world.get::<CachedCenter>(entity).unwrap().center
+    }
+
+    #[test]
+    fn sort_registration_handles_a_late_render_app_once() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            super::super::gpu_skin::UsdGpuSkinningPlugin,
+        ));
+        assert!(!app.world().contains_resource::<Configured>());
+        app.insert_sub_app(RenderApp, bevy::app::SubApp::new());
+        super::super::gpu_skin::UsdGpuSkinningPlugin.finish(&mut app);
+        assert!(app.world().contains_resource::<Configured>());
+        app.sub_app_mut(RenderApp)
+            .world_mut()
+            .resource_mut::<Centers>()
+            .0
+            .insert(Entity::PLACEHOLDER.into(), Vec3::X);
+        configure(&mut app);
+        assert_eq!(
+            app.sub_app(RenderApp).world().resource::<Centers>().0.len(),
+            1
+        );
     }
 
     #[test]
@@ -315,6 +372,28 @@ mod tests {
         app.update();
         assert_eq!(center(app.world(), a), Some(Vec3::new(5.5, 0.5, 0.0)));
         assert_eq!(center(app.world(), b), Some(Vec3::new(16.0, 0.5, 0.0)));
+        let removed = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .remove(handle.id())
+            .unwrap();
+        app.update();
+        assert_eq!(center(app.world(), a), None);
+        assert_eq!(center(app.world(), b), None);
+        app.world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .insert(handle.id(), removed)
+            .unwrap();
+        app.update();
+        assert_eq!(center(app.world(), a), Some(Vec3::new(5.5, 0.5, 0.0)));
+        app.world_mut().entity_mut(weights).remove::<MorphWeights>();
+        app.update();
+        assert_eq!(center(app.world(), a), None);
+        app.world_mut()
+            .entity_mut(weights)
+            .insert(MorphWeights::new(vec![0.25], None).unwrap());
+        app.update();
+        assert_eq!(center(app.world(), a), Some(Vec3::new(4.5, 0.5, 0.0)));
         app.world_mut().entity_mut(b).remove::<MeshMorphWeights>();
         app.update();
         assert_eq!(center(app.world(), b), None);
@@ -429,9 +508,175 @@ mod tests {
                 .get_aabb(),
             original.get_aabb()
         );
+        *app.world_mut().get_mut::<GlobalTransform>(entity).unwrap() =
+            GlobalTransform::from_scale(Vec3::ZERO);
+        app.update();
+        assert_eq!(center(app.world(), entity), None);
+        *app.world_mut().get_mut::<GlobalTransform>(entity).unwrap() =
+            GlobalTransform::from(transform);
+        app.update();
+        assert!(center(app.world(), entity).is_some());
         app.world_mut().despawn(joint);
         app.update();
         assert_eq!(center(app.world(), entity), None);
+    }
+
+    #[test]
+    fn instance_subsets_match_cpu_centers_through_clocks_reload_and_close() {
+        use crate::{
+            UsdScene, UsdSceneRoot, UsdSource,
+            asset::UsdSceneState,
+            instance::{UsdInstanceTime, UsdInstances},
+        };
+        use bevy::camera::primitives::MeshAabb;
+        let source = |orientation| {
+            let file = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../assets/skel_morph_subsets.usda"
+            );
+            UsdSource::new("sort-subsets.usda", format!(
+                "#usda 1.0\n(subLayers = [@{file}@])\nover \"Test\" {{ over \"Bar\" {{ uniform token orientation = \"{orientation}\" }} }}\n"
+            ).into_bytes()).unwrap()
+        };
+        let setup = |gpu| {
+            let mut app = app();
+            app.add_plugins((crate::UsdPlugin, crate::UsdAssetPlugin))
+                .init_resource::<Assets<StandardMaterial>>()
+                .init_resource::<Assets<Image>>()
+                .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
+            if gpu {
+                app.add_plugins(super::super::gpu_skin::UsdGpuSkinningPlugin);
+            }
+            let handle = app
+                .world_mut()
+                .resource_mut::<Assets<UsdScene>>()
+                .add(UsdScene {
+                    source: source("rightHanded"),
+                    textures: default(),
+                });
+            let roots = [0.0, 60.0].map(|current| {
+                app.world_mut()
+                    .spawn((
+                        UsdSceneRoot(handle.clone()),
+                        UsdInstanceTime { current },
+                        Transform::from_xyz(current as f32 * 0.1, 0.0, 0.0),
+                    ))
+                    .id()
+            });
+            app.update();
+            for root in roots {
+                assert_eq!(
+                    app.world().get::<UsdSceneState>(root),
+                    Some(&UsdSceneState::Ready)
+                );
+            }
+            (app, handle, roots)
+        };
+        let draws = |app: &App, root| {
+            let parent = app
+                .world()
+                .non_send::<UsdInstances>()
+                .entity(root, "/Test/Bar")
+                .unwrap();
+            std::iter::once((String::new(), parent))
+                .chain(
+                    app.world()
+                        .get::<Children>(parent)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|&child| {
+                            app.world()
+                                .get::<super::super::subset::UsdSubset>(child)
+                                .map(|part| (part.0.clone(), child))
+                        }),
+                )
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let check = |cpu: &App, a: [Entity; 2], gpu: &App, b: [Entity; 2]| {
+            for (a, b) in a.into_iter().zip(b) {
+                let cpu_draws = draws(cpu, a);
+                let gpu_draws = draws(gpu, b);
+                assert!(cpu_draws.len() > 1);
+                assert_eq!(
+                    cpu_draws.keys().collect::<Vec<_>>(),
+                    gpu_draws.keys().collect::<Vec<_>>()
+                );
+                for (name, entity) in cpu_draws {
+                    let mesh = cpu.world().get::<Mesh3d>(entity).unwrap();
+                    let transform = cpu.world().get::<GlobalTransform>(entity).unwrap();
+                    let expected = cpu
+                        .world()
+                        .resource::<Assets<Mesh>>()
+                        .get(&mesh.0)
+                        .unwrap()
+                        .get_aabb()
+                        .map(|bounds| transform.transform_point(Vec3::from(bounds.center)));
+                    let actual = center(gpu.world(), gpu_draws[&name]);
+                    match (expected, actual) {
+                        (Some(expected), Some(actual)) => assert!(
+                            actual.abs_diff_eq(expected, 1e-4),
+                            "{name} {actual:?} {expected:?}"
+                        ),
+                        (None, None) => (),
+                        other => panic!("{name} {other:?}"),
+                    }
+                }
+            }
+        };
+        let (mut cpu, ah, a) = setup(false);
+        let (mut gpu, bh, b) = setup(true);
+        for clocks in [[0.0, 60.0], [60.0, 0.0], [15.0, 45.0], [30.0, 30.0]] {
+            for i in 0..2 {
+                cpu.world_mut()
+                    .get_mut::<UsdInstanceTime>(a[i])
+                    .unwrap()
+                    .current = clocks[i];
+                gpu.world_mut()
+                    .get_mut::<UsdInstanceTime>(b[i])
+                    .unwrap()
+                    .current = clocks[i];
+            }
+            cpu.update();
+            gpu.update();
+            check(&cpu, a, &gpu, b);
+        }
+        for (app, handle) in [(&mut cpu, &ah), (&mut gpu, &bh)] {
+            app.world_mut()
+                .resource_mut::<Assets<UsdScene>>()
+                .get_mut(handle)
+                .unwrap()
+                .source = source("leftHanded");
+            app.update();
+            app.update();
+        }
+        check(&cpu, a, &gpu, b);
+        gpu.update();
+        let rebuilt = gpu.world().resource::<DeformedSortTiming>().rebuilt;
+        for _ in 0..3 {
+            gpu.update();
+        }
+        assert_eq!(
+            gpu.world().resource::<DeformedSortTiming>().rebuilt,
+            rebuilt
+        );
+        gpu.world_mut().entity_mut(b[0]).remove::<UsdSceneRoot>();
+        gpu.update();
+        assert_eq!(gpu.world().non_send::<UsdInstances>().len(), 1);
+        assert!(
+            draws(&gpu, b[1])
+                .values()
+                .any(|&entity| center(gpu.world(), entity).is_some())
+        );
+        gpu.world_mut().despawn(b[1]);
+        gpu.update();
+        assert!(gpu.world().non_send::<UsdInstances>().is_empty());
+        assert_eq!(
+            gpu.world_mut()
+                .query::<&CachedCenter>()
+                .iter(gpu.world())
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -539,38 +784,5 @@ mod tests {
         let mut top = TransparentSortingInfo3d::AlwaysOnTop;
         set_center(&mut top, Vec3::Y);
         assert!(matches!(top, TransparentSortingInfo3d::AlwaysOnTop));
-    }
-}
-
-fn restore_centers(
-    mut originals: ResMut<Originals>,
-    transparent: Option<ResMut<ViewSortedRenderPhases<Transparent3d>>>,
-    transmissive: Option<ResMut<ViewSortedRenderPhases<Transmissive3d>>>,
-) {
-    if let Some(mut phases) = transparent {
-        for (view, entity, sorting) in originals.transparent.drain(..) {
-            if let Some(item) = phases
-                .0
-                .get_mut(&view)
-                .and_then(|phase| phase.items.get_mut(&entity))
-            {
-                item.sorting_info = sorting;
-            }
-        }
-    } else {
-        originals.transparent.clear();
-    }
-    if let Some(mut phases) = transmissive {
-        for (view, entity, sorting) in originals.transmissive.drain(..) {
-            if let Some(item) = phases
-                .0
-                .get_mut(&view)
-                .and_then(|phase| phase.items.get_mut(&entity))
-            {
-                item.sorting_info = sorting;
-            }
-        }
-    } else {
-        originals.transmissive.clear();
     }
 }

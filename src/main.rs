@@ -28,6 +28,7 @@ mod perf_render;
 mod render_settings;
 mod timeline;
 mod toolbar_icons;
+mod transparent_probe;
 mod ui_diagnostics;
 mod ui_frame_pacing;
 mod ui_replay;

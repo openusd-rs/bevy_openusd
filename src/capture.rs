@@ -221,12 +221,16 @@ pub fn configure(app: &mut App) {
     if let Some(current) = time {
         app.insert_resource(usd_bevy::route::StageTime { current });
     }
+    if std::env::var_os("USD_CAPTURE_PHASE_PROBE").is_some() {
+        crate::transparent_probe::configure(app);
+    }
     let started = std::time::Instant::now();
     app.add_systems(Last, move |mut commands: Commands, cameras: Query<CaptureCamera, With<Camera3d>>,
         generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
         diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
         session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>,
         bridge: Res<usd_bevy::editor::EditorBridge>, mut seek_state: Local<CaptureSeeks>,
+        transparent: Option<Res<crate::transparent_probe::TransparentProbe>>,
         meshes: Res<Assets<Mesh>>, mesh_references: Query<(&Mesh3d, &InheritedVisibility)>| {
         let active = cameras.iter().find(|(camera, ..)| camera.is_active);
         let document = active.and_then(|_| session.as_ref().map(|session| session.document_id()));
@@ -245,6 +249,9 @@ pub fn configure(app: &mut App) {
                 let mut timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
                 timing.push_str(&seek_state.report(&seeks));
+                if let Some(probe) = &transparent {
+                    timing.push_str(&probe.report());
+                }
                 timing.push_str(&crate::capture_metadata::camera_report(transform, camera.clip_from_view()));
                 timing.push_str(&crate::capture_metadata::mesh_residency_report(&meshes,
                     mesh_references.iter().map(|(mesh, visibility)| (mesh.0.id(), visibility.get()))));

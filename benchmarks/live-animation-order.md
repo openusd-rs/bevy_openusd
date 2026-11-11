@@ -205,3 +205,32 @@ and extracted camera state before attributing the repeatable grid difference to
 animation traversal. Preserve full-frame zero-tolerance checks and all original
 failures. Native cadence, responsive loading, browser and lifecycle work remain
 open under `OPTIMIZATION.md`.
+
+### Unseeked controls and render-state probe
+
+Four saved-viewer controls in
+`/tmp/bevy-optimization-live-order-unseeked.KtpHpt/` open directly at time zero
+or five with no seek commands. Both before/after pairs are pixel-exact at
+tolerance zero; metadata matches except elapsed settling time and confirms empty
+requested/observed sequences. All four capture processes succeed. Headless
+loader/clipboard diagnostics remain (4 or 5 records per run), so the combined
+control driver still fails. These results distinguish opening at a pose from
+the failing live-seek sequences; they do not establish the cause of the latter.
+
+The controls explicitly select Weston/GTK portal configuration inside their
+owned private runtime rather than inheriting the user's desktop selection.
+None activates Hyprland or KDE portal backends. The reusable capture-session
+helper now applies that private-only environment; its regression checks that
+the caller's desktop, display and XDG environment remain unchanged.
+
+The existing transparent-phase probe is shared from `src/transparent_probe.rs`
+by both the offscreen example and embedded screenshot harness. Setting
+`USD_CAPTURE_PHASE_PROBE` on a screenshot request records actual sorted phase
+items, extracted grid transforms/settings, and extracted camera matrices,
+viewport, render format and jitter. Its scope remains the latest completed
+render phase after sorting and before batching/preparation, not a claim about
+GPU uniform readback or the screenshot's exact submission. The normal viewer
+does not register this opt-in probe. Hardening passes 848 no-default / 967
+all-feature/all-target executions, formatting and strict Clippy; regression
+coverage includes display-setting changes and optional extracted projection
+overrides/jitter. Log: `/tmp/bevy-optimization-live-order-probe-harden.log`.

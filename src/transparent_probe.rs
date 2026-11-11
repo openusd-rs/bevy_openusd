@@ -3,8 +3,10 @@ use bevy::{
     prelude::*,
     render::{
         Extract, ExtractSchedule, Render, RenderApp, RenderSystems,
+        camera::TemporalJitter,
         render_phase::ViewSortedRenderPhases,
         sync_world::{MainEntity, MainEntityHashMap},
+        view::ExtractedView,
     },
 };
 use std::sync::{Arc, Mutex};
@@ -91,13 +93,37 @@ fn extract_labels(
     }
     labels.grids.clear();
     for (transform, settings) in &grids {
-        labels.grids.push_str(&format!(
-            "transparent_grid world={:?} scale={:?} fade={:?}\n",
-            transform.to_matrix(),
-            settings.scale,
-            settings.fadeout_distance
-        ));
+        labels.grids.push_str(&grid_report(transform, settings));
     }
+}
+
+fn grid_report(
+    transform: &GlobalTransform,
+    settings: &bevy::dev_tools::infinite_grid::InfiniteGridSettings,
+) -> String {
+    format!(
+        "transparent_grid world={:?} scale={:?} fade={:?} dot_fade={:?} major_interval={} x_color={:?} z_color={:?} minor_color={:?} major_color={:?}\n",
+        transform.to_matrix(),
+        settings.scale,
+        settings.fadeout_distance,
+        settings.dot_fadeout_strength,
+        settings.major_line_interval,
+        settings.x_axis_color,
+        settings.z_axis_color,
+        settings.minor_line_color,
+        settings.major_line_color,
+    )
+}
+
+fn view_report(view: &ExtractedView, jitter: Option<Vec2>) -> String {
+    format!(
+        "transparent_camera scope=extracted-view-before-prepare world_from_view={:?} clip_from_view={:?} clip_from_world={:?} viewport={:?} format={:?} jitter={jitter:?}\n",
+        view.world_from_view.to_matrix(),
+        view.clip_from_view,
+        view.clip_from_world,
+        view.viewport,
+        view.target_format,
+    )
 }
 
 fn item_report(
@@ -123,9 +149,16 @@ fn report(
     phases: Res<ViewSortedRenderPhases<Transparent3d>>,
     labels: Res<Labels>,
     probe: Res<TransparentProbe>,
+    views: Query<(&ExtractedView, Option<&TemporalJitter>)>,
 ) {
     let mut text = labels.grids.clone();
     for (view, phase) in &phases.0 {
+        if let Some((extracted, jitter)) = views
+            .iter()
+            .find(|(extracted, _)| extracted.retained_view_entity == *view)
+        {
+            text.push_str(&view_report(extracted, jitter.map(|jitter| jitter.offset)));
+        }
         text.push_str(&format!(
             "transparent_view={view:?} items={}\n",
             phase.items.len()
@@ -146,6 +179,55 @@ fn report(
     let mut snapshot = probe.0.lock().unwrap();
     snapshot.frames += 1;
     snapshot.text = text;
+}
+
+#[test]
+fn grid_report_preserves_transform_and_display_settings() {
+    use bevy::dev_tools::infinite_grid::InfiniteGridSettings;
+    let transform = GlobalTransform::from_translation(Vec3::new(1.0, -2.0, 3.0));
+    let mut settings = InfiniteGridSettings {
+        scale: 0.25,
+        fadeout_distance: 42.0,
+        dot_fadeout_strength: 0.75,
+        major_line_interval: 8,
+        ..default()
+    };
+    let before = grid_report(&transform, &settings);
+    assert!(before.contains(&format!("world={:?}", transform.to_matrix())));
+    assert!(before.contains("scale=0.25 fade=42.0 dot_fade=0.75 major_interval=8"));
+    assert!(before.contains(&format!("x_color={:?}", settings.x_axis_color)));
+    assert!(before.contains(&format!("z_color={:?}", settings.z_axis_color)));
+    assert!(before.contains(&format!("minor_color={:?}", settings.minor_line_color)));
+    assert!(before.contains(&format!("major_color={:?}", settings.major_line_color)));
+    settings.fadeout_distance = f32::from_bits(settings.fadeout_distance.to_bits() + 1);
+    assert_ne!(before, grid_report(&transform, &settings));
+}
+
+#[test]
+fn view_report_preserves_extracted_matrices_and_jitter() {
+    use bevy::render::{render_resource::TextureFormat, view::RetainedViewEntity};
+    let view = ExtractedView {
+        retained_view_entity: RetainedViewEntity::new(Entity::PLACEHOLDER.into(), None, 0),
+        clip_from_view: Mat4::from_scale(Vec3::new(2.0, 3.0, 4.0)),
+        world_from_view: GlobalTransform::from_translation(Vec3::new(5.0, 6.0, 7.0)),
+        clip_from_world: Some(Mat4::IDENTITY),
+        target_format: TextureFormat::Rgba16Float,
+        viewport: UVec4::new(4, 5, 640, 480),
+        color_grading: default(),
+        invert_culling: false,
+    };
+    let report = view_report(&view, Some(Vec2::new(0.25, -0.25)));
+    assert!(report.contains("scope=extracted-view-before-prepare"));
+    assert!(report.contains(&format!(
+        "world_from_view={:?}",
+        view.world_from_view.to_matrix()
+    )));
+    assert!(report.contains(&format!("clip_from_view={:?}", view.clip_from_view)));
+    assert!(report.contains(&format!("clip_from_world={:?}", view.clip_from_world)));
+    assert!(report.contains(
+        "viewport=UVec4(4, 5, 640, 480) format=Rgba16Float jitter=Some(Vec2(0.25, -0.25))"
+    ));
+    assert!(view_report(&view, None).contains("jitter=None"));
 }
 
 #[test]

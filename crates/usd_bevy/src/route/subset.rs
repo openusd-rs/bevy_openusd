@@ -579,6 +579,7 @@ def Mesh "M" {
             app.init_resource::<Assets<FlatMaterial>>();
             app.init_resource::<Assets<SkinnedMeshInverseBindposes>>();
             app.init_resource::<GpuSkinningEnabled>();
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             let handle = app
                 .world_mut()
                 .resource_mut::<Assets<crate::UsdScene>>()
@@ -593,7 +594,18 @@ def Mesh "M" {
                     UsdInstanceTime { current: 30.0 },
                 ))
                 .id();
-            app.update();
+            for _ in 0..8 {
+                app.update();
+                if app.world().get::<crate::UsdSceneState>(root)
+                    == Some(&crate::UsdSceneState::Ready)
+                {
+                    break;
+                }
+            }
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready),
+            );
             let parent = app
                 .world()
                 .get_non_send::<UsdInstances>()

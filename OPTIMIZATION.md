@@ -89,7 +89,11 @@ correct readiness reporting.
   or first-visible latency. A subsequent matched sixteen-process comparison
   fails six of eight 5% opening milestone gates, including bird/cow
   request-to-Ready regressions, despite twelve pixel-exact image comparisons.
-  No earlier loading failure is cleared. See
+  Follow-up `20c43b2` snapshots existing texture-finalization counters at Ready:
+  that synchronous `PostUpdate` work consumes 51% of bird and 72% of cow opening
+  in the diagnostic runs, outside the projection budget. Three more image pairs
+  are pixel-exact and updated hardening passes 951 all-feature executions. This
+  identifies the next loading target; no earlier loading failure is cleared. See
   [opening milestones](benchmarks/opening-milestones.md).
 
 - Rendered playback baseline (`9f4212f`, `1fad2a5`): a bounded recorder now uses

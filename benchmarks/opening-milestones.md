@@ -155,3 +155,55 @@ finalization in `PostUpdate`, not just asynchronous IO/decode. The existing
 but was only enabled by `editor_benchmark`; expose it in the native capture
 before assigning the residual interval to the loader. Earlier mip optimization
 and retained fidelity evidence are in [texture finalization](texture-finalization.md).
+
+## Native texture-finalization attribution
+
+`20c43b2` enables the existing `TextureSamplingTiming` resource alongside
+`USD_PROFILE_SOURCES` in `viewer_capture`. It snapshots the image count and wall
+duration at the first all-roots-Ready observation and separately reports the
+cumulative counter at screenshot request. Later settling/playback work cannot
+silently be charged to initial loading. No texture algorithm or policy changes.
+
+Updated hardening passes 835 no-default / 951 all-feature/all-target executions,
+strict Clippy and formatting; release build passes. Logs:
+`/tmp/bevy-optimization-opening-textures-ready-harden.log` and
+`/tmp/bevy-optimization-opening-textures-ready-build.log`. Earlier successful
+counter-only verification is retained in the corresponding `textures-harden`
+and `textures-build` logs. The metadata test also checks optional Ready snapshots.
+
+`/tmp/bevy-optimization-opening-textures.M1sj5I/` retains three diagnostic
+captures with the existing `USD_PROFILE_LOADING=1` validation profiler enabled.
+Binary SHA-256:
+`aa9e2e3f7041f0f9c94a0909fdd6de856bbc64785610cd508da783aec8260c57`.
+Source/lock/quality/camera settings remain as above. No own build overlaps;
+host load spans 36.24–59.69. These extra profiler settings are not a new
+before/after performance comparison.
+
+| Case | Request to Ready, ms | Texture finalization at Ready, ms | Share | Source publication phases, ms | Completed validation, ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Bird | 4626.779 | 2361.033 | 51.0% | 519.686 | 5.721 |
+| Cow | 9299.963 | 6685.995 | 71.9% | 691.014 | 374.415 |
+| Arm | 237.573 | 0 | 0% | 109.436 | 60.424 |
+
+Both textured scenes finalize five images. Bird inputs total 335,544,320 bytes
+and append 111,848,100 bytes; cow inputs total 203,423,744 and append 67,807,908.
+The Ready and screenshot counters agree exactly, so none of this recorded work
+comes from the later settle interval. The arm finalizes no textures. Remaining
+request-to-Ready time after these disjoint counters is 1740.339 / 1548.539 /
+67.713 ms respectively and is not yet attributed to individual operations.
+
+All three image comparisons against the earlier recorder are pixel-exact at
+tolerance zero. Process/log/source checks pass and `analysis.json` validates the
+Ready/final snapshots and phase arithmetic. The cow's retained MDL warning
+keeps the diagnostic driver at exit 1; the analysis exits 0.
+
+`route/sampling.rs::finalise` does this work synchronously in `PostUpdate`, outside
+the scene projection budget. Its time includes mip generation, sampler updates
+and generated-image fingerprinting, not just one arithmetic loop; preemption
+also contributes to wall time. The next production optimization should target
+this measured path while keeping exact finite-image mip bytes, full resolution,
+filtering, color space, generated-image tracking and reload behavior. The prior
+decode lookup-table/full-float-buffer optimization is already present; do not
+repeat it or claim that a faster arithmetic loop alone establishes responsive
+windowed loading. Render/pipeline delays and the failed matched opening gates
+remain separate unfinished work.

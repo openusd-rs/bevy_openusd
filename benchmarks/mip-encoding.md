@@ -79,3 +79,34 @@ initialization. Kernel results do not replace whole-mip/opening measurements.
 
 Exhaustive release, native rendering/performance, reload/export/deformation and
 wasm acceptance remain pending at this implementation checkpoint.
+
+## Completed correctness gates
+
+Candidate `05b3106` passes the release exhaustive comparison for **107,011,437**
+representable inputs, from just below the first nonzero code transition through
+1. The kernel check also passes, with identical checksum 613,326,880 for every
+4,194,304-value observation. Log:
+`/tmp/bevy-optimization-mip-encoding-exhaustive.log`. The fresh release test
+feature set required a nine-minute build; the two tests themselves finish in
+0.86 seconds. No task-owned compilation overlaps the kernel measurements.
+
+| Encoder-only observation | Scalar, ms | Candidate, ms |
+| --- | ---: | ---: |
+| First ABBA block | 34.472 / 34.107 | 8.756 / 8.571 |
+| Second ABBA block | 33.318 / 38.053 | 8.363 / 8.605 |
+
+The average observation falls from 34.988 to 8.574 ms (75.5% lower, about 4.08x
+throughput). This proves an encoder-only improvement in this harness, not a
+whole-image or loading claim. All constants and threshold calculations use the
+same running platform's scalar formula; the exhaustive result is local Linux
+evidence, not proof of every platform's floating-point library behavior.
+
+Native gates also pass: four deformation-oracle tests, five asset watchers plus
+four editor texture watchers, fourteen native exports and the custom-data
+reference round trip. Wasm compilation and the release viewer-capture build pass.
+The status ledger is `/tmp/bevy-optimization-mip-encoding-gates.tsv`; logs are
+`/tmp/bevy-optimization-mip-encoding-{test-native-deformation,test-watchers,test-native,check-web,build}.log`.
+Wasm compilation is not rendered browser or exhaustive browser-math acceptance.
+
+Native rendered output and end-to-end opening measurements are the next gate;
+the kernel result does not waive earlier loading or rendering failures.

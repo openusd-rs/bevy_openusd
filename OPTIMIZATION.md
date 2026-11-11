@@ -83,8 +83,14 @@ correct readiness reporting.
   CPU matrix repeats candidate tangent-cache footprints for every workload;
   baseline bird/cow quick-seek footprints still vary. Geometry/image payloads,
   capacity and asset counts match. Three timing checks still fail, so neither
-  a causal speedup nor 60 Hz is established. Actual live-editor rendered seeks
-  remain pending; asset-root screenshots do not exercise this changed path.
+  a causal speedup nor 60 Hz is established. Capture harness `72a2d73` raises
+  hardening to 845 / 962 executions and wasm still compiles. Twenty actual
+  live-editor runs acknowledge forward/reverse/repeated seeks. Seven image pairs
+  are pixel-exact; three bird pairs fail by up to two RGB levels on roughly 200
+  pixels, visually aligned with the grid. Same-binary controls repeat exactly,
+  so the difference is not dismissed as noise. All twenty captures also retain
+  headless-environment diagnostic failures. Grid/camera-state diagnosis and the
+  full performance workstreams remain open; no acceptance threshold is relaxed.
   See [live animation order](benchmarks/live-animation-order.md).
 
 - Mip output reservation (`fdf88b7`): checked complete-chain sizing and one exact reserve

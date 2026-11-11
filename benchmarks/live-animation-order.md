@@ -108,10 +108,10 @@ All observed timing changes, RSS values and earlier failures remain recorded.
 There are zero semantic-invariant, candidate-repeatability or diagnostic
 failures; this does not convert the timing failures into passes.
 
-## Next rendered check
+## Live-editor capture harness
 
-Actual live-route rendered fidelity remains pending. Add an opt-in screenshot
-seek sequence to the embedded viewer: bounded finite time codes, real
+The rendered check uses an opt-in screenshot seek sequence in the embedded
+viewer: bounded finite time codes, real
 `EditorBridge` seek commands on separate updates, observed-clock acknowledgement,
 document-change reset, and final-clock settling through the existing capture
 gate and timeout. Preserve ordinary screenshot behavior when not requested.
@@ -133,4 +133,75 @@ Hardening passes 845 no-default / 962 all-feature/all-target executions, strict
 Clippy and formatting. The first hardening attempt caught a collapsible nested
 conditional; it was corrected before the passing final run. Logs:
 `/tmp/bevy-optimization-live-seek-capture-{harden,final-harden}.log`.
-This harness validation is not yet a rendered-image result.
+The harness tests alone are not rendered-image results.
+
+## Rendered live-editor comparison
+
+The matched viewer matrix is retained at
+`/tmp/bevy-optimization-live-order-captures.1WEBem/`. It contains 20 isolated
+viewer runs, ten before/after pairs, requested/observed clock metadata, tightly
+packed RGBA and PNG viewport captures, compositor frames, all logs, manifests,
+comparison output, and `analysis.json`. Saved binaries share capture code
+`72a2d73`; the unordered baseline disables only sorting in `animation_paths`, as
+recorded in `baseline-only.patch`. Source restoration is byte-checked and the
+restored candidate rebuild matches the saved executable exactly. SHA-256:
+
+- Before: `ba96c67fc6689f9210286891ec98d88347626a30f5eb2473a7e757099abc8677`
+- After: `5cf559c616fd160245d11d298eff94cd662a5c9d5ca080c994cee2755fdd1394`
+
+`oslo make build --profile release` builds the viewer without launching it;
+`d1c31d1` adds that option while retaining the debug default. Invalid profiles
+are rejected. Capture tools are built separately, and all captures use saved
+binaries through `run-headless-benchmark`, with no task-owned compilation.
+Wasm compilation passes again after the capture change.
+
+Each viewer runs in an owned headless Weston instance with a private runtime
+directory/bus, without user-desktop input or UI replay. Weston records the
+RTX 4080 Vulkan device; viewport readbacks are 1440 x 920. Four GPU-skinning-mode
+scenes use `[5, 10, 5, 5]` and `[5, 0, 10, 10]`, starting at zero. Bird and cow
+also have explicit CPU-skinning controls for the first sequence. All requested
+clocks are observed on subsequent editor updates; final captures satisfy the
+120-update and one-second minimum settling gates. All process, image-region,
+panic/render-error log, asset/source/binary manifest and semantic metadata checks
+pass. Camera matrices, mesh residency and capture dimensions match within pairs.
+
+Seven pairs are pixel-exact at RGB tolerance zero: cow (both GPU clocks and CPU),
+arm (both clocks), and subsets (both clocks). **Three bird pairs fail**:
+
+| Mode / final clock | Changed pixels out of 1,324,800 | Maximum RGB error |
+| --- | ---: | ---: |
+| GPU / 5 | 203 | 2 |
+| GPU / 10 | 205 | 2 |
+| CPU / 5 | 212 | 2 |
+
+The GPU-five difference image was inspected: changes visually align with the
+background grid rather than an obvious bird-shape change. Its changed-pixel
+bounds span `[2, 175, 1427, 910]`. This is a diagnostic observation, not a proven
+cause or a reason to exclude those pixels. One additional fresh run of **each
+same saved binary** reproduces its own GPU-five image exactly (zero changed
+pixels), so these controls do not support dismissing the cross-binary failure
+as random run-to-run variation. Their logs, metadata, comparisons and
+`repeat-results.tsv` remain alongside the original matrix.
+
+Both versions show changed rendered poses between clocks five and ten: bird
+75,876 pixels, cow 105,420 and arm 25,944. Bird poses, cow and arm images were
+visually inspected. These images prove actual live seek rendering, not playback
+cadence or the existing strict CPU/GPU oracle's acceptance.
+
+The broad zero-warning diagnostic also fails in every viewer run (4 or 5
+records each): the headless clipboard lacks data-control/X11 support, the Vulkan
+loader skips an unavailable D3D12 ICD, and some private-bus appearance requests
+time out. Logs retain these failures; none is silently filtered into a pass.
+The private bus also auto-activates system portal backends from inherited desktop
+selection, so future capture isolation should explicitly select a headless/GTK
+portal configuration rather than inherit that selection. No desktop-control or
+input commands were issued. These embedded captures do not resolve the earlier
+asset-root cow MDL diagnostic.
+
+Overall acceptance remains failed: three strict image comparisons and twenty
+runtime-diagnostic rows in the main matrix, in addition to the CPU timing
+failures above. Next: compare unseeked controls and inspect grid transform/settings
+and extracted camera state before attributing the repeatable grid difference to
+animation traversal. Preserve full-frame zero-tolerance checks and all original
+failures. Native cadence, responsive loading, browser and lifecycle work remain
+open under `OPTIMIZATION.md`.

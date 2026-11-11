@@ -222,6 +222,9 @@ make.recipe{
 make.recipe{ name = "test-assets", desc = "test the patched Bevy asset loader",
              run = function() sh.cargo("test", "-p", "bevy_asset", "--lib") end }
 
+make.recipe{ name = "test-pbr", desc = "test the patched Bevy PBR crate",
+             run = function() sh.cargo("test", "-p", "bevy_pbr", "--lib") end }
+
 make.recipe{
   name = "build-tangent-probe",
   desc = "build the release library test executable containing the paired tangent probe",

@@ -1,9 +1,11 @@
 use core::{iter, mem};
 
+use bevy_asset::AssetId;
 use bevy_camera::visibility::ViewVisibility;
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::prelude::*;
 use bevy_mesh::morph::{MeshMorphWeights, MorphWeights, MAX_MORPH_WEIGHTS};
+use bevy_mesh::{Mesh, Mesh3d};
 use bevy_platform::collections::hash_map::Entry;
 use bevy_render::mesh::allocator::MeshAllocator;
 use bevy_render::mesh::RenderMesh;
@@ -18,7 +20,7 @@ use bevy_render::{
 };
 use bytemuck::{NoUninit, Pod, Zeroable};
 
-use crate::{skin, RenderMeshInstances};
+use crate::skin;
 
 #[derive(Component)]
 pub struct MorphIndex {
@@ -65,6 +67,8 @@ pub enum MorphIndices {
 /// weight calculation.
 #[derive(Clone, Copy)]
 pub struct MorphWeightsInfo {
+    /// The mesh asset associated with the extracted weights.
+    mesh_asset_id: AssetId<Mesh>,
     /// The offset to the first weight for this mesh instance in the
     /// `morph_weights` buffer.
     current_weight_offset: u32,
@@ -249,7 +253,7 @@ fn add_to_alignment<T: NoUninit + Default>(buffer: &mut RawBufferVec<T>) {
 pub fn extract_morphs(
     morph_indices: ResMut<MorphIndices>,
     uniform: ResMut<MorphUniforms>,
-    query: Extract<Query<(Entity, &ViewVisibility, &MeshMorphWeights)>>,
+    query: Extract<Query<(Entity, &ViewVisibility, &Mesh3d, &MeshMorphWeights)>>,
     weights_query: Extract<Query<&MorphWeights>>,
     render_device: Res<RenderDevice>,
 ) {
@@ -278,7 +282,7 @@ pub fn extract_morphs(
     uniform.prepare_for_new_frame();
 
     // Loop over each entity with morph targets.
-    for (entity, view_visibility, mesh_weights) in &query {
+    for (entity, view_visibility, mesh, mesh_weights) in &query {
         if !view_visibility.get() {
             continue;
         }
@@ -331,6 +335,7 @@ pub fn extract_morphs(
                 morph_target_info.insert(
                     entity.into(),
                     MorphWeightsInfo {
+                        mesh_asset_id: mesh.id(),
                         current_weight_offset: start as u32,
                         prev_weight_offset: maybe_prev_weights_offset,
                         weight_count: weights.len() as u32,
@@ -350,7 +355,6 @@ pub fn extract_morphs(
 pub fn prepare_morph_descriptors(
     mut morph_indices: ResMut<MorphIndices>,
     mut morph_uniforms: ResMut<MorphUniforms>,
-    render_mesh_instances: Res<RenderMeshInstances>,
     meshes: Res<RenderAssets<RenderMesh>>,
     mesh_allocator: Res<MeshAllocator>,
 ) {
@@ -368,9 +372,7 @@ pub fn prepare_morph_descriptors(
     };
 
     for (&morph_target_main_entity, morph_target_info) in morph_target_info {
-        let Some(mesh_id) = render_mesh_instances.mesh_asset_id(morph_target_main_entity) else {
-            continue;
-        };
+        let mesh_id = morph_target_info.mesh_asset_id;
         let Some(mesh) = meshes.get(mesh_id) else {
             continue;
         };

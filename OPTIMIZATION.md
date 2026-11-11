@@ -87,6 +87,15 @@ correct readiness reporting.
   nonzero; default framing and intermediate-frame/native-window validation are
   also incomplete. See [rendered playback](benchmarks/rendered-playback.md).
 
+- Asset-root scan profiling (`f81d2d2`): opt-in timers confirm repeated animation
+  classification consumes 96.6% of the arm's enclosing animation-update time,
+  26.5% for bird and 24.2% for cow in the instrumented native runs. All three
+  settled poses remain pixel-exact against the saved pre-instrumentation binary.
+  Hardening passes 820 no-default / 928 all-feature tests and strict Clippy.
+  This identifies the next production optimization; no animation-index cache is
+  implemented yet. Invalidation, isolation, bounds and performance acceptance
+  are declared in [asset-root animation](benchmarks/instance-animation.md).
+
 - Point-instancer parent links (`3562782`): isolated ECS scaling confirms
   quadratic repeated replacement of unchanged `ChildOf` links. Stable instance
   links are now retained, source-ID order restored in bulk and removed/cleared

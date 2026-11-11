@@ -76,6 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Matched-main-thread diagnostic is inconclusive:** 32 processes validate
+  32,000 updates, 128 warmups, equal payload/work counts and zero diagnostics.
+  All retain 16 compute-pool threads, with 160 snapshots verifying unchanged
+  worker masks after pinning only each owned main thread. The
+  [declared comparison](benchmarks/tangent-control-placement.md#main-thread-only-result-identical-control-fails)
+  nevertheless fails two identical-binary order strata (+5.36% / +5.28%) and
+  six candidate strata. Whole-run medians within 0.71% do not erase those
+  failures; the second-running lane is slower in both identical and candidate
+  pairs. The clock-mismatch negative control correctly fails. The tangent
+  candidate remains unintegrated; do not retry this matrix unchanged or waive
+  the earlier default-affinity gates. Next target another measured cost, such
+  as upstream-compatible sample decoding/copying. Production code/dependencies
+  and the broader rendering, lifecycle, downstream and platform gaps remain.
+
 - **Control CPU-work/placement diagnosis:** 16 instrumented runs validate
   16,000 updates, complete counter coverage and zero lost samples. GPU-morph
   and subset instruction totals differ only -0.0078% / +0.0038%; the earlier
@@ -84,8 +98,8 @@ correct readiness reporting.
   core/atom placements, with nearly unchanged instruction counts. The
   [placement evidence](benchmarks/tangent-control-placement.md) preserves all
   limits: this does not recover the old run's placement, clear its failures,
-  or measure native FPS. Next compare matched main-thread placement after
-  default worker-pool initialization, retaining worker affinities and both CPU
+  or measure native FPS. The subsequent matched-main-thread comparison above
+  retains default worker-pool initialization, worker affinities and both CPU
   classes. Production dependencies and all broader gates remain unchanged.
 
 - **Tangent full-editor gate failed despite cow gain:** 24 processes validate

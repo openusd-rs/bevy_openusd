@@ -151,3 +151,53 @@ binary control makes the comparison inconclusive rather than authorizing a
 retry, discarded samples or looser bounds. Regardless of outcome, this is
 headless, explicitly paced evidence under controlled main-thread placement,
 not the default-affinity or native-rendering acceptance gate.
+
+## Main-thread-only result: identical control fails
+
+Evidence: `/tmp/bevy-optimization-tangent-main-affinity.sjRXbX/`.
+The driver completes all 32 processes, 32,000 measured updates and 128 warmups
+with no application diagnostics. Each process reports 16 compute-pool threads;
+all 160 affinity snapshots contain 25 total threads. Startup masks are 0–23,
+only the verified owned main TID changes to CPU 0 or 16, and every observed
+worker retains 0–23. Post-warmup, midpoint and pre-final snapshots also place
+the main thread on its selected CPU. The controller's affinity is unchanged.
+The executable identities, manifests, recursive fixture-layer hashes, clocks,
+payload/work counts and raw-to-summary timing checks pass. The analyzer's
+negative control changes one paired clock and correctly fails that comparison.
+
+The diagnostic still fails: two identical-original strata exceed the declared
+5% bound, at +5.36% for subsets and +5.28% for GPU morph on CPU 0. Six candidate
+strata also exceed it. Consequently `driver=0`, `analysis=1`, with the expected
+`negative_control=1`; this comparison cannot qualify the optimization.
+
+| Pair type | Control | CPU | Whole-run median change | Range of order-stratified median paired changes |
+| --- | --- | ---: | ---: | ---: |
+| Identical original | GPU morph | 0 | -0.18% | -4.25% to +5.28% |
+| Identical original | GPU morph | 16 | -0.07% | -4.13% to +4.26% |
+| Identical original | Subsets | 0 | +0.29% | -4.78% to +5.36% |
+| Identical original | Subsets | 16 | +0.45% | -3.48% to +4.54% |
+| Original/candidate | GPU morph | 0 | +0.26% | -8.34% to +8.78% |
+| Original/candidate | GPU morph | 16 | -0.07% | -5.16% to +4.94% |
+| Original/candidate | Subsets | 0 | +0.18% | -9.32% to +11.77% |
+| Original/candidate | Subsets | 16 | +0.71% | -4.29% to +6.13% |
+
+Whole-run changes compare the means of the two fresh-process medians. Each
+stratum instead contains 500 equal-clock pairs with one first-update order;
+there are four strata per table row. In every pair the second-running lane has
+the higher median paired cost, including identical binaries. Pool/placement
+control therefore does not remove order sensitivity in this explicitly paced
+protocol. Do not pool it away, subtract the identical phase from the candidate
+phase, or infer the cause of the earlier unrecorded default-affinity failures.
+
+The complete p95/max/opening/idle/RSS observations remain in `analysis.json`,
+including candidate GPU-morph CPU-0 maximum +30.64%, subsets CPU-0 maximum
++11.02% and subsets CPU-16 idle +32.12%. Opening/idle precede the main-thread
+pin and are not matched-placement measurements. All 32 host snapshots retain
+load/pressure and matching build/viewer process inventories; those inventories
+are empty at the sampled boundaries, not proof of exclusive host use.
+
+No production source, dependency or worker policy changes. The candidate stays
+unintegrated, all earlier failed gates remain open, and no further unchanged
+placement or editor batch is authorized by this result. Further optimization
+should target another measured cost, such as OpenUSD sample decoding/copying,
+rather than treating an inconclusive timing protocol as implementation proof.

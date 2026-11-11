@@ -2,7 +2,9 @@
 
 **Status:** the combined kernel and finite geometry corpus pass, but the
 full-editor comparison fails two control gates. The optimization is not enabled
-in production; all failed observations below remain open.
+in production; all failed observations below remain open. The subsequent
+[main-thread placement comparison](tangent-control-placement.md#main-thread-only-result-identical-control-fails)
+also fails its identical-binary control and cannot qualify the candidate.
 
 ## Hypothesis and boundaries
 

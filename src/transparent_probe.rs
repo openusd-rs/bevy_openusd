@@ -97,7 +97,7 @@ fn extract_labels(
     }
 }
 
-fn grid_report(
+pub(crate) fn grid_report(
     transform: &GlobalTransform,
     settings: &bevy::dev_tools::infinite_grid::InfiniteGridSettings,
 ) -> String {

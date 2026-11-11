@@ -257,8 +257,15 @@ pub fn configure(app: &mut App) {
                     mesh_references.iter().map(|(mesh, visibility)| (mesh.0.id(), visibility.get()))));
                 timing.push_str(&crate::capture_metadata::environment_report(environment, environment_state,
                     diagnostics.as_ref().map_or(0, |value| value.recorded_generations), generators.iter().count(), "Last-at-request"));
-                commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>| {
-                    match save_readback(&event.image, Path::new(&output), &timing) {
+                commands.spawn(Screenshot(target.clone())).observe(move |event: On<ScreenshotCaptured>,
+                    grids: Query<(&GlobalTransform, &bevy::dev_tools::infinite_grid::InfiniteGridSettings)>| {
+                    let mut metadata = timing.clone();
+                    metadata.push_str("readback_grid_scope=ScreenshotCaptured-main-world\n");
+                    for (transform, settings) in &grids {
+                        metadata.push_str("readback_");
+                        metadata.push_str(&crate::transparent_probe::grid_report(transform, settings));
+                    }
+                    match save_readback(&event.image, Path::new(&output), &metadata) {
                         Ok(()) => eprintln!("VIEWPORT_CAPTURE_OK {output}"),
                         Err(error) => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}"),
                     }

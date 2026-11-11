@@ -301,6 +301,20 @@ use crate::route::{SchemaRegistry, StageTime};
 #[derive(Resource, Default, Clone)]
 pub struct AnimatedPrims(pub std::collections::HashSet<String>);
 
+fn animation_paths(animated: &AnimatedPrims, builtin_only: bool) -> impl Iterator<Item = &str> {
+    let sorted = builtin_only.then(|| {
+        let mut paths: Vec<_> = animated.0.iter().map(String::as_str).collect();
+        paths.sort_unstable();
+        paths
+    });
+    sorted.into_iter().flatten().chain(
+        (!builtin_only)
+            .then(|| animated.0.iter().map(String::as_str))
+            .into_iter()
+            .flatten(),
+    )
+}
+
 /// The [`DisplayPurposes`] the projected entities were last filtered against,
 /// so the purpose reprojector only reruns when the toggle actually changes.
 #[derive(Resource, Default)]
@@ -1838,9 +1852,7 @@ fn resample_animation_system(world: &mut World) {
     let map = world.remove_resource::<PrimEntities>().unwrap_or_default();
     let registry = registry_of(world);
     registry.with_materials(world, &live, |world| {
-        let prims = animated
-            .0
-            .iter()
+        let prims = animation_paths(&animated, registry.is_builtin_only())
             .filter_map(|path| Some((openusd::sdf::path(path).ok()?, map.entity(path)?)));
         registry.patch_animation(&live.stage, prims, world);
         crate::route::residency::materialize(world, &live.stage, &map);
@@ -1947,6 +1959,116 @@ pub fn current_transform(stage: &Stage, prim_path: &str) -> Option<Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_animation_paths_are_ordered_across_sets_and_membership_changes() {
+        let names = ["/Z", "/A/Child", "/b", "/B", "/A"];
+        for rotation in 0..names.len() {
+            let mut animated = AnimatedPrims(
+                names
+                    .iter()
+                    .cycle()
+                    .skip(rotation)
+                    .take(names.len())
+                    .map(|path| path.to_string())
+                    .collect(),
+            );
+            assert_eq!(
+                animation_paths(&animated, true).collect::<Vec<_>>(),
+                ["/A", "/A/Child", "/B", "/Z", "/b"]
+            );
+            assert_eq!(
+                animation_paths(&animated, false).collect::<Vec<_>>(),
+                animated.0.iter().map(String::as_str).collect::<Vec<_>>()
+            );
+            animated.0.remove("/Z");
+            animated.0.insert("/A/Before".into());
+            assert_eq!(
+                animation_paths(&animated, true).collect::<Vec<_>>(),
+                ["/A", "/A/Before", "/A/Child", "/B", "/b"]
+            );
+        }
+        for builtin_only in [false, true] {
+            assert!(
+                animation_paths(&AnimatedPrims::default(), builtin_only)
+                    .next()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn custom_animation_callbacks_keep_order_and_snapshot_membership() {
+        #[derive(Resource, Default)]
+        struct Trace(Vec<String>);
+        struct Record;
+        impl crate::route::PrimRoute for Record {
+            fn matches(&self, _: &crate::route::RouteCtx) -> bool {
+                true
+            }
+            fn project(&self, _: &crate::route::RouteCtx, _: &mut World, _: Entity) {}
+            fn patch(
+                &self,
+                ctx: &crate::route::RouteCtx,
+                world: &mut World,
+                _: Entity,
+                _: &[&str],
+            ) {
+                world.resource_mut::<Trace>().0.push(ctx.path.to_string());
+                world
+                    .resource_mut::<AnimatedPrims>()
+                    .0
+                    .insert("/Late".into());
+            }
+        }
+        for with_builtins in [false, true] {
+            let stage = Stage::builder()
+                .schema_registry(openusd_schemas::schema_registry())
+                .in_memory("animation-order.usda")
+                .unwrap();
+            let mut world = World::new();
+            let mut map = PrimEntities::default();
+            for path in ["/Z", "/A", "/M", "/Late"] {
+                stage
+                    .define_prim(path)
+                    .unwrap()
+                    .set_type_name("Xform")
+                    .unwrap();
+                map.insert(path, world.spawn(UsdPrimRef { path: path.into() }).id());
+            }
+            let mut registry = if with_builtins {
+                SchemaRegistry::builtin()
+            } else {
+                SchemaRegistry::new()
+            };
+            registry.register(Record);
+            assert!(!registry.is_builtin_only());
+            world.insert_resource(registry);
+            world.insert_resource(map);
+            world.insert_resource(AnimatedPrims(["/Z", "/A", "/M"].map(str::to_owned).into()));
+            world.init_resource::<Trace>();
+            world.init_resource::<StageTime>();
+            world.init_resource::<SampledTime>();
+            world.insert_non_send(LiveStage::new(stage));
+            for time in [0.0, 10.0] {
+                let expected: Vec<_> = world
+                    .resource::<AnimatedPrims>()
+                    .0
+                    .iter()
+                    .cloned()
+                    .collect();
+                world.resource_mut::<StageTime>().current = time;
+                resample_animation_system(&mut world);
+                assert_eq!(world.resource::<Trace>().0, expected);
+                assert!(world.resource::<AnimatedPrims>().0.contains("/Late"));
+                assert_eq!(world.resource::<PrimEntities>().len(), 4);
+                assert!(world.get_non_send::<LiveStage>().is_some());
+                world.resource_mut::<Trace>().0.clear();
+                resample_animation_system(&mut world);
+                assert!(world.resource::<Trace>().0.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn composition_revision_survives_draining_saturates_and_detaches() {

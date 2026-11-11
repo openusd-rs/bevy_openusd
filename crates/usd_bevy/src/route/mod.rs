@@ -503,6 +503,9 @@ impl SchemaRegistry {
         world: &mut World,
         pool: Option<&bevy::tasks::TaskPool>,
     ) {
+        let _primvars = self
+            .builtin_only
+            .then(|| crate::read::geom::PrimvarScope::begin(stage));
         let settings = world
             .get_resource::<preparation::ParallelMeshPreparation>()
             .copied()

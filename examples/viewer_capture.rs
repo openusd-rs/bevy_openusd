@@ -20,7 +20,7 @@ use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot};
 mod pipeline_probe;
 use pipeline_probe::PipelineProbe;
 
-#[path = "support/transparent_probe.rs"]
+#[path = "../src/transparent_probe.rs"]
 mod transparent_probe;
 
 #[path = "../src/capture_metadata.rs"]

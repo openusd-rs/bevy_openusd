@@ -65,8 +65,17 @@ local function build_example(a)
   return ("target/%s/examples/%s"):format(profile, a.name)
 end
 
-make.recipe{ name = "build", desc = "build the usdview binary",
-             run = function() sh.cargo("build", "--bin", APP) end }
+make.recipe{
+  name = "build",
+  desc = "build the usdview binary",
+  params = { { "--profile", desc = "debug (default) or release" } },
+  run = function(a)
+    local profile = a.profile or "debug"
+    assert(profile == "debug" or profile == "release", "--profile must be debug or release")
+    if profile == "release" then sh.cargo("build", "--release", "--bin", APP)
+    else sh.cargo("build", "--bin", APP) end
+  end,
+}
 make.alias("b", "build")
 
 make.recipe{ name = "compile", desc = "clean, then build", deps = { "clean", "build" } }

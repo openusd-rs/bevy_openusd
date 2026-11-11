@@ -76,6 +76,30 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Built-in live animation order (`8d22fec`) now sorts borrowed paths per pass,
+  preserving public HashSet membership and custom callback order/snapshots.
+  Hardening passes 841 no-default / 958 all-feature executions, and native
+  deformation/watchers/exports plus wasm checks pass. A matched 32-process
+  CPU matrix repeats candidate tangent-cache footprints for every workload;
+  baseline bird/cow quick-seek footprints still vary. Geometry/image payloads,
+  capacity and asset counts match. Three timing checks still fail, so neither
+  a causal speedup nor 60 Hz is established. Capture harness `72a2d73` raises
+  hardening to 845 / 962 executions and wasm still compiles. Twenty actual
+  live-editor runs acknowledge forward/reverse/repeated seeks. Seven image pairs
+  are pixel-exact; three bird pairs fail by up to two RGB levels on roughly 200
+  pixels, visually aligned with the grid. Same-binary controls repeat exactly,
+  so the difference is not dismissed as noise. All twenty captures also retain
+  headless-environment diagnostic failures. Grid/camera-state diagnosis and the
+  full performance workstreams remain open; no acceptance threshold is relaxed.
+  The shared phase probe and readback observer now pass hardening at 848 / 967
+  executions. Unseeked before/after controls match at clocks zero and five.
+  Probed images also match, but the probe/rebuild changes which of two grid
+  images is produced; these results do not replace the original failures.
+  Actual extracted grid/camera/order records match in the probed case, leaving
+  the failing unprobed pass/uniform state to diagnose. Private capture portal
+  selection is now isolated from the user's desktop; capture-tool tests pass.
+  See [live animation order](benchmarks/live-animation-order.md).
+
 - Mip output reservation (`fdf88b7`): checked complete-chain sizing and one exact reserve
   replace geometric output-buffer growth, without changing encoded payload or
   float reduction. Sixty format/dimension/reservation cases preserve all bytes,
@@ -84,8 +108,14 @@ correct readiness reporting.
   compilation pass. The unrelated point/curve fixture now asserts readiness
   with an unlimited test budget (`86315b2`). Four native fixed-pose image pairs
   remain pixel-exact; the cow's missing-MDL warning still fails the combined
-  diagnostic. Real-asset retained capacity and timing/RSS remain pending;
-  current opening counters report lengths, not capacities. No prior failure is waived. See
+  diagnostic. Recorder `626198c` passes updated hardening (839 / 956 executions).
+  A matched thirty-two-process CPU matrix confirms 23.8%/28.6% less bird/cow
+  image-buffer capacity, with unchanged payload, both idle and after seeks;
+  process RSS stays approximately unchanged. Eleven timing comparisons and six
+  tangent-cache equality checks still fail, including different cache footprints
+  between identical baseline runs. Live animation directly iterates a HashSet;
+  the ordered-traversal checkpoint above tests that cause while preserving custom
+  callback ordering and the public resource type. No prior failure is waived. See
   [mip capacity](benchmarks/mip-capacity.md).
 
 - Exact sRGB mip encoding (`05b3106`): a bounded 5124-byte quantizer replaces

@@ -145,7 +145,70 @@ The patched driver therefore still exits 1, and those failures are retained.
 
 This establishes the stale-index repair for the tested first-collected inputs
 and final rendered shape, not all first-visible-frame images or broad GPU/platform
-acceptance. The full 16-case command-prefix matrix has not been rerun after the
-patch. Next isolate the remaining cold-reveal pixel discrepancy, revalidate the
-broader deformation and lifecycle cases, and retain the low-limit adapter,
-downstream Cargo patch, earlier visual, host diagnostic, 60 Hz and platform gates.
+acceptance. The follow-up matrix and diagnostic captures below retain the
+low-limit adapter, downstream Cargo patch, earlier visual, host diagnostic,
+60 Hz and platform gates.
+
+## Full command-prefix replay
+
+`/tmp/bevy-optimization-morph-matrix.E51V0L/` records the patched 16-case matrix:
+CPU/GPU deformation, eager/deferred policy and select/reveal/undo/redo command
+prefixes. It uses the same saved `64a754f0…` viewer and `41ef4e9e…` lock above,
+unchanged shaders/settings and no probe. No owned builds overlap captures;
+observed one-minute host load ranges from 7.39 to 15.49. These are correctness
+captures, not performance measurements. Input and asset hash checks pass.
+
+All 16 processes pass pipeline/readback checks and command-state assertions,
+including identity, scene time, camera, history, selection and residency.
+The substantial 39,764-pixel/max-182 shape failure does not recur. Nevertheless,
+only 15 of 24 exact image comparisons pass. All nine failures change exactly
+215 pixels by at most two RGB levels; all nine use the same pixel coordinates,
+including pairs where the deformed mesh is hidden. The changed positions span
+the background/grid region rather than the former large shape discrepancy.
+`metadata-analysis.mjs` verifies equal camera/grid metadata across all 16 reports
+and writes the coordinates to `metadata-analysis.json`. This is main-world
+metadata, not proof of equal uploaded GPU inputs or an established shader cause.
+
+Each capture still reports four broader isolated-host warnings. The driver exits
+1; the 24 comparison logs, raw images and failures remain intact. No image
+tolerance or quality setting changes.
+
+## Extracted lights and staged palettes
+
+Probe extension `e5d2780` records bounded extracted directional-light parameters
+and ordering after light preparation, plus CPU-side skin staging palettes for
+the parent/subset. It does not read actual GPU buffers or alter rendering order.
+The normal viewer does not install it. Unit tests cover palette bounds and the
+distinction between main/render entity ordering. `Entity::Ord` follows entity
+bits, not the numeric index shown by entity formatting; the original test's
+incorrect ordering assumption and subsequent repair are retained in the logs.
+
+Evidence: `/tmp/bevy-optimization-light-witness.aPKcBd/`.
+
+- Source: `e5d2780`; viewer SHA-256
+  `be22bb39debf5daf6337edc0a82eed0e5897398702a61f6ce6f9eaf59ab3e843`.
+- Cargo.lock remains `41ef4e9e…`; hardening passes 866 no-default and 993
+  all-feature/all-target executions, formatting and strict Clippy
+  (`harden-fixed.log`).
+- Six same-binary native captures cover probed eager reveal, deferred reveal,
+  deferred redo, CPU reveal and two probe-off controls. All process/pipeline/
+  readback checks pass; all retain four host warnings and the driver exits 1.
+- `analyze.mjs` verifies identical extracted light order (rim, fill, key) and
+  parameters across all four probed cases, identical staged parent/subset
+  joint matrices across the three GPU cases, and equal camera/grid metadata.
+  Skin allocation offsets differ, but matrix values do not. No probe history
+  or text is omitted/truncated. These observations do not justify a light-order
+  or skin-matrix runtime patch.
+- The saved publication checker accepts all three new GPU reports, each with
+  four history inputs and two final inputs (`publication-check.log`).
+- One of six strict comparisons is exact. Other failures are 215 pixels/max 2
+  for deferred probe on/off, eager/deferred and reveal/redo; CPU/eager differs
+  by one mesh pixel/max 1, and CPU/deferred by 216 pixels/max 2.
+- At `(625, 538)` CPU is `[208, 200, 191, 255]` and all three probed GPU images
+  are `[208, 200, 190, 255]`. The previous batch assigned that one-pixel variant
+  differently. It is not established as a reproducible cold-deferral defect.
+
+The remaining next step is correlated prepared/GPU render-input evidence, not
+another unchanged matrix, an unproven light-order fix or threshold relaxation.
+Full deformation, lifecycle, native performance and platform acceptance remain
+open; library and viewer stay eager by default.

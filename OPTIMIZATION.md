@@ -76,6 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- The [post-repair matrix and light/skin witness](benchmarks/morph-publication.md#full-command-prefix-replay)
+  extend morph verification to all 16 CPU/GPU, eager/deferred command prefixes.
+  Every state and pipeline/readback check passes; the large wrong-shape failure
+  does not recur. Only 15 of 24 strict image comparisons pass: all nine failures
+  share the same 215 background/grid pixel coordinates, max RGB difference two.
+  A six-case diagnostic replay establishes equal extracted light order/values
+  and staged GPU skin palettes, but retains that pattern and a separate one-pixel
+  mesh difference. `e5d2780` adds read-only opt-in diagnostics, not a rendering
+  change; hardening passes 866 / 993 executions. The publication checker accepts
+  all three new GPU histories. Host warnings and visual failures are not waived.
+  Next correlate actual prepared/GPU inputs with capture; do not patch light
+  order on a rejected hypothesis or repeat the unchanged matrix. Defaults,
+  downstream Cargo-patch requirements and broad unfinished gates remain intact.
+
 - [Morph publication tracing and repair](benchmarks/morph-publication.md)
   establishes the substantial reveal/redo shape failure: Bevy prepared descriptors
   using previously collected mesh instances, then cached a no-morph sentinel in

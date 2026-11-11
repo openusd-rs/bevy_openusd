@@ -100,7 +100,8 @@ correct readiness reporting.
   one bounded composition's positive/negative animation decisions. Flushed
   revision/layer/load/mask/mute keys invalidate it; custom routes stay uncached
   to preserve callback mutation order. Hardening passes 829 no-default / 937
-  all-feature tests and strict Clippy. The 40-process native offscreen ABBA run
+  all-feature tests and strict Clippy; refreshed native deformation/watcher/
+  export checks and wasm compilation pass. The 40-process native offscreen ABBA run
   reduces arm main-update medians by 88.6%, with classification calls falling
   from 45,540 to 138 and unchanged animated decisions. All 12,000 frame/clock
   rows validate, six exact-clock final poses and twelve idle images are

@@ -209,5 +209,28 @@ because every cow run retains the missing `OmniPBR.mdl` warning. These compariso
 do not resolve the separately recorded one-pixel CPU/GPU bird discrepancy or
 prove intermediate-frame/native-window behavior.
 
-Refreshed native deformation/reload/export and wasm gates are running; their
-results and the targeted regression repeats are not yet accepted here.
+Refreshed native gates now pass: four deformation-oracle cases, five asset and
+four editor-texture watcher cases, fourteen native exports and the custom-data
+reference round trip. `check-web` passes wasm compilation, not browser runtime
+acceptance. Logs are
+`/tmp/bevy-optimization-animation-cache-{test-native-deformation,test-watchers,test-native,check-web}.log`;
+`/tmp/bevy-optimization-animation-cache-gates.tsv` retains all attempts.
+
+The first gate driver terminates with status 143 during the native-export recipe,
+after its fourteen exports pass but before the separate custom-data test builds.
+No remaining driver/compiler process is present when the retry starts. That
+retry fails to link the default-feature library test with undefined LLVM hidden
+symbols in its incremental objects. Moving only the implicated
+`target/debug/incremental/usd_bevy-1ab1ow8jrel7y` directory into
+`target/animation-cache-link-quarantine/` and rerunning the unchanged recipe
+succeeds. No production source, dependency, build-profile setting or saved
+benchmark executable changes. The interrupted and failed-link logs remain as
+`animation-cache-test-native-interrupted.log` and
+`animation-cache-test-native-link-failure.log` under `/tmp/bevy-optimization-`.
+The exact cause of the termination is not established; the clean incremental
+rebuild is verification recovery, not a production optimization.
+
+Targeted regression repeats remain pending. They use the same saved binaries,
+settings and default affinity in two additional ABBA blocks for cow play,
+material-subset play and an arm-idle control, with no task-owned compilation
+overlapping. The original failed observations remain part of acceptance.

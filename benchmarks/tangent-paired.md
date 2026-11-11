@@ -10,7 +10,9 @@ Production code remains on the original scheduler.
 At every clock, the probe samples the same sorted animated prim paths and uses
 production GPU eligibility, CPU deformation and mesh assembly to construct owned
 tangent inputs. Both schedulers receive independent identical clones, made before
-timing. The legacy four-prim batches and withdrawn eight-prim/four-worker queues
+timing, with the originals dropped before either lane runs. Clone order alternates
+independently of execution order, covering every combination equally. The legacy
+four-prim batches and withdrawn eight-prim/four-worker queues
 alternate first within sequential pairs in ABBA order. A second fresh process
 reverses that order. Both use one private four-thread pool and the same 16 MiB
 worker-input limit, 128-context boundaries and oversized serial fallback.
@@ -56,3 +58,17 @@ passes in both configurations; the external-asset diagnostic remains explicitly
 ignored until run against a saved release executable. Configurations overlap.
 Evidence is retained under `/tmp/bevy-optimization-tangent-paired.ApABK6/`.
 No production scheduler, resource defaults or dependency versions change.
+
+## Allocation control correction
+
+The first four-process run at `1f581a5` completes 800 measured pairs with exact
+outputs and zero diagnostics. Cow queued/legacy median ratios are 0.763–0.809;
+bird ratios are 0.954–1.003. However, that implementation supplies one lane with
+cloned buffers and the other with original assembled buffers. Allocation capacity,
+layout and cache history are not necessarily equal, despite identical bytes.
+Those retained results are provisional, not accepted scheduler evidence.
+
+The corrected probe clones both lanes and balances clone order against execution
+order. Its fresh results belong in the `balanced/` subdirectory of the original
+evidence directory. The declared thresholds and whole-application limitations
+remain unchanged.

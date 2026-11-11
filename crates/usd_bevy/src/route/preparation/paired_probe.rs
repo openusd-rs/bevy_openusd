@@ -140,6 +140,14 @@ fn order(iteration: usize, reverse: bool) -> [usize; 2] {
     [first, 1 - first]
 }
 
+fn clone_inputs(input: &[Input], first: usize) -> [Option<Vec<Input>>; 2] {
+    let mut copies = [None, None];
+    for index in [first, 1 - first] {
+        copies[index] = Some(input.to_vec());
+    }
+    copies
+}
+
 fn inputs(
     stage: &openusd::usd::Stage,
     paths: &[openusd::sdf::Path],
@@ -204,8 +212,9 @@ fn paired_probe_matches_serial_tangents_and_bounds_sparse_and_oversized_batches(
         };
         assert_eq!(expected.outputs.len(), 11);
         for budget in [1, 512, INPUT_BUDGET] {
-            let old = run(inputs.clone(), &pool, false, budget);
-            let new = run(inputs.clone(), &pool, true, budget);
+            let mut copies = clone_inputs(&inputs, usize::from(budget == 512));
+            let old = run(copies[0].take().unwrap(), &pool, false, budget);
+            let new = run(copies[1].take().unwrap(), &pool, true, budget);
             compare(&old, &expected);
             compare(&new, &expected);
             assert!(old.peak_jobs <= WORKERS && new.peak_jobs <= 2 * WORKERS);
@@ -226,6 +235,11 @@ fn paired_probe_matches_serial_tangents_and_bounds_sparse_and_oversized_batches(
                 vec![0, 1, 1, 0]
             }
         );
+        let mut combinations: Vec<_> = (0..4)
+            .map(|i| (order(i, reverse)[0], usize::from((i % 2 == 1) ^ reverse)))
+            .collect();
+        combinations.sort_unstable();
+        assert_eq!(combinations, [(0, 0), (0, 1), (1, 0), (1, 1)]);
     }
 }
 
@@ -306,7 +320,9 @@ fn real_asset_paired_tangent_scheduling() -> anyhow::Result<()> {
                 }
             }
         }
-        let mut copies = [Some(input.clone()), Some(input)];
+        let first_clone = usize::from((iteration % 2 == 1) ^ reverse);
+        let mut copies = clone_inputs(&input, first_clone);
+        drop(input);
         let setup = setup.elapsed();
         let sequence = order(iteration, reverse);
         let mut elapsed = [Duration::ZERO; 2];
@@ -334,7 +350,7 @@ fn real_asset_paired_tangent_scheduling() -> anyhow::Result<()> {
             iteration - WARMUP
         };
         println!(
-            "tangent_probe_{phase} index={index} clock={clock:.17} first={} jobs={jobs} setup_ns={} legacy_ns={} queued_ns={} legacy_batches={} queued_batches={} legacy_peak_jobs={} queued_peak_jobs={} legacy_peak_bytes={} queued_peak_bytes={} legacy_inline={} queued_inline={} exact=true",
+            "tangent_probe_{phase} index={index} clock={clock:.17} first={} first_clone={first_clone} jobs={jobs} setup_ns={} legacy_ns={} queued_ns={} legacy_batches={} queued_batches={} legacy_peak_jobs={} queued_peak_jobs={} legacy_peak_bytes={} queued_peak_bytes={} legacy_inline={} queued_inline={} exact=true",
             sequence[0],
             setup.as_nanos(),
             elapsed[0].as_nanos(),

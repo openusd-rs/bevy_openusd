@@ -76,6 +76,17 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Rendered playback baseline (`9f4212f`, `1fad2a5`): a bounded recorder now uses
+  production asset-root playback, collecting main intervals, separate published
+  render CPU/GPU pass timings and actual stage clocks. All six bird/arm/cow
+  play/idle cases complete 300 samples; all three settled final poses match
+  independent fixed-pose renders exactly. The small-scene playback target is
+  still unmet: play median offscreen intervals are 48.4 / 18.1 / 92.1 ms, versus
+  approximately 16.7 ms at idle, under heavy variable host load. Most interval
+  cost is in the main update. The cow MDL warning keeps the diagnostic driver
+  nonzero; default framing and intermediate-frame/native-window validation are
+  also incomplete. See [rendered playback](benchmarks/rendered-playback.md).
+
 - Point-instancer parent links (`3562782`): isolated ECS scaling confirms
   quadratic repeated replacement of unchanged `ChildOf` links. Stable instance
   links are now retained, source-ID order restored in bulk and removed/cleared

@@ -133,6 +133,16 @@ pub struct UsdInstances {
     pub(crate) roots: HashMap<Entity, InstanceRuntime>,
 }
 
+/// Opt-in asset-root animation timings; classification is included in total time.
+#[derive(Resource, Default)]
+pub struct UsdInstanceAnimationTiming {
+    pub updates: u64,
+    pub classified: u64,
+    pub animated: u64,
+    pub classification: std::time::Duration,
+    pub total: std::time::Duration,
+}
+
 impl UsdInstances {
     pub fn stage(&self, root: Entity) -> Option<&Stage> {
         self.roots.get(&root).map(|runtime| &runtime.live.stage)
@@ -197,6 +207,112 @@ pub(crate) struct InstanceRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_timing_is_optional_and_counts_only_changed_root_clocks() {
+        let source = crate::UsdSource::new(
+            "instance-animation-timing.usda",
+            br#"#usda 1.0
+def Xform "Fixed" {}
+def Xform "Mover" {
+    double3 xformOp:translate.timeSamples = {0: (0,0,0), 10: (10,0,0)}
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+"#
+            .to_vec(),
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source,
+                textures: default(),
+            });
+        let roots = [0, 1].map(|_| {
+            app.world_mut()
+                .spawn((
+                    crate::UsdSceneRoot(handle.clone()),
+                    UsdInstanceTime::default(),
+                ))
+                .id()
+        });
+        for _ in 0..8 {
+            app.update();
+            if roots.iter().all(|root| {
+                app.world().get::<crate::asset::UsdSceneState>(*root)
+                    == Some(&crate::asset::UsdSceneState::Ready)
+            }) {
+                break;
+            }
+        }
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready),
+            );
+        }
+        app.world_mut()
+            .get_mut::<UsdInstanceTime>(roots[0])
+            .unwrap()
+            .current = 2.0;
+        app.update();
+        assert!(
+            !app.world()
+                .contains_resource::<UsdInstanceAnimationTiming>()
+        );
+        app.init_resource::<UsdInstanceAnimationTiming>();
+        for (root, clock) in roots.into_iter().zip([4.0, 7.0]) {
+            app.world_mut()
+                .get_mut::<UsdInstanceTime>(root)
+                .unwrap()
+                .current = clock;
+        }
+        app.update();
+        let timing = app.world().resource::<UsdInstanceAnimationTiming>();
+        assert_eq!(
+            (timing.updates, timing.classified, timing.animated),
+            (2, 4, 2)
+        );
+        assert!(timing.total >= timing.classification);
+        for (root, clock) in roots.into_iter().zip([4.0, 7.0]) {
+            let mover = app
+                .world()
+                .get_non_send::<UsdInstances>()
+                .unwrap()
+                .entity(root, "/Mover")
+                .unwrap();
+            assert_eq!(
+                app.world().get::<Transform>(mover).unwrap().translation.x,
+                clock
+            );
+        }
+        app.update();
+        assert_eq!(
+            app.world().resource::<UsdInstanceAnimationTiming>().updates,
+            2
+        );
+        app.world_mut()
+            .get_mut::<UsdInstanceTime>(roots[0])
+            .unwrap()
+            .current = 5.0;
+        app.update();
+        let timing = app.world().resource::<UsdInstanceAnimationTiming>();
+        assert_eq!(
+            (timing.updates, timing.classified, timing.animated),
+            (3, 6, 3)
+        );
+    }
 
     #[test]
     fn inherited_normals_stay_independent_across_roots_and_prototypes() {
@@ -508,15 +624,39 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
             runtime.curve_steps = curve_steps;
         }
         if current != runtime.sampled {
+            let started = world
+                .contains_resource::<UsdInstanceAnimationTiming>()
+                .then(bevy::platform::time::Instant::now);
+            let mut classified = 0;
+            let mut animated = 0;
+            let mut classification = std::time::Duration::ZERO;
             let registry = world.resource::<SchemaRegistry>().clone();
             registry.with_materials(world, &runtime.live, |world| {
                 let prims = runtime.map.iter().filter_map(|(path, entity)| {
                     let path = openusd::sdf::path(path).ok()?;
-                    (path.as_str() != "/" && prim_is_animated(&runtime.live.stage, &path))
-                        .then_some((path, entity))
+                    if path.as_str() == "/" {
+                        return None;
+                    }
+                    let begin = started.map(|_| bevy::platform::time::Instant::now());
+                    let varying = prim_is_animated(&runtime.live.stage, &path);
+                    if let Some(begin) = begin {
+                        classified += 1;
+                        animated += u64::from(varying);
+                        classification += begin.elapsed();
+                    }
+                    varying.then_some((path, entity))
                 });
                 registry.patch_animation(&runtime.live.stage, prims, world);
             });
+            if let Some(started) = started {
+                let elapsed = started.elapsed();
+                let mut timing = world.resource_mut::<UsdInstanceAnimationTiming>();
+                timing.updates += 1;
+                timing.classified += classified;
+                timing.animated += animated;
+                timing.classification += classification;
+                timing.total += elapsed;
+            }
             runtime.sampled = current;
             crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
         }

@@ -472,6 +472,9 @@ fn main() -> AppExit {
     if std::env::var_os("USD_PROFILE_SOURCES").is_some() {
         app.init_resource::<usd_bevy::asset::UsdSceneTimings>();
     }
+    if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::instance::UsdInstanceAnimationTiming>();
+    }
     if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() {
         app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>();
     }
@@ -733,6 +736,7 @@ struct CaptureTiming<'w, 's> {
     playback: Option<ResMut<'w, playback_timing::PlaybackTiming>>,
     progress: Res<'w, PipelineProbe>,
     sort_timing: Option<Res<'w, usd_bevy::route::gpu_skin::DeformedSortTiming>>,
+    instance_timing: Option<Res<'w, usd_bevy::instance::UsdInstanceAnimationTiming>>,
     mesh_assets: Res<'w, Assets<Mesh>>,
     mesh_references: Query<'w, 's, (&'static Mesh3d, &'static InheritedVisibility)>,
 }
@@ -821,6 +825,7 @@ fn capture_frame(
         mut playback,
         progress,
         sort_timing,
+        instance_timing,
         mesh_assets,
         mesh_references,
     } = timing;
@@ -1056,6 +1061,13 @@ fn capture_frame(
         capture
             .mesh_report
             .push_str(&preparation_report(&preparation));
+    }
+    if let Some(timing) = instance_timing {
+        capture.mesh_report.push_str(&format!(
+            "instance_animation_scope=all-root-time-changes-includes-warmup-classification-included-in-total\ninstance_animation_updates={}\ninstance_animation_classified={}\ninstance_animation_animated={}\ninstance_animation_classification_ms={:.6}\ninstance_animation_total_ms={:.6}\n",
+            timing.updates, timing.classified, timing.animated,
+            timing.classification.as_secs_f64() * 1000.0, timing.total.as_secs_f64() * 1000.0,
+        ));
     }
     capture.requested = true;
     commands.spawn(Screenshot(target.clone())).observe(

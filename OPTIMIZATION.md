@@ -76,6 +76,55 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- [Native residency reveal verification](benchmarks/native-residency.md) exposes
+  a real shared-device limit failure: the morph/skin pipeline needs nine vertex
+  storage buffers but Mara's device requested eight. `00d9bd6` uses the host's
+  existing limit hook, bounded by adapter capabilities; native readbacks confirm
+  16 requested buffers and no remaining pipeline validation errors. Hardening
+  passes 860 / 983 executions. `b487f49` exposes explicit viewer deferral for
+  testing, but both library and viewer remain eager by default. Sixteen native
+  command-prefix captures preserve selection, clock, entity, history, visibility,
+  residency and camera; only 16 of 24 exact image comparisons pass. Five failures
+  show a substantial GPU morph/shape discrepancy, and three show 219–220 pixels
+  differing by at most two RGB levels. Broader isolated-host diagnostics also
+  fail and remain recorded. Do not enable the policy by default or rerun this
+  matrix unchanged. Next trace parent/subset deformation state and render-world
+  morph descriptor/index publication across reveal and redo; low-limit adapters
+  still need capability-specific fallback acceptance. Full performance, earlier
+  visual discrepancies, lifecycle and platform gates remain open.
+
+- The broader [viewer deferral policy comparison](benchmarks/viewer-residency.md)
+  (`7184abe`) passes its declared CPU target: cow paired update medians fall
+  approximately 68%, from roughly 57 to 18 ms, and every bird/arm/subset ordering
+  stays within the 5% paired-median regression limit. Eight saved release runs
+  validate 8,000 pairs / 16,000 updates with exact hierarchy-visible geometry at
+  every measured clock, bounded caches/preparation and zero runtime diagnostics.
+  Opening/idle/p95/max observations include regressions and remain documented.
+  Hardening passes 855 / 978 executions; `cf382de` repairs a composed-source
+  example's single-update readiness assumption with default/zero-budget checks.
+  EditorBridge tests cover hidden edits, selection, reveal, history, reload and
+  replacement. This is not native rendering/FPS or accepted viewer-default
+  behavior: both library and viewer stay eager. Next verify native viewport
+  reveal/selection/undo, framing and materials against eager controls. This
+  policy comparison does not retroactively pass the failed incremental scheduler
+  experiment below, or resolve the older visual/platform/lifecycle/60 Hz gates.
+
+- [Resident-only preparation under opt-in deferral](benchmarks/deferred-preparation.md)
+  (`d5ad5ab`) preserves eager library/viewer defaults and the original scheduler.
+  Hidden nonresident meshes stay on synchronous visibility-aware routing; already
+  resident meshes can prepare in parallel. Hardening passes 854 / 976 executions,
+  native deformation/watchers/exports and wasm checks pass. CPU/GPU tests cover
+  hidden edits, current-clock reveal, re-hide, independent roots, reload and close.
+  Sixteen release processes validate 16,000 updates with unchanged payload/cache/
+  asset counts, but six paired and seven whole-run checks fail; the 15% incremental
+  bird target is not met. This remains an unaccepted local optimization checkpoint,
+  not a completed performance gate. Four native animations (1,200 frames) match
+  both eager and deferred pre-change final-pose renders pixel-exactly in all eight
+  comparisons. Cow's MDL warning and 60 Hz misses remain. Any broader viewer policy
+  change needs live reveal/selection/undo/reload acceptance and a paired comparison
+  against current eager defaults; it has not been implemented. Do not rerun the
+  same opt-in incremental comparison unchanged or retroactively pass its failures.
+
 - The corrected [paired tangent diagnostic](benchmarks/tangent-paired.md) passes
   800 identical-input comparisons with balanced clone/execution order: cow kernel
   paired medians improve 19–23%, without bird regression. This is a private-pool,

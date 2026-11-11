@@ -8,6 +8,8 @@ pub struct CaptureConfig {
     time: Option<f64>,
     delay_ms: u64,
     seeks: Vec<f64>,
+    residency: Option<crate::capture_residency::Config>,
+    morph_probe: bool,
 }
 
 impl CaptureConfig {
@@ -38,6 +40,8 @@ impl CaptureConfig {
             time,
             delay_ms: 0,
             seeks: Vec::new(),
+            residency: None,
+            morph_probe: false,
         }))
     }
 
@@ -79,8 +83,23 @@ impl CaptureConfig {
         if let Some(config) = &mut config {
             config.delay_ms = Self::delay(read("USD_CAPTURE_DELAY_MS")?)?;
             config.seeks = Self::seeks(read("USD_CAPTURE_SEEKS")?)?;
+            config.residency =
+                crate::capture_residency::Config::parse(read("USD_CAPTURE_RESIDENCY")?)?;
+            config.morph_probe =
+                Self::morph_probe(read("USD_CAPTURE_MORPH_PROBE")?, config.residency.is_some())?;
         }
         Ok(config)
+    }
+
+    fn morph_probe(value: Option<String>, has_residency: bool) -> Result<bool, String> {
+        match value.as_deref() {
+            None | Some("0") => Ok(false),
+            Some("1") if has_residency => Ok(true),
+            _ => Err(
+                "USD_CAPTURE_MORPH_PROBE requires 0 or 1, and 1 requires USD_CAPTURE_RESIDENCY"
+                    .into(),
+            ),
+        }
     }
 }
 
@@ -214,6 +233,8 @@ pub fn configure(app: &mut App) {
         time,
         delay_ms,
         seeks,
+        residency,
+        morph_probe,
     }) = CaptureConfig::from_env().expect("invalid capture configuration")
     else {
         return;
@@ -224,13 +245,22 @@ pub fn configure(app: &mut App) {
     if std::env::var_os("USD_CAPTURE_PHASE_PROBE").is_some() {
         crate::transparent_probe::configure(app);
     }
+    if morph_probe {
+        let config = residency
+            .as_ref()
+            .expect("morph probe requires USD_CAPTURE_RESIDENCY");
+        crate::morph_probe::configure(app, config.mesh_path());
+    }
     let started = std::time::Instant::now();
     app.add_systems(Last, move |mut commands: Commands, cameras: Query<CaptureCamera, With<Camera3d>>,
         generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
         diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
         session: Option<NonSend<usd_bevy::editor::EditorSession>>, time: Res<usd_bevy::route::StageTime>, mut gate: Local<CaptureGate>,
         bridge: Res<usd_bevy::editor::EditorBridge>, mut seek_state: Local<CaptureSeeks>,
-        transparent: Option<Res<crate::transparent_probe::TransparentProbe>>,
+        residency_inputs: crate::capture_residency::Inputs, mut residency_state: Local<crate::capture_residency::State>,
+        (transparent, morph): (Option<Res<crate::transparent_probe::TransparentProbe>>, Option<Res<crate::morph_probe::MorphProbe>>),
+        device: Option<Res<bevy::render::renderer::RenderDevice>>,
+        adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
         meshes: Res<Assets<Mesh>>, mesh_references: Query<(&Mesh3d, &InheritedVisibility)>| {
         let active = cameras.iter().find(|(camera, ..)| camera.is_active);
         let document = active.and_then(|_| session.as_ref().map(|session| session.document_id()));
@@ -240,7 +270,20 @@ pub fn configure(app: &mut App) {
             return;
         }
         let seek_action = seek_state.advance(document, time.current, &seeks);
-        let ready_document = (seek_action == SeekAction::Ready).then_some(document).flatten();
+        let mut ready_document = (seek_action == SeekAction::Ready).then_some(document).flatten();
+        if ready_document.is_some() && let Some(config) = &residency {
+            let (camera, _, transform, ..) = active.expect("residency capture requires a camera");
+            let camera = crate::capture_metadata::camera_report(transform, camera.clip_from_view());
+            match residency_state.advance(config, &residency_inputs, &bridge, camera) {
+                Ok(true) => (),
+                Ok(false) => ready_document = None,
+                Err(error) => {
+                    gate.finished = true;
+                    eprintln!("VIEWPORT_CAPTURE_ERROR {output}: {error}");
+                    return;
+                }
+            }
+        }
         match gate.advance(ready_document, elapsed) {
             CaptureAction::Timeout => eprintln!("VIEWPORT_CAPTURE_ERROR {output}: timed out waiting for an open document, active camera, seek sequence and capture delay"),
             CaptureAction::Request => {
@@ -249,7 +292,21 @@ pub fn configure(app: &mut App) {
                 let mut timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
                 timing.push_str(&seek_state.report(&seeks));
+                if let Some(device) = &device {
+                    timing.push_str(&format!("render_device_storage_buffers_per_shader_stage={}\n",
+                        device.limits().max_storage_buffers_per_shader_stage));
+                }
+                if let Some(adapter) = &adapter {
+                    timing.push_str(&format!("render_adapter_storage_buffers_per_shader_stage={}\n",
+                        adapter.limits().max_storage_buffers_per_shader_stage));
+                }
+                if let Some(config) = &residency {
+                    timing.push_str(&residency_state.report(config));
+                }
                 if let Some(probe) = &transparent {
+                    timing.push_str(&probe.report());
+                }
+                if let Some(probe) = &morph {
                     timing.push_str(&probe.report());
                 }
                 timing.push_str(&crate::capture_metadata::camera_report(transform, camera.clip_from_view()));
@@ -286,6 +343,22 @@ pub fn configure(app: &mut App) {
 mod tests {
     use super::*;
     use bevy::render::render_resource::TextureFormat;
+
+    #[test]
+    fn morph_probe_is_explicit_and_requires_residency() {
+        for residency in [false, true] {
+            assert_eq!(CaptureConfig::morph_probe(None, residency), Ok(false));
+            assert_eq!(
+                CaptureConfig::morph_probe(Some("0".into()), residency),
+                Ok(false)
+            );
+            for value in ["", "true", "2"] {
+                assert!(CaptureConfig::morph_probe(Some(value.into()), residency).is_err());
+            }
+        }
+        assert!(CaptureConfig::morph_probe(Some("1".into()), false).is_err());
+        assert_eq!(CaptureConfig::morph_probe(Some("1".into()), true), Ok(true));
+    }
 
     #[test]
     fn capture_seek_options_are_finite_bounded_and_optional() {

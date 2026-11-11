@@ -12,6 +12,9 @@ pub mod reload;
 pub mod save_state;
 mod texture_index;
 
+#[cfg(test)]
+mod residency_tests;
+
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
 pub mod texture_watch;
 

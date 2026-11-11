@@ -13,6 +13,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod camera_plan;
 mod capture;
 mod capture_metadata;
+mod capture_residency;
 mod capture_tools;
 mod close_confirmation;
 mod control;
@@ -20,12 +21,15 @@ mod curve_quality;
 mod environment;
 mod file_dialog;
 mod framing;
+mod gpu_limits;
 mod host_capture;
 mod inspector;
 mod lighting;
+mod morph_probe;
 mod payload_editor;
 mod perf_render;
 mod render_settings;
+mod residency_policy;
 mod timeline;
 mod toolbar_icons;
 mod transparent_probe;
@@ -59,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     curve_quality::from_env()?;
+    residency_policy::from_env()?;
     capture::CaptureConfig::from_env()?;
     host_capture::from_env()?;
     render_settings::oit_from_env()?;
@@ -201,6 +206,13 @@ struct UsdApp {
 }
 
 impl WindowApp for UsdApp {
+    fn configure_gpu_limits(
+        supported: &bevy::render::settings::WgpuLimits,
+        requested: &mut bevy::render::settings::WgpuLimits,
+    ) {
+        gpu_limits::configure(supported, requested);
+    }
+
     fn new(ctx: CreationContext<'_>) -> Self {
         ui_replay::install(ctx.__internal_egui_ctx()).expect("invalid USD_UI_REPLAY script");
         ui_diagnostics::install(ctx.__internal_egui_ctx())
@@ -696,6 +708,10 @@ fn usd_tree_passes(nodes: &[UsdNode], i: usize, filter: &str) -> bool {
 
 fn configure_usd_app(app: &mut App, editor: EditorBridge) {
     app.insert_resource(curve_quality::from_env().expect("validated USD_CURVE_STEPS"));
+    residency_policy::configure(
+        app,
+        residency_policy::from_env().expect("validated USD_DEFER_HIDDEN_MESHES"),
+    );
     app.insert_resource(editor);
     app.add_plugins((
         UsdPlugin,

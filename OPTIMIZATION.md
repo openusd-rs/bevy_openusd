@@ -76,6 +76,23 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Point-instancer parent links (`3562782`): isolated ECS scaling confirms
+  quadratic repeated replacement of unchanged `ChildOf` links. Stable instance
+  links are now retained, source-ID order restored in bulk and removed/cleared
+  siblings detached before despawning. Runtime components, unrelated children,
+  stable IDs and last-good validation behavior have explicit regression coverage.
+  Hardening passes 819 no-default / 919 all-feature tests, strict Clippy, native
+  deformation/watcher/export checks and wasm compilation. The 20-process release
+  comparison lowers city seek medians from 864–1,370 ms to 51–54 ms (95.3% by the
+  average-of-medians rule), preserving 40,008 mesh entities and eight mesh assets.
+  City, reversed independent hierarchy roots, affine subsets and deformation
+  renders are all pixel-exact before/after at tolerance zero. Full performance
+  acceptance remains open: the small affine fixture regresses in two noisy
+  default-affinity comparisons; a separate P-core diagnostic puts both affine
+  and an unaffected control within 1%, but does not erase those failures.
+  Prototype-part parenting and sustained native cadence remain separate work.
+  See [instancer parenting](benchmarks/instancer-parenting.md).
+
 - Editor hierarchy reuse (`41cb1ce`, `6d4f8ae`): broad profiling identifies
   repeated complete hierarchy/visibility reads during inspector publication.
   The editor now retains one bounded current-composition hierarchy, caches

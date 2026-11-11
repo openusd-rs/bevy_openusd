@@ -31,6 +31,13 @@ specific hook. Isolate a large sibling set and compare unchanged versus changed
 parents before claiming the full route cost is caused by it. No production
 parent-link change has been made at this checkpoint.
 
+The pinned public `replace_children` implementation computes indexed existing/
+final sets, preserves retained `ChildOf` links and replaces target ordering in
+bulk. It is a candidate for source-order restoration and bulk detachment without
+manually mutating relationship internals. The caller must include unrelated
+children it intends to retain. Shrink/clear paths also need inspection: repeated
+individual child removals can have the same sibling-list cost.
+
 ## Required repair constraints and evidence
 
 - Preserve stable instance IDs/entities, runtime-added components, source-order

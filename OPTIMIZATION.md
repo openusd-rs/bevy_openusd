@@ -84,8 +84,15 @@ correct readiness reporting.
   unchanged. Eight new regressions cover clocks, clips, variants, direct edits,
   payload rules, masks, native proxies, undo/redo, failed/repaired reload and
   retention bounds. Hardening passes 817 no-default / 916 all-feature tests and
-  strict Clippy. Native gate completion and saved-release performance acceptance
-  are pending; no speedup is claimed yet. See
+  strict Clippy; native deformation/watcher/export checks and wasm compilation
+  also pass. The 28-process saved-release comparison records a 38.0% reduction
+  in the average arm update medians and 89.6% in its snapshot medians. Opening
+  regressions exceed the 5% gate in three noisy workloads, so full acceptance
+  remains open. The completed 36-open follow-up clears the subset regression,
+  but kitchen/bird aggregate opening medians still exceed the limit; first/later
+  App strata show substantial variance. City seeks
+  expose a separate large [point-instancer cost](benchmarks/instancer-parenting.md).
+  See
   [editor hierarchy sampling](benchmarks/editor-hierarchy.md).
 
 - Posed per-draw sorting (`fe32713`, `291b4af`, `53a34e6`): corrects the observed

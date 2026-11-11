@@ -76,6 +76,18 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Exact sRGB mip encoding (`05b3106`): a bounded 5124-byte quantizer replaces
+  per-channel power evaluation without changing float mip averages, source
+  resolution or output bytes. Linux release comparison covers 107,011,437 float
+  inputs; the encoder-only kernel takes 75.5% less time. Hardening passes 837
+  no-default / 953 all-feature tests; native deformation/watchers/exports and
+  wasm compilation pass. Twelve native image pairs remain pixel-exact.
+  End-to-end acceptance still fails eight checks: bird texture finalization
+  improves only 9.6%, both bird/cow request-to-Ready improve less than the 5%
+  target, and untouched small controls show large startup regressions. Check
+  byte-identical-binary controls before attributing these differences or making
+  another loading change. See [mip encoding](benchmarks/mip-encoding.md).
+
 - Native opening recorder (`9cd2119`): asset-request to all-root Ready,
   post-scene render-pipeline observation and settled image readback now have
   separate wall-clock milestones; device/bootstrap time is separate too.

@@ -110,3 +110,54 @@ Wasm compilation is not rendered browser or exhaustive browser-math acceptance.
 
 Native rendered output and end-to-end opening measurements are the next gate;
 the kernel result does not waive earlier loading or rendering failures.
+
+## Native opening comparison
+
+`/tmp/bevy-optimization-mip-encoding-abba.J038vE/` retains sixteen fresh native
+processes, before/after/after/before for bird, cow, arm and subsets. Both binaries
+include the same opening and texture counters. Baseline production is `5e3b238`
+(saved `20c43b2` binary; intervening changes are documentation); candidate is
+`05b3106`. SHA-256 values:
+
+- Before: `aa9e2e3f7041f0f9c94a0909fdd6de856bbc64785610cd508da783aec8260c57`.
+- After: `6657879141e3eebad2eccd406f75621e8b569e3e15bca0ab2eb547c12cad5172`.
+
+Dependencies, assets, fixed cameras/poses, 1280x720, forward/4x-MSAA, validation,
+default affinity, unlimited projection and sixty-ready-frame settling match.
+The device remains RTX 4080/Vulkan. No task-owned compilation overlaps; one-minute
+host load spans 34.64–46.04. Raw intervals and source/binary hashes are retained.
+
+| Case | Before texture finalization, ms | After texture finalization, ms | Change of pair means | Before request-to-Ready, ms | After request-to-Ready, ms | Change of pair means |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bird | 3283.465 / 1740.631 | 2119.074 / 2423.468 | -9.6% | 6665.002 / 4319.232 | 4455.648 / 6230.575 | -2.7% |
+| Cow | 921.752 / 2872.137 | 1580.312 / 1068.681 | -30.2% | 1640.272 / 4009.843 | 3269.686 / 2231.788 | -2.6% |
+| Arm | 0 / 0 | 0 / 0 | not applicable | 242.139 / 158.988 | 96.923 / 88.225 | -53.8% |
+| Subsets | 0 / 0 | 0 / 0 | not applicable | 26.008 / 17.846 | 54.713 / 40.263 | +116.6% |
+
+**Full performance acceptance fails eight declared checks.** Bird misses the 10%
+texture target (9.585% observed); both textured scenes miss 5% request-to-Ready.
+Arm pipeline observation/readback regress 51.9%/22.0%; subset Ready/pipeline/
+readback regress 116.6%/302.8%/80.6%. The unchanged bird source-publication phases
+increase 33.8%, while cow's unprofiled residual increases 87.6%. Neither the
+kernel result nor variable host load waives these failures or isolates the full
+observed texture-time changes as causal gains.
+
+All sixteen opening/phase records pass order/arithmetic/configuration checks.
+Texture image counts, input/appended bytes and visible mesh counts match;
+texture counters at Ready equal their later screenshot values in every run.
+All twelve image comparisons against each case's first baseline are pixel-exact
+at tolerance zero; representative candidate bird/cow images were inspected.
+All processes, runtime-log checks and source manifests pass. Cow retains four
+missing-MDL warnings; the diagnostic driver and performance analysis exit 1.
+The old CPU/GPU pixel discrepancy and other failed gates remain unresolved.
+
+## Next isolation step
+
+The arm/subset cases finalize no textures, so they never call the new encoder,
+yet their render-startup observations change substantially. Before another
+production optimization, run the same opening harness with byte-identical
+executables under its before/after labels, then counterbalance version order if
+needed. Record every result, not just favorable blocks. This tests startup/order
+variation without silently waiving the current failed gates. More controlled
+whole-image/real-asset measurements are needed beyond the encoder-only kernel;
+bounded main-thread loading and window/browser acceptance are still open.

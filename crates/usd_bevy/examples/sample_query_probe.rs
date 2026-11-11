@@ -83,7 +83,6 @@ fn attributes(stage: &Stage) -> Result<Vec<Attribute>> {
         }
     }
     ensure!(!attributes.is_empty(), "no SkelAnimation attributes");
-    ensure!(attributes.len() <= 512, "probe attribute limit exceeded");
     attributes.sort_by(|a, b| a.path().as_str().cmp(b.path().as_str()));
     Ok(attributes)
 }
@@ -161,11 +160,16 @@ fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
         args.len() == 3,
-        "usage: sample_query_probe ASSET SAMPLES REVERSE_0_OR_1"
+        "usage: sample_query_probe ASSET SAMPLES_OR_inventory REVERSE_0_OR_1"
     );
-    let samples = args[1].parse::<usize>()?;
+    let inventory_only = args[1] == "inventory";
+    let samples = if inventory_only {
+        0
+    } else {
+        args[1].parse::<usize>()?
+    };
     ensure!(
-        (4..=1000).contains(&samples) && samples.is_multiple_of(4),
+        inventory_only || (4..=1000).contains(&samples) && samples.is_multiple_of(4),
         "samples must be 4..1000 and divisible by four"
     );
     let reverse = match args[2].as_str() {
@@ -176,6 +180,19 @@ fn main() -> Result<()> {
     let opening = Instant::now();
     let stage = usd_bevy::UsdSource::from_file(&args[0])?.open_stage()?;
     let attributes = attributes(&stage)?;
+    if inventory_only {
+        inventory(&attributes)?;
+        println!(
+            "SAMPLE_QUERY_INVENTORY_COMPLETE attributes={} scope=one-map-at-a-time-no-queries",
+            attributes.len()
+        );
+        return Ok(());
+    }
+    ensure!(
+        attributes.len() <= 512,
+        "probe attribute limit exceeded: {} > 512",
+        attributes.len()
+    );
     let (start, end) = (stage.start_time_code(), stage.end_time_code());
     ensure!(
         start.is_finite() && end.is_finite() && start < end,

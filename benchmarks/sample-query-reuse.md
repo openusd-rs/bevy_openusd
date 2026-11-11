@@ -45,3 +45,10 @@ asset. Passing only identifies a worthwhile integration candidate; failing
 rejects this opportunity at the declared threshold. Do not relax it, aggregate
 away an order failure or rerun unchanged for a favorable answer. Full-editor,
 resource/lifecycle, native visual and platform gates remain separate.
+
+The initial cow run exceeds the probe's 512-attribute guard before measurement.
+Keep that failure and the original executable; do not raise the guard or repeat
+the reversed cow timing unchanged. Finish only the already-declared second bird
+run. A separate `ASSET inventory 0` mode then inventories the cow one sample
+map at a time without constructing persistent queries or taking performance
+samples. It does not turn the failed cow timing into a passing result.

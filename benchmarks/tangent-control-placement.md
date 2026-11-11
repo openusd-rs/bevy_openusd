@@ -133,3 +133,21 @@ pin unrelated processes or replace this with a globally single-threaded app.
 This can test the implementation with matched main-thread placement while
 preserving normal worker pools. It remains a controlled diagnostic, not an
 automatic waiver of the prior default-affinity failures or proof of native FPS.
+
+The bounded follow-up covers GPU morph and subsets, each on CPU 0 and CPU 16,
+with two reversed-startup pairs per placement. First run eight identical-original
+pairs, then eight original/candidate pairs: 32 processes, 32,000 measured updates
+and 128 warmups. Within each pair, alternate individual updates in ABBA order.
+Keep startup, warmup, midpoint and pre-final affinity snapshots; reject changed
+worker masks, inherited single-CPU worker masks, mismatched pool counts, input
+identities, clocks, payload/work counts, diagnostics or incomplete processes.
+
+Analyze both first-update orders separately (500 measured pairs each) in each
+fresh-process pair. Require all identical-binary strata's median paired ratios
+to lie within 0.95–1.05 before interpreting the candidate. The candidate meets
+this diagnostic's median-control bound only if no stratum exceeds 1.05; retain
+p95/max, opening/idle and memory observations independently. A failed identical-
+binary control makes the comparison inconclusive rather than authorizing a
+retry, discarded samples or looser bounds. Regardless of outcome, this is
+headless, explicitly paced evidence under controlled main-thread placement,
+not the default-affinity or native-rendering acceptance gate.

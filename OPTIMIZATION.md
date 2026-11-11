@@ -76,6 +76,18 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Viewer log traffic:** TRACE is now opt-in via `RUST_LOG`; the default keeps
+  application INFO and warnings/errors. Across 32 native bird seeks, log traffic
+  falls from 233,118 bytes / 3,842 file calls to 1,393 bytes / 29 calls. The
+  rebuilt viewer verifies both default filtering and explicit TRACE. Hardening
+  passes 884 / 1,011 executions, formatting and strict Clippy. Three strict
+  image comparisons pass, including old INFO versus the new default, but two
+  comparisons involving the candidate TRACE capture differ at 207 pixels, max
+  RGB two. Host warnings also remain failures. The
+  [logging evidence](benchmarks/viewer-logging.md) retains all results; this is
+  lower logging I/O, not a native FPS claim or full visual acceptance. This
+  closes the in-progress local change, not the whole optimization roadmap.
+
 - **Scoped query sharing:** animation and skeleton cache hits now share private
   query handles instead of deep-cloning joint-name and mapping vectors. Scope
   lifetime, stage isolation, later edits and deformation arithmetic are
@@ -98,12 +110,6 @@ correct readiness reporting.
   Two unchanged CPU-versus-GPU mesh pixels and host diagnostics remain failures;
   sampled-pose equality is not native-frame-rate or broad release acceptance.
 
-- **Next measured cost:** `src/main.rs::init_tracing` defaults to
-  `warn,usdview=trace,usd_bevy=trace,openusd=info`; native viewer captures emit
-  route traces, unlike the separate headless CPU benchmark. Assess viewer
-  tracing cost before adding more caches. Preserve warnings/errors and explicit
-  `RUST_LOG` overrides; do not claim logging is a bottleneck without measurement.
-
 - **Skin correction-cache candidate rejected:** the saved release diagnostic
   completes five bird clocks with 190 accepted and 15 explicitly rejected GPU
   samples. A 64-entry model avoids only 5.98% of remaining non-adjacent
@@ -114,12 +120,13 @@ correct readiness reporting.
   Further work must target another measured cost; this is not a speedup and
   does not clear any outstanding application, visual or release gate.
 
-- **Wrap-up checkpoint:** the user requested ending the prolonged investigation.
+- **Earlier wrap-up checkpoint:** the user requested ending the prolonged investigation.
   The already-running verification finishes at 880 no-default / 1,007
   all-feature/all-target executions, formatting, strict Clippy and a release
-  diagnostic build. No further real-asset experiment is started. The
-  [skin-influence inventory](benchmarks/skin-influence-reuse.md) is test-only,
-  built but not run on real assets; no production cache or speedup is claimed.
+  diagnostic build. At that checkpoint the
+  [skin-influence inventory](benchmarks/skin-influence-reuse.md) was test-only,
+  built but not run on real assets. Its later measured rejection is recorded
+  above; no production correction cache or speedup is claimed.
   Actual performance work remains in bird skin/mesh preparation, cow tangent
   and hidden-mesh costs, loading regressions and memory/lifecycle validation.
   Earlier visual, 60 Hz, downstream and platform gates are not marked complete.

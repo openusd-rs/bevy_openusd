@@ -57,9 +57,9 @@ use usd_bevy::UsdPlugin;
 use usd_bevy::editor::{EditorBridge, EditorCommand, EditorPlugin, SaveMode};
 use usd_bevy::live::LiveStagePlugin;
 
-/// Everything (trace + panics + backtraces) is mirrored here so a hard crash
-/// is still recoverable after the window dies.
+/// Viewer tracing and panic reports are mirrored to this file.
 const LOG_FILE: &str = "/tmp/usdview.log";
+const DEFAULT_LOG_FILTER: &str = "warn,usdview=info,usd_bevy=info,openusd=info";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if control::run_cli()? {
@@ -111,15 +111,14 @@ fn hot_reload_defaults_on_and_accepts_explicit_disable() {
     assert!(hot_reload_enabled(Some("")).is_err());
 }
 
-/// Tracing to BOTH stderr and [`LOG_FILE`]. The embedded Bevy app has no
-/// `LogPlugin`, so without this the logs go nowhere; the file copy survives a
-/// crash that eats stderr. Override the filter with `RUST_LOG`.
+/// Writes filtered tracing events to stderr and [`LOG_FILE`].
+/// `RUST_LOG` overrides the viewer's INFO-level default.
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt::writer::MakeWriterExt;
     let _ = std::fs::write(LOG_FILE, ""); // truncate per run
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn,usdview=trace,usd_bevy=trace,openusd=info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
     let to_file = || {
         std::fs::OpenOptions::new()
             .create(true)
@@ -133,6 +132,46 @@ fn init_tracing() {
         .with_ansi(false)
         .with_writer(std::io::stderr.and(to_file))
         .try_init();
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use tracing::Level;
+    use tracing_subscriber::prelude::*;
+
+    fn enabled(filter: &str) -> [bool; 9] {
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_subscriber::EnvFilter::new(filter));
+        tracing::subscriber::with_default(subscriber, || {
+            [
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::TRACE),
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::DEBUG),
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::INFO),
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::WARN),
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::ERROR),
+                tracing::enabled!(target: "usdview", Level::INFO),
+                tracing::enabled!(target: "openusd", Level::INFO),
+                tracing::enabled!(target: "other_crate", Level::INFO),
+                tracing::enabled!(target: "other_crate", Level::WARN),
+            ]
+        })
+    }
+
+    #[test]
+    fn default_logging_keeps_info_and_diagnostics_without_mesh_traces() {
+        assert_eq!(
+            enabled(super::DEFAULT_LOG_FILTER),
+            [false, false, true, true, true, true, true, false, true]
+        );
+    }
+
+    #[test]
+    fn explicit_logging_filter_can_enable_trace_and_replace_defaults() {
+        assert_eq!(
+            enabled("off,usd_bevy::route::geom=trace"),
+            [true, true, true, true, true, false, false, false, false]
+        );
+    }
 }
 
 /// Capture panics (message + full backtrace) to the log file and stderr —

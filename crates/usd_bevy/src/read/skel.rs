@@ -21,12 +21,50 @@ use super::util::{read_float_vec, read_rel_first_target};
 
 type PoseKey = (Path, Option<Path>, Option<u64>);
 
+struct RelationshipSamples {
+    answers: std::collections::HashMap<(Path, &'static str), Option<String>>,
+    text_bytes: usize,
+    max_entries: usize,
+    max_text_bytes: usize,
+}
+
+impl Default for RelationshipSamples {
+    fn default() -> Self {
+        Self {
+            answers: Default::default(),
+            text_bytes: 0,
+            max_entries: 4096,
+            max_text_bytes: 1024 * 1024,
+        }
+    }
+}
+
+impl RelationshipSamples {
+    fn insert(&mut self, key: (Path, &'static str), value: &Option<String>) {
+        if self.answers.len() >= self.max_entries || self.answers.contains_key(&key) {
+            return;
+        }
+        let bytes = key
+            .0
+            .as_str()
+            .len()
+            .checked_add(key.1.len())
+            .and_then(|bytes| bytes.checked_add(value.as_ref().map_or(0, String::len)))
+            .and_then(|bytes| bytes.checked_add(self.text_bytes));
+        if let Some(bytes) = bytes.filter(|bytes| *bytes <= self.max_text_bytes) {
+            self.answers.insert(key, value.clone());
+            self.text_bytes = bytes;
+        }
+    }
+}
+
 struct SkelSamples {
     stage: Stage,
     skeletons: std::collections::HashMap<Path, Option<SkeletonQuery>>,
     animations: std::collections::HashMap<Path, Option<AnimQuery>>,
     poses: std::collections::HashMap<PoseKey, Option<Vec<gf::Mat4d>>>,
     binding: Option<(Path, Option<std::rc::Rc<BoundSkin>>)>,
+    relationships: RelationshipSamples,
 }
 
 thread_local! {
@@ -45,6 +83,7 @@ impl SkelSampleScope {
                 animations: Default::default(),
                 poses: Default::default(),
                 binding: None,
+                relationships: Default::default(),
             }))
         }))
     }
@@ -623,13 +662,33 @@ pub fn blend_shaped_points_at(
 }
 
 /// Walk `prim` and its ancestors for the first authored first-target of `rel`.
-fn inherited_rel(stage: &Stage, prim: &Path, rel: &str) -> Option<String> {
+fn sampled_rel_target(
+    stage: &Stage,
+    prim: &Path,
+    rel: &'static str,
+) -> anyhow::Result<Option<String>> {
+    let key = (prim.clone(), rel);
+    if let Some(value) = with_samples(stage, |cache| {
+        cache.relationships.answers.get(&key).cloned()
+    })
+    .flatten()
+    {
+        return Ok(value);
+    }
+    let value = read_rel_first_target(stage, prim, rel);
+    if let Ok(value) = &value {
+        with_samples(stage, |cache| cache.relationships.insert(key, value));
+    }
+    value
+}
+
+fn inherited_rel(stage: &Stage, prim: &Path, rel: &'static str) -> Option<String> {
     let mut cur = Some(prim.clone());
     while let Some(p) = cur {
         if p.is_abs_root() {
             break;
         }
-        if let Ok(Some(t)) = read_rel_first_target(stage, &p, rel) {
+        if let Ok(Some(t)) = sampled_rel_target(stage, &p, rel) {
             return Some(t);
         }
         cur = p.parent();
@@ -1197,6 +1256,234 @@ pub(crate) fn gpu_skin_sample_with_mesh(
 
 #[cfg(test)]
 mod tests {
+    fn relationship_stage() -> Stage {
+        crate::snippet::UsdSnippet::new(
+            r#"#usda 1.0
+def Scope "Root" {
+    rel skel:skeleton = [</First>, </Second>]
+    rel skel:animationSource = </Animation>
+    def Scope "Empty" {
+        rel skel:skeleton = []
+        def Mesh "A" {}
+        def Mesh "B" { rel skel:skeleton = </Local> }
+        def Mesh "C" {}
+    }
+}
+"#,
+        )
+        .open_stage()
+        .unwrap()
+    }
+
+    fn fresh_inherited_rel(stage: &Stage, prim: &Path, rel: &str) -> Option<String> {
+        let mut current = Some(prim.clone());
+        while let Some(path) = current {
+            if path.is_abs_root() {
+                break;
+            }
+            if let Ok(Some(target)) = read_rel_first_target(stage, &path, rel) {
+                return Some(target);
+            }
+            current = path.parent();
+        }
+        None
+    }
+
+    #[test]
+    fn relationship_samples_match_fresh_walks_and_isolate_scopes_and_edits() {
+        let stage = relationship_stage();
+        let other = relationship_stage();
+        other
+            .prim("/Root")
+            .unwrap()
+            .relationship("skel:skeleton")
+            .set_targets([openusd::sdf::path("/Other").unwrap()])
+            .unwrap();
+        let a = openusd::sdf::path("/Root/Empty/A").unwrap();
+        let paths = [
+            "/Root/Empty/A",
+            "/Root/Empty/B",
+            "/Root/Empty/C",
+            "/Missing",
+        ]
+        .map(|path| openusd::sdf::path(path).unwrap());
+        for max_entries in [0, 1, 4096] {
+            let _scope = SkelSampleScope::begin(&stage);
+            with_samples(&stage, |cache| {
+                cache.relationships.max_entries = max_entries
+            });
+            for path in paths.iter().chain(paths.iter().rev()) {
+                for rel in ["skel:skeleton", "skel:animationSource"] {
+                    assert_eq!(
+                        inherited_rel(&stage, path, rel),
+                        fresh_inherited_rel(&stage, path, rel)
+                    );
+                }
+            }
+            let count = with_samples(&stage, |cache| cache.relationships.answers.len()).unwrap();
+            assert!(count <= max_entries);
+            if max_entries == 4096 {
+                assert!(
+                    with_samples(&stage, |cache| {
+                        cache
+                            .relationships
+                            .answers
+                            .get(&(a.clone(), "skel:skeleton"))
+                            == Some(&None)
+                    })
+                    .unwrap()
+                );
+                assert!(
+                    with_samples(&stage, |cache| {
+                        cache
+                            .relationships
+                            .answers
+                            .values()
+                            .any(|value| value.as_deref() == Some("/First"))
+                    })
+                    .unwrap()
+                );
+            }
+            {
+                let _nested = SkelSampleScope::begin(&other);
+                assert_eq!(
+                    inherited_rel(&other, &a, "skel:skeleton").as_deref(),
+                    Some("/Other")
+                );
+                assert_eq!(
+                    inherited_rel(&stage, &a, "skel:skeleton").as_deref(),
+                    Some("/First")
+                );
+                assert!(with_samples(&stage, |_| ()).is_none());
+            }
+            assert_eq!(
+                with_samples(&stage, |cache| cache.relationships.answers.len()),
+                Some(count)
+            );
+            {
+                let _nested = SkelSampleScope::begin(&stage);
+                assert_eq!(
+                    with_samples(&stage, |cache| cache.relationships.answers.len()),
+                    Some(0)
+                );
+            }
+            assert_eq!(
+                with_samples(&stage, |cache| cache.relationships.answers.len()),
+                Some(count)
+            );
+        }
+        assert!(with_samples(&stage, |_| ()).is_none());
+        stage
+            .prim("/Root")
+            .unwrap()
+            .relationship("skel:skeleton")
+            .set_targets([openusd::sdf::path("/Edited").unwrap()])
+            .unwrap();
+        assert_eq!(
+            inherited_rel(&stage, &a, "skel:skeleton").as_deref(),
+            Some("/Edited")
+        );
+        let _scope = SkelSampleScope::begin(&stage);
+        assert_eq!(
+            inherited_rel(&stage, &a, "skel:skeleton").as_deref(),
+            Some("/Edited")
+        );
+        assert_eq!(
+            inherited_rel(&other, &a, "skel:skeleton").as_deref(),
+            Some("/Other")
+        );
+    }
+
+    #[test]
+    fn relationship_sample_limits_bound_text_and_preserve_fresh_fallback() {
+        let key = (openusd::sdf::path("/Root").unwrap(), "skel:skeleton");
+        let value = Some("/Target".to_owned());
+        let bytes = key.0.as_str().len() + key.1.len() + value.as_ref().unwrap().len();
+        for (max_entries, max_text_bytes, retained) in
+            [(0, bytes, false), (1, bytes - 1, false), (1, bytes, true)]
+        {
+            let mut cache = RelationshipSamples {
+                max_entries,
+                max_text_bytes,
+                ..Default::default()
+            };
+            cache.insert(key.clone(), &value);
+            assert_eq!(cache.answers.len(), usize::from(retained));
+            assert_eq!(cache.text_bytes, if retained { bytes } else { 0 });
+            cache.insert(key.clone(), &Some("/Different".into()));
+            cache.insert((openusd::sdf::path("/Another").unwrap(), key.1), &None);
+            assert!(cache.answers.len() <= max_entries);
+            assert!(cache.text_bytes <= max_text_bytes);
+            if retained {
+                assert_eq!(cache.answers.get(&key), Some(&value));
+            }
+        }
+        let stage = relationship_stage();
+        let path = openusd::sdf::path("/Root/Empty/A").unwrap();
+        let _scope = SkelSampleScope::begin(&stage);
+        with_samples(&stage, |cache| cache.relationships.max_text_bytes = 0);
+        for _ in 0..3 {
+            assert_eq!(
+                inherited_rel(&stage, &path, "skel:skeleton").as_deref(),
+                Some("/First")
+            );
+        }
+        assert_eq!(
+            with_samples(&stage, |cache| (
+                cache.relationships.answers.len(),
+                cache.relationships.text_bytes
+            )),
+            Some((0, 0))
+        );
+    }
+
+    #[test]
+    fn custom_routes_read_relationship_edits_without_a_sample_scope() {
+        use crate::route::{PrimRoute, RouteCtx, SchemaRegistry};
+        use bevy::prelude::*;
+        #[derive(Resource, Default)]
+        struct Observed(Vec<Option<String>>);
+        struct EditRelationship;
+        impl PrimRoute for EditRelationship {
+            fn matches(&self, _: &RouteCtx) -> bool {
+                true
+            }
+            fn project(&self, ctx: &RouteCtx, world: &mut World, _: Entity) {
+                assert!(with_samples(ctx.stage, |_| ()).is_none());
+                let value = inherited_rel(ctx.stage, ctx.path, "skel:skeleton");
+                world.resource_mut::<Observed>().0.push(value);
+                ctx.stage
+                    .prim("/Root")
+                    .unwrap()
+                    .relationship("skel:skeleton")
+                    .set_targets([openusd::sdf::path("/Edited").unwrap()])
+                    .unwrap();
+            }
+        }
+        let live = crate::live::LiveStage::new(relationship_stage());
+        let mut world = World::new();
+        world.init_resource::<Observed>();
+        let mut registry = SchemaRegistry::new();
+        registry.register(EditRelationship);
+        registry.with_materials(&mut world, &live, |world| {
+            for path in ["/Root/Empty/A", "/Root/Empty/C"] {
+                let entity = world.spawn_empty().id();
+                registry.patch_prim(
+                    &live.stage,
+                    &openusd::sdf::path(path).unwrap(),
+                    world,
+                    entity,
+                    &[],
+                );
+            }
+        });
+        assert_eq!(
+            world.resource::<Observed>().0,
+            [Some("/First".into()), Some("/Edited".into())]
+        );
+        assert!(with_samples(&live.stage, |_| ()).is_none());
+    }
+
     #[test]
     fn prepared_cpu_points_match_upstream_queries_after_edits() {
         use openusd::vt::Value;

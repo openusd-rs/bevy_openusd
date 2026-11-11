@@ -109,16 +109,19 @@ impl PreparedDeformation {
     }
 }
 
-fn needs_deformation(ctx: &RouteCtx, world: &World) -> bool {
+fn needs_deformation(ctx: &RouteCtx, world: &World, phases: &mut Option<PhaseSample>) -> bool {
     if ctx.type_name.as_deref() != Some("Mesh") || super::subdivision::enabled(ctx, world) {
         return false;
     }
     let kinds = DeformationKinds::read(ctx);
+    phase_lap(phases, "eligibility-kinds");
     ctx.prepared_kinds.set(Some(kinds));
     if !kinds.varying {
         return false;
     }
-    let Ok(Some(read)) = ctx.read_mesh() else {
+    let mesh = ctx.read_mesh();
+    phase_lap(phases, "eligibility-mesh-read");
+    let Ok(Some(read)) = mesh else {
         return false;
     };
     if read.uvs.is_none() || read.points.is_empty() {
@@ -131,6 +134,7 @@ fn needs_deformation(ctx: &RouteCtx, world: &World) -> bool {
         return false;
     }
     let sample = skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read);
+    phase_lap(phases, "eligibility-skin-sample");
     let needed = match &sample {
         Ok(sample) => sample
             .normal_corrections
@@ -171,7 +175,7 @@ pub(super) fn prepare_batch(
         }
         consumed = index + 1;
         mesh_prims += usize::from(ctx.type_name.as_deref() == Some("Mesh"));
-        let needed = needs_deformation(ctx, world);
+        let needed = needs_deformation(ctx, world, &mut phases);
         phase_lap(&mut phases, "eligibility");
         if !needed {
             continue;
@@ -404,6 +408,8 @@ mod tests {
             assert!(phases.phases.values().sum::<std::time::Duration>() <= complete.elapsed);
             for phase in [
                 "eligibility",
+                "eligibility-kinds",
+                "eligibility-mesh-read",
                 "deformation",
                 "assembly",
                 "cache-lookup",
@@ -451,6 +457,39 @@ mod tests {
         assert_eq!(timing.tangent_elapsed, std::time::Duration::ZERO);
         for phase in ["eligibility", "deformation", "assembly", "publication"] {
             assert!(timing.phases.contains_key(phase), "{phase}");
+        }
+    }
+
+    #[test]
+    fn phase_timing_separates_gpu_skin_sampling_without_changing_geometry() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let stage = stage();
+        let registry = SchemaRegistry::builtin();
+        let (mut plain, a) = world(true);
+        let (mut profiled, b) = world(true);
+        profiled.init_resource::<MeshPreparationPhaseTiming>();
+        for world in [&mut plain, &mut profiled] {
+            world.insert_resource(StageTime { current: 5.0 });
+        }
+        let _scope = skel::SkelSampleScope::begin(&stage);
+        registry.patch_animation_with_pool(&stage, a.clone(), &mut plain, Some(&pool));
+        registry.patch_animation_with_pool(&stage, b.clone(), &mut profiled, Some(&pool));
+        for ((_, ae), (_, be)) in a.iter().zip(&b) {
+            same_entities(&plain, *ae, &profiled, *be);
+        }
+        if pool.thread_num() > 1 {
+            let phases = profiled.resource::<MeshPreparationPhaseTiming>();
+            for phase in [
+                "eligibility-kinds",
+                "eligibility-mesh-read",
+                "eligibility-skin-sample",
+            ] {
+                assert!(phases.phases.contains_key(phase), "{phase}");
+            }
+            assert!(
+                phases.phases.values().sum::<std::time::Duration>()
+                    <= profiled.resource::<MeshPreparationTiming>().elapsed
+            );
         }
     }
 

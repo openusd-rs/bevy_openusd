@@ -76,6 +76,26 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Native opening recorder (`9cd2119`): asset-request to all-root Ready,
+  post-scene render-pipeline observation and settled image readback now have
+  separate wall-clock milestones; device/bootstrap time is separate too.
+  Hardening passes 835 no-default / 950 all-feature tests and strict Clippy.
+  Five native before/after image pairs are pixel-exact, including independently
+  timed roots. Bird request-to-Ready measures 6075 ms while the five recorded
+  source-publication phases total only 740 ms, exposing a large previously
+  unmeasured loader/scheduling interval. This is instrumentation evidence, not
+  a speedup or clearance of opening regressions. The unlimited-projection
+  offscreen path and pipeline observation do not establish editor responsiveness
+  or first-visible latency. A subsequent matched sixteen-process comparison
+  fails six of eight 5% opening milestone gates, including bird/cow
+  request-to-Ready regressions, despite twelve pixel-exact image comparisons.
+  Follow-up `20c43b2` snapshots existing texture-finalization counters at Ready:
+  that synchronous `PostUpdate` work consumes 51% of bird and 72% of cow opening
+  in the diagnostic runs, outside the projection budget. Three more image pairs
+  are pixel-exact and updated hardening passes 951 all-feature executions. This
+  identifies the next loading target; no earlier loading failure is cleared. See
+  [opening milestones](benchmarks/opening-milestones.md).
+
 - Rendered playback baseline (`9f4212f`, `1fad2a5`): a bounded recorder now uses
   production asset-root playback, collecting main intervals, separate published
   render CPU/GPU pass timings and actual stage clocks. All six bird/arm/cow
@@ -115,6 +135,34 @@ correct readiness reporting.
   The bird/cow 60 Hz target, native-window/browser performance and previous
   rendering/loading failures remain open. See
   [asset-root animation](benchmarks/instance-animation.md).
+
+- Mesh-preparation phase profiling (`274562f`): opt-in non-overlapping main
+  phases and separate overlapping worker-wall counters preserve the existing
+  preparation policy. Hardening passes 831 no-default / 940 all-feature tests,
+  strict Clippy, release capture build and wasm compilation. Three native
+  playback captures validate 900 raw frames and match independent pre-timer
+  final poses exactly. Cow's dominant batch phase is tangent dispatch/join
+  (31.0 ms per changed update); bird's is eligibility/mesh/skin sampling
+  (11.6 ms), not tangents alone. Subsets submit no tangent jobs. These are
+  diagnostics, not another speedup or clearance of the failed regressions.
+  Both real assets still miss 60 Hz under the observed lower host load.
+  Follow-up must reduce bird eligibility costs and actual cow tangent work
+  without changing normal/tangent fidelity. See
+  [parallel preparation](benchmarks/parallel-mesh-preparation.md).
+
+- Scoped skeleton relationships (`ffb32c6`): repeated local skeleton/animation
+  relationship reads now share a bounded stage-specific read-only-pass map,
+  including absent targets. It retains no historical poses, skips custom
+  registries and drops with the pass; entry/text caps have fresh fallback.
+  Hardening passes 835 no-default / 944 all-feature tests, strict Clippy,
+  native deformation/watcher/export gates, wasm compilation and release build.
+  A sixteen-process native comparison records 31.5% lower bird and 15.1% lower
+  cow mean main medians, but unrelated phase/idle variability prevents assigning
+  the full gain to this cache. All 4,800 raw frames validate; six exact-clock
+  final poses and three idle comparisons are pixel-exact. Full acceptance is
+  still open: bird partial source phases regress 35.1%, prior regression gates
+  remain, and playback tails/native-window/browser/lifecycle targets are unmet.
+  See [scoped skeleton sampling](benchmarks/skel-relationships.md).
 
 - Point-instancer parent links (`3562782`): isolated ECS scaling confirms
   quadratic repeated replacement of unchanged `ChildOf` links. Stable instance

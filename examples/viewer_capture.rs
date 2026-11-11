@@ -31,6 +31,8 @@ mod curve_quality;
 mod environment;
 #[path = "support/gpu_timing.rs"]
 mod gpu_timing;
+#[path = "support/playback_timing.rs"]
+mod playback_timing;
 
 #[derive(Resource)]
 struct Capture {
@@ -260,6 +262,28 @@ fn main() -> AppExit {
         }
     };
     let timing_enabled = timing.enabled();
+    let optional = |name| match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    };
+    let playback = optional("USD_CAPTURE_PLAYBACK_SAMPLES").and_then(|samples| {
+        optional("USD_CAPTURE_PLAYBACK_SPEED").and_then(|speed| {
+            playback_timing::PlaybackTiming::parse(samples.as_deref(), speed.as_deref())
+        })
+    });
+    let playback = match playback {
+        Ok(playback) => playback,
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
+    };
+    let playback_enabled = playback.is_some();
+    if playback_enabled && timing_enabled {
+        eprintln!("playback measurement has its own GPU window; omit USD_CAPTURE_GPU_SAMPLES");
+        return AppExit::error();
+    }
     let curve_settings = match curve_quality::from_env() {
         Ok(settings) => settings,
         Err(error) => {
@@ -374,6 +398,10 @@ fn main() -> AppExit {
             return AppExit::error();
         }
     };
+    if playback_enabled && capture.swap_clocks {
+        eprintln!("playback measurement cannot be combined with USD_CAPTURE_SWAP_CLOCKS");
+        return AppExit::error();
+    }
     capture.shadow_maps = match std::env::var("USD_CAPTURE_SHADOWS")
         .as_deref()
         .unwrap_or("scene")
@@ -450,10 +478,13 @@ fn main() -> AppExit {
     if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
         app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>();
     }
-    if timing_enabled {
+    if timing_enabled || playback_enabled {
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
     }
     pipeline_probe::configure(&mut app);
+    if let Some(playback) = playback {
+        playback_timing::configure(&mut app, playback);
+    }
     if std::env::var_os("USD_CAPTURE_PHASE_PROBE").is_some() {
         transparent_probe::configure(&mut app);
     }
@@ -699,6 +730,7 @@ fn select_authored_camera(
 struct CaptureTiming<'w, 's> {
     diagnostics: Res<'w, bevy::diagnostic::DiagnosticsStore>,
     timing: ResMut<'w, gpu_timing::GpuTiming>,
+    playback: Option<ResMut<'w, playback_timing::PlaybackTiming>>,
     progress: Res<'w, PipelineProbe>,
     sort_timing: Option<Res<'w, usd_bevy::route::gpu_skin::DeformedSortTiming>>,
     mesh_assets: Res<'w, Assets<Mesh>>,
@@ -786,6 +818,7 @@ fn capture_frame(
     let CaptureTiming {
         diagnostics,
         mut timing,
+        mut playback,
         progress,
         sort_timing,
         mesh_assets,
@@ -805,6 +838,13 @@ fn capture_frame(
         instancer_errors,
         geometry_errors,
     } = scene;
+    if let Some(playback) = &playback
+        && let Some(error) = playback.error()
+    {
+        eprintln!("playback failed: {error}\n{}", playback.report());
+        exit.write(AppExit::error());
+        return;
+    }
     if capture.started.elapsed() > capture.timeout {
         eprintln!(
             "capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}",
@@ -812,6 +852,9 @@ fn capture_frame(
             capture.camera_ready,
             progress.snapshot()
         );
+        if let Some(playback) = &playback {
+            eprintln!("{}", playback.report());
+        }
         exit.write(AppExit::error());
         return;
     }
@@ -902,6 +945,12 @@ fn capture_frame(
     if capture.ready_frames < 60 {
         return;
     }
+    if let Some(playback) = &mut playback
+        && !playback.complete()
+    {
+        playback.arm();
+        return;
+    }
     if !timing.collect(&diagnostics) {
         return;
     }
@@ -930,6 +979,9 @@ fn capture_frame(
         "hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n"
     );
     capture.mesh_report.push_str(&timing.report());
+    if let Some(playback) = &playback {
+        capture.mesh_report.push_str(&playback.report());
+    }
     capture
         .mesh_report
         .push_str(&capture_metadata::mesh_residency_report(

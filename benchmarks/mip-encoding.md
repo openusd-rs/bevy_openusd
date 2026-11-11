@@ -151,7 +151,7 @@ All processes, runtime-log checks and source manifests pass. Cow retains four
 missing-MDL warnings; the diagnostic driver and performance analysis exit 1.
 The old CPU/GPU pixel discrepancy and other failed gates remain unresolved.
 
-## Next isolation step
+## Binary-identity control
 
 The arm/subset cases finalize no textures, so they never call the new encoder,
 yet their render-startup observations change substantially. Before another
@@ -161,3 +161,40 @@ needed. Record every result, not just favorable blocks. This tests startup/order
 variation without silently waiving the current failed gates. More controlled
 whole-image/real-asset measurements are needed beyond the encoder-only kernel;
 bounded main-thread loading and window/browser acceptance are still open.
+
+The byte-identical control in
+`/tmp/bevy-optimization-identical-openings.k7TBLe/` uses the candidate SHA above
+for both labels. Eight fresh processes cover arm/subsets in ABBA order, with the
+same settings and no task-owned compilation. All process/log/manifest checks
+pass; six image pairs are pixel-exact. Texture-finalization counters remain zero.
+Nevertheless, the `after` label's pipeline-observation pair mean is 64.5% higher
+for arm and 162.5% higher for subsets; readback rises 27.2%/37.6%. These differences
+cannot be attributed to a code change. Host load spans 33.18–41.08.
+
+Own-process file traces, run in reversed after/before order, show each executable
+opens a different NVIDIA driver-cache pair under the same GLCache directory.
+The `before` label opens `5428040e00f1c7b4.bin` (819,029 bytes) and its 2,752-byte
+index; `after` opens `24aea9e6f6f0e813.bin` and index, both 32 bytes. Both processes
+read `/proc/self/exe`; executable contents remain identical. Trace process/log/
+image checks pass. These are observations of the installed driver, not a general
+claim about its cache-key algorithm or an explanation for the empty cache.
+Traced timings are not performance-acceptance measurements. No host cache was
+removed or manually edited, and no desktop/security settings were changed.
+
+A second control, `/tmp/bevy-optimization-common-path-openings.j8AGBk/`, stages
+each label at the same owned `run/viewer_capture` path, waits for completion
+before replacing it, and performs one explicit unmeasured warmup per case.
+All eight measured processes and image comparisons against their case's warmup
+pass; every opening record validates. Arm pipeline means now differ by +1.0%,
+while subset pipeline means differ by -48.6%. Thus the large consistent
+`after`-label penalty is absent, but substantial variation remains even with
+identical code. Host load is 65.25–85.03, higher than the first control; changing
+both path and warmup does not isolate their individual effects. This is warm-cache
+diagnostic evidence, not cold-start or full performance acceptance.
+
+The next matched baseline/candidate run keeps the original thresholds and asset/
+renderer settings, uses one common executable path for every measured process,
+and retains two unmeasured warmups per case, one per binary, before measured ABBA.
+Snapshots and assets are hashed before/after; all raw outputs, failures and
+warnings are retained. The script is `/tmp/bevy-optimization-mip-common-path.sh`.
+Earlier failed gates remain recorded rather than being retroactively passed.

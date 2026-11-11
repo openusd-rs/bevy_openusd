@@ -86,7 +86,12 @@ correct readiness reporting.
   improves only 9.6%, both bird/cow request-to-Ready improve less than the 5%
   target, and untouched small controls show large startup regressions. Check
   byte-identical-binary controls before attributing these differences or making
-  another loading change. See [mip encoding](benchmarks/mip-encoding.md).
+  another loading change. Those controls reproduce 65%/162% pipeline-observation
+  differences without any code change; own-process traces find different
+  populated/empty NVIDIA cache files for the executable labels. A common-path,
+  warmed control removes the consistent label penalty but remains variable.
+  Matched common-path baseline/candidate measurement is next; this discovery
+  does not clear earlier failures. See [mip encoding](benchmarks/mip-encoding.md).
 
 - Native opening recorder (`9cd2119`): asset-request to all-root Ready,
   post-scene render-pipeline observation and settled image readback now have

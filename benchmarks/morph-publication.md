@@ -278,3 +278,119 @@ and passes next, rather than changing camera/light math or repeating an unchange
 capture matrix. The strict visual gate, earlier one-pixel mesh observation,
 downstream patch distribution, low-limit adapters, lifecycle/platform checks and
 full performance acceptance remain open.
+
+## Release GPU capture and shader replacement
+
+`906918b` adds the optional viewer-only `debugger_capture` feature and
+`make build-debugger-capture`. `USD_CAPTURE_RENDERDOC=1` requires the morph
+capture probe and an already injected RenderDoc library. The API starts after
+the same-frame view/light readback and finishes after rendering, requires a
+successful capture and exactly one new nonempty capture file, and rejects a
+missing injection. Normal viewer/library defaults and upstream versions do not
+change. The initial attempt using wgpu's debugger hooks produced no capture:
+those hooks are unavailable without debug assertions. Its process exit zero is
+not accepted as a successful GPU capture. Global debug assertions remain off.
+
+Evidence: `/tmp/bevy-optimization-renderdoc.E1TYys/`, particularly `api/`.
+
+- Final API hardening passes 872 no-default and 999 all-feature/all-target
+  executions, formatting and strict Clippy (`harden-api.log`); the release build
+  passes (`build-api.log`). Saved viewer SHA-256 is
+  `0e841f64990aae1f89c7d940c49fbe4e2bfe39603c3d07c71baa844116a5dfe3`.
+  Cargo.lock is `818d95e2…`, adding existing optional diagnostic dependencies,
+  not changing upstream OpenUSD or Bevy versions.
+- Eager and deferred hidden-selection captures each save one actual RDC file,
+  with matching uploaded frame counter 184, successful native process and
+  screenshot readback. The same executable also supplies an uninjected control
+  and a negative control that explicitly rejects a requested but absent debugger.
+  Four host warnings remain; injected runs additionally report four EGL backend
+  errors. Process success does not waive these broader diagnostics.
+- RenderDoc 1.44 and its matching source are transient Nix inputs. Layer lookup
+  is confined to the child environment; no global layer registration, desktop
+  automation or replay window is used. Native C++ replay tools export
+  `renderdoc__replay__marker`, avoiding self-injection. The failed first replay,
+  helper compilation attempts and accidentally reused old helper are retained;
+  only `smoke-repeat-verified` and `smoke-simple-verified` establish the repeated
+  full/simple replay result.
+- Both captures contain the grid at event 407 and shader-visible frame 184.
+  Explicit API captures have no meaningful RenderDoc frame number; the uploaded
+  counter establishes correlation. Grid transform and settings buffers are
+  byte-exact. Every typed view field matches. The 14 changed bytes in the raw
+  784-byte view block lie in padding identified by its reflected shader layout,
+  not in camera, grading or frame values (`analysis.json`).
+- Grid vertex SPIR-V is byte-exact. Fragment disassembly and executable SPIR-V
+  instructions also match. Only one `OpSource` instruction differs: generated
+  WGSL moves the fullscreen vertex-output struct before/after the view structs.
+  Removing debug instructions yields identical modules with SHA-256
+  `4aa1fa29fbe7ca56aca509de60aa985a165513c4e3b26ba00588e021b66de3ec`.
+- The native eager screenshot differs from deferred, uninjected control, and
+  **replay of its own capture** by the same historical 215 pixels, max RGB two.
+  Six snapshots from full/simple repeated replay agree exactly with deferred
+  and control, not native eager. Replay is therefore not a pixel-exact oracle
+  for that native image; its mismatch is retained, not waived.
+- A controlled replacement experiment on each fixed capture builds and installs
+  the eager fragment shader, deferred fragment shader and common debug-stripped
+  shader in turn. Each variant is replayed twice and the original restored.
+  All 22 saved images (including baselines and initial-target reads) are byte-exact
+  with the control. Build/replace/replay/restore checks pass in both processes;
+  `replacement-analysis.json` records all hashes. The reported rasterization,
+  four-sample MSAA, depth and basic blend settings match; this is not a claim
+  that every Vulkan pipeline state has been compared.
+
+These results reject different executable grid shaders and different typed
+grid/view values as explanations for this captured pair. Shader debug-source
+replacement does not reproduce the native mismatch. They do not identify a GPU
+driver defect, prove all render inputs equal, or establish native performance.
+Next compare the native same-frame main render target with its screenshot and
+GPU replay to locate the difference before changing rendering math. The strict
+visual gate, earlier mesh-pixel observation, downstream patch distribution,
+low-limit adapters and full performance/lifecycle/platform acceptance stay open.
+
+## Native final-target witness
+
+`08fded6` adds a readback of the captured camera's final resolved main texture
+after rendering and before cleanup, while the explicitly requested GPU capture
+is still active. `src/capture_target.rs` saves `.gpu-main.bin` plus format,
+dimensions, row size and matching frame metadata. It copies native texel bytes
+without color conversion, strips only transfer-row padding, bounds staging to
+64 MiB and polling to five seconds, and rejects unsupported formats, dimensions,
+multisampling, missing copy usage, incomplete reads and failed writes. Failures
+also propagate into the screenshot report rather than allowing a success marker.
+The diagnostic remains opt-in; normal rendering and screenshot tolerances do not
+change. Three tests cover checked layouts, incompatible targets and row padding.
+
+Evidence: `/tmp/bevy-optimization-renderdoc.E1TYys/target/`.
+
+- Hardening passes 875 no-default and 1,002 all-feature/all-target executions,
+  formatting and strict Clippy (`target-harden-fixed.log` in the parent folder).
+  The first compile exposed a missing new state-field initializer; its failed
+  log is retained separately. Release build passes (`target-build.log`).
+- Saved viewer SHA-256 is
+  `dbd3bdee45eecba7ebdf7a1b86a6a783bfcaa79263b68f4963929bfb47c960aa`.
+  `inputs.sha256` records the lockfile and exact source hashes; captures preceded
+  the focused local commit, so their initial environment files record the parent
+  revision and dirty source. The saved source hashes match the committed code.
+- Four alternating eager/deferred hidden-selection runs pass process, debugger,
+  native target readback and screenshot checks. Each records frame 184, a
+  1440x920 `Rgba8UnormSrgb` main texture and 5,299,200 tightly packed bytes.
+  Eight structured host diagnostics per injected run remain. No owned build
+  overlaps captures or replay; recorded system load is 4.03–4.30. No FPS claim.
+- All four native main targets equal their screenshot bytes, including alpha.
+  All six additional cross-run main/screenshot comparisons are exact
+  (`analysis.json`). Each image has SHA-256 `091585c7…`, matching the earlier
+  control, not the earlier failing eager image. This batch **does not reproduce
+  or fix** the intermittent mismatch.
+- Full replays of the first eager/deferred captures complete with 40 draws and
+  last event 459. Their actual grid view counters remain 184. Replayed screenshot
+  bytes equal both corresponding native targets and native screenshots. The
+  added post-render copy is captured without changing the frame's draw count.
+  Grid event IDs are 407 and 408 respectively; the final validator locates the
+  pipeline by name instead of assuming event IDs remain stable between captures.
+
+The native-target diagnostic is verified on this passing batch, but has not yet
+localized a failing frame. It currently runs with RenderDoc injection, so an
+independent native-target readback without that injection is the next useful
+control. Do not infer that screenshot conversion, shader debug source, grid math
+or the GPU driver caused the retained failure. Avoid another unchanged matrix;
+keep the 215/220-pixel and earlier mesh-pixel failures, and the full performance,
+downstream, resource-lifecycle and platform gates open.

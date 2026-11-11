@@ -76,6 +76,28 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- [Native final-target witness](benchmarks/morph-publication.md#native-final-target-witness)
+  (`08fded6`) adds bounded, same-frame native main-texture readback to the opt-in
+  GPU capture. Hardening passes 875 / 1,002 executions. Four new native captures
+  pass ten exact main-target/screenshot/cross-run comparisons; two full GPU
+  replays also match their native bytes. This passing batch verifies the probe,
+  not a fix for the earlier intermittent failure. Next separate native target
+  readback from RenderDoc injection to capture that failure without the injected
+  recorder. All broad workstreams and prior failing evidence remain open.
+
+- [Release GPU capture and shader replacement](benchmarks/morph-publication.md#release-gpu-capture-and-shader-replacement)
+  (`906918b`) now saves verified GPU captures without global debug assertions.
+  The failing native pair has equal typed grid/view data and executable grid
+  shaders; raw view differences are padding and raw fragment differences only
+  embedded debug-source struct order. Swapping both original shaders and their
+  common debug-stripped form in each fixed capture produces 22 exact snapshots,
+  but native eager still differs from its own replay at 215 pixels, max RGB two.
+  Replay is not a native pixel oracle. Next correlate the native final main
+  render target, screenshot and replay, not speculative camera/light/shader math.
+  Hardening passes 872 / 999 executions. All previous strict visual failures,
+  host diagnostics and broad performance/release gates remain open; nothing
+  pushed and no quality, tolerance or policy default changed.
+
 - [Same-frame GPU uniform readback](benchmarks/morph-publication.md#same-frame-gpu-view-and-light-readback)
   (`5241231`) now correlates actual uploaded view/light values with the screenshot,
   with bounded copies, frame/identity checks and explicit failures. Hardening

@@ -21,6 +21,7 @@ mod curve_quality;
 mod environment;
 mod file_dialog;
 mod framing;
+mod gpu_limits;
 mod host_capture;
 mod inspector;
 mod lighting;
@@ -204,6 +205,13 @@ struct UsdApp {
 }
 
 impl WindowApp for UsdApp {
+    fn configure_gpu_limits(
+        supported: &bevy::render::settings::WgpuLimits,
+        requested: &mut bevy::render::settings::WgpuLimits,
+    ) {
+        gpu_limits::configure(supported, requested);
+    }
+
     fn new(ctx: CreationContext<'_>) -> Self {
         ui_replay::install(ctx.__internal_egui_ctx()).expect("invalid USD_UI_REPLAY script");
         ui_diagnostics::install(ctx.__internal_egui_ctx())

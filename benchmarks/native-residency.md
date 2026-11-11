@@ -55,3 +55,27 @@ transform/visibility propagation. The minimal headless fixture includes Bevy's
 visibility's skinned-bounds system. The initial compile/fixture failures and
 passing log are retained in `/tmp/bevy-optimization-native-residency.tjQ8R6/`;
 the successful run is `harden-mesh-plugin.log`.
+
+## Device-limit failure found by the native smoke
+
+The initial deferred redo smoke reaches the real skin/morph pipeline and fails:
+vertex-stage storage buffer count is 9 while the shared Mara device requested
+only 8. Both PBR prepass and opaque pipelines report validation errors, and no
+viewport readback completes. The compositor image alone is not a rendering
+pass. Logs and the image remain under `smoke/`; the original saved viewer hash is
+`af546d21ee258828aaec0c0123e3ba3b647f74906a9ba79c8670ef4cf5f46ea2`.
+
+The viewer now uses Mara's existing `WindowApp::configure_gpu_limits` hook to
+request up to 16 storage buffers per shader stage, bounded by adapter support
+and preserving any higher existing host requirement and all other limits.
+This changes device negotiation, not geometry, skin weights, shader quality or
+validation. Native readback metadata records both actual device and adapter
+limits. Hardening passes 860 / 983 executions after adding the hook regression.
+The new rendering run must establish that the hardware request actually fixes
+the pipeline failure; unit tests alone cannot do that.
+
+Adapters offering fewer than the pipeline's required buffers are not claimed
+fixed by this bounded request. Their capability-specific deformation fallback
+and native acceptance remain outstanding. The isolated compositor also reports
+portal/clipboard/unused-ICD warnings; these remain in the diagnostic ledger and
+are not silently waived or suppressed.

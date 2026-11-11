@@ -237,6 +237,8 @@ pub fn configure(app: &mut App) {
         bridge: Res<usd_bevy::editor::EditorBridge>, mut seek_state: Local<CaptureSeeks>,
         residency_inputs: crate::capture_residency::Inputs, mut residency_state: Local<crate::capture_residency::State>,
         transparent: Option<Res<crate::transparent_probe::TransparentProbe>>,
+        device: Option<Res<bevy::render::renderer::RenderDevice>>,
+        adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
         meshes: Res<Assets<Mesh>>, mesh_references: Query<(&Mesh3d, &InheritedVisibility)>| {
         let active = cameras.iter().find(|(camera, ..)| camera.is_active);
         let document = active.and_then(|_| session.as_ref().map(|session| session.document_id()));
@@ -268,6 +270,14 @@ pub fn configure(app: &mut App) {
                 let mut timing = format!("minimum_ready_delay_ms={delay_ms}\nready_elapsed_ms={}\nready_updates_at_request={}\ndocument_id_at_request={}\nscene_time_at_request={}\n",
                     elapsed.saturating_sub(gate.ready_since.unwrap()).as_millis(), gate.frames, document.unwrap(), time.current);
                 timing.push_str(&seek_state.report(&seeks));
+                if let Some(device) = &device {
+                    timing.push_str(&format!("render_device_storage_buffers_per_shader_stage={}\n",
+                        device.limits().max_storage_buffers_per_shader_stage));
+                }
+                if let Some(adapter) = &adapter {
+                    timing.push_str(&format!("render_adapter_storage_buffers_per_shader_stage={}\n",
+                        adapter.limits().max_storage_buffers_per_shader_stage));
+                }
                 if let Some(config) = &residency {
                     timing.push_str(&residency_state.report(config));
                 }

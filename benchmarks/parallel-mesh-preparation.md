@@ -90,9 +90,10 @@ These phase averages divide all batch durations, including warmup, by the
 
 Cow dispatch/join is 71.6% of batch time, while bird eligibility is 57.5%.
 This rules out treating tangent generation as the sole next target for both
-assets. Eligibility currently includes deformation-kind queries, decoded mesh
-reads and GPU skin sampling/normal-correction preparation; it must be split
-further before attributing that whole cost to a particular query.
+assets. At this checkpoint eligibility includes deformation-kind queries,
+decoded mesh reads and GPU skin sampling/normal-correction preparation.
+The subsequent split and scoped relationship-reuse candidate are recorded in
+[skeleton relationship sampling](skel-relationships.md).
 
 Cow runs 4,620 tangent jobs over 35,374,680 submitted vertices, with 17,266.715 ms
 aggregate worker wall time and 17.268 ms maximum individual job. Bird runs

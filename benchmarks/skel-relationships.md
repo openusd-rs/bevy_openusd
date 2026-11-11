@@ -48,8 +48,8 @@ fourteen export and one custom-data reference round-trip cases. Wasm compilation
 and the release capture build also pass. The ledger is
 `/tmp/bevy-optimization-skel-relations-gates.tsv`, with corresponding
 `skel-relations-{test-native-deformation,test-watchers,test-native,check-web,build}.log`
-files under `/tmp/bevy-optimization-`. Saved-binary performance/render comparison
-is still pending; passing these checks is not elapsed-performance acceptance.
+files under `/tmp/bevy-optimization-`. The saved-binary comparison below retains
+the remaining performance failures; these checks are not full acceptance.
 
 ## Acceptance declared before implementation
 
@@ -69,3 +69,60 @@ is still pending; passing these checks is not elapsed-performance acceptance.
 The separate discovery that `PrimvarScope` currently wraps initial projection
 but not animation is not included in this candidate. It needs its own bounded
 and custom-route-safe assessment rather than conflating two optimizations.
+
+## Native alternating comparison
+
+`/tmp/bevy-optimization-skel-relations-abba.6NRMB5/` retains sixteen fresh
+playback processes, before/after/after/before per case. The pre-change
+`9f78ca9` executable SHA-256 is
+`e0a2e8371af3451ab074b22b62555ea4ff1f872d2a349fc02acdfc325594be20`;
+the candidate containing `ffb32c6`, saved at `3f73990`, is
+`5ff060d6ebd4c3280ca8ea8dcfcbbe477d205bf4c80f29a6716a86d36a2f2003`.
+Both use the refined phase instrumentation, default affinity, RTX 4080/Vulkan,
+validation, forward rendering, 4x MSAA, 1280x720, matching full-object cameras,
+30 warmups and 300 measured frames. No task-owned compilation overlaps.
+Recorded host load spans 25.67–59.09; unrelated jobs are left untouched.
+
+| Case | Before main median, ms | After main median, ms | Mean-of-medians change |
+| --- | ---: | ---: | ---: |
+| Bird play | 70.551 / 56.652 | 57.289 / 29.895 | -31.5% |
+| Cow play | 52.819 / 125.264 | 52.653 / 98.578 | -15.1% |
+| Material subsets play | 1.083 / 1.147 | 1.090 / 1.074 | -3.0% |
+| Arm idle | 0.798 / 3.299 | 0.937 / 1.843 | -32.2% |
+
+The bird's aggregate exceeds the declared 10% incremental target, but this is
+one noisy matrix, not an isolated causal gain or a universal playback claim.
+The unchanged arm-idle path and mesh/tangent phases also vary strongly. Bird
+mean kinds/skin-sampling phases fall 24.8%/25.9%, while its unchanged mesh-read
+phase falls 22.1% and tangent dispatch/join falls 11.4%. These observations
+cannot attribute the entire main-time improvement to relationship reuse.
+Bird and cow p95 main costs improve only about 3%; their candidate tails and
+median offscreen intervals remain well above the 60 Hz budget.
+
+Bird partial open/validation/projection totals regress **35.1%**: before
+586.386/468.571 ms, after 743.648/681.827 ms. This is an unresolved loading
+observation, not waived as noise. It is also not a measurement of complete
+file-to-ready/editor opening. The other partial source totals improve, but
+neither they nor this matrix clear the older kitchen/bird opening, affine seek
+or cow/subset playback regressions.
+
+`raw-analysis.json` validates all 4,800 raw frames, clocks, summaries, interval
+threshold counts and published GPU/render-CPU arrays, with maximum clock error
+5.685e-14. `phase-analysis.json` checks matching phase/job counts, zero tangent
+failures, non-overlapping phase sums within the enclosing timer and identical
+visible CPU/GPU mesh counts across each case. Worker wall times still overlap
+and cannot be summed into main-thread cost.
+
+All six candidate bird/cow/subset settled final poses match independent
+pre-change renders at their exact clocks with zero changed RGB pixels at
+tolerance zero. The two subset comparisons are in `extra-comparisons.tsv`;
+the same ledger records three pixel-exact arm-idle comparisons against the
+first baseline. Representative candidate bird/cow images were inspected.
+All sixteen process/log checks and source manifests pass. Cow retains its
+missing MDL warning, so the diagnostic driver exits 1; the extra-comparison
+driver exits 0. These checks do not resolve the separately tracked CPU/GPU
+bird pixel discrepancy or native-window/browser/lifecycle acceptance.
+
+Full acceptance remains open. Follow-up must investigate the loading
+observation and remaining kind/mesh/tangent costs with controlled evidence,
+not repeatedly rerun until a favorable result appears.

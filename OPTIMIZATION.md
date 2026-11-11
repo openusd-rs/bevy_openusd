@@ -126,9 +126,23 @@ correct readiness reporting.
   (11.6 ms), not tangents alone. Subsets submit no tangent jobs. These are
   diagnostics, not another speedup or clearance of the failed regressions.
   Both real assets still miss 60 Hz under the observed lower host load.
-  Next work must separate bird eligibility costs and reduce actual cow
-  tangent work without changing normal/tangent fidelity. See
+  Follow-up must reduce bird eligibility costs and actual cow tangent work
+  without changing normal/tangent fidelity. See
   [parallel preparation](benchmarks/parallel-mesh-preparation.md).
+
+- Scoped skeleton relationships (`ffb32c6`): repeated local skeleton/animation
+  relationship reads now share a bounded stage-specific read-only-pass map,
+  including absent targets. It retains no historical poses, skips custom
+  registries and drops with the pass; entry/text caps have fresh fallback.
+  Hardening passes 835 no-default / 944 all-feature tests, strict Clippy,
+  native deformation/watcher/export gates, wasm compilation and release build.
+  A sixteen-process native comparison records 31.5% lower bird and 15.1% lower
+  cow mean main medians, but unrelated phase/idle variability prevents assigning
+  the full gain to this cache. All 4,800 raw frames validate; six exact-clock
+  final poses and three idle comparisons are pixel-exact. Full acceptance is
+  still open: bird partial source phases regress 35.1%, prior regression gates
+  remain, and playback tails/native-window/browser/lifecycle targets are unmet.
+  See [scoped skeleton sampling](benchmarks/skel-relationships.md).
 
 - Point-instancer parent links (`3562782`): isolated ECS scaling confirms
   quadratic repeated replacement of unchanged `ChildOf` links. Stable instance

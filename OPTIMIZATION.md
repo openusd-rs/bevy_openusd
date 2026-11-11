@@ -203,3 +203,14 @@ correct readiness reporting.
   corrected code passes hardening (804 no-default / 899 all-feature tests and
   strict Clippy), but its release elapsed and render acceptance are still pending.
   The full workstreams and existing rendering failures remain open.
+- Corrected batching validation: native deformation/watchers/export and wasm
+  compilation pass. Six CPU/GPU-mode before/after captures of independently
+  timed bird, cow and skin/morph roots are pixel-exact after live clock reversal;
+  metadata proves parallel work executes in the bird/cow production-plugin path.
+  The cow MDL warning still fails the combined capture gate. The original strict
+  single-bird CPU/GPU comparison is rerun and still fails at 2,053 pixels, maximum
+  RGB error 33. The corrected cow unique-clock trial averages 85.364 ms before
+  versus 76.856 ms after across per-process medians (9.97% lower), below the
+  predeclared 15% target amid large host-load swings. This is not accepted native
+  playback performance. Next: tighter temporal pairing, remaining performance
+  controls and observed render-order/bounds diagnosis; preserve all workstreams.

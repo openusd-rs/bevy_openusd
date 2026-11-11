@@ -157,3 +157,75 @@ versus inline work in both benchmark and capture metadata, including captures
 that reverse clocks on existing scene roots. No elapsed or render result for
 the correction is accepted yet. Its first release comparison isolates the
 primary cow GPU gate; the other controls remain required afterward.
+
+## Corrected cow experiment
+
+The four-process cow GPU ABBA run completes under
+`/tmp/bevy-optimization-parallel-grouped-abba.ucCKEr/`, against the same saved
+`c9006b3` baseline. Each process has four warmups and 1,000 unique clocks. No
+task-owned compilation overlaps; host load ranges 18.33–52.65. All final
+geometry/image payload counts, peak asset counts and retained cache payload
+counts agree, and entry/package/cow-directory hashes verify.
+
+Before medians are 89.013 and 81.714 ms; corrected medians are 93.076 and
+60.636 ms. Averaging those per-process medians gives 85.364 versus 76.856 ms,
+about 9.97% lower, **not the predeclared 15% target**. One candidate run is
+promising but the other is slower; neither this aggregate nor the faster single
+run establishes accepted native playback performance. Full means, tails,
+warmups and process CPU remain in `summary.tsv`, `cpu-cache.tsv` and raw logs.
+
+Utilization is corrected: both candidates perform 3,996 parallel batches and
+13,986 jobs, with zero inline jobs during measured seeks, peak four jobs and at
+most 1,682,992 input bytes. Total batches fall from 21,000 to 4,000–5,000. Whole
+batch wall time is still 49.331–78.619 seconds across the 1,000 seeks. The 127 MB
+resident reading in one candidate is below its retained image payload and its
+554 MB process high-water mark; do not call it a memory saving.
+
+Other corrected performance workloads and native cadence remain pending.
+The next timing probe needs tighter temporal pairing of serial/batched work
+rather than treating drift between long processes as an algorithmic gain.
+
+## Corrected native and render validation
+
+Four native deformation oracle checks, nine watcher checks, 15 native export
+checks and wasm compilation pass. Logs are
+`/tmp/bevy-optimization-parallel-grouped-{test-native-deformation,test-watchers,test-native,check-web}.log`;
+the status ledger is `parallel-grouped-gates.tsv`. Wasm compilation is not browser
+runtime acceptance.
+
+`/tmp/bevy-optimization-parallel-captures.Zpsb1g/` contains six saved-binary
+before/after comparisons: bird, cow and combined animated skin/morph fixture,
+each with explicit GPU and CPU routes. Three independently timed roots load at
+0/5/10; after 30 ready frames, their clocks reverse to 10/5/0 before capture.
+All six comparisons are pixel-exact at RGB tolerance zero. All 12 images have
+compiled-pipeline/readback and live-clock-reversal proof. After metadata confirms
+actual parallel batches for bird/cow and inline generation for the single-mesh
+morph fixture. Entry hashes verify. The device is RTX 4080, Vulkan/NVIDIA
+595.112.07, at 1280x720, forward rendering, 4x MSAA with WGPU validation.
+
+The bird/cow images were inspected: all three bodies render, although the nearest
+bird's wing reaches outside the frame. These are scoped comparisons, not complete
+camera-angle coverage or native frame-cadence evidence. Both cow modes still
+warn about the missing `OmniPBR.mdl` dependency, in both binaries; the combined
+capture gate therefore exits 1 rather than being called entirely green.
+
+The strict CPU/GPU comparison of the three-bird view fails at one pixel, maximum
+RGB error 3, tolerance one. That different framing does not replace the original
+single-bird gate. The original single-bird time-zero GPU and CPU captures were
+rerun with the corrected binary: **2,053 pixels still fail**, maximum RGB error
+33, tolerance one. Its inspected diff remains on grid lines through the wing
+transparency. This is unchanged from the preceding checkpoint and unresolved;
+neither comparison tolerance nor grid visibility was changed.
+
+## Next work
+
+- Add a tightly paired elapsed probe using independent serial/batched editor
+  apps, identical clocks and balanced first-update order, preserving document
+  identity checks and raw samples. Identify it as a same-binary scheduling
+  comparison, not a replacement for saved-revision or native-frame evidence.
+- Complete corrected bird/CPU/small-control comparisons and establish an actual
+  elapsed benefit before accepting the parallel implementation as an optimization.
+- Resolve the strict rendering discrepancy with observed phase/bounds evidence;
+  do not hide the grid, relax tolerance or mutate shared mesh bounds blindly.
+- Continue the complete loading, editor, memory/lifecycle and platform workstreams
+  in `OPTIMIZATION.md`; this checkpoint does not finish the overall objective.

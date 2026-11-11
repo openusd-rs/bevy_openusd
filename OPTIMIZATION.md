@@ -84,9 +84,13 @@ correct readiness reporting.
   formatting and strict Clippy. The projection-only comparison validates 800
   clocks and 32 warmups with matching output digests; cow kernel time falls
   6.35%, missing the predeclared 10% target. That candidate is not integrated.
-  A distinct temporary-member-list reuse candidate keeps the same gates and
-  separate evidence; its comparison is pending. Production dependencies stay
-  unchanged. No whole-app, native FPS or broader completion is claimed.
+  A distinct candidate also reuses the temporary member list: a separate
+  800-clock / 32-warmup comparison passes the same kernel gates, with matching
+  output digests, 16.71% lower cow and 17.73% lower bird kernel medians, and
+  bounded jobs/inputs. Cow maximum rises 0.29%; peak RSS stays within 5%.
+  Production dependencies stay unchanged. Full-editor, adversarial geometry,
+  downstream, platform and rendered integration checks remain pending; no
+  whole-app, native FPS or broader completion is claimed.
 
 - **Authored-flag cache withdrawn after measurement:** 20 release processes
   validate 20,000 unique updates and 80 warmups, with unchanged payload/work

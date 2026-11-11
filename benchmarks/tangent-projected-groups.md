@@ -46,7 +46,8 @@ authorize shipping a dependency fork or clear any existing acceptance failures.
 ## Harness checkpoint
 
 Evidence directory: `/tmp/bevy-optimization-tangent-projection.HLArUU/`.
-Both original and first-candidate release probes build successfully. Two focused non-ignored tests
+Both original and first-candidate release probes build successfully. Two focused
+non-ignored tests
 pass: sparse/oversized scheduling still matches serial tangents, and the digest
 detects index identity, added attributes, signed-zero bytes and index-format
 changes. Both binaries pass these two tests. Two real-asset diagnostics remain
@@ -104,3 +105,41 @@ this second candidate separately under `combined-mikktspace/` and its results
 under `reuse/`. Do not overwrite the projection-only failure. No production
 integration, native capture or full-editor timing is authorized by this probe
 alone; the broader checks remain necessary if the combined kernel gate passes.
+
+## Combined result: kernel gate passes, integration pending
+
+The combined release probe builds and passes the same two focused tests. The
+production manifest/lockfile are restored before measurements; neither
+experimental dependency is enabled in the worktree. The production/test source
+is unchanged from the successful 885 / 1,012 hardening run above.
+
+The separate `reuse/` comparison completes eight processes without errors or
+matched diagnostics. All 800 measured clocks and 32 warmups validate, covering
+22,876 tangent jobs. Every corresponding output digest and work/budget field
+matches, including the repeat/reverse warmups. Recorded input and source hashes
+verify, and no task-owned build or capture overlaps the run.
+
+| Workload | Original median ms | Combined median ms | Median change | p95 change | Maximum change | Mean peak RSS change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cow | 30.236845 | 25.184399 | -16.71% | -15.36% | +0.29% | -0.29% |
+| Bird | 6.023785 | 4.955607 | -17.73% | -19.38% | -13.25% | +2.02% |
+
+The cow pairings improve 16.44% and 16.97%; bird improves 17.69% and 17.78%.
+Whole-process wall time improves 10.87% and 6.59% respectively; it still
+includes untimed setup/loading/hash work and is not application frame timing.
+The small cow maximum increase remains recorded, not omitted. Mean peak RSS
+stays within the 5% gate. `reuse/benchmark-status.txt` records `driver=0` and
+`analysis=0`, with no kernel acceptance failures.
+
+The combined probe SHA-256 is
+`2d33dd6168c16052a05cb8ea7ac848f1f35beaecbcc5a22c68628d92ed6a8e2a`.
+The original executable is identical to the first experiment. Compare each
+candidate only with its own contemporaneous baseline: subtracting the two
+experiments' percentages is not a measured isolated allocation-only benefit.
+
+This result supports investigating integration; it does not enable a production
+fork or establish a viewer speedup. Next run the saved-original versus combined
+full-editor comparison with the declared cow/bird/control gates, preserving
+the dependency pin and native visual failures. Additional adversarial geometry,
+bounded-scratch, downstream packaging, platform and strict native rendered
+validation remain necessary before accepting a production implementation.

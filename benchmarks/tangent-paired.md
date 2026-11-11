@@ -72,3 +72,33 @@ The corrected probe clones both lanes and balances clone order against execution
 order. Its fresh results belong in the `balanced/` subdirectory of the original
 evidence directory. The declared thresholds and whole-application limitations
 remain unchanged.
+
+## Balanced result
+
+`39ff8c2` passes hardening again (853 / 972 overlapping executions, strict Clippy
+and formatting). Its saved release executable completes four fresh processes,
+800 measured pairs and 16 warmup pairs without runtime diagnostics. Every result
+has byte-exact attributes, indices and morphs. Raw clocks, durations, summaries,
+bounds and the 50/50 clone-order split within each execution-order stratum are
+independently checked. Executable, lockfile and asset hashes remain unchanged.
+
+| Process | Execution first | Legacy median ms | Queue median ms | Median paired ratio |
+| --- | --- | ---: | ---: | ---: |
+| Cow 0 | Legacy | 31.178 | 24.223 | 0.7683 |
+| Cow 0 | Queue | 30.529 | 24.704 | 0.8040 |
+| Cow 1 | Legacy | 31.476 | 24.032 | 0.7669 |
+| Cow 1 | Queue | 30.755 | 24.852 | 0.8071 |
+| Bird 0 | Legacy | 6.264 | 6.082 | 0.9739 |
+| Bird 0 | Queue | 6.295 | 6.059 | 0.9619 |
+| Bird 1 | Legacy | 6.316 | 6.127 | 0.9605 |
+| Bird 1 | Queue | 6.423 | 6.214 | 0.9791 |
+
+All eight declared kernel thresholds pass. No task-owned compilation overlaps
+measurement. This supports investigating the queue in the application; it does
+not clear the failed full-scene gate, prove 60 Hz, or re-enable the queue. The
+next comparison must pair individual full editor updates across the saved
+versions, rather than compare long blocks under changing host load.
+
+Raw evidence: `balanced/{harden,build,analysis}.log`, `analysis.json`, four asset
+logs, `progress.log`, `environment.txt` and hash manifests beneath the original
+evidence directory. The original allocation-asymmetric run is retained separately.

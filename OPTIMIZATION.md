@@ -76,6 +76,12 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- The corrected [paired tangent diagnostic](benchmarks/tangent-paired.md) passes
+  800 identical-input comparisons with balanced clone/execution order: cow kernel
+  paired medians improve 19–23%, without bird regression. This is a private-pool,
+  owned-mesh result, not whole-application performance. The production queue stays
+  withdrawn; tightly paired full-editor updates are the next scheduler gate.
+
 - The larger tangent-queue trial (`a4fa55d`) is withdrawn: it halves cow batch
   barriers but fails its primary performance target under severe variable host
   load. Sixteen processes validate 16,000 updates, unchanged payload/cache/asset

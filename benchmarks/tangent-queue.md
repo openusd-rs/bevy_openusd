@@ -112,6 +112,10 @@ The next scheduler investigation needs tightly paired comparisons of identical
 job payloads, separating queue partitioning, executor contention and generation
 cost. The full remaining work and prior failures in `OPTIMIZATION.md` are intact.
 
+The [balanced owned-job comparison](tangent-paired.md) subsequently passes its
+predeclared kernel thresholds. It does not clear this whole-application failure
+or re-enable the candidate; individual full-editor updates must be paired next.
+
 ## Restored-source verification
 
 `519d33e` withdraws the scheduler. The first restored hardening run exposes

@@ -5,8 +5,9 @@ use bevy::{
         skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
     },
     pbr::{
-        MeshInputUniform, MeshUniform, MorphIndices, MorphUniforms, RenderMeshInstances,
-        collect_meshes_for_gpu_building, prepare_morph_descriptors,
+        ExtractedDirectionalLight, MeshInputUniform, MeshUniform, MorphIndices, MorphUniforms,
+        RenderMeshInstances, SkinUniforms, collect_meshes_for_gpu_building, prepare_lights,
+        prepare_morph_descriptors,
     },
     prelude::*,
     render::{
@@ -14,7 +15,7 @@ use bevy::{
         batching::gpu_preprocessing::BatchedInstanceBuffers,
         mesh::{RenderMesh, allocator::MeshAllocator},
         render_asset::RenderAssets,
-        sync_world::MainEntity,
+        sync_world::{MainEntity, MainEntityHashMap},
     },
 };
 use std::{
@@ -24,10 +25,11 @@ use std::{
 
 const TEXT_LIMIT: usize = 64 * 1024;
 const HISTORY_LIMIT: usize = 2 * 1024 * 1024;
-const PHASES: [&str; 3] = [
+const PHASES: [&str; 4] = [
     "before-descriptors",
     "after-descriptors",
     "after-collection",
+    "after-lights",
 ];
 
 #[derive(Default)]
@@ -50,7 +52,7 @@ impl Write for Text {
 
 #[derive(Default)]
 struct Snapshot {
-    latest: [String; 3],
+    latest: [String; 4],
     frames: u64,
     events: usize,
     omitted: usize,
@@ -106,6 +108,8 @@ struct Sources {
     frame: u64,
     text: String,
     entities: Vec<(MainEntity, Option<AssetId<Mesh>>)>,
+    light_names: MainEntityHashMap<String>,
+    joint_counts: MainEntityHashMap<usize>,
 }
 
 type MeshSource = (
@@ -137,6 +141,7 @@ struct MainInputs<'w, 's> {
     joints: Query<'w, 's, &'static GlobalTransform>,
     meshes: Res<'w, Assets<Mesh>>,
     inverse_bindposes: Res<'w, Assets<SkinnedMeshInverseBindposes>>,
+    light_names: Query<'w, 's, (Entity, &'static Name), With<DirectionalLight>>,
 }
 
 pub fn configure(app: &mut App, path: &str) {
@@ -157,6 +162,12 @@ pub fn configure(app: &mut App, path: &str) {
                 after_collection.after(collect_meshes_for_gpu_building),
             )
                 .in_set(RenderSystems::PrepareMeshes),
+        )
+        .add_systems(
+            Render,
+            observe_lights
+                .after(prepare_lights)
+                .in_set(RenderSystems::PrepareResources),
         );
 }
 
@@ -193,6 +204,13 @@ fn mesh_report(text: &mut Text, mesh: &Mesh) {
 fn extract_sources(mut sources: ResMut<Sources>, target: Res<Target>, inputs: Extract<MainInputs>) {
     sources.frame += 1;
     sources.entities.clear();
+    sources.joint_counts.clear();
+    sources.light_names = inputs
+        .light_names
+        .iter()
+        .take(32)
+        .map(|(entity, name)| (entity.into(), name.as_str().to_owned()))
+        .collect();
     let mut text = Text::default();
     let view = inputs.bridge.view().ok();
     writeln!(
@@ -237,6 +255,9 @@ fn extract_sources(mut sources: ResMut<Sources>, target: Res<Target>, inputs: Ex
                 mesh_report(&mut text, mesh);
             }
             if let Some(skin) = skin {
+                sources
+                    .joint_counts
+                    .insert(entity.into(), skin.joints.len());
                 writeln!(text, "source_joints_count={}", skin.joints.len()).unwrap();
                 let inverse = inputs.inverse_bindposes.get(&skin.inverse_bindposes);
                 for (index, joint) in skin.joints.iter().take(128).enumerate() {
@@ -263,6 +284,7 @@ struct RenderInputs<'w> {
     meshes: Res<'w, RenderAssets<RenderMesh>>,
     allocator: Res<'w, MeshAllocator>,
     buffers: Option<Res<'w, BatchedInstanceBuffers<MeshUniform, MeshInputUniform>>>,
+    skins: Res<'w, SkinUniforms>,
 }
 
 fn before_descriptors(probe: Res<MorphProbe>, inputs: RenderInputs) {
@@ -310,6 +332,23 @@ fn observe(probe: &MorphProbe, inputs: &RenderInputs, phase: usize) {
                 .collect();
             writeln!(text, "render_weights={weights:?}").unwrap();
         }
+        let skin_index = inputs.skins.skin_index(entity);
+        let joint_count = inputs
+            .sources
+            .joint_counts
+            .get(&entity)
+            .copied()
+            .unwrap_or(0);
+        let palette = staging_palette(
+            &inputs.skins.current_staging_buffer,
+            skin_index,
+            joint_count,
+        );
+        writeln!(
+            text,
+            "skin_staging index={skin_index:?} joints={joint_count} prefix={palette:?}"
+        )
+        .unwrap();
         match &*inputs.instances {
             RenderMeshInstances::CpuBuilding(_) => writeln!(text, "instance_builder=cpu").unwrap(),
             RenderMeshInstances::GpuBuilding(instances) => {
@@ -333,9 +372,130 @@ fn observe(probe: &MorphProbe, inputs: &RenderInputs, phase: usize) {
         .record(inputs.sources.frame, phase, text);
 }
 
+fn staging_palette(buffer: &[Mat4], index: Option<u32>, joints: usize) -> Option<&[Mat4]> {
+    let start = index? as usize;
+    buffer.get(start..start.checked_add(joints.min(128))?)
+}
+
+fn observe_lights(
+    probe: Res<MorphProbe>,
+    sources: Res<Sources>,
+    lights: Query<(
+        Entity,
+        &MainEntity,
+        &ExtractedDirectionalLight,
+        &bevy::camera::visibility::RenderLayers,
+    )>,
+) {
+    let mut text = Text::default();
+    let count = lights.iter().count();
+    let mut ordered: Vec<_> = lights.iter().take(32).collect();
+    ordered.sort_by_key(|(entity, _, light, _)| {
+        (light.volumetric, light.shadow_maps_enabled, *entity)
+    });
+    writeln!(text, "directional_light_scope=extracted-after-prepare-not-GPU-readback\ndirectional_light_count={count}\ndirectional_light_omitted={}", count.saturating_sub(32)).unwrap();
+    for (index, (entity, main, light, layers)) in ordered.iter().enumerate() {
+        let name = sources
+            .light_names
+            .get(*main)
+            .map_or("<unlabelled>", String::as_str);
+        writeln!(text, "directional_light render_order={index} render={entity:?} main={main:?} name={name:?} volumetric={} shadows={} contact={} lightmapped={} color={:?} illuminance={:?} world={:?} layers={layers:?} depth_bias={:?} normal_bias={:?} soft_shadow={:?} cascade_config={:?} sun_size={:?} sun_intensity={:?}",
+            light.volumetric, light.shadow_maps_enabled, light.contact_shadows_enabled,
+            light.affects_lightmapped_mesh_diffuse, light.color, light.illuminance,
+            light.transform.to_matrix(), light.shadow_depth_bias, light.shadow_normal_bias,
+            light.soft_shadow_size, light.cascade_shadow_config, light.sun_disk_angular_size,
+            light.sun_disk_intensity).unwrap();
+    }
+    ordered
+        .sort_by_key(|(_, main, light, _)| (light.volumetric, light.shadow_maps_enabled, **main));
+    let main_order: Vec<_> = ordered
+        .iter()
+        .map(|(_, main, _, _)| {
+            sources
+                .light_names
+                .get(*main)
+                .map_or("<unlabelled>", String::as_str)
+        })
+        .collect();
+    writeln!(text, "directional_light_main_order={main_order:?}").unwrap();
+    probe.0.lock().unwrap().record(sources.frame, 3, text);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn light_probe_distinguishes_render_and_main_entity_order() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut main = World::new();
+        let fill: MainEntity = main.spawn_empty().id().into();
+        let rim: MainEntity = main.spawn_empty().id().into();
+        let mut world = World::new();
+        let probe = MorphProbe::default();
+        world.insert_resource(probe.clone());
+        let mut sources = Sources::default();
+        sources.light_names.insert(fill, "Fill".into());
+        sources.light_names.insert(rim, "Rim".into());
+        world.insert_resource(sources);
+        for entity in [rim, fill] {
+            world.spawn((
+                entity,
+                bevy::camera::visibility::RenderLayers::default(),
+                ExtractedDirectionalLight {
+                    color: LinearRgba::WHITE,
+                    illuminance: 100.0,
+                    transform: GlobalTransform::IDENTITY,
+                    shadow_maps_enabled: false,
+                    contact_shadows_enabled: false,
+                    volumetric: false,
+                    affects_lightmapped_mesh_diffuse: true,
+                    shadow_depth_bias: 0.02,
+                    shadow_normal_bias: 0.03,
+                    cascade_shadow_config: default(),
+                    cascades: default(),
+                    frusta: default(),
+                    soft_shadow_size: None,
+                    occlusion_culling: false,
+                    sun_disk_angular_size: 0.0,
+                    sun_disk_intensity: 0.0,
+                },
+            ));
+        }
+        world.run_system_once(observe_lights).unwrap();
+        let report = probe.report();
+        let first = report
+            .lines()
+            .find(|line| line.starts_with("directional_light render_order=0 "))
+            .unwrap();
+        let main_order = if fill < rim {
+            ["Fill", "Rim"]
+        } else {
+            ["Rim", "Fill"]
+        };
+        assert!(
+            first.contains(&format!("name={:?}", main_order[1])),
+            "{report}"
+        );
+        assert!(report.contains(&format!("directional_light_main_order={main_order:?}")));
+        assert!(report.contains("directional_light_omitted=0"));
+        assert!(report.contains("not-GPU-readback"));
+    }
+
+    #[test]
+    fn skin_palette_report_bounds_offsets_and_keeps_exact_values() {
+        let palette = [Mat4::IDENTITY, Mat4::from_scale(Vec3::new(1.0, 1.001, 3.0))];
+        assert_eq!(staging_palette(&palette, Some(1), 1), Some(&palette[1..]));
+        assert!(staging_palette(&palette, Some(1), 2).is_none());
+        assert!(staging_palette(&palette, None, 1).is_none());
+        assert!(staging_palette(&palette, Some(u32::MAX), usize::MAX).is_none());
+        assert_eq!(
+            staging_palette(&[Mat4::IDENTITY; 129], Some(0), 129)
+                .unwrap()
+                .len(),
+            128
+        );
+    }
 
     #[test]
     fn text_is_utf8_safe_and_bounded() {
@@ -352,13 +512,13 @@ mod tests {
     fn history_deduplicates_each_phase_and_reports_overflow() {
         let probe = MorphProbe::default();
         for frame in 0..100 {
-            for phase in 0..3 {
+            for phase in 0..PHASES.len() {
                 let mut text = Text::default();
                 write!(text, "{}", "x".repeat(TEXT_LIMIT)).unwrap();
                 probe.0.lock().unwrap().record(frame, phase, text);
             }
         }
-        assert_eq!(probe.0.lock().unwrap().events, 3);
+        assert_eq!(probe.0.lock().unwrap().events, PHASES.len());
         for frame in 100..200 {
             let mut text = Text::default();
             write!(text, "{frame}{}", "x".repeat(TEXT_LIMIT)).unwrap();

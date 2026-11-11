@@ -260,6 +260,153 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
 
+    fn source_fixture() -> Result<usd_bevy::UsdSource> {
+        Ok(usd_bevy::UsdSource::snapshot(
+            "query-lifetime.usda",
+            br#"#usda 1.0
+def Xform "Source" {
+    def SkelAnimation "Anim" {
+        float3[] translations.timeSamples = { 0: [(0, 0, 0)], 10: [(10, 0, 0)] }
+    }
+}
+def Xform "Inst" (instanceable = true; prepend references = </Source>) {}
+"#
+            .as_slice(),
+        )?)
+    }
+
+    fn sample_bytes(attribute: &Attribute) -> Result<usize> {
+        attribute
+            .time_samples()?
+            .unwrap_or_default()
+            .iter()
+            .try_fold(0usize, |sum, (_, value)| {
+                sum.checked_add(numeric_bytes(value)?.len())
+                    .context("sample payload overflow")
+            })
+    }
+
+    fn grow_samples(attribute: &Attribute) -> Result<()> {
+        for time in [0.0, 10.0] {
+            attribute.clone().set_at(
+                Value::Vec3fVec(vec![openusd::gf::vec3f(time as f32, 1.0, 2.0); 4096]),
+                TimeCode::new(time),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compare_clocks(attribute: &Attribute, query: &AttributeQuery) -> Result<()> {
+        for time in [0.0, 5.0, 10.0, 5.0, -1.0, 11.0] {
+            let at = TimeCode::new(time);
+            same_values(
+                &[attribute.get_at::<Value>(at)?],
+                &[query.get_at::<Value>(at)?],
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn query_refresh_can_exceed_initial_sample_budget() -> Result<()> {
+        let stage = source_fixture()?.open_stage()?;
+        let attribute = stage.attribute("/Source/Anim.translations")?;
+        let query = attribute.query();
+        let prim = openusd::sdf::path("/Source/Anim")?;
+        compare_clocks(&attribute, &query)?;
+        let revision = stage.index_revision(&prim).context("indexed source")?;
+        let initial_bytes = sample_bytes(&attribute)?;
+        let budget = 1024;
+        assert_eq!(initial_bytes, 24);
+        assert!(initial_bytes < budget);
+
+        grow_samples(&attribute)?;
+        stage.flush()?;
+        assert_eq!(stage.index_revision(&prim), Some(revision));
+        let edited_bytes = sample_bytes(&attribute)?;
+        assert_eq!(edited_bytes, 98_304);
+        assert!(edited_bytes > budget);
+        compare_clocks(&attribute, &query)?;
+        assert_eq!(
+            numeric_bytes(&query.get_at::<Value>(TimeCode::new(5.0))?.unwrap())?.len(),
+            49_152
+        );
+
+        attribute.clone().block()?;
+        stage.flush()?;
+        compare_clocks(&attribute, &query)?;
+        assert!(query.get_at::<Value>(TimeCode::new(5.0))?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn proxy_path_revision_does_not_guard_query_readmission() -> Result<()> {
+        let stage = source_fixture()?.open_stage()?;
+        let prim = openusd::sdf::path("/Inst/Anim")?;
+        assert!(stage.prim(prim.clone())?.is_instance_proxy()?);
+        let attribute = stage.attribute("/Inst/Anim.translations")?;
+        let query = attribute.query();
+        compare_clocks(&attribute, &query)?;
+        assert_eq!(stage.index_revision(&prim), None);
+        assert_eq!(sample_bytes(&attribute)?, 24);
+
+        grow_samples(&stage.attribute("/Source/Anim.translations")?)?;
+        stage.flush()?;
+        compare_clocks(&attribute, &query)?;
+        assert_eq!(stage.index_revision(&prim), None);
+        assert_eq!(sample_bytes(&attribute)?, 98_304);
+        assert_eq!(
+            numeric_bytes(&query.get_at::<Value>(TimeCode::new(5.0))?.unwrap())?.len(),
+            49_152
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn equal_root_labels_do_not_share_query_state_or_lifetime() -> Result<()> {
+        let source = source_fixture()?;
+        let stage = source.open_stage()?;
+        let other = source.open_stage()?;
+        assert!(stage != other);
+        assert_eq!(
+            stage.root_layer().identifier(),
+            other.root_layer().identifier()
+        );
+        let attribute = stage.attribute("/Source/Anim.translations")?;
+        let other_attribute = other.attribute("/Source/Anim.translations")?;
+        assert_eq!(attribute.path(), other_attribute.path());
+        let query = attribute.query();
+        let other_query = other_attribute.query();
+        compare_clocks(&attribute, &query)?;
+        compare_clocks(&other_attribute, &other_query)?;
+        grow_samples(&attribute)?;
+        compare_clocks(&attribute, &query)?;
+        compare_clocks(&other_attribute, &other_query)?;
+        assert_eq!(sample_bytes(&attribute)?, 98_304);
+        assert_eq!(sample_bytes(&other_attribute)?, 24);
+        assert!(
+            same_values(
+                &[query.get_at::<Value>(TimeCode::new(5.0))?],
+                &[other_query.get_at::<Value>(TimeCode::new(5.0))?],
+            )
+            .is_err()
+        );
+
+        let sentinel = std::rc::Rc::new(());
+        let weak = std::rc::Rc::downgrade(&sentinel);
+        stage.add_sink(move |_: &Stage, _: &openusd::usd::CommittedChange<'_>| {
+            let _keep_alive = &sentinel;
+        })?;
+        drop(attribute);
+        drop(stage);
+        assert!(weak.upgrade().is_some());
+        assert!(query.get_at::<Value>(TimeCode::new(5.0))?.is_some());
+        drop(query);
+        assert!(weak.upgrade().is_none());
+        compare_clocks(&other_attribute, &other_query)?;
+        Ok(())
+    }
+
     #[test]
     fn exact_comparison_detects_sign_kind_and_presence() {
         let zero = [Some(Value::FloatVec(vec![0.0]))];

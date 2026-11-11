@@ -1,0 +1,652 @@
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 00000000..018b9ff0
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,23 @@
++.PHONY: fmt test-budget test-queries test-attributes lint doc
++export CARGO_WORKSPACE_DIR := $(CURDIR)/
++export CARGO_BUILD_JOBS := 2
++export CARGO_PROFILE_DEV_DEBUG := 0
++export CARGO_PROFILE_TEST_DEBUG := 0
++
++fmt:
++	cargo fmt --all
++
++test-budget:
++	cargo test -p openusd --lib usd::query_budget::tests
++
++test-queries:
++	cargo test -p openusd --lib usd::attribute::tests::query_
++
++test-attributes:
++	cargo test -p openusd --lib usd::attribute::tests
++
++lint:
++	cargo clippy -p openusd --all-targets --all-features -- -D warnings
++
++doc:
++	cargo doc -p openusd --no-deps --all-features
+diff --git a/crates/openusd/src/ar.rs b/crates/openusd/src/ar.rs
+index bb684a89..15e88242 100644
+--- a/crates/openusd/src/ar.rs
++++ b/crates/openusd/src/ar.rs
+@@ -54,6 +54,11 @@ use crate::{tf, usdz};
+ pub struct ResolvedPath(PathBuf);
+ 
+ impl ResolvedPath {
++    /// Capacity of the owned path buffer.
++    pub(crate) fn heap_bytes(&self) -> usize {
++        self.0.capacity()
++    }
++
+     /// Creates a new resolved path.
+     pub fn new(path: impl Into<PathBuf>) -> Self {
+         Self(path.into())
+diff --git a/crates/openusd/src/pcp/asset_resolve.rs b/crates/openusd/src/pcp/asset_resolve.rs
+index 7a93f8cb..c9cd67ea 100644
+--- a/crates/openusd/src/pcp/asset_resolve.rs
++++ b/crates/openusd/src/pcp/asset_resolve.rs
+@@ -51,6 +51,14 @@ pub(crate) struct AssetSite {
+ }
+ 
+ impl AssetSite {
++    /// Owned buffers and shared path text, charged in full.
++    pub(super) fn heap_bytes(&self) -> Option<usize> {
++        self.source_layer
++            .capacity()
++            .checked_add(self.anchor.as_ref().map_or(0, ar::ResolvedPath::heap_bytes))?
++            .checked_add(self.query_path.heap_bytes()?)
++    }
++
+     /// The site of an opinion authored in `layer` at `query_path`, contributed
+     /// by a node composing in `stack` — the graph-backed case, which resolves
+     /// the anchor and identifier through `graph`.
+diff --git a/crates/openusd/src/pcp/index_cache.rs b/crates/openusd/src/pcp/index_cache.rs
+index 55fce240..0e686266 100644
+--- a/crates/openusd/src/pcp/index_cache.rs
++++ b/crates/openusd/src/pcp/index_cache.rs
+@@ -226,6 +226,25 @@ impl Default for AttributeValueSource {
+     }
+ }
+ 
++impl AttributeValueSource {
++    /// Heap storage of accounted sources, including sample-map capacity.
++    pub(crate) fn heap_bytes(&self) -> Option<usize> {
++        match self {
++            Self::Static(None) | Self::PerTime => Some(0),
++            Self::Static(Some(value)) => value.heap_bytes(),
++            Self::TimeSamples { samples, site, .. } => {
++                let bytes = samples
++                    .capacity()
++                    .checked_mul(size_of::<(f64, Value)>())?
++                    .checked_add(site.heap_bytes()?)?;
++                samples
++                    .iter()
++                    .try_fold(bytes, |bytes, (_, value)| bytes.checked_add(value.heap_bytes()?))
++            }
++        }
++    }
++}
++
+ /// An [`AttributeValueSource`] with the stamp that says how long replaying it
+ /// stays correct — what [`IndexCache::resolve_value_source`] hands back.
+ ///
+diff --git a/crates/openusd/src/sdf/path.rs b/crates/openusd/src/sdf/path.rs
+index a9b4b869..618112e5 100644
+--- a/crates/openusd/src/sdf/path.rs
++++ b/crates/openusd/src/sdf/path.rs
+@@ -90,6 +90,13 @@ impl Default for Path {
+     }
+ }
+ 
++impl Path {
++    /// Shared text record and its string capacity, excluding reference counts.
++    pub(crate) fn heap_bytes(&self) -> Option<usize> {
++        size_of::<Text>().checked_add(self.path.text.capacity())
++    }
++}
++
+ impl fmt::Display for Path {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         write!(f, "{}", self.path)
+diff --git a/crates/openusd/src/usd/attribute.rs b/crates/openusd/src/usd/attribute.rs
+index 3fc84cd1..383108fb 100644
+--- a/crates/openusd/src/usd/attribute.rs
++++ b/crates/openusd/src/usd/attribute.rs
+@@ -1453,13 +1453,16 @@ impl AttributeAuthoringPlan {
+ pub struct AttributeQuery {
+     attr: Attribute,
+     cached: RefCell<Option<CachedSource>>,
++    budget: Option<super::QueryCacheBudget>,
+ }
+ 
+ impl Clone for AttributeQuery {
+     /// Clones the attribute handle but not the resolved-source memo: the clone
+     /// resolves its source lazily on first use, like a fresh query.
+     fn clone(&self) -> Self {
+-        Self::new(&self.attr)
++        let mut query = Self::new(&self.attr);
++        query.budget = self.budget.clone();
++        query
+     }
+ }
+ 
+@@ -1472,9 +1475,16 @@ struct CachedSource {
+     revision: pcp::PrimRevision,
+     redirect_epoch: Option<u64>,
+     source: AttributeValueSource,
++    _charge: Option<super::query_budget::Charge>,
+ }
+ 
+ impl CachedSource {
++    fn retained_bytes(&self) -> Option<usize> {
++        size_of::<Self>()
++            .checked_add(self.prim.heap_bytes()?)?
++            .checked_add(self.source.heap_bytes()?)
++    }
++
+     /// Whether the memo still describes what `stage` would resolve now: the prim
+     /// it resolved from carries the same revision, and — for an answer reached
+     /// by redirection — the epoch that redirection was memoized under still
+@@ -1511,9 +1521,18 @@ impl AttributeQuery {
+         Self {
+             attr: attr.clone(),
+             cached: RefCell::new(None),
++            budget: None,
+         }
+     }
+ 
++    /// Builds a query sharing `budget` for source admission on each refresh.
++    /// An unadmitted source answers the current read and is then dropped.
++    pub fn with_budget(attr: &Attribute, budget: &super::QueryCacheBudget) -> Self {
++        let mut query = Self::new(attr);
++        query.budget = Some(budget.clone());
++        query
++    }
++
+     /// The attribute this query is anchored to.
+     pub fn attribute(&self) -> &Attribute {
+         &self.attr
+@@ -1627,6 +1646,7 @@ impl AttributeQuery {
+         {
+             return self.evaluate(&cached.source, time);
+         }
++        self.cached.take();
+ 
+         // Miss: resolve the source once and evaluate it. An empty source is as
+         // final as any other — a query on a `/__Prototype_N` path completes
+@@ -1641,12 +1661,20 @@ impl AttributeQuery {
+         // index is cached at the answering prim, so nothing can say when the
+         // answer expires — the source is used once and not memoized.
+         if let Some(revision) = resolved.revision {
+-            self.cached.replace(Some(CachedSource {
++            let mut cached = CachedSource {
+                 prim: resolved.prim,
+                 revision,
+                 redirect_epoch: resolved.redirect_epoch,
+                 source: resolved.source,
+-            }));
++                _charge: None,
++            };
++            if let Some(budget) = &self.budget {
++                let Some(charge) = cached.retained_bytes().and_then(|bytes| budget.acquire(bytes)) else {
++                    return Ok(value);
++                };
++                cached._charge = Some(charge);
++            }
++            self.cached.replace(Some(cached));
+         }
+         Ok(value)
+     }
+diff --git a/crates/openusd/src/usd/mod.rs b/crates/openusd/src/usd/mod.rs
+index 281b9e7a..4b6aa6ed 100644
+--- a/crates/openusd/src/usd/mod.rs
++++ b/crates/openusd/src/usd/mod.rs
+@@ -23,6 +23,7 @@ mod object;
+ mod prim;
+ mod prim_definition;
+ mod prim_type_info;
++mod query_budget;
+ mod relationship;
+ mod resolve_info;
+ mod schema;
+@@ -55,6 +56,7 @@ pub use object::{Object, Property};
+ pub use prim::{Prim, PrimIndexRef, PrimRange, VariantSet, VariantSets};
+ pub use prim_definition::{DefProperty, PrimDefinition};
+ pub use prim_type_info::{PrimTypeId, PrimTypeInfo};
++pub use query_budget::QueryCacheBudget;
+ pub use relationship::{Relationship, RelationshipBuilder};
+ pub use resolve_info::{ResolveInfo, ResolveInfoSource};
+ pub use schema::{APISchemaBase, SchemaBase, SchemaKind, Typed};
+diff --git a/crates/openusd/src/usd/query_budget.rs b/crates/openusd/src/usd/query_budget.rs
+new file mode 100644
+index 00000000..beea122d
+--- /dev/null
++++ b/crates/openusd/src/usd/query_budget.rs
+@@ -0,0 +1,343 @@
++//! Shared admission limits for retained attribute-query sources.
++
++use std::cell::Cell;
++use std::rc::Rc;
++
++/// Shared byte and entry limits for cached attribute-query sources.
++///
++/// Charges include source records, vector capacities and owned source metadata.
++/// Shared path storage is charged in full per source. Allocator and reference
++/// count headers, stage storage, query handles, temporary decoding and returned
++/// values are outside this budget. Unaccounted value kinds are not cached.
++#[derive(Clone, Debug)]
++pub struct QueryCacheBudget(Rc<State>);
++
++#[derive(Debug)]
++struct State {
++    max_bytes: usize,
++    max_entries: usize,
++    bytes: Cell<usize>,
++    entries: Cell<usize>,
++}
++
++pub(super) struct Charge {
++    budget: QueryCacheBudget,
++    bytes: usize,
++}
++
++impl QueryCacheBudget {
++    /// Creates an empty shared budget. A zero limit disables admission.
++    pub fn new(max_bytes: usize, max_entries: usize) -> Self {
++        Self(Rc::new(State {
++            max_bytes,
++            max_entries,
++            bytes: Cell::new(0),
++            entries: Cell::new(0),
++        }))
++    }
++
++    /// Bytes charged by currently retained sources.
++    pub fn retained_bytes(&self) -> usize {
++        self.0.bytes.get()
++    }
++
++    /// Number of currently retained sources.
++    pub fn retained_entries(&self) -> usize {
++        self.0.entries.get()
++    }
++
++    pub(super) fn acquire(&self, bytes: usize) -> Option<Charge> {
++        let total = self.0.bytes.get().checked_add(bytes)?;
++        let entries = self.0.entries.get().checked_add(1)?;
++        if self.0.max_bytes == 0 || total > self.0.max_bytes || entries > self.0.max_entries {
++            return None;
++        }
++        self.0.bytes.set(total);
++        self.0.entries.set(entries);
++        Some(Charge {
++            budget: self.clone(),
++            bytes,
++        })
++    }
++}
++
++impl Drop for Charge {
++    fn drop(&mut self) {
++        self.budget.0.bytes.set(self.budget.0.bytes.get() - self.bytes);
++        self.budget.0.entries.set(self.budget.0.entries.get() - 1);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::usd::stage::tests::stage;
++    use crate::usd::{Attribute, AttributeQuery, CommittedChange, InterpolationType, Stage, TimeCode};
++    use crate::{Result, gf, pcp, sdf, vt};
++
++    fn sampled(stage: &Stage, path: &str, count: usize) -> Result<Attribute> {
++        let attr = stage.create_attribute(path, "float3[]")?;
++        for time in [0.0, 10.0] {
++            attr.clone().set_at(
++                vt::Value::Vec3fVec(vec![gf::vec3f(time as f32, 1.0, 2.0); count]),
++                TimeCode::new(time),
++            )?;
++        }
++        Ok(attr)
++    }
++
++    fn compare(query: &AttributeQuery) -> Result<()> {
++        for time in [
++            None,
++            Some(0.0),
++            Some(5.0),
++            Some(10.0),
++            Some(5.0),
++            Some(-1.0),
++            Some(11.0),
++        ] {
++            let time = time.map(TimeCode::new);
++            assert_eq!(
++                query.get_at::<vt::Value>(time)?,
++                query.attribute().get_at::<vt::Value>(time)?
++            );
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn charge_limits_release() {
++        let budget = QueryCacheBudget::new(10, 2);
++        let first = budget.acquire(6).unwrap();
++        assert!(budget.acquire(5).is_none());
++        let second = budget.clone().acquire(4).unwrap();
++        assert_eq!(budget.retained_bytes(), 10);
++        assert!(budget.acquire(0).is_none());
++        drop(first);
++        assert_eq!(budget.retained_bytes(), 4);
++        drop(second);
++        assert_eq!(budget.retained_entries(), 0);
++        assert_eq!(budget.retained_bytes(), 0);
++        assert!(QueryCacheBudget::new(0, 1).acquire(0).is_none());
++        assert!(QueryCacheBudget::new(1, 0).acquire(0).is_none());
++        let huge = QueryCacheBudget::new(usize::MAX, usize::MAX);
++        let charge = huge.acquire(usize::MAX).unwrap();
++        assert!(huge.acquire(1).is_none());
++        drop(charge);
++        assert_eq!(huge.retained_bytes(), 0);
++    }
++
++    #[test]
++    fn query_growth_readmission() -> Result<()> {
++        let stage = stage()?;
++        let attr = sampled(&stage, "/P.points", 1)?;
++        let budget = QueryCacheBudget::new(4096, 1);
++        let query = AttributeQuery::with_budget(&attr, &budget);
++        compare(&query)?;
++        assert!(query.memo_is_current());
++        let bytes = budget.retained_bytes();
++        assert!((24..=4096).contains(&bytes));
++        sampled(&stage, "/P.points", 4096)?;
++        compare(&query)?;
++        assert!(!query.memo_is_current());
++        assert_eq!(budget.retained_bytes(), 0);
++        assert_eq!(budget.retained_entries(), 0);
++        sampled(&stage, "/P.points", 1)?;
++        compare(&query)?;
++        assert!(query.memo_is_current());
++        assert_eq!(budget.retained_bytes(), bytes);
++        attr.block()?;
++        compare(&query)?;
++        assert!(query.get_at::<vt::Value>(TimeCode::new(5.0))?.is_none());
++        drop(query);
++        assert_eq!(budget.retained_bytes(), 0);
++        Ok(())
++    }
++
++    #[test]
++    fn clone_shares_budget() -> Result<()> {
++        let stage = stage()?;
++        let attr = sampled(&stage, "/P.points", 1)?;
++        let budget = QueryCacheBudget::new(4096, 1);
++        let first = AttributeQuery::with_budget(&attr, &budget);
++        compare(&first)?;
++        let second = first.clone();
++        compare(&second)?;
++        assert!(first.memo_is_current());
++        assert!(!second.memo_is_current());
++        assert_eq!(budget.retained_entries(), 1);
++        drop(first);
++        assert_eq!(budget.retained_bytes(), 0);
++        compare(&second)?;
++        assert!(second.memo_is_current());
++        drop(second);
++        assert_eq!(budget.retained_bytes(), 0);
++        Ok(())
++    }
++
++    #[test]
++    fn proxy_growth_readmission() -> Result<()> {
++        let stage = stage()?;
++        sampled(&stage, "/Source/Anim.points", 1)?;
++        stage
++            .define_prim("/Inst")?
++            .set_metadata(
++                sdf::FieldKey::References.as_str(),
++                vt::Value::ReferenceListOp(sdf::ReferenceListOp::prepended([sdf::Reference {
++                    prim_path: sdf::path("/Source")?,
++                    ..Default::default()
++                }])),
++            )?
++            .set_instanceable(true)?;
++        let attr = stage.attribute("/Inst/Anim.points")?;
++        assert!(stage.prim("/Inst/Anim")?.is_instance_proxy()?);
++        let budget = QueryCacheBudget::new(4096, 1);
++        let query = AttributeQuery::with_budget(&attr, &budget);
++        compare(&query)?;
++        assert!(query.memo_is_current());
++        sampled(&stage, "/Source/Anim.points", 4096)?;
++        compare(&query)?;
++        assert!(!query.memo_is_current());
++        assert_eq!(budget.retained_bytes(), 0);
++        assert_eq!(stage.index_revision(&sdf::path("/Inst/Anim")?), None);
++        Ok(())
++    }
++
++    #[test]
++    fn unaccounted_source_fallback() -> Result<()> {
++        let stage = stage()?;
++        let attr = stage
++            .create_attribute("/P.name", "token")?
++            .set(vt::Value::Token("hello".into()))?;
++        let budget = QueryCacheBudget::new(usize::MAX, 10);
++        let query = AttributeQuery::with_budget(&attr, &budget);
++        compare(&query)?;
++        assert!(!query.memo_is_current());
++        assert_eq!(budget.retained_entries(), 0);
++        let disabled = AttributeQuery::with_budget(&sampled(&stage, "/P.points", 1)?, &QueryCacheBudget::new(0, 1));
++        compare(&disabled)?;
++        assert!(!disabled.memo_is_current());
++        Ok(())
++    }
++
++    #[test]
++    fn exact_byte_boundary() -> Result<()> {
++        let stage = stage()?;
++        let attr = sampled(&stage, "/P.points", 1)?;
++        let measure = QueryCacheBudget::new(4096, 1);
++        let query = AttributeQuery::with_budget(&attr, &measure);
++        compare(&query)?;
++        let bytes = measure.retained_bytes();
++        assert!(bytes > 24);
++        drop(query);
++        for (limit, admitted) in [(bytes - 1, false), (bytes, true)] {
++            let budget = QueryCacheBudget::new(limit, 1);
++            let query = AttributeQuery::with_budget(&attr, &budget);
++            compare(&query)?;
++            assert_eq!(query.memo_is_current(), admitted);
++            assert_eq!(budget.retained_bytes(), if admitted { bytes } else { 0 });
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn stage_isolation_release() -> Result<()> {
++        let first_stage = stage()?;
++        let second_stage = stage()?;
++        let budget = QueryCacheBudget::new(16_384, 2);
++        let first_attr = sampled(&first_stage, "/P.points", 1)?;
++        let second_attr = sampled(&second_stage, "/P.points", 2)?;
++        let first = AttributeQuery::with_budget(&first_attr, &budget);
++        let second = AttributeQuery::with_budget(&second_attr, &budget);
++        let sentinel = Rc::new(());
++        let weak = Rc::downgrade(&sentinel);
++        first_stage.add_sink(move |_: &Stage, _: &CommittedChange<'_>| {
++            let _keep = &sentinel;
++        })?;
++        compare(&first)?;
++        compare(&second)?;
++        assert_eq!(budget.retained_entries(), 2);
++        let both_bytes = budget.retained_bytes();
++        assert_ne!(
++            first.get_at::<vt::Value>(TimeCode::new(5.0))?,
++            second.get_at::<vt::Value>(TimeCode::new(5.0))?
++        );
++        drop(first_attr);
++        drop(first_stage);
++        assert!(weak.upgrade().is_some());
++        drop(first);
++        assert!(weak.upgrade().is_none());
++        assert_eq!(budget.retained_entries(), 1);
++        assert!(budget.retained_bytes() < both_bytes);
++        compare(&second)?;
++        drop(second);
++        assert_eq!(budget.retained_bytes(), 0);
++        Ok(())
++    }
++
++    #[test]
++    fn retimed_interpolation_matches() -> Result<()> {
++        let stage = stage()?;
++        sampled(&stage, "/Source/Anim.points", 1)?;
++        stage.define_prim("/Retimed")?.set_metadata(
++            sdf::FieldKey::References.as_str(),
++            vt::Value::ReferenceListOp(sdf::ReferenceListOp::prepended([sdf::Reference {
++                prim_path: sdf::path("/Source")?,
++                layer_offset: sdf::LayerOffset::new(10.0, 2.0),
++                ..Default::default()
++            }])),
++        )?;
++        let budget = QueryCacheBudget::new(4096, 1);
++        let query = AttributeQuery::with_budget(&stage.attribute("/Retimed/Anim.points")?, &budget);
++        for mode in [InterpolationType::Linear, InterpolationType::Held] {
++            stage.set_interpolation(mode);
++            compare(&query)?;
++            for time in [10.0, 20.0, 30.0, 20.0] {
++                let time = TimeCode::new(time);
++                assert_eq!(
++                    query.get_at::<vt::Value>(time)?,
++                    query.attribute().get_at::<vt::Value>(time)?
++                );
++            }
++            assert!(query.memo_is_current());
++            assert_eq!(budget.retained_entries(), 1);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn value_capacity_accounting() {
++        let mut numbers = Vec::<gf::Vec3f>::with_capacity(32);
++        numbers.push(gf::vec3f(0.0, 0.0, 0.0));
++        let capacity = numbers.capacity() * size_of::<gf::Vec3f>();
++        assert_eq!(vt::Value::Vec3fVec(numbers).heap_bytes(), Some(capacity));
++        let mut word = String::with_capacity(128);
++        word.push('x');
++        let capacity = word.capacity();
++        assert_eq!(vt::Value::String(word).heap_bytes(), Some(capacity));
++        let mut words = Vec::<String>::with_capacity(8);
++        words.push(String::with_capacity(64));
++        let capacity = words.capacity() * size_of::<String>() + words[0].capacity();
++        assert_eq!(vt::Value::StringVec(words).heap_bytes(), Some(capacity));
++        assert_eq!(vt::Value::Token("unaccounted".into()).heap_bytes(), None);
++    }
++
++    #[test]
++    fn source_capacity_accounting() -> Result<()> {
++        let stage = stage()?;
++        let attr = sampled(&stage, "/P.points", 1)?;
++        let mut resolved = stage.resolve_value_source(attr.path())?;
++        let before = resolved.source.heap_bytes().unwrap();
++        let added = match &mut resolved.source {
++            pcp::AttributeValueSource::TimeSamples { samples, .. } => {
++                let before = samples.capacity();
++                samples.reserve(50);
++                (samples.capacity() - before) * size_of::<(f64, vt::Value)>()
++            }
++            _ => panic!("sampled source"),
++        };
++        assert!(added > 0);
++        assert_eq!(resolved.source.heap_bytes(), Some(before + added));
++        Ok(())
++    }
++}
+diff --git a/crates/openusd/src/vt/value.rs b/crates/openusd/src/vt/value.rs
+index f0e4d82a..504b06b7 100644
+--- a/crates/openusd/src/vt/value.rs
++++ b/crates/openusd/src/vt/value.rs
+@@ -334,6 +334,77 @@ impl serde::Serialize for Value {
+ }
+ 
+ impl Value {
++    /// Heap capacities of numeric and string values; unaccounted kinds return
++    /// `None`.
++    pub(crate) fn heap_bytes(&self) -> Option<usize> {
++        fn array<T>(values: &Vec<T>) -> Option<usize> {
++            values.capacity().checked_mul(size_of::<T>())
++        }
++        match self {
++            Self::None
++            | Self::ValueBlock
++            | Self::Bool(_)
++            | Self::Uchar(_)
++            | Self::Int(_)
++            | Self::Uint(_)
++            | Self::Int64(_)
++            | Self::Uint64(_)
++            | Self::Half(_)
++            | Self::Float(_)
++            | Self::Double(_)
++            | Self::Quath(_)
++            | Self::Quatf(_)
++            | Self::Quatd(_)
++            | Self::Vec2h(_)
++            | Self::Vec2f(_)
++            | Self::Vec2d(_)
++            | Self::Vec2i(_)
++            | Self::Vec3h(_)
++            | Self::Vec3f(_)
++            | Self::Vec3d(_)
++            | Self::Vec3i(_)
++            | Self::Vec4h(_)
++            | Self::Vec4f(_)
++            | Self::Vec4d(_)
++            | Self::Vec4i(_)
++            | Self::Matrix2d(_)
++            | Self::Matrix3d(_)
++            | Self::Matrix4d(_) => Some(0),
++            Self::BoolVec(v) => array(v),
++            Self::UcharVec(v) => array(v),
++            Self::IntVec(v) => array(v),
++            Self::UintVec(v) => array(v),
++            Self::Int64Vec(v) => array(v),
++            Self::Uint64Vec(v) => array(v),
++            Self::HalfVec(v) => array(v),
++            Self::FloatVec(v) => array(v),
++            Self::DoubleVec(v) => array(v),
++            Self::QuathVec(v) => array(v),
++            Self::QuatfVec(v) => array(v),
++            Self::QuatdVec(v) => array(v),
++            Self::Vec2hVec(v) => array(v),
++            Self::Vec2fVec(v) => array(v),
++            Self::Vec2dVec(v) => array(v),
++            Self::Vec2iVec(v) => array(v),
++            Self::Vec3hVec(v) => array(v),
++            Self::Vec3fVec(v) => array(v),
++            Self::Vec3dVec(v) => array(v),
++            Self::Vec3iVec(v) => array(v),
++            Self::Vec4hVec(v) => array(v),
++            Self::Vec4fVec(v) => array(v),
++            Self::Vec4dVec(v) => array(v),
++            Self::Vec4iVec(v) => array(v),
++            Self::Matrix2dVec(v) => array(v),
++            Self::Matrix3dVec(v) => array(v),
++            Self::Matrix4dVec(v) => array(v),
++            Self::String(v) => Some(v.capacity()),
++            Self::StringVec(v) => v
++                .iter()
++                .try_fold(array(v)?, |bytes, value| bytes.checked_add(value.capacity())),
++            _ => None,
++        }
++    }
++
+     /// Extracts the payload as `T` if this holds the matching variant, else
+     /// `None`. A typed view over the `try_as_*` accessors and the
+     /// [`TryFrom<Value>`] impls — e.g. `value.get::<tf::Token>()`. `T = Value`

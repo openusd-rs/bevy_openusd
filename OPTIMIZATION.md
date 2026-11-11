@@ -76,6 +76,15 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- Transparent render-order diagnosis (`4f7987c`, `431b285`): optional actual-phase
+  snapshots show the left wing's generated material subset crosses the grid's
+  sort key between GPU and CPU paths, despite identical grid transforms/settings.
+  Both diagnostic captures are pixel-exact against their previous versions;
+  strict CPU/GPU comparison still fails at 2,053 pixels. Hardening passes 804
+  no-default / 903 all-feature tests. No production sorting fix or tolerance
+  change has been made. See [hummingbird playback](benchmarks/hummingbird-playback.md)
+  for concrete phase keys and the subset/instance-safe repair requirements.
+
 - Tightly paired scheduling evidence (`79e80bc`): six CPU/GPU-prepared workloads,
   two independent app pairs each and 1,000 unique clocks per pair complete with
   equal retained payload counts. Cow GPU median update cost falls 21.9–28.6%,

@@ -287,7 +287,9 @@ make.recipe{
     end
     sh.mkdir(a.output)
     run("cpu", a.output .. "/cpu")
-    run("gpu", a.output .. "/gpu", a.output .. "/cpu")
+    for _, mode in ipairs({ "gpu", "cpu-deferred", "gpu-deferred" }) do
+      run(mode, a.output .. "/" .. mode, a.output .. "/cpu")
+    end
   end,
 }
 

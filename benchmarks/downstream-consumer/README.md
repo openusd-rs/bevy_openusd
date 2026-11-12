@@ -44,6 +44,9 @@ reference within RGB 1. The GPU run also checks that every visible morph
 instance gets a current descriptor with the expected vertex count and weight.
 Without the PBR override the first reveal draws the wrong shape and the
 comparison fails; the subset/parent colour check alone does not catch it.
+The recipe repeats both runs with `DeferHiddenMeshes`: the initially hidden
+root has no meshes until its Bevy `Visibility` reveals it, and every phase
+must still match the eager CPU reference.
 Acceptance was recorded on local Linux NVIDIA Vulkan only.
 
 Downstream application workloads, other browsers and platforms, and

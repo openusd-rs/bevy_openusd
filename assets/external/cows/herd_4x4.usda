@@ -1,0 +1,125 @@
+#usda 1.0
+(
+    defaultPrim = "Herd"
+    metersPerUnit = 1
+    upAxis = "Z"
+    startTimeCode = 0
+    endTimeCode = 288
+    timeCodesPerSecond = 60
+)
+
+def Xform "Herd"
+{
+    def Xform "Cow_0_0" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (-3.75, -6.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_0_1" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (-3.75, -2.25, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_0_2" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (-3.75, 2.25, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_0_3" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (-3.75, 6.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_1_0" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (-1.25, -6.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_1_1" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (-1.25, -2.25, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_1_2" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (-1.25, 2.25, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_1_3" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (-1.25, 6.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_2_0" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (1.25, -6.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_2_1" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (1.25, -2.25, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_2_2" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (1.25, 2.25, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_2_3" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (1.25, 6.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_3_0" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (3.75, -6.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_3_1" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (3.75, -2.25, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_3_2" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (3.75, 2.25, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cow_3_3" (
+        prepend references = @./cow_eating.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (3.75, 6.75, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

@@ -662,6 +662,7 @@ fn fit_capture_grid(
         ),
         With<environment::ViewerGrid>,
     >,
+    mut scene_bounds: ResMut<environment::SceneBounds>,
 ) {
     if capture.requested {
         return;
@@ -697,6 +698,7 @@ fn fit_capture_grid(
         }
     }
     if let Some((height, scale, fade)) = environment::fit_grid(low, high) {
+        scene_bounds.0 = Some((low, high));
         for (mut transform, mut settings) in &mut grids {
             transform.translation.y = height;
             settings.scale = scale;
@@ -1461,6 +1463,7 @@ mod tests {
         let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();
         capture.ready_frames = 1;
         app.insert_resource(capture);
+        app.init_resource::<environment::SceneBounds>();
         app.add_systems(Update, fit_capture_grid);
         let root = app
             .world_mut()

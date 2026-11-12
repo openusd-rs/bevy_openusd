@@ -1,4 +1,4 @@
-use crate::environment::ViewerGrid;
+use crate::environment::{SceneBounds, ViewerGrid};
 use bevy::camera::primitives::Aabb;
 use bevy::dev_tools::infinite_grid::InfiniteGridSettings;
 use bevy::ecs::system::SystemParam;
@@ -17,6 +17,7 @@ impl FrameRequest {
 
 pub fn configure(app: &mut App) {
     app.init_resource::<FrameRequest>()
+        .init_resource::<SceneBounds>()
         .add_systems(Last, frame_opened_document);
 }
 
@@ -41,6 +42,7 @@ type FramingGrid = (&'static mut Transform, &'static mut InfiniteGridSettings);
 struct FramingTargets<'w, 's> {
     cameras: Query<'w, 's, FramingCamera, (With<Camera3d>, Without<ViewerGrid>)>,
     grids: Query<'w, 's, FramingGrid, (With<ViewerGrid>, Without<Camera3d>)>,
+    bounds: ResMut<'w, SceneBounds>,
 }
 
 fn frame_opened_document(
@@ -55,6 +57,7 @@ fn frame_opened_document(
     let FramingTargets {
         mut cameras,
         mut grids,
+        mut bounds,
     } = targets;
     let requested = request.0.swap(false, std::sync::atomic::Ordering::Relaxed);
     let Some(root) = prims.entity("/") else {
@@ -100,6 +103,7 @@ fn frame_opened_document(
         applied = true;
     }
     if applied {
+        bounds.0 = Some((low, high));
         for (mut transform, mut settings) in &mut grids {
             if let Some((height, scale, fade)) = crate::environment::fit_grid(low, high) {
                 transform.translation.y = height;
@@ -185,6 +189,10 @@ mod tests {
                 .unwrap()
                 .focus,
             Vec3::ZERO
+        );
+        assert_eq!(
+            app.world().resource::<SceneBounds>().0,
+            Some((Vec3::splat(-1.0), Vec3::ONE))
         );
         app.world_mut()
             .entity_mut(hidden)

@@ -185,25 +185,15 @@ fn attach_prepared(
         crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)
     })?;
     preparation_lap(profile, "skin-sample");
-    let skinned_tangents = read.uvs.is_some()
-        && sample
-            .normal_corrections
-            .iter()
-            .any(|matrix| *matrix != Mat3::IDENTITY);
-    let assembly = if !skinned_tangents && !has_morphs {
-        super::cache::Assembly::StandardTangents
-    } else {
+    let assembly = if has_morphs {
         super::cache::Assembly::Standard
+    } else {
+        super::cache::Assembly::StandardTangents
     };
     let mut mesh = super::cache::assemble_cached_mesh(world, read, assembly);
     preparation_lap(profile, "rest-mesh");
     let morph_weights = if has_morphs {
-        Some(super::gpu_morph::prepare(
-            ctx,
-            read,
-            &mut mesh,
-            !skinned_tangents,
-        )?)
+        Some(super::gpu_morph::prepare(ctx, read, &mut mesh, true)?)
     } else {
         None
     };
@@ -221,9 +211,6 @@ fn attach_prepared(
         morph_weights.as_deref().unwrap_or(&[]),
     )?;
     preparation_lap(profile, "normal-correction");
-    if skinned_tangents {
-        correct_tangents(ctx, world, &mut mesh, &source_points, &sample, profile)?;
-    }
     let indices: Vec<_> = source_points
         .iter()
         .map(|&point| sample.indices[point])
@@ -338,55 +325,6 @@ fn correct_normals(
             );
         }
     }
-    Ok(())
-}
-
-fn correct_tangents(
-    ctx: &RouteCtx,
-    world: &mut World,
-    mesh: &mut Mesh,
-    mapping: &[usize],
-    skin: &crate::read::skel::GpuSkinSample,
-    profile: &mut Option<PreparationSample>,
-) -> anyhow::Result<()> {
-    let prepared = ctx.prepared_deformation.borrow_mut().take();
-    let mut prepared = if let Some(prepared) = prepared {
-        prepared?.ok_or_else(|| anyhow::anyhow!("missing tangent deformation"))?
-    } else {
-        let read = super::skel::deformed_mesh(ctx)?
-            .ok_or_else(|| anyhow::anyhow!("missing tangent deformation"))?;
-        preparation_lap(profile, "tangent-deform");
-        let prepared = super::preparation::PreparedDeformation::new(read);
-        preparation_lap(profile, "tangent-assembly");
-        prepared
-    };
-    prepared.generate_tangents(world);
-    preparation_lap(profile, "tangent-generation");
-    let deformed = prepared.mesh;
-    anyhow::ensure!(
-        deformed.count_vertices() == mesh.count_vertices(),
-        "skinned tangent mapping changed"
-    );
-    let Some(bevy::mesh::VertexAttributeValues::Float32x4(tangents)) =
-        deformed.attribute(Mesh::ATTRIBUTE_TANGENT)
-    else {
-        mesh.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
-        return Ok(());
-    };
-    let mut corrected = Vec::with_capacity(tangents.len());
-    for (tangent, &point) in tangents.iter().zip(mapping) {
-        let matrix = skin.indices[point]
-            .iter()
-            .zip(skin.weights[point])
-            .fold(Mat4::ZERO, |matrix, (&index, weight)| {
-                matrix + skin.matrices[index as usize] * weight
-            });
-        let value = Mat3::from_mat4(matrix).inverse() * Vec3::from_slice(&tangent[..3]);
-        anyhow::ensure!(value.is_finite(), "nonfinite skinned tangent correction");
-        corrected.push([value.x, value.y, value.z, tangent[3]]);
-    }
-    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, corrected);
-    preparation_lap(profile, "tangent-correction");
     Ok(())
 }
 
@@ -548,36 +486,8 @@ mod tests {
             let mapping = crate::mesh::vertex_point_indices(&read);
             let mut gpu = crate::mesh::assemble_mesh(&read, None, false);
             assert!(gpu.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
-            let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu, false).unwrap();
+            let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu, true).unwrap();
             correct_normals(&mut gpu, &mapping, &skin.normal_corrections, &weights).unwrap();
-            correct_tangents(&ctx, &mut world, &mut gpu, &mapping, &skin, &mut None).unwrap();
-            let mut profiled = gpu.clone();
-            let mut profile = Some(PreparationSample {
-                since: bevy::platform::time::Instant::now(),
-                phases: Default::default(),
-            });
-            correct_tangents(
-                &ctx,
-                &mut world,
-                &mut profiled,
-                &mapping,
-                &skin,
-                &mut profile,
-            )
-            .unwrap();
-            assert_eq!(
-                profiled.attribute(Mesh::ATTRIBUTE_TANGENT),
-                gpu.attribute(Mesh::ATTRIBUTE_TANGENT)
-            );
-            let phases = &profile.unwrap().phases;
-            assert!(phases.contains_key("tangent-assembly"));
-            assert!(phases.contains_key("tangent-generation"));
-            let mut cached = gpu.clone();
-            correct_tangents(&ctx, &mut world, &mut cached, &mapping, &skin, &mut None).unwrap();
-            assert_eq!(
-                cached.attribute(Mesh::ATTRIBUTE_TANGENT),
-                gpu.attribute(Mesh::ATTRIBUTE_TANGENT)
-            );
             let morph = crate::read::skel::morph_sample(&stage, &path, Some(time)).unwrap();
             let (mut normals, points) = crate::read::skel::morph_normals(&read, &morph).unwrap();
             crate::read::skel::skin_normals(
@@ -592,9 +502,17 @@ mod tests {
             let mut deformed = read.clone();
             deformed.normals = Some(normals);
             let cpu = crate::mesh::mesh_from_usd(&deformed);
-            let tangent_cpu = crate::mesh::mesh_from_usd(
-                &super::super::skel::deformed_mesh(&ctx).unwrap().unwrap(),
+            let (deformed_read, source) =
+                super::super::skel::deformed_mesh_with_tangent_source(&ctx)
+                    .unwrap()
+                    .unwrap();
+            assert!(source.as_ref().is_some_and(|source| source.morphed));
+            let mut prepared = super::super::preparation::PreparedDeformation::with_tangent_source(
+                deformed_read,
+                source,
             );
+            prepared.generate_tangents(&mut world);
+            let tangent_cpu = prepared.mesh;
             let Some(bevy::mesh::VertexAttributeValues::Float32x4(actual_tangents)) =
                 gpu.attribute(Mesh::ATTRIBUTE_TANGENT)
             else {

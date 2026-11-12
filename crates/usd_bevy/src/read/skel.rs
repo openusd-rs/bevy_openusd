@@ -553,6 +553,58 @@ impl SkinNormalSample {
         }
         Ok(())
     }
+
+    /// Per-point linear blend of the skinning matrices, which carries
+    /// pre-skin tangent directions into the deformed pose.
+    pub(crate) fn tangent_matrices(
+        &self,
+        point_count: usize,
+    ) -> anyhow::Result<Vec<bevy::math::Mat3>> {
+        use bevy::math::{Mat3, Mat4};
+        let transforms: Vec<_> = self
+            .transforms
+            .iter()
+            .map(|matrix| {
+                Mat4::from_cols_array(
+                    &(self.geom_bind_transform * *matrix)
+                        .0
+                        .map(|value| value as f32),
+                )
+            })
+            .collect();
+        let count = if self.rigid { 1 } else { point_count };
+        anyhow::ensure!(
+            count.checked_mul(self.stride) == Some(self.indices.len())
+                && self.indices.len() == self.weights.len(),
+            "invalid tangent influence count"
+        );
+        anyhow::ensure!(
+            self.indices
+                .iter()
+                .all(|index| *index >= 0 && (*index as usize) < transforms.len()),
+            "invalid tangent influences"
+        );
+        let mut matrices: Vec<_> = (0..count)
+            .map(|component| {
+                let start = component * self.stride;
+                let blended = (start..start + self.stride).fold(Mat4::ZERO, |matrix, slot| {
+                    matrix + transforms[self.indices[slot] as usize] * self.weights[slot]
+                });
+                Mat3::from_mat4(blended)
+            })
+            .collect();
+        if self.rigid {
+            matrices.resize(
+                point_count,
+                matrices.first().copied().unwrap_or(Mat3::IDENTITY),
+            );
+        }
+        anyhow::ensure!(
+            matrices.iter().all(|matrix| matrix.is_finite()),
+            "nonfinite tangent skin matrix"
+        );
+        Ok(matrices)
+    }
 }
 
 fn normal_skin_matrix(matrix: bevy::math::Mat4) -> anyhow::Result<bevy::math::Mat3> {
@@ -1014,6 +1066,8 @@ pub(crate) fn skinned_points_with_mesh(
 pub(crate) struct CpuSkinSample {
     pub points: Vec<[f32; 3]>,
     pub normals: SkinNormalSample,
+    /// Blend-shaped points before skinning, when blend shapes apply.
+    pub morphed: Option<Vec<[f32; 3]>>,
 }
 
 pub(crate) fn cpu_skin_sample(
@@ -1110,6 +1164,7 @@ pub(crate) fn cpu_skin_sample(
     Ok(Some(CpuSkinSample {
         points: deformed.into_iter().map(|v| [v.x, v.y, v.z]).collect(),
         normals: skin.normal_sample(transforms, indices, weights, time)?,
+        morphed,
     }))
 }
 

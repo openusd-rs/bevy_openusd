@@ -68,6 +68,15 @@ pub(super) struct PreparedDeformation {
     pub read: ReadMesh,
     pub mesh: Mesh,
     pub tangents_ready: bool,
+    skin: Option<SkinnedTangentInput>,
+}
+
+/// Pre-skin mesh whose tangents are carried into the deformed mesh by the
+/// blended skin matrix of each vertex.
+struct SkinnedTangentInput {
+    mesh: Mesh,
+    matrices: Vec<Mat3>,
+    morphed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -92,18 +101,95 @@ impl DeformationKinds {
 }
 
 impl PreparedDeformation {
-    pub fn new(read: ReadMesh) -> Self {
+    pub fn with_tangent_source(
+        read: ReadMesh,
+        source: Option<super::skel::SkinnedTangentSource>,
+    ) -> Self {
         let mesh = crate::mesh::assemble_mesh(&read, None, false);
+        let skin = source.and_then(|source| {
+            let input = crate::mesh::assemble_mesh(&source.read, None, false);
+            let mapping = crate::mesh::vertex_point_indices(&read);
+            (input.count_vertices() == mesh.count_vertices()
+                && mapping.len() == mesh.count_vertices()
+                && mapping.iter().all(|&point| point < source.matrices.len()))
+            .then(|| SkinnedTangentInput {
+                mesh: input,
+                matrices: mapping
+                    .iter()
+                    .map(|&point| source.matrices[point])
+                    .collect(),
+                morphed: source.morphed,
+            })
+        });
         Self {
             read,
             mesh,
             tangents_ready: false,
+            skin,
         }
+    }
+
+    /// The mesh MikkTSpace runs on: pre-skin geometry when skinned.
+    pub fn tangent_input(&self) -> &Mesh {
+        self.skin.as_ref().map_or(&self.mesh, |skin| &skin.mesh)
+    }
+
+    fn tangent_input_mut(&mut self) -> &mut Mesh {
+        self.skin
+            .as_mut()
+            .map_or(&mut self.mesh, |skin| &mut skin.mesh)
+    }
+
+    /// Whether the tangent input changes with the pose (cache admission).
+    pub fn tangent_input_varies(&self) -> bool {
+        self.skin.as_ref().is_none_or(|skin| skin.morphed)
+    }
+
+    pub fn take_tangent_input(&mut self) -> Mesh {
+        let empty = Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        std::mem::replace(self.tangent_input_mut(), empty)
+    }
+
+    pub fn restore_tangent_input(&mut self, mesh: Mesh) {
+        *self.tangent_input_mut() = mesh;
+        self.apply_skinned_tangents();
+        self.tangents_ready = true;
+    }
+
+    /// Writes the skinned pre-skin tangents onto the deformed mesh.
+    pub fn apply_skinned_tangents(&mut self) {
+        let Some(skin) = &self.skin else {
+            return;
+        };
+        let Some(bevy::mesh::VertexAttributeValues::Float32x4(tangents)) =
+            skin.mesh.attribute(Mesh::ATTRIBUTE_TANGENT)
+        else {
+            self.mesh.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
+            return;
+        };
+        let skinned: Vec<_> = tangents
+            .iter()
+            .zip(&skin.matrices)
+            .map(|(tangent, matrix)| {
+                let direction = Vec3::from_slice(&tangent[..3]);
+                let value = (*matrix * direction).try_normalize().unwrap_or(direction);
+                [value.x, value.y, value.z, tangent[3]]
+            })
+            .collect();
+        self.mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, skinned);
     }
 
     pub fn generate_tangents(&mut self, world: &mut World) {
         if !self.tangents_ready && self.read.uvs.is_some() {
-            cache::generate_cached_deformed_tangents(world, &mut self.mesh);
+            if self.tangent_input_varies() {
+                cache::generate_cached_deformed_tangents(world, self.tangent_input_mut());
+            } else {
+                cache::generate_cached_tangents(world, self.tangent_input_mut());
+            }
+            self.apply_skinned_tangents();
         }
         self.tangents_ready = true;
     }
@@ -135,13 +221,7 @@ fn needs_deformation(ctx: &RouteCtx, world: &World, phases: &mut Option<PhaseSam
     }
     let sample = skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read);
     phase_lap(phases, "eligibility-skin-sample");
-    let needed = match &sample {
-        Ok(sample) => sample
-            .normal_corrections
-            .iter()
-            .any(|matrix| *matrix != Mat3::IDENTITY),
-        Err(_) => true,
-    };
+    let needed = sample.is_err();
     *ctx.prepared_skin.borrow_mut() = Some(sample);
     needed
 }
@@ -184,9 +264,11 @@ pub(super) fn prepare_batch(
         if !needed {
             continue;
         }
-        let result = super::skel::deformed_mesh(ctx);
+        let result = super::skel::deformed_mesh_with_tangent_source(ctx);
         phase_lap(&mut phases, "deformation");
-        let result = result.map(|read| read.map(PreparedDeformation::new));
+        let result = result.map(|deformed| {
+            deformed.map(|(read, source)| PreparedDeformation::with_tangent_source(read, source))
+        });
         phase_lap(&mut phases, "assembly");
         let mut prepared = match result {
             Ok(Some(prepared)) => prepared,
@@ -195,19 +277,22 @@ pub(super) fn prepare_batch(
                 continue;
             }
         };
-        let bytes = cache::mesh_payload_bytes(&prepared.mesh);
+        let bytes = cache::mesh_payload_bytes(prepared.tangent_input());
         if bytes > settings.max_input_bytes.saturating_sub(input_bytes) {
             *ctx.prepared_deformation.borrow_mut() = Some(Ok(Some(prepared)));
             phase_lap(&mut phases, "cache-lookup");
             break;
         }
-        match cache::prepare_tangents(world, &mut prepared.mesh, true) {
+        let varies = prepared.tangent_input_varies();
+        match cache::prepare_tangents(world, prepared.tangent_input_mut(), varies) {
             Some(ticket) => {
                 input_bytes += bytes;
-                pending.push((index, prepared.read, ticket));
-                jobs.push((index, prepared.mesh));
+                let job = prepared.take_tangent_input();
+                pending.push((index, prepared, ticket));
+                jobs.push((index, job));
             }
             None => {
+                prepared.apply_skinned_tangents();
                 prepared.tangents_ready = true;
                 *ctx.prepared_deformation.borrow_mut() = Some(Ok(Some(prepared)));
                 cache_hits += 1;
@@ -247,7 +332,7 @@ pub(super) fn prepare_batch(
     };
     phase_lap(&mut phases, "tangent-dispatch-join");
     results.sort_unstable_by_key(|(index, _, _, _)| *index);
-    for ((index, mesh, result, elapsed), (expected, read, ticket)) in
+    for ((index, mesh, result, elapsed), (expected, mut prepared, ticket)) in
         results.into_iter().zip(pending)
     {
         assert_eq!(index, expected);
@@ -258,12 +343,8 @@ pub(super) fn prepare_batch(
             phases.timing.tangent_max = phases.timing.tangent_max.max(elapsed);
         }
         cache::finish_tangents(world, &mesh, ticket, result);
-        *contexts[index].0.prepared_deformation.borrow_mut() =
-            Some(Ok(Some(PreparedDeformation {
-                read,
-                mesh,
-                tangents_ready: true,
-            })));
+        prepared.restore_tangent_input(mesh);
+        *contexts[index].0.prepared_deformation.borrow_mut() = Some(Ok(Some(prepared)));
     }
     phase_lap(&mut phases, "publication");
     if let Some(started) = started {
@@ -678,7 +759,7 @@ mod tests {
         let stage = stage();
         let registry = SchemaRegistry::builtin();
         for (limit, count, gap, batches) in [(4, 4, 20, 1), (usize::MAX, 11, 8, 2)] {
-            let (mut world, meshes) = world(true);
+            let (mut world, meshes) = world(false);
             world.insert_resource(StageTime { current: 5.0 });
             world.insert_resource(cache::MeshTangentCache::with_byte_budget(0));
             world.resource_mut::<ParallelMeshPreparation>().max_jobs = limit;
@@ -842,7 +923,8 @@ mod tests {
                 assert_eq!(serial.resource::<MeshPreparationTiming>().jobs, 0);
                 let timing = parallel.resource::<MeshPreparationTiming>();
                 if pool.thread_num() > 1 {
-                    assert_eq!(timing.jobs as usize, resident_before);
+                    let expected = if gpu { 0 } else { resident_before };
+                    assert_eq!(timing.jobs as usize, expected);
                     assert!(timing.peak_jobs <= 2 && timing.peak_input_bytes <= 4096);
                 }
                 assert_eq!(
@@ -1062,7 +1144,8 @@ def "Copy" (references = @{file}@</Test>) {{}}
                 Some(Value::Token("leftHanded".into()))
             );
             if bevy::tasks::ComputeTaskPool::get().thread_num() > 1 {
-                assert!(parallel.world().resource::<MeshPreparationTiming>().jobs > 0);
+                let jobs = parallel.world().resource::<MeshPreparationTiming>().jobs;
+                assert_eq!(jobs > 0, !gpu);
             }
             assert_eq!(serial.world().resource::<MeshPreparationTiming>().jobs, 0);
             parallel

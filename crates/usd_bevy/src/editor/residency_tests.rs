@@ -239,7 +239,8 @@ fn editor_deferral_preserves_selection_reveal_history_reload_and_replacement() {
             document
         );
         if bevy::tasks::ComputeTaskPool::get().thread_num() > 1 {
-            assert!(deferred.world().resource::<MeshPreparationTiming>().jobs > 0);
+            let jobs = deferred.world().resource::<MeshPreparationTiming>().jobs;
+            assert_eq!(jobs > 0, !gpu);
         }
         let view = command(
             &mut deferred,

@@ -69,23 +69,75 @@ pub(crate) fn deformed_mesh(ctx: &RouteCtx) -> anyhow::Result<Option<crate::read
     deformed_mesh_with_kinds(ctx, skinned, blended)
 }
 
+/// Pre-skin geometry and per-point blended skin matrices. Its MikkTSpace
+/// tangents, carried by those matrices, are the deformed mesh's tangents.
+pub(crate) struct SkinnedTangentSource {
+    pub read: crate::read::geom::ReadMesh,
+    pub matrices: Vec<Mat3>,
+    pub morphed: bool,
+}
+
+type Deformed = (crate::read::geom::ReadMesh, Option<SkinnedTangentSource>);
+
 fn deformed_mesh_with_kinds(
     ctx: &RouteCtx,
     skinned: bool,
     blended: bool,
 ) -> anyhow::Result<Option<crate::read::geom::ReadMesh>> {
+    Ok(deform(ctx, skinned, blended, false)?.map(|(read, _)| read))
+}
+
+/// The deformed mesh plus, for skinned meshes with UVs, its tangent source.
+pub(crate) fn deformed_mesh_with_tangent_source(
+    ctx: &RouteCtx,
+) -> anyhow::Result<Option<Deformed>> {
+    let (skinned, blended) = ctx.prepared_kinds.get().map_or_else(
+        || {
+            (
+                is_skinned(ctx.stage, ctx.path),
+                has_blend_shapes(ctx.stage, ctx.path),
+            )
+        },
+        |kinds| (kinds.skinned, kinds.blended),
+    );
+    deform(ctx, skinned, blended, true)
+}
+
+fn deform(
+    ctx: &RouteCtx,
+    skinned: bool,
+    blended: bool,
+    tangents: bool,
+) -> anyhow::Result<Option<Deformed>> {
     let Some(source) = ctx.read_mesh()? else {
         return Ok(None);
     };
     let sample = if skinned {
         crate::read::skel::cpu_skin_sample(ctx.stage, ctx.path, ctx.time, Some(source))?
-            .map(|sample| (sample.points, Some(sample.normals)))
+            .map(|sample| (sample.points, Some((sample.normals, sample.morphed))))
     } else {
         crate::read::skel::blend_shape_deform(ctx.stage, ctx.path, &source.points, ctx.time)
             .map(|points| (points, None))
     };
-    let Some((points, skin_normals)) = sample else {
+    let Some((points, skin)) = sample else {
         return Ok(None);
+    };
+    let (skin_normals, mut tangent_source) = match skin {
+        Some((normals, morphed)) if tangents && source.uvs.is_some() => {
+            let mut read = source.clone();
+            let morphed_points = morphed.is_some();
+            if let Some(morphed) = morphed {
+                read.triangulation_points = Some(std::mem::replace(&mut read.points, morphed));
+            }
+            let source = SkinnedTangentSource {
+                matrices: normals.tangent_matrices(read.points.len())?,
+                read,
+                morphed: morphed_points,
+            };
+            (Some(normals), Some(source))
+        }
+        Some((normals, _)) => (Some(normals), None),
+        None => (None, None),
     };
     let mut read = source.clone();
     read.triangulation_points = Some(std::mem::replace(&mut read.points, points));
@@ -100,6 +152,9 @@ fn deformed_mesh_with_kinds(
             }
         };
         let (mut normals, points) = crate::read::skel::morph_normals(&read, &sample)?;
+        if let Some(source) = tangent_source.as_mut() {
+            source.read.normals = Some(normals.clone());
+        }
         if let Some(skin) = skin_normals {
             skin.apply(&mut normals, &points, read.points.len())?;
         }
@@ -107,7 +162,7 @@ fn deformed_mesh_with_kinds(
     } else {
         None
     };
-    Ok(Some(read))
+    Ok(Some((read, tangent_source)))
 }
 
 impl PrimRoute for SkinRoute {
@@ -182,8 +237,11 @@ impl PrimRoute for SkinRoute {
             .borrow_mut()
             .take()
             .unwrap_or_else(|| {
-                deformed_mesh_with_kinds(ctx, skinned, blended)
-                    .map(|read| read.map(super::preparation::PreparedDeformation::new))
+                deform(ctx, skinned, blended, true).map(|deformed| {
+                    deformed.map(|(read, source)| {
+                        super::preparation::PreparedDeformation::with_tangent_source(read, source)
+                    })
+                })
             });
         let mut prepared = match prepared {
             Ok(Some(prepared)) => prepared,
@@ -218,6 +276,36 @@ impl PrimRoute for SkinRoute {
 mod tests {
     use super::*;
     use crate::instance::UsdInstances;
+
+    /// Uncached deformed mesh whose tangents are pre-skin MikkTSpace tangents
+    /// carried by each vertex's blended skin matrix.
+    fn reference_mesh(ctx: &RouteCtx) -> Mesh {
+        let (read, source) = deformed_mesh_with_tangent_source(ctx).unwrap().unwrap();
+        let mut mesh = crate::mesh::mesh_from_usd(&read);
+        let Some(source) = source else {
+            return mesh;
+        };
+        let input = crate::mesh::mesh_from_usd(&source.read);
+        let Some(bevy::mesh::VertexAttributeValues::Float32x4(tangents)) =
+            input.attribute(Mesh::ATTRIBUTE_TANGENT)
+        else {
+            mesh.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
+            return mesh;
+        };
+        let skinned: Vec<_> = tangents
+            .iter()
+            .zip(crate::mesh::vertex_point_indices(&read))
+            .map(|(tangent, point)| {
+                let direction = Vec3::from_slice(&tangent[..3]);
+                let value = (source.matrices[point] * direction)
+                    .try_normalize()
+                    .unwrap_or(direction);
+                [value.x, value.y, value.z, tangent[3]]
+            })
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, skinned);
+        mesh
+    }
 
     #[test]
     fn cached_cpu_tangents_follow_unique_clocks_and_mesh_edits() {
@@ -274,8 +362,7 @@ mod tests {
                         .unwrap();
                 }
                 let ctx = RouteCtx::at(&stage, &path, Some(time));
-                let read = deformed_mesh(&ctx).unwrap().unwrap();
-                let expected = crate::mesh::mesh_from_usd(&read);
+                let expected = reference_mesh(&ctx);
                 for _ in 0..3 {
                     SkinRoute.project(&ctx, &mut world, entity);
                     assert_eq!(world.get::<UsdCpuSkinFallback>(entity).is_some(), gpu);

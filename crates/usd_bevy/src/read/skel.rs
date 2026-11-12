@@ -22,7 +22,32 @@ pub mod access_profile;
 
 use super::util::{read_float_vec, read_rel_first_target};
 
-type PoseKey = (Path, Option<Path>, Option<u64>);
+type PoseKey = (PoseSource, Option<u64>);
+
+/// A composed spec: its layer, its path there and the time offset and scale
+/// that reach it.
+type SpecKey = (openusd::sdf::LayerHandle, Path, [u64; 2]);
+
+/// What decides a skeleton's pose: the composed specs of the skeleton and its
+/// animation, so copies referencing the same data share one evaluation.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum PoseSource {
+    Specs(Vec<SpecKey>, Option<Vec<SpecKey>>),
+    Paths(Path, Option<Path>),
+}
+
+fn spec_stack(stage: &Stage, path: &Path) -> Option<Vec<SpecKey>> {
+    let stack = stage.prim(path.clone()).ok()?.prim_stack().ok()?;
+    Some(
+        stack
+            .into_iter()
+            .map(|site| {
+                let offset = [site.offset.offset.to_bits(), site.offset.scale.to_bits()];
+                (site.layer, site.path, offset)
+            })
+            .collect(),
+    )
+}
 
 struct RelationshipSamples {
     answers: std::collections::HashMap<(Path, &'static str), Option<String>>,
@@ -66,6 +91,7 @@ struct SkelSamples {
     skeletons: std::collections::HashMap<Path, Option<Rc<SkeletonQuery>>>,
     animations: std::collections::HashMap<Path, Option<Rc<AnimQuery>>>,
     poses: std::collections::HashMap<PoseKey, Option<Vec<gf::Mat4d>>>,
+    sources: std::collections::HashMap<(Path, Option<Path>), PoseSource>,
     binding: Option<(Path, Option<std::rc::Rc<BoundSkin>>)>,
     relationships: RelationshipSamples,
 }
@@ -85,6 +111,7 @@ impl SkelSampleScope {
                 skeletons: Default::default(),
                 animations: Default::default(),
                 poses: Default::default(),
+                sources: Default::default(),
                 binding: None,
                 relationships: Default::default(),
             }))
@@ -959,12 +986,31 @@ fn resolve_bound_skin(stage: &Stage, mesh_path: &Path) -> anyhow::Result<Option<
 impl BoundSkin {
     /// Skinning transforms at `time` in skeleton joint order, or `None` when
     /// the skeleton has no bind pose.
+    fn pose_source(&self) -> PoseSource {
+        let paths = (self.skeleton_path.clone(), self.animation_path.clone());
+        if let Some(source) =
+            with_samples(&self.stage, |cache| cache.sources.get(&paths).cloned()).flatten()
+        {
+            return source;
+        }
+        let skeleton = spec_stack(&self.stage, &self.skeleton_path);
+        let animation = self
+            .animation_path
+            .as_ref()
+            .map(|path| spec_stack(&self.stage, path));
+        let source = match (skeleton, animation) {
+            (Some(skeleton), None) => PoseSource::Specs(skeleton, None),
+            (Some(skeleton), Some(Some(animation))) => PoseSource::Specs(skeleton, Some(animation)),
+            _ => PoseSource::Paths(paths.0.clone(), paths.1.clone()),
+        };
+        with_samples(&self.stage, |cache| {
+            cache.sources.insert(paths, source.clone());
+        });
+        source
+    }
+
     fn pose_transforms(&self, time: Option<f64>) -> anyhow::Result<Option<Vec<gf::Mat4d>>> {
-        let key = (
-            self.skeleton_path.clone(),
-            self.animation_path.clone(),
-            time.map(f64::to_bits),
-        );
+        let key = (self.pose_source(), time.map(f64::to_bits));
         if let Some(value) =
             with_samples(&self.stage, |cache| cache.poses.get(&key).cloned()).flatten()
         {
@@ -2036,6 +2082,66 @@ def SkelRoot "Root"
                 "{point:?} != {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn referenced_copies_share_pose_evaluations_by_composed_specs() {
+        let text = r#"#usda 1.0
+def SkelRoot "Template" {
+    def Skeleton "Skel" {
+        uniform token[] joints = ["Root"]
+        uniform matrix4d[] bindTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        uniform matrix4d[] restTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        rel skel:animationSource = </Template/Anim>
+    }
+    def SkelAnimation "Anim" {
+        uniform token[] joints = ["Root"]
+        float3[] translations.timeSamples = {0: [(0,0,0)], 10: [(10,0,0)]}
+        quatf[] rotations = [(1,0,0,0)]
+        half3[] scales = [(1,1,1)]
+    }
+    def Mesh "Bar" (prepend apiSchemas = ["SkelBindingAPI"]) {
+        rel skel:skeleton = </Template/Skel>
+        int[] primvars:skel:jointIndices = [0, 0, 0] (elementSize = 1 interpolation = "vertex")
+        float[] primvars:skel:jointWeights = [1, 1, 1] (elementSize = 1 interpolation = "vertex")
+        point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }
+}
+def "A" (prepend references = </Template>) {}
+def "B" (prepend references = </Template>) {}
+def "Late" (prepend references = </Template> (offset = 5)) {}
+def "Edited" (prepend references = </Template>) {
+    over "Anim" { float3[] translations.timeSamples = {0: [(0,0,0)], 10: [(0,10,0)]} }
+}
+"#;
+        let stage = crate::UsdSource::new("copies.usda", text.as_bytes())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let pose = |mesh: &str| {
+            bound_skin(&stage, &openusd::sdf::path(mesh).unwrap())
+                .unwrap()
+                .unwrap()
+                .pose_transforms(Some(5.0))
+                .unwrap()
+                .unwrap()
+        };
+        let unshared: Vec<_> = ["/A/Bar", "/Late/Bar", "/Edited/Bar"].map(pose).to_vec();
+        let scope = SkelSampleScope::begin(&stage);
+        let shared = ["/A/Bar", "/B/Bar", "/Late/Bar", "/Edited/Bar"].map(pose);
+        assert_eq!(with_samples(&stage, |cache| cache.poses.len()), Some(3));
+        drop(scope);
+        assert_eq!(shared[0], shared[1]);
+        assert_eq!(
+            [&shared[0], &shared[2], &shared[3]]
+                .map(Clone::clone)
+                .to_vec(),
+            unshared
+        );
+        assert_ne!(shared[0], shared[2]);
+        assert_ne!(shared[0], shared[3]);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Bounded root-local animation classification for the current composition.
 
-use crate::live::{LiveStage, prim_is_animated};
+use crate::live::{LiveStage, animated_only_by_deformation, prim_is_animated};
 use openusd::{sdf::Path, usd::Stage};
 use std::collections::HashMap;
 
@@ -30,9 +30,26 @@ impl Revision {
     }
 }
 
+/// Whether a prim animates, and whether only its deformation does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Animation {
+    pub animated: bool,
+    pub deformation_only: bool,
+}
+
+impl Animation {
+    fn classify(stage: &Stage, path: &Path) -> Self {
+        let animated = prim_is_animated(stage, path);
+        Self {
+            animated,
+            deformation_only: animated && animated_only_by_deformation(stage, path),
+        }
+    }
+}
+
 pub(crate) struct AnimationCache {
     revision: Option<Revision>,
-    entries: HashMap<Path, bool>,
+    entries: HashMap<Path, Animation>,
     path_bytes: usize,
     max_paths: usize,
     max_path_bytes: usize,
@@ -57,7 +74,12 @@ impl AnimationCache {
         self.path_bytes = 0;
     }
 
-    pub(super) fn sample(&mut self, live: &LiveStage, path: &Path, retain: bool) -> (bool, bool) {
+    pub(super) fn sample(
+        &mut self,
+        live: &LiveStage,
+        path: &Path,
+        retain: bool,
+    ) -> (Animation, bool) {
         let revision = retain.then(|| Revision::read(live)).flatten();
         if self.revision != revision || revision.is_none() {
             self.clear();
@@ -66,7 +88,7 @@ impl AnimationCache {
         if let Some(&animated) = self.entries.get(path) {
             return (animated, true);
         }
-        let animated = prim_is_animated(&live.stage, path);
+        let animated = Animation::classify(&live.stage, path);
         if self.revision.is_some() {
             if Revision::read(live) != self.revision {
                 self.clear();
@@ -103,8 +125,19 @@ mod tests {
             cache.entries,
             live.stage.layer_identifiers()
         );
-        assert_eq!(cache.sample(live, &path, true).0, expected, "cached {name}");
-        assert_eq!(cache.sample(live, &path, true), (expected, true));
+        assert_eq!(
+            cache.sample(live, &path, true).0.animated,
+            expected,
+            "cached {name}"
+        );
+        assert_eq!(
+            cache.sample(live, &path, true),
+            (Animation::classify(&live.stage, &path), true)
+        );
+    }
+
+    fn animated((animation, cached): (Animation, bool)) -> (bool, bool) {
+        (animation.animated, cached)
     }
 
     #[test]
@@ -145,7 +178,7 @@ mod tests {
             for path in paths.iter().rev().chain(&paths) {
                 assert_eq!(
                     cache.sample(&live, path, true),
-                    (prim_is_animated(&live.stage, path), true)
+                    (Animation::classify(&live.stage, path), true)
                 );
             }
         }
@@ -178,7 +211,7 @@ mod tests {
         live.try_drain_changes().unwrap();
         assert!(live.composition_revision() > revision);
         assert_eq!(
-            cache.sample(&live, &openusd::sdf::path("/Box").unwrap(), true),
+            animated(cache.sample(&live, &openusd::sdf::path("/Box").unwrap(), true)),
             (true, false)
         );
         check(&mut cache, &live, "/Box", true);
@@ -189,7 +222,7 @@ mod tests {
             .unwrap();
         live.try_drain_changes().unwrap();
         assert_eq!(
-            cache.sample(&live, &openusd::sdf::path("/Box").unwrap(), true),
+            animated(cache.sample(&live, &openusd::sdf::path("/Box").unwrap(), true)),
             (false, false)
         );
         check(&mut cache, &live, "/Box", false);
@@ -302,7 +335,7 @@ def Material "Mat" {
             for _ in 0..3 {
                 for name in ["/A", "/B"] {
                     let path = openusd::sdf::path(name).unwrap();
-                    assert!(!cache.sample(&live, &path, true).0);
+                    assert!(!cache.sample(&live, &path, true).0.animated);
                     assert!(cache.entries.len() <= max_paths);
                     assert!(cache.path_bytes <= max_path_bytes);
                 }

@@ -525,7 +525,12 @@ impl SchemaRegistry {
         });
         let Some(pool) = pool else {
             for (path, entity) in prims {
-                self.patch_prim(stage, &path, world, entity, &[]);
+                let ctx = RouteCtx::at(stage, &path, time_of(world));
+                if world.contains_resource::<MeshReadTiming>() {
+                    ctx.read_timing.set(Some(MeshReadTiming::default()));
+                }
+                self.apply_animation_routes(&ctx, world, entity);
+                ctx.report_read_timing(world);
             }
             return;
         };
@@ -550,10 +555,35 @@ impl SchemaRegistry {
                 let count = preparation::prepare_batch(&contexts[offset..], world, pool, settings);
                 assert!(count > 0);
                 for (ctx, entity) in &contexts[offset..offset + count] {
-                    self.apply_routes(ctx, world, *entity, Some(&[]));
+                    self.apply_animation_routes(ctx, world, *entity);
                     ctx.report_read_timing(world);
                 }
                 offset += count;
+            }
+        }
+    }
+
+    /// One animation resample. A resident deformation-only mesh runs just the
+    /// deformation routes; every other prim reapplies all routes.
+    fn apply_animation_routes(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
+        let deformation_only = self.builtin_only
+            && world
+                .get::<crate::live::DeformationOnlyAnimation>(entity)
+                .is_some()
+            && world.get::<residency::UsdDeferredMesh>(entity).is_none()
+            && !residency::should_defer(ctx, world, entity);
+        if !deformation_only {
+            self.apply_routes(ctx, world, entity, Some(&[]));
+            return;
+        }
+        let deformation = [
+            skel::SkinRoute.name(),
+            subdivision::SubdivisionRoute.name(),
+            subset::SubsetRoute.name(),
+        ];
+        for route in &self.routes {
+            if deformation.contains(&route.name()) {
+                run_route(route.as_ref(), ctx, world, entity, Some(&[]));
             }
         }
     }

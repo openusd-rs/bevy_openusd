@@ -572,6 +572,104 @@ mod tests {
     }
 
     #[test]
+    fn resampled_deformation_only_instances_match_fresh_projection() {
+        use crate::instance::{UsdInstanceTime, UsdInstances};
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/skel_morph_subsets.usda"
+        );
+        for gpu in [false, true] {
+            let source = crate::UsdSource::new(file, std::fs::read(file).unwrap()).unwrap();
+            let mut app = App::new();
+            app.add_plugins((
+                MinimalPlugins,
+                bevy::asset::AssetPlugin::default(),
+                crate::UsdPlugin,
+                crate::UsdAssetPlugin,
+            ));
+            app.init_resource::<Assets<Mesh>>();
+            app.init_resource::<Assets<StandardMaterial>>();
+            app.init_resource::<Assets<SkinnedMeshInverseBindposes>>();
+            if gpu {
+                app.init_resource::<GpuSkinningEnabled>();
+            }
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
+            let handle = app
+                .world_mut()
+                .resource_mut::<Assets<crate::UsdScene>>()
+                .add(crate::UsdScene {
+                    source,
+                    textures: default(),
+                });
+            let root = |app: &mut App, current| {
+                app.world_mut()
+                    .spawn((
+                        crate::UsdSceneRoot(handle.clone()),
+                        UsdInstanceTime { current },
+                    ))
+                    .id()
+            };
+            let moving = root(&mut app, 0.0);
+            app.update();
+            for current in [15.0, 45.0] {
+                app.world_mut()
+                    .get_mut::<UsdInstanceTime>(moving)
+                    .unwrap()
+                    .current = current;
+                app.update();
+            }
+            let fresh = root(&mut app, 45.0);
+            app.update();
+            let face = |world: &World, root| {
+                world
+                    .get_non_send::<UsdInstances>()
+                    .unwrap()
+                    .entity(root, "/Test/Bar")
+                    .unwrap()
+            };
+            let (a, b) = (face(app.world(), moving), face(app.world(), fresh));
+            let world = app.world();
+            assert!(
+                world
+                    .get::<crate::live::DeformationOnlyAnimation>(a)
+                    .is_some()
+            );
+            let mesh = |entity| {
+                world
+                    .resource::<Assets<Mesh>>()
+                    .get(&world.get::<Mesh3d>(entity).unwrap().0)
+                    .unwrap()
+            };
+            let (ma, mb) = (mesh(a), mesh(b));
+            assert_eq!(ma.get_index_buffer_bytes(), mb.get_index_buffer_bytes());
+            assert_eq!(ma.attributes().count(), mb.attributes().count());
+            for (attribute, values) in mb.attributes() {
+                assert_eq!(
+                    ma.attribute(attribute.id).unwrap().get_bytes(),
+                    values.get_bytes(),
+                    "gpu={gpu} {}",
+                    attribute.name
+                );
+            }
+            assert_eq!(
+                world.get::<UsdGpuSkin>(a).map(|skin| &skin.matrices),
+                world.get::<UsdGpuSkin>(b).map(|skin| &skin.matrices)
+            );
+            let color = |entity| {
+                let material = &world.get::<MeshMaterial3d<StandardMaterial>>(entity)?.0;
+                Some(
+                    world
+                        .resource::<Assets<StandardMaterial>>()
+                        .get(material)?
+                        .base_color,
+                )
+            };
+            assert_eq!(color(a), color(b));
+            assert!(color(a).is_some());
+        }
+    }
+
+    #[test]
     fn influence_only_animation_updates_independent_gpu_instances() {
         use crate::instance::{UsdInstanceTime, UsdInstances};
         let source = crate::UsdSource::new(

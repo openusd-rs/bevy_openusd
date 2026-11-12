@@ -661,16 +661,36 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
                         return None;
                     }
                     let begin = started.map(|_| bevy::platform::time::Instant::now());
-                    let (varying, cached) =
+                    let (sample, cached) =
                         runtime.animation.sample(&runtime.live, &path, cacheable);
                     if let Some(begin) = begin {
                         classified += u64::from(!cached);
                         reused += u64::from(cached);
-                        animated += u64::from(varying);
+                        animated += u64::from(sample.animated);
                         classification += begin.elapsed();
                     }
-                    varying.then_some((path, entity))
+                    sample
+                        .animated
+                        .then_some((path, entity, sample.deformation_only))
                 });
+                if !cacheable {
+                    let prims = prims.map(|(path, entity, _)| (path, entity));
+                    registry.patch_animation(&runtime.live.stage, prims, world);
+                    return;
+                }
+                let prims: Vec<_> = prims.collect();
+                for (_, entity, deformation_only) in &prims {
+                    let Ok(mut entity) = world.get_entity_mut(*entity) else {
+                        continue;
+                    };
+                    let marked = entity.contains::<crate::live::DeformationOnlyAnimation>();
+                    if *deformation_only && !marked {
+                        entity.insert(crate::live::DeformationOnlyAnimation);
+                    } else if !*deformation_only && marked {
+                        entity.remove::<crate::live::DeformationOnlyAnimation>();
+                    }
+                }
+                let prims = prims.into_iter().map(|(path, entity, _)| (path, entity));
                 registry.patch_animation(&runtime.live.stage, prims, world);
             });
             if let Some(started) = started {

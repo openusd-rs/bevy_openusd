@@ -76,6 +76,19 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Flat tangent-group membership fails the real-asset gate:** an isolated
+  MikkTSpace arena preserves output bits across 3,474 finite comparisons and
+  22,876 real tangent jobs. Both release dependency configurations pass the
+  same 743 library tests (25 ignored). Six synthetic cases reduce allocation
+  calls and peak live requested storage, but eight real-asset processes miss
+  the cow 5% kernel target (4.9644%) and exceed both 5% process-memory limits
+  (cow +7.22%, bird +10.33%). The [arena report](benchmarks/tangent-group-arena.md)
+  preserves timings, source replay, negative controls and all failures. A
+  sparse-UV diagnostic proves unused arena reservation; it does not establish
+  the cause of the RSS increase. Address membership occupancy and process
+  memory before another candidate; do not adopt or rerun this source unchanged.
+  Production runtime/dependencies and all broader acceptance gaps are unchanged.
+
 - **Integrated query reuse fails performance acceptance:** 48 editor processes
   verify 48,000 measured updates, 192 warmups, identical payload/work counts,
   correct clocks and bounded real cache use. Bird/cow reuse every measured query

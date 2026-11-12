@@ -21,6 +21,8 @@ struct Geometry {
     faces: Vec<Vec<usize>>,
     written: Vec<Vec<Option<Option<TangentBits>>>>,
     reads: std::cell::RefCell<Option<Vec<[usize; 3]>>>,
+    normal_mode: usize,
+    normal_calls: std::cell::Cell<usize>,
 }
 
 impl Geometry {
@@ -32,6 +34,8 @@ impl Geometry {
             faces,
             written,
             reads: std::cell::RefCell::new(None),
+            normal_mode: 0,
+            normal_calls: std::cell::Cell::new(0),
         }
     }
     fn trace(&self, kind: usize, face: usize, corner: usize) {
@@ -41,6 +45,29 @@ impl Geometry {
     }
     fn vertex(&self, face: usize, corner: usize) -> Vertex {
         self.vertices[self.faces[face][corner]]
+    }
+    fn normal(&self, face: usize, corner: usize) -> [f32; 3] {
+        let base = self.vertex(face, corner).normal;
+        if self.normal_mode == 0 {
+            return base;
+        }
+        let call = self.normal_calls.get();
+        self.normal_calls.set(call + 1);
+        match self.normal_mode {
+            1 => [if call.is_multiple_of(2) { 0.0 } else { -0.0 }, 0.0, 1.0],
+            2 => match (call / 3) % 3 {
+                0 => base,
+                1 => [0.0, 1.0, 0.0],
+                _ => [1.0, 0.0, 0.0],
+            },
+            3 => match (call / 17) % 4 {
+                0 => base,
+                1 => [0.0, 0.0, -1.0],
+                2 => [0.0, 1.0, 0.0],
+                _ => [-0.0, 0.0, 1.0],
+            },
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -62,7 +89,7 @@ macro_rules! adapter {
             }
             fn normal(&self, face: usize, corner: usize) -> [f32; 3] {
                 self.0.trace(3, face, corner);
-                self.0.vertex(face, corner).normal
+                self.0.normal(face, corner)
             }
             fn tex_coord(&self, face: usize, corner: usize) -> [f32; 2] {
                 self.0.trace(4, face, corner);
@@ -357,6 +384,13 @@ fn main() {
                 expanded(mesh, true),
                 &mut counts,
             );
+        }
+    }
+    for mode in 1..=3 {
+        for size in [3, 17, 64] {
+            let mut mesh = fan(size, false, 0.2);
+            mesh.normal_mode = mode;
+            compare(&format!("changing-normal-{mode}-{size}"), mesh, &mut counts);
         }
     }
     let square = fan(4, false, 0.0);

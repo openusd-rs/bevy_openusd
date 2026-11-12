@@ -76,6 +76,34 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Sustained-block identical-editor controls fail:** twenty original-editor
+  processes complete 20,000 updates and 80 warmups with exact paired clocks,
+  payloads, work and animation operations; all exit zero without diagnostics.
+  Fifteen of twenty declared timing strata fail. All eight bird/cow median
+  ratios meet 1%, but three heavy-workload tails fail 5%; every light-workload
+  stratum fails. The [control report](benchmarks/editor-block-results.md)
+  retains source/executable/asset verification, default affinity, host load,
+  raw samples and four passing negative controls. No candidate editor is built
+  or adopted. Investigate scheduling/environment stability before another
+  elapsed comparison, without rerunning unchanged or loosening limits; keep
+  independent packaging, native, lifecycle and browser work open.
+
+- **Normal-keyed tangent reuse passes its declared kernel gate:** an isolated
+  streamed-group candidate preserves every geometry read while reusing projected
+  pairs for exact current-normal bits and temporary subgroup membership storage.
+  All 3,528 finite cases and 11,802,154 callback events match; a deliberately
+  stale normal memo is rejected. Allocation/sparse-UV checks, strict dependency
+  lint/no-std compilation and 743 library tests in each dependency configuration
+  pass (25 ignored). Eight real-asset processes preserve output digests/work
+  across 22,876 jobs. Cow/bird medians improve 17.16% / 22.44%, passing the
+  declared 10% cow target; mean peak RSS changes +2.69% / -1.29% pass. Cow p95
+  increases 19.93% and remains an integration risk. The
+  [memo report](benchmarks/tangent-normal-memo.md) retains all evidence and
+  negative controls. Sustained-block whole-editor controls also fail, so this
+  source remains isolated; do not reinterpret failed controls or claim FPS.
+  Production is unchanged; packaging, native, lifecycle,
+  browser and full-workstream acceptance remain open.
+
 - **Streamed tangent groups pass resource checks but miss elapsed acceptance:**
   an isolated replacement processes one completed group at a time. The corpus
   matches 3,474 cases and 11,729,458 geometry callbacks in order; sparse-UV

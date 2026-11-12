@@ -379,7 +379,8 @@ fn paired_editors_preserve_payloads_and_disable_only_serial_preparation() {
             0
         );
         if bevy::tasks::ComputeTaskPool::get().thread_num() > 1 {
-            assert!(batched.app.world().resource::<MeshPreparationTiming>().jobs > 0);
+            let jobs = batched.app.world().resource::<MeshPreparationTiming>().jobs;
+            assert_eq!(jobs > 0, !gpu);
         }
     }
 }

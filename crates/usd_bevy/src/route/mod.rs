@@ -581,12 +581,16 @@ impl SchemaRegistry {
     /// One animation resample. A resident deformation-only mesh runs just the
     /// deformation routes; every other prim reapplies all routes.
     fn apply_animation_routes(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        let deformation_only = self.builtin_only
+        let marked = self.builtin_only
             && world
                 .get::<crate::live::DeformationOnlyAnimation>(entity)
-                .is_some()
-            && world.get::<residency::UsdDeferredMesh>(entity).is_none()
-            && !residency::should_defer(ctx, world, entity);
+                .is_some();
+        let deferred = world.get::<residency::UsdDeferredMesh>(entity).is_some();
+        let hidden = marked && residency::should_defer(ctx, world, entity);
+        if marked && deferred && hidden {
+            return;
+        }
+        let deformation_only = marked && !deferred && !hidden;
         if !deformation_only {
             self.apply_routes(ctx, world, entity, Some(&[]));
             return;

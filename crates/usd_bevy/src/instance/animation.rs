@@ -47,9 +47,14 @@ impl Animation {
     }
 }
 
+/// Animated prims of a root map with whether only their deformation animates.
+pub(super) type AnimatedPrims = Vec<(Path, bevy::prelude::Entity, bool)>;
+
 pub(crate) struct AnimationCache {
     revision: Option<Revision>,
     entries: HashMap<Path, Animation>,
+    animated: Option<(usize, AnimatedPrims)>,
+    classified: u64,
     path_bytes: usize,
     max_paths: usize,
     max_path_bytes: usize,
@@ -60,6 +65,8 @@ impl Default for AnimationCache {
         Self {
             revision: None,
             entries: HashMap::new(),
+            animated: None,
+            classified: 0,
             path_bytes: 0,
             max_paths: 65_536,
             max_path_bytes: 8 * 1024 * 1024,
@@ -71,7 +78,34 @@ impl AnimationCache {
     fn clear(&mut self) {
         self.revision = None;
         self.entries = HashMap::new();
+        self.animated = None;
         self.path_bytes = 0;
+    }
+
+    /// Validates retained classifications against the current composition;
+    /// without `retain` every later lookup classifies afresh.
+    pub(super) fn begin(&mut self, live: &LiveStage, retain: bool) {
+        let revision = retain.then(|| Revision::read(live)).flatten();
+        if self.revision != revision || revision.is_none() {
+            self.clear();
+            self.revision = revision;
+        }
+    }
+
+    fn lookup(&mut self, stage: &Stage, path: &Path) -> (Animation, bool) {
+        if let Some(&animated) = self.entries.get(path) {
+            return (animated, true);
+        }
+        let animated = Animation::classify(stage, path);
+        if self.revision.is_some()
+            && self.entries.len() < self.max_paths
+            && let Some(bytes) = self.path_bytes.checked_add(path.as_str().len())
+            && bytes <= self.max_path_bytes
+        {
+            self.entries.insert(path.clone(), animated);
+            self.path_bytes = bytes;
+        }
+        (animated, false)
     }
 
     pub(super) fn sample(
@@ -80,27 +114,45 @@ impl AnimationCache {
         path: &Path,
         retain: bool,
     ) -> (Animation, bool) {
-        let revision = retain.then(|| Revision::read(live)).flatten();
-        if self.revision != revision || revision.is_none() {
-            self.clear();
-            self.revision = revision;
+        self.begin(live, retain);
+        self.lookup(&live.stage, path)
+    }
+
+    /// Animated prims of `map`, reclassified only after [`Self::begin`] sees
+    /// a composition change; `counts` receives fresh and reused lookups.
+    pub(super) fn animated_prims(
+        &mut self,
+        stage: &Stage,
+        map: &crate::live::PrimEntities,
+        counts: &mut [u64; 2],
+    ) -> AnimatedPrims {
+        if self.revision.is_some()
+            && let Some((len, prims)) = &self.animated
+            && *len == map.len()
+        {
+            counts[1] += self.classified;
+            return prims.clone();
         }
-        if let Some(&animated) = self.entries.get(path) {
-            return (animated, true);
-        }
-        let animated = Animation::classify(&live.stage, path);
+        let before = counts[0] + counts[1];
+        let prims: AnimatedPrims = map
+            .iter()
+            .filter_map(|(path, entity)| {
+                let path = openusd::sdf::path(path).ok()?;
+                if path.as_str() == "/" {
+                    return None;
+                }
+                let (animation, cached) = self.lookup(stage, &path);
+                counts[usize::from(cached)] += 1;
+                animation
+                    .animated
+                    .then_some((path, entity, animation.deformation_only))
+            })
+            .collect();
         if self.revision.is_some() {
-            if Revision::read(live) != self.revision {
-                self.clear();
-            } else if self.entries.len() < self.max_paths
-                && let Some(bytes) = self.path_bytes.checked_add(path.as_str().len())
-                && bytes <= self.max_path_bytes
-            {
-                self.entries.insert(path.clone(), animated);
-                self.path_bytes = bytes;
-            }
+            self.classified = counts[0] + counts[1] - before;
+            self.animated = Some((map.len(), prims.clone()));
         }
-        (animated, false)
+        prims
     }
 }
 
@@ -182,6 +234,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn animated_prim_lists_are_reused_until_composition_changes() {
+        let live = LiveStage::new(
+            source(
+                "#usda 1.0\ndef Sphere \"A\" { double radius = 1 }\ndef Sphere \"B\" { double radius.timeSamples = {0: 1, 10: 2} }\n",
+            )
+            .open_stage()
+            .unwrap(),
+        );
+        let mut world = World::new();
+        let mut map = crate::live::PrimEntities::default();
+        for path in ["/", "/A", "/B"] {
+            map.insert(path, world.spawn_empty().id());
+        }
+        let names = |prims: AnimatedPrims| {
+            let mut names: Vec<_> = prims
+                .iter()
+                .map(|(path, _, _)| path.as_str().to_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let mut cache = AnimationCache::default();
+        let mut counts = [0; 2];
+        for reused in [0, 2] {
+            cache.begin(&live, true);
+            assert_eq!(
+                names(cache.animated_prims(&live.stage, &map, &mut counts)),
+                ["/B"]
+            );
+            assert_eq!(counts, [2, reused]);
+        }
+        live.stage
+            .attribute("/A.radius")
+            .unwrap()
+            .set_at(Value::Double(2.0), TimeCode::new(5.0))
+            .unwrap();
+        live.try_drain_changes().unwrap();
+        cache.begin(&live, true);
+        assert_eq!(
+            names(cache.animated_prims(&live.stage, &map, &mut counts)),
+            ["/A", "/B"]
+        );
+        assert_eq!(counts, [4, 2]);
     }
 
     #[test]

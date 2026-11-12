@@ -228,8 +228,7 @@ fn real_asset_tangent_kernel() -> anyhow::Result<()> {
     })?;
     paths.retain(|path| crate::live::prim_is_animated(&stage, path));
     paths.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    let mut world = World::new();
-    world.init_resource::<super::super::gpu_skin::GpuSkinningEnabled>();
+    let world = World::new();
     let pool = bevy::tasks::TaskPoolBuilder::new()
         .num_threads(WORKERS)
         .build();
@@ -322,9 +321,11 @@ fn inputs(
             let context = RouteCtx::at(stage, path, Some(clock));
             let mesh_prim = context.type_name.as_deref() == Some("Mesh");
             let mesh = if needs_deformation(&context, world, &mut None) {
-                let read = super::super::skel::deformed_mesh(&context)?
-                    .ok_or_else(|| anyhow::anyhow!("missing deformation for {path}"))?;
-                Some(PreparedDeformation::new(read).mesh)
+                let (read, source) =
+                    super::super::skel::deformed_mesh_with_tangent_source(&context)?
+                        .ok_or_else(|| anyhow::anyhow!("missing deformation for {path}"))?;
+                let prepared = PreparedDeformation::with_tangent_source(read, source);
+                Some(prepared.tangent_input().clone())
             } else {
                 None
             };
@@ -347,8 +348,7 @@ fn paired_probe_matches_serial_tangents_and_bounds_sparse_and_oversized_batches(
     .open_stage()
     .unwrap();
     let path = openusd::sdf::path("/Test/Face").unwrap();
-    let mut world = World::new();
-    world.init_resource::<super::super::gpu_skin::GpuSkinningEnabled>();
+    let world = World::new();
     let pool = bevy::tasks::TaskPoolBuilder::new()
         .num_threads(WORKERS)
         .build();
@@ -431,8 +431,7 @@ fn real_asset_paired_tangent_scheduling() -> anyhow::Result<()> {
     })?;
     paths.retain(|path| crate::live::prim_is_animated(&stage, path));
     paths.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    let mut world = World::new();
-    world.init_resource::<super::super::gpu_skin::GpuSkinningEnabled>();
+    let world = World::new();
     let pool = bevy::tasks::TaskPoolBuilder::new()
         .num_threads(WORKERS)
         .build();

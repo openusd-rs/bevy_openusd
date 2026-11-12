@@ -42,13 +42,17 @@ UDIM tiles. All seven rendered with `cargo run --example gif_frames`.
 
 ## Use it in Bevy
 
+For the current local, unpushed checkout, put these paths in your consuming
+workspace's root `Cargo.toml` (adjust the sibling checkout path):
+
 ```toml
 [dependencies]
-bevy = "0.20.1"
-usd_bevy = { git = "https://github.com/openusd-rs/bevy_openusd" }
+bevy = "=0.20.1"
+usd_bevy = { path = "../bevy_openusd/crates/usd_bevy" }
 
 [patch.crates-io]
-bevy_asset = { git = "https://github.com/openusd-rs/bevy_openusd" }
+bevy_asset = { path = "../bevy_openusd/vendor/bevy_asset" }
+bevy_pbr = { path = "../bevy_openusd/vendor/bevy_pbr" }
 ```
 
 ```rust
@@ -70,7 +74,13 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 ```
 
 The `bevy_asset` patch keeps loads of one source in order, so an older snapshot
-never lands after a newer one.
+never lands after a newer one. The `bevy_pbr` patch preserves morph descriptors
+when meshes first become visible or are revealed again. **Both patches are
+required in your workspace root**; Cargo does not inherit this repository's
+patch table through the `usd_bevy` dependency. Keep the library and both patches
+on the same checkout/revision. These local changes are not available through a
+published release. See the [standalone consumer fixture](benchmarks/downstream-consumer/README.md)
+for integration checks and the remaining rendering/platform limits.
 
 ## usdview
 

@@ -76,6 +76,36 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Standalone consumer configuration is exercised:** the README now includes
+  both required consumer-root Bevy overrides, including the previously omitted
+  PBR morph repair, using the unpushed local checkout rather than implying a
+  published fix. An independent workspace resolves one patched Bevy 0.20.1
+  graph and official OpenUSD, with no viewer/Mara dependency or feature
+  unification. Real manifests missing either patch resolve the registry crate
+  and are rejected. Three public-API integration tests pass with no optional
+  features and again with all features; strict consumer Clippy passes. They
+  cover independent clocks, shared geometry, identity-preserving reload,
+  visible failure with last-good retention, repair, ownership cleanup and
+  ordered source loads. The [consumer report](benchmarks/downstream-integration.md)
+  retains fixture corrections and limits. Patches still must be configured by
+  consumers; downstream GPU/native/browser, existing applications, package/
+  release and full lifecycle/performance acceptance remain open. The tangent
+  candidate remains isolated and production runtime/dependency pins unchanged.
+
+- **Block scheduler diagnostic narrows the control instability:** twenty
+  unchanged-editor processes preserve 20,000 updates, 80 warmups and exact
+  payload/work counts. The analyzer validates 916 snapshots of 25 threads;
+  main-thread migration occurs in 424 of 428 observed measured blocks. Main
+  CPU execution occupies 88.58-99.24% of migrating groups' external windows,
+  but endpoint snapshots cannot attribute CPU-class residency or frequency/
+  cache effects. Runqueue accounting is disabled and remains unavailable,
+  not zero. Fourteen instrumented timing strata still fail. The
+  [diagnostic report](benchmarks/editor-scheduler-results.md) records all raw
+  evidence, eight passing tests, socket-input harness correction, negative
+  controls and intact default affinity. Match sustained-block main-thread
+  placement or sample within-block residency before interpreting another
+  elapsed comparison; no candidate adoption or broader completion follows.
+
 - **Sustained-block identical-editor controls fail:** twenty original-editor
   processes complete 20,000 updates and 80 warmups with exact paired clocks,
   payloads, work and animation operations; all exit zero without diagnostics.

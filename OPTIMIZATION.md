@@ -76,6 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Stage-owned query reuse is connected in an isolated viewer candidate:**
+  built-in projection shares bounded animation queries across passes. Metadata
+  accounting includes slot records, paths and ordering capacities; fresh order
+  comparisons preserve edits, load/mute changes and reload. Nine new tests cover
+  admission boundaries, reentry, lifecycle and nested custom-registry bypass.
+  Library feature configurations pass 760 / 752 overlapping tests with 34 / 25
+  existing ignored cases; strict library Clippy and workspace compilation pass.
+  A fresh patch replay matches all twelve upstream and five viewer files.
+  The [owner report](benchmarks/stage-animation-queries.md) records limits,
+  exclusions, source identities and failed fixture compiles. Main runtime and
+  dependency pins remain unchanged. Next measure integrated editor performance,
+  resource use and rendered behavior against the original dependency, retaining
+  the unresolved default-path, borrowed-source and broader acceptance gates.
+
 - **Budgeted animation schema API passes:** opt-in `AnimQuery::with_budget`
   preserves typed arrays and matrix construction while sharing bounded source
   storage. Eight new semantic tests cover edits, order snapshots, clones,

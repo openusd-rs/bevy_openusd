@@ -76,6 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Block scheduler diagnostic narrows the control instability:** twenty
+  unchanged-editor processes preserve 20,000 updates, 80 warmups and exact
+  payload/work counts. The analyzer validates 916 snapshots of 25 threads;
+  main-thread migration occurs in 424 of 428 observed measured blocks. Main
+  CPU execution occupies 88.58-99.24% of migrating groups' external windows,
+  but endpoint snapshots cannot attribute CPU-class residency or frequency/
+  cache effects. Runqueue accounting is disabled and remains unavailable,
+  not zero. Fourteen instrumented timing strata still fail. The
+  [diagnostic report](benchmarks/editor-scheduler-results.md) records all raw
+  evidence, eight passing tests, socket-input harness correction, negative
+  controls and intact default affinity. Match sustained-block main-thread
+  placement or sample within-block residency before interpreting another
+  elapsed comparison; no candidate adoption or broader completion follows.
+
 - **Sustained-block identical-editor controls fail:** twenty original-editor
   processes complete 20,000 updates and 80 warmups with exact paired clocks,
   payloads, work and animation operations; all exit zero without diagnostics.

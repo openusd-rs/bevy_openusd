@@ -76,6 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Budgeted used-channel kernel gate passes:** four isolated release processes
+  verify 4,000 clocks, 16 warmups and 18,072 exact attribute-answer pairs on the
+  traced three bird/six cow channels. All eight order strata pass the declared
+  25% gate: bird batches fall from about 0.116 to 0.003 ms, cow from about
+  0.314 to 0.002–0.003 ms. Charged source storage stays at 1,575,975 / 2,771,274
+  bytes under the 8 MiB/eight-entry limits and returns to zero on query drop.
+  The [complete result](benchmarks/bounded-query-prototype.md#used-channel-result)
+  retains cold fills, raw tails, process RSS, host load, manifests and three
+  successful negative controls. Probe tests/formatting/strict lint pass; the
+  production dependency and broader acceptance gaps remain unchanged. Next
+  validate refusal cost and semantic/lifecycle integration, then whole-editor
+  and rendered behavior. These sub-millisecond kernel savings are not an FPS
+  claim or completion of any broad workstream.
+
 - **Bounded upstream-query prototype implemented:** an isolated patch adds
   shared byte/entry admission under the upstream query's private source stamp,
   checked capacity accounting and RAII release. Ten new tests and 163 existing

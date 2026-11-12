@@ -1,8 +1,8 @@
 # Budgeted upstream query prototype
 
-Status: isolated implementation and focused correctness checks pass. The
-production dependency is unchanged. No application speedup is measured or
-accepted, and nothing is submitted upstream.
+Status: isolated implementation, focused correctness checks and the used-channel
+attribute-kernel gate pass. The production dependency is unchanged. No full
+application speedup is measured or accepted, and nothing is submitted upstream.
 
 The [admission investigation](sample-query-reuse.md#admission-and-lifetime-constraints)
 rules out using a one-time payload inventory or public index build revision as
@@ -77,10 +77,10 @@ compiler identity, command output and terminal exits. Full upstream/workspace
 tests, browser/native rendering and application lifecycle acceptance have not
 been run for this prototype.
 
-## Next integration gate
+## Used-channel gate
 
-First compare the budgeted API with direct reads on the actually requested
-three bird/six cow component channels from the saved operation trace. Use an
+Compare the budgeted API with direct reads on the actually requested three
+bird/six cow component channels from the saved operation trace. Use an
 8 MiB/eight-entry shared source budget per stage, 1,000 unique clocks plus four
 warmups, balanced first-read order and reversed fresh-process order. Require
 exact option/type/numeric-bit answers throughout, no exceeded byte/entry limit,
@@ -89,8 +89,77 @@ Preserve raw samples, identities, manifests and all failures. This new
 used-channel comparison supplements the earlier all-authored probe; its cow
 512-attribute failure remains a failure.
 
+## Used-channel result
+
+Evidence: `/tmp/bevy-optimization-query-budget-used.nkmq12/`. The standalone
+probe, channel lists, analyzer and runner are in local commit `4d6b375`. Its
+release executable is `probe`, SHA-256
+`3af2c6c0fdfb347cc6d16f1c98e79e6cf3f2aa6e963115f3b18baa4846930e33`,
+built with Rust 1.98.1. The isolated manifest uses the library's real `UsdSource`
+and existing Bevy patches; only its three OpenUSD packages receive command-line
+path overrides to the recorded candidate. Production manifests/lock are intact.
+
+All four processes exit zero with empty application diagnostic streams. They
+validate 4,000 measured clocks plus 16 warmups and 18,072 exact attribute-answer
+pairs, including option presence, value kind and numeric bits. The independently
+parsed output validates selected paths against the saved projection trace,
+sample/default inventories, clocks, ABBA order, fingerprints across fresh
+processes, source charges and final release. All eight declared median strata
+pass the unchanged 25% gate:
+
+| Run | First batch | Direct median µs | Budgeted median µs | Change |
+| --- | --- | ---: | ---: | ---: |
+| Bird 0 | Direct | 116.035 | 3.002 | -97.41% |
+| Bird 0 | Budgeted | 116.476 | 3.019 | -97.41% |
+| Bird 1 | Direct | 115.673 | 3.081 | -97.34% |
+| Bird 1 | Budgeted | 116.529 | 3.064 | -97.37% |
+| Cow 0 | Direct | 313.887 | 2.356 | -99.25% |
+| Cow 0 | Budgeted | 313.677 | 2.110 | -99.33% |
+| Cow 1 | Direct | 315.630 | 2.512 | -99.20% |
+| Cow 1 | Budgeted | 315.157 | 2.232 | -99.29% |
+
+The absolute saving is roughly 0.113 ms per bird batch and 0.312 ms per cow
+batch in this kernel. Geometry, authored-value checks, rendering and editor
+updates are outside the timed region. This is not a whole-app percentage or
+native frame-rate measurement. Initial query fills take 0.505–0.579 ms for bird
+and 1.028–1.179 ms for cow; all warmups, p95/max and raw samples are retained.
+
+| Asset | Numeric sample payload | Charged source bytes | Cached sources |
+| --- | ---: | ---: | ---: |
+| Bird | 1,484,000 | 1,575,975 | 3 |
+| Cow | 2,223,228 | 2,771,274 | 6 |
+
+Charges stay constant within each run, below 8 MiB/eight entries, and return to
+zero when queries are dropped. The budget exclusions above still apply. Process
+peak RSS is 49,936 / 50,064 KiB for bird and 34,364 / 34,296 KiB for cow; each
+process includes both read policies, its stage and inventory, so these are not
+before/after memory comparisons.
+
+The probe's three unit tests, formatting and strict probe Clippy pass. Its
+initial compile failure used the wrong error type while collecting attribute
+handles; the corrected build and its original failed log are preserved. Three
+negative controls correctly reject an oversized charge, a changed clock and
+eight deliberately slower query strata. The saved binary/source and all 268
+asset-manifest entries verify before and after measurement. Host snapshots show
+unrelated Pasq build/test work, left untouched. No owned builds or captures
+overlap the measurements.
+
+Build/test through `oslo make test-query-budget-probe --upstream PATH` and
+`oslo make build-query-budget-probe --upstream PATH` inside `nix develop`.
+The recorded runner fixes the candidate/trace locations and saves a binary
+before executing it through `run-headless-benchmark`; inspect those locations
+before reproducing it. Its commands do not modify the production dependency.
+
+## Remaining integration checks
+
 Before production adoption, also validate refused-read cost, error/reentrant
 settlement paths, clips, bounded query-owner lifetime, schema integration and
 real edit/reload workloads. Then run the full-editor performance and rendered
 regression gates. Attribute-kernel success cannot establish 60 Hz, whole-process
 memory bounds or completion of the broader optimization roadmap.
+
+Next measure refused reads with zero-byte, one-byte and zero-entry budgets on
+these same real channels. Require exact answers, zero retained source charges
+and no more than 5% median overhead in either first-read stratum, in both fresh
+orders for each asset. Retain cold/warm data and failures. This is a separate
+refusal-cost matrix, not a rerun or replacement of the accepted 8 MiB case.

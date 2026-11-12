@@ -281,9 +281,16 @@ make.recipe{
 make.recipe{
   name = "build-tangent-probe",
   desc = "build the release library test executable containing the paired tangent probe",
-  run = function()
+  params = { { "--candidate", desc = "optional isolated MikkTSpace source directory" } },
+  run = function(a)
+    local override = {}
+    if a.candidate then
+      assert(type(a.candidate) == "string" and a.candidate:match("^/[%w%._/%-]+$"),
+             "provide --candidate /absolute/path/to/isolated/mikktspace")
+      override = { "--config", 'patch.crates-io.bevy_mikktspace.path="' .. a.candidate .. '"' }
+    end
     sh.cargo("test", "-p", "usd_bevy", "--release", "--lib",
-             "--features", "bevy/multi_threaded", "--no-run")
+             "--features", "bevy/multi_threaded", "--no-run", table.unpack(override))
   end,
 }
 
@@ -307,7 +314,7 @@ make.recipe{
     assert(type(a.candidate) == "string" and #a.candidate > 0, "provide --candidate PATH")
     local output = "target/tangent-corpus"
     sh.mkdir("-p", output)
-    sh.rustfmt("--edition", "2024", "--check", "scripts/tangent_corpus.rs")
+    sh.rustfmt("--edition", "2024", "--check", "scripts/tangent_corpus.rs", "scripts/tangent_allocations.rs")
     for _, source in ipairs({ {"original", a.original}, {"candidate", a.candidate} }) do
       sh.rustc("--crate-name", "tangent_" .. source[1], "--crate-type", "rlib",
                "--edition=2024", "--cfg", 'feature="std"', "-D", "warnings", "-C", "opt-level=3",
@@ -323,6 +330,24 @@ target/tangent-corpus/tangent-corpus --negative-control > target/tangent-corpus/
 status=$?
 test "$status" -eq 101 || exit 1
 grep -q 'case=fan-3-false threshold=-1' target/tangent-corpus/negative-control.log
+]])
+  end,
+}
+
+make.recipe{
+  name = "test-tangent-allocations",
+  desc = "verify tangent allocation reductions and the counting oracle",
+  run = function()
+    sh.sh("-c", "target/tangent-corpus/tangent-corpus --allocations")
+    sh.sh("-c", [[
+target/tangent-corpus/tangent-corpus --allocation-negative-control > target/tangent-corpus/allocation-negative-control.log 2>&1
+status=$?
+test "$status" -eq 101 || exit 1
+grep -q 'allocation calls did not decrease' target/tangent-corpus/allocation-negative-control.log
+target/tangent-corpus/tangent-corpus --retention-negative-control > target/tangent-corpus/retention-negative-control.log 2>&1
+status=$?
+test "$status" -eq 101 || exit 1
+grep -q 'generation retained an allocation' target/tangent-corpus/retention-negative-control.log
 ]])
   end,
 }

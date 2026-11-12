@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 
+mod tangent_allocations;
+
 #[derive(Clone, Copy)]
 struct Vertex {
     position: [f32; 3],
@@ -180,8 +182,84 @@ fn random(state: &mut u64) -> u64 {
     *state
 }
 
+fn grid(size: usize, disconnected: bool, degenerates: bool) -> Geometry {
+    let mut vertices = Vec::new();
+    for y in 0..=size {
+        for x in 0..=size {
+            vertices.push(Vertex {
+                position: [x as f32, y as f32, ((x * y) % 7) as f32 / 32.0],
+                normal: [0.0, 0.0, 1.0],
+                uv: [x as f32 / size as f32, y as f32 / size as f32],
+            });
+        }
+    }
+    let mut faces = Vec::new();
+    for y in 0..size {
+        for x in 0..size {
+            let a = y * (size + 1) + x;
+            let b = a + 1;
+            let c = a + size + 1;
+            let d = c + 1;
+            faces.extend([vec![a, b, d], vec![a, d, c]]);
+            if degenerates {
+                faces.extend([vec![a, a, d], vec![a, a, a], vec![b, b, d, c]]);
+            }
+        }
+    }
+    let mut mesh = Geometry::new(vertices, faces);
+    if disconnected {
+        mesh = expanded(mesh, false);
+        for (index, face) in mesh.faces.iter().enumerate() {
+            for &corner in face {
+                mesh.vertices[corner].uv[0] += 2.0 * index as f32;
+            }
+        }
+    }
+    mesh
+}
+
+fn allocations(negative: bool) {
+    tangent_allocations::self_test();
+    for size in [8, 32, 64] {
+        for disconnected in [false, true] {
+            let mesh = grid(size, disconnected, false);
+            let mut a = Original(mesh.clone());
+            let mut b = Candidate(mesh);
+            let original = tangent_allocations::measure(|| {
+                tangent_original::generate_tangents(&mut a).unwrap();
+            });
+            let candidate = tangent_allocations::measure(|| {
+                tangent_candidate::generate_tangents(&mut b).unwrap();
+            });
+            assert_eq!(a.0.written, b.0.written);
+            println!(
+                "tangent_allocations size={size} disconnected={disconnected} original={original:?} candidate={candidate:?} scope=requested-call-local-storage-not-RSS-or-FPS"
+            );
+            let calls = if negative {
+                original.calls
+            } else {
+                candidate.calls
+            };
+            assert!(calls < original.calls, "allocation calls did not decrease");
+            assert!(candidate.peak <= original.peak, "peak live bytes increased");
+        }
+    }
+}
+
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args == ["--retention-negative-control"] {
+        let mut retained = None;
+        tangent_allocations::measure(|| {
+            retained = Some(std::hint::black_box(Box::new([1u8; 128])));
+        });
+        std::hint::black_box(retained);
+        panic!("retained allocation was not detected");
+    }
+    if args == ["--allocations"] || args == ["--allocation-negative-control"] {
+        allocations(args == ["--allocation-negative-control"]);
+        return;
+    }
     assert!(args.is_empty() || args == ["--negative-control"]);
     let mut counts = Counts {
         negative_control: !args.is_empty(),
@@ -218,6 +296,17 @@ fn main() {
             Geometry::new(square.vertices.clone(), faces),
             &mut counts,
         );
+    }
+    for size in [2, 8, 32] {
+        for disconnected in [false, true] {
+            for degenerates in [false, true] {
+                compare(
+                    &format!("grid-{size}-{disconnected}-{degenerates}"),
+                    grid(size, disconnected, degenerates),
+                    &mut counts,
+                );
+            }
+        }
     }
     let mut state = 0x92c45ab39f01d783;
     for case in 0..512 {

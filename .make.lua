@@ -241,6 +241,35 @@ make.recipe{
   end,
 }
 
+local function budget_probe(a, command, ...)
+  assert(type(a.upstream) == "string" and a.upstream:match("^/[%w%._/%-]+$"),
+         "provide --upstream /absolute/path/to/patched/openusd")
+  local source = 'patch."https://github.com/mxpv/openusd".'
+  sh.cargo(command, "--manifest-path", "benchmarks/query-budget-probe/Cargo.toml",
+    "--target-dir", "target",
+    "--config", source .. 'openusd.path="' .. a.upstream .. '/crates/openusd"',
+    "--config", source .. 'openusd-schemas.path="' .. a.upstream .. '/crates/openusd-schemas"',
+    "--config", source .. 'openusd-build.path="' .. a.upstream .. '/crates/openusd-build"', ...)
+end
+
+make.recipe{
+  name = "build-query-budget-probe",
+  desc = "build the isolated budgeted-query benchmark",
+  params = { { "--upstream", desc = "absolute path to the patched upstream checkout" } },
+  run = function(a) budget_probe(a, "build", "--release") end,
+}
+
+make.recipe{
+  name = "test-query-budget-probe",
+  desc = "format, test and lint the isolated query benchmark",
+  params = { { "--upstream", desc = "absolute path to the patched upstream checkout" } },
+  run = function(a)
+    sh.cargo("fmt", "--manifest-path", "benchmarks/query-budget-probe/Cargo.toml")
+    budget_probe(a, "test")
+    budget_probe(a, "clippy", "--all-targets", "--", "-D", "warnings")
+  end,
+}
+
 make.recipe{
   name = "test-sample-query-probe",
   desc = "test sample clocks, bit comparisons and upstream query edits",

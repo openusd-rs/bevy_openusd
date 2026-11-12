@@ -586,6 +586,7 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
         .map_or(0.0, Time::delta_secs_f64);
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     let curve_steps = crate::route::curves::current_geometry_key(world);
+    let revealed = crate::route::residency::revealed(world);
     let mut roots: Vec<_> = instances.roots.keys().copied().collect();
     roots.sort_unstable();
     if let Some(last) = world
@@ -622,6 +623,9 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
             runtime.defer_hidden = defer_hidden;
         }
         apply_changes(world, &runtime.live, &mut runtime.map);
+        if revealed {
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
+        }
         let purposes = world
             .get_resource::<crate::route::DisplayPurposes>()
             .copied()

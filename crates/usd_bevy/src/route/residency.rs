@@ -63,9 +63,24 @@ pub(crate) fn enabled(world: &World) -> bool {
             .is_none_or(|registry| registry.builtin_only)
 }
 
+/// Whether a deferred, unqueued mesh is now hierarchy-visible, for example
+/// after an app changed a Bevy [`Visibility`] rather than a USD opinion.
+pub(crate) fn revealed(world: &mut World) -> bool {
+    if !enabled(world) {
+        return false;
+    }
+    let deferred: Vec<_> = world
+        .query_filtered::<Entity, (With<UsdDeferredMesh>, Without<UsdMeshPreparationQueued>)>()
+        .iter(world)
+        .collect();
+    deferred
+        .into_iter()
+        .any(|entity| super::hierarchy_hidden(world, entity) != Some(true))
+}
+
 pub(crate) fn refresh_mode(world: &mut World) {
     let current = enabled(world);
-    let changed = world.resource::<AppliedDeferMode>().0 != Some(current);
+    let changed = world.resource::<AppliedDeferMode>().0 != Some(current) || revealed(world);
     if !changed
         && world
             .query_filtered::<Entity, With<UsdMeshPreparationQueued>>()
@@ -426,6 +441,55 @@ def Xform "Hidden" {
                     .is_none()
             );
         }
+    }
+
+    #[test]
+    fn bevy_visibility_reveals_deferred_instance_meshes_at_a_paused_clock() {
+        let (mut app, _) = setup();
+        let source = UsdSource::snapshot(
+            "shown.usda",
+            br#"#usda 1.0
+def Xform "Shown" {
+    def Mesh "M" {
+        point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+        uniform token subdivisionScheme = "none"
+    }
+}
+"#
+            .as_slice(),
+        )
+        .unwrap();
+        let asset = app
+            .world_mut()
+            .resource_mut::<Assets<UsdScene>>()
+            .add(UsdScene {
+                source,
+                textures: default(),
+            });
+        let root = app
+            .world_mut()
+            .spawn((
+                UsdSceneRoot(asset),
+                UsdInstanceTime { current: 0.0 },
+                Visibility::Hidden,
+            ))
+            .id();
+        app.update();
+        let entity = app
+            .world()
+            .non_send::<UsdInstances>()
+            .entity(root, "/Shown/M")
+            .unwrap();
+        assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        app.update();
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
+        app.update();
+        assert!(app.world().get::<Mesh3d>(entity).is_some());
+        assert!(app.world().get::<UsdDeferredMesh>(entity).is_none());
     }
 
     #[test]

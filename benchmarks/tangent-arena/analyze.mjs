@@ -1,0 +1,67 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+assert.equal(process.argv.length, 3, 'provide the evidence directory');
+const root = pathToFileURL(path.resolve(process.argv[2]) + path.sep);
+const read = name => fs.readFileSync(new URL(name, root), 'utf8');
+const records = read('results.tsv').trim().split('\n').slice(1).map(line => {
+  const [name, run, variant, status, diagnostics] = line.split('\t');
+  assert.equal(Number(status), 0, line); assert.equal(Number(diagnostics), 0, line);
+  return { name, run: Number(run), variant };
+});
+assert.equal(records.length, 8);
+const fields = line => Object.fromEntries([...line.matchAll(/\b(\w+)=([^\s]+)/g)].map(([,key,value]) => [key, key !== 'digest' && /^[-+\d.]+$/.test(value) ? Number(value) : value]));
+const runs = records.map(row => {
+  const id = `${row.name}-${row.run}-${row.variant}`;
+  const log = read(`${id}.log`);
+  assert(log.includes('test result: ok. 1 passed; 0 failed;'), `${id}: missing completed test`);
+  const header = fields(log.split('\n').find(line => line.includes('tangent_kernel asset=')));
+  assert.equal(header.samples, 100); assert.equal(header.warmup, 4);
+  assert.equal(header.workers, 4); assert.equal(header.input_budget, 16*1024*1024);
+  assert.equal(header.start, 0); assert.equal(header.end, row.name === 'cow' ? 288 : 264);
+  const lines = log.split('\n').filter(line => /^tangent_kernel_(warmup|sample) /.test(line));
+  assert.equal(lines.length, 104);
+  const samples = lines.map((line, i) => {
+    assert(line.startsWith(i < 4 ? 'tangent_kernel_warmup ' : 'tangent_kernel_sample '));
+    const result = fields(line);
+    assert.equal(result.index, i < 4 ? i : i - 4);
+    const expected = header.end * (i < 4 ? [0, .5, 1, .5][i] : (i-3)/100);
+    assert(Math.abs(result.clock - expected) < 1e-9, `${id}: clock mismatch`);
+    assert(Number.isSafeInteger(result.elapsed_ns) && result.elapsed_ns >= 0);
+    assert(result.jobs > 0 && result.peak_jobs <= 4 && result.peak_bytes <= 16*1024*1024);
+    assert.match(result.digest, /^[0-9a-f]{64}$/);
+    return result;
+  });
+  const sorted = samples.slice(4).map(x => x.elapsed_ns).sort((a,b)=>a-b);
+  const summary = fields(log.split('\n').find(line => line.startsWith('tangent_kernel_summary ')));
+  assert.equal(summary.samples, 100);
+  for (const [key, index] of [['median_ns',49],['p95_ns',94],['max_ns',99]]) assert.equal(summary[key], sorted[index]);
+  const time = fields(read(`${id}.time`)); assert.equal(time.exit,0);
+  assert(time.peak_rss_kib > 0 && time.wall_s > 0);
+  return {...row, samples, summary, time};
+});
+const failures=[];
+const comparisons = ['cow','bird'].map(name => {
+  const group = runs.filter(x=>x.name===name);
+  assert.deepEqual(group.map(x=>x.variant), ['before','after','after','before']);
+  assert.deepEqual(group.map(x=>x.run), [1,2,3,4]);
+  const exact = run => run.samples.map(({elapsed_ns,...fields})=>fields);
+  for (const run of group) assert.deepEqual(exact(run),exact(group[0]), `${name}: output/work differs`);
+  const percent=(a,b)=>100*(b/a-1);
+  const metrics=Object.fromEntries(['median_ns','p95_ns','max_ns','peak_rss_kib','wall_s'].map(key=>{
+    const get = x => key in x.summary ? x.summary[key] : x.time[key];
+    const before=(get(group[0])+get(group[3]))/2, after=(get(group[1])+get(group[2]))/2;
+    return [key, {before,after,percent:percent(before,after)}];
+  }));
+  const paired = [percent(group[0].summary.median_ns,group[1].summary.median_ns), percent(group[3].summary.median_ns,group[2].summary.median_ns)];
+  if(name==='cow' && metrics.median_ns.percent > -5) failures.push('cow: 5% kernel target missed');
+  if(name==='bird' && paired.some(x=>x>5)) failures.push('bird: paired median regression exceeds 5%');
+  if(metrics.peak_rss_kib.percent > 5) failures.push(`${name}: mean peak RSS increase exceeds 5%`);
+  return {name,metrics,paired};
+});
+const result={scope:'owned posed-mesh tangent kernel, not full editor or FPS', processes:8, measured_clocks:800,warmups:32,failures,comparisons,runs};
+fs.writeFileSync(new URL('analysis.json',root),JSON.stringify(result,null,2)+'\n');
+for(const result of comparisons) console.log(JSON.stringify(result));
+console.log(JSON.stringify({processes:8,measured_clocks:800,warmups:32,failures}));
+if(failures.length)process.exitCode=1;

@@ -34,7 +34,19 @@ first-visible morph descriptor publication. Use the same local checkout or
 verified revision for the library and both overrides. A Mara override is only
 needed by the viewer, not this standalone library consumer.
 
-Rendered first-visible morph correctness, downstream application workloads,
-browser/platform behavior and package/release acceptance remain separate
-gates. The fixture does not turn root-only overrides into transitive patches
-or remove the consumer configuration requirement.
+`oslo make test-downstream-gpu --output NEW_DIRECTORY` needs a GPU. It renders
+`assets/morph_subsets.usda` offscreen through the public plugins, first with
+CPU morphs as the reference, then with `UsdGpuSkinningPlugin`. Each run
+captures five phases: hidden, first reveal, hidden again, revealed again and a
+replacement root. Hidden frames must be black. Visible frames must show both
+the orange subset and the parent material, and GPU frames must match the CPU
+reference within RGB 1. The GPU run also checks that every visible morph
+instance gets a current descriptor with the expected vertex count and weight.
+Without the PBR override the first reveal draws the wrong shape and the
+comparison fails; the subset/parent colour check alone does not catch it.
+Acceptance was recorded on local Linux NVIDIA Vulkan only.
+
+Downstream application workloads, other browsers and platforms, and
+package/release acceptance remain separate gates. The fixture does not turn
+root-only overrides into transitive patches or remove the consumer
+configuration requirement.

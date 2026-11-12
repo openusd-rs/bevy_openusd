@@ -13,6 +13,10 @@ frame rates.
 | `4c0528a` | stop resampling SkelAnimation prims | 18.3 → 15.9 ms | unchanged |
 | `9f5ffd5` | deformation-only meshes run only deformation routes | 16.2 → 13.7 ms | 12.7 → 10.1 ms |
 | `ed33cde` | viewer defers hidden meshes by default | 13.8 → 6.7 ms | 10.2 → 9.9 ms |
+| next | GPU normal blend, pose-only resampling | 6.5 → 5.6 ms | 9.8 → 5.3 ms |
+
+The last row is with deferral; without it the cow falls 13.4 → 6.6 ms and the
+bird 9.7 → 5.3 ms, and bird peak RSS drops from 935 to 866 MiB.
 
 ## Changes
 
@@ -40,6 +44,19 @@ frame rates.
   `Visibility` change never materialized at a paused clock; `e6fab1b` queues
   such meshes for preparation.
 
+- **GPU normal blend.** The vendored `bevy_pbr` mesh and prepass vertex
+  shaders skin normals as UsdSkel does, `normalize(Σ wᵢ · inverse-transpose(Jᵢ) · n)`
+  over the nonzero influences, instead of the inverse-transpose of the blended
+  matrix. Every skinned mesh drawn with the patched crate uses it. The CPU no
+  longer computes per-point normal corrections, so a GPU-skinned mesh is
+  static once uploaded. Rigidly deformed meshes upload their single blended
+  matrix as the palette, which keeps UsdSkel's rigid normal rule.
+- **Pose-only resampling.** A resident deformation-only GPU skin without
+  blend shapes keeps its mesh and subset split; each resample rebuilds only
+  the joint palette from the stage, after checking that every weighted joint
+  is invertible, and skips preparation, mesh reads and assembly. Any other
+  case, including a degenerate pose, takes the full attach.
+
 ## Verification
 
 Every commit passed `make test-library` (both feature sets), `make lint`,
@@ -56,7 +73,14 @@ were not rerun.
 - The bird `body` mesh uses up to 20 influences per point and stays CPU
   skinned; keeping the four strongest would move 23 points by more than 10%
   of their weight.
-- GPU-skinned meshes with non-identity normal corrections still rebuild and
-  re-upload a mesh every frame for pose-dependent normals, and preparation
-  still re-reads static mesh data per frame (about 6 ms on the eager cow).
-- Morph-only meshes still regenerate MikkTSpace tangents every frame.
+- Skinned meshes with blend shapes still take the full attach every frame,
+  including morphed MikkTSpace tangents; morph-only meshes regenerate their
+  tangents every frame too.
+
+For the GPU normal blend, offscreen cow and bird frames match the CPU route
+within 1/255 and the previous build within 1/255; resampled instances match
+directly projected ones exactly; `make test-deformation` passes at tolerance 1
+for the blended morph, subset, vertex- and constant-influence fixtures. A first
+pose-only attempt re-split subsets from the parent's remainder mesh and lost
+the bird's blur cards after a clock change; the subset route is now skipped
+on pose-only frames and a regression test covers it.

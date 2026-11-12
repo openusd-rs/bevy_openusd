@@ -30,7 +30,8 @@ viewer or Mara. This is dependency-resolution evidence, not a GPU test.
 Both overrides belong in the **consuming workspace root**. Cargo ignores
 patch tables in dependencies; see the [Cargo reference](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section).
 The asset override preserves source-load ordering. The PBR override repairs
-first-visible morph descriptor publication. Use the same local checkout or
+first-visible morph descriptor publication and skins normals with UsdSkel's
+blend of per-joint inverse transposes, which GPU-skinned USD meshes rely on. Use the same local checkout or
 verified revision for the library and both overrides. A Mara override is only
 needed by the viewer, not this standalone library consumer.
 

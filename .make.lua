@@ -234,6 +234,52 @@ make.recipe{ name = "test-pbr", desc = "test the patched Bevy PBR crate",
              run = function() sh.cargo("test", "-p", "bevy_pbr", "--lib") end }
 
 make.recipe{
+  name = "prepare-downstream",
+  desc = "resolve the standalone consumer from the workspace lockfile offline",
+  run = function()
+    sh.sh("-c", [[test -e benchmarks/downstream-consumer/Cargo.lock || cp Cargo.lock benchmarks/downstream-consumer/Cargo.lock]])
+    sh.cargo("metadata", "--offline", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml", "--no-deps", "--format-version", "1")
+    sh.cargo("check", "--offline", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml", "--target-dir", "target", "--tests")
+  end,
+}
+
+make.recipe{
+  name = "fmt-downstream",
+  desc = "format the standalone consumer fixture",
+  run = function() sh.cargo("fmt", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml") end,
+}
+
+make.recipe{
+  name = "test-downstream",
+  desc = "test the standalone consumer without viewer feature unification",
+  run = function()
+    for _, features in ipairs({ "--no-default-features", "--all-features" }) do
+      sh.cargo("test", "--offline", "--locked", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml",
+        "--target-dir", "target", features, "--", "--test-threads=1")
+    end
+    sh.cargo("clippy", "--offline", "--locked", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml",
+      "--target-dir", "target", "--all-targets", "--all-features", "--", "-D", "warnings")
+  end,
+}
+
+make.recipe{
+  name = "metadata-downstream",
+  desc = "write dependency metadata for a standalone consumer manifest",
+  params = {
+    { "--manifest", desc = "absolute consumer manifest path" },
+    { "--output", desc = "absolute metadata output path" },
+    { "--resolve", desc = "1 permits disposable consumer lockfile resolution" },
+  },
+  run = function(a)
+    assert(type(a.manifest) == "string" and a.manifest:match("^/[%w%._/%-]+$"), "provide --manifest /absolute/path")
+    assert(type(a.output) == "string" and a.output:match("^/[%w%._/%-]+$"), "provide --output /absolute/path")
+    assert(a.resolve == nil or a.resolve == "1", "--resolve must be 1")
+    sh.sh("-c", "cargo metadata --offline " .. (a.resolve and "" or "--locked ")
+      .. "--filter-platform x86_64-unknown-linux-gnu --format-version 1 --manifest-path " .. a.manifest .. " > " .. a.output)
+  end,
+}
+
+make.recipe{
   name = "build-sample-query-probe",
   desc = "build the upstream animation-attribute query comparison",
   run = function()

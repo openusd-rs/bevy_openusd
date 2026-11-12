@@ -76,6 +76,58 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Owned sample transfer passes the mixed-budget gate:** carrying decoded
+  sample-map ownership through the upstream opinion walk avoids the query's
+  duplicate clone. The original 64 KiB mixed-budget case fails all eight strata
+  at 82–152% overhead; the changed candidate passes at 1.20–4.39%. All admitted
+  and no-room regression strata also pass. Core all-feature tests pass 2,494
+  cases on each of two toolchains, including explicit buffer-ownership checks.
+  The [ownership report](benchmarks/query-owned-samples.md) records original
+  failures, source replay and the increased retained capacity charges, still
+  within the same budgets. Production dependencies/runtime remain unchanged.
+  Oversized borrowed maps still clone; budget-specific semantic/lifecycle,
+  schema integration and whole-editor/rendered acceptance remain open.
+
+- **No-room query refusal gate passes:** the original bounded-query prototype
+  fails all 24 refusal strata, with 83–148% overhead. A source-record/entry
+  preflight uses ordinary resolution when admission is impossible; all 24
+  changed-candidate strata pass the unchanged 5% limit (maximum +3.51%). The
+  before/after matrices verify 24,000 updates, 96 warmups and 108,432 exact
+  attribute-answer pairs with zero retained charges. Four further processes
+  preserve the admitted-read gate and source bounds. The
+  [refusal report](benchmarks/query-refusal-cost.md) records source replay,
+  focused tests, negative controls, variable host load and the original failure.
+  Production dependencies/runtime are unchanged. Oversized sample maps can
+  still be constructed before rejection when the fixed record fits; that cost,
+  semantic/lifecycle integration and whole-editor/rendered gates remain open.
+
+- **Budgeted used-channel kernel gate passes:** four isolated release processes
+  verify 4,000 clocks, 16 warmups and 18,072 exact attribute-answer pairs on the
+  traced three bird/six cow channels. All eight order strata pass the declared
+  25% gate: bird batches fall from about 0.116 to 0.003 ms, cow from about
+  0.314 to 0.002–0.003 ms. Charged source storage stays at 1,575,975 / 2,771,274
+  bytes under the 8 MiB/eight-entry limits and returns to zero on query drop.
+  The [complete result](benchmarks/bounded-query-prototype.md#used-channel-result)
+  retains cold fills, raw tails, process RSS, host load, manifests and three
+  successful negative controls. Probe tests/formatting/strict lint pass; the
+  production dependency and broader acceptance gaps remain unchanged. Next
+  validate refusal cost and semantic/lifecycle integration, then whole-editor
+  and rendered behavior. These sub-millisecond kernel savings are not an FPS
+  claim or completion of any broad workstream.
+
+- **Bounded upstream-query prototype implemented:** an isolated patch adds
+  shared byte/entry admission under the upstream query's private source stamp,
+  checked capacity accounting and RAII release. Ten new tests and 163 existing
+  attribute tests pass on Rust 1.96.1 and 1.98.1; strict core all-target/feature
+  Clippy and rustdoc pass on 1.96.1. The unchanged original reproduces the
+  candidate's 1.98 Clippy failures in upstream hashing code. A fresh patch
+  replay matches every tested file. The [prototype report](benchmarks/bounded-query-prototype.md)
+  defines the retained-storage budget, excluded transient/process allocations,
+  remaining ownership/semantic checks and the next used-channel performance
+  gate. No production dependency or runtime changes, no new speedup and no
+  broader acceptance are claimed. Next measure the budgeted candidate, not an
+  unbounded cache inferred from the sample inventory.
+
 - **Query admission boundary verified:** three new regressions demonstrate that
   a warmed query can grow from 24 to 98,304 numeric sample bytes after an edit,
   while the ordinary prim's public index build revision stays unchanged. An

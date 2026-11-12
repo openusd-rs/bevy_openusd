@@ -1,0 +1,528 @@
+diff --git a/Makefile b/Makefile
+index cf49f5a1..955ddc96 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-.PHONY: fmt test-budget test-queries test-attributes test-resolvers test-core lint doc
++.PHONY: fmt test-budget test-queries test-attributes test-resolvers test-core test-skel lint lint-schemas doc doc-schemas
+ export CARGO_WORKSPACE_DIR := $(CURDIR)/
+ export CARGO_BUILD_JOBS := 2
+ export CARGO_PROFILE_DEV_DEBUG := 0
+@@ -22,8 +22,18 @@ test-resolvers:
+ test-core:
+ 	cargo test -p openusd --lib --all-features
+ 
++test-skel:
++	cargo test -p openusd-schemas --lib --features skel
++	cargo test -p openusd-schemas --test skel --features skel
++
+ lint:
+ 	cargo clippy -p openusd --all-targets --all-features -- -D warnings
+ 
+ doc:
+ 	cargo doc -p openusd --no-deps --all-features
++
++lint-schemas:
++	cargo clippy -p openusd-schemas --all-targets --all-features -- -D warnings
++
++doc-schemas:
++	cargo doc -p openusd-schemas --no-deps --all-features
+diff --git a/crates/openusd-schemas/src/skel/anim_query.rs b/crates/openusd-schemas/src/skel/anim_query.rs
+index 107d3679..69c1e7a9 100644
+--- a/crates/openusd-schemas/src/skel/anim_query.rs
++++ b/crates/openusd-schemas/src/skel/anim_query.rs
+@@ -1,10 +1,7 @@
+ //! Time-dependent view of a `Animation` prim.
+ //!
+-//! Mirrors Pixar's `UsdSkelAnimQuery`. Thin wrapper: each
+-//! `compute_*` method pulls the underlying `timeSamples` through
+-//! [`openusd::usd::Attribute::get_at`], so the values it returns already
+-//! honour the stage's interpolation mode (AOUSD §12.5 — linear by
+-//! default, with per-joint slerp for the `rotations` array). The
++//! Mirrors Pixar's `UsdSkelAnimQuery`. Reads honour the stage's interpolation
++//! mode, including per-joint slerp for the `rotations` array. The
+ //! `*_time_samples` methods say at which times those attributes are
+ //! authored, for a consumer stepping through the animation sample by
+ //! sample.
+@@ -12,19 +9,14 @@
+ //! Built once over the prim, then queried at whatever stage times the
+ //! consumer needs. The schema gives the animation's arrays no fallbacks, so a
+ //! read answers `None` where an array has no value, as C++ answers `false`.
+-//
+-// TODO(perf): every read builds its attribute handle afresh and resolves
+-// the value source again. C++ holds a `UsdAttributeQuery` per attribute,
+-// which resolves the source once; the query here could hold four
+-// `openusd::usd::AttributeQuery`s the same way once that type is `Clone`
+-// and `Debug`, and answers sample times from its cached source.
+ 
++use std::fmt;
+ use std::sync::Arc;
+ 
+ use openusd::Result;
+ 
+ use openusd::gf;
+-use openusd::usd::{Attribute, TimeCode};
++use openusd::usd::{Attribute, AttributeQuery, QueryCacheBudget, TimeCode};
+ use openusd::vt::{self, Value};
+ 
+ use super::skinning::{JointTransformComponents, make_transforms};
+@@ -32,11 +24,22 @@ use super::{Animation, AnimationSchema};
+ 
+ /// Pre-resolved description of one `Animation` prim: the view itself,
+ /// and the joint and blend-shape orderings as authored on it.
+-#[derive(Debug, Clone)]
++#[derive(Clone)]
+ pub struct AnimQuery {
+     anim: Animation,
+     joints: Vec<String>,
+     blend_shapes: Arc<[String]>,
++    queries: Option<Box<[AttributeQuery; 4]>>,
++}
++
++impl fmt::Debug for AnimQuery {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("AnimQuery")
++            .field("anim", &self.anim)
++            .field("joints", &self.joints)
++            .field("blend_shapes", &self.blend_shapes)
++            .finish()
++    }
+ }
+ 
+ impl AnimQuery {
+@@ -54,9 +57,23 @@ impl AnimQuery {
+             anim,
+             joints,
+             blend_shapes,
++            queries: None,
+         })
+     }
+ 
++    /// Builds a query whose component and weight sources share `budget`.
++    /// Joint and blend-shape orderings are captured at construction.
++    /// Clones share the budget and start with empty source memos.
++    pub fn with_budget(anim: Animation, budget: &QueryCacheBudget) -> Result<Self> {
++        let mut query = Self::new(anim)?;
++        let [translations, rotations, scales] = query.joint_transform_attributes();
++        query.queries = Some(Box::new(
++            [translations, rotations, scales, query.anim.blend_shape_weights_attr()]
++                .map(|attribute| AttributeQuery::with_budget(&attribute, budget)),
++        ));
++        Ok(query)
++    }
++
+     /// The `Animation` prim the query reads.
+     pub fn animation(&self) -> &Animation {
+         &self.anim
+@@ -127,7 +144,11 @@ impl AnimQuery {
+         &self,
+         time: impl Into<Option<TimeCode>>,
+     ) -> Result<Option<JointTransformComponents>> {
+-        transform_components(&self.anim, time.into())
++        let time = time.into();
++        match self.queries.as_deref() {
++            Some(queries) => components_at(|index| queries[index].get_at::<Value>(time)),
++            None => transform_components(&self.anim, time),
++        }
+     }
+ 
+     /// Returns the joint-local 4×4 transform per joint at `time`,
+@@ -176,42 +197,373 @@ impl AnimQuery {
+     /// [`blend_shape_order`](Self::blend_shape_order) where they are remapped,
+     /// as in C++.
+     pub fn blend_shape_weights(&self, time: impl Into<Option<TimeCode>>) -> Result<Option<Vec<f32>>> {
+-        array_at(&self.anim.blend_shape_weights_attr(), time.into())
++        let time = time.into();
++        array_at(match self.queries.as_deref() {
++            Some(queries) => queries[3].get_at::<Value>(time),
++            None => self.anim.blend_shape_weights_attr().get_at::<Value>(time),
++        })
+     }
+ }
+ 
+-/// `attribute`'s value at `time` as an array of `T`, whatever precision it
+-/// was authored at, or `None` where it holds no value of that shape.
+ /// `anim`'s `(translations, rotations, scales)` at `time`, as
+ /// [`AnimQuery::joint_transform_components`] answers them.
+ pub(super) fn transform_components(
+     anim: &Animation,
+     time: Option<TimeCode>,
+ ) -> Result<Option<JointTransformComponents>> {
+-    let Some(translations) = array_at(&anim.translations_attr(), time)? else {
++    let attributes = [anim.translations_attr(), anim.rotations_attr(), anim.scales_attr()];
++    components_at(|index| attributes[index].get_at::<Value>(time))
++}
++
++fn components_at(mut read: impl FnMut(usize) -> Result<Option<Value>>) -> Result<Option<JointTransformComponents>> {
++    let Some(translations) = array_at(read(0))? else {
+         return Ok(None);
+     };
+-    let Some(rotations) = array_at(&anim.rotations_attr(), time)? else {
++    let Some(rotations) = array_at(read(1))? else {
+         return Ok(None);
+     };
+-    let Some(scales) = array_at(&anim.scales_attr(), time)? else {
++    let Some(scales) = array_at(read(2))? else {
+         return Ok(None);
+     };
+     Ok(Some((translations, rotations, scales)))
+ }
+ 
+-fn array_at<T>(attribute: &Attribute, time: Option<TimeCode>) -> Result<Option<Vec<T>>>
++fn array_at<T>(value: Result<Option<Value>>) -> Result<Option<Vec<T>>>
+ where
+     Vec<T>: vt::FromValueCast,
+ {
+-    Ok(attribute
+-        .get_at::<Value>(time)?
+-        .and_then(|value| value.cast::<Vec<T>>().ok()))
++    Ok(value?.and_then(|value| value.cast::<Vec<T>>().ok()))
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use openusd::usd::{CommittedChange, InterpolationType, Stage};
++    use std::cell::Cell;
++    use std::fs;
++    use std::io;
++    use std::rc::Rc;
++
++    fn fixture() -> Result<(Stage, Animation)> {
++        let stage = Stage::builder()
++            .schema_registry(crate::schema_registry())
++            .open(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/usdSkel_scene.usda"))?;
++        let anim = Animation::get(&stage, "/World/Character/Anim")?.unwrap();
++        Ok((stage, anim))
++    }
++
++    fn compare(query: &AnimQuery, direct: &AnimQuery) -> Result<()> {
++        assert_eq!(query.joint_order(), direct.joint_order());
++        assert_eq!(query.blend_shape_order(), direct.blend_shape_order());
++        assert_eq!(
++            query.joint_transform_time_samples()?,
++            direct.joint_transform_time_samples()?
++        );
++        assert_eq!(
++            query.blend_shape_weight_time_samples()?,
++            direct.blend_shape_weight_time_samples()?
++        );
++        assert_eq!(
++            query.joint_transforms_might_be_time_varying()?,
++            direct.joint_transforms_might_be_time_varying()?
++        );
++        assert_eq!(
++            query.blend_shape_weights_might_be_time_varying()?,
++            direct.blend_shape_weights_might_be_time_varying()?
++        );
++        for time in [
++            None,
++            Some(-1.0),
++            Some(0.0),
++            Some(5.0),
++            Some(10.0),
++            Some(5.0),
++            Some(11.0),
++        ] {
++            let time = time.map(TimeCode::new);
++            assert_eq!(
++                query.joint_transform_components(time)?,
++                direct.joint_transform_components(time)?
++            );
++            assert_eq!(
++                query.joint_local_transforms(time)?,
++                direct.joint_local_transforms(time)?
++            );
++            assert_eq!(query.blend_shape_weights(time)?, direct.blend_shape_weights(time)?);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn budgeted_modes_bounds() -> Result<()> {
++        let (stage, anim) = fixture()?;
++        let direct = AnimQuery::new(anim.clone())?;
++        assert!(direct.queries.is_none());
++        for (bytes, entries) in [(16_384, 4), (16_384, 1), (0, 4), (1, 4), (16_384, 0)] {
++            let budget = QueryCacheBudget::new(bytes, entries);
++            let query = AnimQuery::with_budget(anim.clone(), &budget)?;
++            for mode in [InterpolationType::Linear, InterpolationType::Held] {
++                stage.set_interpolation(mode);
++                compare(&query, &direct)?;
++                assert!(budget.retained_bytes() <= bytes);
++                assert!(budget.retained_entries() <= entries);
++            }
++            assert_eq!(budget.retained_entries(), if bytes >= 16_384 { entries } else { 0 });
++            drop(query);
++            assert_eq!(budget.retained_bytes(), 0);
++            assert_eq!(budget.retained_entries(), 0);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn budgeted_clone_release() -> Result<()> {
++        let (_, anim) = fixture()?;
++        let direct = AnimQuery::new(anim.clone())?;
++        let budget = QueryCacheBudget::new(16_384, 4);
++        let first = AnimQuery::with_budget(anim, &budget)?;
++        compare(&first, &direct)?;
++        let bytes = budget.retained_bytes();
++        let second = first.clone();
++        compare(&second, &direct)?;
++        assert_eq!(budget.retained_bytes(), bytes);
++        assert_eq!(budget.retained_entries(), 4);
++        drop(first);
++        assert_eq!(budget.retained_entries(), 0);
++        compare(&second, &direct)?;
++        assert_eq!(budget.retained_entries(), 4);
++        assert_eq!(budget.retained_bytes(), bytes);
++        drop(second);
++        assert_eq!(budget.retained_bytes(), 0);
++        Ok(())
++    }
++
++    #[test]
++    fn budgeted_growth_orders() -> Result<()> {
++        let (_, anim) = fixture()?;
++        let direct = AnimQuery::new(anim.clone())?;
++        let budget = QueryCacheBudget::new(16_384, 4);
++        let query = AnimQuery::with_budget(anim.clone(), &budget)?;
++        compare(&query, &direct)?;
++        assert_eq!(budget.retained_entries(), 4);
++        for (count, entries) in [(4096, 3), (3, 4)] {
++            for time in [0.0, 10.0] {
++                anim.translations_attr().set_at(
++                    Value::Vec3fVec(vec![gf::vec3f(time as f32, 2.0, 3.0); count]),
++                    TimeCode::new(time),
++                )?;
++            }
++            compare(&query, &direct)?;
++            assert_eq!(budget.retained_entries(), entries);
++            assert!(budget.retained_bytes() <= 16_384);
++        }
++        anim.joints_attr().set(Value::TokenVec(vec!["Root".into()]))?;
++        let fresh = AnimQuery::with_budget(anim.clone(), &budget)?;
++        assert_eq!(query.joint_order().len(), 3);
++        assert_eq!(fresh.joint_order(), &["Root"]);
++        anim.translations_attr().block()?;
++        compare(&query, &direct)?;
++        assert!(query.joint_transform_components(TimeCode::new(5.0))?.is_none());
++        drop((query, fresh));
++        assert_eq!(budget.retained_bytes(), 0);
++        Ok(())
++    }
++
++    #[test]
++    fn budgeted_precision_absence() -> Result<()> {
++        let directory = tempfile::tempdir()?;
++        let path = directory.path().join("animation.usda");
++        fs::write(
++            &path,
++            r#"#usda 1.0
++def SkelAnimation "Precision" {
++    uniform token[] joints = ["Root"]
++    double3[] translations.timeSamples = { 0: [(0, 0, 0)], 10: [(2, 4, 6)] }
++    quatd[] rotations = [(1, 0, 0, 0)]
++    double3[] scales = [(1, 1, 1)]
++    double[] blendShapeWeights.timeSamples = { 0: [0.25], 10: [0.75] }
++}
++def SkelAnimation "Absent" {}
++def SkelAnimation "Wrong" {
++    string translations = "not an array"
++    float[] blendShapeWeights = None
++}
++"#,
++        )?;
++        let stage = Stage::builder()
++            .schema_registry(crate::schema_registry())
++            .open(path.to_str().unwrap())?;
++        for path in ["/Precision", "/Absent", "/Wrong"] {
++            let anim = Animation::get(&stage, path)?.unwrap();
++            let direct = AnimQuery::new(anim.clone())?;
++            for bytes in [0, 16_384] {
++                let budget = QueryCacheBudget::new(bytes, 4);
++                let query = AnimQuery::with_budget(anim.clone(), &budget)?;
++                compare(&query, &direct)?;
++                if path == "/Precision" {
++                    assert_eq!(
++                        query.joint_transform_components(TimeCode::new(5.0))?.unwrap().0,
++                        [gf::vec3f(1.0, 2.0, 3.0)]
++                    );
++                    assert_eq!(query.blend_shape_weights(TimeCode::new(5.0))?, Some(vec![0.5]));
++                } else {
++                    assert!(query.joint_transform_components(TimeCode::new(5.0))?.is_none());
++                }
++                drop(query);
++                assert_eq!(budget.retained_bytes(), 0);
++            }
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn budgeted_reentrant_edit() -> Result<()> {
++        let (stage, anim) = fixture()?;
++        let budget = QueryCacheBudget::new(16_384, 4);
++        let query = Rc::new(AnimQuery::with_budget(anim.clone(), &budget)?);
++        query.joint_transform_components(TimeCode::new(5.0))?.unwrap();
++        let weak = Rc::downgrade(&query);
++        let observed = Rc::new(Cell::new(None));
++        let result = observed.clone();
++        let _token = stage.add_sink(move |_: &Stage, _: &CommittedChange<'_>| {
++            let query = weak.upgrade().unwrap();
++            let components = query.joint_transform_components(TimeCode::new(5.0)).unwrap().unwrap();
++            result.set(Some(components.0[0].x));
++        })?;
++        stage.root_layer().edit(|edit| {
++            edit.attribute_mut("/World/Character/Anim.translations")?
++                .unwrap()
++                .set_time_sample(10.0, Value::Vec3fVec(vec![gf::vec3f(8.0, 0.0, 0.0); 3]))
++        })?;
++        assert_eq!(
++            query.joint_transform_components(TimeCode::new(5.0))?.unwrap().0[0].x,
++            4.0
++        );
++        assert_eq!(observed.get(), Some(4.0));
++        assert!(budget.retained_bytes() <= 16_384);
++        drop(query);
++        assert_eq!(budget.retained_bytes(), 0);
++        Ok(())
++    }
++
++    #[test]
++    fn budgeted_stage_release() -> Result<()> {
++        let budget = QueryCacheBudget::new(32_768, 8);
++        let (first_stage, first_anim) = fixture()?;
++        let (second_stage, second_anim) = fixture()?;
++        second_anim
++            .translations_attr()
++            .set_at(Value::Vec3fVec(vec![gf::vec3f(9.0, 0.0, 0.0); 3]), TimeCode::new(0.0))?;
++        let sentinel = Rc::new(());
++        let weak = Rc::downgrade(&sentinel);
++        let _token = first_stage.add_sink(move |_: &Stage, _: &CommittedChange<'_>| {
++            let _keep = &sentinel;
++        })?;
++        let first = AnimQuery::with_budget(first_anim, &budget)?;
++        let second = AnimQuery::with_budget(second_anim, &budget)?;
++        assert_ne!(
++            first.joint_transform_components(TimeCode::new(0.0))?,
++            second.joint_transform_components(TimeCode::new(0.0))?
++        );
++        assert_eq!(budget.retained_entries(), 6);
++        drop(first_stage);
++        assert!(weak.upgrade().is_some());
++        drop(first);
++        assert!(weak.upgrade().is_none());
++        assert_eq!(budget.retained_entries(), 3);
++        drop((second, second_stage));
++        assert_eq!(budget.retained_entries(), 0);
++        assert_eq!(budget.retained_bytes(), 0);
++        Ok(())
++    }
++
++    #[test]
++    fn budgeted_clips_match() -> Result<()> {
++        let directory = tempfile::tempdir()?;
++        fs::write(
++            directory.path().join("root.usda"),
++            r#"#usda 1.0
++def SkelAnimation "Anim" (
++    clips = {
++        dictionary default = {
++            asset[] assetPaths = [@./first.usda@, @./second.usda@]
++            string primPath = "/Clip"
++            asset manifestAssetPath = @./manifest.usda@
++            double2[] active = [(0, 0), (5, 1)]
++        }
++    }
++) {
++    uniform token[] joints = ["Root"]
++    float3[] translations
++    quatf[] rotations = [(1, 0, 0, 0)]
++    half3[] scales = [(1, 1, 1)]
++    float[] blendShapeWeights
++}
++"#,
++        )?;
++        fs::write(
++            directory.path().join("manifest.usda"),
++            "#usda 1.0\nover \"Clip\" {\n float3[] translations\n float[] blendShapeWeights\n}\n",
++        )?;
++        for (name, value) in [("first", 2), ("second", 8)] {
++            fs::write(
++                directory.path().join(format!("{name}.usda")),
++                format!(
++                    "#usda 1.0\ndef \"Clip\" {{\n float3[] translations.timeSamples = {{ 0: [({value}, 0, 0)] }}\n float[] blendShapeWeights.timeSamples = {{ 0: [{value}] }}\n}}\n"
++                ),
++            )?;
++        }
++        let stage = Stage::builder()
++            .schema_registry(crate::schema_registry())
++            .open(directory.path().join("root.usda").to_str().unwrap())?;
++        let anim = Animation::get(&stage, "/Anim")?.unwrap();
++        let direct = AnimQuery::new(anim.clone())?;
++        for bytes in [0, 16_384] {
++            let budget = QueryCacheBudget::new(bytes, 4);
++            let query = AnimQuery::with_budget(anim.clone(), &budget)?;
++            for (mode, first) in [(InterpolationType::Linear, 3.2), (InterpolationType::Held, 2.0)] {
++                stage.set_interpolation(mode);
++                compare(&query, &direct)?;
++                for (time, value) in [(1.0, first), (6.0, 8.0), (1.0, first)] {
++                    assert_eq!(
++                        query.joint_transform_components(TimeCode::new(time))?.unwrap().0[0].x,
++                        value
++                    );
++                    assert_eq!(query.blend_shape_weights(TimeCode::new(time))?, Some(vec![value]));
++                }
++            }
++            assert!(budget.retained_bytes() <= bytes);
++            drop(query);
++            assert_eq!(budget.retained_bytes(), 0);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn component_reads_short_circuit() -> Result<()> {
++        let mut calls = Vec::new();
++        assert!(
++            components_at(|index| {
++                calls.push(index);
++                Ok(Some(Value::String("not an array".into())))
++            })?
++            .is_none()
++        );
++        assert_eq!(calls, [0]);
++        calls.clear();
++        let error = components_at(|index| {
++            calls.push(index);
++            if index == 0 {
++                Ok(Some(Value::Vec3fVec(vec![gf::vec3f(0.0, 0.0, 0.0)])))
++            } else {
++                Err(io::Error::other("unreadable sample").into())
++            }
++        })
++        .unwrap_err();
++        assert!(error.to_string().contains("unreadable sample"));
++        assert_eq!(calls, [0, 1]);
++        Ok(())
++    }
+ 
+     #[test]
+     fn from_trs_identity_rotation_unit_scale() {
+diff --git a/crates/openusd-schemas/src/skel/mod.rs b/crates/openusd-schemas/src/skel/mod.rs
+index 5eb7c722..e5d581ad 100644
+--- a/crates/openusd-schemas/src/skel/mod.rs
++++ b/crates/openusd-schemas/src/skel/mod.rs
+@@ -20,8 +20,8 @@
+ //! prims, so `skel` enables the `geom` feature. A prim is an animation source
+ //! (C++ `UsdSkelIsSkelAnimationPrim`) where [`Animation::from_prim`] answers
+ //! one. Time-sampled Animation
+-//! evaluation is handled by [`AnimQuery`], which delegates to
+-//! [`openusd::usd::Attribute::get`] and inherits the stage's interpolation mode
++//! evaluation is handled by [`AnimQuery`], which inherits the stage's
++//! interpolation mode
+ //! (AOUSD §12.5 — linear by default, with per-joint slerp for `rotations`).
+ //! [`SkeletonQuery`] binds a skeleton to the animation it inherits and poses
+ //! it at any time; [`SkinningQuery`] skins a prim through the

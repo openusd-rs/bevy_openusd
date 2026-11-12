@@ -76,6 +76,22 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Normal-keyed tangent reuse passes its declared kernel gate:** an isolated
+  streamed-group candidate preserves every geometry read while reusing projected
+  pairs for exact current-normal bits and temporary subgroup membership storage.
+  All 3,528 finite cases and 11,802,154 callback events match; a deliberately
+  stale normal memo is rejected. Allocation/sparse-UV checks, strict dependency
+  lint/no-std compilation and 743 library tests in each dependency configuration
+  pass (25 ignored). Eight real-asset processes preserve output digests/work
+  across 22,876 jobs. Cow/bird medians improve 17.16% / 22.44%, passing the
+  declared 10% cow target; mean peak RSS changes +2.69% / -1.29% pass. Cow p95
+  increases 19.93% and remains an integration risk. The
+  [memo report](benchmarks/tangent-normal-memo.md) retains all evidence and
+  negative controls. Next qualify sustained-block whole-editor controls before
+  measuring this source in the editor; do not reinterpret failed single-update
+  controls or claim FPS. Production is unchanged; packaging, native, lifecycle,
+  browser and full-workstream acceptance remain open.
+
 - **Streamed tangent groups pass resource checks but miss elapsed acceptance:**
   an isolated replacement processes one completed group at a time. The corpus
   matches 3,474 cases and 11,729,458 geometry callbacks in order; sparse-UV

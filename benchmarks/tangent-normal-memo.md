@@ -1,5 +1,9 @@
 # Normal-keyed tangent projections
 
+**Status:** the declared kernel, output/callback, allocation and process-memory
+gates pass. Cow p95 increases 19.93% and remains an unresolved integration risk.
+This supports whole-editor investigation, not production adoption or FPS claims.
+
 ## Candidate and boundaries
 
 The streamed-group candidate passes its correctness/resource checks but misses
@@ -77,3 +81,74 @@ as its old default. This trial uses 10%. A marked synthetic 7.5% timing fixture
 passes the 5% setting and fails the 10% setting with the expected diagnostic;
 it is only an analyzer test, not an observed performance result. These checks
 are committed before real-asset measurements.
+
+## Real-asset result: declared kernel gate passes
+
+The release candidate builds in 4m05s on Rust 1.98.1. The saved original and new
+candidate each pass the same 743 default-feature library tests, with 25 existing
+ignored tests. These are overlapping configurations, not 1,486 distinct cases.
+Both use viewer source `210521d`; its runtime/probe source matches the main
+checkout. The original source/lockfile/executable manifests verify. Only the
+MikkTSpace registry source/checksum is removed in the candidate lockfile, and
+the viewer's original lockfile is restored before measurement.
+
+All eight real-asset processes exit zero without application diagnostics. The
+analyzer checks 800 measured clocks, 32 warmups and 22,876 tangent jobs; every
+corresponding output digest, work count and four-job / 16 MiB input bound
+matches. Source, executable and all 268 asset-manifest entries verify after
+measurement. The analyzer records `required_cow_gain_percent = 10`.
+
+| Workload | Original median ms | Candidate median ms | Median change | p95 change | Mean peak RSS change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cow | 30.578789 | 25.331986 | -17.16% | +19.93% | +2.69% |
+| Bird | 6.014000 | 4.664190 | -22.44% | -21.60% | -1.29% |
+
+Values compare means of two process summaries, not pooled medians or native
+frame times. The cow nearby pairings improve 22.36% and 11.86%; bird improves
+21.63% and 23.25%. Cow therefore passes the 10% mean-of-medians target, neither
+bird pairing regresses, and both mean peak RSS changes stay below 5%.
+
+Cow p95 rises from 35.134476 to 42.138195 ms and its maximum rises 0.82%. These
+observations are retained, not reclassified as passes or excluded from later
+application acceptance. The kernel protocol did not declare a p95 threshold;
+passing it does not establish smooth frame pacing. Bird's maximum falls 23.70%.
+Whole-process wall time falls 7.22% / 9.28%, but includes untimed setup and is
+not full-editor elapsed evidence. Comparisons with earlier experiments do not
+isolate the contribution of any individual part of this combined candidate.
+
+Starting one-minute host load ranges from 5.28 to 7.34. Default affinity and
+four workers are unchanged. No owned build/capture overlaps timing; unrelated
+build activity is recorded and left alone. `driver.exit`, `analysis.exit` and
+`verification.exit` are all zero. The verifier still rejects altered clocks,
+altered output digests and doubled candidate timings under the 10% target.
+
+Saved executable SHA-256:
+
+```text
+before c092b2331eb27d4b9c07735151d52298ea3a3fdcd99b926f307f7c480b4cdbaf
+after  52423d5204b93f841f67950acf7ffac7628a0f550db22fba0b4f1af5fb6efe49
+```
+
+## Next acceptance boundary
+
+Move to whole-editor measurement rather than another kernel-only variation.
+The earlier per-update alternating-process protocol fails identical-binary
+controls, even when only the main thread is pinned. Do not waive those failures,
+pool away order strata or claim an application gain from this kernel result.
+
+The existing stepped input contract accepts buffered sequential command lines;
+its regression already compares fully buffered commands with ordinary timeline
+updates. A controlled block-fed protocol can therefore test sustained editor
+work without changing the runtime: validate every ready marker/clock, feed
+fixed-size contiguous blocks, alternate process blocks in balanced order and
+retain every first/resumed update. Declare the block sizes, control limits and
+analysis before running, and qualify identical-original controls first. This
+is a different pacing experiment, not permission to rerun failed comparisons
+unchanged until they pass. Keep the native-frame distinction explicit.
+
+If controls are stable, build this exact isolated source into the full editor
+and test original/candidate workload, tail and memory regressions. The cow p95
+increase requires attention. Packaging must also preserve downstream library
+behavior; a root-only Cargo patch is not automatically inherited by users.
+Native visual, lifecycle, browser and all remaining broad workstreams stay open.
+Production runtime, manifests and dependency pins remain unchanged.

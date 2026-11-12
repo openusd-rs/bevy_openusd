@@ -101,9 +101,19 @@ fn first(iteration: usize, reverse: bool) -> usize {
     usize::from(matches!(iteration % 4, 1 | 2) ^ reverse)
 }
 
-fn within_budget(bytes: usize, entries: usize) -> Result<()> {
+fn limits(policy: &str) -> Result<(usize, usize, bool)> {
+    Ok(match policy {
+        "admit" => (MAX_BYTES, MAX_ENTRIES, true),
+        "zero-bytes" => (0, MAX_ENTRIES, false),
+        "one-byte" => (1, MAX_ENTRIES, false),
+        "zero-entries" => (MAX_BYTES, 0, false),
+        _ => anyhow::bail!("unknown admission policy"),
+    })
+}
+
+fn within_budget(bytes: usize, entries: usize, limits: (usize, usize)) -> Result<()> {
     ensure!(
-        bytes <= MAX_BYTES && entries <= MAX_ENTRIES,
+        bytes <= limits.0 && entries <= limits.1,
         "cache budget exceeded"
     );
     Ok(())
@@ -112,9 +122,11 @@ fn within_budget(bytes: usize, entries: usize) -> Result<()> {
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
-        args.len() == 3,
-        "usage: query_budget_probe ASSET CHANNELS REVERSE_0_OR_1"
+        (3..=4).contains(&args.len()),
+        "usage: query_budget_probe ASSET CHANNELS REVERSE_0_OR_1 [POLICY]"
     );
+    let policy = args.get(3).map_or("admit", String::as_str);
+    let (max_bytes, max_entries, admitted) = limits(policy)?;
     let reverse = match args[2].as_str() {
         "0" => false,
         "1" => true,
@@ -150,7 +162,7 @@ fn main() -> Result<()> {
     println!(
         "{}",
         json!({"type":"config", "samples":SAMPLES, "warmup":WARMUP, "reverse":reverse,
-        "paths":paths, "start":start, "end":end, "max_bytes":MAX_BYTES, "max_entries":MAX_ENTRIES,
+        "paths":paths, "start":start, "end":end, "policy":policy, "max_bytes":max_bytes, "max_entries":max_entries,
         "opening_ns":opening.elapsed().as_nanos(), "layers":stage.layer_identifiers(),
         "scope":"animation-attribute-batch-not-editor-or-native-fps"})
     );
@@ -172,7 +184,7 @@ fn main() -> Result<()> {
             "samples":samples.len(), "numeric_bytes":bytes, "default_bytes":default_bytes})
         );
     }
-    let budget = QueryCacheBudget::new(MAX_BYTES, MAX_ENTRIES);
+    let budget = QueryCacheBudget::new(max_bytes, max_entries);
     let queries: Vec<_> = attributes
         .iter()
         .map(|attr| AttributeQuery::with_budget(attr, &budget))
@@ -201,10 +213,18 @@ fn main() -> Result<()> {
         compare(&direct, &query)?;
         let fingerprint = digest(&direct)?;
         ensure!(fingerprint == digest(&query)?, "fingerprint mismatch");
-        within_budget(budget.retained_bytes(), budget.retained_entries())?;
+        within_budget(
+            budget.retained_bytes(),
+            budget.retained_entries(),
+            (max_bytes, max_entries),
+        )?;
         ensure!(
-            budget.retained_entries() == attributes.len(),
-            "component source not admitted"
+            if admitted {
+                budget.retained_entries() == attributes.len()
+            } else {
+                budget.retained_entries() == 0 && budget.retained_bytes() == 0
+            },
+            "source admission differs from policy"
         );
         println!(
             "{}",
@@ -268,9 +288,9 @@ mod tests {
 
     #[test]
     fn limits_and_path_lists() {
-        assert!(within_budget(MAX_BYTES, MAX_ENTRIES).is_ok());
-        assert!(within_budget(MAX_BYTES + 1, MAX_ENTRIES).is_err());
-        assert!(within_budget(MAX_BYTES, MAX_ENTRIES + 1).is_err());
+        assert!(within_budget(MAX_BYTES, MAX_ENTRIES, (MAX_BYTES, MAX_ENTRIES)).is_ok());
+        assert!(within_budget(MAX_BYTES + 1, MAX_ENTRIES, (MAX_BYTES, MAX_ENTRIES)).is_err());
+        assert!(within_budget(MAX_BYTES, MAX_ENTRIES + 1, (MAX_BYTES, MAX_ENTRIES)).is_err());
         for invalid in ["", "\n", "/A.x\n/A.x", " /A.x", "/A.x "] {
             assert!(paths(invalid).is_err());
         }
@@ -279,5 +299,20 @@ mod tests {
             .collect::<String>();
         assert!(paths(&oversized).is_err());
         assert_eq!(paths("/A.x\n/A.y\n").unwrap(), vec!["/A.x", "/A.y"]);
+    }
+
+    #[test]
+    fn refusal_policies() {
+        assert_eq!(limits("admit").unwrap(), (MAX_BYTES, MAX_ENTRIES, true));
+        for (policy, bytes, entries) in [
+            ("zero-bytes", 0, 8),
+            ("one-byte", 1, 8),
+            ("zero-entries", MAX_BYTES, 0),
+        ] {
+            assert_eq!(limits(policy).unwrap(), (bytes, entries, false));
+            assert!(within_budget(0, 0, (bytes, entries)).is_ok());
+            assert!(within_budget(2, 1, (bytes, entries)).is_err());
+        }
+        assert!(limits("unknown").is_err());
     }
 }

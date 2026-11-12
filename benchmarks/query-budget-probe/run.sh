@@ -1,17 +1,20 @@
 #!/run/current-system/sw/bin/bash
 set -euo pipefail
 out=${1:?provide evidence directory}
+expected=${2:-49bd693b6530a910be069ac670b98b5cee62c30b}
 upstream=/tmp/bevy-optimization-query-budget.uW9rMA/upstream
 trace=/tmp/bevy-optimization-animation-access.tzNL5k
 node=/nix/store/v2210ar51jddnrcx46m53ivv9palc26m-nodejs-24.14.0/bin/node
 timer=/run/current-system/sw/bin/time
-test "$(git -C "$upstream" rev-parse HEAD)" = 49bd693b6530a910be069ac670b98b5cee62c30b
+test "$(git -C "$upstream" rev-parse HEAD)" = "$expected"
 git -C "$upstream" diff --exit-code
+git -C "$upstream" rev-parse HEAD > "$out/upstream-head"
+git -C "$upstream" diff 900ea31591348e3fbf416d4661d703aa8700771b HEAD --binary > "$out/upstream.patch"
 for variable in "${!USD_@}"; do unset "$variable"; done
 cp target/release/query_budget_probe "$out/probe"
 cp "$trace/analysis.json" "$out/trace-analysis.json"
 cp "$trace/assets.sha256" "$out/assets.sha256"
-sha256sum "$out/probe" "$out/trace-analysis.json" Cargo.lock Cargo.toml crates/usd_bevy/Cargo.toml \
+sha256sum "$out"/{probe,trace-analysis.json,upstream-head,upstream.patch} Cargo.lock Cargo.toml crates/usd_bevy/Cargo.toml \
   crates/usd_bevy/src/source.rs .make.lua benchmarks/patches/openusd-query-budget.patch \
   benchmarks/query-budget-probe/{Cargo.toml,Cargo.lock,src/main.rs,analyze.mjs,negative.mjs,run.sh,bird.paths,cow.paths} > "$out/inputs.sha256"
 sha256sum -c "$out/assets.sha256" > "$out/assets-before.log"

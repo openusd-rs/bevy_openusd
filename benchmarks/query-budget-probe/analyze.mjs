@@ -2,11 +2,17 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const [directory, traceFile] = process.argv.slice(2);
+const [directory, traceFile, protocol = 'admit'] = process.argv.slice(2);
 assert(directory && traceFile, 'usage: analyze.mjs RESULTS TRACE_ANALYSIS_JSON');
+assert(['admit', 'refusal'].includes(protocol), 'unknown protocol');
 const trace = JSON.parse(readFileSync(traceFile, 'utf8'));
 const maxBytes = 8 * 1024 * 1024;
-const names = ['bird-0', 'cow-0', 'cow-1', 'bird-1'];
+const policies = { 'zero-bytes': [0, 8], 'one-byte': [1, 8], 'zero-entries': [maxBytes, 0] };
+const cases = protocol === 'admit'
+  ? ['bird-0', 'cow-0', 'cow-1', 'bird-1'].map(name => ({ name, asset: name.split('-')[0], reverse: name.endsWith('-1'), policy: 'admit' }))
+  : [false, true].flatMap(reverse => (reverse ? Object.keys(policies).reverse() : Object.keys(policies))
+      .flatMap(policy => (reverse ? ['cow', 'bird'] : ['bird', 'cow'])
+        .map(asset => ({ name: `${asset}-${policy}-${Number(reverse)}`, asset, policy, reverse }))));
 const files = (name, suffix) => readFileSync(join(directory, `${name}.${suffix}`), 'utf8');
 const quantiles = values => {
   const ordered = [...values].sort((a, b) => a - b);
@@ -15,9 +21,8 @@ const quantiles = values => {
 };
 const prior = new Map();
 const violations = [];
-const runs = names.map(name => {
-  const [asset, reverseText] = name.split('-');
-  const reverse = reverseText === '1';
+const runs = cases.map(({ name, asset, reverse, policy }) => {
+  const [limitBytes, limitEntries] = protocol === 'admit' ? [maxBytes, 8] : policies[policy];
   const reference = trace.runs.find(run => run.name === asset);
   assert(reference, `missing trace for ${asset}`);
   assert.equal(files(name, 'exit').trim(), '0', `${name}: process failed`);
@@ -33,8 +38,9 @@ const runs = names.map(name => {
   assert.equal(config.samples, 1000);
   assert.equal(config.warmup, 4);
   assert.equal(config.reverse, reverse);
-  assert.equal(config.max_bytes, maxBytes);
-  assert.equal(config.max_entries, 8);
+  assert.equal(config.max_bytes, limitBytes);
+  assert.equal(config.max_entries, limitEntries);
+  assert.equal(config.policy ?? 'admit', policy);
   assert.deepEqual(config.paths, expected, 'channels differ from observed projection');
   assert(expected.length === (asset === 'bird' ? 3 : 6));
   assert(Number.isFinite(config.start) && Number.isFinite(config.end) && config.start < config.end);
@@ -51,7 +57,8 @@ const runs = names.map(name => {
   const timed = rows.slice(1 + expected.length, -1);
   assert.equal(timed.length, 1004);
   const charged = timed[0].retained_bytes;
-  assert(charged > reference.numeric_payload_bytes, 'missing source storage overhead');
+  if (protocol === 'admit') assert(charged > reference.numeric_payload_bytes, 'missing source storage overhead');
+  else assert.equal(charged, 0, 'source budget exceeded');
   const signatures = [];
   const clocks = [];
   timed.forEach((row, iteration) => {
@@ -66,9 +73,9 @@ const runs = names.map(name => {
       assert(Number.isSafeInteger(row[key]) && row[key] > 0, `invalid ${key}`);
     }
     assert.match(row.digest, /^[0-9a-f]{64}$/);
-    assert(Number.isSafeInteger(row.retained_bytes) && row.retained_bytes > 0 && row.retained_bytes <= maxBytes, 'source budget exceeded');
+    assert(Number.isSafeInteger(row.retained_bytes) && row.retained_bytes >= 0 && row.retained_bytes <= limitBytes, 'source budget exceeded');
     assert.equal(row.retained_bytes, charged, 'unchanged source charge drifted');
-    assert.equal(row.retained_entries, expected.length);
+    assert.equal(row.retained_entries, protocol === 'admit' ? expected.length : 0);
     signatures.push([row.type, row.index, row.clock, row.digest]);
     if (!warm) clocks.push(row.clock);
   });
@@ -88,17 +95,18 @@ const runs = names.map(name => {
     const direct = quantiles(samples.map(row => row.direct_ns));
     const query = quantiles(samples.map(row => row.query_ns));
     const change = (query.median_ns / direct.median_ns - 1) * 100;
-    if (change > -25) violations.push(`${name} first=${first}: median change ${change.toFixed(4)}% misses -25%`);
+    const bound = protocol === 'admit' ? -25 : 5;
+    if (change > bound) violations.push(`${name} first=${first}: median change ${change.toFixed(4)}% exceeds ${bound}%`);
     return { first, samples: samples.length, direct, query, median_change_percent: change };
   });
-  return { name, attributes: expected.length, samples: 1000, warmup_updates: 4,
+  return { name, policy, attributes: expected.length, samples: 1000, warmup_updates: 4,
     numeric_payload_bytes: reference.numeric_payload_bytes, charged_source_bytes: charged,
-    retained_entries: expected.length, peak_rss_kb: peakRss, strata,
+    retained_entries: protocol === 'admit' ? expected.length : 0, peak_rss_kb: peakRss, strata,
     warmup_samples: timed.slice(0, 4).map(row => ({ first: row.first, clock: row.clock,
       direct_ns: row.direct_ns, query_ns: row.query_ns })) };
 });
-const result = { gate_passed: violations.length === 0, violations, runs,
-  measured_updates: 4000, warmup_updates: 16,
+const result = { protocol, gate_passed: violations.length === 0, violations, runs,
+  measured_updates: cases.length * 1000, warmup_updates: cases.length * 4,
   compared_attribute_answers: runs.reduce((sum, run) => sum + (1000 + 4) * run.attributes, 0),
   scope: 'used-animation-attribute-batches; not full editor, native FPS or a process-memory limit' };
 writeFileSync(join(directory, 'analysis.json'), JSON.stringify(result, null, 2) + '\n');

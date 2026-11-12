@@ -3,8 +3,8 @@ use usd_bevy::route::residency::DeferHiddenMeshes;
 
 fn parse(value: Option<&str>) -> Result<bool, String> {
     match value {
-        None | Some("0") => Ok(false),
-        Some("1") => Ok(true),
+        Some("0") => Ok(false),
+        None | Some("1") => Ok(true),
         _ => Err("USD_DEFER_HIDDEN_MESHES must be 0 or 1".into()),
     }
 }
@@ -24,8 +24,8 @@ pub fn configure(app: &mut App, enabled: bool) {
 }
 
 #[test]
-fn viewer_residency_is_eager_unless_explicitly_enabled() {
-    for (value, expected) in [(None, false), (Some("0"), false), (Some("1"), true)] {
+fn viewer_residency_defers_hidden_meshes_unless_disabled() {
+    for (value, expected) in [(None, true), (Some("0"), false), (Some("1"), true)] {
         let enabled = parse(value).unwrap();
         assert_eq!(enabled, expected);
         let mut app = App::new();

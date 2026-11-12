@@ -394,6 +394,20 @@ grep -q 'geometry callback order differs' target/tangent-corpus/read-order-negat
 }
 
 make.recipe{
+  name = "test-editor-blocks",
+  desc = "check the sustained editor block protocol and harness syntax",
+  params = { { "--node", desc = "Node.js executable (default: node)" } },
+  run = function(a)
+    local node = a.node or "node"
+    assert(node == "node" or node:match("^/[%w%._/%-]+$"), "provide a Node.js executable path")
+    sh.sh("-c", node .. " --test benchmarks/editor-blocks/protocol.test.mjs")
+    for _, file in ipairs({ "run", "analyze", "verify" }) do
+      sh.sh("-c", node .. " --check benchmarks/editor-blocks/" .. file .. ".mjs")
+    end
+  end,
+}
+
+make.recipe{
   name = "test-texture-encoding",
   desc = "exhaustively compare release sRGB mip encoding with the scalar formula",
   run = function()

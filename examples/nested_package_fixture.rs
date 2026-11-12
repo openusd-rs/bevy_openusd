@@ -51,9 +51,11 @@ def Xform "Part" {
         let stage =
             UsdSource::snapshot("virtual-encode.usda", text.as_bytes().to_vec())?.open_stage()?;
         let mut output = Cursor::new(Vec::new());
+        let layer = stage.root_layer();
+        let layer = layer.try_borrow()?;
         openusd::sdf::LayerRegistry::find_by_extension("usdc")
             .unwrap()
-            .write(stage.root_layer().data(), &mut output)?;
+            .write(layer.data(), &mut output)?;
         let bytes = output.into_inner();
         if !bytes.starts_with(b"PXR-USDC") {
             return Err("binary layer signature missing".into());
@@ -220,7 +222,7 @@ fn nested_package_export_reopens_without_original_files() {
                     prim: "/Root/Box".into(),
                     name: "size".into(),
                     type_name: "double".into(),
-                    value: openusd::sdf::Value::Double(4.0),
+                    value: openusd::vt::Value::Double(4.0),
                 })
                 .unwrap();
             let output = directory
@@ -259,7 +261,7 @@ fn nested_package_export_reopens_without_original_files() {
                     prim: "/Root/Mat/Tex".into(),
                     name: "inputs:file".into(),
                     type_name: "asset".into(),
-                    value: openusd::sdf::Value::AssetPath(openusd::sdf::AssetPath::new(
+                    value: openusd::vt::Value::AssetPath(openusd::sdf::AssetPath::new(
                         "missing.png",
                     )),
                 })

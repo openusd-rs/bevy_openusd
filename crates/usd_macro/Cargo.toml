@@ -14,4 +14,4 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 # Compile-time USDA validation.
-openusd = { path = "../../vendor/openusd/crates/openusd" }
+openusd = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b" }

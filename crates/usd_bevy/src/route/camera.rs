@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use openusd_schemas::geom::CameraSchema;
 use std::f32::consts::PI;
 
-use openusd::sdf::Value;
+use openusd::vt::Value;
 use openusd_schemas::geom::Camera;
 
 use super::{PrimRoute, RouteCtx};
@@ -162,8 +162,8 @@ mod tests {
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
-    use openusd::sdf::Value;
     use openusd::usd::Stage;
+    use openusd::vt::Value;
 
     #[test]
     fn perspective_offsets_preserve_frustum_and_subview_geometry() {

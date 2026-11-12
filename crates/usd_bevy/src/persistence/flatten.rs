@@ -2,6 +2,7 @@ use anyhow::{Result, ensure};
 use openusd::{
     sdf,
     usd::{PrimPredicate, Stage},
+    vt,
 };
 use std::collections::BTreeMap;
 
@@ -74,7 +75,7 @@ pub(crate) fn preserving_instances(stage: &Stage) -> Result<sdf::Layer> {
                 edit.data_mut().set_field(
                     instance,
                     sdf::FieldKey::References.as_str(),
-                    sdf::Value::ReferenceListOp(sdf::ReferenceListOp::explicit(vec![
+                    vt::Value::ReferenceListOp(sdf::ReferenceListOp::explicit(vec![
                         sdf::Reference {
                             prim_path: destination.clone(),
                             ..Default::default()
@@ -114,14 +115,14 @@ fn bake_clips(stage: &Stage, paths: &[sdf::Path], layer: &mut sdf::Layer) -> Res
             {
                 let time_code = Some(openusd::usd::TimeCode::new(time));
                 let value = if attribute.resolve_info_at(time_code)?.value_is_blocked() {
-                    sdf::Value::ValueBlock
+                    vt::Value::ValueBlock
                 } else {
                     attribute
-                        .get_at::<sdf::Value>(time_code)?
-                        .unwrap_or(sdf::Value::ValueBlock)
+                        .get_at::<vt::Value>(time_code)?
+                        .unwrap_or(vt::Value::ValueBlock)
                 };
                 let mut unresolved = false;
-                let value = value.map_asset_paths(&mut |asset| {
+                let mapped = value.map_asset_paths(|asset| {
                     if let Some(resolved) = asset.resolved_path() {
                         sdf::AssetPath::with_resolved_path(resolved, resolved)
                     } else {
@@ -129,6 +130,7 @@ fn bake_clips(stage: &Stage, paths: &[sdf::Path], layer: &mut sdf::Layer) -> Res
                         asset
                     }
                 });
+                let value = mapped.unwrap_or(value);
                 ensure!(
                     !unresolved,
                     "unresolved clip asset at {} at time {time}",
@@ -152,7 +154,7 @@ fn bake_clips(stage: &Stage, paths: &[sdf::Path], layer: &mut sdf::Layer) -> Res
                 edit.data_mut().set_field(
                     &property,
                     sdf::FieldKey::TimeSamples.as_str(),
-                    sdf::Value::TimeSamples(sdf::normalize_time_samples(samples)),
+                    vt::Value::TimeSamples(sdf::normalize_time_samples(samples)),
                 );
                 Ok(())
             })?;
@@ -260,7 +262,7 @@ def "Model" (
             stage
                 .prim("/Model")
                 .unwrap()
-                .get_metadata::<sdf::Value>("clips")
+                .metadata::<vt::Value>("clips")
                 .unwrap()
                 .is_none()
         );
@@ -382,7 +384,7 @@ def Sphere "Model" {
                 stage
                     .prim("/Model")
                     .unwrap()
-                    .get_metadata::<sdf::Value>("clips")
+                    .metadata::<vt::Value>("clips")
                     .unwrap()
                     .is_none()
             );
@@ -409,13 +411,13 @@ def Sphere "Model" {
                     stage
                         .attribute("/Model.strength")
                         .unwrap()
-                        .get_at::<sdf::Value>(time)
+                        .get_at::<vt::Value>(time)
                         .unwrap(),
                     editor
                         .stage()
                         .attribute("/Model.strength")
                         .unwrap()
-                        .get_at::<sdf::Value>(time)
+                        .get_at::<vt::Value>(time)
                         .unwrap(),
                     "{extension}"
                 );
@@ -556,8 +558,8 @@ def Xform "Leaf" {
                 let original = stage.attribute(property.as_str()).unwrap();
                 let output = reopened.attribute(property.as_str()).unwrap();
                 assert_eq!(
-                    output.get::<sdf::Value>().unwrap(),
-                    original.get::<sdf::Value>().unwrap(),
+                    output.get::<vt::Value>().unwrap(),
+                    original.get::<vt::Value>().unwrap(),
                     "{property}"
                 );
                 for time in original.time_sample_times().unwrap() {
@@ -569,8 +571,8 @@ def Xform "Leaf" {
                 for time in [0.0, 10.0, 20.0, 30.0] {
                     let time = Some(openusd::usd::TimeCode::new(time));
                     assert_eq!(
-                        output.get_at::<sdf::Value>(time).unwrap(),
-                        original.get_at::<sdf::Value>(time).unwrap(),
+                        output.get_at::<vt::Value>(time).unwrap(),
+                        original.get_at::<vt::Value>(time).unwrap(),
                         "{property}"
                     );
                 }

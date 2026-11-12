@@ -38,7 +38,7 @@ use bevy::reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
 use bevy::reflect::structs::DynamicStruct;
 use bevy::reflect::tuple::DynamicTuple;
 use bevy::reflect::{GetPath, PartialReflect, ReflectRef, TypeInfo, std_traits::ReflectDefault};
-use openusd::sdf::Value;
+use openusd::vt::Value;
 
 use super::{PrimRoute, RouteCtx};
 
@@ -764,7 +764,7 @@ impl ReflectRoute {
                     let def_val = default_instance
                         .as_ref()
                         .and_then(|d| d.reflect_path(path.as_str()).ok())
-                        .map(|f| f.to_dynamic());
+                        .and_then(|f| f.to_dynamic().ok());
                     if let Some(def_val) = def_val
                         && let Some(mut comp) = reflect_component.reflect_mut(&mut ent)
                         && let Ok(target) = comp.reflect_path_mut(path.as_str())

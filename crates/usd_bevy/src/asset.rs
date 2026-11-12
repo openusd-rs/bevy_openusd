@@ -387,7 +387,7 @@ impl AssetLoader for UsdAssetLoader {
             ));
         }
         let source_id = load_context.path().source().clone_owned();
-        let mut source = UsdSource::snapshot(&root.join(path), bytes)?;
+        let mut source = UsdSource::snapshot(root.join(path), bytes)?;
         if !Path::new(source.identifier()).starts_with(&root) {
             return Err(std::io::Error::other("USD root escapes asset source"));
         }
@@ -517,12 +517,7 @@ impl Plugin for UsdAssetPlugin {
         if !app.world().contains_resource::<Assets<Image>>() {
             app.init_asset::<Image>();
         }
-        if app.is_plugin_added::<bevy::pbr::PbrPlugin>() {
-            crate::route::flat_material::configure(app);
-            crate::route::strand_material::configure(app);
-            crate::route::medium_material::configure(app);
-            crate::route::sheen_material::configure(app);
-        }
+        crate::route::configure_materials(app);
         let server = app.world().get_resource::<AssetServer>().cloned();
         app.init_asset::<UsdScene>()
             .init_resource::<UsdProjectionBudget>()
@@ -669,19 +664,19 @@ pub(crate) fn spawn_usd_scenes(world: &mut World) {
             timed(profiled, &mut timing.textures, || {
                 decode_missing_textures(world, &stage, &source, &mut textures, default_composition)
             })?;
-            Ok(stage)
+            LiveStage::try_new(stage).map_err(anyhow::Error::from)
         });
         timing.failures = usize::from(opened.is_err());
         match opened {
-            Ok(stage) => {
+            Ok(live) => {
                 let retained = instances
                     .roots
                     .remove(&entity)
                     .filter(|runtime| runtime.asset == handle.id());
-                if retained.is_none() {
-                    if let Some(subtree) = previous.as_ref().and_then(|old| old.subtree) {
-                        world.despawn(subtree);
-                    }
+                if retained.is_none()
+                    && let Some(subtree) = previous.as_ref().and_then(|old| old.subtree)
+                {
+                    world.despawn(subtree);
                 }
                 let current = world
                     .get::<UsdInstanceTime>(entity)
@@ -691,7 +686,6 @@ pub(crate) fn spawn_usd_scenes(world: &mut World) {
                 let previous_textures = world.remove_resource::<SnapshotTextures>();
                 world.insert_resource(StageTime { current });
                 world.insert_resource(SnapshotTextures(textures.clone()));
-                let live = LiveStage::new(stage);
                 let mut job = None;
                 let map = timed(profiled, &mut timing.projection, || {
                     if let Some(mut runtime) = retained {
@@ -776,6 +770,7 @@ pub(crate) fn spawn_usd_scenes(world: &mut World) {
                         map,
                         textures: SnapshotTextures(textures),
                         sampled: current,
+                        animation: default(),
                         purposes: world
                             .get_resource::<crate::route::DisplayPurposes>()
                             .copied()
@@ -1115,22 +1110,22 @@ def Xform "Old" {}
             .clone();
         stage
             .create_attribute(
-                openusd::sdf::path(&format!("{path}.xformOp:translate")).unwrap(),
+                openusd::sdf::path(format!("{path}.xformOp:translate")).unwrap(),
                 "double3",
             )
             .unwrap()
             .set_at(
-                openusd::sdf::Value::Vec3d([7.0, 0.0, 0.0].into()),
+                openusd::vt::Value::Vec3d([7.0, 0.0, 0.0].into()),
                 openusd::usd::TimeCode::new(0.0),
             )
             .unwrap();
         stage
             .create_attribute(
-                openusd::sdf::path(&format!("{path}.xformOpOrder")).unwrap(),
+                openusd::sdf::path(format!("{path}.xformOpOrder")).unwrap(),
                 "token[]",
             )
             .unwrap()
-            .set(openusd::sdf::Value::TokenVec(vec![
+            .set(openusd::vt::Value::TokenVec(vec![
                 "xformOp:translate".into(),
             ]))
             .unwrap();
@@ -1275,7 +1270,7 @@ def Xform "Old" {}
                         prim: "/Old".into(),
                         name: "visibility".into(),
                         type_name: "token".into(),
-                        value: openusd::sdf::Value::Token("invisible".into()),
+                        value: openusd::vt::Value::Token("invisible".into()),
                     }],
                     ..default()
                 },
@@ -1305,7 +1300,7 @@ def Xform "Old" {}
             .clone();
         let directory = tempfile::tempdir().unwrap();
         let broken = UsdSource::snapshot(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             &b"#usda 1.0\ndef Xform \"Broken\" (prepend references = @missing.usda@</Model>) {}\n"
                 [..],
         )
@@ -1686,7 +1681,7 @@ def Xform "Model" (
                         prim: "/Model".into(),
                         name: "visibility".into(),
                         type_name: "token".into(),
-                        value: openusd::sdf::Value::Token("invisible".into()),
+                        value: openusd::vt::Value::Token("invisible".into()),
                     }],
                 },
             ))
@@ -1806,13 +1801,7 @@ def Xform "Model" (
             ..default()
         });
         spawn_usd_scenes(&mut world);
-        assert!(
-            world
-                .non_send::<UsdInstances>()
-                .stage(root)
-                .unwrap()
-                .ptr_eq(&before)
-        );
+        assert!(world.non_send::<UsdInstances>().stage(root).unwrap() == &before);
         instance_entity(&world, root, "/Model/Loader");
     }
 
@@ -2246,7 +2235,9 @@ def Xform "Model" (
         exercise_clip_reload(
             app,
             "root.usda",
-            |path, text| std::fs::write(directory.path().join(path), text).unwrap(),
+            |path, text| {
+                std::fs::write(directory.path().canonicalize().unwrap().join(path), text).unwrap()
+            },
             |_| {},
         );
     }
@@ -2381,7 +2372,7 @@ def Sphere "Model" (
     fn native_file_watcher_updates_deferred_mesh_dependencies() {
         use crate::route::residency::{DeferHiddenMeshes, UsdDeferredMesh};
         let directory = tempfile::tempdir().unwrap();
-        let layer = directory.path().join("mesh.usda");
+        let layer = directory.path().canonicalize().unwrap().join("mesh.usda");
         let geometry = |size: u32| {
             format!(
                 r#"#usda 1.0
@@ -2398,7 +2389,7 @@ def Xform "Hidden" {{
             )
         };
         std::fs::write(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             "#usda 1.0\n(subLayers = [@mesh.usda@])\n",
         )
         .unwrap();
@@ -2470,7 +2461,7 @@ def Xform "Hidden" {{
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("inherited".into()))
+            .set(openusd::vt::Value::Token("inherited".into()))
             .unwrap();
         tick_until(&mut app, |world| world.get::<Mesh3d>(entities[0]).is_some());
         let mesh = app
@@ -2506,7 +2497,11 @@ def Xform "Hidden" {{
     #[ignore = "requires native filesystem events"]
     fn native_file_watcher_recovers_missing_initial_root() {
         let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("missing/root");
+        let source = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("missing/root");
         let mut app = App::new();
         app.register_asset_source(
             bevy::asset::io::AssetSourceId::Default,
@@ -2600,12 +2595,20 @@ def Xform "Hidden" {{
     #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
     fn exercise_native_file_watcher(removal_adapter: bool) {
         let directory = tempfile::tempdir().unwrap();
-        let layer = directory.path().join("models/textured.usda");
-        let texture = directory.path().join("textures/pixel.png");
+        let layer = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("models/textured.usda");
+        let texture = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("textures/pixel.png");
         std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
         std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
         std::fs::write(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             "#usda 1.0\n( subLayers = [@models/textured.usda@] )\n",
         )
         .unwrap();
@@ -2756,7 +2759,11 @@ def Xform "Hidden" {{
         });
         if removal_adapter {
             let textures = texture.parent().unwrap();
-            let moved_textures = directory.path().join("moved-textures");
+            let moved_textures = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("moved-textures");
             let retained_images = image_handles(app.world());
             std::fs::rename(textures, &moved_textures).unwrap();
             tick_until(&mut app, |world| {
@@ -2810,7 +2817,11 @@ def Xform "Hidden" {{
                 })
             });
             let models = layer.parent().unwrap();
-            let moved = directory.path().join("moved-models");
+            let moved = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("moved-models");
             let retained_meshes = mesh_handles(app.world());
             std::fs::rename(models, &moved).unwrap();
             tick_until(&mut app, |world| {
@@ -2904,7 +2915,11 @@ def Xform "Hidden" {{
             std::fs::create_dir_all(layer.parent().unwrap()).unwrap();
             std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
             for relative in ["root.usda", "models/textured.usda", "textures/pixel.png"] {
-                std::fs::copy(old_root.join(relative), directory.path().join(relative)).unwrap();
+                std::fs::copy(
+                    old_root.join(relative),
+                    directory.path().canonicalize().unwrap().join(relative),
+                )
+                .unwrap();
             }
             tick_until(&mut app, |world| {
                 roots
@@ -3458,16 +3473,12 @@ def Mesh "Body" {
         let value = stage
             .attribute("/Mat.inputs:surfaceMap")
             .unwrap()
-            .get::<openusd::sdf::Value>()
+            .get::<openusd::vt::Value>()
             .unwrap();
-        let Some(openusd::sdf::Value::AssetPath(path)) = value else {
+        let Some(openusd::vt::Value::AssetPath(path)) = value else {
             panic!("surfaceMap is not an asset: {value:?}")
         };
-        assert!(
-            path.resolved_path()
-                .unwrap()
-                .ends_with("textures/Color/body.ptx")
-        );
+        assert!(Path::new(path.resolved_path().unwrap()).ends_with("textures/Color/body.ptx"));
         assert_eq!(source.dependencies().count(), 0);
     }
 
@@ -3521,7 +3532,10 @@ def Material "Unused" {
         let scene = UsdScene::from_source(source, &mut images).unwrap();
         assert_eq!(scene.textures.len(), 1);
         let ((path, _), handle) = scene.textures.iter().next().unwrap();
-        assert!(path.ends_with("textures/color.<UDIM>.png"), "{path}");
+        assert!(
+            Path::new(path).ends_with("textures/color.<UDIM>.png"),
+            "{path}"
+        );
         let atlas = images.get(handle).unwrap();
         assert_eq!((atlas.width(), atlas.height()), (UDIM_COLUMNS, 2));
         let texel = |x, y| atlas.get_color_at(x, y).unwrap().to_linear();
@@ -3535,10 +3549,23 @@ def Material "Unused" {
     fn memory_sources_report_gaps_and_decode_textures_without_disk() {
         let root = "models/textured.usda";
         let partial = UsdSource::from_memory(root, [(root, TEXTURED.as_bytes().to_vec())]).unwrap();
-        assert_eq!(partial.missing_dependencies(), ["textures/pixel.png"]);
+        assert_eq!(
+            partial
+                .missing_dependencies()
+                .iter()
+                .map(|dependency| dependency.replace('\\', "/"))
+                .collect::<Vec<_>>(),
+            ["textures/pixel.png"]
+        );
         let mut images = Assets::<Image>::default();
         let error = UsdScene::from_source(partial, &mut images).unwrap_err();
-        assert!(error.to_string().contains("textures/pixel.png"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .replace('\\', "/")
+                .contains("textures/pixel.png"),
+            "{error}"
+        );
 
         let files = [
             (root, TEXTURED.as_bytes().to_vec()),

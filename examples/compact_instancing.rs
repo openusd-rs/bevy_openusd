@@ -5,6 +5,7 @@ use bevy::{
     camera::{
         RenderTarget,
         primitives::{Aabb, MeshAabb},
+        visibility::NoAutoAabb,
     },
     core_pipeline::core_3d::Opaque3d,
     ecs::{
@@ -38,7 +39,9 @@ use bevy::{
 };
 use std::collections::HashMap;
 
-const SHADER: Handle<Shader> = bevy::asset::uuid_handle!("3e5e507a-7301-4c35-82ac-ae906a8b9178");
+#[path = "support/pipeline_probe.rs"]
+mod pipeline_probe;
+use pipeline_probe::PipelineProbe;
 
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
 struct Pulling {
@@ -52,7 +55,7 @@ struct Pulling {
 
 impl MaterialExtension for Pulling {
     fn vertex_shader() -> ShaderRef {
-        SHADER.into()
+        "shaders/compact_instancing.wesl".into()
     }
     fn enable_prepass() -> bool {
         false
@@ -72,7 +75,8 @@ impl MaterialExtension for Pulling {
     }
 }
 
-#[derive(Clone, ShaderType)]
+#[derive(Clone, Copy, ShaderType, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 struct Point {
     translation: Vec4,
     rotation: Vec4,
@@ -245,6 +249,10 @@ fn main() {
     });
     app.add_plugins(
         DefaultPlugins
+            .set(AssetPlugin {
+                file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/assets").into(),
+                ..default()
+            })
             .set(PbrPlugin {
                 use_gpu_instance_buffer_builder: false,
                 ..default()
@@ -264,16 +272,6 @@ fn main() {
         std::time::Duration::from_secs_f64(1.0 / 60.0),
     ));
     app.add_plugins(MaterialPlugin::<ExtendedMaterial<StandardMaterial, Pulling>>::default());
-    app.world_mut()
-        .resource_mut::<Assets<Shader>>()
-        .insert(
-            SHADER.id(),
-            Shader::from_wgsl(
-                include_str!("compact_instancing.wgsl"),
-                "compact_instancing.wgsl",
-            ),
-        )
-        .unwrap();
     let render = app.sub_app_mut(RenderApp);
     use bevy::render::batching::gpu_preprocessing::{
         GpuPreprocessingMode, GpuPreprocessingSupport,
@@ -294,21 +292,34 @@ fn main() {
         .resource::<DrawFunctions<Opaque3d>>()
         .write()
         .add_with::<DrawMaterial, _>(state);
+    pipeline_probe::configure(&mut app);
     app.add_systems(Startup, setup)
         .add_systems(Update, capture)
         .run();
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct FixtureAssets<'w> {
+    meshes: ResMut<'w, Assets<Mesh>>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
+    pulling: ResMut<'w, Assets<ExtendedMaterial<StandardMaterial, Pulling>>>,
+    buffers: ResMut<'w, Assets<ShaderBuffer>>,
+    images: ResMut<'w, Assets<Image>>,
+}
+
 fn setup(
     mut commands: Commands,
     options: Res<Options>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut pulling: ResMut<Assets<ExtendedMaterial<StandardMaterial, Pulling>>>,
-    mut buffers: ResMut<Assets<ShaderBuffer>>,
-    mut images: ResMut<Assets<Image>>,
+    assets: FixtureAssets,
     device: Res<RenderDevice>,
 ) {
+    let FixtureAssets {
+        mut meshes,
+        mut materials,
+        mut pulling,
+        mut buffers,
+        mut images,
+    } = assets;
     let mut prototype = Mesh::from(Cuboid::new(0.28, 0.4, 0.22));
     prototype.duplicate_vertices();
     let VertexAttributeValues::Float32x3(positions) =
@@ -333,11 +344,11 @@ fn setup(
         .flat_map(|((p, n), uv)| [Vec3::from(*p).extend(uv[0]), Vec3::from(*n).extend(uv[1])])
         .collect();
     let vertices = buffers.add(ShaderBuffer::from(packed));
-    let prototype_bounds = prototype.compute_aabb().unwrap();
+    let prototype_bounds = prototype.get_aabb().unwrap();
     let prototype = meshes.add(prototype);
     let limits = device.limits();
     let capacity = batch_capacity(
-        u64::from(limits.max_storage_buffer_binding_size),
+        limits.max_storage_buffer_binding_size,
         limits.max_buffer_size,
         vertices_per_point,
         options.batch_limit,
@@ -402,6 +413,7 @@ fn setup(
                     root,
                     RootPose(root),
                     *bounds,
+                    NoAutoAabb,
                     VirtualVertices(vertices_per_point.checked_mul(*count as u32).unwrap()),
                     NoAutomaticBatching,
                 ));
@@ -465,38 +477,67 @@ fn setup(
     );
 }
 
+#[derive(Default)]
+struct CaptureProgress {
+    frames: u32,
+    ready_frames: u32,
+    requested: bool,
+    started: Option<std::time::Instant>,
+}
+
 fn capture(
     mut commands: Commands,
-    mut frames: Local<u32>,
+    mut progress: Local<CaptureProgress>,
     camera: Query<&RenderTarget, With<Camera3d>>,
     options: Res<Options>,
     mut roots: Query<(&mut Transform, &RootPose)>,
     visible: Query<&ViewVisibility, With<Mesh3d>>,
+    pipelines: Res<PipelineProbe>,
 ) {
-    *frames += 1;
+    assert!(
+        progress
+            .started
+            .get_or_insert_with(std::time::Instant::now)
+            .elapsed()
+            < std::time::Duration::from_secs(60),
+        "compact capture timed out; pipeline status: {:?}",
+        pipelines.snapshot()
+    );
+    progress.frames += 1;
+    let frames = progress.frames;
     if options.cull_check {
-        if matches!(*frames, 40 | 80) {
+        if matches!(frames, 40 | 80) {
             for (mut transform, original) in &mut roots {
                 *transform = original.0;
-                if *frames == 40 {
+                if frames == 40 {
                     transform.translation.x += 10_000.0;
                 }
             }
         }
-        if *frames == 70 {
+        if frames == 70 {
             let visible = visible.iter().filter(|visibility| visibility.get()).count();
             assert_eq!(visible, 0, "offscreen roots must be culled");
             println!("COMPACT_CULL_CHECK offscreen_visible={visible}");
         }
     }
-    if *frames != 120 {
+    if frames < 120 || progress.requested {
+        return;
+    }
+    if pipelines.ready_count().is_none() {
+        progress.ready_frames = 0;
+        return;
+    }
+    progress.ready_frames += 1;
+    if progress.ready_frames < 3 {
         return;
     }
     let visible = visible.iter().filter(|visibility| visibility.get()).count();
     assert!(visible > 0, "visible point batches must survive culling");
     println!("COMPACT_VISIBLE restored_visible={visible}");
+    progress.requested = true;
     commands.spawn(Screenshot(camera.single().unwrap().clone())).observe(
-        |event: On<ScreenshotCaptured>, options: Res<Options>, report: Res<BatchReport>, meshes: Query<&Mesh3d>, mut exit: MessageWriter<AppExit>| {
+        |event: On<ScreenshotCaptured>, options: Res<Options>, report: Res<BatchReport>, meshes: Query<&Mesh3d>, pipelines: Res<PipelineProbe>, mut exit: MessageWriter<AppExit>| {
+            let compiled = pipelines.ready_count().expect("capture pipelines must remain ready at readback");
             let count = meshes.iter().count();
             assert_eq!(count, report.render_entities);
             let memory = std::fs::read_to_string("/proc/self/status").unwrap_or_default().lines()
@@ -509,7 +550,7 @@ fn capture(
                     image.save(&options.output).map_err(|error| error.to_string())
                 });
             match result {
-                Ok(()) => { println!("CAPTURE_OK {}", options.output); exit.write(AppExit::Success); }
+                Ok(()) => { println!("CAPTURE_PIPELINES_READY compiled={compiled}"); println!("CAPTURE_OK {}", options.output); exit.write(AppExit::Success); }
                 Err(error) => { eprintln!("CAPTURE_FAILED {error}"); exit.write(AppExit::error()); }
             }
         });
@@ -518,6 +559,22 @@ fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_point_buffer_matches_the_shader_layout() {
+        assert_eq!(std::mem::size_of::<Point>(), 48);
+        assert_eq!(std::mem::offset_of!(Point, translation), 0);
+        assert_eq!(std::mem::offset_of!(Point, rotation), 16);
+        assert_eq!(std::mem::offset_of!(Point, scale), 32);
+        let point = Point::from(Transform::from_xyz(1.0, 2.0, 3.0));
+        let buffer = ShaderBuffer::from(vec![point]);
+        assert_eq!(buffer.buffer_size(), 48);
+        let uploaded = buffer.cast_slice::<Point>().unwrap();
+        assert_eq!(uploaded.len(), 1);
+        assert_eq!(uploaded[0].translation, point.translation);
+        assert_eq!(uploaded[0].rotation, point.rotation);
+        assert_eq!(uploaded[0].scale, point.scale);
+    }
 
     #[test]
     fn batch_bounds_enclose_transformed_prototype_corners() {

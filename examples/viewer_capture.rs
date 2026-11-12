@@ -16,25 +16,12 @@ use std::{
 };
 use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot};
 
-#[derive(Resource, Clone, Default)]
-struct PipelineProgress(std::sync::Arc<std::sync::Mutex<Option<(usize, Vec<String>)>>>);
+#[path = "support/pipeline_probe.rs"]
+mod pipeline_probe;
+use pipeline_probe::PipelineProbe;
 
-fn pipeline_progress(
-    cache: Res<bevy::render::render_resource::PipelineCache>,
-    progress: Res<PipelineProgress>,
-) {
-    use bevy::render::render_resource::CachedPipelineState;
-    let mut waiting = 0;
-    let mut errors = Vec::new();
-    for pipeline in cache.pipelines() {
-        match &pipeline.state {
-            CachedPipelineState::Ok(_) => (),
-            CachedPipelineState::Err(error) => errors.push(error.to_string()),
-            _ => waiting += 1,
-        }
-    }
-    *progress.0.lock().unwrap() = Some((waiting, errors));
-}
+#[path = "../src/transparent_probe.rs"]
+mod transparent_probe;
 
 #[path = "../src/capture_metadata.rs"]
 mod capture_metadata;
@@ -44,6 +31,10 @@ mod curve_quality;
 mod environment;
 #[path = "support/gpu_timing.rs"]
 mod gpu_timing;
+#[path = "support/opening_timing.rs"]
+mod opening_timing;
+#[path = "support/playback_timing.rs"]
+mod playback_timing;
 
 #[derive(Resource)]
 struct Capture {
@@ -71,6 +62,8 @@ struct Capture {
     ready_frames: u32,
     requested: bool,
     mesh_report: String,
+    opening: opening_timing::OpeningTiming,
+    opening_texture_sampling: Option<(usize, Duration)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -190,6 +183,8 @@ impl Capture {
             ready_frames: 0,
             requested: false,
             mesh_report: String::new(),
+            opening: opening_timing::OpeningTiming::new(Instant::now()),
+            opening_texture_sampling: None,
         })
     }
 
@@ -260,6 +255,7 @@ fn reverse_capture_clocks(
 }
 
 fn main() -> AppExit {
+    let started = Instant::now();
     let timing = match std::env::var("USD_CAPTURE_GPU_SAMPLES") {
         Ok(value) => gpu_timing::GpuTiming::parse(Some(&value)),
         Err(std::env::VarError::NotPresent) => gpu_timing::GpuTiming::parse(None),
@@ -273,6 +269,28 @@ fn main() -> AppExit {
         }
     };
     let timing_enabled = timing.enabled();
+    let optional = |name| match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    };
+    let playback = optional("USD_CAPTURE_PLAYBACK_SAMPLES").and_then(|samples| {
+        optional("USD_CAPTURE_PLAYBACK_SPEED").and_then(|speed| {
+            playback_timing::PlaybackTiming::parse(samples.as_deref(), speed.as_deref())
+        })
+    });
+    let playback = match playback {
+        Ok(playback) => playback,
+        Err(error) => {
+            eprintln!("{error}");
+            return AppExit::error();
+        }
+    };
+    let playback_enabled = playback.is_some();
+    if playback_enabled && timing_enabled {
+        eprintln!("playback measurement has its own GPU window; omit USD_CAPTURE_GPU_SAMPLES");
+        return AppExit::error();
+    }
     let curve_settings = match curve_quality::from_env() {
         Ok(settings) => settings,
         Err(error) => {
@@ -287,6 +305,7 @@ fn main() -> AppExit {
             return AppExit::error();
         }
     };
+    capture.opening = opening_timing::OpeningTiming::new(started);
     capture.renderer = match CaptureRenderer::parse(
         &std::env::var("USD_CAPTURE_RENDERER").unwrap_or_else(|_| "forward".into()),
     ) {
@@ -353,11 +372,11 @@ fn main() -> AppExit {
         }
     };
     capture.camera_path = std::env::var("USD_CAPTURE_CAMERA").ok();
-    if let Ok(times) = std::env::var("USD_CAPTURE_INSTANCE_TIMES") {
-        if let Err(error) = capture.set_instance_times(&times) {
-            eprintln!("{error}");
-            return AppExit::error();
-        }
+    if let Ok(times) = std::env::var("USD_CAPTURE_INSTANCE_TIMES")
+        && let Err(error) = capture.set_instance_times(&times)
+    {
+        eprintln!("{error}");
+        return AppExit::error();
     }
     match std::env::var("USD_CAPTURE_INSTANCE_SPACING") {
         Ok(value) => {
@@ -387,6 +406,10 @@ fn main() -> AppExit {
             return AppExit::error();
         }
     };
+    if playback_enabled && capture.swap_clocks {
+        eprintln!("playback measurement cannot be combined with USD_CAPTURE_SWAP_CLOCKS");
+        return AppExit::error();
+    }
     capture.shadow_maps = match std::env::var("USD_CAPTURE_SHADOWS")
         .as_deref()
         .unwrap_or("scene")
@@ -412,8 +435,6 @@ fn main() -> AppExit {
     if capture.renderer == CaptureRenderer::Deferred {
         app.insert_resource(bevy::pbr::DefaultOpaqueRendererMethod::deferred());
     }
-    let progress = PipelineProgress::default();
-    app.insert_resource(progress.clone());
     app.insert_resource(capture)
         .add_plugins(
             DefaultPlugins
@@ -439,6 +460,8 @@ fn main() -> AppExit {
             environment::ViewerEnvironmentPlugin,
         ))
         .insert_resource(usd_bevy::UsdProjectionBudget(Duration::MAX))
+        .init_resource::<usd_bevy::route::preparation::MeshPreparationTiming>()
+        .init_resource::<usd_bevy::route::gpu_skin::DeformedSortTiming>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -455,7 +478,12 @@ fn main() -> AppExit {
             .insert_resource(usd_bevy::skeleton_overlay::UsdSkeletonOverlay { visible: true });
     }
     if std::env::var_os("USD_PROFILE_SOURCES").is_some() {
-        app.init_resource::<usd_bevy::asset::UsdSceneTimings>();
+        app.init_resource::<usd_bevy::asset::UsdSceneTimings>()
+            .init_resource::<usd_bevy::route::TextureSamplingTiming>();
+    }
+    if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::instance::UsdInstanceAnimationTiming>()
+            .init_resource::<usd_bevy::route::preparation::MeshPreparationPhaseTiming>();
     }
     if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() {
         app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>();
@@ -463,17 +491,30 @@ fn main() -> AppExit {
     if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
         app.init_resource::<usd_bevy::route::ProjectionVisibilityTimings>();
     }
-    if timing_enabled {
+    if timing_enabled || playback_enabled {
         app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
     }
-    app.sub_app_mut(bevy::render::RenderApp)
-        .insert_resource(progress)
-        .add_systems(
-            bevy::render::Render,
-            pipeline_progress.after(bevy::render::RenderSystems::Render),
-        );
+    pipeline_probe::configure(&mut app);
+    if let Some(playback) = playback {
+        playback_timing::configure(&mut app, playback);
+    }
+    if std::env::var_os("USD_CAPTURE_PHASE_PROBE").is_some() {
+        transparent_probe::configure(&mut app);
+    }
     if std::env::var_os("USD_CPU_SKINNING").is_none() {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
+    }
+    if let Ok(threshold) = std::env::var("USD_CAPTURE_GPU_INSTANCING") {
+        let Ok(threshold) = threshold.parse::<usize>() else {
+            eprintln!("USD_CAPTURE_GPU_INSTANCING must be a non-negative integer");
+            return AppExit::error();
+        };
+        app.insert_resource(usd_bevy::route::gpu_instancing::UsdGpuInstancing {
+            threshold,
+            min_pixels: 0.0,
+            shadows: true,
+        })
+        .add_plugins(usd_bevy::route::gpu_instancing::UsdGpuInstancingPlugin);
     }
     if let Ok(levels) = std::env::var("USD_SUBDIVISION_LEVELS") {
         let settings = usd_bevy::route::subdivision::UsdSubdivisionSettings::new(
@@ -544,13 +585,14 @@ fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     server: Res<AssetServer>,
-    capture: Res<Capture>,
+    mut capture: ResMut<Capture>,
 ) {
     let mut image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = images.add(image);
     let mut camera = commands.spawn((
         Camera3d::default(),
+        bevy::pbr::ScreenSpaceTransmission::default(),
         CaptureCamera,
         capture.msaa,
         capture.exposure,
@@ -577,6 +619,7 @@ fn setup(
     if capture.renderer == CaptureRenderer::Oit {
         camera.insert(bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default());
     }
+    capture.opening.request(Instant::now());
     let scene: Handle<UsdScene> = server.load(
         capture
             .asset
@@ -597,18 +640,20 @@ fn setup(
     }
 }
 
+type SceneMeshBounds = (
+    &'static Mesh3d,
+    Option<&'static bevy::camera::primitives::Aabb>,
+    &'static GlobalTransform,
+    &'static InheritedVisibility,
+    Option<&'static bevy::mesh::skinning::SkinnedMesh>,
+    Option<&'static bevy::mesh::morph::MeshMorphWeights>,
+);
+
 fn fit_capture_grid(
     capture: Res<Capture>,
     states: Query<&usd_bevy::asset::UsdSceneState, With<CaptureInstance>>,
     mut fitted: Local<Option<Vec<u64>>>,
-    meshes: Query<(
-        &Mesh3d,
-        Option<&bevy::camera::primitives::Aabb>,
-        &GlobalTransform,
-        &InheritedVisibility,
-        Option<&bevy::mesh::skinning::SkinnedMesh>,
-        Option<&bevy::mesh::morph::MeshMorphWeights>,
-    )>,
+    meshes: Query<SceneMeshBounds>,
     mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
     mut grids: Query<
         (
@@ -617,6 +662,7 @@ fn fit_capture_grid(
         ),
         With<environment::ViewerGrid>,
     >,
+    mut scene_bounds: ResMut<environment::SceneBounds>,
 ) {
     if capture.requested {
         return;
@@ -652,6 +698,7 @@ fn fit_capture_grid(
         }
     }
     if let Some((height, scale, fade)) = environment::fit_grid(low, high) {
+        scene_bounds.0 = Some((low, high));
         for (mut transform, mut settings) in &mut grids {
             transform.translation.y = height;
             settings.scale = scale;
@@ -661,10 +708,16 @@ fn fit_capture_grid(
     }
 }
 
+type AuthoredCamera = (
+    &'static usd_bevy::UsdPrimRef,
+    &'static GlobalTransform,
+    &'static Projection,
+);
+
 fn select_authored_camera(
     mut capture: ResMut<Capture>,
     sources: Query<
-        (&usd_bevy::UsdPrimRef, &GlobalTransform, &Projection),
+        AuthoredCamera,
         (
             With<usd_bevy::route::camera::UsdCamera>,
             Without<CaptureCamera>,
@@ -689,65 +742,145 @@ fn select_authored_camera(
     capture.camera_ready = true;
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct CaptureTiming<'w, 's> {
+    diagnostics: Res<'w, bevy::diagnostic::DiagnosticsStore>,
+    timing: ResMut<'w, gpu_timing::GpuTiming>,
+    playback: Option<ResMut<'w, playback_timing::PlaybackTiming>>,
+    progress: Res<'w, PipelineProbe>,
+    render_scene_ready: ResMut<'w, pipeline_probe::PipelineSceneReady>,
+    sort_timing: Option<Res<'w, usd_bevy::route::gpu_skin::DeformedSortTiming>>,
+    instance_timing: Option<Res<'w, usd_bevy::instance::UsdInstanceAnimationTiming>>,
+    preparation_phases: Option<Res<'w, usd_bevy::route::preparation::MeshPreparationPhaseTiming>>,
+    texture_sampling: Option<Res<'w, usd_bevy::route::TextureSamplingTiming>>,
+    mesh_assets: Res<'w, Assets<Mesh>>,
+    mesh_references: Query<'w, 's, (&'static Mesh3d, &'static InheritedVisibility)>,
+}
+
+type CaptureMeshData = (
+    Entity,
+    &'static InheritedVisibility,
+    Option<&'static bevy::mesh::skinning::SkinnedMesh>,
+    Option<&'static usd_bevy::route::gpu_skin::UsdCpuSkinFallback>,
+    Option<&'static usd_bevy::route::gpu_morph::UsdGpuMorph>,
+    Option<&'static MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>,
+);
+
+type CaptureGeometryIssues = (
+    &'static usd_bevy::UsdPrimRef,
+    Option<&'static usd_bevy::route::shapes::UsdShapeError>,
+    Option<&'static usd_bevy::route::curves::UsdCurveError>,
+    Option<&'static usd_bevy::route::xform::UsdTransformError>,
+);
+
+#[derive(bevy::ecs::system::SystemParam)]
+struct CaptureScene<'w, 's> {
+    states: Query<'w, 's, &'static usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
+    meshes: Query<'w, 's, CaptureMeshData, With<Mesh3d>>,
+    camera: Query<
+        'w,
+        's,
+        (
+            &'static RenderTarget,
+            &'static GlobalTransform,
+            &'static Camera,
+        ),
+        With<CaptureCamera>,
+    >,
+    environments: Query<
+        'w,
+        's,
+        &'static usd_bevy::route::dome_environment::UsdDomeEnvironmentState,
+        With<CaptureCamera>,
+    >,
+    environment_lights:
+        Query<'w, 's, &'static bevy::light::EnvironmentMapLight, With<CaptureCamera>>,
+    generators: Query<'w, 's, (), With<bevy::light::GeneratedEnvironmentMapLight>>,
+    dome_diagnostics:
+        Option<Res<'w, usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
+    studio_lights: Query<'w, 's, &'static environment::StudioLight>,
+    deformation_errors: Query<
+        'w,
+        's,
+        (
+            &'static usd_bevy::UsdPrimRef,
+            &'static usd_bevy::route::skel::UsdDeformationError,
+        ),
+    >,
+    subdivision_errors: Query<
+        'w,
+        's,
+        (
+            &'static usd_bevy::UsdPrimRef,
+            &'static usd_bevy::route::subdivision::UsdSubdivisionError,
+        ),
+    >,
+    instancer_errors: Query<
+        'w,
+        's,
+        (
+            &'static usd_bevy::UsdPrimRef,
+            &'static usd_bevy::route::instancer::UsdInstancerWarning,
+        ),
+    >,
+    geometry_errors: Query<'w, 's, CaptureGeometryIssues>,
+}
+
 fn capture_frame(
     mut commands: Commands,
     mut capture: ResMut<Capture>,
-    timing: (
-        Res<bevy::diagnostic::DiagnosticsStore>,
-        ResMut<gpu_timing::GpuTiming>,
-        Res<PipelineProgress>,
-        Res<Assets<Mesh>>,
-        Query<(&Mesh3d, &InheritedVisibility)>,
-    ),
-    states: Query<&usd_bevy::asset::UsdSceneState, With<UsdSceneRoot>>,
-    meshes: Query<
-        (
-            Entity,
-            &InheritedVisibility,
-            Option<&bevy::mesh::skinning::SkinnedMesh>,
-            Option<&usd_bevy::route::gpu_skin::UsdCpuSkinFallback>,
-            Option<&usd_bevy::route::gpu_morph::UsdGpuMorph>,
-            Option<&MeshMaterial3d<usd_bevy::route::flat_material::FlatMaterial>>,
-        ),
-        With<Mesh3d>,
-    >,
-    camera: Query<(&RenderTarget, &GlobalTransform, &Camera), With<CaptureCamera>>,
-    environments: Query<
-        &usd_bevy::route::dome_environment::UsdDomeEnvironmentState,
-        With<CaptureCamera>,
-    >,
-    environment_lights: Query<&bevy::light::EnvironmentMapLight, With<CaptureCamera>>,
-    generators: Query<(), With<bevy::light::GeneratedEnvironmentMapLight>>,
-    dome_diagnostics: Option<Res<usd_bevy::route::dome_environment::UsdDomeEnvironmentDiagnostics>>,
-    studio_lights: Query<&environment::StudioLight>,
-    deformation_errors: Query<(
-        &usd_bevy::UsdPrimRef,
-        &usd_bevy::route::skel::UsdDeformationError,
-    )>,
-    subdivision_errors: Query<(
-        &usd_bevy::UsdPrimRef,
-        &usd_bevy::route::subdivision::UsdSubdivisionError,
-    )>,
-    instancer_errors: Query<(
-        &usd_bevy::UsdPrimRef,
-        &usd_bevy::route::instancer::UsdInstancerWarning,
-    )>,
-    geometry_errors: Query<(
-        &usd_bevy::UsdPrimRef,
-        Option<&usd_bevy::route::shapes::UsdShapeError>,
-        Option<&usd_bevy::route::curves::UsdCurveError>,
-        Option<&usd_bevy::route::xform::UsdTransformError>,
-    )>,
+    timing: CaptureTiming,
+    scene: CaptureScene,
+    preparation: Option<Res<usd_bevy::route::preparation::MeshPreparationTiming>>,
+    transparent: Option<Res<transparent_probe::TransparentProbe>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let (diagnostics, mut timing, progress, mesh_assets, mesh_references) = timing;
+    let CaptureTiming {
+        diagnostics,
+        mut timing,
+        mut playback,
+        progress,
+        mut render_scene_ready,
+        sort_timing,
+        instance_timing,
+        preparation_phases,
+        texture_sampling,
+        mesh_assets,
+        mesh_references,
+    } = timing;
+    let CaptureScene {
+        states,
+        meshes,
+        camera,
+        environments,
+        environment_lights,
+        generators,
+        dome_diagnostics,
+        studio_lights,
+        deformation_errors,
+        subdivision_errors,
+        instancer_errors,
+        geometry_errors,
+    } = scene;
+    render_scene_ready.0 = false;
+    if let Some(playback) = &playback
+        && let Some(error) = playback.error()
+    {
+        eprintln!("playback failed: {error}\n{}", playback.report());
+        exit.write(AppExit::error());
+        return;
+    }
     if capture.started.elapsed() > capture.timeout {
         eprintln!(
             "capture failed: timed out waiting for scene/render readback; camera={:?} ready={}; pipeline status: {:?}",
             capture.camera_path,
             capture.camera_ready,
-            progress.0.lock().unwrap()
+            progress.snapshot()
         );
+        if let Some(playback) = &playback {
+            eprintln!("{}", playback.report());
+        }
+        eprintln!("{}", capture.opening.report());
         exit.write(AppExit::error());
         return;
     }
@@ -764,6 +897,12 @@ fn capture_frame(
     }
     if states.iter().count() != capture.instance_times.len() || capture.requested {
         return;
+    }
+    capture.opening.scene_ready(Instant::now());
+    if capture.opening_texture_sampling.is_none() {
+        capture.opening_texture_sampling = texture_sampling
+            .as_ref()
+            .map(|timing| (timing.images, timing.elapsed));
     }
     if !capture.camera_ready {
         return;
@@ -830,18 +969,22 @@ fn capture_frame(
             return;
         }
     }
-    if !progress
-        .0
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|(waiting, errors)| *waiting == 0 && errors.is_empty())
-    {
+    render_scene_ready.0 = true;
+    if progress.ready_count_for_scene(true).is_some() {
+        capture.opening.pipelines_observed(Instant::now());
+    }
+    if progress.ready_count().is_none() {
         capture.ready_frames = 0;
         return;
     }
     capture.ready_frames += 1;
     if capture.ready_frames < 60 {
+        return;
+    }
+    if let Some(playback) = &mut playback
+        && !playback.complete()
+    {
+        playback.arm();
         return;
     }
     if !timing.collect(&diagnostics) {
@@ -872,6 +1015,9 @@ fn capture_frame(
         "hierarchy_visible_meshes={visible}\nhierarchy_visible_gpu_meshes={gpu}\nhierarchy_visible_gpu_morph_meshes={morph}\n"
     );
     capture.mesh_report.push_str(&timing.report());
+    if let Some(playback) = &playback {
+        capture.mesh_report.push_str(&playback.report());
+    }
     capture
         .mesh_report
         .push_str(&capture_metadata::mesh_residency_report(
@@ -933,10 +1079,44 @@ fn capture_frame(
         "shadow_maps=off\n"
     };
     capture.mesh_report.push_str(shadows);
+    if let Some(transparent) = transparent {
+        capture.mesh_report.push_str(&transparent.report());
+    }
+    if let Some(timing) = sort_timing {
+        capture.mesh_report.push_str(&format!(
+            "deformed_sort_scope=main-world-dependency-checks-and-posed-center-rebuilds\ndeformed_sort_updates={}\ndeformed_sort_rebuilt={}\ndeformed_sort_vertices={}\ndeformed_sort_elapsed_ns={}\n",
+            timing.updates, timing.rebuilt, timing.vertices, timing.elapsed.as_nanos()
+        ));
+    }
+    if let Some(preparation) = preparation {
+        capture
+            .mesh_report
+            .push_str(&preparation_report(&preparation));
+    }
+    if let Some(phases) = preparation_phases {
+        capture
+            .mesh_report
+            .push_str(&preparation_phase_report(&phases));
+    }
+    if let Some(timing) = texture_sampling {
+        capture
+            .mesh_report
+            .push_str(&texture_sampling_report(&timing));
+    }
+    if let Some(timing) = instance_timing {
+        capture.mesh_report.push_str(&format!(
+            "instance_animation_scope=all-root-time-changes-includes-warmup-classification-included-in-total\ninstance_animation_updates={}\ninstance_animation_classified={}\ninstance_animation_reused={}\ninstance_animation_animated={}\ninstance_animation_classification_ms={:.6}\ninstance_animation_total_ms={:.6}\n",
+            timing.updates, timing.classified, timing.reused, timing.animated,
+            timing.classification.as_secs_f64() * 1000.0, timing.total.as_secs_f64() * 1000.0,
+        ));
+    }
     capture.requested = true;
+    capture.opening.screenshot_requested(Instant::now());
     commands.spawn(Screenshot(target.clone())).observe(
-        |event: On<ScreenshotCaptured>, capture: Res<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>,
-         visibility: Option<Res<usd_bevy::route::ProjectionVisibilityTimings>>, mut exit: MessageWriter<AppExit>| {
+        |event: On<ScreenshotCaptured>, mut capture: ResMut<Capture>, timings: Option<Res<usd_bevy::asset::UsdSceneTimings>>,
+         visibility: Option<Res<usd_bevy::route::ProjectionVisibilityTimings>>, progress: Res<PipelineProbe>, mut exit: MessageWriter<AppExit>| {
+            capture.opening.readback(Instant::now());
+            let compiled = progress.ready_count().expect("capture pipelines must remain ready at readback");
             if let Some(timings) = visibility {
                 for ((route, hidden), row) in &timings.0 {
                     let hierarchy = match hidden { Some(true) => "hidden", Some(false) => "visible", None => "unknown" };
@@ -945,15 +1125,61 @@ fn capture_frame(
                 }
             }
             if let Some(timings) = timings {
-                eprintln!("capture_source_profile attempts={} failures={} validation_reuses={} open_ms={:.3} validation_ms={:.3} projection_ms={:.3}",
+                eprintln!("capture_source_profile attempts={} failures={} validation_reuses={} open_ms={:.3} validation_ms={:.3} projection_ms={:.3} overrides_ms={:.3} textures_ms={:.3}",
                     timings.attempts, timings.failures, timings.validation_reuses, timings.open.as_secs_f64()*1000.0,
-                    timings.validation.as_secs_f64()*1000.0, timings.projection.as_secs_f64()*1000.0);
+                    timings.validation.as_secs_f64()*1000.0, timings.projection.as_secs_f64()*1000.0,
+                    timings.overrides.as_secs_f64()*1000.0, timings.textures.as_secs_f64()*1000.0);
             }
             match save(&event.image, &capture) {
-                Ok(()) => { println!("CAPTURE_OK {output}", output = capture.output.display()); exit.write(AppExit::Success); }
+                Ok(()) => { println!("CAPTURE_PIPELINES_READY compiled={compiled}"); println!("CAPTURE_OK {output}", output = capture.output.display()); exit.write(AppExit::Success); }
                 Err(error) => { eprintln!("CAPTURE_FAILED {error}"); exit.write(AppExit::error()); }
             }
         });
+}
+
+fn preparation_report(timing: &usd_bevy::route::preparation::MeshPreparationTiming) -> String {
+    format!(
+        "mesh_preparation_batches={}\nmesh_preparation_parallel_batches={}\nmesh_preparation_inline_jobs={}\nmesh_preparation_jobs={}\nmesh_preparation_peak_jobs={}\nmesh_preparation_peak_input_bytes={}\nmesh_preparation_elapsed_ms={:.3}\n",
+        timing.batches,
+        timing.parallel_batches,
+        timing.inline_jobs,
+        timing.jobs,
+        timing.peak_jobs,
+        timing.peak_input_bytes,
+        timing.elapsed.as_secs_f64() * 1000.0,
+    )
+}
+
+fn texture_sampling_report(timing: &usd_bevy::route::TextureSamplingTiming) -> String {
+    format!(
+        "texture_sampling_scope=all-main-world-finalization-includes-mips-sampler-and-generated-image-fingerprints\ntexture_sampling_images={}\ntexture_sampling_input_bytes={}\ntexture_sampling_appended_bytes={}\ntexture_sampling_elapsed_ms={:.6}\ntexture_sampling_slowest_ms={:.6}\n",
+        timing.images,
+        timing.input_bytes,
+        timing.appended_bytes,
+        timing.elapsed.as_secs_f64() * 1000.0,
+        timing.slowest.as_secs_f64() * 1000.0,
+    )
+}
+
+fn preparation_phase_report(
+    timing: &usd_bevy::route::preparation::MeshPreparationPhaseTiming,
+) -> String {
+    let mut report = format!(
+        "mesh_preparation_phase_scope=all-animation-batches-includes-warmup-nonoverlapping-main-phases\nmesh_preparation_worker_scope=overlapping-job-wall-times-not-thread-cpu-or-additive-to-main-phases\nmesh_preparation_phase_batches={}\nmesh_preparation_tangent_jobs={}\nmesh_preparation_tangent_failures={}\nmesh_preparation_tangent_vertices={}\nmesh_preparation_tangent_worker_ms={:.6}\nmesh_preparation_tangent_worker_max_ms={:.6}\n",
+        timing.batches,
+        timing.tangent_jobs,
+        timing.tangent_failures,
+        timing.tangent_vertices,
+        timing.tangent_elapsed.as_secs_f64() * 1000.0,
+        timing.tangent_max.as_secs_f64() * 1000.0,
+    );
+    for (phase, elapsed) in &timing.phases {
+        report.push_str(&format!(
+            "mesh_preparation_phase_ms[{phase}]={:.6}\n",
+            elapsed.as_secs_f64() * 1000.0,
+        ));
+    }
+    report
 }
 
 fn save(image: &Image, capture: &Capture) -> Result<(), String> {
@@ -1009,7 +1235,18 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
             "curve_steps={}\ncurve_surface_sides={:?}\n",
             capture.curve_steps, capture.curve_surface_sides
         )
-        + &capture.mesh_report;
+        + &capture.mesh_report
+        + &capture.opening.report();
+    let report = match capture.opening_texture_sampling {
+        Some((images, elapsed)) => {
+            report
+                + &format!(
+                    "opening_texture_sampling_scope=first-all-roots-ready-observation\nopening_texture_sampling_images={images}\nopening_texture_sampling_elapsed_ms={:.6}\n",
+                    elapsed.as_secs_f64() * 1000.0,
+                )
+        }
+        None => report,
+    };
     let report = report
         + &format!(
             "exposure_ev100={}\ntonemapping={:?}\n",
@@ -1024,6 +1261,82 @@ fn save(image: &Image, capture: &Capture) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn texture_sampling_metadata_reports_post_projection_work() {
+        let report = super::texture_sampling_report(&usd_bevy::route::TextureSamplingTiming {
+            images: 2,
+            input_bytes: 128,
+            appended_bytes: 32,
+            elapsed: std::time::Duration::from_millis(7),
+            slowest: std::time::Duration::from_millis(4),
+        });
+        for line in [
+            "texture_sampling_images=2",
+            "texture_sampling_input_bytes=128",
+            "texture_sampling_appended_bytes=32",
+            "texture_sampling_elapsed_ms=7.000000",
+            "texture_sampling_slowest_ms=4.000000",
+        ] {
+            assert!(report.lines().any(|actual| actual == line));
+        }
+        assert!(report.contains("includes-mips-sampler-and-generated-image-fingerprints"));
+    }
+
+    #[test]
+    fn mesh_phase_metadata_keeps_overlapping_worker_times_separate() {
+        use std::time::Duration;
+        let report = super::preparation_phase_report(
+            &usd_bevy::route::preparation::MeshPreparationPhaseTiming {
+                batches: 1,
+                phases: [("assembly", Duration::from_millis(3))].into(),
+                tangent_jobs: 2,
+                tangent_failures: 1,
+                tangent_vertices: 8,
+                tangent_elapsed: Duration::from_millis(5),
+                tangent_max: Duration::from_millis(3),
+            },
+        );
+        for line in [
+            "mesh_preparation_phase_batches=1",
+            "mesh_preparation_tangent_jobs=2",
+            "mesh_preparation_tangent_failures=1",
+            "mesh_preparation_tangent_vertices=8",
+            "mesh_preparation_tangent_worker_ms=5.000000",
+            "mesh_preparation_tangent_worker_max_ms=3.000000",
+            "mesh_preparation_phase_ms[assembly]=3.000000",
+        ] {
+            assert!(report.lines().any(|actual| actual == line));
+        }
+        assert!(report.contains("includes-warmup"));
+        assert!(report.contains("not-thread-cpu-or-additive-to-main-phases"));
+    }
+
+    #[test]
+    fn mesh_preparation_metadata_distinguishes_parallel_and_inline_jobs() {
+        let report =
+            super::preparation_report(&usd_bevy::route::preparation::MeshPreparationTiming {
+                batches: 3,
+                parallel_batches: 1,
+                inline_jobs: 1,
+                jobs: 5,
+                peak_jobs: 4,
+                peak_input_bytes: 1024,
+                elapsed: std::time::Duration::from_millis(2),
+                ..Default::default()
+            });
+        for line in [
+            "mesh_preparation_batches=3",
+            "mesh_preparation_parallel_batches=1",
+            "mesh_preparation_inline_jobs=1",
+            "mesh_preparation_jobs=5",
+            "mesh_preparation_peak_jobs=4",
+            "mesh_preparation_peak_input_bytes=1024",
+            "mesh_preparation_elapsed_ms=2.000",
+        ] {
+            assert!(report.lines().any(|actual| actual == line));
+        }
+    }
+
     #[test]
     fn camera_response_defaults_bounds_and_atomic_failure() {
         use super::*;
@@ -1150,6 +1463,7 @@ mod tests {
         let mut capture = Capture::parse(&["a.usda".into(), "a.png".into(), "0".into()]).unwrap();
         capture.ready_frames = 1;
         app.insert_resource(capture);
+        app.init_resource::<environment::SceneBounds>();
         app.add_systems(Update, fit_capture_grid);
         let root = app
             .world_mut()
@@ -1431,6 +1745,7 @@ mod tests {
         let image = Image::new_target_texture(1280, 720, TextureFormat::Rgba8UnormSrgb, None);
         for levels in [None, Some(2)] {
             capture.subdivision_levels = levels;
+            capture.opening_texture_sampling = levels.map(|_| (3, Duration::from_millis(7)));
             capture.curve_steps = if levels.is_some() { 32 } else { 8 };
             capture.msaa = if levels.is_some() {
                 Msaa::Off
@@ -1444,6 +1759,12 @@ mod tests {
             assert!(report.contains(&format!("msaa={:?}\n", capture.msaa)));
             assert!(report.contains(&format!("exposure_ev100={}\n", capture.exposure.ev100)));
             assert!(report.contains(&format!("tonemapping={:?}\n", capture.tonemapping)));
+            if levels.is_some() {
+                assert!(report.contains("opening_texture_sampling_images=3\n"));
+                assert!(report.contains("opening_texture_sampling_elapsed_ms=7.000000\n"));
+            } else {
+                assert!(!report.contains("opening_texture_sampling_"));
+            }
             assert!(report.contains("requested_eye=Vec3(6.0, 4.0, 8.0)\n"));
             assert!(!report.contains("\neye="));
             assert_eq!(

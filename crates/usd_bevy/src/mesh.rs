@@ -267,12 +267,16 @@ impl MeshFaceIndices {
 fn select_flat_indices(read: &ReadMesh, triangles: &[u32], subset: Option<&[i32]>) -> Vec<u32> {
     let selected = subset.map(|faces| {
         flat_corner_indices(read, Some(faces))
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|triangle| [triangle[0], triangle[1], triangle[2]])
             .collect::<std::collections::HashSet<_>>()
     });
     triangles
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .enumerate()
         .filter(|(_, triangle)| {
             selected
@@ -306,11 +310,15 @@ pub(crate) fn assemble_mesh(read: &ReadMesh, face_subset: Option<&[i32]>, tangen
         mesh.compute_smooth_normals();
     }
     if tangents && read.uvs.is_some() {
-        if let Err(e) = mesh.generate_tangents() {
-            bevy::log::debug!("mesh: generate_tangents failed: {e}");
-        }
+        generate_tangents(&mut mesh);
     }
     mesh
+}
+
+pub(crate) fn generate_tangents(mesh: &mut Mesh) {
+    if let Err(e) = mesh.generate_tangents() {
+        bevy::log::debug!("mesh: generate_tangents failed: {e}");
+    }
 }
 
 /// A flat-shaded mesh for a material that derives normals per fragment:
@@ -585,7 +593,7 @@ pub(crate) fn compute_point_smooth_normals(read: &ReadMesh) -> Vec<[f32; 3]> {
         &read.face_vertex_indices,
         None,
     );
-    for triangle in triangles.chunks_exact(3) {
+    for triangle in triangles.as_chunks::<3>().0 {
         let indices = [
             triangle[0] as usize,
             triangle[1] as usize,
@@ -658,7 +666,7 @@ pub(crate) fn crease_corner_normals(
         offset += count;
     }
     let mut sums = vec![DVec3::ZERO; points.len()];
-    for triangle in flat_corner_indices(read, None).chunks_exact(3) {
+    for triangle in flat_corner_indices(read, None).as_chunks::<3>().0 {
         let corners = [
             triangle[0] as usize,
             triangle[1] as usize,
@@ -703,7 +711,7 @@ fn build_flat(read: &ReadMesh, face_subset: Option<&[i32]>) -> BuiltMesh {
     let mut output_normals = Vec::with_capacity(triangles.len());
     let mut output_uvs = Vec::with_capacity(triangles.len());
     let mut output_colors = colors.as_ref().map(|_| Vec::with_capacity(triangles.len()));
-    for triangle in triangles.chunks_exact(3) {
+    for triangle in triangles.as_chunks::<3>().0 {
         let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
         let point = |index: u32| Vec3::from_array(positions[index as usize]).as_dvec3();
         let normal = (point(b) - point(a))
@@ -1198,7 +1206,7 @@ fn point_in_triangle_2d(p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> b
 /// Build a Bevy mesh from a UsdGeom.Cube's `size`. The USD cube is
 /// size × size × size centred at the prim origin.
 pub fn mesh_cube(size: f64) -> Mesh {
-    Mesh::from(bevy::math::primitives::Cuboid::new(
+    Mesh::from(bevy::shape::Cuboid::new(
         size as f32,
         size as f32,
         size as f32,
@@ -1207,13 +1215,13 @@ pub fn mesh_cube(size: f64) -> Mesh {
 
 /// UsdGeom.Sphere radius → Bevy's UV sphere.
 pub fn mesh_sphere(radius: f64) -> Mesh {
-    Mesh::from(bevy::math::primitives::Sphere::new(radius as f32))
+    Mesh::from(bevy::shape::Sphere::new(radius as f32))
 }
 
 /// UsdGeom.Cylinder dimensions + axis. Bevy's `Cylinder` points up the Y
 /// axis by convention, so we apply an axis rotation for X/Z cases.
 pub fn mesh_cylinder(params: ReadCylinder) -> Mesh {
-    let mut mesh = Mesh::from(bevy::math::primitives::Cylinder::new(
+    let mut mesh = Mesh::from(bevy::shape::Cylinder::new(
         params.radius as f32,
         params.height as f32,
     ));
@@ -1224,7 +1232,7 @@ pub fn mesh_cylinder(params: ReadCylinder) -> Mesh {
 /// UsdGeom.Plane `width` × `length`. Y-normal plane centred at the origin.
 pub fn mesh_plane(width: f64, length: f64) -> Mesh {
     Mesh::from(
-        bevy::math::primitives::Plane3d::default()
+        bevy::shape::Plane3d::default()
             .mesh()
             .size(width as f32, length as f32),
     )
@@ -1235,7 +1243,7 @@ pub fn mesh_capsule(params: ReadCylinder) -> Mesh {
     // UsdGeom.Capsule's `height` is the cylinder portion length (hemispheres
     // add `2*radius` to the total). Bevy's Capsule3d takes `half_length` =
     // half the cylinder portion.
-    let mut mesh = Mesh::from(bevy::math::primitives::Capsule3d::new(
+    let mut mesh = Mesh::from(bevy::shape::Capsule3d::new(
         params.radius as f32,
         params.height as f32,
     ));
@@ -1758,7 +1766,12 @@ def Mesh "M" {
                 for (vertex, &point) in mapping.iter().enumerate() {
                     assert_eq!(positions[vertex], read.points[point]);
                 }
-                for (triangle, ns) in positions.chunks_exact(3).zip(normals.chunks_exact(3)) {
+                for (triangle, ns) in positions
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .zip(normals.as_chunks::<3>().0)
+                {
                     let normal = (Vec3::from_array(triangle[1]) - Vec3::from_array(triangle[0]))
                         .cross(Vec3::from_array(triangle[2]) - Vec3::from_array(triangle[0]))
                         .normalize();

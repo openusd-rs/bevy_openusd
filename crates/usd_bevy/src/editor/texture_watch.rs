@@ -99,10 +99,10 @@ fn rearm_replaced_directories(state: &mut WatchState, now: Instant) -> Option<us
     let replaced: BTreeSet<_> = state
         .watchers
         .iter()
-        .filter_map(|(parent, _, _)| {
-            (directory_identity(parent).as_ref() != state.identities.get(parent))
-                .then(|| parent.clone())
+        .filter(|(parent, _, _)| {
+            directory_identity(parent).as_ref() != state.identities.get(parent)
         })
+        .map(|(parent, _, _)| parent.clone())
         .collect();
     if replaced.is_empty() {
         return None;
@@ -225,7 +225,11 @@ mod tests {
     #[test]
     fn initial_retry_yields_to_explicit_open_and_preserves_existing_edits() {
         let directory = tempfile::tempdir().unwrap();
-        let current = directory.path().join("current.usda");
+        let current = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("current.usda");
         std::fs::write(&current, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((
@@ -242,6 +246,8 @@ mod tests {
             .send(EditorCommand::Open(
                 directory
                     .path()
+                    .canonicalize()
+                    .unwrap()
                     .join("absent.usda")
                     .to_string_lossy()
                     .into_owned(),
@@ -261,7 +267,7 @@ mod tests {
                 prim: "/Root".into(),
                 name: "score".into(),
                 type_name: "double".into(),
-                value: openusd::sdf::Value::Double(17.0),
+                value: openusd::vt::Value::Double(17.0),
             }))
             .unwrap();
         app.update();
@@ -291,8 +297,8 @@ mod tests {
     fn native_editor_texture_watch_recovers_failed_initial_open() {
         for corrupt in [false, true] {
             let directory = tempfile::tempdir().unwrap();
-            let scene = directory.path().join("scene.usda");
-            let texture = directory.path().join("pixel.png");
+            let scene = directory.path().canonicalize().unwrap().join("scene.usda");
+            let texture = directory.path().canonicalize().unwrap().join("pixel.png");
             std::fs::write(
                 &scene,
                 r#"#usda 1.0
@@ -365,11 +371,15 @@ def Material "Mat" {
                     prim: "/Mat".into(),
                     name: "score".into(),
                     type_name: "double".into(),
-                    value: openusd::sdf::Value::Double(17.0),
+                    value: openusd::vt::Value::Double(17.0),
                 }))
                 .unwrap();
             app.update();
-            let replacement = directory.path().join("replacement.usda");
+            let replacement = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("replacement.usda");
             std::fs::write(
                 &replacement,
                 std::fs::read_to_string(&scene)
@@ -429,8 +439,8 @@ def Material "Mat" {
     #[ignore = "requires native filesystem events"]
     fn native_editor_texture_watch_retries_only_failed_directories() {
         let directory = tempfile::tempdir().unwrap();
-        let ready = directory.path().join("ready");
-        let missing = directory.path().join("missing");
+        let ready = directory.path().canonicalize().unwrap().join("ready");
+        let missing = directory.path().canonicalize().unwrap().join("missing");
         std::fs::create_dir(&ready).unwrap();
         let mut state = WatchState {
             paths: [ready.join("a.png"), missing.join("b.png")].into(),
@@ -473,7 +483,11 @@ def Material "Mat" {
                 rearm_replaced_directories(&mut state, now + Duration::from_secs(2)),
                 None
             );
-            std::fs::rename(&missing, directory.path().join("old-missing")).unwrap();
+            std::fs::rename(
+                &missing,
+                directory.path().canonicalize().unwrap().join("old-missing"),
+            )
+            .unwrap();
             std::fs::create_dir(&missing).unwrap();
             assert_eq!(
                 rearm_replaced_directories(&mut state, now + Duration::from_millis(2999)),
@@ -532,11 +546,11 @@ def Material "Mat" {
     #[ignore = "requires native filesystem events"]
     fn native_editor_texture_watch_recovery_refreshes_missed_pixels() {
         let directory = tempfile::tempdir().unwrap();
-        let images = directory.path().join("images");
+        let images = directory.path().canonicalize().unwrap().join("images");
         std::fs::create_dir(&images).unwrap();
         let file = images.join("pixel.png");
         std::fs::write(&file, png([255, 0, 0, 255])).unwrap();
-        let scene = directory.path().join("scene.usda");
+        let scene = directory.path().canonicalize().unwrap().join("scene.usda");
         std::fs::write(
             &scene,
             r#"#usda 1.0
@@ -596,6 +610,9 @@ def Material "Mat" {
         };
         assert_eq!(pixels(app.world()), [255, 0, 0, 255]);
         assert!(app.world().resource::<WatchState>().watchers.is_empty());
+        app.world_mut()
+            .resource_mut::<super::super::reload::EditorReloadSettings>()
+            .enabled = false;
         std::fs::remove_file(&file).unwrap();
         std::fs::remove_dir(&images).unwrap();
         app.update();
@@ -638,7 +655,7 @@ def Material "Mat" {
                 prim: "/Mat/Texture".into(),
                 name: "inputs:file".into(),
                 type_name: "asset".into(),
-                value: openusd::sdf::Value::AssetPath(openusd::sdf::AssetPath::new(
+                value: openusd::vt::Value::AssetPath(openusd::sdf::AssetPath::new(
                     "new-images/later.png",
                 )),
             }))
@@ -652,7 +669,11 @@ def Material "Mat" {
                 .contains("Texture loading failed")
         );
         assert_eq!(pixels(app.world()), [0, 0, 255, 255]);
-        let requested = directory.path().join("new-images/later.png");
+        let requested = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("new-images/later.png");
         assert!(
             app.world()
                 .resource::<super::super::EditorTextureRequests>()
@@ -702,7 +723,11 @@ def Material "Mat" {
         #[cfg(unix)]
         {
             let parent = requested.parent().unwrap();
-            let moved = directory.path().join("replaced-images");
+            let moved = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("replaced-images");
             std::fs::rename(parent, &moved).unwrap();
             std::fs::create_dir(parent).unwrap();
             std::fs::write(&requested, png([255, 0, 255, 255])).unwrap();
@@ -726,9 +751,9 @@ def Material "Mat" {
     #[ignore = "requires native filesystem events"]
     fn native_editor_texture_watch_preserves_document_and_recovers() {
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("pixel.png");
+        let file = directory.path().canonicalize().unwrap().join("pixel.png");
         std::fs::write(&file, png([255, 0, 0, 255])).unwrap();
-        let scene = directory.path().join("scene.usda");
+        let scene = directory.path().canonicalize().unwrap().join("scene.usda");
         std::fs::write(
             &scene,
             r#"#usda 1.0
@@ -779,7 +804,7 @@ def Material "Mat" {
                 prim: "/Mat/Surface".into(),
                 name: "inputs:ior".into(),
                 type_name: "float".into(),
-                value: openusd::sdf::Value::Float(1.7),
+                value: openusd::vt::Value::Float(1.7),
             }))
             .unwrap();
         app.update();
@@ -808,7 +833,15 @@ def Material "Mat" {
             .get_resource_ref::<crate::asset::SnapshotTextures>()
             .unwrap()
             .last_changed();
-        std::fs::write(directory.path().join("unrelated.txt"), "unrelated change").unwrap();
+        std::fs::write(
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("unrelated.txt"),
+            "unrelated change",
+        )
+        .unwrap();
         let deadline = bevy::platform::time::Instant::now() + Duration::from_secs(1);
         while bevy::platform::time::Instant::now() < deadline {
             app.update();
@@ -821,7 +854,11 @@ def Material "Mat" {
                 .last_changed(),
             texture_tick
         );
-        let temporary = directory.path().join("replacement.png");
+        let temporary = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("replacement.png");
         std::fs::write(&temporary, png([0, 0, 255, 255])).unwrap();
         std::fs::rename(&temporary, &file).unwrap();
         tick_until(&mut app, |world| pixels(world) == [0, 0, 255, 255]);
@@ -849,8 +886,16 @@ def Material "Mat" {
             before
         );
         let next_directory = tempfile::tempdir().unwrap();
-        let next_scene = next_directory.path().join("scene.usda");
-        let next_file = next_directory.path().join("pixel.png");
+        let next_scene = next_directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("scene.usda");
+        let next_file = next_directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("pixel.png");
         std::fs::copy(&scene, &next_scene).unwrap();
         std::fs::write(&next_file, png([255, 255, 0, 255])).unwrap();
         bridge
@@ -890,6 +935,8 @@ def Material "Mat" {
             .send(EditorCommand::Open(
                 next_directory
                     .path()
+                    .canonicalize()
+                    .unwrap()
                     .join("missing.usda")
                     .to_string_lossy()
                     .into_owned(),

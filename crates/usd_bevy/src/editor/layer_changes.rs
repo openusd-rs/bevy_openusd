@@ -10,7 +10,7 @@ struct Changes(Rc<RefCell<BTreeMap<String, u64>>>, Rc<Cell<u64>>);
 
 impl StageSink for Changes {
     fn after_commit(&self, _stage: &Stage, change: &CommittedChange<'_>) {
-        if change.resynced.iter().any(|path| path.is_prim_path()) {
+        if change.resynced.iter().any(|path| path.is_prim()) {
             self.1.set(self.1.get().saturating_add(1));
         }
         let mut revisions = self.0.borrow_mut();
@@ -29,15 +29,49 @@ pub(super) struct LayerChanges {
     changes: Changes,
 }
 
-impl LayerChanges {
-    pub fn new(stage: &Stage) -> Self {
-        let changes = Changes::default();
-        let sink = stage.add_sink(changes.clone());
+#[derive(PartialEq, Eq)]
+pub(super) struct CompositionRevision {
+    layers: Vec<String>,
+    authored: BTreeMap<String, u64>,
+    structure: u64,
+    load_rules: openusd::pcp::LoadRules,
+    mask: openusd::usd::StagePopulationMask,
+    muted: Vec<String>,
+}
+
+impl CompositionRevision {
+    pub(super) fn read(stage: &Stage, changes: &LayerChanges) -> Self {
+        let authored = changes.revisions();
         Self {
+            layers: stage.layer_identifiers(),
+            authored,
+            structure: changes.structural_revision(),
+            load_rules: stage.load_rules(),
+            mask: stage.mask(),
+            muted: stage.muted_layers(),
+        }
+    }
+
+    pub(super) fn reusable(&self) -> bool {
+        self.structure != u64::MAX && self.authored.values().all(|revision| *revision != u64::MAX)
+    }
+}
+
+impl LayerChanges {
+    pub fn new(stage: &Stage) -> openusd::Result<Self> {
+        let changes = Changes::default();
+        let revisions = Rc::downgrade(&changes.0);
+        let structure = Rc::downgrade(&changes.1);
+        let sink = stage.add_sink(move |stage: &Stage, change: &CommittedChange<'_>| {
+            if let (Some(revisions), Some(structure)) = (revisions.upgrade(), structure.upgrade()) {
+                Changes(revisions, structure).after_commit(stage, change);
+            }
+        })?;
+        Ok(Self {
             stage: stage.clone(),
             sink,
             changes,
-        }
+        })
     }
 
     pub fn revisions(&self) -> BTreeMap<String, u64> {
@@ -52,7 +86,9 @@ impl LayerChanges {
 
 impl Drop for LayerChanges {
     fn drop(&mut self) {
-        self.stage.remove_sink(self.sink);
+        if let Err(error) = self.stage.remove_sink(self.sink) {
+            bevy::log::warn!("failed to detach layer change observer: {error}");
+        }
     }
 }
 
@@ -61,9 +97,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direct_layer_edits_advance_revisions_without_composed_reads() {
+        let stage = Stage::builder().in_memory("direct-tracking.usda").unwrap();
+        let tracker = LayerChanges::new(&stage).unwrap();
+        let layer = stage.root_layer();
+        layer
+            .edit(|layer| {
+                openusd::sdf::PrimSpec::new(
+                    layer.data_mut(),
+                    "/Direct",
+                    openusd::sdf::Specifier::Def,
+                    "Xform",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(tracker.revisions()[layer.identifier()], 1);
+        assert!(tracker.structural_revision() > 0);
+        assert_eq!(tracker.revisions()[layer.identifier()], 1);
+    }
+
+    #[test]
     fn dropping_tracker_detaches_sink_from_surviving_stage() {
         let stage = Stage::builder().in_memory("tracking.usda").unwrap();
-        let tracker = LayerChanges::new(&stage);
+        let tracker = LayerChanges::new(&stage).unwrap();
         let changes = tracker.changes.clone();
         drop(tracker);
         assert_eq!(Rc::strong_count(&changes.0), 1);

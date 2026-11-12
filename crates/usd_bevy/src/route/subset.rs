@@ -54,10 +54,12 @@ fn update_skin(world: &mut World, parent: Entity, flat: bool) {
     }
 }
 
+type PreparedSubset = (String, Handle<Mesh>, Handle<StandardMaterial>, Vec<String>);
+
 #[derive(Clone, Default)]
 pub(crate) struct PreparedSubsets {
     remainder: Option<Handle<Mesh>>,
-    parts: Vec<(String, Handle<Mesh>, Handle<StandardMaterial>, Vec<String>)>,
+    parts: Vec<PreparedSubset>,
     warning: Option<String>,
 }
 
@@ -449,6 +451,7 @@ def Mesh "M" {
         app.init_resource::<Assets<StandardMaterial>>();
         app.init_resource::<Assets<FlatMaterial>>();
         app.init_resource::<GpuSkinningEnabled>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -576,6 +579,7 @@ def Mesh "M" {
             app.init_resource::<Assets<FlatMaterial>>();
             app.init_resource::<Assets<SkinnedMeshInverseBindposes>>();
             app.init_resource::<GpuSkinningEnabled>();
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             let handle = app
                 .world_mut()
                 .resource_mut::<Assets<crate::UsdScene>>()
@@ -590,7 +594,18 @@ def Mesh "M" {
                     UsdInstanceTime { current: 30.0 },
                 ))
                 .id();
-            app.update();
+            for _ in 0..8 {
+                app.update();
+                if app.world().get::<crate::UsdSceneState>(root)
+                    == Some(&crate::UsdSceneState::Ready)
+                {
+                    break;
+                }
+            }
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready),
+            );
             let parent = app
                 .world()
                 .get_non_send::<UsdInstances>()
@@ -686,7 +701,7 @@ def Mesh "M" {
                 stage
                     .attribute("/Test/Bar.skel:blendShapes")
                     .unwrap()
-                    .set(openusd::sdf::Value::TokenVec(vec![]))
+                    .set(openusd::vt::Value::TokenVec(vec![]))
                     .unwrap();
                 app.update();
                 for entity in std::iter::once(parent).chain(parts.iter().map(|(child, _)| *child)) {
@@ -799,7 +814,7 @@ def Mesh "M" {
         for indices in [vec![-1], vec![1], vec![0, 0]] {
             attribute
                 .clone()
-                .set(openusd::sdf::Value::IntVec(indices))
+                .set(openusd::vt::Value::IntVec(indices))
                 .unwrap();
             crate::live::apply_changes(&mut world, &live, &mut map);
             assert!(children(&world, parent).is_empty());
@@ -817,7 +832,7 @@ def Mesh "M" {
             );
         }
         assert!(world.get_entity(child).is_err());
-        attribute.set(openusd::sdf::Value::IntVec(vec![0])).unwrap();
+        attribute.set(openusd::vt::Value::IntVec(vec![0])).unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert_eq!(children(&world, parent).len(), 1);
         assert!(world.get::<UsdSubsetWarning>(parent).is_none());
@@ -869,6 +884,7 @@ def Material "Mat" {
         ));
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -890,7 +906,20 @@ def Material "Mat" {
                 UsdInstanceTime { current: 10.0 },
             ))
             .id();
-        app.update();
+        for _ in 0..200 {
+            app.update();
+            if [a, b].iter().all(|root| {
+                app.world().get::<crate::UsdSceneState>(*root) == Some(&crate::UsdSceneState::Ready)
+            }) {
+                break;
+            }
+        }
+        for root in [a, b] {
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready),
+            );
+        }
         let parent = |world: &World, root| {
             world
                 .get_non_send::<UsdInstances>()

@@ -67,7 +67,9 @@ pub(super) fn transformed(
         )?;
         anyhow::ensure!(
             data[..6]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .any(|bytes| half::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32() != 0.5),
             "constant normal becomes zero at float16 precision"
         );
@@ -115,8 +117,8 @@ pub(super) fn transformed(
         "color transform requires a 2D image"
     );
     anyhow::ensure!(
-        matches!(image.sampler, bevy::image::ImageSampler::Default),
-        "color transform requires a shared default sampler"
+        super::sampling::derivable(&image.sampler),
+        "color transform requires a shared material sampler"
     );
     let count = u64::from(size.width) * u64::from(size.height);
     anyhow::ensure!(
@@ -156,15 +158,15 @@ fn rgba8_transformed(
         _ => return None,
     };
     let pixels = image.data.as_ref()?.get(..count.checked_mul(4)?)?;
-    let mut table = [[[0; 2]; 256]; 4];
-    for byte in 0..256 {
+    let mut table = [[[0; 2]; 4]; 256];
+    for (byte, channels) in table.iter_mut().enumerate() {
         let value = byte as f32 / 255.0;
         let linear = if srgb {
             Color::srgb(value, value, value).to_linear().red
         } else {
             value
         };
-        for channel in 0..4 {
+        for (channel, output) in channels.iter_mut().enumerate() {
             let value = if channel == 3 {
                 value
             } else {
@@ -174,38 +176,39 @@ fn rgba8_transformed(
             if !value.is_finite() {
                 return None;
             }
-            table[channel][byte] = value.to_le_bytes();
+            *output = value.to_le_bytes();
         }
     }
     let mut data = Vec::with_capacity(count.checked_mul(8)?);
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         for channel in 0..4 {
-            data.extend_from_slice(&table[channel][pixel[channel] as usize]);
+            data.extend_from_slice(&table[pixel[channel] as usize][channel]);
         }
     }
     Some(data)
 }
 
 fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<Image>> {
-    if let Some(handle) = world
-        .get_resource::<ColorTextures>()
-        .and_then(|cache| cache.images.get(&key))
-    {
-        if world.resource::<Assets<Image>>().contains(handle) {
-            return Ok(handle.clone());
-        }
-    }
-    let image = Image::new(
+    let mut image = Image::new_uninit(
         Extent3d {
             width: key.0,
             height: key.1,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        key.2.clone(),
         TextureFormat::Rgba16Float,
         bevy::asset::RenderAssetUsages::default(),
     );
+    if let Some(id) = world
+        .get_resource::<ColorTextures>()
+        .and_then(|cache| cache.images.get(&key))
+        .map(Handle::id)
+        && let Some(handle) =
+            super::generated_image::reuse_if(world, id, &image, |data| data == key.2.as_slice())
+    {
+        return Ok(handle);
+    }
+    image.data = Some(key.2.clone());
     let handle = super::generated_image::intern(world, image);
     world.init_resource::<ColorTextures>();
     let mut cache = world.resource_mut::<ColorTextures>();
@@ -214,8 +217,7 @@ fn cached(world: &mut World, key: (u32, u32, Vec<u8>)) -> anyhow::Result<Handle<
         cache.images.clear();
         cache.bytes = 0;
     }
-    if bytes <= 64 * 1024 * 1024 {
-        cache.images.insert(key, handle.clone());
+    if bytes <= 64 * 1024 * 1024 && cache.images.insert(key, handle.clone()).is_none() {
         cache.bytes += bytes;
     }
     Ok(handle)

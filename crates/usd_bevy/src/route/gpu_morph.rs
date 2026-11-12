@@ -52,7 +52,8 @@ pub(crate) fn attach(ctx: &RouteCtx, world: &mut World, entity: Entity) -> anyho
     let read = ctx
         .read_mesh()?
         .ok_or_else(|| anyhow::anyhow!("missing morph mesh"))?;
-    let mut mesh = crate::mesh::assemble_mesh(read, None, false);
+    let mut mesh =
+        super::cache::assemble_cached_mesh(world, read, super::cache::Assembly::Standard);
     let weights = prepare(ctx, read, &mut mesh, true)?;
     let handle = super::cache::intern_mesh(world, mesh);
     set_weights(world, entity, weights);
@@ -76,7 +77,7 @@ pub(crate) fn prepare(
 ) -> anyhow::Result<Vec<f32>> {
     let authored = read.normals.is_some();
     anyhow::ensure!(
-        crate::mesh::uses_flat_normals(&read) || authored,
+        crate::mesh::uses_flat_normals(read) || authored,
         "GPU morph normal mode is unsupported"
     );
     let sample = crate::read::skel::morph_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)?;
@@ -84,7 +85,7 @@ pub(crate) fn prepare(
         !sample.targets.is_empty() && sample.targets.len() <= MAX_MORPH_WEIGHTS,
         "unsupported morph target count"
     );
-    let mapping = crate::mesh::vertex_point_indices(&read);
+    let mapping = crate::mesh::vertex_point_indices(read);
     anyhow::ensure!(
         !mapping.is_empty() && mapping.len() == mesh.count_vertices(),
         "invalid morph vertex mapping"
@@ -366,13 +367,13 @@ mod tests {
         ] {
             attribute
                 .clone()
-                .set_metadata("interpolation", openusd::sdf::Value::Token(mode.into()))
+                .set_metadata("interpolation", openusd::vt::Value::Token(mode.into()))
                 .unwrap();
             stage
                 .prim(&path)
                 .unwrap()
                 .attribute("primvars:normals:indices")
-                .set(openusd::sdf::Value::IntVec(indices))
+                .set(openusd::vt::Value::IntVec(indices))
                 .unwrap();
             for time in [0.0, 5.0, 10.0] {
                 let ctx = RouteCtx::at(&stage, &path, Some(time));
@@ -441,7 +442,7 @@ mod tests {
         stage
             .attribute("/Test/Skel/Anim.scales")
             .unwrap()
-            .set(openusd::sdf::Value::Vec3hVec(vec![
+            .set(openusd::vt::Value::Vec3hVec(vec![
                 [0.0, 1.0, 1.0].map(openusd::gf::f16::from_f32).into(),
             ]))
             .unwrap();

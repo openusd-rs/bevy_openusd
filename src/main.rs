@@ -13,21 +13,29 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod camera_plan;
 mod capture;
 mod capture_metadata;
+mod capture_residency;
+mod capture_target;
 mod capture_tools;
+mod capture_uniforms;
 mod close_confirmation;
 mod control;
 mod curve_quality;
 mod environment;
 mod file_dialog;
 mod framing;
+mod gpu_limits;
 mod host_capture;
 mod inspector;
 mod lighting;
+mod morph_probe;
 mod payload_editor;
 mod perf_render;
 mod render_settings;
+mod renderdoc_capture;
+mod residency_policy;
 mod timeline;
 mod toolbar_icons;
+mod transparent_probe;
 mod ui_diagnostics;
 mod ui_frame_pacing;
 mod ui_replay;
@@ -49,15 +57,16 @@ use usd_bevy::UsdPlugin;
 use usd_bevy::editor::{EditorBridge, EditorCommand, EditorPlugin, SaveMode};
 use usd_bevy::live::LiveStagePlugin;
 
-/// Everything (trace + panics + backtraces) is mirrored here so a hard crash
-/// is still recoverable after the window dies.
+/// Viewer tracing and panic reports are mirrored to this file.
 const LOG_FILE: &str = "/tmp/usdview.log";
+const DEFAULT_LOG_FILTER: &str = "warn,usdview=info,usd_bevy=info,openusd=info";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if control::run_cli()? {
         return Ok(());
     }
     curve_quality::from_env()?;
+    residency_policy::from_env()?;
     capture::CaptureConfig::from_env()?;
     host_capture::from_env()?;
     render_settings::oit_from_env()?;
@@ -102,15 +111,14 @@ fn hot_reload_defaults_on_and_accepts_explicit_disable() {
     assert!(hot_reload_enabled(Some("")).is_err());
 }
 
-/// Tracing to BOTH stderr and [`LOG_FILE`]. The embedded Bevy app has no
-/// `LogPlugin`, so without this the logs go nowhere; the file copy survives a
-/// crash that eats stderr. Override the filter with `RUST_LOG`.
+/// Writes filtered tracing events to stderr and [`LOG_FILE`].
+/// `RUST_LOG` overrides the viewer's INFO-level default.
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt::writer::MakeWriterExt;
     let _ = std::fs::write(LOG_FILE, ""); // truncate per run
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn,usdview=trace,usd_bevy=trace,openusd=info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
     let to_file = || {
         std::fs::OpenOptions::new()
             .create(true)
@@ -124,6 +132,46 @@ fn init_tracing() {
         .with_ansi(false)
         .with_writer(std::io::stderr.and(to_file))
         .try_init();
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use tracing::Level;
+    use tracing_subscriber::prelude::*;
+
+    fn enabled(filter: &str) -> [bool; 9] {
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_subscriber::EnvFilter::new(filter));
+        tracing::subscriber::with_default(subscriber, || {
+            [
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::TRACE),
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::DEBUG),
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::INFO),
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::WARN),
+                tracing::enabled!(target: "usd_bevy::route::geom", Level::ERROR),
+                tracing::enabled!(target: "usdview", Level::INFO),
+                tracing::enabled!(target: "openusd", Level::INFO),
+                tracing::enabled!(target: "other_crate", Level::INFO),
+                tracing::enabled!(target: "other_crate", Level::WARN),
+            ]
+        })
+    }
+
+    #[test]
+    fn default_logging_keeps_info_and_diagnostics_without_mesh_traces() {
+        assert_eq!(
+            enabled(super::DEFAULT_LOG_FILTER),
+            [false, false, true, true, true, true, true, false, true]
+        );
+    }
+
+    #[test]
+    fn explicit_logging_filter_can_enable_trace_and_replace_defaults() {
+        assert_eq!(
+            enabled("off,usd_bevy::route::geom=trace"),
+            [true, true, true, true, true, false, false, false, false]
+        );
+    }
 }
 
 /// Capture panics (message + full backtrace) to the log file and stderr —
@@ -200,6 +248,13 @@ struct UsdApp {
 }
 
 impl WindowApp for UsdApp {
+    fn configure_gpu_limits(
+        supported: &bevy::render::settings::WgpuLimits,
+        requested: &mut bevy::render::settings::WgpuLimits,
+    ) {
+        gpu_limits::configure(supported, requested);
+    }
+
     fn new(ctx: CreationContext<'_>) -> Self {
         ui_replay::install(ctx.__internal_egui_ctx()).expect("invalid USD_UI_REPLAY script");
         ui_diagnostics::install(ctx.__internal_egui_ctx())
@@ -575,14 +630,16 @@ fn outliner_pane(
                 .with_tree(7, move |tree| {
                     usd_tree(
                         tree,
-                        tree_root,
-                        accent,
-                        &filter,
-                        &nodes,
                         &roots,
-                        &tree_selected,
-                        &editor,
-                        &visibility,
+                        UsdTreeView {
+                            root_id: tree_root,
+                            accent,
+                            filter: &filter,
+                            nodes: &nodes,
+                            selected: &tree_selected,
+                            editor: &editor,
+                            visibility: &visibility,
+                        },
                     )
                 }),
             Pod::new(MaraId::new(("usd.outliner", "scene", 2usize))).with_readout(
@@ -597,52 +654,43 @@ fn outliner_pane(
     );
 }
 
-fn usd_tree(
-    tree: &mut TreeBody,
+#[derive(Clone, Copy)]
+struct UsdTreeView<'a> {
     root_id: MaraId,
     accent: MaraColor32,
-    filter: &str,
-    nodes: &[UsdNode],
-    roots: &[usize],
-    selected: &str,
-    editor: &EditorBridge,
-    visibility: &std::collections::HashMap<String, bool>,
-) {
+    filter: &'a str,
+    nodes: &'a [UsdNode],
+    selected: &'a str,
+    editor: &'a EditorBridge,
+    visibility: &'a std::collections::HashMap<String, bool>,
+}
+
+fn usd_tree(tree: &mut TreeBody, roots: &[usize], view: UsdTreeView) {
     let mut clicked: Option<String> = None;
     for &r in roots {
-        walk_usd_tree(
-            tree,
-            root_id,
-            nodes,
-            r,
-            0,
-            selected,
-            accent,
-            filter,
-            &mut clicked,
-            editor,
-            visibility,
-        );
+        walk_usd_tree(tree, view, r, 0, &mut clicked);
     }
     if let Some(p) = clicked {
-        send(editor, EditorCommand::Select(Some(p)));
+        send(view.editor, EditorCommand::Select(Some(p)));
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk_usd_tree(
     tree: &mut TreeBody,
-    root_id: MaraId,
-    nodes: &[UsdNode],
+    view: UsdTreeView,
     i: usize,
     depth: u32,
-    selected: &str,
-    accent: MaraColor32,
-    filter: &str,
     clicked: &mut Option<String>,
-    editor: &EditorBridge,
-    visibility: &std::collections::HashMap<String, bool>,
 ) {
+    let UsdTreeView {
+        root_id,
+        accent,
+        filter,
+        nodes,
+        selected,
+        editor,
+        visibility,
+    } = view;
     if !usd_tree_passes(nodes, i, filter) {
         return;
     }
@@ -679,19 +727,7 @@ fn walk_usd_tree(
     }
     if is_branch && expanded {
         for &c in &node.children {
-            walk_usd_tree(
-                tree,
-                root_id,
-                nodes,
-                c,
-                depth + 1,
-                selected,
-                accent,
-                filter,
-                clicked,
-                editor,
-                visibility,
-            );
+            walk_usd_tree(tree, view, c, depth + 1, clicked);
         }
     }
 }
@@ -714,6 +750,10 @@ fn usd_tree_passes(nodes: &[UsdNode], i: usize, filter: &str) -> bool {
 
 fn configure_usd_app(app: &mut App, editor: EditorBridge) {
     app.insert_resource(curve_quality::from_env().expect("validated USD_CURVE_STEPS"));
+    residency_policy::configure(
+        app,
+        residency_policy::from_env().expect("validated USD_DEFER_HIDDEN_MESHES"),
+    );
     app.insert_resource(editor);
     app.add_plugins((
         UsdPlugin,
@@ -768,6 +808,7 @@ fn setup_camera(
     mara_bevy::apply_rig(&chase, &mut transform);
     let mut camera = commands.spawn((
         Camera3d::default(),
+        bevy::pbr::ScreenSpaceTransmission::default(),
         transform,
         AmbientLight {
             color: Color::srgb(0.78, 0.85, 1.0),

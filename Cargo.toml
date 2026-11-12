@@ -1,9 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["crates/usd_bevy", "crates/usd_macro", "examples/web"]
-exclude = ["xtra", "vendor/openusd", "vendor/bevy_asset"]
+exclude = ["xtra", "vendor/bevy_asset", "vendor/bevy_pbr", "vendor/mara_bevy"]
 
 [profile.dev.package.openusd]
+opt-level = 3
+
+[profile.dev.package.openusd-schemas]
 opt-level = 3
 
 [profile.dev.package.usd_bevy]
@@ -17,16 +20,16 @@ opt-level = 3
 
 [patch.crates-io]
 bevy_asset = { path = "vendor/bevy_asset" }
+bevy_pbr = { path = "vendor/bevy_pbr" }
 
-[patch."https://github.com/mxpv/openusd"]
-openusd = { path = "vendor/openusd/crates/openusd" }
-openusd-build = { path = "vendor/openusd/crates/openusd-build" }
-openusd-schemas = { path = "vendor/openusd/crates/openusd-schemas" }
+[patch."https://github.com/dave-gray101/mara"]
+mara_bevy = { path = "vendor/mara_bevy" }
 
 [package]
 name = "usdview"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
+rust-version = "1.97.1"
 license = "MIT"
 description = "Live OpenUSD editor — mara UI host embedding a Bevy viewport."
 repository = "https://github.com/bresilla/bevy_openusd"
@@ -37,6 +40,7 @@ path = "src/main.rs"
 
 [features]
 file_watcher = ["usd_bevy/file_watcher"]
+debugger_capture = ["dep:libloading", "dep:renderdoc-sys"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -45,11 +49,11 @@ png = "0.18"
 # The live USD editor: stage projection, sync, authoring, persistence.
 usd_bevy = { path = "crates/usd_bevy", features = ["skeleton_overlay", "physics_overlay"] }
 # Pure-Rust USD — the viewer opens the live `Stage` directly.
-openusd = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0" }
-openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "b7df5add628cbb791103a7da842dbd82810da5d0", features = ["geom", "shade"] }
+openusd = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b", features = ["geom", "shade"] }
 
 # mara — the egui UI host (window + ribbons/panes) embedding a Bevy viewport.
-mara = { git = "https://github.com/bresilla/mara", branch = "main", default-features = false, features = ["window", "bevy"] }
+mara = { git = "https://github.com/dave-gray101/mara", rev = "0ba23f4de3971a965d54fbe8cb01deb7b9c76741", default-features = false, features = ["window", "bevy"] }
 # Native "Open USD…" file picker.
 rfd = "0.15"
 # Global allocator for the binary and examples.
@@ -59,9 +63,9 @@ mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Bevy 0.19 (needs Rust 1.95+) — the embedded viewport renders the USD scene
+# Bevy 0.20 — the embedded viewport renders the USD scene
 # offscreen into a mara-provided render target.
-bevy = { version = "0.19.1", default-features = false, features = [
+bevy = { version = "0.20.1", default-features = false, features = [
     "bevy_anti_alias",
     "std",
     "bevy_asset",
@@ -74,6 +78,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "bevy_camera",
     "bevy_image",
     "bevy_dev_tools",
+    "render_dev_tools",
     "bevy_gizmos",
     "bevy_gizmos_render",
     "reflect_auto_register",
@@ -81,11 +86,14 @@ bevy = { version = "0.19.1", default-features = false, features = [
 
 [dev-dependencies]
 tempfile = "3"
+bytemuck = { version = "1", features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
-wgpu = { version = "29", default-features = false, features = ["vulkan"] }
-egui-wgpu = { version = "0.34", default-features = false, features = ["winit"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu", "x11"] }
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+egui-wgpu = { version = "0.37", default-features = false, features = ["winit"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["process"] }
+libloading = { version = "0.8.9", optional = true }
+renderdoc-sys = { version = "1.1", optional = true }

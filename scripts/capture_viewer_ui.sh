@@ -1,11 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 if [[ $# != 2 ]]; then
     echo "usage: capture_viewer_ui.sh ASSET OUTPUT.png" >&2
     exit 2
 fi
-for command in weston weston-screenshooter setsid make realpath grep timeout; do
+for command in weston weston-screenshooter setsid oslo realpath grep timeout; do
     command -v "$command" >/dev/null || { echo "missing command: $command" >&2; exit 2; }
 done
 asset=$(realpath "$1")
@@ -88,12 +88,11 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 export XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=usd-capture
 if [[ ${USD_UI_CAPTURE_PRIVATE_BUS:-0} == 1 ]]; then
-    export XDG_CONFIG_HOME="$runtime/config" XDG_DATA_HOME="$runtime/data" XDG_CACHE_HOME="$runtime/cache"
-    mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+    capture_session_private_environment "$runtime"
 fi
 unset WAYLAND_SOCKET
 compositor=(weston --backend=headless --renderer="$renderer" --fake-seat --width=1600 --height=1000 --socket="$WAYLAND_DISPLAY" --no-config --debug --idle-time=0)
-if command -v nixVulkan >/dev/null; then compositor=(nixVulkan "${compositor[@]}"); fi
+if [[ ! -e /etc/NIXOS ]] && command -v nixVulkan >/dev/null; then compositor=(nixVulkan "${compositor[@]}"); fi
 capture_session_run "$runtime/compositor.pid" "${compositor[@]}" > "${output%.png}.weston.log" 2>&1 &
 compositor_pid=$!
 for ((i=0; i<100; i++)); do
@@ -103,8 +102,7 @@ for ((i=0; i<100; i++)); do
 done
 [[ -S "$runtime/$WAYLAND_DISPLAY" ]] || { echo "compositor startup timed out" >&2; exit 1; }
 cd "$root"
-viewer=(env USD_UI_CAPTURE_HANDSHAKE=1 make run WAYLAND_DISPLAY="$WAYLAND_DISPLAY" CARGO="${CARGO:-cargo --offline}" ARGS="$(printf '%q' "$asset")")
-if [[ "$profile" == release ]]; then viewer+=("APP_TARGET=--release --bin usdview"); fi
+viewer=(env USD_UI_CAPTURE_HANDSHAKE=1 USD_WINDOW_BACKEND=wayland oslo make run --profile "$profile" --args "$(printf '%q' "$asset")")
 if [[ "$paired" == 1 ]]; then
     viewer=(env "USD_SCREENSHOT=$viewport" "${viewer[@]}")
 fi
@@ -139,8 +137,8 @@ if [[ "$paired" == 1 ]]; then
             case "$key" in width) width=$value ;; height) height=$value ;; esac
         done < "${viewport%.png}.capture.txt"
         if [[ "$width" =~ ^[1-9][0-9]*$ && "$height" =~ ^[1-9][0-9]*$ ]]; then
-            if make run RUN_WITH= CARGO="${CARGO:-cargo --offline}" APP_TARGET='--example capture_inspect' \
-                ARGS="$(printf '%q' "$viewport") 0 0 $width $height" > "${viewport%.png}.inspect.log" 2>&1; then
+            if oslo make run-example --name capture_inspect \
+                --args "$(printf '%q' "$viewport") 0 0 $width $height" > "${viewport%.png}.inspect.log" 2>&1; then
                 viewport_ok=1
             fi
         fi
@@ -191,8 +189,8 @@ cd "$root"
 outputs=("$output")
 if [[ "$second_wait" != 0 ]]; then outputs+=("$second"); fi
 for frame in "${outputs[@]}"; do
-    if [[ ! -f "$frame" ]] || ! make run RUN_WITH= CARGO="${CARGO:-cargo --offline}" APP_TARGET='--example capture_inspect' \
-        ARGS="$(printf '%q' "$frame") 110 110 1400 800" > "${frame%.png}.inspect.log" 2>&1; then
+    if [[ ! -f "$frame" ]] || ! oslo make run-example --name capture_inspect \
+        --args "$(printf '%q' "$frame") 110 110 1400 800" > "${frame%.png}.inspect.log" 2>&1; then
         echo "viewer capture failed region inspection; image and logs retained: $frame" >&2
         echo 'region_inspection_passed=0' >> "${frame%.png}.settings.txt"
         capture_ok=0
@@ -202,7 +200,7 @@ for frame in "${outputs[@]}"; do
     fi
 done
 runtime_log_ok=1
-if ! /bin/bash "$root/scripts/check_viewer_log.sh" "${output%.png}.viewer.log"; then
+if ! bash "$root/scripts/check_viewer_log.sh" "${output%.png}.viewer.log"; then
     runtime_log_ok=0
     capture_ok=0
 fi

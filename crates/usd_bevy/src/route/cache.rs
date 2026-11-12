@@ -28,10 +28,12 @@ fn record_cache(world: &mut World, name: &'static str, value: u64) {
     }
 }
 
+type AssembledMesh = (u64, ReadMesh, Mesh, usize, Option<AssetId<Mesh>>);
+
 /// Bounded geometry-input cache containing immutable assembled meshes.
 #[derive(Resource)]
 pub struct MeshAssemblyCache {
-    entries: std::collections::VecDeque<(u64, ReadMesh, Mesh, usize, Option<AssetId<Mesh>>)>,
+    entries: std::collections::VecDeque<AssembledMesh>,
     payload_bytes: usize,
     byte_budget: usize,
 }
@@ -183,9 +185,9 @@ pub(crate) fn intern_assembled_mesh(
     handle
 }
 
-pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh) -> Mesh {
-    let (signature, hit) = lookup_assembly(world, read, Assembly::StandardTangents);
-    assemble_after_lookup(world, read, signature, hit, Assembly::StandardTangents).0
+pub(crate) fn assemble_cached_mesh(world: &mut World, read: &ReadMesh, assembly: Assembly) -> Mesh {
+    let (signature, hit) = lookup_assembly(world, read, assembly);
+    assemble_after_lookup(world, read, signature, hit, assembly).0
 }
 
 /// `mesh` with tangents, interned, when `material` has a normal map that
@@ -368,9 +370,7 @@ pub(crate) fn intern_material_with_sheen(
         record_sheen(world, &handle, sheen);
         return handle;
     }
-    let mut hash = FixedHasher.build_hasher();
-    format!("{material:?}{sheen:?}").hash(&mut hash);
-    let signature = hash.finish();
+    let signature = BuildHasher::hash_one(&FixedHasher, format!("{material:?}{sheen:?}"));
     if let Some(candidates) = world.resource::<MaterialCache>().materials.get(&signature) {
         let assets = world.resource::<Assets<StandardMaterial>>();
         for handle in candidates {
@@ -566,9 +566,13 @@ pub fn intern_mesh(world: &mut World, mesh: Mesh) -> Handle<Mesh> {
 #[derive(Resource)]
 pub struct MeshTangentCache {
     entries: std::collections::VecDeque<(u64, Mesh, bevy::mesh::VertexAttributeValues, usize)>,
+    recent_deformed: std::collections::VecDeque<u64>,
     payload_bytes: usize,
     byte_budget: usize,
 }
+
+const MAX_TANGENT_ENTRIES: usize = 128;
+const MAX_TANGENT_ADMISSION_HISTORY: usize = 128;
 
 impl Default for MeshTangentCache {
     fn default() -> Self {
@@ -580,6 +584,7 @@ impl MeshTangentCache {
     pub fn with_byte_budget(byte_budget: usize) -> Self {
         Self {
             entries: default(),
+            recent_deformed: default(),
             payload_bytes: 0,
             byte_budget,
         }
@@ -591,41 +596,120 @@ impl MeshTangentCache {
 }
 
 pub(crate) fn generate_cached_tangents(world: &mut World, mesh: &mut Mesh) {
+    generate_tangents_cached(world, mesh, false);
+}
+
+pub(crate) fn generate_cached_deformed_tangents(world: &mut World, mesh: &mut Mesh) {
+    generate_tangents_cached(world, mesh, true);
+}
+
+fn generate_tangents_cached(world: &mut World, mesh: &mut Mesh, deformed: bool) {
+    if let Some(ticket) = prepare_tangents(world, mesh, deformed) {
+        let result = mesh.generate_tangents();
+        finish_tangents(world, mesh, ticket, result);
+    }
+}
+
+pub(super) struct TangentTicket {
+    signature: u64,
+    admit: bool,
+}
+
+pub(super) fn prepare_tangents(
+    world: &mut World,
+    mesh: &mut Mesh,
+    deformed: bool,
+) -> Option<TangentTicket> {
     world.init_resource::<MeshTangentCache>();
     let signature = mesh_signature(mesh);
-    if let Some((_, _, tangents, _)) = world
+    let hit = world
         .resource::<MeshTangentCache>()
         .entries
         .iter()
-        .find(|(key, input, _, _)| *key == signature && meshes_equal(input, mesh))
-    {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents.clone());
-        return;
+        .position(|(key, input, _, _)| *key == signature && meshes_equal(input, mesh));
+    if let Some(index) = hit {
+        let mut cache = world.resource_mut::<MeshTangentCache>();
+        let entry = cache.entries.remove(index).unwrap();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, entry.2.clone());
+        cache.entries.push_back(entry);
+        record_cache(world, "tangent_hits", 1);
+        if deformed {
+            record_cache(world, "deformed_tangent_hits", 1);
+        }
+        return None;
     }
-    if let Err(error) = mesh.generate_tangents() {
+    record_cache(world, "tangent_misses", 1);
+    let admit = if deformed {
+        record_cache(world, "deformed_tangent_misses", 1);
+        let mut cache = world.resource_mut::<MeshTangentCache>();
+        if cache.byte_budget == 0 {
+            false
+        } else {
+            let previous = cache
+                .recent_deformed
+                .iter()
+                .position(|key| *key == signature);
+            if let Some(index) = previous {
+                cache.recent_deformed.remove(index);
+            } else if cache.recent_deformed.len() == MAX_TANGENT_ADMISSION_HISTORY {
+                cache.recent_deformed.pop_front();
+            }
+            cache.recent_deformed.push_back(signature);
+            previous.is_some()
+        }
+    } else {
+        true
+    };
+    Some(TangentTicket { signature, admit })
+}
+
+pub(super) fn finish_tangents(
+    world: &mut World,
+    mesh: &Mesh,
+    ticket: TangentTicket,
+    result: Result<(), bevy::mesh::GenerateTangentsError>,
+) {
+    if let Err(error) = result {
+        record_cache(world, "tangent_failures", 1);
         bevy::log::debug!("mesh: generate_tangents failed: {error}");
         return;
     }
     let Some(tangents) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT) else {
         return;
     };
+    if !ticket.admit {
+        record_cache(world, "tangent_admission_skips", 1);
+        return;
+    }
     let bytes = mesh_payload_bytes(mesh);
     let mut cache = world.resource_mut::<MeshTangentCache>();
     if bytes > cache.byte_budget {
         return;
     }
-    while cache.entries.len() >= 32 || bytes > cache.byte_budget.saturating_sub(cache.payload_bytes)
+    let mut evicted = (0, 0);
+    while cache.entries.len() >= MAX_TANGENT_ENTRIES
+        || bytes > cache.byte_budget.saturating_sub(cache.payload_bytes)
     {
         let Some((_, _, _, removed)) = cache.entries.pop_front() else {
             break;
         };
         cache.payload_bytes -= removed;
+        evicted.0 += 1;
+        evicted.1 += removed as u64;
     }
     let tangents = tangents.clone();
     let mut input = mesh.clone();
     input.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
-    cache.entries.push_back((signature, input, tangents, bytes));
+    cache
+        .entries
+        .push_back((ticket.signature, input, tangents, bytes));
     cache.payload_bytes += bytes;
+    record_cache(world, "tangent_insertions", 1);
+    record_cache(world, "tangent_inserted_bytes", bytes as u64);
+    if evicted.0 != 0 {
+        record_cache(world, "tangent_evicted_entries", evicted.0);
+        record_cache(world, "tangent_evicted_bytes", evicted.1);
+    }
 }
 
 pub(crate) fn mesh_payload_bytes(mesh: &Mesh) -> usize {
@@ -813,7 +897,7 @@ mod tests {
             .resource_mut::<Assets<Mesh>>()
             .get_mut(&second)
             .unwrap()
-            .final_aabb = Some(bevy::math::bounding::Aabb3d::new(Vec3::ZERO, Vec3::ONE));
+            .final_aabb = Some(bevy::shape::Aabb3d::new(Vec3::ZERO, Vec3::ONE));
         let third = intern_assembled_mesh(&mut world, &read, Assembly::Standard);
         assert_ne!(second.id(), third.id());
         world.resource_mut::<Assets<Mesh>>().remove(third.id());
@@ -871,7 +955,7 @@ mod tests {
             .unwrap();
         let mut world = World::new();
         let expected = crate::mesh::assemble_mesh(&read, None, true);
-        let mut first = assemble_cached_mesh(&mut world, &read);
+        let mut first = assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents);
         assert!(meshes_equal(&first, &expected));
         first.insert_attribute(
             Mesh::ATTRIBUTE_POSITION,
@@ -880,7 +964,7 @@ mod tests {
         read.subsets.clear();
         read.double_sided = !read.double_sided;
         assert!(meshes_equal(
-            &assemble_cached_mesh(&mut world, &read),
+            &assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents),
             &expected
         ));
         assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 1);
@@ -892,7 +976,7 @@ mod tests {
             }
             let reference = crate::mesh::assemble_mesh(&read, None, true);
             assert!(meshes_equal(
-                &assemble_cached_mesh(&mut world, &read),
+                &assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents),
                 &reference
             ));
         }
@@ -901,7 +985,7 @@ mod tests {
         world.insert_resource(MeshAssemblyCache::with_byte_budget(budget));
         for offset in [1.0, 2.0, 3.0] {
             read.points[0][0] = offset;
-            assemble_cached_mesh(&mut world, &read);
+            assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents);
             assert!(
                 world
                     .resource::<MeshAssemblyCache>()
@@ -912,9 +996,66 @@ mod tests {
         }
         world.insert_resource(MeshAssemblyCache::with_byte_budget(0));
         assert!(meshes_equal(
-            &assemble_cached_mesh(&mut world, &read),
+            &assemble_cached_mesh(&mut world, &read, Assembly::StandardTangents),
             &crate::mesh::assemble_mesh(&read, None, true)
         ));
+        assert!(world.resource::<MeshAssemblyCache>().entries.is_empty());
+    }
+
+    #[test]
+    fn assembly_cache_separates_modes_and_returns_independent_meshes() {
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/material_subsets.usda"
+        );
+        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let read =
+            crate::read::geom::read_mesh_at(&stage, &openusd::sdf::path("/Panels").unwrap(), None)
+                .unwrap()
+                .unwrap();
+        let mut world = World::new();
+        world.init_resource::<MeshCacheMetrics>();
+        for _ in 0..3 {
+            for assembly in [
+                Assembly::Standard,
+                Assembly::StandardTangents,
+                Assembly::FlatShared,
+            ] {
+                let expected = assembly.build(&mut world, &read);
+                let mut mesh = assemble_cached_mesh(&mut world, &read, assembly);
+                assert!(meshes_equal(&mesh, &expected));
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_POSITION,
+                    vec![[9.0; 3]; mesh.count_vertices()],
+                );
+                mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+                assert!(meshes_equal(
+                    &assemble_cached_mesh(&mut world, &read, assembly),
+                    &expected
+                ));
+            }
+        }
+        assert_eq!(world.resource::<MeshAssemblyCache>().entries.len(), 3);
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["assembly_builds"], 3);
+        assert_eq!(
+            world.resource::<MeshCacheMetrics>().0["assembly_clone_hits"],
+            15
+        );
+        world.insert_resource(MeshAssemblyCache::with_byte_budget(0));
+        for assembly in [
+            Assembly::Standard,
+            Assembly::StandardTangents,
+            Assembly::FlatShared,
+        ] {
+            let expected = assembly.build(&mut world, &read);
+            assert!(meshes_equal(
+                &assemble_cached_mesh(&mut world, &read, assembly),
+                &expected
+            ));
+        }
         assert!(world.resource::<MeshAssemblyCache>().entries.is_empty());
     }
 
@@ -988,6 +1129,102 @@ mod tests {
         generate_cached_tangents(&mut world, &mut invalid);
         assert!(invalid.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
         assert_eq!(world.resource::<MeshTangentCache>().entries.len(), 1);
+    }
+
+    #[test]
+    fn tangent_cache_bounds_unique_samples_and_preserves_exact_outputs() {
+        let input = Mesh::from(Rectangle::default());
+        let mut reference = input.clone();
+        reference.generate_tangents().unwrap();
+        let size = mesh_payload_bytes(&reference);
+        for budget in [0, size * 3, usize::MAX] {
+            let mut world = World::new();
+            world.insert_resource(MeshTangentCache::with_byte_budget(budget));
+            for sample in 0..1000 {
+                let mut mesh = Mesh::from(Rectangle::new(1.0 + sample as f32 * 0.001, 1.0));
+                let mut reference = mesh.clone();
+                reference.generate_tangents().unwrap();
+                generate_cached_tangents(&mut world, &mut mesh);
+                assert!(meshes_equal(&mesh, &reference));
+                let cache = world.resource::<MeshTangentCache>();
+                assert!(cache.entries.len() <= MAX_TANGENT_ENTRIES);
+                assert!(cache.payload_bytes <= budget);
+                assert_eq!(cache.payload_bytes, cache.entries.len() * size);
+            }
+        }
+    }
+
+    #[test]
+    fn tangent_cache_keeps_a_working_set_and_refreshes_recent_hits() {
+        let mut world = World::new();
+        world.init_resource::<MeshCacheMetrics>();
+        for _ in 0..3 {
+            for index in 0..80 {
+                generate_cached_tangents(
+                    &mut world,
+                    &mut Mesh::from(Rectangle::new(index as f32 + 1.0, 1.0)),
+                );
+            }
+        }
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["tangent_misses"], 80);
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["tangent_hits"], 160);
+        let size = mesh_payload_bytes(&world.resource::<MeshTangentCache>().entries[0].1)
+            + 4 * std::mem::size_of::<[f32; 4]>();
+        world.insert_resource(MeshTangentCache::with_byte_budget(size * 3));
+        world.resource_mut::<MeshCacheMetrics>().0.clear();
+        for cold in 2..102 {
+            for index in [0, 1, cold] {
+                generate_cached_tangents(
+                    &mut world,
+                    &mut Mesh::from(Rectangle::new(index as f32 + 1.0, 1.0)),
+                );
+            }
+        }
+        assert_eq!(
+            world.resource::<MeshCacheMetrics>().0["tangent_misses"],
+            102
+        );
+        assert_eq!(world.resource::<MeshCacheMetrics>().0["tangent_hits"], 198);
+        assert_eq!(world.resource::<MeshTangentCache>().entries.len(), 3);
+    }
+
+    #[test]
+    fn deformed_tangent_admission_bounds_unique_inputs_and_requires_reuse() {
+        for budget in [0, 4096] {
+            let mut world = World::new();
+            world.insert_resource(MeshTangentCache::with_byte_budget(budget));
+            world.init_resource::<MeshCacheMetrics>();
+            for sample in 0..1000 {
+                let mut mesh = Mesh::from(Rectangle::new(sample as f32 + 2.0, 1.0));
+                let mut expected = mesh.clone();
+                expected.generate_tangents().unwrap();
+                generate_cached_deformed_tangents(&mut world, &mut mesh);
+                assert!(meshes_equal(&mesh, &expected));
+                let cache = world.resource::<MeshTangentCache>();
+                assert!(cache.entries.is_empty());
+                assert_eq!(cache.payload_bytes, 0);
+                assert!(cache.recent_deformed.len() <= MAX_TANGENT_ADMISSION_HISTORY);
+                if budget == 0 {
+                    assert!(cache.recent_deformed.is_empty());
+                }
+            }
+            for _ in 0..3 {
+                generate_cached_deformed_tangents(
+                    &mut world,
+                    &mut Mesh::from(Rectangle::default()),
+                );
+            }
+            let cache = world.resource::<MeshTangentCache>();
+            assert_eq!(cache.entries.len(), usize::from(budget != 0));
+            assert!(cache.payload_bytes <= budget);
+            let hits = world
+                .resource::<MeshCacheMetrics>()
+                .0
+                .get("deformed_tangent_hits")
+                .copied()
+                .unwrap_or(0);
+            assert_eq!(hits, u64::from(budget != 0));
+        }
     }
 
     #[test]
@@ -1260,7 +1497,7 @@ mod tests {
             "/Template/Shape",
             "size",
             "double",
-            openusd::sdf::Value::Double(4.0),
+            openusd::vt::Value::Double(4.0),
         )
         .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
@@ -1384,7 +1621,7 @@ mod tests {
             stage
                 .create_attribute(format!("{name}.size").as_str(), "double")
                 .unwrap()
-                .set(openusd::sdf::Value::Double(size as f64))
+                .set(openusd::vt::Value::Double(size as f64))
                 .unwrap();
         }
 

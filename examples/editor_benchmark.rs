@@ -10,12 +10,32 @@ use usd_bevy::{
     live::LiveStagePlugin,
 };
 
+#[path = "editor_benchmark/paired.rs"]
+mod paired;
+
+#[path = "editor_benchmark/stepped.rs"]
+mod stepped;
+
+#[path = "editor_benchmark/residency.rs"]
+mod residency_probe;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SeekMode {
     Idle,
     Repeated,
+    Quick,
     Unique,
     Timeline,
+}
+
+const SEEK_WARMUP: usize = 4;
+
+fn seek_sample_phase(iteration: usize) -> (&'static str, usize) {
+    if iteration < SEEK_WARMUP {
+        ("seek_warmup", iteration)
+    } else {
+        ("seek", iteration - SEEK_WARMUP)
+    }
 }
 
 impl SeekMode {
@@ -23,12 +43,13 @@ impl SeekMode {
         match self {
             Self::Idle => 0,
             Self::Repeated => 100,
+            Self::Quick => 8,
             Self::Unique | Self::Timeline => 1000,
         }
     }
     fn clock(self, iteration: usize) -> f64 {
-        if matches!(self, Self::Unique | Self::Timeline) && iteration >= 4 {
-            (iteration - 3) as f64 * 10.0 / self.samples() as f64
+        if matches!(self, Self::Unique | Self::Timeline) && iteration >= SEEK_WARMUP {
+            (iteration - SEEK_WARMUP + 1) as f64 * 10.0 / self.samples() as f64
         } else {
             [0.0, 5.0, 10.0, 5.0][iteration % 4]
         }
@@ -36,9 +57,13 @@ impl SeekMode {
 }
 
 fn parse_rss(status: &str) -> Option<usize> {
+    parse_status_bytes(status, "VmRSS:")
+}
+
+fn parse_status_bytes(status: &str, field: &str) -> Option<usize> {
     let mut value = status
         .lines()
-        .find(|line| line.starts_with("VmRSS:"))?
+        .find(|line| line.split_whitespace().next() == Some(field))?
         .split_whitespace();
     value.next()?;
     let kib = value.next()?.parse::<usize>().ok()?;
@@ -52,12 +77,37 @@ fn resident_bytes() -> Option<usize> {
     parse_rss(&std::fs::read_to_string("/proc/self/status").ok()?)
 }
 
+fn peak_resident_bytes() -> Option<usize> {
+    parse_status_bytes(
+        &std::fs::read_to_string("/proc/self/status").ok()?,
+        "VmHWM:",
+    )
+}
+
 fn asset_counts(world: &World) -> [usize; 3] {
     [
         world.resource::<Assets<Mesh>>().len(),
         world.resource::<Assets<StandardMaterial>>().len(),
         world.resource::<Assets<Image>>().len(),
     ]
+}
+
+fn image_buffer_report(images: &Assets<Image>) -> String {
+    let (buffers, payload, capacity) = images
+        .iter()
+        .filter_map(|(_, image)| image.data.as_ref())
+        .fold((0usize, 0, 0), |(buffers, payload, capacity), data| {
+            (
+                buffers + 1,
+                payload + data.len(),
+                capacity + data.capacity(),
+            )
+        });
+    format!(
+        "image_buffer_scope=main-world-Assets-Image-data image_assets={} data_buffers={buffers} payload_bytes={payload} capacity_bytes={capacity} spare_bytes={} excludes=source,mesh,handles,allocator-overhead,scratch,gpu",
+        images.len(),
+        capacity - payload
+    )
 }
 
 fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
@@ -182,6 +232,34 @@ fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn report_routes(world: &World, phase: &str, samples: usize) {
+    if let Some(profile) = world.get_resource::<usd_bevy::route::AnimationAccessProfile>() {
+        let snapshot = profile.snapshot();
+        eprintln!(
+            "animation_access_totals phase={phase} samples={samples} scopes={} calls={} entries={} key_bytes={} dropped={} saturated={} scope=projection-animation-operations-not-decoder-calls",
+            snapshot.scopes,
+            snapshot.calls,
+            snapshot.records.len(),
+            snapshot.key_bytes,
+            snapshot.dropped,
+            snapshot.saturated
+        );
+        for record in snapshot.records {
+            eprintln!(
+                "animation_access_profile phase={phase} root={:?} path={:?} operation={} calls={}",
+                record.root, record.path, record.operation, record.calls
+            );
+        }
+    }
+    if let Some(timing) = world.get_resource::<usd_bevy::route::TextureSamplingTiming>() {
+        eprintln!(
+            "texture_sampling_profile phase={phase} images={} input_bytes={} appended_bytes={} elapsed_ms={:.3} slowest_ms={:.3}",
+            timing.images,
+            timing.input_bytes,
+            timing.appended_bytes,
+            timing.elapsed.as_secs_f64() * 1000.0,
+            timing.slowest.as_secs_f64() * 1000.0
+        );
+    }
     if let Some(timing) =
         world.get_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>()
     {
@@ -203,6 +281,33 @@ fn report_routes(world: &World, phase: &str, samples: usize) {
             timing.joints,
             timing.elapsed.as_secs_f64() * 1000.0
         );
+    }
+    if let Some(timing) =
+        world.get_resource::<usd_bevy::route::preparation::MeshPreparationTiming>()
+    {
+        eprintln!(
+            "mesh_preparation_profile phase={phase} batches={} parallel_batches={} inline_jobs={} jobs={} cache_hits={} peak_jobs={} peak_input_bytes={} elapsed_ms={:.3}",
+            timing.batches,
+            timing.parallel_batches,
+            timing.inline_jobs,
+            timing.jobs,
+            timing.cache_hits,
+            timing.peak_jobs,
+            timing.peak_input_bytes,
+            timing.elapsed.as_secs_f64() * 1000.0
+        );
+    }
+    if let Some(timing) =
+        world.get_resource::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>()
+    {
+        for (step, elapsed) in &timing.phases {
+            eprintln!(
+                "gpu_skin_preparation_profile phase={phase} attempts={} failures={} step={step} elapsed_ms={:.3}",
+                timing.attempts,
+                timing.failures,
+                elapsed.as_secs_f64() * 1000.0
+            );
+        }
     }
     if let Some(timings) = world.get_resource::<usd_bevy::route::ProjectionVisibilityTimings>() {
         for ((route, hidden), row) in &timings.0 {
@@ -271,17 +376,32 @@ struct Measurement {
     peak_asset_counts: [usize; 3],
     rss_before_seeks: Option<usize>,
     rss_after_seeks: Option<usize>,
+    rss_process_peak: Option<usize>,
     cached_meshes: usize,
     cached_mesh_payload_bytes: usize,
     cached_tangent_payload_bytes: usize,
     cached_assembly_payload_bytes: usize,
 }
 
-fn measure(
+fn open_editor(
     path: &Path,
     gpu_prepared: bool,
-    seek: SeekMode,
-) -> Result<Measurement, Box<dyn std::error::Error>> {
+    preparation: Option<usd_bevy::route::preparation::ParallelMeshPreparation>,
+) -> Result<(App, EditorBridge, Measurement), Box<dyn std::error::Error>> {
+    open_editor_with_deferral(
+        path,
+        gpu_prepared,
+        preparation,
+        std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some(),
+    )
+}
+
+fn open_editor_with_deferral(
+    path: &Path,
+    gpu_prepared: bool,
+    preparation: Option<usd_bevy::route::preparation::ParallelMeshPreparation>,
+    defer: bool,
+) -> Result<(App, EditorBridge, Measurement), Box<dyn std::error::Error>> {
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
@@ -293,7 +413,7 @@ fn measure(
     app.init_asset::<Mesh>()
         .init_asset::<StandardMaterial>()
         .init_asset::<Image>();
-    if std::env::var_os("USD_DEFER_HIDDEN_MESHES").is_some() {
+    if defer {
         app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>();
     }
     if let Ok(value) = std::env::var("USD_RESIDENCY_BUDGET_MS") {
@@ -304,9 +424,15 @@ fn measure(
     if gpu_prepared {
         app.add_plugins(usd_bevy::route::gpu_skin::UsdGpuSkinningPlugin);
     }
+    if std::env::var_os("USD_PROFILE_ANIMATION_READS").is_some() {
+        app.init_resource::<usd_bevy::route::AnimationAccessProfile>();
+    }
     if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        app.init_resource::<usd_bevy::route::TextureSamplingTiming>();
         app.init_resource::<usd_bevy::route::material::MaterialResolveTimings>();
         app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>();
+        app.init_resource::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>();
+        app.init_resource::<usd_bevy::route::preparation::MeshPreparationTiming>();
         app.init_resource::<usd_bevy::route::residency::ResidencyPreparationTiming>();
         app.init_resource::<usd_bevy::route::ProjectionTimings>();
         if std::env::var_os("USD_PROFILE_VISIBILITY").is_some() {
@@ -314,6 +440,9 @@ fn measure(
         }
         app.init_resource::<usd_bevy::route::cache::MeshCacheMetrics>();
         app.init_resource::<usd_bevy::route::MeshReadTiming>();
+    }
+    if let Some(preparation) = preparation {
+        app.insert_resource(preparation);
     }
     app.update();
     let bridge = app.world().resource::<EditorBridge>().clone();
@@ -337,14 +466,59 @@ fn measure(
     if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() {
         promote_deferred(&mut app)?;
     }
-    let mut result = Measurement {
+    let result = Measurement {
         open,
         idle,
         peak_asset_counts: asset_counts(app.world()),
         rss_before_seeks: resident_bytes(),
         ..default()
     };
+    if bridge.view()?.document.document_id != view.document.document_id {
+        return Err("idle updates replaced the editor document".into());
+    }
+    Ok((app, bridge, result))
+}
+
+fn reset_profiles(world: &mut World) {
+    fn reset<T: Resource<Mutability = bevy::ecs::component::Mutable> + Default>(world: &mut World) {
+        if let Some(mut timing) = world.get_resource_mut::<T>() {
+            *timing = default();
+        }
+    }
+    reset::<usd_bevy::route::AnimationAccessProfile>(world);
+    reset::<usd_bevy::route::preparation::MeshPreparationTiming>(world);
+    reset::<usd_bevy::route::gpu_skin::GpuSkinPreparationTiming>(world);
+    reset::<usd_bevy::route::gpu_skin::GpuSkinUpdateTiming>(world);
+    reset::<usd_bevy::route::residency::ResidencyPreparationTiming>(world);
+    reset::<usd_bevy::route::material::MaterialResolveTimings>(world);
+    reset::<usd_bevy::route::TextureSamplingTiming>(world);
+    reset::<usd_bevy::route::ProjectionTimings>(world);
+    reset::<usd_bevy::route::ProjectionVisibilityTimings>(world);
+    reset::<usd_bevy::route::cache::MeshCacheMetrics>(world);
+    reset::<usd_bevy::route::MeshReadTiming>(world);
+}
+
+fn measure(
+    path: &Path,
+    gpu_prepared: bool,
+    seek: SeekMode,
+) -> Result<Measurement, Box<dyn std::error::Error>> {
+    measure_with_steps(path, gpu_prepared, seek, None)
+}
+
+fn measure_with_steps(
+    path: &Path,
+    gpu_prepared: bool,
+    seek: SeekMode,
+    mut steps: Option<&mut dyn std::io::BufRead>,
+) -> Result<Measurement, Box<dyn std::error::Error>> {
+    if steps.is_some() && seek != SeekMode::Timeline {
+        return Err("stepped measurements require seek-timeline".into());
+    }
+    let (mut app, bridge, mut result) = open_editor(path, gpu_prepared, None)?;
+    let view = bridge.view()?;
     if seek != SeekMode::Idle {
+        let raw_samples = steps.is_some() || std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some();
         if seek == SeekMode::Timeline {
             if !view.timeline.start.is_finite()
                 || !view.timeline.end.is_finite()
@@ -359,32 +533,24 @@ fn measure(
             );
         }
         let mut timings = Vec::with_capacity(seek.samples());
-        for iteration in 0..seek.samples() + 4 {
-            if iteration == 4 {
-                if let Some(mut timings) = app
-                    .world_mut()
-                    .get_resource_mut::<usd_bevy::route::ProjectionTimings>()
-                {
-                    timings.0.clear();
-                }
-                if let Some(mut timings) =
-                    app.world_mut()
-                        .get_resource_mut::<usd_bevy::route::ProjectionVisibilityTimings>()
-                {
-                    timings.0.clear();
-                }
-                if let Some(mut metrics) = app
-                    .world_mut()
-                    .get_resource_mut::<usd_bevy::route::cache::MeshCacheMetrics>()
-                {
-                    metrics.0.clear();
-                }
-                if let Some(mut reads) = app
-                    .world_mut()
-                    .get_resource_mut::<usd_bevy::route::MeshReadTiming>()
-                {
-                    *reads = default();
-                }
+        let mut warmup = [Duration::ZERO; SEEK_WARMUP];
+        if steps.is_some() {
+            println!(
+                "seek_step_config samples={} warmup={SEEK_WARMUP} pool_threads={} excludes=stdin-wait,stdout,gpu scope=full-headless-editor-update",
+                seek.samples(),
+                bevy::tasks::ComputeTaskPool::get().thread_num()
+            );
+        }
+        for iteration in 0..seek.samples() + SEEK_WARMUP {
+            if iteration == SEEK_WARMUP {
+                println!(
+                    "seek_warmup_summary samples={} total_ns={} max_ns={}",
+                    warmup.len(),
+                    warmup.iter().sum::<Duration>().as_nanos(),
+                    warmup.iter().max().unwrap().as_nanos()
+                );
+                report_routes(app.world(), "after-seek-warmup", SEEK_WARMUP);
+                reset_profiles(app.world_mut());
             }
             let normalized = seek.clock(iteration);
             let time = if seek == SeekMode::Timeline {
@@ -393,7 +559,14 @@ fn measure(
             } else {
                 normalized
             };
+            if let Some(reader) = steps.as_deref_mut() {
+                stepped::await_step(reader, &mut std::io::stdout().lock(), iteration)?;
+            }
             bridge.send(EditorCommand::Seek(time))?;
+            let texture_before = app
+                .world()
+                .get_resource::<usd_bevy::route::TextureSamplingTiming>()
+                .map(|timing| (timing.elapsed, timing.images, timing.appended_bytes));
             let start = Instant::now();
             app.update();
             let elapsed = start.elapsed();
@@ -406,8 +579,28 @@ fn measure(
                     format!("seek did not preserve document and clock: {}", state.status).into(),
                 );
             }
-            if iteration >= 4 {
+            if iteration >= SEEK_WARMUP {
                 timings.push(elapsed);
+            } else {
+                warmup[iteration] = elapsed;
+            }
+            if raw_samples {
+                let (prefix, index) = seek_sample_phase(iteration);
+                println!(
+                    "{prefix}_sample index={index} clock={time:.17} update_ns={}",
+                    elapsed.as_nanos()
+                );
+                if let Some((elapsed, images, appended)) = texture_before {
+                    let timing = app
+                        .world()
+                        .resource::<usd_bevy::route::TextureSamplingTiming>();
+                    println!(
+                        "{prefix}_texture_sample index={index} finalize_ns={} images={} appended_bytes={}",
+                        (timing.elapsed - elapsed).as_nanos(),
+                        timing.images - images,
+                        timing.appended_bytes - appended
+                    );
+                }
             }
             for (peak, current) in result
                 .peak_asset_counts
@@ -423,7 +616,19 @@ fn measure(
         result.seek_max = *timings.last().unwrap();
         report_routes(app.world(), "measured-seeks", seek.samples());
     }
+    measure_payload(&mut app, &mut result)?;
+    if bridge.view()?.document.document_id != view.document.document_id {
+        return Err("updates replaced the editor document".into());
+    }
+    Ok(result)
+}
+
+fn measure_payload(
+    app: &mut App,
+    result: &mut Measurement,
+) -> Result<(), Box<dyn std::error::Error>> {
     result.rss_after_seeks = resident_bytes();
+    result.rss_process_peak = peak_resident_bytes();
     if let Some(cache) = app
         .world()
         .get_resource::<usd_bevy::route::cache::ProjectionCache>()
@@ -449,6 +654,30 @@ fn measure(
         .iter(app.world())
         .count();
     result.mesh_entities = app.world_mut().query::<&Mesh3d>().iter(app.world()).count();
+    if std::env::var_os("USD_PROFILE_ROUTES").is_some() {
+        let mut fallbacks = app.world_mut().query::<(
+            &usd_bevy::UsdPrimRef,
+            &usd_bevy::route::gpu_skin::UsdCpuSkinFallback,
+            &Mesh3d,
+            Option<&Visibility>,
+        )>();
+        let count = fallbacks.iter(app.world()).count();
+        eprintln!(
+            "cpu_skin_fallback_total count={count} shown={}",
+            count.min(16)
+        );
+        for (prim, fallback, mesh, visibility) in fallbacks.iter(app.world()).take(16) {
+            let vertices = app
+                .world()
+                .resource::<Assets<Mesh>>()
+                .get(&mesh.0)
+                .map_or(0, Mesh::count_vertices);
+            eprintln!(
+                "cpu_skin_fallback path={:?} own_visibility={visibility:?} vertices={vertices} reason={:?}",
+                prim.path, fallback.0
+            );
+        }
+    }
     result.subset_entities = app
         .world_mut()
         .query::<&usd_bevy::route::subset::UsdSubset>()
@@ -483,6 +712,10 @@ fn measure(
         .sum();
     if std::env::var_os("USD_PROFILE_IMAGES").is_some() {
         use std::hash::{Hash, Hasher};
+        eprintln!(
+            "{}",
+            image_buffer_report(app.world().resource::<Assets<Image>>())
+        );
         let mut groups = std::collections::HashMap::new();
         for (_, image) in app.world().resource::<Assets<Image>>().iter() {
             let Some(data) = &image.data else { continue };
@@ -522,16 +755,13 @@ fn measure(
             );
         }
     }
-    if bridge.view()?.document.document_id != view.document.document_id {
-        return Err("idle updates replaced the editor document".into());
-    }
-    Ok(result)
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if !(1..=4).contains(&args.len()) {
-        return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-unique|seek-timeline]".into());
+        return Err("usage: editor_benchmark ASSET [SAMPLES] [cpu|gpu-prepared] [seek|seek-quick|seek-unique|seek-timeline|seek-timeline-paired|seek-residency-paired]".into());
     }
     let path = std::fs::canonicalize(&args[0])?;
     let samples = args
@@ -545,15 +775,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seek = match args.get(3).map(String::as_str) {
         None => SeekMode::Idle,
         Some("seek") => SeekMode::Repeated,
+        Some("seek-quick") => SeekMode::Quick,
         Some("seek-unique") => SeekMode::Unique,
-        Some("seek-timeline") => SeekMode::Timeline,
-        _ => return Err("fourth argument must be seek, seek-unique or seek-timeline".into()),
+        Some("seek-timeline" | "seek-timeline-paired" | "seek-residency-paired") => {
+            SeekMode::Timeline
+        }
+        _ => {
+            return Err(
+                "fourth argument must be seek, seek-quick, seek-unique, seek-timeline, seek-timeline-paired or seek-residency-paired".into(),
+            );
+        }
     };
     let gpu_prepared = match args.get(2).map(String::as_str) {
         None | Some("cpu") => false,
         Some("gpu-prepared") => true,
         _ => return Err("deformation must be cpu or gpu-prepared".into()),
     };
+    let stepped = stepped::configured(
+        std::env::var_os("USD_BENCH_STEPPED").as_deref(),
+        samples,
+        args.get(3).map(String::as_str) == Some("seek-timeline"),
+    )?;
     println!(
         "asset={} profile={} renderer=headless deformation={} excludes=plugin-startup,ui,gpu assets=all-retained-not-visibility-filtered samples={samples}",
         path.display(),
@@ -567,6 +809,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "payloads=retained-cpu-bytes excludes=gpu-allocation,asset-handles,allocator-overhead"
     );
+    if args.get(3).is_some_and(|mode| {
+        matches!(
+            mode.as_str(),
+            "seek-timeline-paired" | "seek-residency-paired"
+        )
+    }) {
+        let reverse =
+            residency_probe::reverse(std::env::var_os("USD_BENCH_PAIR_REVERSE").as_deref())?;
+        for sample in 0..samples {
+            println!("paired_sample_begin={sample}");
+            if args[3] == "seek-residency-paired" {
+                paired::run_residency(
+                    &path,
+                    gpu_prepared,
+                    seek.samples(),
+                    (sample % 2 != 0) ^ reverse,
+                )?;
+            } else {
+                paired::run(
+                    &path,
+                    gpu_prepared,
+                    seek.samples(),
+                    (sample % 2 != 0) ^ reverse,
+                )?;
+            }
+        }
+        return Ok(());
+    }
     if std::env::var_os("USD_BENCH_PREWARM_HIDDEN").is_some() {
         println!(
             "prewarm=all-deferred-after-idle payload_phase_override=after-prewarm-or-seeks idle_phase=before-prewarm"
@@ -581,7 +851,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             "0,5,10,5"
         },
-        if seek == SeekMode::Idle { 0 } else { 4 },
+        if seek == SeekMode::Idle {
+            0
+        } else {
+            SEEK_WARMUP
+        },
         seek.samples(),
         if seek != SeekMode::Idle {
             "after-seeks"
@@ -590,15 +864,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     println!(
-        "rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks peak_assets=sampled-after-updates-not-allocation-counts"
+        "rss=whole-process-linux-VmRSS-or-NA rss_phase=after-idle,after-seeks rss_peak=VmHWM-process-lifetime-including-prior-samples-or-NA peak_assets=sampled-after-updates-not-allocation-counts"
     );
     println!(
-        "sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes,cached_assembly_payload_bytes"
+        "sample,open_ms,idle_us,mesh_entities,subset_entities,mesh_assets,vertices,unreferenced_vertices,vertex_bytes,index_bytes,morph_bytes,image_bytes,seek_median_us,seek_p95_us,seek_max_us,gpu_morph_entities,peak_mesh_assets,peak_material_assets,peak_image_assets,rss_before_seeks,rss_after_seeks,cached_meshes,cached_mesh_payload_bytes,cached_tangent_payload_bytes,cached_assembly_payload_bytes,rss_process_peak"
     );
     for sample in 0..samples {
-        let m = measure(&path, gpu_prepared, seek)?;
+        if std::env::var_os("USD_BENCH_RAW_SAMPLES").is_some() {
+            println!("sample_begin={sample}");
+        }
+        let m = if stepped {
+            measure_with_steps(
+                &path,
+                gpu_prepared,
+                seek,
+                Some(&mut std::io::stdin().lock()),
+            )?
+        } else {
+            measure(&path, gpu_prepared, seek)?
+        };
         println!(
-            "{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{}",
+            "{sample},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
             m.open.as_secs_f64() * 1000.0,
             m.idle.as_secs_f64() * 1_000_000.0,
             m.mesh_entities,
@@ -622,10 +908,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             m.cached_meshes,
             m.cached_mesh_payload_bytes,
             m.cached_tangent_payload_bytes,
-            m.cached_assembly_payload_bytes
+            m.cached_assembly_payload_bytes,
+            m.rss_process_peak.map_or("NA".into(), |v| v.to_string())
         );
     }
     Ok(())
+}
+
+#[test]
+fn raw_seek_phases_include_warmup_without_reindexing_samples() {
+    for iteration in 0..SEEK_WARMUP {
+        assert_eq!(seek_sample_phase(iteration), ("seek_warmup", iteration));
+    }
+    for iteration in 0..SeekMode::Repeated.samples() {
+        assert_eq!(
+            seek_sample_phase(iteration + SEEK_WARMUP),
+            ("seek", iteration)
+        );
+    }
+}
+
+#[test]
+fn quick_seek_uses_eight_samples_after_warmup() {
+    assert_eq!(SeekMode::Quick.samples(), 8);
+    for index in 0..12 {
+        assert_eq!(
+            SeekMode::Quick.clock(index),
+            SeekMode::Repeated.clock(index)
+        );
+    }
 }
 
 #[test]
@@ -662,6 +973,12 @@ fn unique_seek_schedule_and_resident_measurement_are_explicit() {
     assert_eq!(parse_rss("VmRSS: missing kB"), None);
     assert_eq!(parse_rss("Name: probe"), None);
     assert_eq!(parse_rss(&format!("VmRSS: {} kB", usize::MAX)), None);
+    assert_eq!(parse_rss("VmRSS:extra 123 kB"), None);
+    assert_eq!(
+        parse_status_bytes("VmRSS: 123 kB\nVmHWM: 456 kB", "VmHWM:"),
+        Some(456 * 1024)
+    );
+    assert_eq!(parse_status_bytes("VmHWM: 123 MB", "VmHWM:"), None);
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/morph_tangent_normals.usda");
     for gpu_prepared in [false, true] {
         let result = measure(&path, gpu_prepared, SeekMode::Unique).unwrap();
@@ -680,6 +997,55 @@ fn animated_materials_do_not_retain_every_sample() {
         let result = measure(&path, gpu_prepared, SeekMode::Unique).unwrap();
         assert!(result.peak_asset_counts[1] <= 16, "{result:?}");
     }
+}
+
+#[test]
+fn image_buffer_accounting_separates_capacity_from_payload() {
+    use bevy::{asset::RenderAssetUsages, render::render_resource::*};
+    let mut images = Assets::<Image>::default();
+    let empty = image_buffer_report(&images);
+    assert!(
+        empty.contains(
+            "image_assets=0 data_buffers=0 payload_bytes=0 capacity_bytes=0 spare_bytes=0"
+        )
+    );
+    let mut image = Image::new(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        vec![51; 4],
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::default(),
+    );
+    image.data.as_mut().unwrap().reserve_exact(60);
+    let mut no_data = image.clone();
+    no_data.data = None;
+    let mut reserved = image.clone();
+    reserved.data = Some(Vec::with_capacity(32));
+    let capacity =
+        image.data.as_ref().unwrap().capacity() + reserved.data.as_ref().unwrap().capacity();
+    let handles = [images.add(image), images.add(no_data), images.add(reserved)];
+    let report = image_buffer_report(&images);
+    assert!(report.contains(&format!(
+        "image_assets=3 data_buffers=2 payload_bytes=4 capacity_bytes={capacity} spare_bytes={}",
+        capacity - 4
+    )));
+    assert!(report.contains("scope=main-world-Assets-Image-data"));
+    assert!(report.contains("excludes=source,mesh,handles,allocator-overhead,scratch,gpu"));
+    assert!(handles.iter().all(|handle| images.contains(handle.id())));
+    assert_eq!(
+        images
+            .get(&handles[0])
+            .unwrap()
+            .data
+            .as_ref()
+            .unwrap()
+            .len(),
+        4
+    );
 }
 
 #[test]

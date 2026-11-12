@@ -1,0 +1,110 @@
+diff --git a/crates/openusd-schemas/src/skel/anim_query.rs b/crates/openusd-schemas/src/skel/anim_query.rs
+index 69c1e7a9..5d071f83 100644
+--- a/crates/openusd-schemas/src/skel/anim_query.rs
++++ b/crates/openusd-schemas/src/skel/anim_query.rs
+@@ -16,7 +16,7 @@ use std::sync::Arc;
+ use openusd::Result;
+ 
+ use openusd::gf;
+-use openusd::usd::{Attribute, AttributeQuery, QueryCacheBudget, TimeCode};
++use openusd::usd::{Attribute, AttributeQuery, QueryCacheBudget, SchemaBase, TimeCode};
+ use openusd::vt::{self, Value};
+ 
+ use super::skinning::{JointTransformComponents, make_transforms};
+@@ -79,6 +79,27 @@ impl AnimQuery {
+         &self.anim
+     }
+ 
++    /// Bytes in the query record, ordering capacities and attribute handles.
++    /// Shared paths and orderings are charged in full. Source-owned heap
++    /// storage, stage storage, allocator and reference-count headers are excluded.
++    /// Returns `None` on arithmetic overflow.
++    pub fn metadata_bytes(&self) -> Option<usize> {
++        let mut bytes = size_of::<Self>()
++            .checked_add(self.anim.prim().path().heap_bytes()?)?
++            .checked_add(self.joints.capacity().checked_mul(size_of::<String>())?)?
++            .checked_add(self.blend_shapes.len().checked_mul(size_of::<String>())?)?;
++        for name in self.joints.iter().chain(self.blend_shapes.iter()) {
++            bytes = bytes.checked_add(name.capacity())?;
++        }
++        if let Some(queries) = self.queries.as_deref() {
++            bytes = bytes.checked_add(size_of::<[AttributeQuery; 4]>())?;
++            for query in queries {
++                bytes = bytes.checked_add(query.attribute().path().heap_bytes()?)?;
++            }
++        }
++        Some(bytes)
++    }
++
+     /// Joint ordering as authored on the Animation. Does not
+     /// have to match the bound Skeleton's joint order — callers
+     /// remap by name when needed.
+@@ -252,6 +273,51 @@ mod tests {
+         Ok((stage, anim))
+     }
+ 
++    #[test]
++    fn metadata_counts_capacity() -> Result<()> {
++        let (_, anim) = fixture()?;
++        let mut query = AnimQuery::new(anim)?;
++        query.joints = Vec::with_capacity(64);
++        let mut joint = String::with_capacity(1024);
++        joint.push_str("root");
++        query.joints.push(joint);
++        let mut shape = String::with_capacity(512);
++        shape.push_str("smile");
++        query.blend_shapes = vec![shape].into();
++        let expected = size_of::<AnimQuery>()
++            + query.anim.prim().path().heap_bytes().unwrap()
++            + 64 * size_of::<String>()
++            + 1024
++            + size_of::<String>()
++            + 512;
++        assert_eq!(query.metadata_bytes(), Some(expected));
++        assert!(query.clone().metadata_bytes().unwrap() < expected);
++        Ok(())
++    }
++
++    #[test]
++    fn metadata_excludes_sources() -> Result<()> {
++        let (_, anim) = fixture()?;
++        let direct = AnimQuery::new(anim.clone())?;
++        let budget = QueryCacheBudget::new(1024 * 1024, 8);
++        let query = AnimQuery::with_budget(anim, &budget)?;
++        let paths: usize = query
++            .queries
++            .as_ref()
++            .unwrap()
++            .iter()
++            .map(|q| q.attribute().path().heap_bytes().unwrap())
++            .sum();
++        let bytes = direct.metadata_bytes().unwrap() + size_of::<[AttributeQuery; 4]>() + paths;
++        assert_eq!(query.metadata_bytes(), Some(bytes));
++        query.joint_local_transforms(TimeCode::new(5.0))?;
++        assert!(budget.retained_bytes() > 0);
++        assert_eq!(query.metadata_bytes(), Some(bytes));
++        drop(query);
++        assert_eq!(budget.retained_bytes(), 0);
++        Ok(())
++    }
++
+     fn compare(query: &AnimQuery, direct: &AnimQuery) -> Result<()> {
+         assert_eq!(query.joint_order(), direct.joint_order());
+         assert_eq!(query.blend_shape_order(), direct.blend_shape_order());
+diff --git a/crates/openusd/src/sdf/path.rs b/crates/openusd/src/sdf/path.rs
+index 618112e5..7f697ceb 100644
+--- a/crates/openusd/src/sdf/path.rs
++++ b/crates/openusd/src/sdf/path.rs
+@@ -91,8 +91,10 @@ impl Default for Path {
+ }
+ 
+ impl Path {
+-    /// Shared text record and its string capacity, excluding reference counts.
+-    pub(crate) fn heap_bytes(&self) -> Option<usize> {
++    /// Bytes in the shared text record and its string capacity. Charges the
++    /// full allocation for each clone; excludes allocator and reference-count
++    /// headers. Returns `None` on arithmetic overflow.
++    pub fn heap_bytes(&self) -> Option<usize> {
+         size_of::<Text>().checked_add(self.path.text.capacity())
+     }
+ }

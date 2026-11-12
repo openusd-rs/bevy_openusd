@@ -63,9 +63,24 @@ pub(crate) fn enabled(world: &World) -> bool {
             .is_none_or(|registry| registry.builtin_only)
 }
 
+/// Whether a deferred, unqueued mesh is now hierarchy-visible, for example
+/// after an app changed a Bevy [`Visibility`] rather than a USD opinion.
+pub(crate) fn revealed(world: &mut World) -> bool {
+    if !enabled(world) {
+        return false;
+    }
+    let deferred: Vec<_> = world
+        .query_filtered::<Entity, (With<UsdDeferredMesh>, Without<UsdMeshPreparationQueued>)>()
+        .iter(world)
+        .collect();
+    deferred
+        .into_iter()
+        .any(|entity| super::hierarchy_hidden(world, entity) != Some(true))
+}
+
 pub(crate) fn refresh_mode(world: &mut World) {
     let current = enabled(world);
-    let changed = world.resource::<AppliedDeferMode>().0 != Some(current);
+    let changed = world.resource::<AppliedDeferMode>().0 != Some(current) || revealed(world);
     if !changed
         && world
             .query_filtered::<Entity, With<UsdMeshPreparationQueued>>()
@@ -370,7 +385,7 @@ def Xform "Hidden" {
             stage
                 .attribute("/Hidden.visibility")
                 .unwrap()
-                .set(openusd::sdf::Value::Token("inherited".into()))
+                .set(openusd::vt::Value::Token("inherited".into()))
                 .unwrap();
         }
         app.update();
@@ -429,6 +444,55 @@ def Xform "Hidden" {
     }
 
     #[test]
+    fn bevy_visibility_reveals_deferred_instance_meshes_at_a_paused_clock() {
+        let (mut app, _) = setup();
+        let source = UsdSource::snapshot(
+            "shown.usda",
+            br#"#usda 1.0
+def Xform "Shown" {
+    def Mesh "M" {
+        point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0,1,2]
+        uniform token subdivisionScheme = "none"
+    }
+}
+"#
+            .as_slice(),
+        )
+        .unwrap();
+        let asset = app
+            .world_mut()
+            .resource_mut::<Assets<UsdScene>>()
+            .add(UsdScene {
+                source,
+                textures: default(),
+            });
+        let root = app
+            .world_mut()
+            .spawn((
+                UsdSceneRoot(asset),
+                UsdInstanceTime { current: 0.0 },
+                Visibility::Hidden,
+            ))
+            .id();
+        app.update();
+        let entity = app
+            .world()
+            .non_send::<UsdInstances>()
+            .entity(root, "/Shown/M")
+            .unwrap();
+        assert!(app.world().get::<UsdDeferredMesh>(entity).is_some());
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        app.update();
+        assert!(app.world().get::<Mesh3d>(entity).is_none());
+        *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
+        app.update();
+        assert!(app.world().get::<Mesh3d>(entity).is_some());
+        assert!(app.world().get::<UsdDeferredMesh>(entity).is_none());
+    }
+
+    #[test]
     fn rehidden_queued_mesh_is_not_prepared_and_budget_removal_drains_queue() {
         let (mut app, asset) = setup();
         app.insert_resource(UsdResidencyBudget(std::time::Duration::ZERO));
@@ -452,7 +516,7 @@ def Xform "Hidden" {
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("invisible".into()))
+            .set(openusd::vt::Value::Token("invisible".into()))
             .unwrap();
         app.update();
         assert!(app.world().get::<Mesh3d>(entity).is_none());
@@ -597,7 +661,7 @@ def Xform "Hidden" {
             .attribute("/Hidden/M.points")
             .unwrap()
             .set_at(
-                openusd::sdf::Value::Vec3fVec(vec![
+                openusd::vt::Value::Vec3fVec(vec![
                     [0.0, 0.0, 0.0].into(),
                     [7.0, 0.0, 0.0].into(),
                     [0.0, 7.0, 0.0].into(),
@@ -610,7 +674,7 @@ def Xform "Hidden" {
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("inherited".into()))
+            .set(openusd::vt::Value::Token("inherited".into()))
             .unwrap();
         app.update();
         let handle = app.world().get::<Mesh3d>(entities[0]).unwrap().0.clone();
@@ -627,7 +691,7 @@ def Xform "Hidden" {
             stage
                 .attribute("/Hidden.visibility")
                 .unwrap()
-                .set(openusd::sdf::Value::Token(value.into()))
+                .set(openusd::vt::Value::Token(value.into()))
                 .unwrap();
             app.update();
             assert_eq!(app.world().get::<Mesh3d>(entities[0]).unwrap().0, handle);
@@ -651,12 +715,12 @@ def Xform "Hidden" {
         stage
             .create_attribute(openusd::sdf::path("/Hidden.purpose").unwrap(), "token")
             .unwrap()
-            .set(openusd::sdf::Value::Token("guide".into()))
+            .set(openusd::vt::Value::Token("guide".into()))
             .unwrap();
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("inherited".into()))
+            .set(openusd::vt::Value::Token("inherited".into()))
             .unwrap();
         app.update();
         assert!(app.world().get::<Mesh3d>(mesh_entity(&app, root)).is_none());
@@ -742,7 +806,7 @@ def Xform "Hidden" {
         stage
             .attribute("/Hidden.visibility")
             .unwrap()
-            .set(openusd::sdf::Value::Token("inherited".into()))
+            .set(openusd::vt::Value::Token("inherited".into()))
             .unwrap();
         app.update();
         let handle = &app.world().get::<Mesh3d>(entity).unwrap().0;
@@ -775,7 +839,7 @@ def Xform "Hidden" {
                 .attribute("/Hidden.visibility")
                 .unwrap()
                 .set_at(
-                    openusd::sdf::Value::Token(value.into()),
+                    openusd::vt::Value::Token(value.into()),
                     openusd::usd::TimeCode::new(time),
                 )
                 .unwrap();

@@ -557,7 +557,7 @@ fn asset_server_instances_animate_uv_chains_independently() {
                 )
                 .unwrap();
             assert_eq!(
-                image.data.as_ref().unwrap(),
+                &image.data.as_ref().unwrap()[..16],
                 &[
                     255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255
                 ]

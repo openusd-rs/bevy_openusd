@@ -57,30 +57,87 @@ fn bake_static(ctx: &RouteCtx, world: &mut World, entity: Entity, skinned: bool,
 }
 
 pub(crate) fn deformed_mesh(ctx: &RouteCtx) -> anyhow::Result<Option<crate::read::geom::ReadMesh>> {
-    deformed_mesh_with_kinds(
-        ctx,
-        is_skinned(ctx.stage, ctx.path),
-        has_blend_shapes(ctx.stage, ctx.path),
-    )
+    let (skinned, blended) = ctx.prepared_kinds.get().map_or_else(
+        || {
+            (
+                is_skinned(ctx.stage, ctx.path),
+                has_blend_shapes(ctx.stage, ctx.path),
+            )
+        },
+        |kinds| (kinds.skinned, kinds.blended),
+    );
+    deformed_mesh_with_kinds(ctx, skinned, blended)
 }
+
+/// Pre-skin geometry and per-point blended skin matrices. Its MikkTSpace
+/// tangents, carried by those matrices, are the deformed mesh's tangents.
+pub(crate) struct SkinnedTangentSource {
+    pub read: crate::read::geom::ReadMesh,
+    pub matrices: Vec<Mat3>,
+    pub morphed: bool,
+}
+
+type Deformed = (crate::read::geom::ReadMesh, Option<SkinnedTangentSource>);
 
 fn deformed_mesh_with_kinds(
     ctx: &RouteCtx,
     skinned: bool,
     blended: bool,
 ) -> anyhow::Result<Option<crate::read::geom::ReadMesh>> {
+    Ok(deform(ctx, skinned, blended, false)?.map(|(read, _)| read))
+}
+
+/// The deformed mesh plus, for skinned meshes with UVs, its tangent source.
+pub(crate) fn deformed_mesh_with_tangent_source(
+    ctx: &RouteCtx,
+) -> anyhow::Result<Option<Deformed>> {
+    let (skinned, blended) = ctx.prepared_kinds.get().map_or_else(
+        || {
+            (
+                is_skinned(ctx.stage, ctx.path),
+                has_blend_shapes(ctx.stage, ctx.path),
+            )
+        },
+        |kinds| (kinds.skinned, kinds.blended),
+    );
+    deform(ctx, skinned, blended, true)
+}
+
+fn deform(
+    ctx: &RouteCtx,
+    skinned: bool,
+    blended: bool,
+    tangents: bool,
+) -> anyhow::Result<Option<Deformed>> {
     let Some(source) = ctx.read_mesh()? else {
         return Ok(None);
     };
     let sample = if skinned {
         crate::read::skel::cpu_skin_sample(ctx.stage, ctx.path, ctx.time, Some(source))?
-            .map(|sample| (sample.points, Some(sample.normals)))
+            .map(|sample| (sample.points, Some((sample.normals, sample.morphed))))
     } else {
         crate::read::skel::blend_shape_deform(ctx.stage, ctx.path, &source.points, ctx.time)
             .map(|points| (points, None))
     };
-    let Some((points, skin_normals)) = sample else {
+    let Some((points, skin)) = sample else {
         return Ok(None);
+    };
+    let (skin_normals, mut tangent_source) = match skin {
+        Some((normals, morphed)) if tangents && source.uvs.is_some() => {
+            let mut read = source.clone();
+            let morphed_points = morphed.is_some();
+            if let Some(morphed) = morphed {
+                read.triangulation_points = Some(std::mem::replace(&mut read.points, morphed));
+            }
+            let source = SkinnedTangentSource {
+                matrices: normals.tangent_matrices(read.points.len())?,
+                read,
+                morphed: morphed_points,
+            };
+            (Some(normals), Some(source))
+        }
+        Some((normals, _)) => (Some(normals), None),
+        None => (None, None),
     };
     let mut read = source.clone();
     read.triangulation_points = Some(std::mem::replace(&mut read.points, points));
@@ -95,6 +152,9 @@ fn deformed_mesh_with_kinds(
             }
         };
         let (mut normals, points) = crate::read::skel::morph_normals(&read, &sample)?;
+        if let Some(source) = tangent_source.as_mut() {
+            source.read.normals = Some(normals.clone());
+        }
         if let Some(skin) = skin_normals {
             skin.apply(&mut normals, &points, read.points.len())?;
         }
@@ -102,13 +162,245 @@ fn deformed_mesh_with_kinds(
     } else {
         None
     };
-    Ok(Some(read))
+    Ok(Some((read, tangent_source)))
+}
+
+impl PrimRoute for SkinRoute {
+    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
+        super::gpu_skin::clear(world, entity);
+        world.entity_mut(entity).remove::<(
+            CpuSubsetGeometry,
+            UsdDeformationError,
+            super::gpu_skin::UsdCpuSkinFallback,
+        )>();
+    }
+    fn matches(&self, ctx: &RouteCtx) -> bool {
+        matches!(ctx.type_name.as_deref(), Some("Mesh"))
+    }
+
+    fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
+        if ctx.deformation_resample() && super::gpu_skin::update_pose(ctx, world, entity) {
+            ctx.mark_posed();
+            return;
+        }
+        world
+            .entity_mut(entity)
+            .remove::<(CpuSubsetGeometry, UsdDeformationError)>();
+        if world.get_resource::<Assets<Mesh>>().is_none() {
+            return;
+        }
+        if super::subdivision::enabled(ctx, world) {
+            return;
+        }
+        let kinds = ctx
+            .prepared_kinds
+            .get()
+            .unwrap_or_else(|| super::preparation::DeformationKinds::read(ctx));
+        let (skinned, blended) = (kinds.skinned, kinds.blended);
+        if !skinned && !blended {
+            super::gpu_morph::clear(world, entity);
+            if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
+                super::gpu_skin::clear(world, entity);
+            }
+            world
+                .entity_mut(entity)
+                .remove::<super::gpu_skin::UsdCpuSkinFallback>();
+            return;
+        }
+        if !kinds.varying {
+            bake_static(ctx, world, entity, skinned, blended);
+            return;
+        }
+        if world.contains_resource::<super::gpu_skin::GpuSkinningEnabled>() {
+            let result = if !skinned && blended {
+                if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
+                    super::gpu_skin::clear(world, entity);
+                }
+                super::gpu_morph::attach(ctx, world, entity)
+            } else {
+                if !blended {
+                    super::gpu_morph::clear(world, entity);
+                }
+                super::gpu_skin::attach(ctx, world, entity, blended)
+            };
+            match result {
+                Ok(()) => return,
+                Err(error) => {
+                    super::gpu_skin::clear(world, entity);
+                    world
+                        .entity_mut(entity)
+                        .insert(super::gpu_skin::UsdCpuSkinFallback(error.to_string()));
+                }
+            }
+        } else if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
+            super::gpu_skin::clear(world, entity);
+        }
+        super::gpu_morph::clear(world, entity);
+        let prepared = ctx
+            .prepared_deformation
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| {
+                deform(ctx, skinned, blended, true).map(|deformed| {
+                    deformed.map(|(read, source)| {
+                        super::preparation::PreparedDeformation::with_tangent_source(read, source)
+                    })
+                })
+            });
+        let mut prepared = match prepared {
+            Ok(Some(prepared)) => prepared,
+            result => {
+                let error = result.err().map_or_else(
+                    || "deformation produced no mesh".into(),
+                    |error| error.to_string(),
+                );
+                world
+                    .entity_mut(entity)
+                    .remove::<Mesh3d>()
+                    .insert(UsdDeformationError(error));
+                return;
+            }
+        };
+        prepared.generate_tangents(world);
+        if !prepared.read.subsets.is_empty() {
+            world
+                .entity_mut(entity)
+                .insert(CpuSubsetGeometry(prepared.read));
+        }
+        let handle = world.resource_mut::<Assets<Mesh>>().add(prepared.mesh);
+        if let Some(mut m) = world.get_mut::<Mesh3d>(entity) {
+            m.0 = handle;
+        } else if let Ok(mut e) = world.get_entity_mut(entity) {
+            e.insert(Mesh3d(handle));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::instance::UsdInstances;
+
+    /// Uncached deformed mesh whose tangents are pre-skin MikkTSpace tangents
+    /// carried by each vertex's blended skin matrix.
+    fn reference_mesh(ctx: &RouteCtx) -> Mesh {
+        let (read, source) = deformed_mesh_with_tangent_source(ctx).unwrap().unwrap();
+        let mut mesh = crate::mesh::mesh_from_usd(&read);
+        let Some(source) = source else {
+            return mesh;
+        };
+        let input = crate::mesh::mesh_from_usd(&source.read);
+        let Some(bevy::mesh::VertexAttributeValues::Float32x4(tangents)) =
+            input.attribute(Mesh::ATTRIBUTE_TANGENT)
+        else {
+            mesh.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
+            return mesh;
+        };
+        let skinned: Vec<_> = tangents
+            .iter()
+            .zip(crate::mesh::vertex_point_indices(&read))
+            .map(|(tangent, point)| {
+                let direction = Vec3::from_slice(&tangent[..3]);
+                let value = (source.matrices[point] * direction)
+                    .try_normalize()
+                    .unwrap_or(direction);
+                [value.x, value.y, value.z, tangent[3]]
+            })
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, skinned);
+        mesh
+    }
+
+    #[test]
+    fn cached_cpu_tangents_follow_unique_clocks_and_mesh_edits() {
+        use super::super::cache::{MeshCacheMetrics, MeshTangentCache};
+        use super::super::gpu_skin::{GpuSkinningEnabled, UsdCpuSkinFallback};
+        use openusd::vt::Value;
+        let file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/skel_morph_blended_animated.usda"
+        );
+        for (gpu, budget) in [(false, 0), (false, 4096), (true, 0), (true, 4096)] {
+            let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap())
+                .unwrap()
+                .open_stage()
+                .unwrap();
+            let path = openusd::sdf::path("/Test/Face").unwrap();
+            stage
+                .attribute("/Test/Face.primvars:skel:jointWeights")
+                .unwrap()
+                .set(Value::FloatVec(vec![0.8; 8]))
+                .unwrap();
+            let mut world = World::new();
+            world.init_resource::<Assets<Mesh>>();
+            world.init_resource::<MeshCacheMetrics>();
+            world.insert_resource(MeshTangentCache::with_byte_budget(budget));
+            if gpu {
+                world.init_resource::<GpuSkinningEnabled>();
+            }
+            let entity = world.spawn_empty().id();
+            for (iteration, time) in (0..=40)
+                .map(|step| step as f64 * 0.25)
+                .chain([5.0, 0.0, 10.0, 5.0])
+                .enumerate()
+            {
+                let edit = match iteration {
+                    10 => Some((
+                        "primvars:st",
+                        Value::Vec2fVec(
+                            [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+                                .map(Into::into)
+                                .to_vec(),
+                        ),
+                    )),
+                    20 => Some(("normals", Value::Vec3fVec(vec![[0.0, 1.0, 1.0].into(); 4]))),
+                    30 => Some(("orientation", Value::Token("leftHanded".into()))),
+                    _ => None,
+                };
+                if let Some((name, value)) = edit {
+                    stage
+                        .prim(path.clone())
+                        .unwrap()
+                        .attribute(name)
+                        .set(value)
+                        .unwrap();
+                }
+                let ctx = RouteCtx::at(&stage, &path, Some(time));
+                let expected = reference_mesh(&ctx);
+                for _ in 0..3 {
+                    SkinRoute.project(&ctx, &mut world, entity);
+                    assert_eq!(world.get::<UsdCpuSkinFallback>(entity).is_some(), gpu);
+                    let handle = &world.get::<Mesh3d>(entity).unwrap().0;
+                    let actual = world.resource::<Assets<Mesh>>().get(handle).unwrap();
+                    assert_eq!(
+                        actual.get_index_buffer_bytes(),
+                        expected.get_index_buffer_bytes()
+                    );
+                    assert_eq!(actual.attributes().count(), expected.attributes().count());
+                    for (attribute, values) in expected.attributes() {
+                        assert_eq!(
+                            actual.attribute(attribute.id).unwrap().get_bytes(),
+                            values.get_bytes(),
+                            "gpu={gpu}, budget={budget}, time={time}, attribute={}",
+                            attribute.name
+                        );
+                    }
+                }
+                assert!(
+                    world
+                        .resource::<MeshTangentCache>()
+                        .retained_payload_bytes()
+                        <= budget
+                );
+            }
+            let metrics = &world.resource::<MeshCacheMetrics>().0;
+            assert!(metrics["tangent_misses"] > 0);
+            assert_eq!(
+                metrics.get("tangent_hits").copied().unwrap_or(0) > 0,
+                budget > 0
+            );
+        }
+    }
 
     #[test]
     fn unanimated_skins_bake_once_and_share_their_mesh() {
@@ -242,7 +534,7 @@ def SkelRoot "Rig" {{
             let scales = stage.attribute("/Test/Skel/Anim.scales").unwrap();
             scales
                 .clone()
-                .set(openusd::sdf::Value::Vec3hVec(vec![
+                .set(openusd::vt::Value::Vec3hVec(vec![
                     [0.0, 1.0, 1.0].map(openusd::gf::f16::from_f32).into(),
                 ]))
                 .unwrap();
@@ -268,7 +560,7 @@ def SkelRoot "Rig" {{
             );
             assert!(app.world().get_entity(runtime_child).is_ok());
             scales
-                .set(openusd::sdf::Value::Vec3hVec(vec![
+                .set(openusd::vt::Value::Vec3hVec(vec![
                     [2.0, 1.0, 0.5].map(openusd::gf::f16::from_f32).into(),
                 ]))
                 .unwrap();
@@ -283,97 +575,6 @@ def SkelRoot "Rig" {{
                 gpu
             );
             assert!(app.world().get_entity(runtime_child).is_ok());
-        }
-    }
-}
-
-impl PrimRoute for SkinRoute {
-    fn remove(&self, _: &RouteCtx, world: &mut World, entity: Entity) {
-        super::gpu_skin::clear(world, entity);
-        world.entity_mut(entity).remove::<(
-            CpuSubsetGeometry,
-            UsdDeformationError,
-            super::gpu_skin::UsdCpuSkinFallback,
-        )>();
-    }
-    fn matches(&self, ctx: &RouteCtx) -> bool {
-        matches!(ctx.type_name.as_deref(), Some("Mesh"))
-    }
-
-    fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
-        world
-            .entity_mut(entity)
-            .remove::<(CpuSubsetGeometry, UsdDeformationError)>();
-        if world.get_resource::<Assets<Mesh>>().is_none() {
-            return;
-        }
-        if super::subdivision::enabled(ctx, world) {
-            return;
-        }
-        let skinned = is_skinned(ctx.stage, ctx.path);
-        let blended = has_blend_shapes(ctx.stage, ctx.path);
-        if !skinned && !blended {
-            super::gpu_morph::clear(world, entity);
-            if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
-                super::gpu_skin::clear(world, entity);
-            }
-            world
-                .entity_mut(entity)
-                .remove::<super::gpu_skin::UsdCpuSkinFallback>();
-            return;
-        }
-        if !crate::read::skel::deformation_is_time_varying(ctx.stage, ctx.path) {
-            bake_static(ctx, world, entity, skinned, blended);
-            return;
-        }
-        if world.contains_resource::<super::gpu_skin::GpuSkinningEnabled>() {
-            let result = if !skinned && blended {
-                if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
-                    super::gpu_skin::clear(world, entity);
-                }
-                super::gpu_morph::attach(ctx, world, entity)
-            } else {
-                if !blended {
-                    super::gpu_morph::clear(world, entity);
-                }
-                super::gpu_skin::attach(ctx, world, entity, blended)
-            };
-            match result {
-                Ok(()) => return,
-                Err(error) => {
-                    super::gpu_skin::clear(world, entity);
-                    world
-                        .entity_mut(entity)
-                        .insert(super::gpu_skin::UsdCpuSkinFallback(error.to_string()));
-                }
-            }
-        } else if world.get::<super::gpu_skin::UsdGpuSkin>(entity).is_some() {
-            super::gpu_skin::clear(world, entity);
-        }
-        super::gpu_morph::clear(world, entity);
-        let read = match deformed_mesh_with_kinds(ctx, skinned, blended) {
-            Ok(Some(read)) => read,
-            result => {
-                let error = result.err().map_or_else(
-                    || "deformation produced no mesh".into(),
-                    |error| error.to_string(),
-                );
-                world
-                    .entity_mut(entity)
-                    .remove::<Mesh3d>()
-                    .insert(UsdDeformationError(error));
-                return;
-            }
-        };
-        let mesh = crate::mesh::mesh_from_usd(&read);
-        if !read.subsets.is_empty() {
-            world.entity_mut(entity).insert(CpuSubsetGeometry(read));
-        }
-        let handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
-        if let Some(mut m) = world.get_mut::<Mesh3d>(entity) {
-            m.0 = handle;
-        } else if let Ok(mut e) = world.get_entity_mut(entity) {
-            e.insert(Mesh3d(handle));
         }
     }
 }

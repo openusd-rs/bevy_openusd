@@ -55,7 +55,7 @@ fn surface_diagnostics(mesh: &Mesh) -> String {
     let mut indexed_edges = HashMap::<[usize; 2], usize>::new();
     let (mut duplicate, mut degenerate, mut reversed, mut grazing, mut corners) = (0, 0, 0, 0, 0);
     let mut minimum_dot = 1.0f64;
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         let Some(vertices) = triangle
             .iter()
             .map(|index| points.get(*index).copied())
@@ -162,7 +162,7 @@ fn describe(mesh: &ReadMesh) -> String {
         && normals.interpolation == usd_bevy::read::geom::Interpolation::Vertex
         && matches!(projected.attribute(Mesh::ATTRIBUTE_NORMAL), Some(VertexAttributeValues::Float32x3(values)) if values == &normals.values));
     format!(
-        "points={} faces={} corners={} subdivision={:?} authored_normals={} uv_values={} projected_vertices={} projected_unique_normals={} projected_invalid_normals={} subsets={} double_sided={} authored_vertex_normals_preserved={preserved}\n  {}",
+        "points={} faces={} corners={} subdivision={:?} authored_normals={} uv_values={} projected_vertices={} projected_unique_normals={} projected_invalid_normals={} subsets={} double_sided={} authored_vertex_normals_preserved={preserved}\n  {}\n  {}",
         mesh.points.len(),
         mesh.face_vertex_counts.len(),
         mesh.face_vertex_indices.len(),
@@ -174,11 +174,8 @@ fn describe(mesh: &ReadMesh) -> String {
         invalid_normals,
         mesh.subsets.len(),
         mesh.double_sided,
-        format!(
-            "{}\n  {}",
-            surface_diagnostics(&projected),
-            indexed_vertex_diagnostics(&projected)
-        )
+        surface_diagnostics(&projected),
+        indexed_vertex_diagnostics(&projected)
     )
 }
 

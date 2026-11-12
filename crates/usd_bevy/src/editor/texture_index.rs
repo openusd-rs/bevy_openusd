@@ -1,33 +1,5 @@
+use super::layer_changes::CompositionRevision as Revision;
 use openusd::{sdf::Path, usd::Stage};
-use std::collections::BTreeMap;
-
-#[derive(PartialEq, Eq)]
-struct Revision {
-    layers: Vec<String>,
-    authored: BTreeMap<String, u64>,
-    structure: u64,
-    load_rules: openusd::pcp::LoadRules,
-    mask: openusd::usd::StagePopulationMask,
-    muted: Vec<String>,
-}
-
-impl Revision {
-    fn read(stage: &Stage, changes: &super::layer_changes::LayerChanges) -> Self {
-        let authored = changes.revisions();
-        Self {
-            layers: stage.layer_identifiers(),
-            authored,
-            structure: changes.structural_revision(),
-            load_rules: stage.load_rules(),
-            mask: stage.mask(),
-            muted: stage.muted_layers(),
-        }
-    }
-
-    fn reusable(&self) -> bool {
-        self.structure != u64::MAX && self.authored.values().all(|revision| *revision != u64::MAX)
-    }
-}
 
 #[derive(Default)]
 pub(super) struct TextureIndex {
@@ -43,6 +15,7 @@ impl TextureIndex {
         stage: &Stage,
         changes: &super::layer_changes::LayerChanges,
     ) -> Result<crate::source::TextureRequests, String> {
+        stage.flush().map_err(|error| error.to_string())?;
         let revision = Revision::read(stage, changes);
         if !revision.reusable() || self.revision.as_ref() != Some(&revision) {
             self.revision = None;
@@ -73,7 +46,7 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
         )
         .open_stage()
         .unwrap();
-        let changes = super::super::layer_changes::LayerChanges::new(&stage);
+        let changes = super::super::layer_changes::LayerChanges::new(&stage).unwrap();
         let mut index = TextureIndex::default();
         let first = index.requests(&stage, &changes).unwrap();
         assert_eq!(
@@ -91,9 +64,9 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
         stage
             .create_attribute("/Plain.inputs:texture:file", "asset")
             .unwrap()
-            .set(openusd::sdf::Value::AssetPath(
-                openusd::sdf::AssetPath::new("second.exr"),
-            ))
+            .set(openusd::vt::Value::AssetPath(openusd::sdf::AssetPath::new(
+                "second.exr",
+            )))
             .unwrap();
         let second = index.requests(&stage, &changes).unwrap();
         assert_eq!(
@@ -113,7 +86,7 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
     #[test]
     fn texture_resolution_is_fresh_without_rebuilding_candidate_paths() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let bytes =
             b"#usda 1.0\ndef DomeLight \"Dome\" { asset inputs:texture:file = @late.exr@ }\n";
         std::fs::write(&root, bytes).unwrap();
@@ -121,10 +94,14 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
             .unwrap()
             .open_stage()
             .unwrap();
-        let changes = super::super::layer_changes::LayerChanges::new(&stage);
+        let changes = super::super::layer_changes::LayerChanges::new(&stage).unwrap();
         let mut index = TextureIndex::default();
         let before = index.requests(&stage, &changes).unwrap();
-        std::fs::write(directory.path().join("late.exr"), b"resolver probe").unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join("late.exr"),
+            b"resolver probe",
+        )
+        .unwrap();
         let after = index.requests(&stage, &changes).unwrap();
         assert_eq!(
             after,
@@ -150,7 +127,7 @@ def DomeLight "Dome" { asset inputs:texture:file = @first.exr@ }
         .with_dependency(&weak)
         .unwrap();
         let stage = root.open_stage().unwrap();
-        let changes = super::super::layer_changes::LayerChanges::new(&stage);
+        let changes = super::super::layer_changes::LayerChanges::new(&stage).unwrap();
         let mut index = TextureIndex::default();
         assert_eq!(index.requests(&stage, &changes).unwrap().len(), 1);
         stage.mute_layer(weak.identifier());
@@ -177,7 +154,7 @@ def Xform "Model" (
         )
         .open_stage()
         .unwrap();
-        let changes = super::super::layer_changes::LayerChanges::new(&stage);
+        let changes = super::super::layer_changes::LayerChanges::new(&stage).unwrap();
         let mut index = TextureIndex::default();
         assert!(index.requests(&stage, &changes).unwrap().is_empty());
         crate::authoring::set_variant(&stage, "/Model", "look", "lit").unwrap();
@@ -187,7 +164,8 @@ def Xform "Model" (
         assert_eq!(index.scans, 3);
         let root = stage.root_layer().identifier().to_owned();
         stage
-            .layer_mut(&root)
+            .layer(&root)
+            .unwrap()
             .unwrap()
             .edit(|layer| {
                 openusd::sdf::PrimSpec::new(

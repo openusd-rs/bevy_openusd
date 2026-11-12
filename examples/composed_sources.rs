@@ -1,19 +1,22 @@
 use bevy::prelude::*;
 use openusd_schemas::geom::{Sphere, SphereSchema};
-use usd_bevy::{UsdAssetPlugin, UsdPlugin, UsdScene, UsdSceneRoot, UsdSceneState, UsdSource};
+use usd_bevy::{
+    UsdAssetPlugin, UsdPlugin, UsdProjectionBudget, UsdScene, UsdSceneRoot, UsdSceneState,
+    UsdSource,
+};
 
 #[derive(Component, Debug, PartialEq)]
 struct RuntimeTag(u32);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    verify()?;
+    verify(UsdProjectionBudget::default())?;
     println!(
         "Verified typed/inline composition, shared meshes, reload isolation, failure recovery and root cleanup."
     );
     Ok(())
 }
 
-fn verify() -> Result<(), Box<dyn std::error::Error>> {
+fn verify(budget: UsdProjectionBudget) -> Result<(), Box<dyn std::error::Error>> {
     let stage = openusd::usd::Stage::builder()
         .schema_registry(openusd_schemas::schema_registry())
         .in_memory("model.usda")?;
@@ -46,7 +49,8 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
         UsdAssetPlugin,
     ));
     app.init_resource::<Assets<Mesh>>()
-        .init_resource::<Assets<StandardMaterial>>();
+        .init_resource::<Assets<StandardMaterial>>()
+        .insert_resource(budget);
     let handle = app
         .world_mut()
         .resource_mut::<Assets<UsdScene>>()
@@ -56,7 +60,7 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
         });
     let first_root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
     let second_root = app.world_mut().spawn(UsdSceneRoot(handle.clone())).id();
-    app.update();
+    update_ready(&mut app, &[first_root, second_root])?;
     let instances = app
         .world()
         .get_non_send::<usd_bevy::instance::UsdInstances>()
@@ -80,9 +84,9 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
         "/First",
         "radius",
         "double",
-        openusd::sdf::Value::Double(2.0),
+        openusd::vt::Value::Double(2.0),
     )?;
-    app.update();
+    update_ready(&mut app, &[first_root, second_root])?;
     let instances = app
         .world()
         .get_non_send::<usd_bevy::instance::UsdInstances>()
@@ -128,7 +132,7 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
                 prim: "/First".into(),
                 name: "radius".into(),
                 type_name: "double".into(),
-                value: openusd::sdf::Value::Double(4.0),
+                value: openusd::vt::Value::Double(4.0),
             }],
             ..default()
         });
@@ -143,7 +147,7 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
         .get_mut(&handle)
         .unwrap()
         .source = replacement_source.clone();
-    app.update();
+    update_ready(&mut app, &[first_root, second_root])?;
     assert_radius(&app, first_root, "/First", 4.0)?;
     assert_radius(&app, first_root, "/Second", 3.0)?;
     assert_radius(&app, second_root, "/First", 3.0)?;
@@ -180,7 +184,7 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
         .get_mut(&handle)
         .unwrap()
         .source = replacement_source;
-    app.update();
+    update_ready(&mut app, &[first_root, second_root])?;
     for root in [first_root, second_root] {
         assert!(matches!(
             app.world().get::<UsdSceneState>(root),
@@ -190,7 +194,7 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
     app.world_mut()
         .entity_mut(first_root)
         .remove::<usd_bevy::instance::UsdInstanceOverrides>();
-    app.update();
+    update_ready(&mut app, &[first_root, second_root])?;
     assert_radius(&app, first_root, "/First", 3.0)?;
     assert_eq!(app.world().get::<RuntimeTag>(a), Some(&RuntimeTag(73)));
     assert_eq!(
@@ -232,6 +236,33 @@ fn verify() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn update_ready(app: &mut App, roots: &[Entity]) -> Result<(), Box<dyn std::error::Error>> {
+    let started = std::time::Instant::now();
+    loop {
+        app.update();
+        let mut ready = true;
+        for root in roots {
+            match app.world().get::<UsdSceneState>(*root) {
+                Some(UsdSceneState::Ready) => (),
+                Some(UsdSceneState::Failed(error)) => {
+                    return Err(format!("scene {root:?} failed: {error}").into());
+                }
+                _ => ready = false,
+            }
+        }
+        if ready {
+            return Ok(());
+        }
+        if started.elapsed() > std::time::Duration::from_secs(10) {
+            let states: Vec<_> = roots
+                .iter()
+                .map(|root| (root, app.world().get::<UsdSceneState>(*root)))
+                .collect();
+            return Err(format!("scenes did not finish projection: {states:?}").into());
+        }
+    }
+}
+
 fn assert_radius(
     app: &App,
     root: Entity,
@@ -256,5 +287,10 @@ fn assert_radius(
 
 #[test]
 fn inline_typed_sources_compose_and_project() {
-    verify().unwrap();
+    for budget in [
+        UsdProjectionBudget::default(),
+        UsdProjectionBudget(std::time::Duration::ZERO),
+    ] {
+        verify(budget).unwrap();
+    }
 }

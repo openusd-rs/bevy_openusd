@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) fn limit_normals(mesh: &ReadMesh) -> MeshPrimvar<[f32; 3]> {
     let mut rings = vec![BTreeMap::new(); mesh.points.len()];
     let mut invalid = BTreeSet::new();
-    for face in mesh.face_vertex_indices.chunks_exact(4) {
+    for face in mesh.face_vertex_indices.as_chunks::<4>().0 {
         for i in 0..4 {
             let vertex = face[i] as usize;
             let sector = (face[(i + 2) % 4] as usize, face[(i + 3) % 4] as usize);

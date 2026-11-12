@@ -1,6 +1,7 @@
-use crate::environment::ViewerGrid;
+use crate::environment::{SceneBounds, ViewerGrid};
 use bevy::camera::primitives::Aabb;
 use bevy::dev_tools::infinite_grid::InfiniteGridSettings;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use mara::ui::modules::bevy as mara_bevy;
 use usd_bevy::live::PrimEntities;
@@ -16,33 +17,48 @@ impl FrameRequest {
 
 pub fn configure(app: &mut App) {
     app.init_resource::<FrameRequest>()
+        .init_resource::<SceneBounds>()
         .add_systems(Last, frame_opened_document);
+}
+
+type FramingMesh = (
+    Entity,
+    &'static Mesh3d,
+    Option<&'static Aabb>,
+    &'static GlobalTransform,
+    &'static InheritedVisibility,
+    Option<&'static bevy::mesh::skinning::SkinnedMesh>,
+    Option<&'static bevy::mesh::morph::MeshMorphWeights>,
+);
+
+type FramingCamera = (
+    &'static mut mara_bevy::ChaseCamera,
+    &'static mut Transform,
+    &'static mut Projection,
+);
+type FramingGrid = (&'static mut Transform, &'static mut InfiniteGridSettings);
+
+#[derive(SystemParam)]
+struct FramingTargets<'w, 's> {
+    cameras: Query<'w, 's, FramingCamera, (With<Camera3d>, Without<ViewerGrid>)>,
+    grids: Query<'w, 's, FramingGrid, (With<ViewerGrid>, Without<Camera3d>)>,
+    bounds: ResMut<'w, SceneBounds>,
 }
 
 fn frame_opened_document(
     prims: Res<PrimEntities>,
-    meshes: Query<(
-        Entity,
-        &Mesh3d,
-        Option<&Aabb>,
-        &GlobalTransform,
-        &InheritedVisibility,
-        Option<&bevy::mesh::skinning::SkinnedMesh>,
-        Option<&bevy::mesh::morph::MeshMorphWeights>,
-    )>,
+    meshes: Query<FramingMesh>,
     mesh_bounds: usd_bevy::mesh::bounds::MeshBounds,
     parents: Query<&ChildOf>,
-    mut cameras: Query<
-        (&mut mara_bevy::ChaseCamera, &mut Transform, &mut Projection),
-        (With<Camera3d>, Without<ViewerGrid>),
-    >,
-    mut grids: Query<
-        (&mut Transform, &mut InfiniteGridSettings),
-        (With<ViewerGrid>, Without<Camera3d>),
-    >,
+    targets: FramingTargets,
     mut framed: Local<Option<Entity>>,
     request: Res<FrameRequest>,
 ) {
+    let FramingTargets {
+        mut cameras,
+        mut grids,
+        mut bounds,
+    } = targets;
     let requested = request.0.swap(false, std::sync::atomic::Ordering::Relaxed);
     let Some(root) = prims.entity("/") else {
         return;
@@ -87,6 +103,7 @@ fn frame_opened_document(
         applied = true;
     }
     if applied {
+        bounds.0 = Some((low, high));
         for (mut transform, mut settings) in &mut grids {
             if let Some((height, scale, fade)) = crate::environment::fit_grid(low, high) {
                 transform.translation.y = height;
@@ -172,6 +189,10 @@ mod tests {
                 .unwrap()
                 .focus,
             Vec3::ZERO
+        );
+        assert_eq!(
+            app.world().resource::<SceneBounds>().0,
+            Some((Vec3::splat(-1.0), Vec3::ONE))
         );
         app.world_mut()
             .entity_mut(hidden)

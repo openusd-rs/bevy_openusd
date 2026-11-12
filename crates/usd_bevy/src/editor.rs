@@ -1,15 +1,19 @@
 //! Composition-aware editor state over one authoritative live stage.
 
 use bevy::prelude::*;
-use openusd::sdf::Value;
 use openusd::usd::{EditTarget, Stage, UndoStage};
+use openusd::vt::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+mod hierarchy;
 mod layer_changes;
 pub mod reload;
 pub mod save_state;
 mod texture_index;
+
+#[cfg(test)]
+mod residency_tests;
 
 #[cfg(all(feature = "file_watcher", not(target_arch = "wasm32")))]
 pub mod texture_watch;
@@ -152,29 +156,33 @@ impl Plugin for EditorPlugin {
     }
 }
 
+type RenderingIssues = (
+    Option<&'static crate::route::subdivision::UsdSubdivisionError>,
+    Option<&'static crate::route::skel::UsdDeformationError>,
+    Option<&'static crate::route::instancer::UsdInstancerWarning>,
+    Option<&'static crate::route::shapes::UsdShapeError>,
+    Option<&'static crate::route::curves::UsdCurveError>,
+    Option<&'static crate::route::xform::UsdTransformError>,
+    Option<&'static crate::route::material::UsdMaterialWarning>,
+    Option<&'static crate::route::subset::UsdSubsetWarning>,
+    Option<&'static crate::route::gpu_skin::UsdCpuSkinFallback>,
+);
+
+type GeneratedProjection = (
+    Option<&'static Children>,
+    Option<&'static crate::route::subset::UsdSubset>,
+    Option<&'static crate::route::instancer::UsdPrototypePart>,
+    Has<crate::route::instancer::UsdInstance>,
+    Option<&'static crate::route::instancer::UsdInstanceId>,
+    Option<&'static crate::route::material::UsdMaterialWarning>,
+);
+
 fn publish_projection_issues(
     bridge: Res<EditorBridge>,
     prims: Option<Res<crate::live::PrimEntities>>,
     issues: Query<&crate::route::reflect::UsdReflectIssues>,
-    rendering: Query<(
-        Option<&crate::route::subdivision::UsdSubdivisionError>,
-        Option<&crate::route::skel::UsdDeformationError>,
-        Option<&crate::route::instancer::UsdInstancerWarning>,
-        Option<&crate::route::shapes::UsdShapeError>,
-        Option<&crate::route::curves::UsdCurveError>,
-        Option<&crate::route::xform::UsdTransformError>,
-        Option<&crate::route::material::UsdMaterialWarning>,
-        Option<&crate::route::subset::UsdSubsetWarning>,
-        Option<&crate::route::gpu_skin::UsdCpuSkinFallback>,
-    )>,
-    generated: Query<(
-        Option<&Children>,
-        Option<&crate::route::subset::UsdSubset>,
-        Option<&crate::route::instancer::UsdPrototypePart>,
-        Has<crate::route::instancer::UsdInstance>,
-        Option<&crate::route::instancer::UsdInstanceId>,
-        Option<&crate::route::material::UsdMaterialWarning>,
-    )>,
+    rendering: Query<RenderingIssues>,
+    generated: Query<GeneratedProjection>,
 ) {
     let Ok(mut state) = bridge.0.lock() else {
         return;
@@ -506,9 +514,10 @@ fn process_commands(world: &mut World) {
                     profile("stage-open");
                     crate::UsdSource::validate_composition(&stage)?;
                     profile("composition-validated");
-                    let mut editor = EditorSession::new(stage.clone());
+                    let mut editor = EditorSession::try_new(stage.clone())?;
+                    let live = crate::live::LiveStage::try_new(stage.clone())?;
                     profile("editor-created");
-                    let textures = match prepare_textures(&editor, &source) {
+                    let textures = match prepare_textures(&editor, &source, &disk_baselines) {
                         Ok(textures) => textures,
                         Err(error) => {
                             if session.is_none() {
@@ -531,13 +540,13 @@ fn process_commands(world: &mut World) {
                     }
                     profile("textures-decoded");
                     world.remove_non_send::<crate::live::LiveStage>();
-                    if let Some(map) = world.remove_resource::<crate::live::PrimEntities>() {
-                        if let Some(root) = map.entity("/") {
-                            world.despawn(root);
-                        }
+                    if let Some(map) = world.remove_resource::<crate::live::PrimEntities>()
+                        && let Some(root) = map.entity("/")
+                    {
+                        world.despawn(root);
                     }
                     world.insert_resource(crate::live::PrimEntities::default());
-                    world.insert_non_send(crate::live::LiveStage::new(stage.clone()));
+                    world.insert_non_send(live);
                     editor.save_state.borrow_mut().disk = Some(disk_baselines);
                     editor
                         .save_state
@@ -593,7 +602,14 @@ fn process_commands(world: &mut World) {
                     .source
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("document has no source snapshot"))
-                    .and_then(|source| refresh_textures(world, editor.stage(), source))
+                    .and_then(|source| {
+                        refresh_textures(
+                            world,
+                            editor.stage(),
+                            source,
+                            editor.save_state.borrow().disk.as_ref(),
+                        )
+                    })
                     .map(|_| {
                         if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
                             live.enqueue_resync("/");
@@ -679,16 +695,21 @@ fn process_commands(world: &mut World) {
             Err(error) => format!("Failed: {error:#}"),
         };
     }
-    if let Some(editor) = session.as_ref().filter(|_| texture_dirty) {
-        if let Some(source) = &editor.source {
-            match refresh_textures(world, editor.stage(), source) {
-                Ok(()) => {
-                    if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
-                        live.enqueue_resync("/");
-                    }
+    if let Some(editor) = session.as_ref().filter(|_| texture_dirty)
+        && let Some(source) = &editor.source
+    {
+        match refresh_textures(
+            world,
+            editor.stage(),
+            source,
+            editor.save_state.borrow().disk.as_ref(),
+        ) {
+            Ok(()) => {
+                if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
+                    live.enqueue_resync("/");
                 }
-                Err(error) => status = format!("Texture loading failed: {error:#}"),
             }
+            Err(error) => status = format!("Texture loading failed: {error:#}"),
         }
     }
     let time = world.resource::<crate::route::StageTime>().current;
@@ -781,11 +802,22 @@ fn refresh_textures(
     world: &mut World,
     stage: &Stage,
     source: &crate::UsdSource,
+    disk: Option<&crate::source::DiskBaselines>,
 ) -> anyhow::Result<()> {
     let requests = crate::UsdSource::stage_texture_requests(stage).map_err(anyhow::Error::msg)?;
     set_texture_requests(world, texture_request_paths(stage, &requests));
-    let textures = decode_textures(source, requests.textures, &requests.environment_only)?;
-    install_textures(world, textures)
+    let mut baselines = disk.map(|disk| disk.lock().expect("disk baselines").clone());
+    let textures = decode_textures(
+        source,
+        requests.textures,
+        &requests.environment_only,
+        baselines.as_mut(),
+    )?;
+    install_textures(world, textures)?;
+    if let Some((disk, baselines)) = disk.zip(baselines) {
+        disk.record_reads(baselines);
+    }
+    Ok(())
 }
 
 fn texture_request_paths(
@@ -816,15 +848,25 @@ fn texture_request_paths(
 fn prepare_textures(
     editor: &EditorSession,
     source: &crate::UsdSource,
+    disk: &crate::source::DiskBaselines,
 ) -> anyhow::Result<PreparedTextures> {
     let requests = editor.texture_requests()?;
-    decode_textures(source, requests.textures, &requests.environment_only)
+    let mut baselines = disk.lock().expect("disk baselines").clone();
+    let textures = decode_textures(
+        source,
+        requests.textures,
+        &requests.environment_only,
+        Some(&mut baselines),
+    )?;
+    disk.record_reads(baselines);
+    Ok(textures)
 }
 
 fn decode_textures(
     source: &crate::UsdSource,
     requests: std::collections::BTreeSet<(String, bool)>,
     environment_only: &std::collections::BTreeSet<String>,
+    mut baselines: Option<&mut crate::source::DiskHashes>,
 ) -> anyhow::Result<PreparedTextures> {
     let mut images = Vec::new();
     for (path, srgb) in requests {
@@ -833,9 +875,11 @@ fn decode_textures(
         } else {
             bevy::asset::RenderAssetUsages::default()
         };
-        let bytes = source
-            .read_asset(&path)
-            .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
+        let bytes = match baselines.as_deref_mut() {
+            Some(baselines) => source.read_asset_tracked(&path, baselines),
+            None => source.read_asset(&path),
+        }
+        .map_err(|error| anyhow::anyhow!("cannot read texture {path}: {error}"))?;
         let inner = openusd::ar::split_package_relative_path_inner(&path)
             .map(|(_, inner)| inner)
             .unwrap_or_else(|| path.clone());
@@ -867,7 +911,8 @@ fn install_textures(world: &mut World, prepared: PreparedTextures) -> anyhow::Re
         prepared.iter().map(|((path, _), _)| path.clone()).collect(),
     );
     let old = world
-        .remove_resource::<crate::asset::SnapshotTextures>()
+        .get_resource::<crate::asset::SnapshotTextures>()
+        .cloned()
         .unwrap_or_default();
     let mut textures = crate::asset::SnapshotTextures::default();
     for (key, image) in prepared {
@@ -887,7 +932,12 @@ fn install_textures(world: &mut World, prepared: PreparedTextures) -> anyhow::Re
             .0
             .insert(key, reused.unwrap_or_else(|| assets.add(image)));
     }
-    world.insert_resource(textures);
+    if world
+        .get_resource::<crate::asset::SnapshotTextures>()
+        .is_none_or(|old| old.0 != textures.0)
+    {
+        world.insert_resource(textures);
+    }
     Ok(())
 }
 
@@ -1028,7 +1078,7 @@ impl EditorEdit {
                 let attribute = stage.create_attribute(path, "matrix4d")?;
                 attribute
                     .clear()?
-                    .set(Value::Matrix4d(openusd::gf::Matrix4d(*matrix)))?;
+                    .set(Value::Matrix4d(openusd::gf::Mat4d(*matrix)))?;
                 let mut order = Vec::new();
                 if *reset {
                     order.push("!resetXformStack!".into());
@@ -1155,7 +1205,6 @@ struct HistoryEntry {
     edit: EditorEdit,
     target: EditTarget,
     local_target: bool,
-    transactions: usize,
     layers: std::collections::BTreeSet<String>,
     selection_before: Option<String>,
     selection_after: Option<String>,
@@ -1243,6 +1292,8 @@ impl EditorSnapshot {
     }
 }
 
+const DEFAULT_HISTORY_LIMIT: usize = 128;
+
 /// Main-thread editor model. Clone `stage()` into `LiveStage` to project the
 /// same document; route undoable authoring through `edit()`.
 pub struct EditorSession {
@@ -1255,27 +1306,40 @@ pub struct EditorSession {
     redo: Vec<HistoryEntry>,
     history_limit: usize,
     layer_changes: layer_changes::LayerChanges,
+    history_revisions: std::collections::BTreeMap<String, u64>,
     save_state: std::cell::RefCell<save_state::SaveState>,
     texture_index: std::cell::RefCell<texture_index::TextureIndex>,
+    hierarchy: std::cell::RefCell<hierarchy::HierarchyCache>,
 }
 
 impl EditorSession {
+    /// Creates an editor session for a stage that can flush pending edits.
+    ///
+    /// # Panics
+    /// Panics when change tracking cannot be installed. Use [`Self::try_new`] for fallible setup.
     pub fn new(stage: Stage) -> Self {
+        Self::try_new(stage).expect("editor layer change observer")
+    }
+
+    /// Creates an editor session after installing its layer change observer.
+    pub fn try_new(stage: Stage) -> anyhow::Result<Self> {
         static NEXT_DOCUMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let layer_changes = layer_changes::LayerChanges::new(&stage);
-        Self {
+        let layer_changes = layer_changes::LayerChanges::new(&stage)?;
+        Ok(Self {
             document_id: NEXT_DOCUMENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             revision: 0,
             source: None,
-            stage: UndoStage::with_capacity(stage, usize::MAX),
+            stage: UndoStage::with_capacity(stage, DEFAULT_HISTORY_LIMIT),
             selected: None,
             undo: Vec::new(),
             redo: Vec::new(),
-            history_limit: 128,
+            history_limit: DEFAULT_HISTORY_LIMIT,
             layer_changes,
+            history_revisions: Default::default(),
             save_state: Default::default(),
             texture_index: Default::default(),
-        }
+            hierarchy: Default::default(),
+        })
     }
 
     pub fn stage(&self) -> &Stage {
@@ -1293,7 +1357,7 @@ impl EditorSession {
     pub fn from_source(source: crate::UsdSource) -> anyhow::Result<Self> {
         let (stage, disk) = source.open_stage_for_editor()?;
         crate::UsdSource::validate_composition(&stage)?;
-        let mut editor = Self::new(stage);
+        let mut editor = Self::try_new(stage)?;
         editor.save_state.borrow_mut().disk = Some(disk);
         editor
             .save_state
@@ -1312,22 +1376,25 @@ impl EditorSession {
         self.history_limit
     }
 
-    /// Retains newest undo commands, then nearest redo commands. Zero disables history.
+    /// Discards undo commands and retains the nearest redo commands. Zero disables history.
     /// Limits command count, not diff bytes or transactions inside an active command.
     pub fn set_history_limit(&mut self, limit: usize) {
         self.synchronize_external_edits();
+        if limit == self.history_limit {
+            return;
+        }
         self.history_limit = limit;
+        self.stage = UndoStage::with_capacity(Stage::clone(&self.stage), limit);
+        self.undo.clear();
         self.trim_history();
     }
 
     fn trim_history(&mut self) {
         let excess = self.undo.len().saturating_sub(self.history_limit);
-        let transactions = self
-            .undo
-            .drain(..excess)
-            .map(|entry| entry.transactions)
-            .sum();
-        self.stage.discard_oldest(transactions);
+        self.undo.drain(..excess);
+        if self.history_limit == 0 {
+            self.stage.reset();
+        }
         let excess = (self.undo.len() + self.redo.len()).saturating_sub(self.history_limit);
         self.redo.drain(..excess);
     }
@@ -1358,7 +1425,7 @@ impl EditorSession {
     pub fn set_layer_muted(&mut self, identifier: &str, muted: bool) -> anyhow::Result<()> {
         self.synchronize_external_edits();
         anyhow::ensure!(
-            self.stage.layer(identifier).is_some() || self.stage.is_layer_muted(identifier),
+            self.stage.layer(identifier)?.is_some() || self.stage.is_layer_muted(identifier),
             "unknown layer"
         );
         if muted {
@@ -1424,24 +1491,17 @@ impl EditorSession {
             .layer_stack()
             .iter()
             .any(|layer| layer == target.layer_identifier());
-        let before = self.stage.undo_depth();
-        if let Err(error) = edit.apply(&self.stage) {
-            while self.stage.undo_depth() > before {
-                self.stage.undo()?;
-            }
-            return Err(error);
-        }
-        let transactions = self.stage.undo_depth() - before;
-        if transactions > 0 {
+        let result = self.stage.group(|stage| edit.apply(stage));
+        let layers = self.settle_layers();
+        result?;
+        if !layers.is_empty() {
             self.revision = self.revision.wrapping_add(1);
             let selection_before = self.selected.clone();
             self.selected = edit.selection_after(self.selected.as_deref());
-            let layers = self.stage.recent_layer_identifiers(transactions);
             self.undo.push(HistoryEntry {
                 edit,
                 target,
                 local_target,
-                transactions,
                 layers,
                 selection_before,
                 selection_after: self.selected.clone(),
@@ -1454,7 +1514,7 @@ impl EditorSession {
 
     pub fn undo(&mut self) -> anyhow::Result<bool> {
         self.synchronize_external_edits();
-        let Some(entry) = self.undo.last_mut() else {
+        let Some(entry) = self.undo.last() else {
             return Ok(false);
         };
         anyhow::ensure!(
@@ -1472,14 +1532,10 @@ impl EditorSession {
             "restore layer participation for {} before undo",
             entry.target.layer_identifier()
         );
-        while entry.transactions > 0 {
-            anyhow::ensure!(
-                self.stage.undo()?,
-                "editor transaction history is inconsistent"
-            );
-            entry.transactions -= 1;
-            self.revision = self.revision.wrapping_add(1);
-        }
+        let undone = self.stage.undo();
+        self.history_revisions = self.layer_changes.revisions();
+        anyhow::ensure!(undone?, "editor transaction history is inconsistent");
+        self.revision = self.revision.wrapping_add(1);
         if entry.selection_before != entry.selection_after {
             self.selected = entry.selection_before.clone();
         }
@@ -1509,33 +1565,48 @@ impl EditorSession {
         );
         let target = self.stage.edit_target();
         self.stage.set_edit_target(entry.target.clone())?;
-        let before = self.stage.undo_depth();
-        let result = entry.edit.apply(&self.stage);
-        if result.is_err() {
-            while self.stage.undo_depth() > before {
-                self.stage.undo()?;
-            }
-        }
+        let result = self.stage.group(|stage| entry.edit.apply(stage));
+        let layers = self.settle_layers();
         self.stage.set_edit_target(target)?;
         result?;
         let mut entry = self.redo.pop().unwrap();
-        entry.transactions = self.stage.undo_depth() - before;
-        entry.layers = self.stage.recent_layer_identifiers(entry.transactions);
         if entry.selection_before != entry.selection_after {
             self.selected = entry.selection_after.clone();
         }
-        self.undo.push(entry);
+        // A redo that changes nothing records no step, so it leaves no entry.
+        if !layers.is_empty() {
+            entry.layers = layers;
+            self.undo.push(entry);
+        }
         self.revision = self.revision.wrapping_add(1);
         self.trim_history();
         Ok(true)
     }
 
+    /// Moves the external-edit baseline past the editor's own commits and
+    /// returns the layers they changed.
+    fn settle_layers(&mut self) -> std::collections::BTreeSet<String> {
+        let revisions = self.layer_changes.revisions();
+        let layers = revisions
+            .iter()
+            .filter(|(layer, revision)| self.history_revisions.get(*layer) != Some(*revision))
+            .map(|(layer, _)| layer.clone())
+            .collect();
+        self.history_revisions = revisions;
+        layers
+    }
+
     /// Establishes a new history baseline when edits bypass the command model.
     pub fn synchronize_external_edits(&mut self) -> bool {
-        let tracked: usize = self.undo.iter().map(|entry| entry.transactions).sum();
-        if tracked == self.stage.undo_depth() {
+        if let Err(error) = self.stage.flush() {
+            bevy::log::warn!("failed to flush editor changes: {error}");
             return false;
         }
+        let revisions = self.layer_changes.revisions();
+        if self.undo.len() == self.stage.undo_depth() && revisions == self.history_revisions {
+            return false;
+        }
+        self.history_revisions = revisions;
         self.revision = self.revision.wrapping_add(1);
         self.stage.reset();
         self.undo.clear();
@@ -1550,18 +1621,17 @@ impl EditorSession {
             .as_ref()
             .and_then(|disk| disk.lock().expect("disk baselines").get(&key).copied());
         let published = match mode {
-            SaveMode::RootLayer => crate::persistence::export_layer(
-                &self.stage,
-                &self.stage.root_layer(),
-                filename,
-                expected,
-            )?,
+            SaveMode::RootLayer => {
+                let layer = self.stage.root_layer().try_borrow()?;
+                crate::persistence::export_layer(&self.stage, &layer, filename, expected)?
+            }
             SaveMode::EditLayer => {
                 let target = self.stage.edit_target();
                 let layer = self
                     .stage
-                    .layer(target.layer_identifier())
+                    .layer(target.layer_identifier())?
                     .ok_or_else(|| anyhow::anyhow!("edit layer is unavailable"))?;
+                let layer = layer.try_borrow()?;
                 crate::persistence::export_layer(&self.stage, &layer, filename, expected)?
             }
             SaveMode::Flattened => {
@@ -1600,6 +1670,7 @@ impl EditorSession {
             time.is_none_or(f64::is_finite),
             "inspection time must be finite"
         );
+        self.stage.flush()?;
         let mut snapshot = EditorSnapshot {
             document_id: self.document_id,
             revision: self.revision,
@@ -1630,26 +1701,12 @@ impl EditorSession {
             &snapshot.layer_revisions,
             self.layer_changes.structural_revision(),
         );
-        let predicate = openusd::usd::PrimPredicate::new(
-            openusd::usd::PrimStatus::ACTIVE.union(openusd::usd::PrimStatus::DEFINED),
-            openusd::usd::PrimStatus::ABSTRACT,
-        )
-        .with_instance_proxies(true);
-        self.stage
-            .traverse(predicate, |path: &openusd::sdf::Path| {
-                snapshot.prims.push(path.as_str().to_owned());
-            })?;
-        for path in &snapshot.prims {
-            let value = self
-                .stage
-                .prim(openusd::sdf::path(path)?)?
-                .attribute("visibility")
-                .get_at::<Value>(time.map(openusd::usd::TimeCode::new))?;
-            snapshot.visibility.insert(
-                path.clone(),
-                !matches!(value, Some(Value::Token(token)) if token.as_str() == "invisible"),
-            );
-        }
+        self.hierarchy.borrow_mut().sample(
+            &self.stage,
+            &self.layer_changes,
+            time,
+            &mut snapshot,
+        )?;
         if let Some(path) = &self.selected {
             if !snapshot.prims.contains(path) {
                 snapshot.selected = None;
@@ -1657,29 +1714,26 @@ impl EditorSession {
             }
             let prim = self.stage.prim(openusd::sdf::path(path)?)?;
             for site in prim.prim_stack()? {
-                let layer = self
-                    .stage
-                    .layer(&site.layer)
-                    .ok_or_else(|| anyhow::anyhow!("composition opinion layer is unavailable"))?;
-                if let Some(value) = layer.data().try_field(&site.path, "references")? {
-                    if let Value::ReferenceListOp(operation) = value.as_ref() {
-                        snapshot.reference_opinions.push(ReferenceOpinion {
-                            layer: site.layer.clone(),
-                            prim: site.path.clone(),
-                            offset: site.offset,
-                            operation: operation.clone(),
-                        });
-                    }
+                let layer = site.layer.try_borrow()?;
+                if let Some(value) = layer.data().try_field(&site.path, "references")?
+                    && let Value::ReferenceListOp(operation) = value.as_ref()
+                {
+                    snapshot.reference_opinions.push(ReferenceOpinion {
+                        layer: site.layer.identifier().to_owned(),
+                        prim: site.path.clone(),
+                        offset: site.offset,
+                        operation: operation.clone(),
+                    });
                 }
-                if let Some(value) = layer.data().try_field(&site.path, "payload")? {
-                    if let Value::PayloadListOp(operation) = value.as_ref() {
-                        snapshot.payload_opinions.push(PayloadOpinion {
-                            layer: site.layer,
-                            prim: site.path,
-                            offset: site.offset,
-                            operation: operation.clone(),
-                        });
-                    }
+                if let Some(value) = layer.data().try_field(&site.path, "payload")?
+                    && let Value::PayloadListOp(operation) = value.as_ref()
+                {
+                    snapshot.payload_opinions.push(PayloadOpinion {
+                        layer: site.layer.identifier().to_owned(),
+                        prim: site.path,
+                        offset: site.offset,
+                        operation: operation.clone(),
+                    });
                 }
             }
             snapshot.asset_info = crate::read::geom::read_asset_info(&self.stage, prim.path())?;
@@ -1699,7 +1753,7 @@ impl EditorSession {
                         .push(format!("Material read failed: {error:#}")),
                 }
             }
-            snapshot.variants = prim.variant_sets().get_all_variant_selections()?;
+            snapshot.variants = prim.variant_sets().selections()?;
             snapshot.variant_choices = variant_choices(&self.stage, path)?;
             snapshot.selected_loaded = Some(prim.is_loaded()?);
             for relationship in prim.relationships()? {
@@ -1769,9 +1823,7 @@ fn variant_choices(
     let mut sets: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         Default::default();
     for site in prim.prim_stack()? {
-        let layer = stage
-            .layer(&site.layer)
-            .ok_or_else(|| anyhow::anyhow!("variant layer is unavailable"))?;
+        let layer = site.layer.try_borrow()?;
         let Some(names) = layer.data().try_field(&site.path, "variantSetChildren")? else {
             continue;
         };
@@ -1781,10 +1833,10 @@ fn variant_choices(
         for name in names {
             let options = sets.entry(name.as_str().to_string()).or_default();
             let set_path = site.path.append_variant_selection(name.as_str(), "")?;
-            if let Some(children) = layer.data().try_field(&set_path, "variantChildren")? {
-                if let Value::TokenVec(children) = children.as_ref() {
-                    options.extend(children.iter().map(|name| name.as_str().to_string()));
-                }
+            if let Some(children) = layer.data().try_field(&set_path, "variantChildren")?
+                && let Value::TokenVec(children) = children.as_ref()
+            {
+                options.extend(children.iter().map(|name| name.as_str().to_string()));
             }
         }
     }
@@ -1832,21 +1884,23 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         assert_eq!(opinions[0].prim.as_str(), "/Root");
         assert_eq!(opinions[0].offset, openusd::sdf::LayerOffset::default());
         assert_eq!(
-            opinions[0].operation.prepended_items[0].asset_path,
+            opinions[0].operation.prepended_items()[0].asset_path,
             "weak.usda"
         );
         assert!(opinions[1].layer.ends_with("weak.usda"));
         assert_eq!(opinions[1].prim.as_str(), "/Source{choice=a}");
         assert_eq!(opinions[1].offset, openusd::sdf::LayerOffset::new(10., 2.));
         assert_eq!(
-            opinions[1].operation.prepended_items[0].prim_path.as_str(),
+            opinions[1].operation.prepended_items()[0]
+                .prim_path
+                .as_str(),
             "/Model"
         );
         assert_eq!(
-            opinions[1].operation.prepended_items[0]
+            opinions[1].operation.prepended_items()[0]
                 .custom_data
                 .get("label"),
-            Some(&openusd::sdf::Value::String("inner".into()))
+            Some(&openusd::vt::Value::String("inner".into()))
         );
         editor
             .edit(EditorEdit::References {
@@ -1856,8 +1910,8 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
             .unwrap();
         let blocked = editor.snapshot().unwrap().reference_opinions;
         assert_eq!(blocked.len(), 1);
-        assert!(blocked[0].operation.explicit);
-        assert!(blocked[0].operation.explicit_items.is_empty());
+        assert!(blocked[0].operation.is_explicit());
+        assert!(blocked[0].operation.explicit_items().is_empty());
         editor.undo().unwrap();
         assert_eq!(editor.snapshot().unwrap().reference_opinions.len(), 2);
         assert_eq!(
@@ -1871,23 +1925,24 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
     fn assert_reference_custom_data(stage: &openusd::usd::Stage) {
         let field = stage
             .root_layer()
+            .borrow()
             .data()
             .try_field(&openusd::sdf::path("/Root").unwrap(), "references")
             .unwrap()
             .unwrap()
             .into_owned();
-        let openusd::sdf::Value::ReferenceListOp(op) = field else {
+        let openusd::vt::Value::ReferenceListOp(op) = field else {
             panic!("reference list op")
         };
         assert_eq!(
-            op.prepended_items[0].custom_data.get("label"),
-            Some(&openusd::sdf::Value::String("retained".into()))
+            op.prepended_items()[0].custom_data.get("label"),
+            Some(&openusd::vt::Value::String("retained".into()))
         );
         assert!(
-            matches!(op.prepended_items[0].custom_data.get("settings"), Some(openusd::sdf::Value::Dictionary(values)) if values.get("version") == Some(&openusd::sdf::Value::Int(3)))
+            matches!(op.prepended_items()[0].custom_data.get("settings"), Some(openusd::vt::Value::Dictionary(values)) if values.get("version") == Some(&openusd::vt::Value::Int(3)))
         );
         assert_eq!(
-            op.prepended_items[0].layer_offset,
+            op.prepended_items()[0].layer_offset,
             openusd::sdf::LayerOffset::new(10., 2.)
         );
         assert_eq!(
@@ -1913,7 +1968,11 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         let original = editor.stage().root_layer().export_to_string().unwrap();
         let directory = tempfile::tempdir().unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let exported = directory.path().join(format!("exported.{extension}"));
+            let exported = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("exported.{extension}"));
             editor
                 .save(exported.to_str().unwrap(), SaveMode::RootLayer)
                 .unwrap();
@@ -1951,8 +2010,16 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         let editor = EditorSession::new(source.open_stage().unwrap());
         let directory = tempfile::tempdir().unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let exported = directory.path().join(format!("exported.{extension}"));
-            let native = directory.path().join(format!("native-{extension}.usda"));
+            let exported = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("exported.{extension}"));
+            let native = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("native-{extension}.usda"));
             editor
                 .save(exported.to_str().unwrap(), SaveMode::RootLayer)
                 .unwrap();
@@ -2027,7 +2094,7 @@ def Xform "Root" ( prepend references = [</A>, </B>] ) {}
         let mut annotated = reference("/C");
         annotated.custom_data.insert(
             "label".into(),
-            openusd::sdf::Value::String("retained".into()),
+            openusd::vt::Value::String("retained".into()),
         );
         for (operation, expected) in [
             (ReferenceListOp::prepended([annotated]), Some(3.)),
@@ -2040,11 +2107,8 @@ def Xform "Root" ( prepend references = [</A>, </B>] ) {}
             ),
             (ReferenceListOp::explicit([]), None),
             (
-                ReferenceListOp {
-                    deleted_items: vec![reference("/A")],
-                    prepended_items: vec![reference("/C")],
-                    ..Default::default()
-                },
+                ReferenceListOp::deleted([reference("/A")])
+                    .with(openusd::sdf::ListOpType::Prepended, [reference("/C")]),
                 Some(3.),
             ),
         ] {
@@ -2065,12 +2129,13 @@ def Xform "Root" ( prepend references = [</A>, </B>] ) {}
             assert_eq!(score(&reopened), expected);
             let field = reopened
                 .root_layer()
+                .borrow()
                 .data()
                 .try_field(&openusd::sdf::path("/Root").unwrap(), "references")
                 .unwrap()
                 .unwrap()
                 .into_owned();
-            assert_eq!(field, openusd::sdf::Value::ReferenceListOp(operation));
+            assert_eq!(field, openusd::vt::Value::ReferenceListOp(operation));
             editor.undo().unwrap();
             assert_eq!(
                 editor.stage().root_layer().export_to_string().unwrap(),
@@ -2144,7 +2209,7 @@ def Xform "Root" ( prepend payload = [</A>, </B>] ) {}
             (PayloadListOp::deleted([payload("/A")]), Some(2.)),
             (
                 PayloadListOp::deleted([Payload {
-                    layer_offset: Some(openusd::sdf::LayerOffset::default()),
+                    layer_offset: openusd::sdf::LayerOffset::default(),
                     ..payload("/A")
                 }]),
                 Some(2.),
@@ -2156,7 +2221,7 @@ def Xform "Root" ( prepend payload = [</A>, </B>] ) {}
             (
                 PayloadListOp::ordered([
                     Payload {
-                        layer_offset: Some(openusd::sdf::LayerOffset::default()),
+                        layer_offset: openusd::sdf::LayerOffset::default(),
                         ..payload("/B")
                     },
                     payload("/A"),
@@ -2165,11 +2230,8 @@ def Xform "Root" ( prepend payload = [</A>, </B>] ) {}
             ),
             (PayloadListOp::explicit([]), None),
             (
-                PayloadListOp {
-                    deleted_items: vec![payload("/A")],
-                    prepended_items: vec![payload("/C")],
-                    ..Default::default()
-                },
+                PayloadListOp::deleted([payload("/A")])
+                    .with(openusd::sdf::ListOpType::Prepended, [payload("/C")]),
                 Some(3.),
             ),
         ] {
@@ -2242,7 +2304,9 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         assert_eq!(opinions[0].prim.as_str(), "/Source{choice=a}");
         assert_eq!(opinions[0].offset, openusd::sdf::LayerOffset::new(10., 2.));
         assert_eq!(
-            opinions[0].operation.prepended_items[0].prim_path.as_str(),
+            opinions[0].operation.prepended_items()[0]
+                .prim_path
+                .as_str(),
             "/Model"
         );
     }
@@ -2261,13 +2325,15 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         assert_eq!(original.len(), 1);
         assert!(original[0].layer.ends_with("payload_authoring_weak.usda"));
         assert_eq!(original[0].prim.as_str(), "/Root");
-        assert!(!original[0].operation.explicit);
+        assert!(!original[0].operation.is_explicit());
         assert_eq!(
-            original[0].operation.prepended_items[0].asset_path,
+            original[0].operation.prepended_items()[0].asset_path,
             "payload_authoring_content.usda"
         );
         assert_eq!(
-            original[0].operation.prepended_items[0].prim_path.as_str(),
+            original[0].operation.prepended_items()[0]
+                .prim_path
+                .as_str(),
             "/Box"
         );
         editor
@@ -2279,8 +2345,8 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         let blocked = editor.snapshot().unwrap().payload_opinions;
         assert_eq!(blocked.len(), 2);
         assert!(blocked[0].layer.ends_with("payload_authoring.usda"));
-        assert!(blocked[0].operation.explicit);
-        assert!(blocked[0].operation.explicit_items.is_empty());
+        assert!(blocked[0].operation.is_explicit());
+        assert!(blocked[0].operation.explicit_items().is_empty());
         assert_eq!(blocked[1].operation, original[0].operation);
         editor
             .edit(EditorEdit::ClearPayloads {
@@ -2300,11 +2366,15 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         let directory = tempfile::tempdir().unwrap();
         let first = directory
             .path()
+            .canonicalize()
+            .unwrap()
             .join("first.usda")
             .to_string_lossy()
             .into_owned();
         let second = directory
             .path()
+            .canonicalize()
+            .unwrap()
             .join("second.usda")
             .to_string_lossy()
             .into_owned();
@@ -2372,7 +2442,12 @@ def Xform "Root" ( prepend references = @weak.usda@</Source> (offset = 10; scale
         );
         bridge
             .send(open(
-                &directory.path().join("missing.usda").to_string_lossy(),
+                &directory
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join("missing.usda")
+                    .to_string_lossy(),
                 &replaced.document,
             ))
             .unwrap();
@@ -2411,7 +2486,7 @@ def Xform "Instance" {}
         let before = stage.root_layer().export_to_string().unwrap();
         let payload = openusd::sdf::Payload {
             prim_path: openusd::sdf::path("/Model").unwrap(),
-            layer_offset: Some(openusd::sdf::LayerOffset::new(10., 2.)),
+            layer_offset: openusd::sdf::LayerOffset::new(10., 2.),
             ..Default::default()
         };
         editor
@@ -2438,7 +2513,7 @@ def Xform "Instance" {}
         assert_eq!(stage.root_layer().export_to_string().unwrap(), authored);
         for scale in [0., -1., f64::NAN, f64::INFINITY] {
             let invalid = openusd::sdf::Payload {
-                layer_offset: Some(openusd::sdf::LayerOffset::new(0., scale)),
+                layer_offset: openusd::sdf::LayerOffset::new(0., scale),
                 ..payload.clone()
             };
             assert!(
@@ -2510,7 +2585,7 @@ def Xform "Instance" {}
         assert!(editor.snapshot().unwrap().revision > undone);
     }
     #[test]
-    fn default_history_limit_bounds_retained_transactions() {
+    fn default_history_limit_bounds_retained_steps() {
         use super::*;
         let stage = Stage::builder()
             .in_memory("history-retention.usda")
@@ -2527,14 +2602,7 @@ def Xform "Instance" {}
                 })
                 .unwrap();
             assert!(editor.undo.len() <= 128);
-            assert_eq!(
-                editor.stage.undo_depth(),
-                editor
-                    .undo
-                    .iter()
-                    .map(|entry| entry.transactions)
-                    .sum::<usize>()
-            );
+            assert_eq!(editor.stage.undo_depth(), editor.undo.len());
         }
         assert_eq!(editor.undo.len(), 128);
         for _ in 0..128 {
@@ -2579,7 +2647,7 @@ def Xform "Instance" {}
         editor
             .edit(EditorEdit::Batch(vec![define("/A"), define("/B")]))
             .unwrap();
-        assert!(editor.undo.last().unwrap().transactions > 1);
+        assert_eq!(editor.stage.undo_depth(), 2, "the batch is one step");
         editor.edit(define("/Newest")).unwrap();
         assert_eq!(editor.undo.len(), 2);
         assert!(editor.undo().unwrap());
@@ -2593,6 +2661,8 @@ def Xform "Instance" {}
         assert!(editor.redo().unwrap());
         assert!(!editor.redo().unwrap());
         editor.set_history_limit(1);
+        assert!(!editor.undo().unwrap());
+        editor.edit(define("/Retained")).unwrap();
         let before = stage.root_layer().export_to_string().unwrap();
         let depth = editor.stage.undo_depth();
         let mut edits = (0..32)
@@ -2607,6 +2677,7 @@ def Xform "Instance" {}
         assert_eq!(stage.root_layer().export_to_string().unwrap(), before);
         assert_eq!(editor.stage.undo_depth(), depth);
         assert_eq!(editor.undo.len(), 1);
+        assert!(!editor.synchronize_external_edits());
         editor.set_history_limit(0);
         assert!(!editor.undo().unwrap());
         assert!(!editor.redo().unwrap());
@@ -2635,18 +2706,42 @@ def Xform "Instance" {}
             assert!(editor.undo().unwrap());
         }
         editor.set_history_limit(2);
-        assert_eq!(editor.redo.len(), 1);
+        assert!(editor.undo.is_empty());
+        assert_eq!(editor.redo.len(), 2);
+        assert!(editor.redo().unwrap());
         assert!(editor.redo().unwrap());
         assert!(!editor.redo().unwrap());
-        assert!(stage.prim("/B").unwrap().is_valid().unwrap());
-        assert!(!stage.prim("/C").unwrap().is_valid().unwrap());
+        assert!(stage.prim("/C").unwrap().is_valid().unwrap());
+        assert!(!stage.prim("/D").unwrap().is_valid().unwrap());
         stage.define_prim("/External").unwrap();
         editor.set_history_limit(1);
         assert!(!editor.undo().unwrap());
         editor.edit(define("/Recent")).unwrap();
         assert!(editor.undo().unwrap());
         assert!(stage.prim("/External").unwrap().is_valid().unwrap());
-        assert!(stage.prim("/B").unwrap().is_valid().unwrap());
+        assert!(stage.prim("/C").unwrap().is_valid().unwrap());
+    }
+
+    #[test]
+    fn full_history_still_sees_noops_and_external_edits() {
+        use super::*;
+        let stage = Stage::builder().in_memory("full-history.usda").unwrap();
+        let mut editor = EditorSession::new(stage.clone());
+        editor.set_history_limit(2);
+        let define = |path: &str| EditorEdit::Define {
+            path: path.into(),
+            type_name: "Xform".into(),
+        };
+        editor.edit(define("/A")).unwrap();
+        editor.edit(define("/B")).unwrap();
+        assert_eq!(editor.stage.undo_depth(), 2);
+        editor.edit(EditorEdit::Batch(Vec::new())).unwrap();
+        assert_eq!(editor.undo.len(), 2);
+        stage.define_prim("/External").unwrap();
+        assert_eq!(editor.stage.undo_depth(), 2);
+        assert!(editor.synchronize_external_edits());
+        assert!(!editor.undo().unwrap());
+        assert!(stage.prim("/External").unwrap().is_valid().unwrap());
     }
     #[test]
     fn visibility_commands_edit_samples_or_defaults_and_undo() {
@@ -2719,7 +2814,7 @@ def Xform "Instance" {}
         use super::*;
         let directory = tempfile::tempdir().unwrap();
         let source = crate::UsdSource::snapshot(
-            directory.path().join("scene.usda"),
+            directory.path().canonicalize().unwrap().join("scene.usda"),
             br#"#usda 1.0
 def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
 "#
@@ -2735,7 +2830,7 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
         )
         .unwrap();
         let previous = world.resource::<crate::asset::SnapshotTextures>().0.clone();
-        let error = refresh_textures(&mut world, &stage, &source).unwrap_err();
+        let error = refresh_textures(&mut world, &stage, &source, None).unwrap_err();
         assert!(error.to_string().contains("missing.png"));
         assert_eq!(
             world.resource::<crate::asset::SnapshotTextures>().0,
@@ -2745,6 +2840,8 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
             world.resource::<EditorTextureRequests>().0,
             [directory
                 .path()
+                .canonicalize()
+                .unwrap()
                 .join("missing.png")
                 .to_string_lossy()
                 .into_owned()]
@@ -2994,6 +3091,7 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
                 let text = stage
                     .layer(&identifier)
                     .unwrap()
+                    .unwrap()
                     .export_to_string()
                     .unwrap();
                 (identifier, text)
@@ -3023,7 +3121,7 @@ def DomeLight "Sky" { asset inputs:texture:file = @missing.png@ }
             original
         );
         for (identifier, before) in layers_before {
-            let layer = editor.stage().layer(&identifier).unwrap();
+            let layer = editor.stage().layer(&identifier).unwrap().unwrap();
             assert_eq!(layer.export_to_string().unwrap(), before);
         }
     }
@@ -3081,6 +3179,7 @@ def Xform "M" {}
         assert!(
             !stage
                 .root_layer()
+                .borrow()
                 .data()
                 .has_spec(&path.append_property("xformOp:transform").unwrap())
         );
@@ -3088,6 +3187,7 @@ def Xform "M" {}
         assert!(
             stage
                 .root_layer()
+                .borrow()
                 .data()
                 .has_spec(&source_path.append_property("xformOp:transform").unwrap())
         );
@@ -3105,7 +3205,11 @@ def Xform "M" {}
             ("flat", SaveMode::Flattened),
         ] {
             for extension in ["usda", "usdc", "usd"] {
-                let output = directory.path().join(format!("{name}.{extension}"));
+                let output = directory
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(format!("{name}.{extension}"));
                 editor.save(output.to_str().unwrap(), mode).unwrap();
                 let reopened = Stage::builder()
                     .schema_registry(openusd_schemas::schema_registry())
@@ -3209,6 +3313,7 @@ def Xform "M" {}
         assert!(
             !stage
                 .root_layer()
+                .borrow()
                 .data()
                 .has_spec(&openusd::sdf::Path::new("/M.score").unwrap())
         );
@@ -3242,6 +3347,7 @@ def Xform "M" {}
             assert!(
                 !stage
                     .root_layer()
+                    .borrow()
                     .data()
                     .has_spec(&openusd::sdf::Path::new("/Source.newValue").unwrap())
             );
@@ -3354,7 +3460,7 @@ def Xform "M" { double score = 2 }
         );
         assert_eq!(
             attribute
-                .get_metadata::<String>("documentation")
+                .metadata::<String>("documentation")
                 .unwrap()
                 .as_deref(),
             Some("keep this metadata")
@@ -3502,7 +3608,7 @@ def Xform "Model" (
             crate::UsdSource::new("checked.usda", &b"#usda 1.0\ndef Scope \"Model\" {}\n"[..])
                 .unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let output = directory.path().join("saved.usda");
+        let output = directory.path().canonicalize().unwrap().join("saved.usda");
         std::fs::write(&output, "original").unwrap();
         let editor = EditorSession::new(source.open_stage().unwrap());
         let snapshot = editor.snapshot().unwrap();
@@ -3573,8 +3679,8 @@ def Xform "Model" (
     #[test]
     fn source_save_baselines_reject_external_edits_and_follow_own_saves() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
-        let weak = directory.path().join("weak.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
+        let weak = directory.path().canonicalize().unwrap().join("weak.usda");
         let initial = "#usda 1.0\n(subLayers = [@weak.usda@])\n";
         std::fs::write(&root, initial).unwrap();
         std::fs::write(&weak, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
@@ -3600,7 +3706,7 @@ def Xform "Model" (
         editor
             .save(root.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
-        let copy = directory.path().join("copy.usda");
+        let copy = directory.path().canonicalize().unwrap().join("copy.usda");
         editor
             .save(copy.to_str().unwrap(), SaveMode::EditLayer)
             .unwrap();
@@ -3626,7 +3732,7 @@ def Xform "Model" (
     #[test]
     fn source_save_baseline_tracks_outer_package_bytes() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usdz");
+        let root = directory.path().canonicalize().unwrap().join("root.usdz");
         let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
         archive
             .add_layer("root.usda", b"#usda 1.0\ndef Xform \"Root\" {}\n")
@@ -3653,7 +3759,7 @@ def Xform "Model" (
     #[test]
     fn source_save_baseline_uses_supplied_root_bytes_not_later_disk_content() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let source =
             crate::UsdSource::new(&root, b"#usda 1.0\ndef Xform \"Original\" {}\n".as_slice())
                 .unwrap();
@@ -3673,8 +3779,8 @@ def Xform "Model" (
     fn layer_save_states_follow_content_and_only_source_saves() {
         use save_state::LayerSaveState::{Clean, Modified, Unknown};
         let directory = tempfile::tempdir().unwrap();
-        let root_file = directory.path().join("root.usda");
-        let weak_file = directory.path().join("weak.usda");
+        let root_file = directory.path().canonicalize().unwrap().join("root.usda");
+        let weak_file = directory.path().canonicalize().unwrap().join("weak.usda");
         std::fs::write(&root_file, "#usda 1.0\n(subLayers = [@weak.usda@])\nover \"Root\" { point3f[] points = [(0,0,0), (1,0,0)] }\n").unwrap();
         std::fs::write(&weak_file, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let source = crate::UsdSource::new(&root_file, std::fs::read(&root_file).unwrap()).unwrap();
@@ -3718,14 +3824,29 @@ def Xform "Model" (
             SaveMode::Flattened,
         ] {
             editor
-                .save(directory.path().join("copy.usda").to_str().unwrap(), mode)
+                .save(
+                    directory
+                        .path()
+                        .canonicalize()
+                        .unwrap()
+                        .join("copy.usda")
+                        .to_str()
+                        .unwrap(),
+                    mode,
+                )
                 .unwrap();
             assert_eq!(editor.snapshot().unwrap().layer_save_states, both);
         }
         assert!(
             editor
                 .save(
-                    directory.path().join("missing/out.usda").to_str().unwrap(),
+                    directory
+                        .path()
+                        .canonicalize()
+                        .unwrap()
+                        .join("missing/out.usda")
+                        .to_str()
+                        .unwrap(),
                     SaveMode::RootLayer
                 )
                 .is_err()
@@ -3805,6 +3926,33 @@ def Xform "Model" (
             ]))
             .unwrap();
         assert_eq!(editor.snapshot().unwrap().layer_save_states[&root], Clean);
+    }
+
+    #[test]
+    fn editor_observer_rejects_busy_setup_and_defers_history_changes() {
+        let stage = Stage::builder().in_memory("busy-editor.usda").unwrap();
+        let mut editor = EditorSession::try_new(stage.clone()).unwrap();
+        stage
+            .root_layer()
+            .edit(|layer| {
+                assert!(EditorSession::try_new(stage.clone()).is_err());
+                assert!(editor.snapshot().is_err());
+                assert!(!editor.synchronize_external_edits());
+                openusd::sdf::PrimSpec::new(
+                    layer.data_mut(),
+                    "/Direct",
+                    openusd::sdf::Specifier::Def,
+                    "Xform",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(editor.synchronize_external_edits());
+        let snapshot = editor.snapshot().unwrap();
+        assert!(snapshot.prims.iter().any(|path| path == "/Direct"));
+        assert!(snapshot.layer_revisions[&snapshot.root_layer] > 0);
+        assert!(!snapshot.can_undo);
+        assert!(!editor.synchronize_external_edits());
     }
 
     #[test]
@@ -3903,6 +4051,7 @@ def Xform "Root" { def Cube "Shape" {} }
                     .stage()
                     .layer(id)
                     .unwrap()
+                    .unwrap()
                     .export_to_string()
                     .unwrap()
             })
@@ -3927,6 +4076,7 @@ def Xform "Root" { def Cube "Shape" {} }
                 editor
                     .stage()
                     .layer(id)
+                    .unwrap()
                     .unwrap()
                     .export_to_string()
                     .unwrap(),
@@ -3961,6 +4111,7 @@ def Xform "Root" { def Cube "Shape" {} }
             .stage()
             .layer(&layers[2])
             .unwrap()
+            .unwrap()
             .export_to_string()
             .unwrap();
         editor
@@ -3975,6 +4126,7 @@ def Xform "Root" { def Cube "Shape" {} }
             .stage()
             .layer(&layers[2])
             .unwrap()
+            .unwrap()
             .export_to_string()
             .unwrap();
         editor.set_edit_layer(&layers[0]).unwrap();
@@ -3988,6 +4140,7 @@ def Xform "Root" { def Cube "Shape" {} }
                 .stage()
                 .layer(&layers[2])
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap(),
             edited
@@ -3998,6 +4151,7 @@ def Xform "Root" { def Cube "Shape" {} }
             editor
                 .stage()
                 .layer(&layers[2])
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),
@@ -4014,6 +4168,7 @@ def Xform "Root" { def Cube "Shape" {} }
                 .stage()
                 .layer(&layers[2])
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap(),
             original
@@ -4024,6 +4179,7 @@ def Xform "Root" { def Cube "Shape" {} }
             editor
                 .stage()
                 .layer(&layers[2])
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),
@@ -4077,7 +4233,10 @@ over "Root" {}
         let authored = editor.stage().root_layer().export_to_string().unwrap();
         let before = editor.snapshot().unwrap();
         editor.set_layer_muted(&weak, true).unwrap();
-        assert_eq!(editor.snapshot().unwrap().muted_layers, [weak.clone()]);
+        assert_eq!(
+            editor.snapshot().unwrap().muted_layers.as_slice(),
+            std::slice::from_ref(&weak)
+        );
         assert!(
             !editor
                 .stage()
@@ -4333,6 +4492,7 @@ over "Root" {}
             .stage()
             .layer(&weak)
             .unwrap()
+            .unwrap()
             .export_to_string()
             .unwrap();
         editor
@@ -4346,6 +4506,7 @@ over "Root" {}
         let edited = editor
             .stage()
             .layer(&weak)
+            .unwrap()
             .unwrap()
             .export_to_string()
             .unwrap();
@@ -4365,6 +4526,7 @@ over "Root" {}
                 .stage()
                 .layer(&weak)
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap(),
             edited
@@ -4374,6 +4536,7 @@ over "Root" {}
             editor
                 .stage()
                 .layer(&weak)
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),
@@ -4394,6 +4557,7 @@ over "Root" {}
                 .stage()
                 .layer(&weak)
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap(),
             original
@@ -4403,6 +4567,7 @@ over "Root" {}
             editor
                 .stage()
                 .layer(&weak)
+                .unwrap()
                 .unwrap()
                 .export_to_string()
                 .unwrap(),
@@ -4838,12 +5003,12 @@ def Xform "Mover" {
     fn relationship_targets_distinguish_empty_from_cleared_and_undo() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
-            directory.path().join("weak.usda"),
+            directory.path().canonicalize().unwrap().join("weak.usda"),
             "#usda 1.0\ndef Xform \"Owner\" { rel links = [</A>, </B.value>] }\n",
         )
         .unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             &b"#usda 1.0\n( subLayers = [@weak.usda@] )\n"[..],
         )
         .unwrap();
@@ -4906,7 +5071,7 @@ def Xform "Mover" {
                 targets: vec![openusd::sdf::path("/Future").unwrap()],
             })
             .unwrap();
-        let output = directory.path().join("saved.usda");
+        let output = directory.path().canonicalize().unwrap().join("saved.usda");
         editor
             .save(output.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
@@ -4985,7 +5150,11 @@ def Xform "Mover" {
         #[derive(Component, PartialEq, Debug)]
         struct RuntimeState(u32);
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("namespace.usda");
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("namespace.usda");
         std::fs::write(
             &path,
             "#usda 1.0\ndef Cube \"Box\" {}\ndef Xform \"Group\" {}\n",
@@ -5307,13 +5476,21 @@ def Material "Mat" {
                 .write_image_data(&[200, 80, 20, 255])
                 .unwrap();
         }
-        std::fs::write(directory.path().join("pixel.png"), &png).unwrap();
-        std::fs::write(directory.path().join("scene.usda"), text).unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join("pixel.png"),
+            &png,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join("scene.usda"),
+            text,
+        )
+        .unwrap();
         let mut archive = openusd::usdz::ArchiveWriter::new(std::io::Cursor::new(Vec::new()));
         archive.add_layer("scene.usda", text.as_bytes()).unwrap();
         archive.add_layer("pixel.png", &png).unwrap();
         std::fs::write(
-            directory.path().join("scene.usdz"),
+            directory.path().canonicalize().unwrap().join("scene.usdz"),
             archive.finish().unwrap().into_inner(),
         )
         .unwrap();
@@ -5328,6 +5505,8 @@ def Material "Mat" {
                 .send(EditorCommand::Open(
                     directory
                         .path()
+                        .canonicalize()
+                        .unwrap()
                         .join(filename)
                         .to_string_lossy()
                         .into_owned(),
@@ -5412,7 +5591,8 @@ def Material "Mat" {
                     .export_to_string()
                     .unwrap();
                 let document_id = bridge.view().unwrap().document.document_id;
-                std::fs::remove_file(directory.path().join("pixel.png")).unwrap();
+                std::fs::remove_file(directory.path().canonicalize().unwrap().join("pixel.png"))
+                    .unwrap();
                 bridge.send(EditorCommand::RefreshTextures).unwrap();
                 app.update();
                 let status = bridge.view().unwrap().status;
@@ -5432,12 +5612,26 @@ def Material "Mat" {
                         .as_ref(),
                     Some(&texture)
                 );
-                std::fs::write(directory.path().join("pixel.png"), b"broken image").unwrap();
+                std::fs::write(
+                    directory.path().canonicalize().unwrap().join("pixel.png"),
+                    b"broken image",
+                )
+                .unwrap();
                 bridge.send(EditorCommand::RefreshTextures).unwrap();
                 app.update();
                 let status = bridge.view().unwrap().status;
                 assert!(status.starts_with("Failed: cannot decode texture "));
-                assert!(status.contains(directory.path().join("pixel.png").to_str().unwrap()));
+                assert!(
+                    status.contains(
+                        directory
+                            .path()
+                            .canonicalize()
+                            .unwrap()
+                            .join("pixel.png")
+                            .to_str()
+                            .unwrap()
+                    )
+                );
                 assert_eq!(
                     app.world()
                         .resource::<Assets<StandardMaterial>>()
@@ -5463,7 +5657,11 @@ def Material "Mat" {
                         .write_image_data(&[20, 160, 240, 255])
                         .unwrap();
                 }
-                std::fs::write(directory.path().join("pixel.png"), changed).unwrap();
+                std::fs::write(
+                    directory.path().canonicalize().unwrap().join("pixel.png"),
+                    changed,
+                )
+                .unwrap();
                 bridge.send(EditorCommand::RefreshTextures).unwrap();
                 app.update();
                 assert_eq!(bridge.view().unwrap().status, "Ready");
@@ -5552,12 +5750,18 @@ def Material "Mat" {
                         .unwrap(),
                     Some(Value::Float(1.7))
                 );
-                std::fs::write(directory.path().join("pixel.png"), &png).unwrap();
+                std::fs::write(
+                    directory.path().canonicalize().unwrap().join("pixel.png"),
+                    &png,
+                )
+                .unwrap();
             }
             bridge
                 .send(EditorCommand::Open(
                     directory
                         .path()
+                        .canonicalize()
+                        .unwrap()
                         .join("missing.usda")
                         .to_string_lossy()
                         .into_owned(),
@@ -5584,12 +5788,16 @@ def Material "Mat" {
     fn typed_references_compose_reusable_assets_and_undo() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
-            directory.path().join("part.usda"),
+            directory.path().canonicalize().unwrap().join("part.usda"),
             "#usda 1.0\n(defaultPrim = \"Part\")\ndef Xform \"Part\" { def Cube \"Shape\" {} }\n",
         )
         .unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("assembly.usda"),
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("assembly.usda"),
             &b"#usda 1.0\ndef Xform \"Left\" {}\ndef Xform \"Right\" {}\n"[..],
         )
         .unwrap();
@@ -5642,7 +5850,11 @@ def Material "Mat" {
             crate::authoring::export_stage_string(editor.stage()).unwrap(),
             before
         );
-        let output = directory.path().join("assembly-out.usda");
+        let output = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("assembly-out.usda");
         editor
             .save(output.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
@@ -5709,7 +5921,7 @@ def Material "Mat" {
     fn variant_choices_follow_referenced_namespace_and_undo_selection() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
-            directory.path().join("model.usda"),
+            directory.path().canonicalize().unwrap().join("model.usda"),
             r#"#usda 1.0
 def Xform "Asset" (prepend variantSets = "shape") {
     variantSet "shape" = {
@@ -5721,7 +5933,7 @@ def Xform "Asset" (prepend variantSets = "shape") {
         )
         .unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             &b"#usda 1.0\ndef Xform \"Mounted\" ( prepend references = @model.usda@</Asset> ) {}\n"
                 [..],
         )
@@ -5919,11 +6131,15 @@ def Xform "Asset" (prepend variantSets = "shape") {
     #[test]
     fn authored_external_payloads_reconcile_live_history_and_save() {
         let directory = tempfile::tempdir().unwrap();
-        let part = directory.path().join("part.usda");
+        let part = directory.path().canonicalize().unwrap().join("part.usda");
         let part_text =
             "#usda 1.0\n(defaultPrim = \"Part\")\ndef Xform \"Part\" { def Cube \"Shape\" {} }\n";
         std::fs::write(&part, part_text).unwrap();
-        let root = directory.path().join("assembly.usda");
+        let root = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("assembly.usda");
         std::fs::write(&root, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((
@@ -6002,7 +6218,7 @@ def Xform "Asset" (prepend variantSets = "shape") {
                 );
             }
         }
-        let output = directory.path().join("saved.usda");
+        let output = directory.path().canonicalize().unwrap().join("saved.usda");
         bridge
             .send(EditorCommand::Save {
                 filename: output.to_string_lossy().into_owned(),
@@ -6019,7 +6235,7 @@ def Xform "Asset" (prepend variantSets = "shape") {
             reopened
                 .prim("/Root")
                 .unwrap()
-                .get_metadata::<Value>("payload")
+                .metadata::<Value>("payload")
                 .unwrap(),
             Some(Value::PayloadListOp(_))
         ));
@@ -6123,7 +6339,7 @@ def Xform "Asset" (prepend variantSets = "shape") {
     fn flatten_rejects_timecode_clips_without_replacing_destination() {
         let directory = tempfile::tempdir().unwrap();
         let source = crate::UsdSource::snapshot(
-            directory.path().join("source.usda"),
+            directory.path().canonicalize().unwrap().join("source.usda"),
             &br#"#usda 1.0
 def Xform "Model" (
     clips = {
@@ -6141,7 +6357,7 @@ def Xform "Model" (
         )
         .unwrap();
         let clip = crate::UsdSource::snapshot(
-            directory.path().join("clip.usda"),
+            directory.path().canonicalize().unwrap().join("clip.usda"),
             &b"#usda 1.0\ndef Xform \"Model\" { timecode score.timeSamples = {0: 1, 10: 3} }\n"[..],
         )
         .unwrap();
@@ -6149,7 +6365,11 @@ def Xform "Model" (
         let editor = EditorSession::new(source.open_stage().unwrap());
         let before = editor.stage().root_layer().export_to_string().unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let destination = directory.path().join(format!("output.{extension}"));
+            let destination = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("output.{extension}"));
             std::fs::write(&destination, b"existing output").unwrap();
             let error = editor
                 .save(destination.to_str().unwrap(), SaveMode::Flattened)
@@ -6168,7 +6388,11 @@ def Xform "Model" (
             before
         );
         for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
-            let destination = directory.path().join("authored.usda");
+            let destination = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("authored.usda");
             editor.save(destination.to_str().unwrap(), mode).unwrap();
             assert!(
                 std::fs::read_to_string(destination)
@@ -6181,7 +6405,7 @@ def Xform "Model" (
     #[test]
     fn flatten_rejects_incomplete_composition_without_publishing_or_mutating() {
         let directory = tempfile::tempdir().unwrap();
-        let source = crate::UsdSource::snapshot(directory.path().join("source.usda"), &b"#usda 1.0\ndef Scope \"Model\" (prepend references = @missing.usda@</Model>) {}\n"[..]).unwrap();
+        let source = crate::UsdSource::snapshot(directory.path().canonicalize().unwrap().join("source.usda"), &b"#usda 1.0\ndef Scope \"Model\" (prepend references = @missing.usda@</Model>) {}\n"[..]).unwrap();
         let mut editor = EditorSession::new(source.open_stage().unwrap());
         editor.select(Some("/Model".into())).unwrap();
         editor
@@ -6194,7 +6418,11 @@ def Xform "Model" (
             .unwrap();
         let before = editor.stage().root_layer().export_to_string().unwrap();
         for extension in ["usda", "usdc", "usd", "usdz"] {
-            let path = directory.path().join(format!("flat.{extension}"));
+            let path = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("flat.{extension}"));
             std::fs::write(&path, "existing output").unwrap();
             let error = editor
                 .save(path.to_str().unwrap(), SaveMode::Flattened)
@@ -6213,7 +6441,11 @@ def Xform "Model" (
         );
         assert!(editor.snapshot().unwrap().can_undo);
         for mode in [SaveMode::RootLayer, SaveMode::EditLayer] {
-            let path = directory.path().join("authored.usda");
+            let path = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("authored.usda");
             editor.save(path.to_str().unwrap(), mode).unwrap();
             assert!(
                 std::fs::read_to_string(path)
@@ -6237,10 +6469,14 @@ def Xform "Model" (
     #[test]
     fn invalid_composition_open_preserves_document_selection_and_history() {
         let directory = tempfile::tempdir().unwrap();
-        let current = directory.path().join("current.usda");
+        let current = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("current.usda");
         std::fs::write(&current, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         std::fs::write(
-            directory.path().join("model.usda"),
+            directory.path().canonicalize().unwrap().join("model.usda"),
             "#usda 1.0\ndef Scope \"Present\" {}\n",
         )
         .unwrap();
@@ -6290,7 +6526,11 @@ def Xform "Model" (
                 "#usda 1.0\ndef Scope \"Broken\" (prepend payload = @missing.usda@</Model>) {}\n",
             ),
         ] {
-            let path = directory.path().join(format!("{name}.usda"));
+            let path = directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join(format!("{name}.usda"));
             std::fs::write(&path, text).unwrap();
             bridge
                 .send(EditorCommand::Open(path.to_string_lossy().into_owned()))
@@ -6328,7 +6568,11 @@ def Xform "Model" (
     #[test]
     fn command_bridge_edits_the_projected_document_and_preserves_it_on_open_failure() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("document.usda");
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("document.usda");
         std::fs::write(&path, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
@@ -6373,6 +6617,8 @@ def Xform "Model" (
             .send(EditorCommand::Open(
                 directory
                     .path()
+                    .canonicalize()
+                    .unwrap()
                     .join("absent.usda")
                     .to_string_lossy()
                     .into_owned(),
@@ -6391,7 +6637,11 @@ def Xform "Model" (
     #[test]
     fn unchanged_reload_reuses_inspection_but_changes_and_errors_refresh_it() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("document.usda");
+        let path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("document.usda");
         std::fs::write(&path, "#usda 1.0\ndef Xform \"Root\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
@@ -6576,10 +6826,10 @@ def Xform "Model" (
     #[test]
     fn layer_target_undo_and_save_modes_preserve_composition() {
         let directory = tempfile::tempdir().unwrap();
-        let weak = directory.path().join("weak.usda");
+        let weak = directory.path().canonicalize().unwrap().join("weak.usda");
         std::fs::write(&weak, "#usda 1.0\ndef Cube \"Box\" { double size = 3 }\n").unwrap();
         let source = crate::UsdSource::new(
-            directory.path().join("root.usda"),
+            directory.path().canonicalize().unwrap().join("root.usda"),
             &b"#usda 1.0\n( subLayers = [@weak.usda@] )\n"[..],
         )
         .unwrap();
@@ -6617,7 +6867,7 @@ def Xform "Model" (
                 .iter()
                 .any(|a| a.name == "size" && a.value == Some(Value::Double(7.0)))
         );
-        let flat = directory.path().join("flat.usda");
+        let flat = directory.path().canonicalize().unwrap().join("flat.usda");
         editor
             .save(flat.to_str().unwrap(), SaveMode::Flattened)
             .unwrap();
@@ -6634,7 +6884,11 @@ def Xform "Model" (
                 .unwrap(),
             Some(7.0)
         );
-        let root_out = directory.path().join("root_out.usda");
+        let root_out = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("root_out.usda");
         editor
             .save(root_out.to_str().unwrap(), SaveMode::RootLayer)
             .unwrap();
@@ -6644,7 +6898,11 @@ def Xform "Model" (
                 .contains("subLayers")
         );
         editor.set_edit_layer(weak.to_str().unwrap()).unwrap();
-        let layer_out = directory.path().join("layer_out.usda");
+        let layer_out = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("layer_out.usda");
         editor
             .save(layer_out.to_str().unwrap(), SaveMode::EditLayer)
             .unwrap();

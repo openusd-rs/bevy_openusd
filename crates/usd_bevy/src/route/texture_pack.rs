@@ -12,9 +12,11 @@ struct Plane {
     values: Vec<u8>,
 }
 
+type PackedPlanes = (Option<Plane>, Option<Plane>, Option<Plane>);
+
 #[derive(Resource, Default)]
 pub(crate) struct PackedTextures {
-    images: std::collections::HashMap<(Option<Plane>, Option<Plane>, Option<Plane>), Handle<Image>>,
+    images: std::collections::HashMap<PackedPlanes, Handle<Image>>,
     bytes: usize,
 }
 
@@ -114,8 +116,8 @@ pub(crate) fn base_color_alpha(
             "diffuse and opacity textures have different resolutions"
         );
         anyhow::ensure!(
-            matches!(image.sampler, bevy::image::ImageSampler::Default),
-            "alpha packing requires a shared default sampler"
+            super::sampling::derivable(&image.sampler),
+            "alpha packing requires a shared material sampler"
         );
         Some(image)
     } else {
@@ -127,10 +129,9 @@ pub(crate) fn base_color_alpha(
     if let Some(handle) = world
         .get_resource::<AlphaTextures>()
         .and_then(|cache| cache.images.get(&key))
+        && world.resource::<Assets<Image>>().contains(handle)
     {
-        if world.resource::<Assets<Image>>().contains(handle) {
-            return Ok(Some(handle.clone()));
-        }
+        return Ok(Some(handle.clone()));
     }
     let image = Image::new(
         Extent3d {
@@ -229,7 +230,9 @@ fn rgba8_alpha(color: Option<&Image>, alpha: &[u8]) -> Option<Vec<u8>> {
     });
     Some(
         pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .zip(alpha)
             .flat_map(|(pixel, &alpha)| {
                 [
@@ -274,8 +277,8 @@ fn plane(
         "scalar packing requires a 2D image"
     );
     anyhow::ensure!(
-        matches!(image.sampler, bevy::image::ImageSampler::Default),
-        "scalar packing requires a shared default sampler"
+        super::sampling::derivable(&image.sampler),
+        "scalar packing requires a shared material sampler"
     );
     let count = u64::from(size.width) * u64::from(size.height);
     anyhow::ensure!(
@@ -339,7 +342,9 @@ fn rgba8_plane(
         *output = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     }
     Ok(Some(
-        data.chunks_exact(4)
+        data.as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| table[pixel[channel] as usize])
             .collect(),
     ))
@@ -472,12 +477,12 @@ fn pack(
             .iter()
             .find_map(|(hash, id)| (*hash == fingerprint).then_some(*id))
     });
-    if let Some(id) = candidate {
-        if let Some(handle) = super::generated_image::reuse_if(world, id, &template, |data| {
+    if let Some(id) = candidate
+        && let Some(handle) = super::generated_image::reuse_if(world, id, &template, |data| {
             packed_pixels_match(data, width as usize * height as usize, &key)
-        }) {
-            return Ok(Some(handle));
-        }
+        })
+    {
+        return Ok(Some(handle));
     }
     if let Some(handle) = world
         .get_resource::<PackedTextures>()
@@ -536,21 +541,22 @@ fn pack(
     Ok(Some(handle))
 }
 
-fn packed_pixels_match(
-    data: &[u8],
-    count: usize,
-    planes: &(Option<Plane>, Option<Plane>, Option<Plane>),
-) -> bool {
+fn packed_pixels_match(data: &[u8], count: usize, planes: &PackedPlanes) -> bool {
     data.len() == count * 4
-        && data.chunks_exact(4).enumerate().all(|(i, pixel)| {
-            pixel
-                == [
-                    planes.2.as_ref().map_or(255, |p| p.values[i]),
-                    planes.0.as_ref().map_or(255, |p| p.values[i]),
-                    planes.1.as_ref().map_or(255, |p| p.values[i]),
-                    255,
-                ]
-        })
+        && data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .all(|(i, pixel)| {
+                *pixel
+                    == [
+                        planes.2.as_ref().map_or(255, |p| p.values[i]),
+                        planes.0.as_ref().map_or(255, |p| p.values[i]),
+                        planes.1.as_ref().map_or(255, |p| p.values[i]),
+                        255,
+                    ]
+            })
 }
 
 #[cfg(test)]

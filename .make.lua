@@ -2,11 +2,11 @@
 --
 --   make            the recipes, with what each of them says it does
 --   make build      the usdview binary
---   make run        usdview, through nixVulkan
+--   make run        usdview, with host graphics on NixOS or nixVulkan elsewhere
 --   make test       the usdview tests
 --
 -- At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
--- The toolchain and the `nixVulkan` wrapper come from `.env.lua`'s dev shell.
+-- The toolchain and the non-NixOS `nixVulkan` wrapper come from `.env.lua`'s dev shell.
 
 local make = oslo.make
 
@@ -22,12 +22,21 @@ local function fresh_display_env(cmd)
   return ([[
 _usd_xdg_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 _usd_wl=""
+case "${USD_WINDOW_BACKEND:-auto}" in
+  auto|wayland|x11) ;;
+  *) echo "USD_WINDOW_BACKEND must be auto, wayland or x11" >&2; exit 2 ;;
+esac
 if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "$_usd_xdg_runtime/$WAYLAND_DISPLAY" ]; then
   _usd_wl="$WAYLAND_DISPLAY"
 elif [ -S "$_usd_xdg_runtime/wayland-0" ]; then
   _usd_wl="wayland-0"
 else
   _usd_wl=$(ls -t "$_usd_xdg_runtime"/wayland-* 2>/dev/null | grep -v '\.lock$' | head -n1 | xargs -r basename)
+fi
+if [ "${USD_WINDOW_BACKEND:-auto}" = x11 ]; then
+  _usd_wl=""
+elif [ "${USD_WINDOW_BACKEND:-auto}" = wayland ] && [ -z "$_usd_wl" ]; then
+  echo "no live Wayland socket" >&2; exit 2
 fi
 if [ -n "$_usd_wl" ]; then
   _usd_backend=wayland
@@ -47,24 +56,107 @@ local function need(tool, why)
   assert(oslo.run{ "sh", "-c", "command -v " .. tool, capture = true }.ok, why)
 end
 
-make.recipe{ name = "build", desc = "build the usdview binary",
-             run = function() sh.cargo("build", "--bin", APP) end }
+local function build_example(a)
+  assert(type(a.name) == "string" and a.name:match("^[%w_%-]+$"), "provide --name EXAMPLE")
+  local profile = a.profile or "debug"
+  assert(profile == "debug" or profile == "release", "--profile must be debug or release")
+  if profile == "release" then sh.cargo("build", "--release", "--example", a.name)
+  else sh.cargo("build", "--example", a.name) end
+  return ("target/%s/examples/%s"):format(profile, a.name)
+end
+
+make.recipe{
+  name = "build",
+  desc = "build the usdview binary",
+  params = { { "--profile", desc = "debug (default) or release" } },
+  run = function(a)
+    local profile = a.profile or "debug"
+    assert(profile == "debug" or profile == "release", "--profile must be debug or release")
+    if profile == "release" then sh.cargo("build", "--release", "--bin", APP)
+    else sh.cargo("build", "--bin", APP) end
+  end,
+}
 make.alias("b", "build")
+
+make.recipe{
+  name = "build-debugger-capture",
+  desc = "build the release viewer with opt-in RenderDoc capture support",
+  run = function()
+    sh.cargo("build", "--release", "--bin", APP, "--features", "debugger_capture")
+  end,
+}
 
 make.recipe{ name = "compile", desc = "clean, then build", deps = { "clean", "build" } }
 make.alias("c", "compile")
 
 make.recipe{
   name = "run",
-  desc = "launch usdview (fresh Wayland detection, nixVulkan wrapper)",
-  params = { { "--args", desc = "passed through to usdview, e.g. a USD scene path" } },
-  deps = { "build" },
+  desc = "launch usdview (fresh Wayland detection, host graphics on NixOS)",
+  params = {
+    { "--args", desc = "passed through to usdview, e.g. a USD scene path" },
+    { "--profile", desc = "debug (default) or release" },
+  },
   run = function(a)
-    sh.sh("-c", fresh_display_env(
-      ("env WINIT_UNIX_BACKEND=$_usd_backend nixVulkan target/debug/%s %s"):format(APP, a.args or "")))
+    local profile = a.profile or "debug"
+    assert(profile == "debug" or profile == "release", "--profile must be debug or release")
+    if profile == "release" then sh.cargo("build", "--release", "--bin", APP)
+    else sh.cargo("build", "--bin", APP) end
+    sh.sh("-c", fresh_display_env(([[
+set -- target/%s/%s %s
+if [ ! -e /etc/NIXOS ]; then
+  set -- nixVulkan "$@"
+fi
+exec env WGPU_VALIDATION="${USD_WGPU_VALIDATION:-${WGPU_VALIDATION:-0}}" \
+  WGPU_DEBUG="${USD_WGPU_DEBUG:-${WGPU_DEBUG:-0}}" WINIT_UNIX_BACKEND=$_usd_backend "$@"
+]]):format(profile, APP, a.args or "")))
   end,
 }
 make.alias("r", "run")
+
+make.recipe{
+  name = "build-example",
+  desc = "build an example target",
+  params = {
+    { "--name", desc = "example target name" },
+    { "--profile", desc = "debug (default) or release" },
+  },
+  run = function(a) build_example(a) end,
+}
+
+make.recipe{
+  name = "run-example",
+  desc = "build and run an example with host graphics on NixOS",
+  params = {
+    { "--name", desc = "example target name" },
+    { "--args", desc = "arguments passed through to the example" },
+    { "--profile", desc = "debug (default) or release" },
+  },
+  run = function(a)
+    local executable = build_example(a)
+    sh.sh("-c", fresh_display_env(([[
+set -- %s %s
+if [ ! -e /etc/NIXOS ]; then
+  set -- nixVulkan "$@"
+fi
+exec env WGPU_VALIDATION="${USD_WGPU_VALIDATION:-${WGPU_VALIDATION:-0}}" \
+  WGPU_DEBUG="${USD_WGPU_DEBUG:-${WGPU_DEBUG:-0}}" WINIT_UNIX_BACKEND=$_usd_backend "$@"
+]]):format(executable, a.args or "")))
+  end,
+}
+
+make.recipe{
+  name = "run-headless-benchmark",
+  desc = "run a saved benchmark executable without rebuilding it",
+  params = {
+    { "--binary", desc = "path to the recorded benchmark executable" },
+    { "--args", desc = "arguments passed through to the benchmark" },
+  },
+  run = function(a)
+    assert(type(a.binary) == "string" and #a.binary > 0, "provide --binary PATH")
+    local binary = "'" .. a.binary:gsub("'", "'\\''") .. "'"
+    sh.sh("-c", "exec " .. binary .. " " .. (a.args or ""))
+  end,
+}
 
 make.recipe{
   name = "capture-reference",
@@ -74,9 +166,9 @@ make.recipe{
 }
 
 make.recipe{ name = "serve-web", desc = "serve the usd_bevy web example in a browser (trunk, wasm32)",
-             run = function() sh.sh("-c", "cd examples/web && trunk serve --release --open") end }
+             run = function() sh.sh("-c", "cd examples/web && NO_COLOR=true trunk serve --release --open") end }
 make.recipe{ name = "build-web", desc = "build the web example's wasm bundle to examples/web/dist",
-             run = function() sh.sh("-c", "cd examples/web && trunk build --release") end }
+             run = function() sh.sh("-c", "cd examples/web && NO_COLOR=true trunk build --release") end }
 
 make.recipe{ name = "test", desc = "test the usdview target",
              run = function() sh.cargo("test", "--bin", APP) end }
@@ -87,14 +179,483 @@ make.recipe{ name = "test-native", desc = "check editor exports with native Open
              run = function()
                sh.cargo("test", "--workspace", "--lib", "persistence::tests::native_export",
                         "--", "--ignored", "--nocapture")
+               sh.cargo("test", "-p", "usd_bevy", "native_reference_custom_data_round_trip",
+                        "--", "--ignored", "--nocapture")
              end }
+
+make.recipe{
+  name = "test-watchers",
+  desc = "test native filesystem events with the file watcher enabled",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--all-features", "asset::tests::native_",
+             "--", "--ignored", "--test-threads=1", "--nocapture")
+    sh.cargo("test", "-p", "usd_bevy", "--all-features", "editor::texture_watch::tests::native",
+             "--", "--ignored", "--test-threads=1", "--nocapture")
+  end,
+}
+
+make.recipe{
+  name = "build-native-deformation",
+  desc = "build the native OpenUSD point oracle with its SDK compiler and flags",
+  run = function()
+    sh.sh("-c", [[mkdir -p target && ${USD_NATIVE_CXX:-${CXX:-c++}} -std=c++17 -O2 ${CXXFLAGS:-} ${USD_NATIVE_CPPFLAGS:-} ${CPPFLAGS:-} scripts/sample_native_deformation.cpp ${USD_NATIVE_LDFLAGS:-} ${LDFLAGS:-} ${USD_NATIVE_LDLIBS:-} ${LDLIBS:-} -o target/sample-native-deformation]])
+  end,
+}
+
+make.recipe{
+  name = "test-native-deformation",
+  desc = "compare CPU skinning and morphs with the native OpenUSD oracle",
+  run = function()
+    sh.sh("-c", [[USD_NATIVE_DEFORMATION_TOOL="${USD_NATIVE_DEFORMATION_TOOL:-$PWD/target/sample-native-deformation}" cargo test -p usd_bevy --all-features --lib native_baked_ -- --ignored --nocapture]])
+  end,
+}
 
 make.recipe{ name = "check", desc = "cargo check on the usdview target",
              run = function() sh.cargo("check", "--bin", APP) end }
 make.recipe{ name = "check-all", desc = "cargo check on the full workspace, all targets",
              run = function() sh.cargo("check", "--workspace", "--all-targets") end }
 
+make.recipe{ name = "check-web", desc = "check the browser target on wasm32",
+             run = function() sh.cargo("check", "-p", "usd_web", "--target", "wasm32-unknown-unknown") end }
+
+make.recipe{
+  name = "test-library",
+  desc = "test the library without editor feature unification, then with all features",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--no-default-features")
+    sh.cargo("test", "-p", "usd_bevy", "--all-features")
+  end,
+}
+
+make.recipe{ name = "test-assets", desc = "test the patched Bevy asset loader",
+             run = function() sh.cargo("test", "-p", "bevy_asset", "--lib") end }
+
+make.recipe{ name = "test-pbr", desc = "test the patched Bevy PBR crate",
+             run = function() sh.cargo("test", "-p", "bevy_pbr", "--lib") end }
+
+make.recipe{
+  name = "prepare-downstream",
+  desc = "resolve the standalone consumer from the workspace lockfile offline",
+  run = function()
+    sh.sh("-c", [[test -e benchmarks/downstream-consumer/Cargo.lock || cp Cargo.lock benchmarks/downstream-consumer/Cargo.lock]])
+    sh.cargo("metadata", "--offline", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml", "--no-deps", "--format-version", "1")
+    sh.cargo("check", "--offline", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml", "--target-dir", "target", "--tests")
+  end,
+}
+
+make.recipe{
+  name = "fmt-downstream",
+  desc = "format the standalone consumer fixture",
+  run = function() sh.cargo("fmt", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml") end,
+}
+
+make.recipe{
+  name = "test-downstream",
+  desc = "test the standalone consumer without viewer feature unification",
+  run = function()
+    for _, features in ipairs({ "--no-default-features", "--all-features" }) do
+      sh.cargo("test", "--offline", "--locked", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml",
+        "--target-dir", "target", features, "--", "--test-threads=1")
+    end
+    sh.cargo("clippy", "--offline", "--locked", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml",
+      "--target-dir", "target", "--all-targets", "--all-features", "--", "-D", "warnings")
+  end,
+}
+
+make.recipe{
+  name = "build-downstream-gpu",
+  desc = "build and check the standalone offscreen morph consumer",
+  run = function()
+    local manifest = "benchmarks/downstream-consumer/Cargo.toml"
+    sh.cargo("fmt", "--manifest-path", manifest)
+    sh.cargo("test", "--offline", "--locked", "--manifest-path", manifest, "--target-dir", "target", "--example", "gpu_morph")
+    sh.cargo("clippy", "--offline", "--locked", "--manifest-path", manifest, "--target-dir", "target", "--example", "gpu_morph", "--", "-D", "warnings")
+    sh.cargo("build", "--offline", "--locked", "--manifest-path", manifest, "--target-dir", "target", "--example", "gpu_morph")
+  end,
+}
+
+make.recipe{
+  name = "test-downstream-gpu",
+  desc = "render the standalone morph consumer on CPU and GPU and compare",
+  params = { { "--output", desc = "new evidence directory" } },
+  deps = { "build-downstream-gpu" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    local function run(...)
+      sh.cargo("run", "--offline", "--locked", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml",
+               "--target-dir", "target", "--example", "gpu_morph", "--", ...)
+    end
+    sh.mkdir(a.output)
+    run("cpu", a.output .. "/cpu")
+    for _, mode in ipairs({ "gpu", "cpu-deferred", "gpu-deferred" }) do
+      run(mode, a.output .. "/" .. mode, a.output .. "/cpu")
+    end
+  end,
+}
+
+make.recipe{
+  name = "metadata-downstream",
+  desc = "write dependency metadata for a standalone consumer manifest",
+  params = {
+    { "--manifest", desc = "absolute consumer manifest path" },
+    { "--output", desc = "absolute metadata output path" },
+    { "--resolve", desc = "1 permits disposable consumer lockfile resolution" },
+  },
+  run = function(a)
+    assert(type(a.manifest) == "string" and a.manifest:match("^/[%w%._/%-]+$"), "provide --manifest /absolute/path")
+    assert(type(a.output) == "string" and a.output:match("^/[%w%._/%-]+$"), "provide --output /absolute/path")
+    assert(a.resolve == nil or a.resolve == "1", "--resolve must be 1")
+    sh.sh("-c", "cargo metadata --offline " .. (a.resolve and "" or "--locked ")
+      .. "--filter-platform x86_64-unknown-linux-gnu --format-version 1 --manifest-path " .. a.manifest .. " > " .. a.output)
+  end,
+}
+
+make.recipe{
+  name = "build-sample-query-probe",
+  desc = "build the upstream animation-attribute query comparison",
+  run = function()
+    sh.cargo("build", "-p", "usd_bevy", "--release", "--example", "sample_query_probe")
+  end,
+}
+
+local function budget_probe(a, command, ...)
+  assert(type(a.upstream) == "string" and a.upstream:match("^/[%w%._/%-]+$"),
+         "provide --upstream /absolute/path/to/patched/openusd")
+  local source = 'patch."https://github.com/mxpv/openusd".'
+  sh.cargo(command, "--manifest-path", "benchmarks/query-budget-probe/Cargo.toml",
+    "--target-dir", "target",
+    "--config", source .. 'openusd.path="' .. a.upstream .. '/crates/openusd"',
+    "--config", source .. 'openusd-schemas.path="' .. a.upstream .. '/crates/openusd-schemas"',
+    "--config", source .. 'openusd-build.path="' .. a.upstream .. '/crates/openusd-build"', ...)
+end
+
+make.recipe{
+  name = "build-query-budget-probe",
+  desc = "build the isolated budgeted-query benchmark",
+  params = { { "--upstream", desc = "absolute path to the patched upstream checkout" } },
+  run = function(a) budget_probe(a, "build", "--release") end,
+}
+
+make.recipe{
+  name = "test-query-budget-probe",
+  desc = "format, test and lint the isolated query benchmark",
+  params = { { "--upstream", desc = "absolute path to the patched upstream checkout" } },
+  run = function(a)
+    sh.cargo("fmt", "--manifest-path", "benchmarks/query-budget-probe/Cargo.toml")
+    budget_probe(a, "test")
+    budget_probe(a, "clippy", "--all-targets", "--", "-D", "warnings")
+  end,
+}
+
+make.recipe{
+  name = "test-sample-query-probe",
+  desc = "test sample clocks, bit comparisons and upstream query edits",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--example", "sample_query_probe")
+  end,
+}
+
+make.recipe{
+  name = "build-tangent-probe",
+  desc = "build the release library test executable containing the paired tangent probe",
+  params = { { "--candidate", desc = "optional isolated MikkTSpace source directory" } },
+  run = function(a)
+    local override = {}
+    if a.candidate then
+      assert(type(a.candidate) == "string" and a.candidate:match("^/[%w%._/%-]+$"),
+             "provide --candidate /absolute/path/to/isolated/mikktspace")
+      override = { "--config", 'patch.crates-io.bevy_mikktspace.path="' .. a.candidate .. '"' }
+    end
+    sh.cargo("test", "-p", "usd_bevy", "--release", "--lib",
+             "--features", "bevy/multi_threaded", "--no-run", table.unpack(override))
+  end,
+}
+
+make.recipe{
+  name = "build-skin-probe",
+  desc = "build the release library test executable containing the skin influence inventory",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--release", "--lib", "--no-run")
+  end,
+}
+
+make.recipe{
+  name = "test-tangent-corpus",
+  desc = "compare two MikkTSpace source copies on a deterministic geometry corpus",
+  params = {
+    { "--original", desc = "original crate directory" },
+    { "--candidate", desc = "candidate crate directory" },
+  },
+  run = function(a)
+    assert(type(a.original) == "string" and #a.original > 0, "provide --original PATH")
+    assert(type(a.candidate) == "string" and #a.candidate > 0, "provide --candidate PATH")
+    local output = "target/tangent-corpus"
+    sh.mkdir("-p", output)
+    sh.rustfmt("--edition", "2024", "--check", "scripts/tangent_corpus.rs", "scripts/tangent_allocations.rs")
+    for _, source in ipairs({ {"original", a.original}, {"candidate", a.candidate} }) do
+      sh.rustc("--crate-name", "tangent_" .. source[1], "--crate-type", "rlib",
+               "--edition=2024", "--cfg", 'feature="std"', "-D", "warnings", "-C", "opt-level=3",
+               source[2] .. "/src/lib.rs", "-o", output .. "/libtangent_" .. source[1] .. ".rlib")
+    end
+    sh.rustc("scripts/tangent_corpus.rs", "--edition=2024", "-D", "warnings", "-C", "opt-level=3",
+             "--extern", "tangent_original=" .. output .. "/libtangent_original.rlib",
+             "--extern", "tangent_candidate=" .. output .. "/libtangent_candidate.rlib",
+             "-o", output .. "/tangent-corpus")
+    sh.sh("-c", output .. "/tangent-corpus")
+    sh.sh("-c", [[
+target/tangent-corpus/tangent-corpus --negative-control > target/tangent-corpus/negative-control.log 2>&1
+status=$?
+test "$status" -eq 101 || exit 1
+grep -q 'case=fan-3-false threshold=-1' target/tangent-corpus/negative-control.log
+]])
+  end,
+}
+
+make.recipe{
+  name = "test-tangent-allocations",
+  desc = "verify tangent allocation reductions and the counting oracle",
+  run = function()
+    sh.sh("-c", "target/tangent-corpus/tangent-corpus --allocations")
+    sh.sh("-c", "target/tangent-corpus/tangent-corpus --sparse-allocations")
+    sh.sh("-c", [[
+target/tangent-corpus/tangent-corpus --allocation-negative-control > target/tangent-corpus/allocation-negative-control.log 2>&1
+status=$?
+test "$status" -eq 101 || exit 1
+grep -q 'allocation calls did not decrease' target/tangent-corpus/allocation-negative-control.log
+target/tangent-corpus/tangent-corpus --retention-negative-control > target/tangent-corpus/retention-negative-control.log 2>&1
+status=$?
+test "$status" -eq 101 || exit 1
+grep -q 'generation retained an allocation' target/tangent-corpus/retention-negative-control.log
+]])
+  end,
+}
+
+make.recipe{
+  name = "fmt-tangent-candidate",
+  desc = "format the tangent corpus and an isolated MikkTSpace candidate",
+  params = { { "--candidate", desc = "isolated MikkTSpace source directory" } },
+  run = function(a)
+    assert(type(a.candidate) == "string" and a.candidate:match("^/[%w%._/%-]+$"),
+           "provide --candidate /absolute/path/to/isolated/mikktspace")
+    sh.rustfmt("--edition", "2024", "scripts/tangent_corpus.rs", "scripts/tangent_allocations.rs",
+               a.candidate .. "/src/mikktspace.rs")
+  end,
+}
+
+make.recipe{
+  name = "check-tangent-source",
+  desc = "lint an isolated MikkTSpace source and check its no-std build",
+  params = { { "--candidate", desc = "isolated MikkTSpace source directory" } },
+  run = function(a)
+    assert(type(a.candidate) == "string" and a.candidate:match("^/[%w%._/%-]+$"),
+           "provide --candidate /absolute/path/to/isolated/mikktspace")
+    local manifest = a.candidate .. "/Cargo.toml"
+    sh.cargo("clippy", "--manifest-path", manifest, "--lib", "--all-features", "--", "-D", "warnings")
+    sh.cargo("check", "--manifest-path", manifest, "--lib", "--no-default-features")
+  end,
+}
+
+make.recipe{
+  name = "test-tangent-stream",
+  desc = "verify tangent callback order and sparse group allocation bounds",
+  run = function()
+    sh.sh("-c", "target/tangent-corpus/tangent-corpus --read-order")
+    sh.sh("-c", "target/tangent-corpus/tangent-corpus --sparse-allocation-gate")
+    sh.sh("-c", [[
+target/tangent-corpus/tangent-corpus --read-order-negative-control > target/tangent-corpus/read-order-negative-control.log 2>&1
+status=$?
+test "$status" -eq 101 || exit 1
+grep -q 'geometry callback order differs' target/tangent-corpus/read-order-negative-control.log
+]])
+  end,
+}
+
+make.recipe{
+  name = "test-editor-scheduler",
+  desc = "check editor scheduler diagnostic counters and scripts",
+  params = { { "--node", desc = "Node.js executable (default: node)" } },
+  run = function(a)
+    local node = a.node or "node"
+    assert(node == "node" or node:match("^/[%w%._/%-]+$"), "provide a Node.js executable path")
+    sh.sh("-c", node .. " --test benchmarks/editor-scheduler/scheduler.test.mjs")
+    for _, file in ipairs({ "run", "analyze" }) do
+      sh.sh("-c", node .. " --check benchmarks/editor-scheduler/" .. file .. ".mjs")
+    end
+  end,
+}
+
+make.recipe{
+  name = "test-editor-blocks",
+  desc = "check the sustained editor block protocol and harness syntax",
+  params = { { "--node", desc = "Node.js executable (default: node)" } },
+  run = function(a)
+    local node = a.node or "node"
+    assert(node == "node" or node:match("^/[%w%._/%-]+$"), "provide a Node.js executable path")
+    sh.sh("-c", node .. " --test benchmarks/editor-blocks/protocol.test.mjs")
+    for _, file in ipairs({ "run", "analyze", "verify" }) do
+      sh.sh("-c", node .. " --check benchmarks/editor-blocks/" .. file .. ".mjs")
+    end
+  end,
+}
+
+make.recipe{
+  name = "test-texture-encoding",
+  desc = "exhaustively compare release sRGB mip encoding with the scalar formula",
+  run = function()
+    sh.cargo("test", "-p", "usd_bevy", "--release", "--lib",
+             "route::sampling::tests::srgb_encoding_", "--",
+             "--ignored", "--test-threads=1", "--nocapture")
+  end,
+}
+
+make.recipe{ name = "test-host", desc = "test the patched Mara Bevy host",
+             run = function() sh.cargo("test", "-p", "mara_bevy", "--lib") end }
+
+make.recipe{
+  name = "test-host-gpu",
+  desc = "exercise the Mara host's GPU texture and RGBA readbacks",
+  run = function()
+    sh.sh("-c", [[WGPU_VALIDATION=1 WGPU_DEBUG=1 cargo test -p mara_bevy --lib headless_renderer_produces_ -- --ignored --test-threads=1 --nocapture]])
+  end,
+}
+
+make.recipe{
+  name = "test-capture-tools",
+  desc = "test capture configuration, pipeline probes, process cleanup and log failures",
+  run = function()
+    sh.cargo("test", "--example", "viewer_capture", "--example", "compact_instancing")
+    sh.bash("scripts/check_capture_preflight_tests.sh")
+    sh.bash("scripts/check_capture_session.sh")
+    sh.bash("scripts/check_viewer_log_tests.sh")
+  end,
+}
+
+make.recipe{
+  name = "test-ui",
+  desc = "capture the native editor in an isolated Weston compositor",
+  params = {
+    { "--asset", desc = "scene path (default: flagship_showcase.usda)" },
+    { "--output", desc = "new PNG path" },
+  },
+  deps = { "build" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW.png")
+    sh.bash("scripts/capture_viewer_ui.sh", a.asset or "assets/flagship_showcase.usda", a.output)
+  end,
+}
+
+make.recipe{
+  name = "build-close-probe",
+  desc = "build the X11 native-window-close probe",
+  run = function()
+    sh.sh("-c", "mkdir -p target && cc -Wall -Wextra -Werror scripts/send_window_close.c -o target/send_window_close $(pkg-config --cflags --libs x11)")
+  end,
+}
+
+make.recipe{
+  name = "build-resize-probe",
+  desc = "build the X11 native-window-resize probe",
+  run = function()
+    sh.sh("-c", "mkdir -p target && cc -Wall -Wextra -Werror scripts/resize_window.c -o target/resize_window $(pkg-config --cflags --libs x11)")
+  end,
+}
+
+make.recipe{
+  name = "test-oit-resize",
+  desc = "verify OIT budget handling across oversized native-window resizes",
+  params = { { "--output", desc = "new evidence directory" } },
+  deps = { "build" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_oit_resize.sh", a.output)
+  end,
+}
+
+make.recipe{
+  name = "test-native-close",
+  desc = "exercise prompt, cancel or discard after an OS close request",
+  params = {
+    { "--output", desc = "new evidence directory" },
+    { "--mode", desc = "prompt (default), cancel or discard" },
+  },
+  deps = { "build", "build-close-probe" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_native_close.sh", a.output, a.mode or "prompt")
+  end,
+}
+
+make.recipe{
+  name = "test-transparency",
+  desc = "capture and compare ordinary blending and OIT ordering",
+  params = { { "--output", desc = "new directory for capture evidence" } },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_transparency_order.sh", a.output)
+  end,
+}
+
+make.recipe{
+  name = "test-render",
+  desc = "capture WESL material, deformation, instancing and OIT fixtures",
+  params = { { "--output", desc = "new directory for capture evidence" } },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_wesl_render.sh", a.output)
+  end,
+}
+
+make.recipe{
+  name = "test-deformation",
+  desc = "compare CPU and GPU deformation captures at selected time codes",
+  params = {
+    { "--asset", desc = "USD scene (default: skel_morph_blended_normals.usda)" },
+    { "--output", desc = "new evidence directory" },
+    { "--tolerance", desc = "maximum RGB channel difference (default: 1)" },
+    { "--times", desc = "space-separated time codes (default: 0 5 10)" },
+  },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    local times = {}
+    for time in (a.times or "0 5 10"):gmatch("%S+") do times[#times + 1] = time end
+    assert(#times > 0, "provide at least one time code")
+    sh.bash("scripts/compare_deformation.sh",
+            a.asset or "assets/skel_morph_blended_normals.usda", a.output,
+            tostring(a.tolerance or 1), table.unpack(times))
+  end,
+}
+
+make.recipe{
+  name = "build-compact-tools",
+  desc = "build both compact-instancing capture and comparison tools",
+  run = function()
+    sh.cargo("build", "--example", "compact_instancing", "--example", "capture_compare")
+  end,
+}
+
+make.recipe{
+  name = "test-compact",
+  desc = "compare compact and expanded instancing with culling and edge views",
+  params = { { "--output", desc = "new evidence directory" } },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    sh.bash("scripts/check_compact_instancing.sh", a.output)
+  end,
+}
+
 make.recipe{ name = "fmt", desc = "format the workspace crates (not vendor/)", run = function() fmt() end }
+
+make.recipe{
+  name = "lint",
+  desc = "strict Clippy checks for all workspace targets and features",
+  params = { { "--format", desc = "diagnostic format: human (default) or json" } },
+  run = function(a)
+    local format = a.format or "human"
+    assert(format == "human" or format == "json", "--format must be human or json")
+    sh.cargo("clippy", "--workspace", "--all-targets", "--all-features", "--keep-going",
+             "--message-format", format, "--", "-D", "warnings")
+  end,
+}
 
 make.recipe{
   name = "harden",

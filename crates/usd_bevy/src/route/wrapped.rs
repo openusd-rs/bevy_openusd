@@ -1,9 +1,11 @@
 //! Standard materials wrapped per entity in a shader extension.
 
 use bevy::{
+    material::OpaqueRendererMethod,
     pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin},
     prelude::*,
     render::render_resource::AsBindGroup,
+    shader::ShaderRef,
 };
 
 pub type Wrapped<E> = ExtendedMaterial<StandardMaterial, E>;
@@ -25,17 +27,17 @@ impl<E: MaterialExtension> Default for Cache<E> {
     }
 }
 
-pub(crate) fn configure<E: MaterialExtension>(app: &mut App) -> bool
+pub(crate) fn configure<E: MaterialExtension>(app: &mut App, shaders: impl FnOnce(&mut App))
 where
     <Wrapped<E> as AsBindGroup>::Data: PartialEq + Eq + std::hash::Hash + Clone,
 {
     if app.is_plugin_added::<MaterialPlugin<Wrapped<E>>>() {
-        return false;
+        return;
     }
+    shaders(app);
     app.init_resource::<Cache<E>>();
     app.add_systems(Last, prune_cache::<E>);
     app.add_plugins(MaterialPlugin::<Wrapped<E>>::default());
-    true
 }
 
 fn prune_cache<E: MaterialExtension>(
@@ -105,13 +107,18 @@ fn attach_matching<E: MaterialExtension>(
                 .map(|owned| owned.base.clone())
         });
     let Some(base) = base else { return };
-    let Some(material) = world
+    let Some(mut material) = world
         .get_resource::<Assets<StandardMaterial>>()
         .and_then(|assets| assets.get(&base))
         .cloned()
     else {
         return;
     };
+    if !matches!(E::fragment_shader(), ShaderRef::Default)
+        && matches!(E::deferred_fragment_shader(), ShaderRef::Default)
+    {
+        material.opaque_render_method = OpaqueRendererMethod::Forward;
+    }
     let matches = |existing: &Wrapped<E>| {
         existing.base.cull_mode == material.cull_mode
             && existing.base.reflect_partial_eq(&material) == Some(true)
@@ -131,7 +138,7 @@ fn attach_matching<E: MaterialExtension>(
             world
                 .resource::<Assets<Wrapped<E>>>()
                 .get(*handle)
-                .is_some_and(|existing| matches(existing))
+                .is_some_and(&matches)
         })
         .cloned();
     let handle = existing.or(cached).unwrap_or_else(|| {
@@ -215,6 +222,104 @@ mod tests {
 
     fn clear(world: &mut World, entity: Entity) {
         super::clear::<FlatNormals>(world, entity);
+    }
+
+    #[test]
+    fn forward_only_conversion_preserves_source_reuse_and_edits() {
+        use super::super::strand_material::{StrandCoverage, StrandMaterial};
+        let mut world = World::new();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world.init_resource::<Assets<StrandMaterial>>();
+        world.init_resource::<Cache<StrandCoverage>>();
+        for method in [
+            OpaqueRendererMethod::Auto,
+            OpaqueRendererMethod::Deferred,
+            OpaqueRendererMethod::Forward,
+        ] {
+            let base = world
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(StandardMaterial {
+                    opaque_render_method: method,
+                    ..default()
+                });
+            let entity = world.spawn(MeshMaterial3d(base.clone())).id();
+            super::attach::<StrandCoverage>(&mut world, entity);
+            let first = world
+                .get::<MeshMaterial3d<StrandMaterial>>(entity)
+                .unwrap()
+                .0
+                .clone();
+            assert_eq!(
+                world
+                    .resource::<Assets<StrandMaterial>>()
+                    .get(&first)
+                    .unwrap()
+                    .base
+                    .opaque_render_method,
+                OpaqueRendererMethod::Forward
+            );
+            assert_eq!(
+                world
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(&base)
+                    .unwrap()
+                    .opaque_render_method,
+                method
+            );
+            super::attach::<StrandCoverage>(&mut world, entity);
+            assert_eq!(
+                world
+                    .get::<MeshMaterial3d<StrandMaterial>>(entity)
+                    .unwrap()
+                    .0,
+                first
+            );
+            let sibling = world.spawn(MeshMaterial3d(base.clone())).id();
+            super::attach::<StrandCoverage>(&mut world, sibling);
+            assert_eq!(
+                world
+                    .get::<MeshMaterial3d<StrandMaterial>>(sibling)
+                    .unwrap()
+                    .0,
+                first
+            );
+            world
+                .resource_mut::<Assets<StandardMaterial>>()
+                .get_mut(&base)
+                .unwrap()
+                .perceptual_roughness = 0.17;
+            super::attach::<StrandCoverage>(&mut world, entity);
+            let updated = &world
+                .get::<MeshMaterial3d<StrandMaterial>>(entity)
+                .unwrap()
+                .0;
+            assert_ne!(*updated, first);
+            let updated = world
+                .resource::<Assets<StrandMaterial>>()
+                .get(updated)
+                .unwrap();
+            assert_eq!(updated.base.perceptual_roughness, 0.17);
+            assert_eq!(
+                updated.base.opaque_render_method,
+                OpaqueRendererMethod::Forward
+            );
+            super::clear::<StrandCoverage>(&mut world, entity);
+            assert_eq!(
+                world
+                    .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                    .unwrap()
+                    .0,
+                base
+            );
+            assert_eq!(
+                world
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(&base)
+                    .unwrap()
+                    .opaque_render_method,
+                method
+            );
+        }
     }
 
     #[test]

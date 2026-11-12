@@ -8,8 +8,8 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
 use openusd_schemas::geom::BasisCurvesSchema;
 
-use openusd::sdf::Value;
-use openusd_schemas::geom::{BasisCurves, Curves, PointBased};
+use openusd::vt::Value;
+use openusd_schemas::geom::{BasisCurves, CurvesSchema, PointBasedSchema};
 
 use super::{PrimRoute, RouteCtx};
 use crate::read::geom::{Interpolation, MeshPrimvar};
@@ -491,13 +491,13 @@ fn emit_polyline(cv: &[[f32; 3]], periodic: bool, out: &mut Vec<[f32; 3]>, idx: 
     }
 }
 
+#[cfg(test)]
+type LineGeometry = (Vec<[f32; 3]>, Vec<u32>, Option<Vec<[f32; 4]>>);
+
 /// Positions + line indices for every curve. Linear curves connect vertices
 /// directly; cubic curves are tessellated through their basis.
 #[cfg(test)]
-fn line_geometry(
-    ctx: &RouteCtx,
-    steps: usize,
-) -> Option<(Vec<[f32; 3]>, Vec<u32>, Option<Vec<[f32; 4]>>)> {
+fn line_geometry(ctx: &RouteCtx, steps: usize) -> Option<LineGeometry> {
     let geometry = centerlines(ctx, steps)?;
     Some((geometry.points, geometry.indices, geometry.colors))
 }
@@ -782,7 +782,7 @@ fn ribbons(
         values.iter().flat_map(|value| [*value, *value]).collect()
     }
     let mut tangents = vec![Vec3::ZERO; points.len()];
-    for pair in segments.chunks_exact(2) {
+    for pair in segments.as_chunks::<2>().0 {
         let (a, b) = (pair[0] as usize, pair[1] as usize);
         let direction = (Vec3::from(points[b]) - Vec3::from(points[a])).normalize_or_zero();
         tangents[a] += direction;
@@ -804,7 +804,7 @@ fn ribbons(
     // One strip per run of joined segments, restarted between curves.
     let mut strip = Vec::with_capacity(segments.len() * 2 + 4);
     let mut last = None;
-    for pair in segments.chunks_exact(2) {
+    for pair in segments.as_chunks::<2>().0 {
         if last != Some(pair[0]) {
             if last.is_some() {
                 strip.push(u32::MAX);
@@ -1497,18 +1497,18 @@ def BasisCurves "Curve" {
             ("Vertex", [[0.125, 0.75, 0.125], [0.875, 0.75, 0.125]]),
             ("Varying", [[0.5, 0., 0.5]; 2]),
         ] {
-            let path = openusd::sdf::path(&format!("/{name}")).unwrap();
+            let path = openusd::sdf::path(format!("/{name}")).unwrap();
             let (positions, _, colors) =
                 line_geometry(&RouteCtx::new(&stage, &path), CUBIC_STEPS).unwrap();
             let colors = colors.unwrap();
             assert_eq!(colors.len(), positions.len());
             assert_eq!(colors.len(), 2 * (CUBIC_STEPS + 1));
-            for curve in 0..2 {
+            for (curve, &midpoint) in midpoints.iter().enumerate() {
                 let base = curve * (CUBIC_STEPS + 1);
                 let actual = colors[base + CUBIC_STEPS / 2];
                 assert!(
                     Vec3::new(actual[0], actual[1], actual[2])
-                        .abs_diff_eq(Vec3::from(midpoints[curve]), 1e-6)
+                        .abs_diff_eq(Vec3::from(midpoint), 1e-6)
                 );
                 assert!((actual[3] - 0.6).abs() < 1e-6);
                 assert_eq!(
@@ -1776,8 +1776,8 @@ def BasisCurves "Curve" {
         .unwrap();
         let stage = source.open_stage().unwrap();
         for basis in ["Bspline", "CatmullRom"] {
-            let pinned = openusd::sdf::path(&format!("/Pinned{basis}")).unwrap();
-            let explicit = openusd::sdf::path(&format!("/Explicit{basis}")).unwrap();
+            let pinned = openusd::sdf::path(format!("/Pinned{basis}")).unwrap();
+            let explicit = openusd::sdf::path(format!("/Explicit{basis}")).unwrap();
             let actual = line_geometry(&RouteCtx::new(&stage, &pinned), CUBIC_STEPS).unwrap();
             assert_eq!(
                 actual,

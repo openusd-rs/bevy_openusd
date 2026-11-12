@@ -207,7 +207,7 @@ fn guard_transparency_buffers(world: &mut World) {
     let limits = device.limits();
     let limit = limits
         .max_buffer_size
-        .min(u64::from(limits.max_storage_buffer_binding_size));
+        .min(limits.max_storage_buffer_binding_size);
     enforce_transparency_budget(world, limit);
 }
 

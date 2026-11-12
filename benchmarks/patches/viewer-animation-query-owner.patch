@@ -1,0 +1,711 @@
+diff --git a/.make.lua b/.make.lua
+index 5bd8d1f..1a80381 100644
+--- a/.make.lua
++++ b/.make.lua
+@@ -270,6 +270,27 @@ make.recipe{
+   end,
+ }
+ 
++make.recipe{
++  name = "test-animation-query-owner",
++  desc = "test and lint stage-owned query integration against a local upstream",
++  params = { { "--upstream", desc = "absolute patched upstream path" } },
++  run = function(a)
++    assert(type(a.upstream) == "string" and a.upstream:match("^/[%w%._/%-]+$"), "provide --upstream")
++    fmt()
++    local source = 'patch."https://github.com/mxpv/openusd".'
++    local function cargo(command, ...)
++      sh.cargo(command,
++        "--config", source .. 'openusd.path="' .. a.upstream .. '/crates/openusd"',
++        "--config", source .. 'openusd-schemas.path="' .. a.upstream .. '/crates/openusd-schemas"',
++        "--config", source .. 'openusd-build.path="' .. a.upstream .. '/crates/openusd-build"', ...)
++    end
++    cargo("test", "-p", "usd_bevy", "--lib", "--all-features")
++    cargo("test", "-p", "usd_bevy", "--lib", "--no-default-features")
++    cargo("clippy", "-p", "usd_bevy", "--all-targets", "--all-features", "--", "-D", "warnings")
++    cargo("check", "--workspace", "--all-targets")
++  end,
++}
++
+ make.recipe{
+   name = "test-sample-query-probe",
+   desc = "test sample clocks, bit comparisons and upstream query edits",
+diff --git a/crates/usd_bevy/src/live.rs b/crates/usd_bevy/src/live.rs
+index c3ad919..24f9a1b 100644
+--- a/crates/usd_bevy/src/live.rs
++++ b/crates/usd_bevy/src/live.rs
+@@ -46,6 +46,7 @@ impl StageChange {
+ pub struct LiveStage {
+     pub stage: Stage,
+     pub(crate) materials: RefCell<Option<crate::route::material::ProjectionMaterials>>,
++    pub(crate) animation_queries: RefCell<Option<Rc<crate::read::skel::AnimationQueries>>>,
+     queue: Rc<RefCell<Vec<StageChange>>>,
+     revision: Rc<Cell<u64>>,
+     // Prim paths whose *next* change was caused by our own author-back and
+@@ -93,6 +94,7 @@ impl LiveStage {
+         Ok(Self {
+             stage,
+             materials: RefCell::default(),
++            animation_queries: RefCell::default(),
+             queue,
+             revision,
+             suppressed: Rc::new(RefCell::new(std::collections::HashSet::new())),
+diff --git a/crates/usd_bevy/src/read/skel.rs b/crates/usd_bevy/src/read/skel.rs
+index 653bc15..5937f5d 100644
+--- a/crates/usd_bevy/src/read/skel.rs
++++ b/crates/usd_bevy/src/read/skel.rs
+@@ -19,6 +19,9 @@ use openusd_schemas::skel::{
+ use std::rc::Rc;
+ 
+ pub mod access_profile;
++mod query_cache;
++pub(crate) use query_cache::AnimationQueries;
++pub use query_cache::AnimationQueryLimits;
+ 
+ use super::util::{read_float_vec, read_rel_first_target};
+ 
+@@ -63,6 +66,7 @@ impl RelationshipSamples {
+ 
+ struct SkelSamples {
+     stage: Stage,
++    queries: Option<Rc<AnimationQueries>>,
+     skeletons: std::collections::HashMap<Path, Option<Rc<SkeletonQuery>>>,
+     animations: std::collections::HashMap<Path, Option<Rc<AnimQuery>>>,
+     poses: std::collections::HashMap<PoseKey, Option<Vec<gf::Mat4d>>>,
+@@ -78,10 +82,15 @@ thread_local! {
+ pub(crate) struct SkelSampleScope(Option<SkelSamples>);
+ 
+ impl SkelSampleScope {
++    pub(crate) fn disabled() -> Self {
++        Self(SKEL_SAMPLES.with(|cache| cache.take()))
++    }
++
+     pub(crate) fn begin(stage: &Stage) -> Self {
+         Self(SKEL_SAMPLES.with(|cache| {
+             cache.replace(Some(SkelSamples {
+                 stage: stage.clone(),
++                queries: None,
+                 skeletons: Default::default(),
+                 animations: Default::default(),
+                 poses: Default::default(),
+@@ -90,6 +99,12 @@ impl SkelSampleScope {
+             }))
+         }))
+     }
++
++    pub(crate) fn with_queries(stage: &Stage, queries: Option<Rc<AnimationQueries>>) -> Self {
++        let scope = Self::begin(stage);
++        with_samples(stage, |cache| cache.queries = queries);
++        scope
++    }
+ }
+ 
+ impl Drop for SkelSampleScope {
+@@ -721,10 +736,15 @@ fn anim_query(stage: &Stage, path: &Path) -> anyhow::Result<Option<Rc<AnimQuery>
+         return Ok(value);
+     }
+     access_profile::record(stage, path, "query-build");
+-    let value = Animation::get(stage, path.clone())?
+-        .map(AnimQuery::new)
+-        .transpose()?
+-        .map(Rc::new);
++    let owner = with_samples(stage, |cache| cache.queries.clone()).flatten();
++    let value = if let Some(owner) = owner {
++        owner.get(path)?
++    } else {
++        Animation::get(stage, path.clone())?
++            .map(AnimQuery::new)
++            .transpose()?
++            .map(Rc::new)
++    };
+     with_samples(stage, |cache| {
+         cache.animations.insert(path.clone(), value.clone());
+     });
+diff --git a/crates/usd_bevy/src/read/skel/query_cache.rs b/crates/usd_bevy/src/read/skel/query_cache.rs
+new file mode 100644
+index 0000000..23927da
+--- /dev/null
++++ b/crates/usd_bevy/src/read/skel/query_cache.rs
+@@ -0,0 +1,542 @@
++use std::cell::RefCell;
++use std::rc::Rc;
++
++use bevy::prelude::Resource;
++use openusd::sdf::Path;
++use openusd::usd::{QueryCacheBudget, SchemaBase, Stage};
++use openusd_schemas::skel::{AnimQuery, Animation};
++
++/// Per-stage limits for animation query reuse during built-in projection.
++/// Metadata includes slot records, query handles, paths and ordering capacities.
++/// Fixed owner state, allocator/reference-count headers, stage storage,
++/// temporary reads and queries held by callers are outside the metadata limit.
++#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
++pub struct AnimationQueryLimits {
++    /// Retained slot and query metadata bytes per owner.
++    pub max_metadata_bytes: usize,
++    /// Maximum retained animation queries per owner.
++    pub max_queries: usize,
++    /// Shared retained-source byte limit, including sources held by callers.
++    pub max_source_bytes: usize,
++    /// Shared maximum number of retained attribute sources.
++    pub max_sources: usize,
++}
++
++impl Default for AnimationQueryLimits {
++    fn default() -> Self {
++        Self {
++            max_metadata_bytes: 1024 * 1024,
++            max_queries: 128,
++            max_source_bytes: 8 * 1024 * 1024,
++            max_sources: 256,
++        }
++    }
++}
++
++pub(crate) struct AnimationQueries {
++    stage: Stage,
++    limits: AnimationQueryLimits,
++    sources: QueryCacheBudget,
++    state: RefCell<Entries>,
++}
++
++struct Entries {
++    slots: Box<[Option<Entry>]>,
++    bytes: usize,
++    revision: u64,
++}
++
++struct Entry {
++    query: Rc<AnimQuery>,
++    bytes: usize,
++}
++
++impl AnimationQueries {
++    pub(crate) fn new(stage: &Stage, limits: AnimationQueryLimits) -> Self {
++        let count = limits
++            .max_queries
++            .min(limits.max_metadata_bytes / size_of::<Option<Entry>>());
++        let mut slots = Vec::new();
++        if slots.try_reserve_exact(count).is_ok() {
++            slots.resize_with(count, || None);
++        }
++        let slots = slots.into_boxed_slice();
++        let bytes = size_of_val(slots.as_ref());
++        Self {
++            stage: stage.clone(),
++            limits,
++            sources: QueryCacheBudget::new(limits.max_source_bytes, limits.max_sources),
++            state: RefCell::new(Entries {
++                slots,
++                bytes,
++                revision: 0,
++            }),
++        }
++    }
++
++    pub(crate) fn matches(&self, stage: &Stage, limits: AnimationQueryLimits) -> bool {
++        self.stage == *stage && self.limits == limits
++    }
++
++    pub(crate) fn prepare(&self, revision: u64) {
++        let mut state = self.state.borrow_mut();
++        if state.revision != revision {
++            state.slots.fill_with(|| None);
++            state.bytes = size_of_val(state.slots.as_ref());
++            state.revision = revision;
++        }
++    }
++
++    pub(crate) fn get(&self, path: &Path) -> anyhow::Result<Option<Rc<AnimQuery>>> {
++        let fresh = Animation::get(&self.stage, path.clone())?
++            .map(AnimQuery::new)
++            .transpose()?;
++        {
++            let mut state = self.state.borrow_mut();
++            let index = state.slots.iter().position(|slot| {
++                slot.as_ref()
++                    .is_some_and(|entry| entry.query.animation().prim().path() == path)
++            });
++            if let Some(index) = index {
++                let entry = state.slots[index].as_ref().unwrap();
++                if fresh.as_ref().is_some_and(|fresh| {
++                    fresh.joint_order() == entry.query.joint_order()
++                        && fresh.blend_shape_order() == entry.query.blend_shape_order()
++                }) {
++                    return Ok(Some(entry.query.clone()));
++                }
++                let bytes = entry.bytes;
++                state.bytes -= bytes;
++                state.slots[index] = None;
++            }
++        }
++        let Some(fresh) = fresh else { return Ok(None) };
++        if !self.state.borrow().slots.iter().any(Option::is_none)
++            || self.limits.max_source_bytes == 0
++            || self.limits.max_sources == 0
++        {
++            return Ok(Some(Rc::new(fresh)));
++        }
++        let query = AnimQuery::with_budget(fresh.animation().clone(), &self.sources)?;
++        let mut state = self.state.borrow_mut();
++        if let Some(index) = state.slots.iter().position(|slot| {
++            slot.as_ref()
++                .is_some_and(|entry| entry.query.animation().prim().path() == path)
++        }) {
++            let entry = state.slots[index].take().unwrap();
++            state.bytes -= entry.bytes;
++        }
++        if let Some(bytes) = query.metadata_bytes()
++            && let Some(total) = state.bytes.checked_add(bytes)
++            && total <= self.limits.max_metadata_bytes
++            && let Some(slot) = state.slots.iter_mut().find(|slot| slot.is_none())
++        {
++            let query = Rc::new(query);
++            *slot = Some(Entry {
++                query: query.clone(),
++                bytes,
++            });
++            state.bytes = total;
++            return Ok(Some(query));
++        }
++        Ok(Some(Rc::new(fresh)))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use openusd::usd::{CommittedChange, TimeCode};
++    use openusd::{gf, sdf, vt};
++    use std::cell::Cell;
++
++    fn stage() -> Stage {
++        crate::snippet::UsdSnippet::new(
++            r#"#usda 1.0
++def SkelAnimation "Anim" {
++    uniform token[] joints = ["root"]
++    uniform token[] blendShapes = ["smile"]
++    float3[] translations.timeSamples = { 0: [(0, 0, 0)], 10: [(10, 0, 0)] }
++    quatf[] rotations = [(1, 0, 0, 0)]
++    half3[] scales = [(1, 1, 1)]
++    float[] blendShapeWeights.timeSamples = { 0: [0], 10: [1] }
++}
++"#,
++        )
++        .open_stage_at("query-cache.usda")
++        .unwrap()
++    }
++
++    fn compare(cache: &AnimationQueries, path: &Path) -> Rc<AnimQuery> {
++        let query = cache.get(path).unwrap().unwrap();
++        let direct =
++            AnimQuery::new(Animation::get(&cache.stage, path.clone()).unwrap().unwrap()).unwrap();
++        assert_eq!(query.joint_order(), direct.joint_order());
++        assert_eq!(query.blend_shape_order(), direct.blend_shape_order());
++        for time in [0.0, 3.25, 10.0, -1.0, 11.0, 3.25, 0.0] {
++            let time = TimeCode::new(time);
++            assert_eq!(
++                query.joint_local_transforms(time).unwrap(),
++                direct.joint_local_transforms(time).unwrap()
++            );
++            assert_eq!(
++                query.blend_shape_weights(time).unwrap(),
++                direct.blend_shape_weights(time).unwrap()
++            );
++        }
++        assert!(cache.state.borrow().bytes <= cache.limits.max_metadata_bytes);
++        assert!(cache.sources.retained_bytes() <= cache.limits.max_source_bytes);
++        assert!(cache.sources.retained_entries() <= cache.limits.max_sources);
++        query
++    }
++
++    #[test]
++    fn reuse_orders_values_release() {
++        let stage = stage();
++        let path = sdf::path("/Anim").unwrap();
++        let cache = AnimationQueries::new(&stage, AnimationQueryLimits::default());
++        let first = compare(&cache, &path);
++        assert!(Rc::ptr_eq(&first, &compare(&cache, &path)));
++        stage
++            .attribute("/Anim.translations")
++            .unwrap()
++            .set_at(
++                vt::Value::Vec3fVec(vec![gf::vec3f(20.0, 0.0, 0.0)]),
++                TimeCode::new(10.0),
++            )
++            .unwrap();
++        assert!(Rc::ptr_eq(&first, &compare(&cache, &path)));
++        stage
++            .attribute("/Anim.joints")
++            .unwrap()
++            .set(vt::Value::TokenVec(vec!["new".into()]))
++            .unwrap();
++        let changed = compare(&cache, &path);
++        assert!(!Rc::ptr_eq(&first, &changed));
++        stage
++            .attribute("/Anim.blendShapes")
++            .unwrap()
++            .set(vt::Value::TokenVec(vec!["frown".into()]))
++            .unwrap();
++        let shapes = compare(&cache, &path);
++        assert!(!Rc::ptr_eq(&changed, &shapes));
++        assert_eq!(shapes.blend_shape_order(), ["frown"]);
++        drop((first, changed, shapes));
++        let budget = cache.sources.clone();
++        assert!(budget.retained_entries() > 0);
++        cache.prepare(1);
++        assert_eq!(budget.retained_bytes(), 0);
++        drop(compare(&cache, &path));
++        drop(cache);
++        assert_eq!(budget.retained_bytes(), 0);
++    }
++
++    #[test]
++    fn admission_falls_back() {
++        let stage = stage();
++        let path = sdf::path("/Anim").unwrap();
++        for limits in [
++            AnimationQueryLimits {
++                max_metadata_bytes: 0,
++                ..Default::default()
++            },
++            AnimationQueryLimits {
++                max_metadata_bytes: 32,
++                ..Default::default()
++            },
++            AnimationQueryLimits {
++                max_queries: 0,
++                ..Default::default()
++            },
++            AnimationQueryLimits {
++                max_source_bytes: 0,
++                ..Default::default()
++            },
++            AnimationQueryLimits {
++                max_sources: 0,
++                ..Default::default()
++            },
++        ] {
++            let cache = AnimationQueries::new(&stage, limits);
++            assert!(!Rc::ptr_eq(
++                &compare(&cache, &path),
++                &compare(&cache, &path)
++            ));
++            assert!(cache.state.borrow().slots.iter().all(Option::is_none));
++            assert_eq!(cache.sources.retained_bytes(), 0);
++        }
++    }
++
++    #[test]
++    fn exact_metadata_boundary() {
++        let stage = stage();
++        let path = sdf::path("/Anim").unwrap();
++        let query = AnimQuery::with_budget(
++            Animation::get(&stage, path.clone()).unwrap().unwrap(),
++            &QueryCacheBudget::new(8192, 8),
++        )
++        .unwrap();
++        let required = size_of::<Option<Entry>>() + query.metadata_bytes().unwrap();
++        for bytes in [required - 1, required] {
++            let cache = AnimationQueries::new(
++                &stage,
++                AnimationQueryLimits {
++                    max_metadata_bytes: bytes,
++                    max_queries: 1,
++                    ..Default::default()
++                },
++            );
++            let a = compare(&cache, &path);
++            let b = compare(&cache, &path);
++            assert_eq!(Rc::ptr_eq(&a, &b), bytes == required);
++        }
++        let cache = AnimationQueries::new(
++            &stage,
++            AnimationQueryLimits {
++                max_metadata_bytes: usize::MAX,
++                max_queries: usize::MAX,
++                ..Default::default()
++            },
++        );
++        assert!(cache.state.borrow().slots.is_empty());
++        compare(&cache, &path);
++    }
++
++    #[test]
++    fn load_mute_and_reload() {
++        use std::fs;
++        let temp = tempfile::tempdir().unwrap();
++        let payload = temp.path().join("payload.usda");
++        let root = temp.path().join("root.usda");
++        let payload_text = |name| {
++            format!(
++                r#"#usda 1.0
++def SkelAnimation "Anim" {{ uniform token[] joints = ["{name}"] }}
++"#
++            )
++        };
++        fs::write(&payload, payload_text("root")).unwrap();
++        fs::write(
++            &root,
++            r#"#usda 1.0
++def SkelAnimation "Anim" (prepend payload = @payload.usda@</Anim>) {}
++"#,
++        )
++        .unwrap();
++        let stage = Stage::builder()
++            .schema_registry(openusd_schemas::schema_registry())
++            .open(root.to_str().unwrap())
++            .unwrap();
++        let path = sdf::path("/Anim").unwrap();
++        let cache = AnimationQueries::new(&stage, AnimationQueryLimits::default());
++        let first = compare(&cache, &path);
++        assert_eq!(first.joint_order(), ["root"]);
++        stage.unload(path.clone()).unwrap();
++        assert!(compare(&cache, &path).joint_order().is_empty());
++        stage
++            .load(path.clone(), openusd::usd::LoadPolicy::WithDescendants)
++            .unwrap();
++        assert_eq!(compare(&cache, &path).joint_order(), ["root"]);
++        let identifier = payload.to_str().unwrap();
++        stage.mute_layer(identifier);
++        assert!(compare(&cache, &path).joint_order().is_empty());
++        stage.unmute_layer(identifier);
++        assert_eq!(compare(&cache, &path).joint_order(), ["root"]);
++        fs::write(&payload, payload_text("reloaded")).unwrap();
++        stage.reload().unwrap();
++        let reloaded = compare(&cache, &path);
++        assert_eq!(reloaded.joint_order(), ["reloaded"]);
++        assert!(!Rc::ptr_eq(&first, &reloaded));
++    }
++
++    #[test]
++    fn bounded_paths_and_growth() {
++        let stage = stage();
++        let path = sdf::path("/Anim").unwrap();
++        let limits = AnimationQueryLimits {
++            max_queries: 1,
++            max_metadata_bytes: 8192,
++            ..Default::default()
++        };
++        let cache = AnimationQueries::new(&stage, limits);
++        let first = compare(&cache, &path);
++        for index in 0..32 {
++            let other = sdf::path(format!("/Other{index}")).unwrap();
++            stage
++                .define_prim(other.clone())
++                .unwrap()
++                .set_type_name("SkelAnimation")
++                .unwrap();
++            let a = cache.get(&other).unwrap().unwrap();
++            let b = cache.get(&other).unwrap().unwrap();
++            assert!(!Rc::ptr_eq(&a, &b));
++            assert!(Rc::ptr_eq(&first, &compare(&cache, &path)));
++        }
++        stage
++            .attribute("/Anim.joints")
++            .unwrap()
++            .set(vt::Value::TokenVec(vec!["x".repeat(16384).into()]))
++            .unwrap();
++        let large = compare(&cache, &path);
++        assert!(!Rc::ptr_eq(&large, &compare(&cache, &path)));
++        assert!(cache.state.borrow().slots.iter().all(Option::is_none));
++        stage
++            .attribute("/Anim.joints")
++            .unwrap()
++            .set(vt::Value::TokenVec(vec!["root".into()]))
++            .unwrap();
++        assert!(Rc::ptr_eq(&compare(&cache, &path), &compare(&cache, &path)));
++        stage
++            .prim(path.clone())
++            .unwrap()
++            .set_type_name("Scope")
++            .unwrap();
++        assert!(cache.get(&path).unwrap().is_none());
++        assert!(cache.state.borrow().slots.iter().all(Option::is_none));
++    }
++
++    #[test]
++    fn reentrant_read_fresh_orders() {
++        let stage = stage();
++        let path = sdf::path("/Anim").unwrap();
++        let cache = Rc::new(AnimationQueries::new(
++            &stage,
++            AnimationQueryLimits::default(),
++        ));
++        drop(compare(&cache, &path));
++        let weak = Rc::downgrade(&cache);
++        let seen = Rc::new(Cell::new(false));
++        let observed = seen.clone();
++        let sink = stage
++            .add_sink(move |_: &Stage, _: &CommittedChange<'_>| {
++                let query = weak
++                    .upgrade()
++                    .unwrap()
++                    .get(&sdf::path("/Anim").unwrap())
++                    .unwrap()
++                    .unwrap();
++                assert_eq!(query.joint_order(), ["edited"]);
++                observed.set(true);
++            })
++            .unwrap();
++        stage
++            .attribute("/Anim.joints")
++            .unwrap()
++            .set(vt::Value::TokenVec(vec!["edited".into()]))
++            .unwrap();
++        stage.flush().unwrap();
++        assert!(seen.get());
++        stage.remove_sink(sink).unwrap();
++        assert!(Rc::ptr_eq(&compare(&cache, &path), &compare(&cache, &path)));
++    }
++
++    #[test]
++    fn stage_identity_and_lifetime() {
++        let first = stage();
++        let second = stage();
++        let limits = AnimationQueryLimits::default();
++        let cache = AnimationQueries::new(&first, limits);
++        assert!(cache.matches(&first.clone(), limits));
++        assert!(!cache.matches(&second, limits));
++        let weak = first.downgrade();
++        drop(compare(&cache, &sdf::path("/Anim").unwrap()));
++        let budget = cache.sources.clone();
++        drop(first);
++        assert!(weak.upgrade().is_some());
++        drop(cache);
++        assert!(weak.upgrade().is_none());
++        assert_eq!(budget.retained_bytes(), 0);
++    }
++
++    #[test]
++    fn builtin_scopes_edit_and_close() {
++        use crate::live::LiveStage;
++        use crate::read::skel::anim_query;
++        use crate::route::SchemaRegistry;
++        use bevy::prelude::World;
++
++        let live = LiveStage::new(stage());
++        let weak = live.stage.downgrade();
++        let path = sdf::path("/Anim").unwrap();
++        let registry = SchemaRegistry::builtin();
++        let mut world = World::new();
++        let first = registry.with_materials(&mut world, &live, |_| {
++            anim_query(&live.stage, &path).unwrap().unwrap()
++        });
++        let second = registry.with_materials(&mut world, &live, |_| {
++            anim_query(&live.stage, &path).unwrap().unwrap()
++        });
++        assert!(Rc::ptr_eq(&first, &second));
++        live.stage
++            .attribute("/Anim.joints")
++            .unwrap()
++            .set(vt::Value::TokenVec(vec!["changed".into()]))
++            .unwrap();
++        let changed = registry.with_materials(&mut world, &live, |_| {
++            anim_query(&live.stage, &path).unwrap().unwrap()
++        });
++        assert_eq!(changed.joint_order(), ["changed"]);
++        assert!(!Rc::ptr_eq(&first, &changed));
++        let owner = live.animation_queries.borrow().as_ref().unwrap().clone();
++        let weak_owner = Rc::downgrade(&owner);
++        let budget = owner.sources.clone();
++        changed.joint_local_transforms(TimeCode::new(5.0)).unwrap();
++        assert!(budget.retained_bytes() > 0);
++        drop((first, second, changed, owner));
++        drop(live);
++        assert!(weak_owner.upgrade().is_none());
++        assert!(weak.upgrade().is_none());
++        assert_eq!(budget.retained_bytes(), 0);
++    }
++
++    #[test]
++    fn limits_and_custom_registry() {
++        use crate::live::LiveStage;
++        use crate::read::skel::{SkelSampleScope, anim_query};
++        use crate::route::SchemaRegistry;
++        use bevy::prelude::World;
++
++        let live = LiveStage::new(stage());
++        let path = sdf::path("/Anim").unwrap();
++        let builtin = SchemaRegistry::builtin();
++        let mut world = World::new();
++        let first = builtin.with_materials(&mut world, &live, |_| {
++            anim_query(&live.stage, &path).unwrap().unwrap()
++        });
++        let owner = Rc::downgrade(live.animation_queries.borrow().as_ref().unwrap());
++        world.insert_resource(AnimationQueryLimits {
++            max_queries: 0,
++            ..Default::default()
++        });
++        let uncached = builtin.with_materials(&mut world, &live, |_| {
++            anim_query(&live.stage, &path).unwrap().unwrap()
++        });
++        assert!(owner.upgrade().is_none());
++        assert!(!Rc::ptr_eq(&first, &uncached));
++        world.remove_resource::<AnimationQueryLimits>();
++        builtin.with_materials(&mut world, &live, |world| {
++            let outer = anim_query(&live.stage, &path).unwrap().unwrap();
++            {
++                let _nested = SkelSampleScope::begin(&live.stage);
++                let inner = anim_query(&live.stage, &path).unwrap().unwrap();
++                assert!(!Rc::ptr_eq(&outer, &inner));
++            }
++            SchemaRegistry::new().with_materials(world, &live, |_| {
++                let a = anim_query(&live.stage, &path).unwrap().unwrap();
++                let b = anim_query(&live.stage, &path).unwrap().unwrap();
++                assert!(!Rc::ptr_eq(&a, &b));
++                assert!(!Rc::ptr_eq(&outer, &a));
++            });
++            assert!(Rc::ptr_eq(
++                &outer,
++                &anim_query(&live.stage, &path).unwrap().unwrap()
++            ));
++        });
++        SchemaRegistry::new().with_materials(&mut world, &live, |_| {
++            let a = anim_query(&live.stage, &path).unwrap().unwrap();
++            let b = anim_query(&live.stage, &path).unwrap().unwrap();
++            assert!(!Rc::ptr_eq(&a, &b));
++        });
++        assert!(live.animation_queries.borrow().is_none());
++    }
++}
+diff --git a/crates/usd_bevy/src/route/mod.rs b/crates/usd_bevy/src/route/mod.rs
+index 030e372..d5dcc26 100644
+--- a/crates/usd_bevy/src/route/mod.rs
++++ b/crates/usd_bevy/src/route/mod.rs
+@@ -360,13 +360,34 @@ impl SchemaRegistry {
+             world.get_resource::<AnimationAccessProfile>(),
+         );
+         if !self.builtin_only {
++            let _skin_samples = crate::read::skel::SkelSampleScope::disabled();
+             live.materials.borrow_mut().take();
++            live.animation_queries.borrow_mut().take();
+             return project(world);
+         }
+-        let _skin_samples = crate::read::skel::SkelSampleScope::begin(&live.stage);
+         if live.try_has_changes().unwrap_or(true) {
+             live.materials.borrow_mut().take();
+         }
++        let limits = world
++            .get_resource::<crate::read::skel::AnimationQueryLimits>()
++            .copied()
++            .unwrap_or_default();
++        let queries = {
++            let mut owner = live.animation_queries.borrow_mut();
++            if owner
++                .as_ref()
++                .is_none_or(|owner| !owner.matches(&live.stage, limits))
++            {
++                *owner = Some(std::rc::Rc::new(crate::read::skel::AnimationQueries::new(
++                    &live.stage,
++                    limits,
++                )));
++            }
++            owner.as_ref().unwrap().clone()
++        };
++        queries.prepare(live.composition_revision());
++        let _skin_samples =
++            crate::read::skel::SkelSampleScope::with_queries(&live.stage, Some(queries));
+         let mut materials = live
+             .materials
+             .borrow_mut()

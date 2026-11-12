@@ -156,6 +156,8 @@ pub struct RouteCtx<'a> {
     prepared_skin: std::cell::RefCell<Option<anyhow::Result<crate::read::skel::GpuSkinSample>>>,
     prepared_kinds: std::cell::Cell<Option<preparation::DeformationKinds>>,
     read_timing: std::cell::Cell<Option<MeshReadTiming>>,
+    deformation_resample: std::cell::Cell<bool>,
+    posed: std::cell::Cell<bool>,
     trace_memory: bool,
 }
 
@@ -184,11 +186,24 @@ impl<'a> RouteCtx<'a> {
             prepared_skin: Default::default(),
             prepared_kinds: Default::default(),
             read_timing: Default::default(),
+            deformation_resample: Default::default(),
+            posed: Default::default(),
             trace_memory: false,
         }
     }
 
     /// The prim path as a string.
+    /// Whether this context resamples a resident deformation-only prim.
+    pub(crate) fn deformation_resample(&self) -> bool {
+        self.deformation_resample.get()
+    }
+
+    /// Records that only the joint palette changed, so the projected
+    /// geometry and its subset split stay valid.
+    pub(crate) fn mark_posed(&self) {
+        self.posed.set(true);
+    }
+
     pub fn prim_str(&self) -> &str {
         self.path.as_str()
     }
@@ -525,7 +540,12 @@ impl SchemaRegistry {
         });
         let Some(pool) = pool else {
             for (path, entity) in prims {
-                self.patch_prim(stage, &path, world, entity, &[]);
+                let ctx = RouteCtx::at(stage, &path, time_of(world));
+                if world.contains_resource::<MeshReadTiming>() {
+                    ctx.read_timing.set(Some(MeshReadTiming::default()));
+                }
+                self.apply_animation_routes(&ctx, world, entity);
+                ctx.report_read_timing(world);
             }
             return;
         };
@@ -550,10 +570,43 @@ impl SchemaRegistry {
                 let count = preparation::prepare_batch(&contexts[offset..], world, pool, settings);
                 assert!(count > 0);
                 for (ctx, entity) in &contexts[offset..offset + count] {
-                    self.apply_routes(ctx, world, *entity, Some(&[]));
+                    self.apply_animation_routes(ctx, world, *entity);
                     ctx.report_read_timing(world);
                 }
                 offset += count;
+            }
+        }
+    }
+
+    /// One animation resample. A resident deformation-only mesh runs just the
+    /// deformation routes; every other prim reapplies all routes.
+    fn apply_animation_routes(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
+        let marked = self.builtin_only
+            && world
+                .get::<crate::live::DeformationOnlyAnimation>(entity)
+                .is_some();
+        let deferred = world.get::<residency::UsdDeferredMesh>(entity).is_some();
+        let hidden = marked && residency::should_defer(ctx, world, entity);
+        if marked && deferred && hidden {
+            return;
+        }
+        let deformation_only = marked && !deferred && !hidden;
+        if !deformation_only {
+            self.apply_routes(ctx, world, entity, Some(&[]));
+            return;
+        }
+        let deformation = [
+            skel::SkinRoute.name(),
+            subdivision::SubdivisionRoute.name(),
+            subset::SubsetRoute.name(),
+        ];
+        ctx.deformation_resample.set(true);
+        for route in &self.routes {
+            if deformation.contains(&route.name()) {
+                run_route(route.as_ref(), ctx, world, entity, Some(&[]));
+                if ctx.posed.get() {
+                    break;
+                }
             }
         }
     }

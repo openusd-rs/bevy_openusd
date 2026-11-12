@@ -261,6 +261,13 @@ pub(super) fn prepare_batch(
         if defer_initial && world.get::<Mesh3d>(*entity).is_none() {
             continue;
         }
+        if world.get::<super::gpu_skin::GpuSkinPose>(*entity).is_some()
+            && world
+                .get::<crate::live::DeformationOnlyAnimation>(*entity)
+                .is_some()
+        {
+            continue;
+        }
         let needed = needs_deformation(ctx, world, &mut phases);
         phase_lap(&mut phases, "eligibility");
         if !needed {
@@ -464,6 +471,59 @@ mod tests {
             a.get::<gpu_skin::UsdGpuSkin>(ae).map(|skin| &skin.matrices),
             b.get::<gpu_skin::UsdGpuSkin>(be).map(|skin| &skin.matrices)
         );
+    }
+
+    #[test]
+    fn deformation_only_resampling_matches_full_routes() {
+        let pool = bevy::tasks::TaskPoolBuilder::new().num_threads(2).build();
+        let registry = SchemaRegistry::builtin();
+        for gpu in [false, true] {
+            for pool in [None, Some(&pool)] {
+                let stage = stage();
+                let (mut full, a) = world(gpu);
+                let (mut fast, b) = world(gpu);
+                fast.init_resource::<super::super::ProjectionTimings>();
+                let attempts = |world: &World, route: &str| {
+                    world.resource::<super::super::ProjectionTimings>().0[route].attempts
+                };
+                let mut skipped = None;
+                for (step, time) in [0.0, 2.5, 10.0, 5.0, 5.0, 0.0].into_iter().enumerate() {
+                    for world in [&mut full, &mut fast] {
+                        world.insert_resource(StageTime { current: time });
+                    }
+                    let _scope = skel::SkelSampleScope::begin(&stage);
+                    registry.patch_animation_with_pool(&stage, a.clone(), &mut full, pool);
+                    registry.patch_animation_with_pool(&stage, b.clone(), &mut fast, pool);
+                    let material = attempts(&fast, super::super::material::MaterialRoute.name());
+                    let skin = attempts(&fast, super::super::skel::SkinRoute.name());
+                    if step == 0 {
+                        for (_, entity) in &b {
+                            fast.entity_mut(*entity)
+                                .insert(crate::live::DeformationOnlyAnimation);
+                        }
+                        skipped = Some(material);
+                    }
+                    assert_eq!(Some(material), skipped);
+                    assert_eq!(skin, (step as u64 + 1) * b.len() as u64);
+                    for ((_, ae), (_, be)) in a.iter().zip(&b) {
+                        same_entities(&full, *ae, &fast, *be);
+                        assert_eq!(full.get::<Transform>(*ae), fast.get::<Transform>(*be));
+                        let color = |world: &World, entity| {
+                            world
+                                .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                                .map(|material| {
+                                    world
+                                        .resource::<Assets<StandardMaterial>>()
+                                        .get(&material.0)
+                                        .unwrap()
+                                        .base_color
+                                })
+                        };
+                        assert_eq!(color(&full, *ae), color(&fast, *be));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

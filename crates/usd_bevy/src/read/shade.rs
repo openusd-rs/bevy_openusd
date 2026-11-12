@@ -345,6 +345,9 @@ pub fn read_preview_material_at(
         out.emissive_color = None;
         out.emissive_texture = None;
     }
+    if omnipbr {
+        apply_omnipbr_blends(stage, material, &shader, &mut out, time)?;
+    }
     out.uv_transform = read_uv_transform(stage, &textures, time)?;
     anyhow::ensure!(
         out.clearcoat
@@ -476,6 +479,63 @@ def Material "Mat" {{
         let read = read_preview_material(&stage, &material).unwrap().unwrap();
         assert_eq!(read.emissive_color, expected, "{enable}");
     }
+}
+
+#[test]
+fn omnipbr_textures_replace_constants_by_influence() {
+    let shader = |inputs: &str| {
+        format!(
+            r#"#usda 1.0
+def Material "Mat" {{
+    token outputs:mdl:surface.connect = </Mat/Shader.outputs:out>
+    def Shader "Shader" {{
+        uniform token info:implementationSource = "sourceAsset"
+        uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+        uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+        {inputs}
+        token outputs:out
+    }}
+}}
+"#
+        )
+    };
+    let read = |inputs: &str| {
+        crate::UsdSource::snapshot("omnipbr.usda", shader(inputs).into_bytes())
+            .unwrap()
+            .open_stage()
+            .map(|stage| {
+                read_preview_material(&stage, &openusd::sdf::path("/Mat").unwrap())
+                    .unwrap()
+                    .unwrap()
+            })
+            .unwrap()
+    };
+    let textured = read(
+        r#"color3f inputs:diffuse_color_constant = (0.5, 0.5, 0.5)
+        asset inputs:diffuse_texture = @albedo.png@
+        color3f inputs:diffuse_tint = (1, 0.5, 0.25)
+        float inputs:reflection_roughness_constant = 0.2
+        asset inputs:reflectionroughness_texture = @rough.png@
+        float inputs:reflection_roughness_texture_influence = 0.25
+        float inputs:metallic_constant = 0.7
+        asset inputs:metallic_texture = @metal.png@"#,
+    );
+    assert_eq!(textured.diffuse_color, Some([1.0, 0.5, 0.25]));
+    assert!(textured.roughness_texture.is_some() && textured.roughness.is_none());
+    assert_eq!(
+        textured.scalar_texture_transforms["roughness"],
+        [0.25, 0.75 * 0.2]
+    );
+    assert!(textured.metallic_texture.is_none());
+    assert_eq!(textured.metallic, Some(0.7));
+    let plain = read(
+        r#"color3f inputs:diffuse_color_constant = (0.5, 0.5, 0.5)
+        float inputs:reflection_roughness_constant = 0.2
+        asset inputs:reflectionroughness_texture = @rough.png@"#,
+    );
+    assert_eq!(plain.diffuse_color, Some([0.5, 0.5, 0.5]));
+    assert!(plain.roughness_texture.is_none());
+    assert_eq!(plain.roughness, Some(0.2));
 }
 
 #[test]
@@ -1222,6 +1282,84 @@ const OMNIPBR_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &
         set_normal_tex,
     ),
 ];
+
+/// OmniPBR uses its diffuse constant only without a diffuse texture, tints
+/// either, and moves roughness and metallic from their constants toward their
+/// textures by each texture's influence.
+fn apply_omnipbr_blends(
+    stage: &Stage,
+    material: &Path,
+    shader: &Path,
+    out: &mut ReadPreviewMaterial,
+    time: Option<f64>,
+) -> anyhow::Result<()> {
+    let input = |out: &mut ReadPreviewMaterial, name: &str| {
+        resolve_channel(stage, material, shader, name, &mut out.warnings, time)
+            .map(|(value, _)| value)
+    };
+    if out.diffuse_texture.is_some() || out.diffuse_ptex.is_some() {
+        out.diffuse_color = None;
+    }
+    if let Some(ResolvedValue::Color3(tint)) = input(out, "diffuse_tint")?
+        && tint != [1.0; 3]
+        && tint.iter().all(|value| value.is_finite())
+    {
+        let base = out.diffuse_color.unwrap_or([1.0; 3]);
+        out.diffuse_color = Some([base[0] * tint[0], base[1] * tint[1], base[2] * tint[2]]);
+    }
+    let influence = |value: Option<ResolvedValue>| match value {
+        Some(ResolvedValue::Scalar(value)) if value.is_finite() => value.clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    let roughness = influence(input(out, "reflection_roughness_texture_influence")?);
+    let metallic = influence(input(out, "metallic_texture_influence")?);
+    blend_toward_texture(
+        &mut out.roughness_texture,
+        &mut out.roughness,
+        &mut out.scalar_texture_transforms,
+        "roughness",
+        roughness,
+        0.5,
+    );
+    blend_toward_texture(
+        &mut out.metallic_texture,
+        &mut out.metallic,
+        &mut out.scalar_texture_transforms,
+        "metallic",
+        metallic,
+        0.0,
+    );
+    Ok(())
+}
+
+/// Bakes `lerp(constant, texture, influence)` into the texture's scale and
+/// bias, leaving no separate constant to multiply it by.
+fn blend_toward_texture(
+    texture: &mut Option<String>,
+    constant: &mut Option<f32>,
+    transforms: &mut std::collections::BTreeMap<String, [f32; 2]>,
+    semantic: &str,
+    influence: f32,
+    default: f32,
+) {
+    if texture.is_none() {
+        return;
+    }
+    if influence == 0.0 {
+        *texture = None;
+        transforms.remove(semantic);
+        return;
+    }
+    let base = constant.take().unwrap_or(default);
+    let [scale, bias] = transforms.get(semantic).copied().unwrap_or([1.0, 0.0]);
+    transforms.insert(
+        semantic.into(),
+        [
+            scale * influence,
+            bias * influence + (1.0 - influence) * base,
+        ],
+    );
+}
 
 /// Whether `path` names a Ptex file.
 pub fn is_ptex(path: &str) -> bool {

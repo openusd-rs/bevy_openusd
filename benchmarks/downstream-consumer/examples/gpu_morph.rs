@@ -156,6 +156,7 @@ struct Frames {
     output: PathBuf,
     reference: Option<PathBuf>,
     deadline: Instant,
+    deferred: bool,
 }
 
 fn verify(phase: usize, rgba: &[u8], reference: Option<&Path>) {
@@ -252,16 +253,22 @@ fn capture(app: &mut App, root: Entity, frames: &Frames, phase: usize) {
         "CONSUMER_CAPTURE phase={phase} meshes={meshes} morphs={morphs} bytes={}",
         rgba.len()
     );
-    assert_eq!(meshes, 2);
+    let never_shown = frames.deferred && phase == 0;
+    assert_eq!(meshes, if never_shown { 0 } else { 2 });
 }
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     assert!(
-        matches!(args.len(), 2 | 3) && matches!(args[0].as_str(), "cpu" | "gpu"),
-        "usage: gpu_morph cpu|gpu NEW_OUTPUT_DIRECTORY [CPU_REFERENCE_DIRECTORY]"
+        matches!(args.len(), 2 | 3)
+            && matches!(
+                args[0].as_str(),
+                "cpu" | "gpu" | "cpu-deferred" | "gpu-deferred"
+            ),
+        "usage: gpu_morph cpu|gpu[-deferred] NEW_OUTPUT_DIRECTORY [CPU_REFERENCE_DIRECTORY]"
     );
-    let gpu = args[0] == "gpu";
+    let gpu = args[0].starts_with("gpu");
+    let deferred = args[0].ends_with("-deferred");
     let output = PathBuf::from(&args[1]);
     std::fs::create_dir(&output).unwrap();
     let reference = args.get(2).map(PathBuf::from);
@@ -289,6 +296,9 @@ fn main() {
     app.add_plugins((UsdPlugin, UsdAssetPlugin));
     if gpu {
         app.add_plugins(UsdGpuSkinningPlugin);
+    }
+    if deferred {
+        app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>();
     }
     app.insert_resource(UsdProjectionBudget(Duration::MAX))
         .init_resource::<Phase>();
@@ -356,6 +366,7 @@ fn main() {
         output: output.clone(),
         reference,
         deadline,
+        deferred,
     };
     capture(&mut app, root, &frames, 0);
     *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;

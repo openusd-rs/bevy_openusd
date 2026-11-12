@@ -75,6 +75,45 @@ fn inverse_transpose_3x3m(in: mat3x3<f32>) -> mat3x3<f32> {
 }
 
 @if(SKINNED)
+fn joint_matrix(instance_index: u32, index: u32) -> mat4x4<f32> {
+@if(SKINS_USE_UNIFORM_BUFFERS)
+    return joint_matrices.data[index];
+@if(!SKINS_USE_UNIFORM_BUFFERS)
+    return joint_matrices[mesh[instance_index].current_skin_index + index];
+}
+
+@if(SKINNED)
+fn skin_normal_term(
+    instance_index: u32,
+    index: u32,
+    weight: f32,
+    normal: vec3<f32>,
+) -> vec3<f32> {
+    if weight == 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let joint = joint_matrix(instance_index, index);
+    let linear = mat3x3<f32>(joint[0].xyz, joint[1].xyz, joint[2].xyz);
+    return weight * (inverse_transpose_3x3m(linear) * normal);
+}
+
+/// Blends each influence's inverse-transpose joint matrix, as UsdSkel skins normals.
+@if(SKINNED)
+fn skin_normals_blended(
+    indexes: vec4<u32>,
+    weights: vec4<f32>,
+    instance_index: u32,
+    normal: vec3<f32>,
+) -> vec3<f32> {
+    return normalize(
+        skin_normal_term(instance_index, indexes.x, weights.x, normal)
+            + skin_normal_term(instance_index, indexes.y, weights.y, normal)
+            + skin_normal_term(instance_index, indexes.z, weights.z, normal)
+            + skin_normal_term(instance_index, indexes.w, weights.w, normal)
+    );
+}
+
+@if(SKINNED)
 fn skin_normals(
     world_from_local: mat4x4<f32>,
     normal: vec3<f32>,

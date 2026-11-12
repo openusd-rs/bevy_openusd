@@ -586,6 +586,7 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
         .map_or(0.0, Time::delta_secs_f64);
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     let curve_steps = crate::route::curves::current_geometry_key(world);
+    let revealed = crate::route::residency::revealed(world);
     let mut roots: Vec<_> = instances.roots.keys().copied().collect();
     roots.sort_unstable();
     if let Some(last) = world
@@ -622,6 +623,9 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
             runtime.defer_hidden = defer_hidden;
         }
         apply_changes(world, &runtime.live, &mut runtime.map);
+        if revealed {
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
+        }
         let purposes = world
             .get_resource::<crate::route::DisplayPurposes>()
             .copied()
@@ -655,22 +659,52 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
             let registry = world.resource::<SchemaRegistry>().clone();
             let cacheable = registry.is_builtin_only();
             registry.with_materials(world, &runtime.live, |world| {
-                let prims = runtime.map.iter().filter_map(|(path, entity)| {
-                    let path = openusd::sdf::path(path).ok()?;
-                    if path.as_str() == "/" {
-                        return None;
+                if !cacheable {
+                    let prims = runtime.map.iter().filter_map(|(path, entity)| {
+                        let path = openusd::sdf::path(path).ok()?;
+                        if path.as_str() == "/" {
+                            return None;
+                        }
+                        let begin = started.map(|_| bevy::platform::time::Instant::now());
+                        let (sample, cached) =
+                            runtime.animation.sample(&runtime.live, &path, false);
+                        if let Some(begin) = begin {
+                            classified += u64::from(!cached);
+                            reused += u64::from(cached);
+                            animated += u64::from(sample.animated);
+                            classification += begin.elapsed();
+                        }
+                        sample.animated.then_some((path, entity))
+                    });
+                    registry.patch_animation(&runtime.live.stage, prims, world);
+                    return;
+                }
+                let begin = started.map(|_| bevy::platform::time::Instant::now());
+                let mut counts = [0; 2];
+                runtime.animation.begin(&runtime.live, true);
+                let prims = runtime.animation.animated_prims(
+                    &runtime.live.stage,
+                    &runtime.map,
+                    &mut counts,
+                );
+                if let Some(begin) = begin {
+                    classified += counts[0];
+                    reused += counts[1];
+                    animated += prims.len() as u64;
+                    classification += begin.elapsed();
+                }
+                for (_, entity, deformation_only) in &prims {
+                    let Ok(mut entity) = world.get_entity_mut(*entity) else {
+                        continue;
+                    };
+                    let marked = entity.contains::<crate::live::DeformationOnlyAnimation>();
+                    if *deformation_only && !marked {
+                        entity.insert(crate::live::DeformationOnlyAnimation);
+                    } else if !*deformation_only && marked {
+                        entity.remove::<crate::live::DeformationOnlyAnimation>();
                     }
-                    let begin = started.map(|_| bevy::platform::time::Instant::now());
-                    let (varying, cached) =
-                        runtime.animation.sample(&runtime.live, &path, cacheable);
-                    if let Some(begin) = begin {
-                        classified += u64::from(!cached);
-                        reused += u64::from(cached);
-                        animated += u64::from(varying);
-                        classification += begin.elapsed();
-                    }
-                    varying.then_some((path, entity))
-                });
+                }
+                let prims = prims.into_iter().map(|(path, entity, _)| (path, entity));
                 registry.patch_animation(&runtime.live.stage, prims, world);
             });
             if let Some(started) = started {

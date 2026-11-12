@@ -30,7 +30,8 @@ viewer or Mara. This is dependency-resolution evidence, not a GPU test.
 Both overrides belong in the **consuming workspace root**. Cargo ignores
 patch tables in dependencies; see the [Cargo reference](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section).
 The asset override preserves source-load ordering. The PBR override repairs
-first-visible morph descriptor publication. Use the same local checkout or
+first-visible morph descriptor publication and skins normals with UsdSkel's
+blend of per-joint inverse transposes, which GPU-skinned USD meshes rely on. Use the same local checkout or
 verified revision for the library and both overrides. A Mara override is only
 needed by the viewer, not this standalone library consumer.
 
@@ -44,6 +45,9 @@ reference within RGB 1. The GPU run also checks that every visible morph
 instance gets a current descriptor with the expected vertex count and weight.
 Without the PBR override the first reveal draws the wrong shape and the
 comparison fails; the subset/parent colour check alone does not catch it.
+The recipe repeats both runs with `DeferHiddenMeshes`: the initially hidden
+root has no meshes until its Bevy `Visibility` reveals it, and every phase
+must still match the eager CPU reference.
 Acceptance was recorded on local Linux NVIDIA Vulkan only.
 
 Downstream application workloads, other browsers and platforms, and

@@ -401,19 +401,64 @@ pub(crate) fn prim_is_animated(stage: &Stage, path: &openusd::sdf::Path) -> bool
     prototypes || prim_inputs_are_animated(stage, path)
 }
 
+/// Inherited primvars whose time samples animate the meshes that inherit them.
+const ANIMATED_PRIMVARS: [&str; 5] = [
+    "primvars:normals",
+    "primvars:displayColor",
+    "primvars:displayOpacity",
+    "primvars:st",
+    "primvars:st0",
+];
+
+/// A projected mesh whose only time-varying inputs are its skeletal or
+/// blend-shape deformation; resampling runs just the deformation routes.
+#[derive(Component)]
+pub(crate) struct DeformationOnlyAnimation;
+
+pub(crate) fn animated_only_by_deformation(stage: &Stage, path: &openusd::sdf::Path) -> bool {
+    stage
+        .prim(path.clone())
+        .ok()
+        .and_then(|prim| prim.type_name().ok().flatten())
+        .as_deref()
+        == Some("Mesh")
+        && !has_time_samples(stage, path)
+        && !subsets_are_animated(stage, path)
+        && crate::read::skel::deformation_is_time_varying(stage, path)
+        && !ANIMATED_PRIMVARS
+            .iter()
+            .any(|name| inherited_primvar_is_animated(stage, path, name))
+        && !crate::read::shade::bound_material_is_time_varying(stage, path)
+}
+
+/// Re-derives [`DeformationOnlyAnimation`] for every prim in [`AnimatedPrims`].
+fn mark_deformation_only(world: &mut World, stage: &Stage, map: &PrimEntities) {
+    let Some(animated) = world.get_resource::<AnimatedPrims>() else {
+        return;
+    };
+    let paths: Vec<_> = animated.0.iter().cloned().collect();
+    for path in paths {
+        let (Ok(prim), Some(entity)) = (openusd::sdf::path(&path), map.entity(&path)) else {
+            continue;
+        };
+        let Ok(mut entity) = world.get_entity_mut(entity) else {
+            continue;
+        };
+        if animated_only_by_deformation(stage, &prim) {
+            entity.insert(DeformationOnlyAnimation);
+        } else {
+            entity.remove::<DeformationOnlyAnimation>();
+        }
+    }
+}
+
 fn prim_inputs_are_animated(stage: &Stage, path: &openusd::sdf::Path) -> bool {
     has_time_samples(stage, path)
         || subsets_are_animated(stage, path)
         || crate::read::skel::deformation_is_time_varying(stage, path)
-        || [
-            "primvars:normals",
-            "primvars:displayColor",
-            "primvars:displayOpacity",
-            "primvars:st",
-            "primvars:st0",
-        ]
-        .iter()
-        .any(|name| inherited_primvar_is_animated(stage, path, name))
+        || ANIMATED_PRIMVARS
+            .iter()
+            .any(|name| inherited_primvar_is_animated(stage, path, name))
         || crate::read::shade::bound_material_is_time_varying(stage, path)
 }
 
@@ -566,15 +611,7 @@ impl AnimationDiscovery {
                 crate::read::skel::deformation_is_time_varying(stage, path)
             })
             || self.measured(4, |this| {
-                [
-                    "primvars:normals",
-                    "primvars:displayColor",
-                    "primvars:displayOpacity",
-                    "primvars:st",
-                    "primvars:st0",
-                ]
-                .iter()
-                .any(|name| {
+                ANIMATED_PRIMVARS.iter().any(|name| {
                     this.inherited_primvar_is_animated(stage, path, name)
                         .unwrap_or(false)
                 })
@@ -876,6 +913,7 @@ fn project_stage_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntiti
         world,
     );
     world.insert_resource(AnimatedPrims(animated));
+    mark_deformation_only(world, &live.stage, map);
     // Projecting authored the initial read; clear so the first sync starts clean.
     let _ = live.drain_changes();
     world.remove_non_send::<crate::route::material::ProjectionMaterialReads>();
@@ -1406,6 +1444,7 @@ fn apply_changes_inner(world: &mut World, live: &LiveStage, map: &mut PrimEntiti
             }
         }
     }
+    mark_deformation_only(world, &live.stage, map);
 }
 
 /// Updates the projected prim paths after a successful editor namespace edit.
@@ -1715,6 +1754,7 @@ fn reconcile_scoped(
     // Refresh the animated set for the reconciled prim set.
     if collect_animation {
         world.insert_resource(AnimatedPrims(animated));
+        mark_deformation_only(world, stage, map);
     }
 }
 
@@ -2432,6 +2472,80 @@ def SkelRoot "Test" {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn deformation_only_marks_follow_projection_and_edits() {
+        let mesh = |name: &str, extra: &str| {
+            format!(
+                r#"
+    def Mesh "{name}" (prepend apiSchemas = ["SkelBindingAPI"]) {{
+        rel skel:skeleton = </Test/Skel>
+        int[] primvars:skel:jointIndices = [0, 0, 0] (elementSize = 1 interpolation = "vertex")
+        float[] primvars:skel:jointWeights = [1, 1, 1] (elementSize = 1 interpolation = "vertex")
+        point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        {extra}
+    }}"#
+            )
+        };
+        let text = format!(
+            r#"#usda 1.0
+def SkelRoot "Test" {{
+    def Skeleton "Skel" {{
+        uniform token[] joints = ["Root"]
+        uniform matrix4d[] bindTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        uniform matrix4d[] restTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        rel skel:animationSource = </Test/Anim>
+    }}
+    def SkelAnimation "Anim" {{
+        uniform token[] joints = ["Root"]
+        float3[] translations.timeSamples = {{0: [(0,0,0)], 10: [(1,0,0)]}}
+    }}
+    {}
+    {}
+}}
+"#,
+            mesh("Bar", ""),
+            mesh(
+                "Own",
+                "float[] primvars:displayOpacity.timeSamples = {0: [1], 10: [0.5]}"
+            )
+        );
+        let stage = crate::UsdSource::new("marks.usda", text.as_bytes())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let live = LiveStage::new(stage.clone());
+        let mut world = World::new();
+        let mut map = PrimEntities::default();
+        project_stage(&mut world, &live, &mut map);
+        let marked = |world: &World, map: &PrimEntities, path: &str| {
+            world
+                .get::<DeformationOnlyAnimation>(map.entity(path).unwrap())
+                .is_some()
+        };
+        let animated = &world.resource::<AnimatedPrims>().0;
+        assert!(animated.contains("/Test/Bar") && animated.contains("/Test/Own"));
+        assert!(marked(&world, &map, "/Test/Bar"));
+        assert!(!marked(&world, &map, "/Test/Own"));
+        stage
+            .create_attribute("/Test/Bar.primvars:displayOpacity", "float[]")
+            .unwrap()
+            .set_at(Value::FloatVec(vec![1.0]), TimeCode::new(0.0))
+            .unwrap()
+            .set_at(Value::FloatVec(vec![0.5]), TimeCode::new(10.0))
+            .unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        assert!(!marked(&world, &map, "/Test/Bar"));
+        stage
+            .attribute("/Test/Bar.primvars:displayOpacity")
+            .unwrap()
+            .clear()
+            .unwrap();
+        apply_changes(&mut world, &live, &mut map);
+        assert!(marked(&world, &map, "/Test/Bar"));
     }
 
     #[test]

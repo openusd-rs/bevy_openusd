@@ -325,16 +325,22 @@ struct AppliedPurposes(Option<crate::route::DisplayPurposes>);
 #[derive(Resource, Default)]
 struct SampledTime(Option<f64>);
 
+/// SkelAnimation inputs that reach the scene only through bound skinned meshes.
+const SKEL_ANIMATION_INPUTS: [&str; 4] =
+    ["translations", "rotations", "scales", "blendShapeWeights"];
+
 fn has_time_samples(stage: &Stage, path: &openusd::sdf::Path) -> bool {
     let Ok(prim) = stage.prim(path.clone()) else {
         return false;
     };
+    let animation = prim.type_name().ok().flatten().as_deref() == Some("SkelAnimation");
     prim.authored_attributes()
         .map(|attrs| {
             attrs.iter().any(|a| {
-                a.num_time_samples()
-                    .map(|count| count != 0)
-                    .unwrap_or(false)
+                !(animation && SKEL_ANIMATION_INPUTS.contains(&a.name()))
+                    && a.num_time_samples()
+                        .map(|count| count != 0)
+                        .unwrap_or(false)
             })
         })
         .unwrap_or(false)
@@ -2368,6 +2374,63 @@ def Material "Mat" {
                     prim.path()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn skel_animation_clips_animate_only_their_bound_meshes() {
+        let source = crate::UsdSource::new(
+            "clips.usda",
+            br#"#usda 1.0
+def SkelRoot "Test" {
+    def Skeleton "Skel" {
+        uniform token[] joints = ["Root"]
+        uniform matrix4d[] bindTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        uniform matrix4d[] restTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        rel skel:animationSource = </Test/Played>
+    }
+    def SkelAnimation "Played" {
+        uniform token[] joints = ["Root"]
+        float3[] translations.timeSamples = {0: [(0,0,0)], 10: [(1,0,0)]}
+        quatf[] rotations.timeSamples = {0: [(1,0,0,0)], 10: [(1,0,0,0)]}
+    }
+    def SkelAnimation "Unused" {
+        uniform token[] joints = ["Root"]
+        float3[] translations.timeSamples = {0: [(0,0,0)], 10: [(2,0,0)]}
+        float[] blendShapeWeights.timeSamples = {0: [0], 10: [1]}
+    }
+    def SkelAnimation "Scripted" {
+        uniform token[] joints = ["Root"]
+        float3[] translations.timeSamples = {0: [(0,0,0)], 10: [(3,0,0)]}
+        custom float bevy:Speed:value.timeSamples = {0: 1, 10: 3}
+    }
+    def Mesh "Bar" (prepend apiSchemas = ["SkelBindingAPI"]) {
+        rel skel:skeleton = </Test/Skel>
+        int[] primvars:skel:jointIndices = [0, 0, 0] (elementSize = 1 interpolation = "vertex")
+        float[] primvars:skel:jointWeights = [1, 1, 1] (elementSize = 1 interpolation = "vertex")
+        point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }
+}
+"#
+            .as_slice(),
+        )
+        .unwrap();
+        let stage = source.open_stage().unwrap();
+        for (path, expected) in [
+            ("/Test/Played", false),
+            ("/Test/Unused", false),
+            ("/Test/Scripted", true),
+            ("/Test/Bar", true),
+        ] {
+            let path = openusd::sdf::path(path).unwrap();
+            assert_eq!(prim_is_animated(&stage, &path), expected, "{path}");
+            assert_eq!(
+                AnimationDiscovery::default().prim_is_animated(&stage, &path),
+                expected,
+                "{path}"
+            );
         }
     }
 

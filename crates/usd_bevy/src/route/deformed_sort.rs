@@ -25,6 +25,11 @@ struct CachedCenter {
     morphed: bool,
 }
 
+/// Main entities the last rendered frame queued in a depth-sorted phase,
+/// shared by both worlds; only those draws need posed centers.
+#[derive(Resource, Clone, Default)]
+struct SortedDraws(std::sync::Arc<std::sync::Mutex<bevy::platform::collections::HashSet<Entity>>>);
+
 #[derive(Resource, Default)]
 struct Centers(MainEntityHashMap<Vec3>);
 
@@ -47,9 +52,12 @@ pub(super) fn configure(app: &mut App) {
     if app.get_sub_app(RenderApp).is_none() || app.world().contains_resource::<Configured>() {
         return;
     }
+    let sorted = SortedDraws::default();
     app.insert_resource(Configured)
+        .insert_resource(sorted.clone())
         .add_systems(Last, update_centers);
     app.sub_app_mut(RenderApp)
+        .insert_resource(sorted)
         .init_resource::<Centers>()
         .init_resource::<Originals>()
         .add_systems(ExtractSchedule, extract_centers)
@@ -84,6 +92,12 @@ type Draws<'w, 's> = Query<
     With<CullingOverride>,
 >;
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct CenterOptions<'w> {
+    timing: Option<ResMut<'w, DeformedSortTiming>>,
+    sorted: Option<Res<'w, SortedDraws>>,
+}
+
 fn update_centers(
     mut commands: Commands,
     mut draws: Draws,
@@ -91,8 +105,9 @@ fn update_centers(
     meshes: Res<Assets<Mesh>>,
     mut mesh_events: MessageReader<AssetEvent<Mesh>>,
     mut inverse_events: MessageReader<AssetEvent<SkinnedMeshInverseBindposes>>,
-    timing: Option<ResMut<DeformedSortTiming>>,
+    options: CenterOptions,
 ) {
+    let CenterOptions { timing, sorted } = options;
     let started = timing
         .as_ref()
         .map(|_| bevy::platform::time::Instant::now());
@@ -100,8 +115,18 @@ fn update_centers(
         mesh_events.read().map(asset_id).collect();
     let dirty_inverse: bevy::platform::collections::HashSet<_> =
         inverse_events.read().map(asset_id).collect();
+    let sorted = sorted.map(|sorted| sorted.0.lock().unwrap().clone());
     let (mut rebuilt, mut vertices) = (0, 0);
     for (entity, mesh, transform, skin, morph, cached) in &mut draws {
+        if sorted
+            .as_ref()
+            .is_some_and(|sorted| !sorted.contains(&entity))
+        {
+            if cached.is_some() {
+                commands.entity(entity).remove::<CachedCenter>();
+            }
+            continue;
+        }
         let skin_value = skin.as_deref();
         let morph_value = morph.as_deref();
         let changed = cached.as_ref().is_none_or(|cached| {
@@ -178,9 +203,24 @@ fn set_center(sorting: &mut TransparentSortingInfo3d, center: Vec3) {
 fn apply_centers(
     centers: Res<Centers>,
     mut originals: ResMut<Originals>,
+    sorted: Option<Res<SortedDraws>>,
     transparent: Option<ResMut<ViewSortedRenderPhases<Transparent3d>>>,
     transmissive: Option<ResMut<ViewSortedRenderPhases<Transmissive3d>>>,
 ) {
+    if let Some(sorted) = sorted {
+        let mut draws = sorted.0.lock().unwrap();
+        draws.clear();
+        for phases in transparent.iter() {
+            for phase in phases.0.values() {
+                draws.extend(phase.items.values().map(|item| item.entity.1.id()));
+            }
+        }
+        for phases in transmissive.iter() {
+            for phase in phases.0.values() {
+                draws.extend(phase.items.values().map(|item| item.entity.1.id()));
+            }
+        }
+    }
     if let Some(mut phases) = transparent {
         for (&view, phase) in &mut phases.0 {
             for item in phase.items.values_mut() {
@@ -310,6 +350,36 @@ mod tests {
             app.sub_app(RenderApp).world().resource::<Centers>().0.len(),
             1
         );
+    }
+
+    #[test]
+    fn only_depth_sorted_draws_rebuild_centers() {
+        let mut app = app();
+        let sorted = SortedDraws::default();
+        app.insert_resource(sorted.clone());
+        let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh());
+        let entity = app
+            .world_mut()
+            .spawn((
+                Mesh3d(handle),
+                GlobalTransform::IDENTITY,
+                MeshMorphWeights::Value { weights: vec![1.0] },
+            ))
+            .id();
+        super::super::deformation::acquire(
+            app.world_mut(),
+            entity,
+            super::super::deformation::MORPH,
+        );
+        app.update();
+        assert!(app.world().get::<CachedCenter>(entity).is_none());
+        assert_eq!(app.world().resource::<DeformedSortTiming>().rebuilt, 0);
+        sorted.0.lock().unwrap().insert(entity);
+        app.update();
+        assert_eq!(center(app.world(), entity), Some(Vec3::new(4.0, 0.5, 0.0)));
+        sorted.0.lock().unwrap().clear();
+        app.update();
+        assert!(app.world().get::<CachedCenter>(entity).is_none());
     }
 
     #[test]

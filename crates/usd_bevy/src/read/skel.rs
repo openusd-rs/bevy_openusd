@@ -522,6 +522,13 @@ impl SkinNormalSample {
         let mut rigid_normal = None;
         for (&point, normal) in source_points.iter().zip(&mut normals.values) {
             let start = if rigid { 0 } else { point * stride };
+            if !rigid
+                && weights[start..start + stride]
+                    .iter()
+                    .all(|weight| *weight == 0.0)
+            {
+                continue;
+            }
             let normal_matrix = if rigid {
                 if let Some(matrix) = rigid_normal {
                     matrix
@@ -1174,6 +1181,8 @@ pub struct GpuSkinSample {
     pub weights: Vec<[f32; 4]>,
     pub matrices: Vec<bevy::math::Mat4>,
     pub(crate) normal_corrections: Vec<bevy::math::Mat3>,
+    /// Unweighted points, each sent to the mesh origin by its own palette entry.
+    pub(crate) collapsed_points: usize,
 }
 
 pub fn gpu_skin_sample(
@@ -1212,7 +1221,7 @@ pub(crate) fn gpu_skin_sample_with_mesh(
         .pose_transforms(time)?
         .ok_or_else(|| anyhow::anyhow!("missing skeleton bind pose"))?;
     let geom_bind_transform = skin.skinning.geom_bind_transform(at)?;
-    let matrices: Vec<_> = skin
+    let mut matrices: Vec<_> = skin
         .mesh_transforms(&transforms)
         .iter()
         .map(|matrix| {
@@ -1252,10 +1261,26 @@ pub(crate) fn gpu_skin_sample_with_mesh(
     let mut normal_palette = vec![None; matrices.len()];
     let flat = crate::mesh::uses_flat_normals(mesh);
     let mut previous: Option<(&[i32], &[f32], bevy::math::Mat3)> = None;
-    for (indices, weights) in indices
+    let mut collapsed_points = 0;
+    for (point, (indices, weights)) in indices
         .chunks_exact(stride)
         .zip(weights.chunks_exact(stride))
+        .enumerate()
     {
+        if !rigid && weights.iter().all(|weight| *weight == 0.0) {
+            anyhow::ensure!(
+                matrices.len() < 256,
+                "GPU joint palette must contain 1–256 joints"
+            );
+            let rest = bevy::math::Vec3::from(mesh.points[point]);
+            matrices.push(bevy::math::Mat4::from_translation(-rest));
+            packed_indices.push([(matrices.len() - 1) as u16, 0, 0, 0]);
+            packed_weights.push([1.0, 0.0, 0.0, 0.0]);
+            normal_corrections.push(bevy::math::Mat3::IDENTITY);
+            collapsed_points += 1;
+            previous = None;
+            continue;
+        }
         anyhow::ensure!(
             (weights.iter().sum::<f32>() - 1.0).abs() <= 1e-5,
             "GPU skinning requires normalized weights"
@@ -1318,6 +1343,7 @@ pub(crate) fn gpu_skin_sample_with_mesh(
         weights: packed_weights,
         matrices,
         normal_corrections,
+        collapsed_points,
     })
 }
 
@@ -2064,6 +2090,77 @@ def SkelRoot "Root"
                 }
             }
         }
+    }
+
+    #[test]
+    fn unweighted_points_collapse_identically_on_gpu_and_cpu() {
+        use bevy::math::{Mat3, Mat4, Vec3};
+        let text = r#"#usda 1.0
+def SkelRoot "Test" {
+    def Skeleton "Skel" {
+        uniform token[] joints = ["Root", "Root/Tip"]
+        uniform matrix4d[] bindTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)), ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        uniform matrix4d[] restTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)), ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        rel skel:animationSource = </Test/Anim>
+    }
+    def SkelAnimation "Anim" {
+        uniform token[] joints = ["Root", "Root/Tip"]
+        float3[] translations = [(0,0,0), (2,0,0)]
+        quatf[] rotations = [(1,0,0,0), (0.70710677,0,0,0.70710677)]
+        half3[] scales = [(1,1,1), (1,1,1)]
+    }
+    def Mesh "Bar" (prepend apiSchemas = ["SkelBindingAPI"]) {
+        rel skel:skeleton = </Test/Skel>
+        int[] primvars:skel:jointIndices = [0,1, 0,1, 0,1, 0,1] (elementSize = 2 interpolation = "vertex")
+        float[] primvars:skel:jointWeights = [1,0, 0.5,0.5, 0,0, 0,1] (elementSize = 2 interpolation = "vertex")
+        point3f[] points = [(-1,0,0), (1,0,0), (1,2,0), (-1,2,0)]
+        normal3f[] normals = [(0,0,1), (0,0,1), (0,0,1), (0,0,1)] (interpolation = "vertex")
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0,1,2,3]
+        uniform token subdivisionScheme = "none"
+    }
+}
+"#;
+        let stage = crate::UsdSource::new("collapse.usda", text.as_bytes())
+            .unwrap()
+            .open_stage()
+            .unwrap();
+        let path = openusd::sdf::path("/Test/Bar").unwrap();
+        let mesh = super::super::geom::read_mesh_at(&stage, &path, None)
+            .unwrap()
+            .unwrap();
+        let sample = gpu_skin_sample(&stage, &path, None).unwrap();
+        assert_eq!(sample.collapsed_points, 1);
+        assert_eq!(sample.matrices.len(), 3);
+        assert_eq!(sample.normal_corrections[2], Mat3::IDENTITY);
+        let cpu = cpu_skin_sample(&stage, &path, None, Some(&mesh))
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.points[2], [0.0; 3]);
+        for (point, rest) in mesh.points.iter().enumerate() {
+            let blended = (0..4).fold(Mat4::ZERO, |matrix, slot| {
+                matrix
+                    + sample.matrices[sample.indices[point][slot] as usize]
+                        * sample.weights[point][slot]
+            });
+            let gpu = blended.transform_point3(Vec3::from(*rest));
+            assert!(
+                gpu.abs_diff_eq(Vec3::from(cpu.points[point]), 1e-5),
+                "point {point}: {gpu} vs {:?}",
+                cpu.points[point]
+            );
+        }
+        let empty = MorphSample {
+            targets: Vec::new(),
+            normal_targets: Vec::new(),
+            weights: Vec::new(),
+        };
+        let (mut normals, points) = morph_normals(&mesh, &empty).unwrap();
+        cpu.normals
+            .apply(&mut normals, &points, mesh.points.len())
+            .unwrap();
+        let collapsed = points.iter().position(|&point| point == 2).unwrap();
+        assert_eq!(normals.values[collapsed], [0.0, 0.0, 1.0]);
     }
 
     #[test]

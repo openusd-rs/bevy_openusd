@@ -185,6 +185,10 @@ fn attach_prepared(
         crate::read::skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read)
     })?;
     preparation_lap(profile, "skin-sample");
+    anyhow::ensure!(
+        !has_morphs || sample.collapsed_points == 0,
+        "GPU skinning cannot collapse blend-shaped points"
+    );
     let assembly = if has_morphs {
         super::cache::Assembly::Standard
     } else {

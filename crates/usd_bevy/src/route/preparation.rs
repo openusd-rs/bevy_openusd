@@ -221,7 +221,9 @@ fn needs_deformation(ctx: &RouteCtx, world: &World, phases: &mut Option<PhaseSam
     }
     let sample = skel::gpu_skin_sample_with_mesh(ctx.stage, ctx.path, ctx.time, read);
     phase_lap(phases, "eligibility-skin-sample");
-    let needed = sample.is_err();
+    let needed = sample
+        .as_ref()
+        .map_or(true, |sample| kinds.blended && sample.collapsed_points > 0);
     *ctx.prepared_skin.borrow_mut() = Some(sample);
     needed
 }

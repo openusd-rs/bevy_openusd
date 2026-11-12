@@ -263,6 +263,35 @@ make.recipe{
 }
 
 make.recipe{
+  name = "build-downstream-gpu",
+  desc = "build and check the standalone offscreen morph consumer",
+  run = function()
+    local manifest = "benchmarks/downstream-consumer/Cargo.toml"
+    sh.cargo("fmt", "--manifest-path", manifest)
+    sh.cargo("test", "--offline", "--locked", "--manifest-path", manifest, "--target-dir", "target", "--example", "gpu_morph")
+    sh.cargo("clippy", "--offline", "--locked", "--manifest-path", manifest, "--target-dir", "target", "--example", "gpu_morph", "--", "-D", "warnings")
+    sh.cargo("build", "--offline", "--locked", "--manifest-path", manifest, "--target-dir", "target", "--example", "gpu_morph")
+  end,
+}
+
+make.recipe{
+  name = "test-downstream-gpu",
+  desc = "render the standalone morph consumer on CPU and GPU and compare",
+  params = { { "--output", desc = "new evidence directory" } },
+  deps = { "build-downstream-gpu" },
+  run = function(a)
+    assert(type(a.output) == "string", "provide --output NEW_DIRECTORY")
+    local function run(...)
+      sh.cargo("run", "--offline", "--locked", "--manifest-path", "benchmarks/downstream-consumer/Cargo.toml",
+               "--target-dir", "target", "--example", "gpu_morph", "--", ...)
+    end
+    sh.mkdir(a.output)
+    run("cpu", a.output .. "/cpu")
+    run("gpu", a.output .. "/gpu", a.output .. "/cpu")
+  end,
+}
+
+make.recipe{
   name = "metadata-downstream",
   desc = "write dependency metadata for a standalone consumer manifest",
   params = {

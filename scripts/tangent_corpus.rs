@@ -248,6 +248,30 @@ fn allocations(negative: bool) {
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args == ["--sparse-allocations"] {
+        tangent_allocations::self_test();
+        for active in [0, 1, 8, 2048] {
+            let mut mesh = expanded(grid(32, false, false), false);
+            for face in mesh.faces.iter().skip(active) {
+                for &index in face {
+                    mesh.vertices[index].uv = [0.0; 2];
+                }
+            }
+            let mut a = Original(mesh.clone());
+            let mut b = Candidate(mesh);
+            let original = tangent_allocations::measure(|| {
+                tangent_original::generate_tangents(&mut a).unwrap();
+            });
+            let candidate = tangent_allocations::measure(|| {
+                tangent_candidate::generate_tangents(&mut b).unwrap();
+            });
+            assert_eq!(a.0.written, b.0.written);
+            println!(
+                "tangent_sparse_allocations active_faces={active} total_faces=2048 original={original:?} candidate={candidate:?} scope=diagnostic-not-performance-acceptance"
+            );
+        }
+        return;
+    }
     if args == ["--retention-negative-control"] {
         let mut retained = None;
         tangent_allocations::measure(|| {

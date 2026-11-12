@@ -339,6 +339,7 @@ make.recipe{
   desc = "verify tangent allocation reductions and the counting oracle",
   run = function()
     sh.sh("-c", "target/tangent-corpus/tangent-corpus --allocations")
+    sh.sh("-c", "target/tangent-corpus/tangent-corpus --sparse-allocations")
     sh.sh("-c", [[
 target/tangent-corpus/tangent-corpus --allocation-negative-control > target/tangent-corpus/allocation-negative-control.log 2>&1
 status=$?

@@ -76,6 +76,21 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Streamed tangent groups pass resource checks but miss elapsed acceptance:**
+  an isolated replacement processes one completed group at a time. The corpus
+  matches 3,474 cases and 11,729,458 geometry callbacks in order; sparse-UV
+  allocation checks now match or improve the original. Strict dependency lint,
+  no-std compilation and the same 743 release library tests in both dependency
+  configurations pass (25 ignored). Eight real-asset processes preserve all
+  output digests and work counts across 22,876 jobs. Process-memory bounds pass
+  (cow -0.75%, bird +0.90%), but the cow kernel improves only 4.31%, below the
+  unchanged 5% target. The [streaming report](benchmarks/tangent-streamed-groups.md)
+  retains the failed compile, failed elapsed gate and negative controls. The
+  next candidate must address repeated subgroup work without discarding the
+  verified callback-order contract; the older projection patch changes normal
+  callback counts and cannot be copied in unchanged. Nothing is adopted or
+  rerun unchanged, and production dependencies/runtime and broader gaps remain.
+
 - **Flat tangent-group membership fails the real-asset gate:** an isolated
   MikkTSpace arena preserves output bits across 3,474 finite comparisons and
   22,876 real tangent jobs. Both release dependency configurations pass the

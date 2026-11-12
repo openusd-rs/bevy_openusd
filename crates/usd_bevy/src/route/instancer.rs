@@ -14,7 +14,7 @@ use openusd_schemas::geom::PointInstancerSchema;
 
 use super::{PrimRoute, RouteCtx};
 use crate::read::geom::{ReadPointInstancer, read_point_instancer_at};
-use openusd::sdf::Value;
+use openusd::vt::Value;
 use openusd_schemas::geom::PointInstancer;
 
 /// Instance IDs masked by composed metadata or sampled visibility.
@@ -25,10 +25,10 @@ fn masked_ids(ctx: &RouteCtx) -> Result<bevy::platform::collections::HashSet<i64
         .prim(ctx.path.clone())
         .map_err(|error| error.to_string())?;
     match prim
-        .get_metadata::<Value>("inactiveIds")
+        .metadata::<Value>("inactiveIds")
         .map_err(|error| error.to_string())?
     {
-        Some(Value::Int64ListOp(op)) if op.explicit => set.extend(op.explicit_items),
+        Some(Value::Int64ListOp(op)) if op.is_explicit() => set.extend(op.explicit_items()),
         None => {}
         _ => return Err("invalid composed inactiveIds metadata".into()),
     }
@@ -171,15 +171,29 @@ impl PointInstancerRoute {
     /// Despawn instance children this route spawned on a previous project, so a
     /// reproject doesn't stack duplicate batches.
     fn clear_instances(world: &mut World, entity: Entity) {
-        let existing: Vec<Entity> = world
+        let (owned, retained): (Vec<Entity>, Vec<Entity>) = world
             .get::<Children>(entity)
-            .map(|c| c.iter().collect())
-            .unwrap_or_default();
-        for child in existing {
-            if world.get::<UsdInstance>(child).is_some() {
-                world.entity_mut(child).despawn();
-            }
+            .into_iter()
+            .flat_map(|children| children.iter())
+            .partition(|child| world.get::<UsdInstance>(*child).is_some());
+        if owned.is_empty() {
+            return;
         }
+        world.entity_mut(entity).replace_children(&retained);
+        for child in owned {
+            world.despawn(child);
+        }
+    }
+}
+
+fn replace_child_order(world: &mut World, parent: Entity, children: &[Entity]) {
+    if !world
+        .get::<Children>(parent)
+        .into_iter()
+        .flat_map(|children| children.iter())
+        .eq(children.iter().copied())
+    {
+        world.entity_mut(parent).replace_children(children);
     }
 }
 
@@ -291,6 +305,18 @@ impl PrimRoute for PointInstancerRoute {
                 Some((world.get::<UsdInstanceId>(child)?.0, child))
             })
             .collect();
+        let mut ordered: Vec<_> = world
+            .get::<Children>(entity)
+            .into_iter()
+            .flat_map(|children| children.iter())
+            .filter(|child| {
+                world
+                    .get::<UsdInstanceId>(*child)
+                    .and_then(|id| existing.get(&id.0))
+                    != Some(child)
+            })
+            .collect();
+        ordered.reserve(read.positions.len());
 
         let have_assets = world.get_resource::<Assets<Mesh>>().is_some()
             && world.get_resource::<Assets<StandardMaterial>>().is_some();
@@ -325,13 +351,13 @@ impl PrimRoute for PointInstancerRoute {
             } else {
                 Visibility::default()
             };
-            e.insert((
-                UsdInstance,
-                UsdInstanceId(id),
-                xf,
-                visibility,
-                ChildOf(entity),
-            ));
+            let components = (UsdInstance, UsdInstanceId(id), xf, visibility);
+            if e.get::<ChildOf>().map(ChildOf::parent) != Some(entity) {
+                e.insert((components, ChildOf(entity)));
+            } else {
+                e.insert(components);
+            }
+            ordered.push(child);
             match handles {
                 Some(Prototype::Hierarchy(parts)) => {
                     apply_handles(ctx, world, child, None);
@@ -372,6 +398,7 @@ impl PrimRoute for PointInstancerRoute {
                 super::profiling::ecs_snapshot(world, "instancer-spawn-progress");
             }
         }
+        replace_child_order(world, entity, &ordered);
         for child in existing.into_values() {
             world.despawn(child);
         }
@@ -875,6 +902,10 @@ fn bake_mesh(
 }
 
 #[cfg(test)]
+#[path = "instancer_parenting_tests.rs"]
+mod parenting_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn instance_id_validation_preserves_implicit_and_explicit_identity() {
@@ -895,8 +926,8 @@ mod tests {
     use super::*;
     use crate::live::{LiveStage, PrimEntities, project_stage};
     use crate::route::SchemaRegistry;
-    use openusd::sdf::Value;
     use openusd::usd::Stage;
+    use openusd::vt::Value;
 
     #[test]
     fn affine_mesh_prototypes_match_explicit_points_and_share_subsets() {
@@ -1016,7 +1047,7 @@ mod tests {
             .is_none()
         );
         assert!(hierarchy_transform(Mat4::from_scale(Vec3::new(0.0, 1.0, 1.0))).is_none());
-        assert!(hierarchy_transform(Mat4::perspective_rh(1.0, 1.0, 0.1, 10.0)).is_none());
+        assert!(hierarchy_transform(bevy::math::proj::perspective(1.0, 1.0, 0.1, 10.0)).is_none());
         assert!(hierarchy_transform(Mat4::from_cols_array(&[f32::NAN; 16])).is_none());
     }
 
@@ -1037,6 +1068,7 @@ mod tests {
         ));
         app.init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -1054,6 +1086,10 @@ mod tests {
         });
         app.update();
         let parents = roots.map(|root| {
+            assert_eq!(
+                app.world().get::<crate::UsdSceneState>(root),
+                Some(&crate::UsdSceneState::Ready)
+            );
             app.world()
                 .get_non_send::<UsdInstances>()
                 .unwrap()
@@ -1222,7 +1258,8 @@ mod tests {
             app.add_plugins(bevy::transform::TransformPlugin);
         }
         app.init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<StandardMaterial>>();
+            .init_resource::<Assets<StandardMaterial>>()
+            .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -1425,6 +1462,7 @@ mod tests {
             ));
             app.init_resource::<Assets<Mesh>>();
             app.init_resource::<Assets<StandardMaterial>>();
+            app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
             let handle = app
                 .world_mut()
                 .resource_mut::<Assets<crate::UsdScene>>()
@@ -1448,6 +1486,10 @@ mod tests {
                 .id();
             app.update();
             let entities = |world: &World, root| {
+                assert_eq!(
+                    world.get::<crate::UsdSceneState>(root),
+                    Some(&crate::UsdSceneState::Ready)
+                );
                 let instances = world.get_non_send::<UsdInstances>().unwrap();
                 let ordinary = instances.entity(root, path).unwrap();
                 let pi = instances.entity(root, "/PI").unwrap();
@@ -1657,6 +1699,7 @@ def PointInstancer "PI" {
         ));
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -1915,7 +1958,7 @@ def Scope "Proto" {}
                 .map(|point| Vec3::from_array(*point))
                 .sum::<Vec3>()
                 / mesh.points.len() as f32;
-            for triangle in mesh.face_vertex_indices.chunks_exact(3) {
+            for triangle in mesh.face_vertex_indices.as_chunks::<3>().0 {
                 let a = Vec3::from_array(mesh.points[triangle[0] as usize]);
                 let b = Vec3::from_array(mesh.points[triangle[1] as usize]);
                 let c = Vec3::from_array(mesh.points[triangle[2] as usize]);
@@ -2162,7 +2205,7 @@ def Material "Mat" {
         world.init_resource::<Assets<Image>>();
         let image = world.resource_mut::<Assets<Image>>().add(Image::default());
         let material_path = openusd::sdf::path("/Mat").unwrap();
-        let read = crate::read::shade::read_preview_material(&stage, &material_path)
+        let read = crate::read::shade::read_preview_material(stage, &material_path)
             .unwrap()
             .unwrap();
         let mut textures = crate::asset::SnapshotTextures::default();
@@ -2200,7 +2243,7 @@ def Material "Mat" {
         assert!(material.double_sided);
         assert!(material.cull_mode.is_none());
         crate::authoring::set_attribute(
-            &stage,
+            stage,
             "/Mat/Surface",
             "inputs:metallic",
             "float",
@@ -2235,7 +2278,7 @@ def Material "Mat" {
             0.3
         );
         crate::authoring::set_attribute(
-            &stage,
+            stage,
             "/Group/Proto",
             "points",
             "point3f[]",
@@ -2259,7 +2302,7 @@ def Material "Mat" {
         };
         assert!(positions.iter().any(|position| position[0] == 4.0));
         crate::authoring::set_relationship_targets(
-            &stage,
+            stage,
             "/Group",
             "material:binding",
             &[openusd::sdf::path("/Missing").unwrap()],
@@ -2275,7 +2318,7 @@ def Material "Mat" {
                     .contains("unsupported material surface")
             );
         }
-        crate::authoring::set_relationship_targets(&stage, "/Group", "material:binding", &[])
+        crate::authoring::set_relationship_targets(stage, "/Group", "material:binding", &[])
             .unwrap();
         crate::live::apply_changes(&mut world, &live, &mut map);
         assert!(
@@ -2296,8 +2339,13 @@ def Material "Mat" {
 
     #[test]
     fn inactive_ids_compose_and_preserve_masked_children() {
+        let virtual_root = std::path::absolute("virtual/masks/root.usda").unwrap();
+        let weak = virtual_root
+            .with_file_name("weak.usda")
+            .to_string_lossy()
+            .into_owned();
         let mut source = crate::UsdSource::snapshot(
-            std::path::Path::new("/virtual/masks/root.usda"),
+            &virtual_root,
             br#"#usda 1.0
 ( subLayers = [@weak.usda@] )
 over "PI" {}
@@ -2306,7 +2354,7 @@ over "PI" {}
         )
         .unwrap();
         source.insert_dependency(
-            "/virtual/masks/weak.usda".into(),
+            weak.clone(),
             br#"#usda 1.0
 def PointInstancer "PI" {
     point3f[] positions = [(1,0,0), (2,0,0), (3,0,0)]
@@ -2320,9 +2368,7 @@ def PointInstancer "PI" {
         let live = LiveStage::new(source.open_stage().unwrap());
         let root = live.stage.edit_target().clone();
         live.stage
-            .set_edit_target(openusd::usd::EditTarget::for_layer(
-                "/virtual/masks/weak.usda",
-            ))
+            .set_edit_target(openusd::usd::EditTarget::for_layer(&weak))
             .unwrap();
         live.stage
             .prim("/PI")
@@ -2334,7 +2380,7 @@ def PointInstancer "PI" {
             .unwrap();
         live.stage.set_edit_target(root).unwrap();
         let mut operation = openusd::sdf::ListOp::prepended(vec![20]);
-        operation.deleted_items = vec![10];
+        operation.set_items(openusd::sdf::ListOpType::Deleted, [10]);
         live.stage
             .prim("/PI")
             .unwrap()

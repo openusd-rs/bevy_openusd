@@ -1,0 +1,115 @@
+diff --git a/src/mikktspace.rs b/src/mikktspace.rs
+index d8e265c..3b216f7 100644
+--- a/src/mikktspace.rs
++++ b/src/mikktspace.rs
+@@ -588,6 +588,8 @@ fn generate_tangent_spaces<I: Geometry<O>, O: Ops>(
+     let mut tangent_spaces: Vec<Option<TangentSpace<O>>> = vec![None; tangent_spaces_total];
+     let mut sub_group_tangent_spaces = Vec::<RawTangentSpace<O>>::new();
+     let mut unified_sub_groups = Vec::<Vec<usize>>::new();
++    let mut projected = Vec::<(Vec3<O>, Vec3<O>)>::new();
++    let mut tmp_group = Vec::<usize>::new();
+     let found = build_4_rule_groups(
+         triangle_info_list,
+         triangle_vertex_list,
+@@ -599,8 +601,17 @@ fn generate_tangent_spaces<I: Geometry<O>, O: Ops>(
+             if unified_sub_groups.capacity() < group.face_indices.len() {
+                 unified_sub_groups.reserve_exact(group.face_indices.len());
+             }
++            projected.clear();
++            tmp_group.clear();
++            if projected.capacity() < group.face_indices.len() {
++                projected.reserve_exact(group.face_indices.len());
++            }
++            if tmp_group.capacity() < group.face_indices.len() {
++                tmp_group.reserve_exact(group.face_indices.len());
++            }
++            let mut projected_normal = None;
+             // triangles
+-            for &f in group.face_indices.iter() {
++            for (position, &f) in group.face_indices.iter().enumerate() {
+                 let a = &triangle_info_list[f];
+ 
+                 // triangle number
+@@ -616,38 +627,48 @@ fn generate_tangent_spaces<I: Geometry<O>, O: Ops>(
+                 // is normalized already
+                 let n = get_normal_from_index(context, vertex_index);
+ 
+-                // project
+-                let s_a = (a.tangent.s - ((n.dot(a.tangent.s)) * n)).normalized_or_zero();
+-                let t_a = (a.tangent.t - ((n.dot(a.tangent.t)) * n)).normalized_or_zero();
++                let normal_bits = [n.x.to_bits(), n.y.to_bits(), n.z.to_bits()];
++                if projected_normal != Some(normal_bits) {
++                    projected.clear();
++                    projected.extend(group.face_indices.iter().map(|&face| {
++                        let tangent = &triangle_info_list[face].tangent;
++                        (
++                            (tangent.s - ((n.dot(tangent.s)) * n)).normalized_or_zero(),
++                            (tangent.t - ((n.dot(tangent.t)) * n)).normalized_or_zero(),
++                        )
++                    }));
++                    projected_normal = Some(normal_bits);
++                }
++                let (s_a, t_a) = projected[position];
+ 
+-                let mut tmp_group = group
+-                    .face_indices
+-                    .iter()
+-                    .copied()
+-                    .filter(|&t| {
+-                        let b = &triangle_info_list[t];
++                tmp_group.clear();
++                tmp_group.extend(
++                    group
++                        .face_indices
++                        .iter()
++                        .copied()
++                        .enumerate()
++                        .filter(|&(position, t)| {
++                            let b = &triangle_info_list[t];
+ 
+-                        let meets_threshold = {
+-                            // project
+-                            let s_b =
+-                                (b.tangent.s - ((n.dot(b.tangent.s)) * n)).normalized_or_zero();
+-                            let t_b =
+-                                (b.tangent.t - ((n.dot(b.tangent.t)) * n)).normalized_or_zero();
++                            let meets_threshold = {
++                                let (s_b, t_b) = projected[position];
+ 
+-                            let s_cos = s_a.dot(s_b);
+-                            let t_cos = t_a.dot(t_b);
++                                let s_cos = s_a.dot(s_b);
++                                let t_cos = t_a.dot(t_b);
+ 
+-                            s_cos > linear_threshold && t_cos > linear_threshold
+-                        };
++                                s_cos > linear_threshold && t_cos > linear_threshold
++                            };
+ 
+-                        let any = a.group_with_any || b.group_with_any;
++                            let any = a.group_with_any || b.group_with_any;
+ 
+-                        // make sure triangles which belong to the same quad are joined.
+-                        let same_original_face = a.original_face_index == b.original_face_index;
++                            // make sure triangles which belong to the same quad are joined.
++                            let same_original_face = a.original_face_index == b.original_face_index;
+ 
+-                        any || same_original_face || meets_threshold
+-                    })
+-                    .collect::<Vec<_>>();
++                            any || same_original_face || meets_threshold
++                        })
++                        .map(|(_, t)| t),
++                );
+ 
+                 // sort pTmpMembers
+                 tmp_group.sort_unstable();
+@@ -666,7 +687,7 @@ fn generate_tangent_spaces<I: Geometry<O>, O: Ops>(
+                             context,
+                             group.vertex_representative,
+                         ));
+-                        unified_sub_groups.push(tmp_group);
++                        unified_sub_groups.push(tmp_group.clone());
+                         l
+                     });
+ 

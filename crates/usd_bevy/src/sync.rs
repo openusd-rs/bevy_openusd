@@ -16,8 +16,8 @@ use bevy::ecs::reflect::{AppTypeRegistry, ReflectComponent};
 use bevy::prelude::*;
 use bevy::reflect::enums::VariantType;
 use bevy::reflect::{PartialReflect, ReflectRef, TypeRegistry};
-use openusd::sdf::Value;
 use openusd::usd::Stage;
+use openusd::vt::Value;
 
 type Result<T> = anyhow::Result<T>;
 
@@ -354,7 +354,7 @@ fn component_type_segment(
         "component type `{}` has no unambiguous USD type segment",
         names.path()
     );
-    openusd::sdf::path("/Type")?.append_property(&format!("bevy:{qualified}:field"))?;
+    openusd::sdf::path("/Type")?.append_property(format!("bevy:{qualified}:field"))?;
     Ok(qualified)
 }
 
@@ -427,7 +427,7 @@ pub(crate) fn component_value_overrides<T: Component + Reflect + TypePath>(
 ) -> Result<Vec<crate::instance::UsdAttributeOverride>> {
     let prim = openusd::sdf::path(prim_path)?;
     anyhow::ensure!(
-        prim.is_prim_path() && prim.as_str() != "/",
+        prim.is_prim() && prim.as_str() != "/",
         "component owner must be a non-root prim path"
     );
     let registration = registry
@@ -466,7 +466,7 @@ fn write_component_opinions(
 ) -> Result<Vec<String>> {
     let prim = openusd::sdf::path(prim_path)?;
     anyhow::ensure!(
-        prim.is_prim_path() && prim.as_str() != "/" && stage.prim(&prim)?.is_valid()?,
+        prim.is_prim() && prim.as_str() != "/" && stage.prim(&prim)?.is_valid()?,
         "component owner must be an existing prim"
     );
     let owner = stage.prim(&prim)?;
@@ -1265,6 +1265,7 @@ def Xform "Instance" (instanceable = true references = </Model>) {}
             stage
                 .layer(&layer)
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap()
                 .contains("bevy:Health:current")
@@ -1297,7 +1298,12 @@ def Xform "Instance" (instanceable = true references = </Model>) {}
             .into_iter()
             .find(|path| path.ends_with("weak.usda"))
             .unwrap();
-        let weak_before = stage.layer(&weak).unwrap().export_to_string().unwrap();
+        let weak_before = stage
+            .layer(&weak)
+            .unwrap()
+            .unwrap()
+            .export_to_string()
+            .unwrap();
         let target = stage
             .layer_identifiers()
             .into_iter()
@@ -1329,6 +1335,7 @@ def Xform "Instance" (instanceable = true references = </Model>) {}
             live.stage
                 .layer(&target)
                 .unwrap()
+                .unwrap()
                 .export_to_string()
                 .unwrap()
                 .contains("bevy:Health")
@@ -1338,7 +1345,12 @@ def Xform "Instance" (instanceable = true references = </Model>) {}
             root_before
         );
         assert_eq!(
-            live.stage.layer(&weak).unwrap().export_to_string().unwrap(),
+            live.stage
+                .layer(&weak)
+                .unwrap()
+                .unwrap()
+                .export_to_string()
+                .unwrap(),
             weak_before
         );
         crate::authoring::clear_attribute(&live.stage, "/Enemy", &names[0]).unwrap();

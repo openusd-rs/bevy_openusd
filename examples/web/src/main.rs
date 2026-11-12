@@ -109,6 +109,7 @@ fn setup(
 ) {
     commands.spawn((
         Camera3d::default(),
+        bevy::pbr::ScreenSpaceTransmission::default(),
         Transform::default(),
         Orbit {
             yaw: 0.0,

@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "usd-downstream-consumer"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[features]
+file_watcher = ["usd_bevy/file_watcher"]
+skeleton_overlay = ["usd_bevy/skeleton_overlay"]
+physics_overlay = ["usd_bevy/physics_overlay"]
+
+[dependencies]
+bevy = { version = "=0.20.1", default-features = false, features = ["std", "async_executor", "multi_threaded"] }
+usd_bevy = { path = "../../crates/usd_bevy" }
+
+[patch.crates-io]
+bevy_asset = { path = "../../vendor/bevy_asset" }
+bevy_pbr = { path = "../../vendor/bevy_pbr" }

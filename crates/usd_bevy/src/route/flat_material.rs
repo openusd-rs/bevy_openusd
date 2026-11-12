@@ -9,25 +9,25 @@ pub struct FlatNormals {}
 
 impl MaterialExtension for FlatNormals {
     fn fragment_shader() -> ShaderRef {
-        "embedded://usd_bevy/route/flat_material.wgsl".into()
+        "embedded://usd_bevy/route/flat_material.wesl".into()
     }
     fn deferred_fragment_shader() -> ShaderRef {
         Self::fragment_shader()
     }
     fn prepass_fragment_shader() -> ShaderRef {
-        "embedded://usd_bevy/route/flat_prepass.wgsl".into()
+        "embedded://usd_bevy/route/flat_prepass.wesl".into()
     }
 }
 
 pub type FlatMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, FlatNormals>;
 
 pub(crate) fn configure(app: &mut App) {
-    if !super::wrapped::configure::<FlatNormals>(app) {
-        return;
-    }
-    bevy::asset::embedded_asset!(app, "flat_material.wgsl");
-    bevy::asset::embedded_asset!(app, "flat_prepass.wgsl");
-    bevy::asset::embedded_asset!(app, "flat_functions.wgsl");
+    super::wrapped::configure::<FlatNormals>(app, |app| {
+        bevy::asset::embedded_asset!(app, "flat_material.wesl");
+        bevy::asset::embedded_asset!(app, "flat_prepass.wesl");
+        bevy::asset::embedded_asset!(app, "flat_functions.wesl");
+        super::shaders::retain(app, "embedded://usd_bevy/route/flat_functions.wesl");
+    });
 }
 
 pub(crate) fn clear(world: &mut World, entity: Entity) {

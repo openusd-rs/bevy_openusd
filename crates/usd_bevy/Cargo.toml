@@ -2,6 +2,7 @@
 name = "usd_bevy"
 version = "0.0.1"
 edition = "2024"
+rust-version = "1.97.1"
 license = "MIT"
 description = "Live OpenUSD editor for Bevy: stage projection, change-driven sync, authoring, persistence."
 repository = "https://github.com/bresilla/bevy_openusd"
@@ -14,8 +15,8 @@ physics_overlay = ["bevy/bevy_gizmos"]
 [dependencies]
 async-channel = { version = "2", optional = true }
 usd_macro = { path = "../usd_macro" }
-openusd = { path = "../../vendor/openusd/crates/openusd" }
-openusd-schemas = { path = "../../vendor/openusd/crates/openusd-schemas", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
+openusd = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
 glam = "0.30"
 anyhow = "1"
 blake3 = "1"
@@ -26,7 +27,7 @@ miniz_oxide = "0.8"
 log = "0.4"
 tempfile = "3"
 zip = { version = "8.2.0", default-features = false, features = ["deflate"] }
-bevy = { version = "0.19.1", default-features = false, features = [
+bevy = { version = "0.20.1", default-features = false, features = [
     "std",
     "bevy_asset",
     "bevy_log",
@@ -44,7 +45,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "exr",
     "reflect_auto_register",
 ] }
-bevy_pbr = { version = "0.19.1", default-features = false, features = ["pbr_multi_layer_material_textures"] }
+bevy_pbr = { version = "0.20.1", default-features = false, features = ["pbr_multi_layer_material_textures"] }
 
 [dev-dependencies]
 png = "0.18"

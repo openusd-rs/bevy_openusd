@@ -6,8 +6,10 @@ use bevy::prelude::*;
 use openusd::usd::Stage;
 
 use crate::asset::SnapshotTextures;
-use crate::live::{AnimatedPrims, LiveStage, PrimEntities, apply_changes, prim_is_animated};
+use crate::live::{AnimatedPrims, LiveStage, PrimEntities, apply_changes};
 use crate::route::{SchemaRegistry, StageTime};
+
+mod animation;
 
 /// An attribute opinion reapplied after source reloads.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,7 +17,7 @@ pub struct UsdAttributeOverride {
     pub prim: String,
     pub name: String,
     pub type_name: String,
-    pub value: openusd::sdf::Value,
+    pub value: openusd::vt::Value,
 }
 
 /// Root-local opinions applied in order: variants, then attributes.
@@ -133,6 +135,17 @@ pub struct UsdInstances {
     pub(crate) roots: HashMap<Entity, InstanceRuntime>,
 }
 
+/// Opt-in asset-root animation timings; classification is included in total time.
+#[derive(Resource, Default)]
+pub struct UsdInstanceAnimationTiming {
+    pub updates: u64,
+    pub classified: u64,
+    pub reused: u64,
+    pub animated: u64,
+    pub classification: std::time::Duration,
+    pub total: std::time::Duration,
+}
+
 impl UsdInstances {
     pub fn stage(&self, root: Entity) -> Option<&Stage> {
         self.roots.get(&root).map(|runtime| &runtime.live.stage)
@@ -176,6 +189,7 @@ pub(crate) struct InstanceRuntime {
     pub map: PrimEntities,
     pub textures: SnapshotTextures,
     pub sampled: f64,
+    pub animation: animation::AnimationCache,
     pub purposes: crate::route::DisplayPurposes,
     pub defer_hidden: bool,
     /// The projection still running for this root, spread over frames.
@@ -197,6 +211,122 @@ pub(crate) struct InstanceRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_timing_is_optional_and_counts_only_changed_root_clocks() {
+        let source = crate::UsdSource::new(
+            "instance-animation-timing.usda",
+            br#"#usda 1.0
+def Xform "Fixed" {}
+def Xform "Mover" {
+    double3 xformOp:translate.timeSamples = {0: (0,0,0), 10: (10,0,0)}
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+"#
+            .to_vec(),
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source,
+                textures: default(),
+            });
+        let roots = [0, 1].map(|_| {
+            app.world_mut()
+                .spawn((
+                    crate::UsdSceneRoot(handle.clone()),
+                    UsdInstanceTime::default(),
+                ))
+                .id()
+        });
+        for _ in 0..8 {
+            app.update();
+            if roots.iter().all(|root| {
+                app.world().get::<crate::asset::UsdSceneState>(*root)
+                    == Some(&crate::asset::UsdSceneState::Ready)
+            }) {
+                break;
+            }
+        }
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready),
+            );
+        }
+        app.world_mut()
+            .get_mut::<UsdInstanceTime>(roots[0])
+            .unwrap()
+            .current = 2.0;
+        app.update();
+        assert!(
+            !app.world()
+                .contains_resource::<UsdInstanceAnimationTiming>()
+        );
+        app.init_resource::<UsdInstanceAnimationTiming>();
+        for (root, clock) in roots.into_iter().zip([4.0, 7.0]) {
+            app.world_mut()
+                .get_mut::<UsdInstanceTime>(root)
+                .unwrap()
+                .current = clock;
+        }
+        app.update();
+        let timing = app.world().resource::<UsdInstanceAnimationTiming>();
+        assert_eq!(
+            (
+                timing.updates,
+                timing.classified,
+                timing.reused,
+                timing.animated
+            ),
+            (2, 2, 2, 2)
+        );
+        assert!(timing.total >= timing.classification);
+        for (root, clock) in roots.into_iter().zip([4.0, 7.0]) {
+            let mover = app
+                .world()
+                .get_non_send::<UsdInstances>()
+                .unwrap()
+                .entity(root, "/Mover")
+                .unwrap();
+            assert_eq!(
+                app.world().get::<Transform>(mover).unwrap().translation.x,
+                clock
+            );
+        }
+        app.update();
+        assert_eq!(
+            app.world().resource::<UsdInstanceAnimationTiming>().updates,
+            2
+        );
+        app.world_mut()
+            .get_mut::<UsdInstanceTime>(roots[0])
+            .unwrap()
+            .current = 5.0;
+        app.update();
+        let timing = app.world().resource::<UsdInstanceAnimationTiming>();
+        assert_eq!(
+            (
+                timing.updates,
+                timing.classified,
+                timing.reused,
+                timing.animated
+            ),
+            (3, 2, 4, 3)
+        );
+    }
 
     #[test]
     fn inherited_normals_stay_independent_across_roots_and_prototypes() {
@@ -253,7 +383,14 @@ def PointInstancer "PI" {{
                 ))
                 .id()
         });
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         app.update();
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready),
+            );
+        }
         let lookup = |world: &World, root, path| {
             world
                 .get_non_send::<UsdInstances>()
@@ -341,7 +478,7 @@ def PointInstancer "PI" {{
             .attribute("/Root.primvars:normals")
             .unwrap()
             .set_at(
-                openusd::sdf::Value::Vec3fVec(vec![openusd::gf::Vec3f::from([0.0, 1.0, 0.0])]),
+                openusd::vt::Value::Vec3fVec(vec![openusd::gf::Vec3f::from([0.0, 1.0, 0.0])]),
                 openusd::usd::TimeCode::new(0.0),
             )
             .unwrap();
@@ -351,7 +488,7 @@ def PointInstancer "PI" {{
         stage
             .create_attribute("/Root/M.primvars:normals", "normal3f[]")
             .unwrap()
-            .set(openusd::sdf::Value::Vec3fVec(vec![
+            .set(openusd::vt::Value::Vec3fVec(vec![
                 openusd::gf::Vec3f::from([0.0, 0.0, -1.0]),
             ]))
             .unwrap();
@@ -386,7 +523,7 @@ def PointInstancer "PI" {{
                 prim: "/Prim".into(),
                 name: "custom".into(),
                 type_name: "int".into(),
-                value: openusd::sdf::Value::Int(7),
+                value: openusd::vt::Value::Int(7),
             }],
         };
         let before = overrides.clone();
@@ -449,6 +586,7 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
         .map_or(0.0, Time::delta_secs_f64);
     let subdivision_levels = crate::route::subdivision::current_levels(world);
     let curve_steps = crate::route::curves::current_geometry_key(world);
+    let revealed = crate::route::residency::revealed(world);
     let mut roots: Vec<_> = instances.roots.keys().copied().collect();
     roots.sort_unstable();
     if let Some(last) = world
@@ -485,6 +623,9 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
             runtime.defer_hidden = defer_hidden;
         }
         apply_changes(world, &runtime.live, &mut runtime.map);
+        if revealed {
+            crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);
+        }
         let purposes = world
             .get_resource::<crate::route::DisplayPurposes>()
             .copied()
@@ -508,14 +649,73 @@ pub(crate) fn tick(world: &mut World, instances: &mut UsdInstances) {
             runtime.curve_steps = curve_steps;
         }
         if current != runtime.sampled {
+            let started = world
+                .contains_resource::<UsdInstanceAnimationTiming>()
+                .then(bevy::platform::time::Instant::now);
+            let mut classified = 0;
+            let mut reused = 0;
+            let mut animated = 0;
+            let mut classification = std::time::Duration::ZERO;
             let registry = world.resource::<SchemaRegistry>().clone();
-            for (path, entity) in runtime.map.iter() {
-                let Ok(path) = openusd::sdf::path(path) else {
-                    continue;
-                };
-                if path.as_str() != "/" && prim_is_animated(&runtime.live.stage, &path) {
-                    registry.patch_prim(&runtime.live.stage, &path, world, entity, &[]);
+            let cacheable = registry.is_builtin_only();
+            registry.with_materials(world, &runtime.live, |world| {
+                if !cacheable {
+                    let prims = runtime.map.iter().filter_map(|(path, entity)| {
+                        let path = openusd::sdf::path(path).ok()?;
+                        if path.as_str() == "/" {
+                            return None;
+                        }
+                        let begin = started.map(|_| bevy::platform::time::Instant::now());
+                        let (sample, cached) =
+                            runtime.animation.sample(&runtime.live, &path, false);
+                        if let Some(begin) = begin {
+                            classified += u64::from(!cached);
+                            reused += u64::from(cached);
+                            animated += u64::from(sample.animated);
+                            classification += begin.elapsed();
+                        }
+                        sample.animated.then_some((path, entity))
+                    });
+                    registry.patch_animation(&runtime.live.stage, prims, world);
+                    return;
                 }
+                let begin = started.map(|_| bevy::platform::time::Instant::now());
+                let mut counts = [0; 2];
+                runtime.animation.begin(&runtime.live, true);
+                let prims = runtime.animation.animated_prims(
+                    &runtime.live.stage,
+                    &runtime.map,
+                    &mut counts,
+                );
+                if let Some(begin) = begin {
+                    classified += counts[0];
+                    reused += counts[1];
+                    animated += prims.len() as u64;
+                    classification += begin.elapsed();
+                }
+                for (_, entity, deformation_only) in &prims {
+                    let Ok(mut entity) = world.get_entity_mut(*entity) else {
+                        continue;
+                    };
+                    let marked = entity.contains::<crate::live::DeformationOnlyAnimation>();
+                    if *deformation_only && !marked {
+                        entity.insert(crate::live::DeformationOnlyAnimation);
+                    } else if !*deformation_only && marked {
+                        entity.remove::<crate::live::DeformationOnlyAnimation>();
+                    }
+                }
+                let prims = prims.into_iter().map(|(path, entity, _)| (path, entity));
+                registry.patch_animation(&runtime.live.stage, prims, world);
+            });
+            if let Some(started) = started {
+                let elapsed = started.elapsed();
+                let mut timing = world.resource_mut::<UsdInstanceAnimationTiming>();
+                timing.updates += 1;
+                timing.classified += classified;
+                timing.reused += reused;
+                timing.animated += animated;
+                timing.classification += classification;
+                timing.total += elapsed;
             }
             runtime.sampled = current;
             crate::route::residency::materialize(world, &runtime.live.stage, &runtime.map);

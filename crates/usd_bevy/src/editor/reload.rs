@@ -5,7 +5,7 @@ use bevy::platform::time::Instant;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 #[derive(Resource, Default, Debug)]
@@ -29,11 +29,12 @@ impl Default for EditorReloadSettings {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Resource, Default)]
 pub(super) struct WatchState {
     document: Option<u64>,
     next: Option<Instant>,
-    observed: BTreeMap<PathBuf, Option<(SystemTime, u64)>>,
+    observed: BTreeMap<PathBuf, Option<(std::time::SystemTime, u64)>>,
     pending: BTreeSet<PathBuf>,
     retry: Option<Instant>,
     revision: u64,
@@ -44,16 +45,17 @@ fn outer_path(id: &str) -> PathBuf {
         .map_or_else(|| PathBuf::from(id), |(outer, _)| PathBuf::from(outer))
 }
 
-fn layer_files(stage: &Stage) -> BTreeSet<PathBuf> {
-    stage
-        .layer_identifiers()
-        .into_iter()
-        .filter_map(|id| {
-            let layer = stage.layer(&id)?;
-            let path = outer_path(layer.resolved_path()?);
-            Some(crate::persistence::destination_identity(&path).unwrap_or(path))
-        })
-        .collect()
+fn layer_files(stage: &Stage) -> anyhow::Result<BTreeSet<PathBuf>> {
+    let mut paths = BTreeSet::new();
+    for id in stage.layer_identifiers() {
+        if let Some(layer) = stage.layer(&id)?
+            && let Some(path) = layer.resolved_path()
+        {
+            let path = outer_path(path);
+            paths.insert(crate::persistence::destination_identity(&path).unwrap_or(path));
+        }
+    }
+    Ok(paths)
 }
 
 fn changed_file(
@@ -70,6 +72,7 @@ fn changed_file(
     Ok((baseline != Some(&hash)).then_some((bytes, hash)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn watch(
     session: Option<NonSend<EditorSession>>,
     textures: Option<Res<EditorTextureRequests>>,
@@ -112,7 +115,13 @@ pub(super) fn watch(
     if editor.save_state.borrow().disk.is_none() {
         return;
     }
-    let mut paths = layer_files(editor.stage());
+    let mut paths = match layer_files(editor.stage()) {
+        Ok(paths) => paths,
+        Err(error) => {
+            status.error = Some(format!("cannot inspect reload layers: {error:#}"));
+            return;
+        }
+    };
     if let Some(textures) = textures {
         paths.extend(
             textures
@@ -191,7 +200,7 @@ impl EditorSession {
             );
         }
         let started = profiled.then(Instant::now);
-        let layers = layer_files(self.stage());
+        let layers = layer_files(self.stage())?;
         let mut watched = layers.clone();
         watched.extend(old_requests.iter().map(|(path, _)| outer_path(path)));
         let mut changed = BTreeMap::new();
@@ -234,7 +243,7 @@ impl EditorSession {
         let mut accepted = BTreeSet::new();
         let mut source_bytes = BTreeMap::new();
         for id in self.stage.layer_identifiers() {
-            let Some(layer) = self.stage.layer(&id) else {
+            let Some(layer) = self.stage.layer(&id)? else {
                 continue;
             };
             let Some(path) = layer.resolved_path() else {
@@ -252,12 +261,7 @@ impl EditorSession {
                 openusd::ar::split_package_relative_path_outer(path)
             {
                 source_bytes.insert(outer, bytes.clone());
-                Arc::<[u8]>::from(openusd::ar::read_package_entry(
-                    Box::new(crate::source::SharedAsset(std::io::Cursor::new(
-                        bytes.clone(),
-                    ))),
-                    &inner,
-                )?)
+                Arc::<[u8]>::from(&*crate::source::package_entry(bytes.clone(), &inner)?)
             } else {
                 source_bytes.insert(path.to_owned(), bytes.clone());
                 bytes.clone()
@@ -307,7 +311,8 @@ impl EditorSession {
                 accepted.insert(outer);
             }
         }
-        let prepared = decode_textures(&source, changed_requests, &requests.environment_only)?;
+        let prepared =
+            decode_textures(&source, changed_requests, &requests.environment_only, None)?;
         let mut publication = TexturePublication {
             requests: requests.textures,
             prepared,
@@ -348,10 +353,11 @@ impl EditorSession {
                     .iter()
                     .map(|(path, bytes)| (path.clone(), bytes.clone())),
             );
-        if let Err(error) = self
+        let published = self
             .stage
-            .without_recording(|stage| plan.as_ref().map_or(Ok(()), |plan| plan.apply(stage)))
-        {
+            .group(|stage| plan.as_ref().map_or(Ok(()), |plan| plan.apply(stage)));
+        self.settle_layers();
+        if let Err(error) = published {
             *disk
                 .replacements
                 .lock()
@@ -362,16 +368,8 @@ impl EditorSession {
         if !replacements.is_empty() {
             let conflicts =
                 |entry: &HistoryEntry| replacements.iter().any(|(id, _)| entry.layers.contains(id));
-            let keep: Vec<_> = self
-                .undo
-                .iter()
-                .flat_map(|entry| std::iter::repeat_n(!conflicts(entry), entry.transactions))
-                .collect();
-            assert!(
-                self.stage.retain_transactions(&keep),
-                "editor transaction history is inconsistent"
-            );
-            self.undo.retain(|entry| !conflicts(entry));
+            self.stage.reset();
+            self.undo.clear();
             self.redo.retain(|entry| !conflicts(entry));
             self.revision = self.revision.wrapping_add(1);
         }
@@ -472,7 +470,8 @@ impl TexturePublication {
 
     pub fn install(self, world: &mut World) {
         let mut textures = world
-            .remove_resource::<crate::asset::SnapshotTextures>()
+            .get_resource::<crate::asset::SnapshotTextures>()
+            .cloned()
             .unwrap_or_default();
         textures.0.retain(|key, _| self.requests.contains(key));
         for (key, image) in self.prepared {
@@ -493,7 +492,12 @@ impl TexturePublication {
             world,
             self.requests.into_iter().map(|(path, _)| path).collect(),
         );
-        world.insert_resource(textures);
+        if world
+            .get_resource::<crate::asset::SnapshotTextures>()
+            .is_none_or(|old| old.0 != textures.0)
+        {
+            world.insert_resource(textures);
+        }
         if let Some(live) = world.get_non_send::<crate::live::LiveStage>() {
             for path in self.consumers {
                 live.enqueue_resync(&path);
@@ -502,14 +506,343 @@ impl TexturePublication {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
     #[test]
+    fn initial_texture_verification_preserves_finalized_images() {
+        let directory = tempfile::tempdir().unwrap();
+        let texture = directory.path().canonicalize().unwrap().join("pixel.png");
+        let png = |pixel: [u8; 4]| {
+            let mut bytes = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut bytes, 4, 2);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder.set_depth(png::BitDepth::Eight);
+                encoder
+                    .write_header()
+                    .unwrap()
+                    .write_image_data(&pixel.repeat(8))
+                    .unwrap();
+            }
+            bytes
+        };
+        let bytes = png([255, 0, 0, 255]);
+        std::fs::write(&texture, &bytes).unwrap();
+        let root = directory.path().join("root.usda");
+        std::fs::write(
+            &root,
+            r#"#usda 1.0
+def Cube "A" { rel material:binding = </Mat> }
+def Material "Mat" {
+    token outputs:surface.connect = </Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </Mat/Texture.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "Texture" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @pixel.png@
+        float3 outputs:rgb
+    }
+}
+"#,
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::live::LiveStagePlugin,
+            EditorPlugin,
+        ));
+        app.init_asset::<Image>()
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_resource::<crate::route::TextureSamplingTiming>();
+        app.world_mut()
+            .resource_mut::<EditorReloadSettings>()
+            .enabled = false;
+        let bridge = app.world().resource::<EditorBridge>().clone();
+        bridge
+            .send(EditorCommand::Open(root.to_string_lossy().into_owned()))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        let key = (texture.to_string_lossy().into_owned(), true);
+        let before = app.world().resource::<crate::asset::SnapshotTextures>().0[&key].clone();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<Image>>()
+                .get(&before)
+                .unwrap()
+                .texture_descriptor
+                .mip_level_count,
+            3
+        );
+        let finalized = app
+            .world()
+            .resource::<crate::route::TextureSamplingTiming>()
+            .images;
+        bridge
+            .send(EditorCommand::ReloadSources(vec![texture.clone()]))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(
+            app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+            before
+        );
+        assert_eq!(
+            app.world()
+                .resource::<crate::route::TextureSamplingTiming>()
+                .images,
+            finalized
+        );
+        let editor = app.world().get_non_send::<EditorSession>().unwrap();
+        assert_eq!(
+            editor
+                .save_state
+                .borrow()
+                .disk
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .get(&texture),
+            Some(&blake3::hash(&bytes))
+        );
+        let disk = editor.save_state.borrow().disk.clone().unwrap();
+        assert!(!disk.snapshots.lock().unwrap().contains_key(&key.0));
+        std::fs::write(&texture, b"invalid image").unwrap();
+        bridge
+            .send(EditorCommand::ReloadSources(vec![texture.clone()]))
+            .unwrap();
+        app.update();
+        assert!(bridge.view().unwrap().status.starts_with("Failed"));
+        assert_eq!(
+            app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+            before
+        );
+        assert_eq!(disk.lock().unwrap()[&texture], blake3::hash(&bytes));
+        let green = png([0, 255, 0, 255]);
+        assert_eq!(green.len(), bytes.len());
+        std::fs::write(&texture, &green).unwrap();
+        bridge
+            .send(EditorCommand::ReloadSources(vec![texture.clone()]))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        let after = app.world().resource::<crate::asset::SnapshotTextures>().0[&key].clone();
+        assert_ne!(after, before);
+        let image = app.world().resource::<Assets<Image>>().get(&after).unwrap();
+        assert_eq!(&image.data.as_ref().unwrap()[..4], &[0, 255, 0, 255]);
+        assert_eq!(image.texture_descriptor.mip_level_count, 3);
+        assert_eq!(disk.lock().unwrap()[&texture], blake3::hash(&green));
+        let finalized = app
+            .world()
+            .resource::<crate::route::TextureSamplingTiming>()
+            .images;
+        bridge
+            .send(EditorCommand::ReloadSources(vec![texture]))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(
+            app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+            after
+        );
+        assert_eq!(
+            app.world()
+                .resource::<crate::route::TextureSamplingTiming>()
+                .images,
+            finalized
+        );
+        let next = directory.path().canonicalize().unwrap().join("next.png");
+        let blue = png([0, 0, 255, 255]);
+        std::fs::write(&next, &blue).unwrap();
+        bridge
+            .send(EditorCommand::Edit(EditorEdit::Attribute {
+                prim: "/Mat/Texture".into(),
+                name: "inputs:file".into(),
+                type_name: "asset".into(),
+                value: Value::AssetPath(openusd::sdf::AssetPath::new("next.png")),
+            }))
+            .unwrap();
+        app.update();
+        assert_eq!(bridge.view().unwrap().status, "Ready");
+        assert_eq!(disk.lock().unwrap()[&next], blake3::hash(&blue));
+        for (command, path) in [
+            (EditorCommand::Undo, key.0.as_str()),
+            (EditorCommand::Redo, next.to_str().unwrap()),
+        ] {
+            bridge.send(command).unwrap();
+            app.update();
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            let key = (path.to_owned(), true);
+            let handle = app.world().resource::<crate::asset::SnapshotTextures>().0[&key].clone();
+            let tick = app
+                .world()
+                .get_resource_ref::<crate::asset::SnapshotTextures>()
+                .unwrap()
+                .last_changed();
+            let finalized = app
+                .world()
+                .resource::<crate::route::TextureSamplingTiming>()
+                .images;
+            bridge
+                .send(EditorCommand::ReloadSources(vec![path.into()]))
+                .unwrap();
+            app.update();
+            assert_eq!(bridge.view().unwrap().status, "Ready");
+            assert_eq!(
+                app.world().resource::<crate::asset::SnapshotTextures>().0[&key],
+                handle
+            );
+            assert_eq!(
+                app.world()
+                    .get_resource_ref::<crate::asset::SnapshotTextures>()
+                    .unwrap()
+                    .last_changed(),
+                tick
+            );
+            assert_eq!(
+                app.world()
+                    .resource::<crate::route::TextureSamplingTiming>()
+                    .images,
+                finalized
+            );
+        }
+    }
+
+    #[test]
+    fn failed_texture_refresh_does_not_publish_new_baselines() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
+        let source = crate::UsdSource::new(
+            &root,
+            br#"#usda 1.0
+def DomeLight "A" { asset inputs:texture:file = @a.png@ }
+def DomeLight "B" { asset inputs:texture:file = @b.png@ }
+"#
+            .as_slice(),
+        )
+        .unwrap();
+        let (stage, disk) = source.open_stage_for_editor().unwrap();
+        let original = disk.lock().unwrap().clone();
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255, 0, 0, 255])
+                .unwrap();
+        }
+        let first = directory.path().join("a.png");
+        let second = directory.path().join("b.png");
+        std::fs::write(&first, &bytes).unwrap();
+        std::fs::write(&second, b"broken image").unwrap();
+        let mut world = World::new();
+        world.insert_resource(Assets::<Image>::default());
+        assert!(refresh_textures(&mut world, &stage, &source, Some(&disk)).is_err());
+        assert_eq!(*disk.lock().unwrap(), original);
+        std::fs::write(&second, &bytes).unwrap();
+        world.remove_resource::<Assets<Image>>();
+        assert!(refresh_textures(&mut world, &stage, &source, Some(&disk)).is_err());
+        assert_eq!(*disk.lock().unwrap(), original);
+        world.insert_resource(Assets::<Image>::default());
+        refresh_textures(&mut world, &stage, &source, Some(&disk)).unwrap();
+        let hashes = disk.lock().unwrap();
+        for path in [first, second] {
+            assert_eq!(hashes[&path], blake3::hash(&bytes));
+            assert!(
+                !disk
+                    .snapshots
+                    .lock()
+                    .unwrap()
+                    .contains_key(path.to_str().unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_texture_publication_preserves_resource_tick() {
+        fn publish(world: &mut World, image: Option<Image>, reload: bool) {
+            let prepared: PreparedTextures = image
+                .into_iter()
+                .map(|image| (("pixel.png".into(), false), image))
+                .collect();
+            if reload {
+                TexturePublication {
+                    requests: prepared.iter().map(|(key, _)| key.clone()).collect(),
+                    prepared,
+                    consumers: Vec::new(),
+                }
+                .install(world);
+            } else {
+                install_textures(world, prepared).unwrap();
+            }
+        }
+        for reload in [false, true] {
+            let mut world = World::new();
+            world.insert_resource(Assets::<Image>::default());
+            let image = Image::default();
+            publish(&mut world, Some(image.clone()), reload);
+            let original = world.resource::<crate::asset::SnapshotTextures>().0.clone();
+            let tick = world
+                .get_resource_ref::<crate::asset::SnapshotTextures>()
+                .unwrap()
+                .last_changed();
+            world.increment_change_tick();
+            publish(&mut world, Some(image.clone()), reload);
+            assert_eq!(
+                world
+                    .get_resource_ref::<crate::asset::SnapshotTextures>()
+                    .unwrap()
+                    .last_changed(),
+                tick
+            );
+            assert_eq!(
+                world.resource::<crate::asset::SnapshotTextures>().0,
+                original
+            );
+            assert_eq!(world.resource::<Assets<Image>>().len(), 1);
+            let mut changed = image;
+            changed.data.as_mut().unwrap()[0] ^= 1;
+            world.increment_change_tick();
+            publish(&mut world, Some(changed), reload);
+            assert_ne!(
+                world
+                    .get_resource_ref::<crate::asset::SnapshotTextures>()
+                    .unwrap()
+                    .last_changed(),
+                tick
+            );
+            assert_ne!(
+                world.resource::<crate::asset::SnapshotTextures>().0,
+                original
+            );
+            world.increment_change_tick();
+            publish(&mut world, None, reload);
+            assert!(
+                world
+                    .resource::<crate::asset::SnapshotTextures>()
+                    .0
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
     fn streaming_checks_detect_same_size_changes_and_return_matching_snapshot_hashes() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("bytes");
+        let path = directory.path().canonicalize().unwrap().join("bytes");
         assert_eq!(
             changed_file(&path, None).unwrap_err().kind(),
             std::io::ErrorKind::NotFound
@@ -539,7 +872,7 @@ mod tests {
     #[test]
     fn disk_change_during_preflight_rejects_publication_and_recovers() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("root.usda");
+        let path = directory.path().canonicalize().unwrap().join("root.usda");
         let contents = |size| format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n");
         std::fs::write(&path, contents(1)).unwrap();
         let mut editor =
@@ -600,7 +933,7 @@ mod tests {
     #[test]
     fn snapshot_only_documents_do_not_reload_same_named_disk_files() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         std::fs::write(&root, "#usda 1.0\ndef Sphere \"Disk\" {}\n").unwrap();
         let source =
             crate::UsdSource::snapshot(&root, b"#usda 1.0\ndef Cube \"Snapshot\" {}\n".as_slice())
@@ -627,7 +960,7 @@ mod tests {
     #[test]
     fn missing_image_assets_reject_reload_before_stage_publication() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let original = b"#usda 1.0\ndef Cube \"Model\" {}\n";
         std::fs::write(&root, original).unwrap();
         let mut png = Vec::new();
@@ -641,7 +974,11 @@ mod tests {
                 .write_image_data(&[255, 0, 0, 255])
                 .unwrap();
         }
-        std::fs::write(directory.path().join("pixel.png"), png).unwrap();
+        std::fs::write(
+            directory.path().canonicalize().unwrap().join("pixel.png"),
+            png,
+        )
+        .unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
         app.init_resource::<Assets<Mesh>>()
@@ -729,9 +1066,9 @@ def Material "Mat" {
     }
 
     #[test]
-    fn unrelated_layer_reload_preserves_undo_and_redo() {
+    fn unrelated_layer_reload_keeps_redo_and_clears_undo() {
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usda");
+        let child = directory.path().canonicalize().unwrap().join("child.usda");
         let write_child = |size| {
             std::fs::write(
                 &child,
@@ -740,7 +1077,7 @@ def Material "Mat" {
             .unwrap()
         };
         write_child(1);
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let text = b"#usda 1.0\ndef Xform \"External\" (prepend references = @child.usda@</Model>) {}\ndef Cube \"Local\" { double size = 1 }\n";
         std::fs::write(&root, text).unwrap();
         let mut editor =
@@ -754,25 +1091,16 @@ def Material "Mat" {
                 value: Value::Double(2.0),
             })
             .unwrap();
-        write_child(3);
-        editor.reload_sources().unwrap();
-        assert_eq!(editor.undo.len(), 1);
-        assert_eq!(editor.stage.undo_depth(), 1);
         assert!(editor.undo().unwrap());
-        assert_eq!(
-            editor
-                .stage()
-                .prim("/Local")
-                .unwrap()
-                .attribute("size")
-                .get::<f64>()
-                .unwrap(),
-            Some(1.0)
-        );
-        write_child(5);
+        write_child(3);
         editor.reload_sources().unwrap();
         assert_eq!(editor.redo.len(), 1);
         assert!(editor.redo().unwrap());
+        write_child(5);
+        editor.reload_sources().unwrap();
+        assert!(editor.undo.is_empty());
+        assert_eq!(editor.stage.undo_depth(), 0);
+        assert!(!editor.undo().unwrap());
         assert_eq!(
             editor
                 .stage()
@@ -798,7 +1126,7 @@ def Material "Mat" {
     #[test]
     fn reload_invalidates_redo_that_would_overwrite_the_source() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let text = b"#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n";
         std::fs::write(&root, text).unwrap();
         let mut editor =
@@ -829,15 +1157,15 @@ def Material "Mat" {
     }
 
     #[test]
-    fn reload_prunes_conflicting_commands_without_dropping_unrelated_undo() {
+    fn reload_clears_undo_across_layers() {
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usda");
+        let child = directory.path().canonicalize().unwrap().join("child.usda");
         std::fs::write(
             &child,
             "#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n",
         )
         .unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let text =
             b"#usda 1.0\n(subLayers = [@child.usda@])\ndef Cube \"Local\" { double size = 1 }\n";
         std::fs::write(&root, text).unwrap();
@@ -862,9 +1190,9 @@ def Material "Mat" {
         )
         .unwrap();
         editor.reload_sources().unwrap();
-        assert_eq!(editor.undo.len(), 1);
-        assert_eq!(editor.stage.undo_depth(), 1);
-        assert!(editor.undo().unwrap());
+        assert!(editor.undo.is_empty());
+        assert_eq!(editor.stage.undo_depth(), 0);
+        assert!(!editor.undo().unwrap());
         assert_eq!(
             editor
                 .stage()
@@ -873,7 +1201,7 @@ def Material "Mat" {
                 .attribute("size")
                 .get::<f64>()
                 .unwrap(),
-            Some(1.0)
+            Some(2.0)
         );
         assert_eq!(
             editor
@@ -885,34 +1213,6 @@ def Material "Mat" {
                 .unwrap(),
             Some(3.0)
         );
-        assert!(!editor.undo().unwrap());
-    }
-
-    #[test]
-    fn capture_suspension_is_nested_and_panic_safe() {
-        let stage = UndoStage::from(Stage::builder().in_memory("capture.usda").unwrap());
-        stage.define_prim("/Before").unwrap();
-        stage.without_recording(|_| {
-            stage.without_recording(|stage| {
-                stage.define_prim("/Nested").unwrap();
-            });
-            stage.define_prim("/Outer").unwrap();
-        });
-        assert_eq!(stage.undo_depth(), 1);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            stage.without_recording(|stage| {
-                stage.define_prim("/BeforePanic").unwrap();
-                panic!("test unwind");
-            });
-        }));
-        assert!(result.is_err());
-        stage.define_prim("/After").unwrap();
-        assert_eq!(stage.undo_depth(), 2);
-        assert!(!stage.retain_transactions(&[false]));
-        assert_eq!(stage.undo_depth(), 2);
-        stage.undo().unwrap();
-        assert!(!stage.prim("/After").unwrap().is_valid().unwrap());
-        assert!(stage.prim("/BeforePanic").unwrap().is_valid().unwrap());
     }
 
     fn tick_until(app: &mut App, predicate: impl Fn(&World) -> bool) {
@@ -940,10 +1240,10 @@ def Material "Mat" {
         #[derive(Component, PartialEq, Debug)]
         struct Runtime(u32);
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usda");
+        let child = directory.path().canonicalize().unwrap().join("child.usda");
         let model = |size| format!("#usda 1.0\ndef Cube \"Model\" {{ double size = {size} }}\n");
         std::fs::write(&child, model(1)).unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         std::fs::write(&root, "#usda 1.0\ndef Xform \"A\" (prepend references = @child.usda@</Model>) {}\ndef Xform \"B\" (prepend references = @child.usda@</Model>) {}\ndef Cube \"Other\" { double size = 7 }\n").unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
@@ -1012,7 +1312,7 @@ def Material "Mat" {
                 .unwrap(),
             Some(3.0)
         );
-        let temporary = directory.path().join("export.tmp");
+        let temporary = directory.path().canonicalize().unwrap().join("export.tmp");
         std::fs::write(&temporary, model(5)).unwrap();
         std::fs::rename(&temporary, &child).unwrap();
         tick_until(&mut app, |world| {
@@ -1031,7 +1331,7 @@ def Material "Mat" {
     #[test]
     fn dirty_layer_conflict_retains_edits_and_disk_baseline() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let original = b"#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n";
         std::fs::write(&root, original).unwrap();
         let mut editor =
@@ -1069,7 +1369,7 @@ def Material "Mat" {
     fn package_layer_save_updates_in_place_repeatedly() {
         use std::io::Write;
         let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("model.usdz");
+        let file = directory.path().canonicalize().unwrap().join("model.usdz");
         let package = |size| {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
             zip.start_file(
@@ -1110,7 +1410,7 @@ def Material "Mat" {
     #[test]
     fn missing_new_reference_recovers_when_dependency_appears() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         std::fs::write(&root, "#usda 1.0\ndef Xform \"A\" {}\n").unwrap();
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, crate::live::LiveStagePlugin, EditorPlugin));
@@ -1142,7 +1442,7 @@ def Material "Mat" {
             Some(entity)
         );
         std::fs::write(
-            directory.path().join("new.usda"),
+            directory.path().canonicalize().unwrap().join("new.usda"),
             "#usda 1.0\ndef Xform \"Model\" { def Cube \"Child\" {} }\n",
         )
         .unwrap();
@@ -1159,7 +1459,7 @@ def Material "Mat" {
             Some(entity)
         );
         std::fs::write(
-            directory.path().join("new.usda"),
+            directory.path().canonicalize().unwrap().join("new.usda"),
             "#usda 1.0\ndef Xform \"Model\" { def Sphere \"Next\" {} }\n",
         )
         .unwrap();
@@ -1194,9 +1494,9 @@ def Material "Mat" {
             bytes
         };
         let directory = tempfile::tempdir().unwrap();
-        let texture = directory.path().join("pixel.png");
+        let texture = directory.path().canonicalize().unwrap().join("pixel.png");
         std::fs::write(&texture, png([255, 0, 0, 255])).unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         std::fs::write(
             &root,
             r#"#usda 1.0
@@ -1280,7 +1580,7 @@ def Material "Mat" {
         assert_eq!(pixels(app.world()), [0, 255, 0, 255]);
         std::fs::write(&texture, png([0, 0, 255, 255])).unwrap();
         tick_until(&mut app, |world| pixels(world) == [0, 0, 255, 255]);
-        let next = directory.path().join("next.png");
+        let next = directory.path().canonicalize().unwrap().join("next.png");
         std::fs::write(&next, png([255, 255, 0, 255])).unwrap();
         let original_root = std::fs::read_to_string(&root).unwrap();
         std::fs::write(&root, original_root.replace("@pixel.png@", "@next.png@")).unwrap();

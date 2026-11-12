@@ -88,7 +88,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .with_decorations(false),
                     renderer: eframe::Renderer::Wgpu,
                     wgpu_options: egui_wgpu::WgpuConfiguration {
-                        present_mode: wgpu::PresentMode::AutoNoVsync,
+                        surface: egui_wgpu::SurfaceConfig {
+                            present_mode: wgpu::PresentMode::AutoNoVsync,
+                            desired_maximum_frame_latency: None,
+                        },
                         ..Default::default()
                     },
                     ..Default::default()
@@ -106,10 +109,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+#[cfg(test)]
+/// Runs a headless UI pass and clears its texture deltas.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
 #[test]
 fn host_probe_paints_without_bevy_or_usd_initialization() {
     let ctx = egui::Context::default();
-    let output = ctx.run_ui(
+    let output = run_pass(
+        &ctx,
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,

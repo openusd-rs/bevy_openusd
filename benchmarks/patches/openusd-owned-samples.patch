@@ -1,0 +1,284 @@
+diff --git a/Makefile b/Makefile
+index 018b9ff0..cf49f5a1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-.PHONY: fmt test-budget test-queries test-attributes lint doc
++.PHONY: fmt test-budget test-queries test-attributes test-resolvers test-core lint doc
+ export CARGO_WORKSPACE_DIR := $(CURDIR)/
+ export CARGO_BUILD_JOBS := 2
+ export CARGO_PROFILE_DEV_DEBUG := 0
+@@ -16,6 +16,12 @@ test-queries:
+ test-attributes:
+ 	cargo test -p openusd --lib usd::attribute::tests
+ 
++test-resolvers:
++	cargo test -p openusd --lib pcp::index_cache::tests
++
++test-core:
++	cargo test -p openusd --lib --all-features
++
+ lint:
+ 	cargo clippy -p openusd --all-targets --all-features -- -D warnings
+ 
+diff --git a/crates/openusd/src/pcp/index_cache.rs b/crates/openusd/src/pcp/index_cache.rs
+index 0e686266..5bdab4ad 100644
+--- a/crates/openusd/src/pcp/index_cache.rs
++++ b/crates/openusd/src/pcp/index_cache.rs
+@@ -180,7 +180,7 @@ pub(crate) struct OwnStatus {
+ /// The resolved source of an attribute's value at a time code, the cacheable
+ /// half of [`IndexCache::value_at`]. A cached view
+ /// ([`Stage::attribute_query`](crate::usd::Stage::attribute_query)) resolves
+-/// this once — paying the opinion walk and the one sample-map clone — then
++/// this once, taking an owned sample map or cloning a borrowed one, then
+ /// replays it across many time codes.
+ pub(crate) enum AttributeValueSource {
+     /// A time-independent value: a `default` opinion (local or fallback), or
+@@ -535,13 +535,13 @@ impl OpinionResolver for ValueAtResolver<'_> {
+         self.read.assets
+     }
+ 
+-    fn on_time_samples(&mut self, samples: &sdf::TimeSampleMap, site: &OpinionSite<'_>) -> Step {
++    fn on_time_samples(&mut self, samples: Cow<'_, sdf::TimeSampleMap>, site: &OpinionSite<'_>) -> Step {
+         let Some(time) = self.time else {
+             return Step::Continue;
+         };
+         let Some(value) = site
+             .offset
+-            .sample_in_stage_time(samples, time, self.interp)
++            .sample_in_stage_time(&samples, time, self.interp)
+             .and_then(block_to_none)
+         else {
+             // The map answers the walk by being here, but supplies no value at
+@@ -633,19 +633,18 @@ impl OpinionResolver for SourceResolver<'_> {
+     /// the same guard does not apply; carrying the site's `layer` and stack id
+     /// instead and resolving them when a replayed value first needs them would
+     /// pay the copies only where they are read.
+-    fn on_time_samples(&mut self, samples: &sdf::TimeSampleMap, site: &OpinionSite<'_>) -> Step {
++    fn on_time_samples(&mut self, samples: Cow<'_, sdf::TimeSampleMap>, site: &OpinionSite<'_>) -> Step {
+         // A map is replayed from one snapshot only where the samples are what
+         // resolution reports: a value composition rewrites — one that draws on
+         // weaker sources, or whose paths reach the stage through this node — is
+         // resolved per time instead, as is anything a stronger composing value
+-        // draws on. Scanning the map costs what cloning it does, which this is
+-        // about to pay anyway.
++        // draws on.
+         if !self.composing.is_empty() || samples.iter().any(|(_, value)| composition_rewrites(value)) {
+             self.source = Some(AttributeValueSource::PerTime);
+             return Step::Stop;
+         }
+         self.source = Some(AttributeValueSource::TimeSamples {
+-            samples: samples.clone(),
++            samples: samples.into_owned(),
+             offset: site.offset,
+             site: site.asset_site(self.graph),
+         });
+@@ -767,11 +766,11 @@ impl SampleTimesResolver {
+ }
+ 
+ impl OpinionResolver for SampleTimesResolver {
+-    fn on_time_samples(&mut self, samples: &sdf::TimeSampleMap, site: &OpinionSite<'_>) -> Step {
++    fn on_time_samples(&mut self, samples: Cow<'_, sdf::TimeSampleMap>, site: &OpinionSite<'_>) -> Step {
+         // A map supplying no value is not a value source, so it contributes no
+         // times — the same judgement the value read and the resolve info make of
+         // it. It still answers, blocking weaker sources.
+-        if !value_resolve::samples_supply_any_value(samples) {
++        if !value_resolve::samples_supply_any_value(&samples) {
+             self.answered = true;
+             return Step::Stop;
+         }
+@@ -800,7 +799,7 @@ impl OpinionResolver for SampleTimesResolver {
+                 return Step::Stop;
+             }
+             if self.want == Want::Map {
+-                let mut map = samples.clone();
++                let mut map = samples.as_ref().clone();
+                 site.offset.apply_to_samples(&mut map);
+                 self.map = Some(map);
+                 self.map_site = Some(site.select());
+@@ -927,7 +926,7 @@ impl InfoResolver<'_> {
+ }
+ 
+ impl OpinionResolver for InfoResolver<'_> {
+-    fn on_time_samples(&mut self, samples: &sdf::TimeSampleMap, site: &OpinionSite<'_>) -> Step {
++    fn on_time_samples(&mut self, samples: Cow<'_, sdf::TimeSampleMap>, site: &OpinionSite<'_>) -> Step {
+         self.resolution.authored = true;
+         // The sample that answers is read once, and interpolated exactly as the
+         // value read interpolates it, so an introspection query and the read
+@@ -935,10 +934,10 @@ impl OpinionResolver for InfoResolver<'_> {
+         // names no time to read a sample at, and judges the map as a whole.
+         let value = self
+             .time
+-            .map(|time| site.offset.sample_in_stage_time(samples, time, self.interp));
++            .map(|time| site.offset.sample_in_stage_time(&samples, time, self.interp));
+         let supplies = match &value {
+             Some(value) => value.is_some(),
+-            None => value_resolve::samples_supply_any_value(samples),
++            None => value_resolve::samples_supply_any_value(&samples),
+         };
+         // A map that supplies no value here is not a value source: the read
+         // falls through to the schema tier, and reporting `TimeSamples` would
+@@ -1214,7 +1213,7 @@ impl OpinionResolver for StandingResolver<'_> {
+         Step::NextSite
+     }
+ 
+-    fn on_time_samples(&mut self, _samples: &sdf::TimeSampleMap, site: &OpinionSite<'_>) -> Step {
++    fn on_time_samples(&mut self, _samples: Cow<'_, sdf::TimeSampleMap>, site: &OpinionSite<'_>) -> Step {
+         self.found(site);
+         Step::Continue
+     }
+@@ -1767,7 +1766,7 @@ impl IndexCache {
+                 {
+                     // What the field holds decides whether there is an opinion
+                     // here at all; the mode then decides what to do with it.
+-                    let field = SampleField::classify(&value);
++                    let field = SampleField::classify(value);
+                     found_opinion = matches!(field, SampleField::Map(_));
+                     // A block withholds samples from every weaker site whatever
+                     // the query asked for, so the flag only ever latches on.
+@@ -4551,6 +4550,89 @@ mod tests {
+         (graph, fresh_cache())
+     }
+ 
++    fn source_sample_field(field: Cow<'_, Value>) -> Result<AttributeValueSource> {
++        let (graph, mut cache) = in_memory_stack("#usda 1.0\ndef Xform \"P\" {}\n");
++        let view = graph.read_view();
++        let prim = sdf::path("/P")?;
++        cache.ensure_index(&view, &prim)?;
++        let (node, layer, offset) = cache
++            .cached(&prim)
++            .live_sites(&view, SiteScope::SpecStack)
++            .next()
++            .unwrap();
++        let site = OpinionSite {
++            node,
++            layer,
++            offset,
++            query_path: sdf::path("/P.values")?,
++        };
++        let mut resolver = SourceResolver {
++            graph: &graph,
++            source: None,
++            defaulted: false,
++            composing: Composing::new(),
++        };
++        let SampleField::Map(samples) = SampleField::classify(field) else {
++            panic!("expected samples")
++        };
++        assert!(resolver.on_time_samples(samples, &site).stop());
++        Ok(resolver.source.unwrap())
++    }
++
++    #[test]
++    fn source_sample_ownership() -> Result<()> {
++        for owned in [false, true] {
++            let mut numbers = Vec::with_capacity(32);
++            numbers.extend([1.0_f32, 2.0]);
++            let values_pointer = numbers.as_ptr();
++            let values_capacity = numbers.capacity();
++            let mut samples = Vec::with_capacity(16);
++            samples.push((0.0, Value::FloatVec(numbers)));
++            let pointer = samples.as_ptr();
++            let capacity = samples.capacity();
++            let mut field = Some(Value::TimeSamples(samples));
++            let source = source_sample_field(if owned {
++                Cow::Owned(field.take().unwrap())
++            } else {
++                Cow::Borrowed(field.as_ref().unwrap())
++            })?;
++            let AttributeValueSource::TimeSamples { samples, .. } = source else {
++                panic!("expected source map")
++            };
++            let numbers = samples[0].1.try_as_float_vec_ref().unwrap();
++            assert_eq!(samples.as_ptr() == pointer, owned);
++            assert_eq!(numbers.as_ptr() == values_pointer, owned);
++            assert_eq!(numbers.as_slice(), &[1.0, 2.0]);
++            if owned {
++                assert_eq!(samples.capacity(), capacity);
++                assert_eq!(numbers.capacity(), values_capacity);
++            } else {
++                let original = field.unwrap();
++                assert_eq!(original.try_as_time_samples_ref().unwrap(), &samples);
++            }
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn sample_field_sentinels() {
++        for value in [
++            Value::TimeSamples(Vec::new()),
++            Value::Float(1.0),
++            Value::None,
++            Value::ValueBlock,
++        ] {
++            let blocked = matches!(value, Value::None | Value::ValueBlock);
++            for field in [
++                SampleField::classify(Cow::Borrowed(&value)),
++                SampleField::classify(Cow::Owned(value.clone())),
++            ] {
++                assert_eq!(matches!(field, SampleField::Blocked), blocked);
++                assert_eq!(matches!(field, SampleField::Unusable), !blocked);
++            }
++        }
++    }
++
+     /// The blast radius of a value edit, pinned against a synthetic
+     /// reference-heavy graph.
+     ///
+diff --git a/crates/openusd/src/pcp/value_resolve.rs b/crates/openusd/src/pcp/value_resolve.rs
+index ef508da1..00711f62 100644
+--- a/crates/openusd/src/pcp/value_resolve.rs
++++ b/crates/openusd/src/pcp/value_resolve.rs
+@@ -118,7 +118,7 @@ pub(crate) enum SampleField<'a> {
+     /// A map holding at least one sample. An empty one is no more a source than
+     /// an absent field: C++ requires a layer to hold at least one sample before
+     /// it counts as a `timeSamples` source.
+-    Map(&'a sdf::TimeSampleMap),
++    Map(Cow<'a, sdf::TimeSampleMap>),
+     /// The field is blocked, withholding samples from every weaker site.
+     Blocked,
+     /// Anything else — not a sample opinion, so nothing to resolve from or to
+@@ -128,10 +128,12 @@ pub(crate) enum SampleField<'a> {
+ 
+ impl<'a> SampleField<'a> {
+     /// Reads a `timeSamples` field's authored value.
+-    pub(crate) fn classify(value: &'a vt::Value) -> Self {
++    pub(crate) fn classify(value: Cow<'a, vt::Value>) -> Self {
+         match value {
+-            vt::Value::TimeSamples(samples) if !samples.is_empty() => Self::Map(samples),
+-            vt::Value::ValueBlock | vt::Value::None => Self::Blocked,
++            Cow::Borrowed(vt::Value::TimeSamples(samples)) if !samples.is_empty() => Self::Map(Cow::Borrowed(samples)),
++            Cow::Owned(vt::Value::TimeSamples(samples)) if !samples.is_empty() => Self::Map(Cow::Owned(samples)),
++            Cow::Borrowed(vt::Value::ValueBlock | vt::Value::None)
++            | Cow::Owned(vt::Value::ValueBlock | vt::Value::None) => Self::Blocked,
+             _ => Self::Unusable,
+         }
+     }
+@@ -522,10 +524,8 @@ impl ClipProbe<'_> {
+ /// Consumes the opinions the shared walk reaches, in strength order — the Rust
+ /// form of C++'s resolver concept.
+ ///
+-/// Every hook borrows what it is handed and returns a [`Step`]; nothing is
+-/// cloned on the resolver's behalf, so a resolver that needs an owned copy
+-/// clones it itself. That is what lets a per-time read borrow a sample map
+-/// while the cached-source resolver clones it once.
++/// Value hooks receive borrowed layer data or owned decoded data and return a
++/// [`Step`]. A resolver retaining data can take an owned value or clone a borrow.
+ pub(crate) trait OpinionResolver {
+     /// Fires for every visited site before any field is probed, whether or not
+     /// the site authors a value. The property stack answers here; the value
+@@ -534,10 +534,10 @@ pub(crate) trait OpinionResolver {
+         Step::Continue
+     }
+ 
+-    /// The strongest `timeSamples` map at this site, borrowed in the
+-    /// contributing layer's own time frame. Never called in
++    /// The strongest `timeSamples` map at this site, in the contributing
++    /// layer's time frame. Decoded maps transfer ownership. Never called in
+     /// [`ResolveMode::Default`].
+-    fn on_time_samples(&mut self, _samples: &sdf::TimeSampleMap, _site: &OpinionSite<'_>) -> Step {
++    fn on_time_samples(&mut self, _samples: Cow<'_, sdf::TimeSampleMap>, _site: &OpinionSite<'_>) -> Step {
+         Step::Continue
+     }
+ 

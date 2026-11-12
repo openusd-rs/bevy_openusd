@@ -57,6 +57,74 @@ fn representation(matrix: Mat4) -> Option<(Transform, Mat4)> {
     ))
 }
 
+fn parent(world: &World, entity: Entity) -> Option<Entity> {
+    world.get::<ChildOf>(entity).map(ChildOf::parent)
+}
+
+fn scene_basis(world: &World, mut entity: Entity) -> GlobalTransform {
+    while let Some(ancestor) = parent(world, entity) {
+        if world
+            .get::<UsdPrimRef>(ancestor)
+            .is_some_and(|prim| prim.path == "/")
+        {
+            return world
+                .get::<GlobalTransform>(ancestor)
+                .copied()
+                .unwrap_or_default();
+        }
+        entity = ancestor;
+    }
+    GlobalTransform::IDENTITY
+}
+
+fn propagate(world: &mut World) {
+    let roots: Vec<_> = world
+        .query_filtered::<Entity, With<UsdTransformOverride>>()
+        .iter(world)
+        .filter(|&entity| {
+            let mut ancestor = parent(world, entity);
+            while let Some(entity) = ancestor {
+                if world.get::<UsdTransformOverride>(entity).is_some() {
+                    return false;
+                }
+                ancestor = parent(world, entity);
+            }
+            true
+        })
+        .collect();
+    for root in roots {
+        let basis = parent(world, root)
+            .and_then(|parent| world.get::<GlobalTransform>(parent))
+            .copied()
+            .unwrap_or_default();
+        let mut pending = vec![(root, basis)];
+        while let Some((entity, mut basis)) = pending.pop() {
+            let Some(transform) = world.get::<Transform>(entity).copied() else {
+                continue;
+            };
+            let residual = world
+                .get::<UsdTransformOverride>(entity)
+                .map(|state| {
+                    if state.reset {
+                        basis = scene_basis(world, entity);
+                    }
+                    state.residual
+                })
+                .unwrap_or(Mat4::IDENTITY);
+            let global =
+                GlobalTransform::from(basis.to_matrix() * transform.to_matrix() * residual);
+            if let Some(mut current) = world.get_mut::<GlobalTransform>(entity)
+                && *current != global
+            {
+                *current = global;
+            }
+            if let Some(children) = world.get::<Children>(entity) {
+                pending.extend(children.iter().map(|child| (child, global)));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,7 +155,8 @@ mod tests {
             crate::UsdAssetPlugin,
         ));
         app.init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<StandardMaterial>>();
+            .init_resource::<Assets<StandardMaterial>>()
+            .insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -104,7 +173,21 @@ mod tests {
                 ))
                 .id()
         });
-        app.update();
+        for _ in 0..8 {
+            app.update();
+            if roots.iter().all(|root| {
+                app.world().get::<crate::asset::UsdSceneState>(*root)
+                    == Some(&crate::asset::UsdSceneState::Ready)
+            }) {
+                break;
+            }
+        }
+        for root in roots {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready),
+            );
+        }
         let lookup = |world: &World, root, path| {
             world
                 .get_non_send::<UsdInstances>()
@@ -207,7 +290,7 @@ mod tests {
     #[test]
     fn live_malformed_matrix_edits_keep_last_pose_and_recover() {
         use crate::live::{LiveStage, PrimEntities, apply_changes, project_stage};
-        use openusd::{gf::Matrix4d, sdf::Value, usd::Stage};
+        use openusd::{gf::Mat4d, usd::Stage, vt::Value};
         let stage = Stage::builder()
             .schema_registry(openusd_schemas::schema_registry())
             .in_memory("affine-recovery.usda")
@@ -221,7 +304,7 @@ mod tests {
             .create_attribute("/Foo.xformOp:transform", "matrix4d")
             .unwrap();
         matrix
-            .set(Value::Matrix4d(Matrix4d(
+            .set(Value::Matrix4d(Mat4d(
                 shear().to_cols_array().map(f64::from),
             )))
             .unwrap();
@@ -243,15 +326,13 @@ mod tests {
         app.update();
         let original = *app.world().get::<GlobalTransform>(entity).unwrap();
         for bad in [
-            Mat4::perspective_rh(1.0, 1.0, 0.1, 10.0),
+            bevy::math::proj::perspective(1.0, 1.0, 0.1, 10.0),
             Mat4::from_scale(Vec3::splat(f32::NAN)),
         ] {
             live.stage
                 .attribute("/Foo.xformOp:transform")
                 .unwrap()
-                .set(Value::Matrix4d(Matrix4d(
-                    bad.to_cols_array().map(f64::from),
-                )))
+                .set(Value::Matrix4d(Mat4d(bad.to_cols_array().map(f64::from))))
                 .unwrap();
             apply_changes(app.world_mut(), &live, &mut map);
             app.update();
@@ -265,7 +346,7 @@ mod tests {
         live.stage
             .attribute("/Foo.xformOp:transform")
             .unwrap()
-            .set(Value::Matrix4d(Matrix4d(
+            .set(Value::Matrix4d(Mat4d(
                 recovered.to_cols_array().map(f64::from),
             )))
             .unwrap();
@@ -288,7 +369,7 @@ mod tests {
     fn editor_history_reprojects_affine_reset_without_replacing_entities() {
         use crate::editor::{EditorEdit, EditorSession};
         use crate::live::{LiveStage, PrimEntities, apply_changes, project_stage};
-        use openusd::sdf::Value;
+        use openusd::vt::Value;
         let stage = openusd::usd::Stage::builder()
             .schema_registry(openusd_schemas::schema_registry())
             .in_memory("history-projection.usda")
@@ -308,7 +389,7 @@ mod tests {
         stage
             .create_attribute("/Parent/Child.xformOp:transform", "matrix4d")
             .unwrap()
-            .set(Value::Matrix4d(openusd::gf::Matrix4d(
+            .set(Value::Matrix4d(openusd::gf::Mat4d(
                 shear().to_cols_array().map(f64::from),
             )))
             .unwrap();
@@ -450,7 +531,7 @@ mod tests {
             ))
             .is_none()
         );
-        assert!(representation(Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0)).is_none());
+        assert!(representation(bevy::math::proj::perspective(1.0, 1.0, 0.1, 100.0)).is_none());
     }
 
     #[test]
@@ -514,74 +595,6 @@ mod tests {
                     .to_matrix()
                     .abs_diff_eq(scene_global * child_local.to_matrix(), 1e-5)
             );
-        }
-    }
-}
-
-fn parent(world: &World, entity: Entity) -> Option<Entity> {
-    world.get::<ChildOf>(entity).map(ChildOf::parent)
-}
-
-fn scene_basis(world: &World, mut entity: Entity) -> GlobalTransform {
-    while let Some(ancestor) = parent(world, entity) {
-        if world
-            .get::<UsdPrimRef>(ancestor)
-            .is_some_and(|prim| prim.path == "/")
-        {
-            return world
-                .get::<GlobalTransform>(ancestor)
-                .copied()
-                .unwrap_or_default();
-        }
-        entity = ancestor;
-    }
-    GlobalTransform::IDENTITY
-}
-
-fn propagate(world: &mut World) {
-    let roots: Vec<_> = world
-        .query_filtered::<Entity, With<UsdTransformOverride>>()
-        .iter(world)
-        .filter(|&entity| {
-            let mut ancestor = parent(world, entity);
-            while let Some(entity) = ancestor {
-                if world.get::<UsdTransformOverride>(entity).is_some() {
-                    return false;
-                }
-                ancestor = parent(world, entity);
-            }
-            true
-        })
-        .collect();
-    for root in roots {
-        let basis = parent(world, root)
-            .and_then(|parent| world.get::<GlobalTransform>(parent))
-            .copied()
-            .unwrap_or_default();
-        let mut pending = vec![(root, basis)];
-        while let Some((entity, mut basis)) = pending.pop() {
-            let Some(transform) = world.get::<Transform>(entity).copied() else {
-                continue;
-            };
-            let residual = world
-                .get::<UsdTransformOverride>(entity)
-                .map(|state| {
-                    if state.reset {
-                        basis = scene_basis(world, entity);
-                    }
-                    state.residual
-                })
-                .unwrap_or(Mat4::IDENTITY);
-            let global =
-                GlobalTransform::from(basis.to_matrix() * transform.to_matrix() * residual);
-            if let Some(mut current) = world.get_mut::<GlobalTransform>(entity) {
-                if *current != global {
-                    *current = global;
-                }
-            }
-            if let Some(children) = world.get::<Children>(entity) {
-                pending.extend(children.iter().map(|child| (child, global)));
-            }
         }
     }
 }

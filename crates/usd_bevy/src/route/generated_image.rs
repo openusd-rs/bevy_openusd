@@ -1,10 +1,91 @@
 use bevy::{asset::AssetId, prelude::*};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 const MAX_ENTRIES: usize = 4096;
 
 #[derive(Resource, Default)]
-struct GeneratedImages(VecDeque<(blake3::Hash, AssetId<Image>)>);
+pub(super) struct GeneratedImages(
+    VecDeque<(blake3::Hash, AssetId<Image>)>,
+    HashMap<AssetId<Image>, FinalizedImage>,
+);
+
+struct FinalizedImage {
+    source: Image,
+    layout: Image,
+    base_len: usize,
+    hash: blake3::Hash,
+}
+
+pub(super) fn layout(image: &Image) -> Image {
+    Image {
+        data: None,
+        data_order: image.data_order,
+        texture_descriptor: image.texture_descriptor.clone(),
+        sampler: image.sampler.clone(),
+        texture_view_descriptor: image.texture_view_descriptor.clone(),
+        asset_usage: image.asset_usage,
+        copy_on_resize: image.copy_on_resize,
+    }
+}
+
+impl GeneratedImages {
+    pub(super) fn record_finalized(
+        &mut self,
+        id: AssetId<Image>,
+        source: Image,
+        base_len: usize,
+        image: &Image,
+    ) {
+        let Some(data) = image.data.as_deref() else {
+            return;
+        };
+        let Some(base) = data.get(..base_len) else {
+            return;
+        };
+        if let Some(previous) = self.1.get_mut(&id)
+            && same_layout(&previous.layout, &source)
+            && previous.hash == blake3::hash(base)
+        {
+            previous.layout = layout(image);
+            previous.hash = blake3::hash(data);
+            return;
+        }
+        if !self
+            .0
+            .iter()
+            .any(|(hash, known)| *known == id && *hash == blake3::hash(base))
+        {
+            return;
+        }
+        self.1.insert(
+            id,
+            FinalizedImage {
+                source,
+                layout: layout(image),
+                base_len,
+                hash: blake3::hash(data),
+            },
+        );
+    }
+
+    fn pixels<'a>(
+        &self,
+        id: AssetId<Image>,
+        image: &'a Image,
+        template: &Image,
+    ) -> Option<&'a [u8]> {
+        let data = image.data.as_deref()?;
+        if same_layout(image, template) {
+            return Some(data);
+        }
+        let finalized = self.1.get(&id)?;
+        (same_layout(&finalized.source, template)
+            && same_layout(&finalized.layout, image)
+            && finalized.hash == blake3::hash(data))
+        .then(|| data.get(..finalized.base_len))
+        .flatten()
+    }
+}
 
 pub(super) fn configure(app: &mut App) {
     app.add_systems(Last, prune);
@@ -13,6 +94,7 @@ pub(super) fn configure(app: &mut App) {
 fn prune(cache: Option<ResMut<GeneratedImages>>, images: Option<Res<Assets<Image>>>) {
     if let (Some(mut cache), Some(images)) = (cache, images) {
         cache.0.retain(|(_, id)| images.contains(*id));
+        cache.1.retain(|id, _| images.contains(*id));
     }
 }
 
@@ -39,7 +121,14 @@ pub(super) fn reuse_if(
         .resource::<Assets<Image>>()
         .get(id)
         .is_some_and(|image| {
-            same_layout(image, template) && image.data.as_deref().is_some_and(pixels_match)
+            let pixels = if same_layout(image, template) {
+                image.data.as_deref()
+            } else {
+                world
+                    .get_resource::<GeneratedImages>()
+                    .and_then(|cache| cache.pixels(id, image, template))
+            };
+            pixels.is_some_and(pixels_match)
         });
     if !matches {
         return None;
@@ -57,22 +146,28 @@ fn intern_hashed(world: &mut World, image: Image, hash: blake3::Hash) -> Handle<
         let images = world.resource::<Assets<Image>>();
         cache.0.iter().find_map(|(key, id)| {
             (*key == hash
-                && images
-                    .get(*id)
-                    .is_some_and(|existing| equivalent(existing, &image)))
+                && images.get(*id).is_some_and(|existing| {
+                    equivalent(existing, &image)
+                        || image
+                            .data
+                            .as_deref()
+                            .is_some_and(|data| cache.pixels(*id, existing, &image) == Some(data))
+                }))
             .then_some(*id)
         })
     });
-    if let Some(id) = candidate {
-        if let Some(handle) = world.resource_mut::<Assets<Image>>().get_strong_handle(id) {
-            return handle;
-        }
+    if let Some(id) = candidate
+        && let Some(handle) = world.resource_mut::<Assets<Image>>().get_strong_handle(id)
+    {
+        return handle;
     }
     let handle = world.resource_mut::<Assets<Image>>().add(image);
     world.init_resource::<GeneratedImages>();
     let mut cache = world.resource_mut::<GeneratedImages>();
-    if cache.0.len() == MAX_ENTRIES {
-        cache.0.pop_front();
+    if cache.0.len() == MAX_ENTRIES
+        && let Some((_, id)) = cache.0.pop_front()
+    {
+        cache.1.remove(&id);
     }
     cache.0.push_back((hash, handle.id()));
     handle
@@ -101,6 +196,110 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<Assets<Image>>();
         world
+    }
+
+    #[test]
+    fn finalized_generated_images_reuse_without_rebuilding_mips() {
+        let (mut app, first) = finalized();
+        let second = intern(app.world_mut(), image(4));
+        assert_eq!(first.id(), second.id());
+        let source = image(4);
+        assert_eq!(
+            reuse_if(app.world_mut(), first.id(), &source, |data| Some(data)
+                == source.data.as_deref())
+            .unwrap()
+            .id(),
+            first.id()
+        );
+        let assets = app.world().resource::<Assets<Image>>();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(
+            assets
+                .get(&first)
+                .unwrap()
+                .texture_descriptor
+                .mip_level_count,
+            3
+        );
+        assert!(
+            app.world().resource::<GeneratedImages>().1[&first.id()]
+                .source
+                .data
+                .is_none()
+        );
+        drop((first, second));
+        for _ in 0..4 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<Assets<Image>>().len(), 0);
+        assert!(app.world().resource::<GeneratedImages>().1.is_empty());
+    }
+
+    #[test]
+    fn finalized_images_follow_later_material_wrap_changes() {
+        use crate::read::shade::{ReadPreviewMaterial, TextureWrap};
+        let (mut app, first) = finalized();
+        let read = ReadPreviewMaterial {
+            diffuse_texture: Some("albedo.png".into()),
+            texture_wraps: [("albedo.png".into(), [TextureWrap::Clamp; 2])].into(),
+            ..default()
+        };
+        super::super::sampling::note(
+            app.world_mut(),
+            &StandardMaterial {
+                base_color_texture: Some(first.clone()),
+                ..default()
+            },
+            &read,
+        );
+        app.update();
+        assert_eq!(intern(app.world_mut(), image(4)).id(), first.id());
+        assert_eq!(
+            app.world()
+                .resource::<Assets<Image>>()
+                .get(&first)
+                .unwrap()
+                .sampler,
+            super::super::sampling::sampler([TextureWrap::Clamp; 2])
+        );
+    }
+
+    #[test]
+    fn finalized_images_reject_changed_pixels_mips_and_layouts() {
+        for change in 0..4 {
+            let (mut app, first) = finalized();
+            {
+                let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+                let mut target = images.get_mut(&first).unwrap();
+                match change {
+                    0 => target.data.as_mut().unwrap()[0] = 0,
+                    1 => *target.data.as_mut().unwrap().last_mut().unwrap() = 0,
+                    2 => target.sampler = bevy::image::ImageSampler::nearest(),
+                    _ => target.texture_descriptor.format = TextureFormat::Rgba8UnormSrgb,
+                }
+            }
+            assert!(reuse_if(app.world_mut(), first.id(), &image(4), |_| true).is_none());
+            assert_ne!(intern(app.world_mut(), image(4)).id(), first.id());
+        }
+    }
+
+    fn finalized() -> (App, Handle<Image>) {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>();
+        configure(&mut app);
+        super::super::sampling::configure(&mut app);
+        let handle = intern(app.world_mut(), image(4));
+        super::super::sampling::note(
+            app.world_mut(),
+            &StandardMaterial {
+                base_color_texture: Some(handle.clone()),
+                ..default()
+            },
+            &default(),
+        );
+        app.update();
+        (app, handle)
     }
 
     #[test]

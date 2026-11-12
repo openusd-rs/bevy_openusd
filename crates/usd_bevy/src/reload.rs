@@ -1,7 +1,7 @@
 //! Transactional, field-level updates of layers in an existing stage.
 
 use openusd::{
-    sdf::{AbstractData, Data, Layer},
+    sdf::{AbstractData, Data, LayerHandle},
     usd::Stage,
 };
 
@@ -17,10 +17,7 @@ impl LayerReload {
     /// Parses replacement bytes and validates composition without modifying `stage`.
     pub fn prepare(stage: &Stage, replacements: &[(String, Vec<u8>)]) -> anyhow::Result<Self> {
         Self::prepare_decoded(stage, replacements, |id, bytes| {
-            Ok(openusd::sdf::LayerRegistry::read_bytes(
-                std::borrow::Cow::Owned(bytes.clone()),
-                id,
-            )?)
+            Ok(openusd::sdf::LayerRegistry::read_bytes(bytes.clone().into(), id)?.0)
         })
     }
 
@@ -29,10 +26,7 @@ impl LayerReload {
         replacements: &[(String, std::sync::Arc<[u8]>)],
     ) -> anyhow::Result<Self> {
         Self::prepare_decoded(stage, replacements, |id, bytes| {
-            Ok(openusd::sdf::LayerRegistry::read_shared_bytes(
-                bytes.clone(),
-                id,
-            )?)
+            Ok(openusd::sdf::LayerRegistry::read_bytes(bytes.clone().into(), id)?.0)
         })
     }
 
@@ -44,19 +38,16 @@ impl LayerReload {
         let mut layers = Vec::new();
         let mut expected = Vec::new();
         for (id, bytes) in replacements {
-            anyhow::ensure!(
-                stage.layer(id).is_some(),
-                "reload layer is not in the stage: {id}"
-            );
+            let layer = stage
+                .layer(id)?
+                .ok_or_else(|| anyhow::anyhow!("reload layer is not in the stage: {id}"))?;
             anyhow::ensure!(
                 !layers.iter().any(|(existing, _)| existing == id),
                 "duplicate reload layer: {id}"
             );
             let data = decode(id, bytes)?;
             layers.push((id.clone(), Data::from_abstract(data.as_ref())?));
-            expected.push(blake3::hash(
-                stage.layer(id).unwrap().export_to_string()?.as_bytes(),
-            ));
+            expected.push(blake3::hash(layer.export_to_string()?.as_bytes()));
         }
         let root = stage.root_layer();
         let root_id = root.identifier().to_owned();
@@ -99,13 +90,18 @@ impl LayerReload {
             if id != root_id {
                 source.insert_dependency(
                     id.clone(),
-                    layer_snapshot(&stage.layer(&id).unwrap(), &id)?,
+                    layer_snapshot(
+                        &stage
+                            .layer(&id)?
+                            .ok_or_else(|| anyhow::anyhow!("reload layer disappeared: {id}"))?,
+                        &id,
+                    )?,
                 );
             }
         }
         let (candidate, disk) = source.open_stage_for_editor()?;
         candidate.set_load_rules(stage.load_rules());
-        candidate.set_interpolation_type(stage.interpolation_type());
+        candidate.set_interpolation(stage.interpolation());
         for id in stage.muted_layers() {
             candidate.mute_layer(id);
         }
@@ -129,7 +125,7 @@ impl LayerReload {
     pub fn apply(&self, stage: &Stage) -> anyhow::Result<()> {
         for ((id, _), expected) in self.layers.iter().zip(&self.expected) {
             let layer = stage
-                .layer(id)
+                .layer(id)?
                 .ok_or_else(|| anyhow::anyhow!("reload layer disappeared: {id}"))?;
             anyhow::ensure!(
                 blake3::hash(layer.export_to_string()?.as_bytes()) == *expected,
@@ -147,8 +143,9 @@ impl LayerReload {
     }
 }
 
-fn layer_snapshot(layer: &Layer, format_path: &str) -> anyhow::Result<Vec<u8>> {
+fn layer_snapshot(layer: &LayerHandle, format_path: &str) -> anyhow::Result<Vec<u8>> {
     use openusd::sdf::FileFormat;
+    let layer = layer.try_borrow()?;
     let packaged = openusd::ar::split_package_relative_path_inner(format_path);
     let path = packaged
         .as_ref()
@@ -183,7 +180,7 @@ fn patch(target: &mut dyn AbstractData, source: &Data) {
         }
         for field in source.list_fields(&path).unwrap_or_default() {
             let value = source
-                .get_field(&path, &field)
+                .field(&path, &field)
                 .expect("materialized layer data");
             if target.try_field(&path, &field).ok().flatten().as_deref() != Some(value.as_ref()) {
                 target.set_field(&path, &field, value.into_owned());
@@ -195,6 +192,7 @@ fn patch(target: &mut dyn AbstractData, source: &Data) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openusd::sdf::Layer;
 
     fn binary_reload_case(kind: &str) {
         use openusd::sdf::FileFormat;
@@ -212,8 +210,8 @@ mod tests {
             bytes.into_inner()
         };
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usdc");
-        let root = directory.path().join(match kind {
+        let child = directory.path().canonicalize().unwrap().join("child.usdc");
+        let root = directory.path().canonicalize().unwrap().join(match kind {
             "dependency" => "root.usda",
             "package" => "root.usdz",
             _ => "root.usdc",
@@ -333,7 +331,7 @@ mod tests {
         let source = crate::UsdSource::new("deferred-reload.usda", text.as_slice()).unwrap();
         let stage = source.open_stage().unwrap();
         stage.set_load_rules(openusd::pcp::LoadRules::none());
-        stage.set_interpolation_type(openusd::usd::InterpolationType::Held);
+        stage.set_interpolation(openusd::usd::InterpolationType::Held);
         crate::UsdSource::validate_composition(&stage).unwrap();
         let replacement = String::from_utf8(text.to_vec())
             .unwrap()
@@ -345,7 +343,7 @@ mod tests {
         .unwrap();
         assert_eq!(plan.candidate().load_rules(), stage.load_rules());
         assert_eq!(
-            plan.candidate().interpolation_type(),
+            plan.candidate().interpolation(),
             openusd::usd::InterpolationType::Held
         );
         plan.apply(&stage).unwrap();
@@ -364,13 +362,13 @@ mod tests {
     #[test]
     fn referenced_layer_reload_updates_both_instances_not_unrelated_prims() {
         let directory = tempfile::tempdir().unwrap();
-        let child = directory.path().join("child.usda");
+        let child = directory.path().canonicalize().unwrap().join("child.usda");
         std::fs::write(
             &child,
             "#usda 1.0\ndef Cube \"Model\" { double size = 1 }\n",
         )
         .unwrap();
-        let root = directory.path().join("root.usda");
+        let root = directory.path().canonicalize().unwrap().join("root.usda");
         let source = crate::UsdSource::new(&root, b"#usda 1.0\ndef Xform \"A\" (prepend references = @child.usda@</Model>) {}\ndef Xform \"B\" (prepend references = @child.usda@</Model>) {}\ndef Cube \"Other\" { double size = 7 }\n".as_slice()).unwrap();
         let stage = source.open_stage().unwrap();
         crate::UsdSource::validate_composition(&stage).unwrap();

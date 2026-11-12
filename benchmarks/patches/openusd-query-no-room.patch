@@ -1,0 +1,95 @@
+diff --git a/crates/openusd/src/usd/attribute.rs b/crates/openusd/src/usd/attribute.rs
+index 383108fb..783bf983 100644
+--- a/crates/openusd/src/usd/attribute.rs
++++ b/crates/openusd/src/usd/attribute.rs
+@@ -1527,6 +1527,7 @@ impl AttributeQuery {
+ 
+     /// Builds a query sharing `budget` for source admission on each refresh.
+     /// An unadmitted source answers the current read and is then dropped.
++    /// When no source record fits, reads use ordinary value resolution.
+     pub fn with_budget(attr: &Attribute, budget: &super::QueryCacheBudget) -> Self {
+         let mut query = Self::new(attr);
+         query.budget = Some(budget.clone());
+@@ -1647,6 +1648,13 @@ impl AttributeQuery {
+             return self.evaluate(&cached.source, time);
+         }
+         self.cached.take();
++        if self
++            .budget
++            .as_ref()
++            .is_some_and(|budget| budget.prospective_usage(size_of::<CachedSource>()).is_none())
++        {
++            return self.evaluate(&AttributeValueSource::PerTime, time);
++        }
+ 
+         // Miss: resolve the source once and evaluate it. An empty source is as
+         // final as any other — a query on a `/__Prototype_N` path completes
+diff --git a/crates/openusd/src/usd/query_budget.rs b/crates/openusd/src/usd/query_budget.rs
+index beea122d..1d276b72 100644
+--- a/crates/openusd/src/usd/query_budget.rs
++++ b/crates/openusd/src/usd/query_budget.rs
+@@ -46,12 +46,17 @@ impl QueryCacheBudget {
+         self.0.entries.get()
+     }
+ 
+-    pub(super) fn acquire(&self, bytes: usize) -> Option<Charge> {
++    pub(super) fn prospective_usage(&self, bytes: usize) -> Option<(usize, usize)> {
+         let total = self.0.bytes.get().checked_add(bytes)?;
+         let entries = self.0.entries.get().checked_add(1)?;
+         if self.0.max_bytes == 0 || total > self.0.max_bytes || entries > self.0.max_entries {
+             return None;
+         }
++        Some((total, entries))
++    }
++
++    pub(super) fn acquire(&self, bytes: usize) -> Option<Charge> {
++        let (total, entries) = self.prospective_usage(bytes)?;
+         self.0.bytes.set(total);
+         self.0.entries.set(entries);
+         Some(Charge {
+@@ -108,13 +113,17 @@ mod tests {
+     #[test]
+     fn charge_limits_release() {
+         let budget = QueryCacheBudget::new(10, 2);
++        assert_eq!(budget.prospective_usage(6), Some((6, 1)));
++        assert_eq!(budget.retained_bytes(), 0);
+         let first = budget.acquire(6).unwrap();
++        assert_eq!(budget.prospective_usage(5), None);
+         assert!(budget.acquire(5).is_none());
+         let second = budget.clone().acquire(4).unwrap();
+         assert_eq!(budget.retained_bytes(), 10);
+         assert!(budget.acquire(0).is_none());
+         drop(first);
+         assert_eq!(budget.retained_bytes(), 4);
++        assert_eq!(budget.prospective_usage(6), Some((10, 2)));
+         drop(second);
+         assert_eq!(budget.retained_entries(), 0);
+         assert_eq!(budget.retained_bytes(), 0);
+@@ -220,6 +229,27 @@ mod tests {
+         Ok(())
+     }
+ 
++    #[test]
++    fn no_room_reads_edits() -> Result<()> {
++        let stage = stage()?;
++        let attr = sampled(&stage, "/P.points", 1)?;
++        for (index, (bytes, entries)) in [(0, 8), (1, 8), (4096, 0)].into_iter().enumerate() {
++            let budget = QueryCacheBudget::new(bytes, entries);
++            let query = AttributeQuery::with_budget(&attr, &budget);
++            compare(&query)?;
++            sampled(&stage, "/P.points", index + 2)?;
++            compare(&query)?;
++            assert_eq!(
++                query.get_at::<Vec<gf::Vec3f>>(TimeCode::new(5.0))?.unwrap().len(),
++                index + 2
++            );
++            assert!(!query.memo_is_current());
++            assert_eq!(budget.retained_bytes(), 0);
++            assert_eq!(budget.retained_entries(), 0);
++        }
++        Ok(())
++    }
++
+     #[test]
+     fn exact_byte_boundary() -> Result<()> {
+         let stage = stage()?;

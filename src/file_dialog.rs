@@ -207,7 +207,7 @@ impl FileDialogs {
     pub fn poll(&mut self) -> Option<EditorCommand> {
         if let Some(answer) = self.confirmation.clone() {
             let mut choice = None;
-            let response = egui::Modal::new(egui::Id::new("usd.open.confirmation")).show(&self.context, |ui| {
+            let response = egui::Modal::new(egui::Id::unique("usd.open.confirmation")).show(&self.context, |ui| {
                 ui.set_max_width(420.);
                 ui.heading("Replace current USD document?");
                 ui.label("Opening another document replaces the current scene. Any changes you have not saved will be lost.");
@@ -256,6 +256,18 @@ impl FileDialogs {
 }
 
 #[cfg(test)]
+/// Runs a headless UI pass and clears its texture deltas.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -281,7 +293,7 @@ mod tests {
             assert!(
                 matches!(dialogs.pending.as_ref().unwrap().0, Request::Open { document_id: 42, revision: value } if value == revision)
             );
-            let _ = context.run_ui(egui::RawInput::default(), |_| {
+            let _ = run_pass(&context, egui::RawInput::default(), |_| {
                 assert!(dialogs.poll().is_none());
             });
             assert!(dialogs.confirmation.is_some());
@@ -293,13 +305,13 @@ mod tests {
                 repeat: false,
                 modifiers: egui::Modifiers::NONE,
             });
-            let _ = context.run_ui(input, |_| {
+            let _ = run_pass(&context, input, |_| {
                 assert!(dialogs.poll().is_none());
             });
             assert!(dialogs.confirmation.is_none());
             assert!(dialogs.pending.is_none());
             assert!(dialogs.status().is_none());
-            let _ = context.run_ui(egui::RawInput::default(), |_| {
+            let _ = run_pass(&context, egui::RawInput::default(), |_| {
                 assert!(dialogs.poll().is_none());
             });
         }

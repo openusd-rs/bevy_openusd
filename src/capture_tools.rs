@@ -16,13 +16,16 @@ pub struct Frame {
     pub rgba: Vec<u8>,
 }
 
+/// Stores the screenshot delivered to one request's callback.
+pub(crate) type ScreenshotSlot = Arc<Mutex<Option<Arc<egui::ColorImage>>>>;
+
 #[derive(Clone)]
 struct Request {
     id: u64,
     ui: bool,
     submitted: bool,
     started: Instant,
-    token: egui::UserData,
+    slot: ScreenshotSlot,
 }
 
 #[derive(Default)]
@@ -47,7 +50,7 @@ impl CaptureBridge {
             ui: include_ui,
             submitted: false,
             started: Instant::now(),
-            token: egui::UserData::new(("usdview-interactive-capture", state.next)),
+            slot: ScreenshotSlot::default(),
         });
         Ok(())
     }
@@ -87,22 +90,16 @@ impl CaptureBridge {
             request.submitted = true;
             snapshot
         };
-        let token = request.token;
+        let slot = request.slot;
         if !request.submitted {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(token.clone()));
+            let sink = slot.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                egui::ScreenshotCallback::new(move |image| {
+                    *sink.lock().unwrap() = Some(image);
+                }),
+            ));
         }
-        let image = ctx.input(|input| {
-            input.events.iter().find_map(|event| match event {
-                egui::Event::Screenshot {
-                    viewport_id,
-                    user_data,
-                    image,
-                } if *viewport_id == egui::ViewportId::ROOT && *user_data == token => {
-                    Some(image.clone())
-                }
-                _ => None,
-            })
-        });
+        let image = slot.lock().unwrap().take();
         if let Some(image) = image {
             self.finish(
                 request.id,
@@ -280,6 +277,18 @@ impl CaptureTools {
 }
 
 #[cfg(test)]
+/// Runs a headless UI pass and clears its texture deltas.
+fn run_pass(
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut output = ctx.run_ui(input, ui);
+    output.textures_delta.clear();
+    output
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -310,30 +319,71 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), before);
     }
     #[test]
-    fn host_callback_matches_the_original_request_token() {
+    fn host_callback_completes_the_original_request() {
         let bridge = CaptureBridge::default();
         bridge.request(true).unwrap();
         let ctx = egui::Context::default();
-        let output = ctx.run_ui(egui::RawInput::default(), |ui| bridge.update_host(ui.ctx()));
-        let command = output.viewport_output[&egui::ViewportId::ROOT]
+        let output = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            bridge.update_host(ui.ctx())
+        });
+        let callback = output.viewport_output[&egui::ViewportId::ROOT]
             .commands
             .iter()
-            .find_map(|command| {
-                if let egui::ViewportCommand::Screenshot(token) = command {
-                    Some(token.clone())
-                } else {
-                    None
-                }
+            .find_map(|command| match command {
+                egui::ViewportCommand::Screenshot(callback) => Some(callback.clone()),
+                _ => None,
             })
             .unwrap();
-        let mut input = egui::RawInput::default();
-        input.events.push(egui::Event::Screenshot {
-            viewport_id: egui::ViewportId::ROOT,
-            user_data: command,
-            image: Arc::new(egui::ColorImage::filled([1, 1], egui::Color32::RED)),
+        callback.complete(Arc::new(egui::ColorImage::filled(
+            [1, 1],
+            egui::Color32::RED,
+        )));
+        let _ = run_pass(&ctx, egui::RawInput::default(), |ui| {
+            bridge.update_host(ui.ctx())
         });
-        let _ = ctx.run_ui(input, |ui| bridge.update_host(ui.ctx()));
         let frame = bridge.take().unwrap().unwrap();
         assert_eq!(frame.rgba, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn expired_host_callback_cannot_complete_a_new_request() {
+        let bridge = CaptureBridge::default();
+        let ctx = egui::Context::default();
+        let submit = || {
+            let output = run_pass(&ctx, egui::RawInput::default(), |ui| {
+                bridge.update_host(ui.ctx())
+            });
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::ViewportCommand::Screenshot(callback) => Some(callback.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        bridge.request(true).unwrap();
+        let expired = submit();
+        bridge.0.lock().unwrap().pending.as_mut().unwrap().started =
+            Instant::now() - Duration::from_secs(31);
+        assert_eq!(bridge.take().unwrap().err().unwrap(), "Capture timed out");
+        bridge.request(true).unwrap();
+        let current = submit();
+        expired.complete(Arc::new(egui::ColorImage::filled(
+            [1, 1],
+            egui::Color32::RED,
+        )));
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            bridge.update_host(ui.ctx())
+        });
+        assert!(bridge.take().is_none());
+        current.complete(Arc::new(egui::ColorImage::filled(
+            [1, 1],
+            egui::Color32::GREEN,
+        )));
+        run_pass(&ctx, egui::RawInput::default(), |ui| {
+            bridge.update_host(ui.ctx())
+        });
+        assert_eq!(bridge.take().unwrap().unwrap().rgba, [0, 255, 0, 255]);
     }
 }

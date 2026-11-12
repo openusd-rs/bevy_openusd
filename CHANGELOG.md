@@ -1,5 +1,371 @@
 # Changelog
 
+## [0.4.0] - 2026-11-12
+
+### <!-- 0 -->⛰️  Features
+
+- Allow opt-in hidden mesh deferral
+- Bevy 0.20
+- Honour wraps and build mip chains
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Fit shadow cascades to the scene
+- Blend OmniPBR textures by influence
+- Reveal deferred meshes on visibility
+- Recognize socket-backed child input
+- Wait for native probe completion
+- Extract mesh IDs with morph weights
+- Request deformation storage limits
+- Wait for composed scene readiness
+- Register late renderer sorting
+- Sort deformed draws by posed centers
+- Preserve packaged entry overrides
+- Track initial texture file hashes
+- Invalidate edited texture samples
+- Reuse finalized generated images
+- Preserve forward-only material paths
+- Verify recovered shader pipelines
+- Preserve custom batch bounds
+- Register materials for live stages
+- Keep unchanged texture change ticks
+- Match the native OpenUSD compiler ABI
+- Preserve layer adoption errors
+- Retry unavailable layer hashes
+- Flush live layer notifications
+- Adapt editor to live layer handles
+- Handle fallible live observers
+- Use live layers in persistence
+- Match Bevy material OIT blending
+- Restore screen-space transmission
+- Register and retain WESL libraries
+- Normalize Trunk no-color setting
+- Exclude native reload polling
+- Retain render-start frame pacing
+- Resolve bash from PATH
+
+### <!-- 2 -->🚜 Refactor
+
+- Track composition revisions
+- Share composition cache key
+- Group pose timing parameters
+- Split tangent cache preparation
+- Group scene and pose queries
+- Group frame validation queries
+- Finish small lint fixes
+- Move environment tests below setup
+- Share outliner traversal context
+- Group render probe resources
+- Name camera and draft queries
+- Simplify capture diagnostics
+- Modernize checked expressions
+- Place route tests after implementation
+- Clarify projection and reload predicates
+- Group instancing render resources
+- Name projection query and cache types
+- Flatten guarded update branches
+- Remove redundant reference wrappers
+- Use fixed-size chunk iterators
+- Use egui unique identifiers
+- Use Bevy projection helpers
+
+### <!-- 3 -->📚 Documentation
+
+- Drop stale migration notes
+- Record herd playback gains
+- Record GPU normal blend gains
+- Record skeletal playback gains
+- Record skinned rest tangent gains
+- Document downstream GPU morph gate
+- Require both downstream Bevy overrides
+- Record editor scheduling diagnostic
+- Record failed editor block controls
+- Define sustained editor controls
+- Record tangent memo kernel gains
+- Record tangent memo qualification
+- Define tangent normal memo gates
+- Record streamed tangent results
+- Define streamed tangent gates
+- Record tangent arena gate failure
+- Define tangent arena gates
+- Record failed editor query gate
+- Record stage query integration
+- Record budgeted animation results
+- Record owned sample results
+- Record no-room query results
+- Record bounded query kernel gains
+- Record bounded query prototype
+- Define bounded query requirements
+- Record requested animation channels
+- Record sample query opportunity
+- Retain main-thread control failures
+- Bound main-thread comparison
+- Measure control placement effect
+- Record tangent CPU work evidence
+- Define tangent placement diagnostic
+- Retain tangent editor failures
+- Define tangent editor comparison
+- Verify tangent scratch experiment
+- Record tangent projection limit
+- Locate remaining preparation costs
+- Verify query sharing renders
+- Audit query control CPU work
+- Record shared query comparison
+- Reject skin correction cache
+- Record native prefix target checks
+- Record independent capture controls
+- Record grid replay evidence
+- Record GPU uniform witness
+- Record full morph verification
+- Record morph publication repair
+- Retain native residency failures
+- Record paired residency results
+- Record deferred preparation checks
+- Retain paired editor gate failures
+- Record balanced tangent timings
+- Record restored scheduler checks
+- Record primvar timing regressions
+- Retain render probe control failures
+- Record live seek render failures
+- Record live ordering comparison
+- Measure real-scene image capacity
+- Verify mip capacity image fidelity
+- Retain common-path opening results
+- Trace binary identity cache bias
+- Record mip opening results
+- Verify exact mip encoding gates
+- Locate native texture loading cost
+- Retain matched opening failures
+- Verify native opening milestones
+- Record scoped relationship results
+- Verify scoped relationship reuse
+- Scope relationship reuse acceptance
+- Locate remaining playback costs
+- Record mesh phase timer verification
+- Retain repeated playback regressions
+- Record refreshed native cache gates
+- Audit animation cache comparison
+- Record animation cache validation
+- Identify asset animation scan cost
+- Record rendered playback baseline
+- Record instancer validation
+- Retain opening regression evidence
+- Record instancer parenting bottleneck
+- Record editor cache acceptance gates
+- Retain residual pixel controls
+- Record posed sorting validation
+- Record wing and grid phase order
+- Record paired scheduling gains
+- Record grouped preparation evidence
+- Record sparse batching correction
+- Define parallel preparation gates
+- Record CPU input reuse evidence
+- Record tangent reuse validation
+- Track transparent sort hypothesis
+- Record skin preparation results
+- Record texture reload savings
+- Record texture load improvements
+- Record assembly comparison results
+- Record release CPU baselines
+- Record baseline instrumentation
+- Record playback repair and limits
+- Define whole-pipeline optimization
+- Record final local acceptance
+- Record visual shader acceptance
+- Record native and web checks
+- Record full test matrix pass
+- Record strict lint progress
+- Record remaining test gates
+- Record live rendering repairs
+- Record native upstream gates
+- Record upstream API verification
+- Record pre-upstream checkpoint
+- Include upstream OpenUSD work
+- Record runtime gates and blockers
+- Record integration and GPU gate
+- Record gates and local progress
+
+### <!-- 4 -->⚡ Performance
+
+- Share poses across identical references
+- Posed centers only for sorted draws
+- Classify animated prims once per tick
+- Blend skin normals on the GPU
+- Defer hidden meshes by default
+- Skip static routes on skinned meshes
+- Stop resampling SkelAnimation prims
+- Gpu-skin meshes with unweighted points
+- Reuse skinned rest tangents
+- Count animation read requests
+- Share animation authored flags
+- Make trace logging opt-in
+- Share scoped query handles
+- Batch resident deferred meshes
+- Balance bounded tangent queues
+- Reuse ancestor primvar reads
+- Order built-in animation traversal
+- Reserve the complete encoded chain
+- Quantize sRGB with bounded tables
+- Reuse scoped relationship samples
+- Cache animation classification
+- Retain stable parent links
+- Reuse stable hierarchy snapshots
+- Group sparse tangent workloads
+- Batch animated tangent preparation
+- Reuse resolved CPU influences
+- Cache reused deformed tangents
+- Retain hot tangent cache entries
+- Reuse the current mesh binding
+- Stream base mip decoding
+- Reuse assembled rest geometry
+- Share projection pose queries
+- Retain static sampled bindings
+- Share live frame preparation
+
+### <!-- 6 -->🧪 Testing
+
+- Expect no GPU tangent jobs when paired
+- Cover deferred reveal in downstream consumer
+- Render standalone morph consumer offscreen
+- Verify standalone library integration
+- Pin standalone consumer dependencies
+- Trace editor block scheduling
+- Define editor scheduling counters
+- Verify sustained editor controls
+- Add sustained editor block driver
+- Retain normal-keyed tangent reuse
+- Verify stricter tangent target
+- Cover changing tangent normals
+- Retain streamed tangent groups
+- Check tangent callback order
+- Probe sparse tangent group storage
+- Gate tangent arena on real meshes
+- Retain tangent group arena
+- Verify tangent allocation counts
+- Verify editor gate rejection
+- Retain query usage instrumentation
+- Gate integrated query reuse
+- Retain stage query reuse
+- Retain query metadata accounting
+- Measure budgeted animation API
+- Retain budgeted animation API
+- Retain owned sample transfer
+- Measure oversized query sources
+- Retain no-room query shortcut
+- Measure refused query reads
+- Measure budgeted animation reads
+- Retain budgeted query prototype
+- Cover query admission hazards
+- Inventory large animation tables
+- Probe upstream sample query reuse
+- Compare tangent geometry corpus
+- Add tangent kernel fingerprints
+- Inventory skin influence reuse
+- Read native final target pixels
+- Add opt-in release GPU captures
+- Capture same-frame GPU uniforms
+- Trace light order and skin palettes
+- Reject stale morph draw inputs
+- Wait for both projected scenes
+- Trace morph descriptor publication
+- Capture residency edit transitions
+- Pair eager and deferred editors
+- Cover deferred mesh command lifecycle
+- Step full editor updates over stdin
+- Balance paired mesh allocations
+- Pair identical tangent scheduling jobs
+- Wait for inherited fixture readiness
+- Record grid state at readback
+- Isolate private portal settings
+- Share live render phase probe
+- Drive live editor seek sequences
+- Report retained image capacity
+- Assert point and curve readiness
+- Keep scalar encoding independent
+- Split opening texture finalization
+- Record native opening milestones
+- Separate deformation eligibility costs
+- Split mesh preparation phase timings
+- Wait for independently timed roots
+- Profile asset-root animation scans
+- Wait for projected fixture roots
+- Record render CPU playback timings
+- Wait for projected roots
+- Measure rendered playback windows
+- Isolate parent-link scaling
+- Cover pose cache invalidation
+- Label generated subset draws
+- Probe transparent phase ordering
+- Pair serial and batched updates
+- Record parallel work utilization
+- Cover parallel instance lifecycle
+- Wait for complete fixture projection
+- Report mesh preparation batch cost
+- Remove needless attribute borrows
+- Split tangent preparation phases
+- Report CPU skin fallback reasons
+- Profile GPU skin preparation
+- Retain seek warmup measurements
+- Remove projection timing race
+- Cover texture refresh provenance
+- Use fixed-size texel chunks
+- Measure texture finalization
+- Remove projection timing race
+- Record raw seeks and peak RSS
+- Remove fixture timing races
+- Add short animation seek probe
+- Complete opacity projections
+- Detect missing and dark strands
+- Complete geometry fixture projection
+- Snapshot compact capture tools
+- Port OIT resize check to Oslo
+- Modernize fixture iteration and literals
+- Isolate watcher retry recovery
+- Await pipelined shader compilation
+- Add deformation and compact gates
+- Bound hierarchy fixture timing
+- Render cameras in GPU smoke tests
+- Select the authored dome path
+- Use the USD light intensity scale
+- Capture GPU instancing fixtures
+- Reject missing shader modules
+- Check typed buffer layout
+- Isolate expired host callbacks
+- Cover custom material routing
+- Remove fixture budget race
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Cleanup
+- Port UI checks to Oslo recipes
+
+### <!-- 9 -->◀️ Revert
+
+- Withdraw authored flag cache
+- Withdraw tangent queue
+
+### Build
+
+- Vendor upstream Bevy PBR sources
+- Allow release builds without launching
+- Run saved baseline executables
+- Support release profiling
+- Optimize upstream USD schemas
+- Include native UI test tools
+- Collect all strict lint diagnostics
+- Expose strict lint diagnostics
+- Pin current upstream revision
+- Expose native deformation oracle
+- Pin Bevy 0.20.1 and Mara fork
+- Rebase loader patch onto 0.20.1
+- Add migration verification gates
+- Pin Rust 1.98.1 for Bevy 0.20
+- Hadle nixos systems
+
+### Merge
+
+- Retain original 0.20 contribution
+
 ## [0.3.0] - 2026-10-08
 
 ### <!-- 0 -->⛰️  Features

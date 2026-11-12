@@ -137,7 +137,7 @@ fn cubemap(
                 let direction = face_direction(face, u, v).normalize();
                 let direction = Vec3::new(direction.x, direction.y, -direction.z);
                 let rgb =
-                    sample(&pixels, size.width, size.height, direction) * Vec3::from_array(tint);
+                    sample(pixels, size.width, size.height, direction) * Vec3::from_array(tint);
                 for value in [rgb.x, rgb.y, rgb.z, 1.0] {
                     anyhow::ensure!(
                         value.is_finite() && value <= 65504.0,
@@ -232,7 +232,8 @@ fn extract_sun(pixels: &mut [Vec3], width: u32, height: u32) -> Option<DomeSun> 
             (peak, at) = (value, index);
         }
     }
-    if !(peak > SUN_CONTRAST * total / (4.0 * std::f32::consts::PI)) {
+    let threshold = SUN_CONTRAST * total / (4.0 * std::f32::consts::PI);
+    if peak.partial_cmp(&threshold) != Some(std::cmp::Ordering::Greater) {
         return None;
     }
     let center = pixel_direction(at as u32 % width, at as u32 / width, width, height);

@@ -17,11 +17,10 @@ use bevy::core_pipeline::{Core3d, Core3dSystems};
 use bevy::ecs::{
     query::ROQueryItem,
     system::{
-        SystemParamItem,
+        SystemParam, SystemParamItem,
         lifetimeless::{Read, SRes},
     },
 };
-use bevy::math::primitives::ViewFrustum;
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{
     MeshPipeline, MeshPipelineKey, MeshPipelineSystems, PrepassPipeline, SetMeshViewBindGroup,
@@ -53,6 +52,7 @@ use bevy::render::{
     view::{ExtractedView, RenderVisibleEntities, RetainedViewEntity},
 };
 use bevy::shader::ShaderDefVal;
+use bevy::shape::ViewFrustum;
 use bytemuck::{Pod, Zeroable};
 
 /// Instances per chunk: one buffer, one culling dispatch, one bounding box.
@@ -64,6 +64,7 @@ const VIEW_STRIDE: u64 = 256;
 /// Turns on GPU instancing for point instancers. Present in the main world
 /// once [`UsdGpuInstancingPlugin`] is added.
 #[derive(Resource, ExtractResource, Debug, Clone, Copy)]
+#[extract_app(RenderApp)]
 pub struct UsdGpuInstancing {
     /// Instancers with more instances than this are drawn on the GPU; smaller
     /// ones keep one entity per instance.
@@ -91,11 +92,13 @@ pub struct UsdGpuInstancingPlugin;
 
 impl Plugin for UsdGpuInstancingPlugin {
     fn build(&self, app: &mut App) {
-        bevy::asset::embedded_asset!(app, "gpu_instancing.wgsl");
+        bevy::asset::embedded_asset!(app, "gpu_instancing.wesl");
         bevy::asset::embedded_asset!(app, "gpu_instancing_cull.wgsl");
-        bevy::asset::embedded_asset!(app, "gpu_instancing_shadow.wgsl");
-        bevy::asset::embedded_asset!(app, "gpu_instancing_types.wgsl");
-        bevy::asset::embedded_asset!(app, "sheen_functions.wgsl");
+        bevy::asset::embedded_asset!(app, "gpu_instancing_shadow.wesl");
+        bevy::asset::embedded_asset!(app, "gpu_instancing_types.wesl");
+        bevy::asset::embedded_asset!(app, "sheen_functions.wesl");
+        super::shaders::retain(app, "embedded://usd_bevy/route/gpu_instancing_types.wesl");
+        super::shaders::retain(app, "embedded://usd_bevy/route/sheen_functions.wesl");
         if !app.world().contains_resource::<UsdGpuInstancing>() {
             app.init_resource::<UsdGpuInstancing>();
         }
@@ -392,7 +395,7 @@ fn init_pipeline(
     });
     commands.insert_resource(InstancingPipeline {
         mesh_pipeline: mesh_pipeline.clone(),
-        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing.wgsl"),
+        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing.wesl"),
         draw_layout,
         cull_layout,
         cull,
@@ -446,7 +449,7 @@ fn init_shadow_pipeline(
         view_layout: prepass.view_layout_no_motion_vectors.clone(),
         empty_layout: prepass.empty_layout.clone(),
         draw_layout: instancing.draw_layout.clone(),
-        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing_shadow.wgsl"),
+        shader: asset_server.load("embedded://usd_bevy/route/gpu_instancing_shadow.wesl"),
         unclipped_depth: prepass.depth_clip_control_supported,
     });
 }
@@ -617,18 +620,30 @@ fn prepare_views(
     queue.write_buffer(cull_views.buffer.as_ref().unwrap(), 0, &bytes);
 }
 
+#[derive(SystemParam)]
+struct InstancingBindResources<'w> {
+    pipeline_cache: Res<'w, PipelineCache>,
+    meshes: Res<'w, RenderAssets<RenderMesh>>,
+    allocator: Res<'w, MeshAllocator>,
+    device: Res<'w, RenderDevice>,
+    queue: Res<'w, RenderQueue>,
+}
+
 fn prepare_bind_groups(
     mut commands: Commands,
     draws: Query<(Entity, &ExtractedDraw, Option<&GpuDraw>)>,
     mut chunks: ResMut<GpuChunks>,
     cull_views: Res<CullViews>,
     pipeline: Option<Res<InstancingPipeline>>,
-    pipeline_cache: Res<PipelineCache>,
-    meshes: Res<RenderAssets<RenderMesh>>,
-    allocator: Res<MeshAllocator>,
-    device: Res<RenderDevice>,
-    queue: Res<RenderQueue>,
+    resources: InstancingBindResources,
 ) {
+    let InstancingBindResources {
+        pipeline_cache,
+        meshes,
+        allocator,
+        device,
+        queue,
+    } = resources;
     let (Some(pipeline), Some(views)) = (pipeline, cull_views.buffer.as_ref()) else {
         return;
     };
@@ -721,17 +736,29 @@ fn prepare_bind_groups(
     }
 }
 
+#[derive(SystemParam)]
+struct InstancingDrawResources<'w> {
+    draw_functions: Res<'w, DrawFunctions<Transparent3d>>,
+    pipeline: Option<Res<'w, InstancingPipeline>>,
+    pipelines: ResMut<'w, SpecializedMeshPipelines<InstancingPipeline>>,
+    pipeline_cache: Res<'w, PipelineCache>,
+    meshes: Res<'w, RenderAssets<RenderMesh>>,
+}
+
 fn queue_draws(
-    draw_functions: Res<DrawFunctions<Transparent3d>>,
-    pipeline: Option<Res<InstancingPipeline>>,
-    mut pipelines: ResMut<SpecializedMeshPipelines<InstancingPipeline>>,
-    pipeline_cache: Res<PipelineCache>,
-    meshes: Res<RenderAssets<RenderMesh>>,
+    resources: InstancingDrawResources,
     draws: Query<&ExtractedDraw, With<GpuDraw>>,
     mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
     view_keys: Res<ViewKeyCache>,
 ) {
+    let InstancingDrawResources {
+        draw_functions,
+        pipeline,
+        mut pipelines,
+        pipeline_cache,
+        meshes,
+    } = resources;
     let Some(pipeline) = pipeline else {
         return;
     };
@@ -783,14 +810,19 @@ fn queue_draws(
 #[derive(Resource, Default)]
 struct QueuedShadows(HashMap<RetainedViewEntity, Vec<MainEntity>>);
 
+#[derive(SystemParam)]
+struct InstancingShadowResources<'w> {
+    draw_functions: Res<'w, DrawFunctions<Shadow>>,
+    pipeline: Option<Res<'w, InstancedShadowPipeline>>,
+    pipelines: ResMut<'w, SpecializedMeshPipelines<InstancedShadowPipeline>>,
+    pipeline_cache: Res<'w, PipelineCache>,
+    meshes: Res<'w, RenderAssets<RenderMesh>>,
+    allocator: Res<'w, MeshAllocator>,
+}
+
 /// Queues the draws each camera sees into its directional shadow cascades.
 fn queue_shadows(
-    draw_functions: Res<DrawFunctions<Shadow>>,
-    pipeline: Option<Res<InstancedShadowPipeline>>,
-    mut pipelines: ResMut<SpecializedMeshPipelines<InstancedShadowPipeline>>,
-    pipeline_cache: Res<PipelineCache>,
-    meshes: Res<RenderAssets<RenderMesh>>,
-    allocator: Res<MeshAllocator>,
+    resources: InstancingShadowResources,
     draws: Query<&ExtractedDraw, With<GpuDraw>>,
     mut phases: ResMut<ViewBinnedRenderPhases<Shadow>>,
     cameras: Query<(&RenderVisibleEntities, &ViewLightEntities)>,
@@ -798,6 +830,14 @@ fn queue_shadows(
     mut queued: ResMut<QueuedShadows>,
     settings: Option<Res<UsdGpuInstancing>>,
 ) {
+    let InstancingShadowResources {
+        draw_functions,
+        pipeline,
+        mut pipelines,
+        pipeline_cache,
+        meshes,
+        allocator,
+    } = resources;
     for (view, entities) in queued.0.drain() {
         if let Some(phase) = phases.get_mut(&view) {
             for entity in entities {
@@ -1030,7 +1070,7 @@ fn prototype_sphere(
     let assets = world.resource::<Assets<Mesh>>();
     let (mut min, mut max) = (Vec3::INFINITY, Vec3::NEG_INFINITY);
     for (mesh, _, part) in meshes {
-        let Some(aabb) = assets.get(mesh).and_then(|mesh| mesh.compute_aabb()) else {
+        let Some(aabb) = assets.get(mesh).and_then(|mesh| mesh.get_aabb()) else {
             continue;
         };
         let (center, half) = (Vec3::from(aabb.center), Vec3::from(aabb.half_extents));

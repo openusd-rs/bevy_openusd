@@ -207,18 +207,20 @@ fn main() -> AppExit {
     app.run()
 }
 
+type SceneMeshBounds = (
+    &'static Mesh3d,
+    Option<&'static bevy::camera::primitives::Aabb>,
+    &'static GlobalTransform,
+    &'static InheritedVisibility,
+    Option<&'static bevy::mesh::skinning::SkinnedMesh>,
+    Option<&'static bevy::mesh::morph::MeshMorphWeights>,
+);
+
 /// Sizes the floor grid and the camera clip planes to the loaded scene once.
 fn fit_grid(
     mut fitted: Local<bool>,
     states: Query<&UsdSceneState>,
-    meshes: Query<(
-        &Mesh3d,
-        Option<&bevy::camera::primitives::Aabb>,
-        &GlobalTransform,
-        &InheritedVisibility,
-        Option<&bevy::mesh::skinning::SkinnedMesh>,
-        Option<&bevy::mesh::morph::MeshMorphWeights>,
-    )>,
+    meshes: Query<SceneMeshBounds>,
     bounds: usd_bevy::mesh::bounds::MeshBounds,
     mut grids: Query<
         (
@@ -318,6 +320,7 @@ fn setup(
     };
     let mut camera = commands.spawn((
         Camera3d::default(),
+        bevy::pbr::ScreenSpaceTransmission::default(),
         exposure,
         tonemapping,
         // Media such as water measure the depth behind them from the prepass.
@@ -350,18 +353,29 @@ fn setup(
     }
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct FramePose<'w, 's> {
+    roots: Query<'w, 's, &'static mut UsdInstanceTime, With<UsdSceneRoot>>,
+    cameras: Query<'w, 's, &'static mut Transform, With<Camera3d>>,
+    skeletons: ResMut<'w, UsdSkeletonOverlay>,
+    joints: ResMut<'w, UsdPhysicsOverlay>,
+}
+
 fn record(
     mut commands: Commands,
     mut recorder: ResMut<Recorder>,
     target: Res<Target>,
     states: Query<&UsdSceneState>,
-    mut roots: Query<&mut UsdInstanceTime, With<UsdSceneRoot>>,
-    mut cameras: Query<&mut Transform, With<Camera3d>>,
-    mut skeletons: ResMut<UsdSkeletonOverlay>,
-    mut joints: ResMut<UsdPhysicsOverlay>,
+    pose: FramePose,
     streaming: Query<&UsdStreamingStatus>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    let FramePose {
+        mut roots,
+        mut cameras,
+        mut skeletons,
+        mut joints,
+    } = pose;
     match states.iter().next() {
         Some(UsdSceneState::Ready) => (),
         Some(UsdSceneState::Failed(error)) => {
@@ -447,6 +461,44 @@ struct SunFitted;
 #[derive(Component)]
 struct FrameSun;
 
+type UnfittedSun = (
+    Or<(
+        With<usd_bevy::route::dome_environment::UsdDomeSun>,
+        With<FrameSun>,
+    )>,
+    Without<SunFitted>,
+);
+
+type SceneLightData = (
+    Entity,
+    &'static usd_bevy::UsdPrimRef,
+    &'static usd_bevy::route::light::UsdLightEmission,
+    Option<&'static usd_bevy::route::light::UsdAreaLight>,
+    &'static GlobalTransform,
+    Option<&'static DirectionalLight>,
+    Option<&'static usd_bevy::route::light::UsdShadowLink>,
+);
+
+type SceneDomeData = (
+    Entity,
+    &'static usd_bevy::UsdPrimRef,
+    &'static usd_bevy::route::dome::UsdDomeLight,
+    Option<&'static usd_bevy::route::dome::UsdDomeTexture>,
+    &'static GlobalTransform,
+    Option<&'static usd_bevy::route::dome::UsdDomePoleRotation>,
+);
+
+#[derive(bevy::ecs::system::SystemParam)]
+struct SceneLights<'w, 's> {
+    suns: Query<'w, 's, Entity, UnfittedSun>,
+    lights: Query<'w, 's, SceneLightData, Without<environment::StudioLight>>,
+    meshes: Query<'w, 's, Entity, With<Mesh3d>>,
+    parents: Query<'w, 's, &'static ChildOf>,
+    prims: Query<'w, 's, &'static usd_bevy::UsdPrimRef>,
+    domes: Query<'w, 's, SceneDomeData>,
+    studio: Query<'w, 's, &'static mut DirectionalLight, With<environment::StudioLight>>,
+}
+
 /// Lights the scene with the dome named by `USD_FRAME_DOME` instead of the
 /// studio rig, with its sun as a shadowed light when `USD_FRAME_SUN` is set,
 /// and draws the dome named by `USD_FRAME_SKY` behind it. The scene light
@@ -458,43 +510,19 @@ fn scene_lighting(
     mut commands: Commands,
     mut done: Local<(bool, bool, bool)>,
     span: Option<Res<SceneSpan>>,
-    suns: Query<
-        Entity,
-        (
-            Or<(
-                With<usd_bevy::route::dome_environment::UsdDomeSun>,
-                With<FrameSun>,
-            )>,
-            Without<SunFitted>,
-        ),
-    >,
-    lights: Query<
-        (
-            Entity,
-            &usd_bevy::UsdPrimRef,
-            &usd_bevy::route::light::UsdLightEmission,
-            Option<&usd_bevy::route::light::UsdAreaLight>,
-            &GlobalTransform,
-            Option<&DirectionalLight>,
-            Option<&usd_bevy::route::light::UsdShadowLink>,
-        ),
-        Without<environment::StudioLight>,
-    >,
-    meshes: Query<Entity, With<Mesh3d>>,
-    parents: Query<&ChildOf>,
-    prims: Query<&usd_bevy::UsdPrimRef>,
-    domes: Query<(
-        Entity,
-        &usd_bevy::UsdPrimRef,
-        &usd_bevy::route::dome::UsdDomeLight,
-        Option<&usd_bevy::route::dome::UsdDomeTexture>,
-        &GlobalTransform,
-        Option<&usd_bevy::route::dome::UsdDomePoleRotation>,
-    )>,
+    lights: SceneLights,
     camera: Single<Entity, With<Camera3d>>,
-    mut studio: Query<&mut DirectionalLight, With<environment::StudioLight>>,
     mut images: ResMut<Assets<Image>>,
 ) {
+    let SceneLights {
+        suns,
+        lights,
+        meshes,
+        parents,
+        prims,
+        domes,
+        mut studio,
+    } = lights;
     let find = |name: &str| {
         let path = std::env::var(name).ok()?;
         domes.iter().find(|dome| dome.1.path == path)
@@ -580,7 +608,7 @@ fn scene_lighting(
                 FrameSun,
                 DirectionalLight {
                     shadow_maps_enabled: true,
-                    ..directional.clone()
+                    ..*directional
                 },
             ));
             return;

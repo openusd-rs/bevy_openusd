@@ -30,8 +30,8 @@ pub const ATTRIBUTE_STRAND_TANGENT: MeshVertexAttribute =
 pub const ATTRIBUTE_STRAND_NORMAL: MeshVertexAttribute =
     MeshVertexAttribute::new("UsdStrandNormal", 0x5553_4459, VertexFormat::Snorm8x4);
 
-const SHADER: &str = "embedded://usd_bevy/route/strand_material.wgsl";
-const PREPASS_SHADER: &str = "embedded://usd_bevy/route/strand_prepass.wgsl";
+const SHADER: &str = "embedded://usd_bevy/route/strand_material.wesl";
+const PREPASS_SHADER: &str = "embedded://usd_bevy/route/strand_prepass.wesl";
 
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone, Default)]
 pub struct StrandCoverage {}
@@ -49,7 +49,7 @@ impl MaterialExtension for StrandCoverage {
     fn alpha_mode() -> Option<AlphaMode> {
         Some(AlphaMode::Opaque)
     }
-    // A depth prepass would draw strands at full coverage and hide those behind.
+    // Depth prepasses exclude stochastic-coverage strands.
     fn enable_prepass() -> bool {
         false
     }
@@ -75,6 +75,18 @@ impl MaterialExtension for StrandCoverage {
             .vertex
             .shader_defs
             .contains(&"PREPASS_PIPELINE".into());
+        if !prepass {
+            let load_prepass_normals = "LOAD_PREPASS_NORMALS".into();
+            descriptor
+                .vertex
+                .shader_defs
+                .retain(|definition| definition != &load_prepass_normals);
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment
+                    .shader_defs
+                    .retain(|definition| definition != &load_prepass_normals);
+            }
+        }
         if !prepass && layout.0.contains(Mesh::ATTRIBUTE_COLOR) {
             attributes.push(Mesh::ATTRIBUTE_COLOR.at_shader_location(5));
         }
@@ -91,11 +103,12 @@ impl MaterialExtension for StrandCoverage {
 pub type StrandMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, StrandCoverage>;
 
 pub(crate) fn configure(app: &mut App) {
-    if super::wrapped::configure::<StrandCoverage>(app) {
-        bevy::asset::embedded_asset!(app, "strand_material.wgsl");
-        bevy::asset::embedded_asset!(app, "strand_prepass.wgsl");
-        bevy::asset::embedded_asset!(app, "strand_functions.wgsl");
-    }
+    super::wrapped::configure::<StrandCoverage>(app, |app| {
+        bevy::asset::embedded_asset!(app, "strand_material.wesl");
+        bevy::asset::embedded_asset!(app, "strand_prepass.wesl");
+        bevy::asset::embedded_asset!(app, "strand_functions.wesl");
+        super::shaders::retain(app, "embedded://usd_bevy/route/strand_functions.wesl");
+    });
 }
 
 pub(crate) fn clear(world: &mut World, entity: Entity) {

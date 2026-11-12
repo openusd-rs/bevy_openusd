@@ -1,8 +1,12 @@
 # bevy_openusd
 
-[OpenUSD](https://openusd.org) as a native scene format for [Bevy](https://bevy.org) 0.19.
+[OpenUSD](https://openusd.org) as a native scene format for [Bevy](https://bevy.org) 0.20.
 `usd_bevy` is the library: it loads and composes USD stages, keeps them live, and
 writes edits back with undo/redo and save. `usdview` is the editor built on it.
+
+It requires Rust 1.97.1 or newer and is tested on Linux/Vulkan and WebGL2; see
+the [Bevy 0.20 migration audit](benchmarks/bevy-020-migration.md) for coverage
+and the [benchmarks](benchmarks/) for measured playback and loading costs.
 
 | ![Hummingbird](media/hummingbird.gif) | ![Chameleon](media/chameleon.gif) | ![Cow](media/cow.gif) |
 | --- | --- | --- |
@@ -38,13 +42,17 @@ UDIM tiles. All seven rendered with `cargo run --example gif_frames`.
 
 ## Use it in Bevy
 
+Clone this repository at a release tag beside your project and put these paths
+in your consuming workspace's root `Cargo.toml`:
+
 ```toml
 [dependencies]
-bevy = "0.19"
-usd_bevy = { git = "https://github.com/openusd-rs/bevy_openusd" }
+bevy = "=0.20.1"
+usd_bevy = { path = "../bevy_openusd/crates/usd_bevy" }
 
 [patch.crates-io]
-bevy_asset = { git = "https://github.com/openusd-rs/bevy_openusd" }
+bevy_asset = { path = "../bevy_openusd/vendor/bevy_asset" }
+bevy_pbr = { path = "../bevy_openusd/vendor/bevy_pbr" }
 ```
 
 ```rust
@@ -66,7 +74,13 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 ```
 
 The `bevy_asset` patch keeps loads of one source in order, so an older snapshot
-never lands after a newer one.
+never lands after a newer one. The `bevy_pbr` patch preserves morph descriptors
+when meshes first become visible or are revealed again, and skins normals with
+UsdSkel's per-joint blend. **Both patches are required in your workspace root**;
+Cargo does not inherit this repository's patch table through the `usd_bevy`
+dependency. Keep the library and both patches on the same checkout. See the
+[standalone consumer fixture](benchmarks/downstream-consumer/README.md) for
+integration checks and the remaining rendering/platform limits.
 
 ## usdview
 

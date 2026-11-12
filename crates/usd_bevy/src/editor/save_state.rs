@@ -2,7 +2,8 @@ use openusd::usd::Stage;
 use std::collections::BTreeMap;
 
 fn content_hash(stage: &Stage, id: &str) -> Option<blake3::Hash> {
-    let layer = stage.layer(id)?;
+    let layer = stage.layer(id).ok()??;
+    let layer = layer.try_borrow().ok()?;
     let data = layer.data();
     let mut hash = blake3::Hasher::new();
     for path in data.spec_paths() {
@@ -16,7 +17,7 @@ fn content_hash(stage: &Stage, id: &str) -> Option<blake3::Hash> {
         hash.update(&(fields.len() as u64).to_le_bytes());
         for field in fields {
             hash_part(&mut hash, field.as_bytes());
-            let value = data.get_field(&path, &field).ok()?;
+            let value = data.field(&path, &field).ok()?;
             let kind: &'static str = value.as_ref().into();
             hash_part(&mut hash, kind.as_bytes());
             if let Some(bytes) = numeric_array_bytes(&value) {
@@ -39,8 +40,8 @@ fn hash_part(hash: &mut blake3::Hasher, bytes: &[u8]) {
     hash.update(bytes);
 }
 
-fn numeric_array_bytes(value: &openusd::sdf::Value) -> Option<&[u8]> {
-    use openusd::sdf::Value;
+fn numeric_array_bytes(value: &openusd::vt::Value) -> Option<&[u8]> {
+    use openusd::vt::Value;
     macro_rules! arrays {
         ($($kind:ident),*) => { match value {
             $(Value::$kind(values) => Some(bytemuck::cast_slice(values)),)*
@@ -122,7 +123,7 @@ impl SaveState {
         for id in stage.layer_identifiers() {
             let revision = revisions.get(&id).copied().unwrap_or_default();
             let current = self.cache.entry(id.clone()).or_insert((u64::MAX, None));
-            if current.0 != revision || revision == u64::MAX {
+            if current.0 != revision || revision == u64::MAX || current.1.is_none() {
                 *current = (revision, content_hash(stage, &id));
             }
             if self.loaded_document
@@ -130,11 +131,12 @@ impl SaveState {
                 && !self.baselines.contains_key(&id)
                 && stage
                     .layer(&id)
+                    .ok()
+                    .flatten()
                     .is_some_and(|layer| layer.resolved_path().is_some())
+                && let Some(hash) = current.1
             {
-                if let Some(hash) = current.1 {
-                    self.baselines.insert(id.clone(), hash);
-                }
+                self.baselines.insert(id.clone(), hash);
             }
             let state = match (self.baselines.get(&id), current.1) {
                 (Some(baseline), Some(hash)) if *baseline == hash => LayerSaveState::Clean,
@@ -150,7 +152,9 @@ impl SaveState {
     }
 
     pub fn saved_to_source(&mut self, stage: &Stage, id: &str, filename: &str) {
-        let Some(layer) = stage.layer(id) else { return };
+        let Ok(Some(layer)) = stage.layer(id) else {
+            return;
+        };
         let Some(source) = layer.resolved_path() else {
             return;
         };
@@ -167,5 +171,36 @@ impl SaveState {
             self.baselines.insert(id.to_string(), hash);
             self.cache.remove(id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_content_hash_is_retried_at_the_same_revision() {
+        let stage = Stage::builder().in_memory("save-state.usda").unwrap();
+        stage.define_prim("/Root").unwrap();
+        let id = stage.root_layer().identifier().to_owned();
+        let hash = content_hash(&stage, &id).unwrap();
+        let mut state = SaveState::default();
+        state.baselines.insert(id.clone(), hash);
+        let revisions = BTreeMap::new();
+        stage
+            .root_layer()
+            .edit(|_| {
+                assert_eq!(
+                    state.states(&stage, &revisions, 0)[&id],
+                    LayerSaveState::Unknown
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(state.cache[&id], (0, None));
+        assert_eq!(
+            state.states(&stage, &revisions, 0)[&id],
+            LayerSaveState::Clean
+        );
     }
 }

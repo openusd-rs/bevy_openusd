@@ -3,8 +3,8 @@
 //! [`ReadPreviewMaterial`], following connections through `UsdUVTexture` and
 //! the MaterialX node graph. Reads through openusd only.
 
-use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
+use openusd::{sdf::Path, vt::Value};
 
 use super::util::{connections_at, read_asset_path, read_bool, read_token_or_string};
 
@@ -60,10 +60,55 @@ pub struct ReadPreviewMaterial {
     pub color_texture_transforms: std::collections::BTreeMap<String, [[f32; 3]; 2]>,
     /// Signed tangent-space RGB transform for Preview Surface UsdUVTexture normals.
     pub normal_texture_transform: Option<[[f32; 3]; 2]>,
+    /// How each texture file wraps along S and T, as its texture node says.
+    pub texture_wraps: std::collections::BTreeMap<String, [TextureWrap; 2]>,
     pub warnings: Vec<String>,
 
     /// Composed texture-coordinate transform in USD's unflipped coordinate basis.
     pub uv_transform: Option<bevy::math::Affine2>,
+}
+
+/// How a texture continues past its edges. Unauthored and `useMetadata`
+/// wraps repeat, as DCC exports expect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextureWrap {
+    #[default]
+    Repeat,
+    Mirror,
+    Clamp,
+    Black,
+}
+
+/// The S and T wraps of a texture node: UsdUVTexture's `wrapS`/`wrapT`, or
+/// MaterialX's `uaddressmode`/`vaddressmode`.
+fn read_texture_wrap(
+    stage: &Stage,
+    tex_prim: &Path,
+    time: Option<f64>,
+) -> anyhow::Result<[TextureWrap; 2]> {
+    let mut wrap = [TextureWrap::Repeat; 2];
+    for (axis, names) in [["wrapS", "uaddressmode"], ["wrapT", "vaddressmode"]]
+        .into_iter()
+        .enumerate()
+    {
+        for name in names {
+            let Some(attribute) = texture_input_attribute(stage, tex_prim, name)? else {
+                continue;
+            };
+            let value = match attribute.get_at::<Value>(time.map(openusd::usd::TimeCode::new))? {
+                Some(Value::Token(value)) => value.as_str().to_owned(),
+                Some(Value::String(value)) => value,
+                _ => continue,
+            };
+            wrap[axis] = match value.as_str() {
+                "mirror" => TextureWrap::Mirror,
+                "clamp" => TextureWrap::Clamp,
+                "black" | "constant" => TextureWrap::Black,
+                _ => TextureWrap::Repeat,
+            };
+        }
+    }
+    Ok(wrap)
 }
 
 /// Resolves preview-purpose material binding, falling back to all-purpose and
@@ -82,8 +127,13 @@ pub fn read_material_binding_for_purpose(
     purpose: &str,
 ) -> anyhow::Result<Option<Path>> {
     Ok(
-        openusd_schemas::shade::MaterialBindingAPI::new(stage.prim(prim.clone())?)
-            .compute_bound_material(purpose)?,
+        openusd_schemas::shade::MaterialBindingAPI::from_prim_unchecked(stage.prim(prim.clone())?)
+            .resolve_binding(
+                purpose,
+                true,
+                &mut openusd_schemas::shade::BindingCache::default(),
+            )?
+            .map(|binding| binding.material_path().clone()),
     )
 }
 
@@ -104,7 +154,7 @@ pub(crate) fn bound_material_is_time_varying(stage: &Stage, prim: &Path) -> bool
 
 pub(crate) fn material_is_time_varying(stage: &Stage, material: &Path) -> bool {
     let mut pending = vec![material.clone()];
-    match resolve_surface_shader(stage, &material) {
+    match resolve_surface_shader(stage, material) {
         Ok(Some((surface, _))) => pending.push(surface),
         Ok(None) => (),
         Err(_) => return true,
@@ -259,6 +309,8 @@ pub fn read_preview_material_at(
             if !textures.contains(&tex.3) {
                 textures.push(tex.3.clone());
             }
+            out.texture_wraps
+                .insert(tex.0.clone(), read_texture_wrap(stage, &tex.3, time)?);
             bind_texture(&mut out, tex);
         }
         match value {
@@ -292,6 +344,9 @@ pub fn read_preview_material_at(
     if omnipbr && read_bool(stage, &shader, "inputs:enable_emission")? != Some(true) {
         out.emissive_color = None;
         out.emissive_texture = None;
+    }
+    if omnipbr {
+        apply_omnipbr_blends(stage, material, &shader, &mut out, time)?;
     }
     out.uv_transform = read_uv_transform(stage, &textures, time)?;
     anyhow::ensure!(
@@ -334,13 +389,13 @@ fn texture_rgba_transform(
         return Ok([[1.0; 4], [0.0; 4]]);
     }
     let mut result = [[1.0; 4], [0.0; 4]];
-    let shader = Shader::new(stage.prim(prim)?);
+    let shader = Shader::from_prim_unchecked(stage.prim(prim)?);
     for (index, name) in ["scale", "bias"].into_iter().enumerate() {
         let input = shader.input(name);
         let path = input.path();
         let connections = input.connected_sources()?;
         anyhow::ensure!(
-            connections.invalid_source_paths().is_empty(),
+            connections.invalid_paths().is_empty(),
             "connected texture scale/bias has invalid sources at {path}"
         );
         let producers = input.value_producing_attributes(ProducerFilter::Any)?;
@@ -424,6 +479,63 @@ def Material "Mat" {{
         let read = read_preview_material(&stage, &material).unwrap().unwrap();
         assert_eq!(read.emissive_color, expected, "{enable}");
     }
+}
+
+#[test]
+fn omnipbr_textures_replace_constants_by_influence() {
+    let shader = |inputs: &str| {
+        format!(
+            r#"#usda 1.0
+def Material "Mat" {{
+    token outputs:mdl:surface.connect = </Mat/Shader.outputs:out>
+    def Shader "Shader" {{
+        uniform token info:implementationSource = "sourceAsset"
+        uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+        uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+        {inputs}
+        token outputs:out
+    }}
+}}
+"#
+        )
+    };
+    let read = |inputs: &str| {
+        crate::UsdSource::snapshot("omnipbr.usda", shader(inputs).into_bytes())
+            .unwrap()
+            .open_stage()
+            .map(|stage| {
+                read_preview_material(&stage, &openusd::sdf::path("/Mat").unwrap())
+                    .unwrap()
+                    .unwrap()
+            })
+            .unwrap()
+    };
+    let textured = read(
+        r#"color3f inputs:diffuse_color_constant = (0.5, 0.5, 0.5)
+        asset inputs:diffuse_texture = @albedo.png@
+        color3f inputs:diffuse_tint = (1, 0.5, 0.25)
+        float inputs:reflection_roughness_constant = 0.2
+        asset inputs:reflectionroughness_texture = @rough.png@
+        float inputs:reflection_roughness_texture_influence = 0.25
+        float inputs:metallic_constant = 0.7
+        asset inputs:metallic_texture = @metal.png@"#,
+    );
+    assert_eq!(textured.diffuse_color, Some([1.0, 0.5, 0.25]));
+    assert!(textured.roughness_texture.is_some() && textured.roughness.is_none());
+    assert_eq!(
+        textured.scalar_texture_transforms["roughness"],
+        [0.25, 0.75 * 0.2]
+    );
+    assert!(textured.metallic_texture.is_none());
+    assert_eq!(textured.metallic, Some(0.7));
+    let plain = read(
+        r#"color3f inputs:diffuse_color_constant = (0.5, 0.5, 0.5)
+        float inputs:reflection_roughness_constant = 0.2
+        asset inputs:reflectionroughness_texture = @rough.png@"#,
+    );
+    assert_eq!(plain.diffuse_color, Some([0.5, 0.5, 0.5]));
+    assert!(plain.roughness_texture.is_none());
+    assert_eq!(plain.roughness, Some(0.2));
 }
 
 #[test]
@@ -1171,6 +1283,84 @@ const OMNIPBR_CHANNELS: &[(&str, ColourSetter, ScalarSetter, TextureSetter)] = &
     ),
 ];
 
+/// OmniPBR uses its diffuse constant only without a diffuse texture, tints
+/// either, and moves roughness and metallic from their constants toward their
+/// textures by each texture's influence.
+fn apply_omnipbr_blends(
+    stage: &Stage,
+    material: &Path,
+    shader: &Path,
+    out: &mut ReadPreviewMaterial,
+    time: Option<f64>,
+) -> anyhow::Result<()> {
+    let input = |out: &mut ReadPreviewMaterial, name: &str| {
+        resolve_channel(stage, material, shader, name, &mut out.warnings, time)
+            .map(|(value, _)| value)
+    };
+    if out.diffuse_texture.is_some() || out.diffuse_ptex.is_some() {
+        out.diffuse_color = None;
+    }
+    if let Some(ResolvedValue::Color3(tint)) = input(out, "diffuse_tint")?
+        && tint != [1.0; 3]
+        && tint.iter().all(|value| value.is_finite())
+    {
+        let base = out.diffuse_color.unwrap_or([1.0; 3]);
+        out.diffuse_color = Some([base[0] * tint[0], base[1] * tint[1], base[2] * tint[2]]);
+    }
+    let influence = |value: Option<ResolvedValue>| match value {
+        Some(ResolvedValue::Scalar(value)) if value.is_finite() => value.clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    let roughness = influence(input(out, "reflection_roughness_texture_influence")?);
+    let metallic = influence(input(out, "metallic_texture_influence")?);
+    blend_toward_texture(
+        &mut out.roughness_texture,
+        &mut out.roughness,
+        &mut out.scalar_texture_transforms,
+        "roughness",
+        roughness,
+        0.5,
+    );
+    blend_toward_texture(
+        &mut out.metallic_texture,
+        &mut out.metallic,
+        &mut out.scalar_texture_transforms,
+        "metallic",
+        metallic,
+        0.0,
+    );
+    Ok(())
+}
+
+/// Bakes `lerp(constant, texture, influence)` into the texture's scale and
+/// bias, leaving no separate constant to multiply it by.
+fn blend_toward_texture(
+    texture: &mut Option<String>,
+    constant: &mut Option<f32>,
+    transforms: &mut std::collections::BTreeMap<String, [f32; 2]>,
+    semantic: &str,
+    influence: f32,
+    default: f32,
+) {
+    if texture.is_none() {
+        return;
+    }
+    if influence == 0.0 {
+        *texture = None;
+        transforms.remove(semantic);
+        return;
+    }
+    let base = constant.take().unwrap_or(default);
+    let [scale, bias] = transforms.get(semantic).copied().unwrap_or([1.0, 0.0]);
+    transforms.insert(
+        semantic.into(),
+        [
+            scale * influence,
+            bias * influence + (1.0 - influence) * base,
+        ],
+    );
+}
+
 /// Whether `path` names a Ptex file.
 pub fn is_ptex(path: &str) -> bool {
     std::path::Path::new(path)
@@ -1636,10 +1826,10 @@ pub(super) fn texture_input_attribute(
     name: &str,
 ) -> anyhow::Result<Option<openusd::usd::Attribute>> {
     use openusd_schemas::shade::{Connectable, ProducerFilter, Shader};
-    let input = Shader::new(stage.prim(tex_prim)?).input(name);
+    let input = Shader::from_prim_unchecked(stage.prim(tex_prim)?).input(name);
     let connections = input.connected_sources()?;
     anyhow::ensure!(
-        connections.invalid_source_paths().is_empty(),
+        connections.invalid_paths().is_empty(),
         "invalid texture {name} connection at {}",
         input.path()
     );
@@ -1939,7 +2129,7 @@ def Material "Mat" {
 
     #[test]
     fn texture_times_follow_each_material_graph_and_surface_fallback() {
-        use openusd::sdf::{Path, Value};
+        use openusd::{sdf::Path, vt::Value};
         let stage = openusd::usd::Stage::builder()
             .in_memory("texture-graphs.usda")
             .unwrap();
@@ -2113,8 +2303,8 @@ def Material "Mat" {
         )
         .unwrap();
         let stage = source.open_stage().unwrap();
-        let parent = MaterialBindingAPI::new(stage.prim("/Set").unwrap());
-        let child = MaterialBindingAPI::new(stage.prim("/Set/Child").unwrap());
+        let parent = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set").unwrap());
+        let child = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set/Child").unwrap());
         let path = Path::new("/Set/Child").unwrap();
         parent.bind("/Inherited").unwrap();
         assert_eq!(
@@ -2133,7 +2323,11 @@ def Material "Mat" {
             "/Local"
         );
         parent
-            .bind_for_purpose("", "/Strong", BindingStrength::StrongerThanDescendants)
+            .bind_for_purpose(
+                "",
+                "/Strong",
+                Some(BindingStrength::StrongerThanDescendants),
+            )
             .unwrap();
         assert_eq!(
             read_material_binding(&stage, &path)
@@ -2146,7 +2340,7 @@ def Material "Mat" {
             .bind_for_purpose(
                 "preview",
                 "/Preview",
-                BindingStrength::WeakerThanDescendants,
+                Some(BindingStrength::WeakerThanDescendants),
             )
             .unwrap();
         let before = stage.root_layer().export_to_string().unwrap();
@@ -2178,8 +2372,12 @@ def Material "Mat" {
         let stage = source.open_stage().unwrap();
         let path = Path::new("/Hair").unwrap();
         assert!(read_material_binding(&stage, &path).unwrap().is_none());
-        MaterialBindingAPI::new(stage.prim("/Hair").unwrap())
-            .bind_for_purpose("full", "/Full", BindingStrength::WeakerThanDescendants)
+        MaterialBindingAPI::from_prim_unchecked(stage.prim("/Hair").unwrap())
+            .bind_for_purpose(
+                "full",
+                "/Full",
+                Some(BindingStrength::WeakerThanDescendants),
+            )
             .unwrap();
         assert_eq!(
             read_material_binding(&stage, &path)
@@ -2202,17 +2400,17 @@ def Material "Mat" {
         let collection =
             openusd::usd::apply_collection(&stage, Path::new("/Set").unwrap(), "selected").unwrap();
         collection
-            .include_path(&stage, Path::new("/Set/A").unwrap())
+            .include_path(Path::new("/Set/A").unwrap())
             .unwrap();
-        let binding = MaterialBindingAPI::new(stage.prim("/Set").unwrap());
+        let binding = MaterialBindingAPI::from_prim_unchecked(stage.prim("/Set").unwrap());
         binding.bind("/Default").unwrap();
         binding
             .bind_collection(
                 "selected",
-                Path::new("/Set.collection:selected").unwrap(),
+                &collection,
                 Path::new("/Collection").unwrap(),
                 "",
-                BindingStrength::WeakerThanDescendants,
+                Some(BindingStrength::WeakerThanDescendants),
             )
             .unwrap();
         assert_eq!(

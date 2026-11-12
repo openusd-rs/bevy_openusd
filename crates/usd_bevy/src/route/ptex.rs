@@ -175,13 +175,13 @@ mod tests {
     #[test]
     fn ptex_face_colors_become_linear_vertex_colors() {
         let directory = tempfile::tempdir().unwrap();
-        let texture = directory.path().join("faces.ptx");
+        let texture = directory.path().canonicalize().unwrap().join("faces.ptx");
         std::fs::write(
             &texture,
             crate::read::ptex::tests::ptex(0, 3, &[255, 0, 0, 0, 0, 255], false),
         )
         .unwrap();
-        let root = directory.path().join("scene.usda");
+        let root = directory.path().canonicalize().unwrap().join("scene.usda");
         std::fs::write(
             &root,
             format!(

@@ -23,6 +23,7 @@ mod color_texture;
 pub mod coverage;
 pub mod curves;
 mod deformation;
+mod deformed_sort;
 pub mod dome;
 pub mod dome_environment;
 pub mod environment_map;
@@ -39,20 +40,37 @@ pub mod medium_material;
 pub mod meta;
 pub mod native;
 pub mod points;
+pub mod preparation;
 pub(crate) mod profiling;
 pub(crate) mod ptex;
 pub mod ptex_atlas;
+pub(crate) mod sampling;
+pub use crate::read::skel::access_profile::AnimationAccessProfile;
+pub use sampling::TextureSamplingTiming;
 mod texture_pack;
 
 pub(crate) fn configure_texture_caches(app: &mut bevy::prelude::App) {
     color_texture::configure(app);
     generated_image::configure(app);
     texture_pack::configure(app);
+    sampling::configure(app);
+}
+
+pub(crate) fn configure_materials(app: &mut bevy::prelude::App) {
+    if app.is_plugin_added::<bevy::pbr::PbrPlugin>() {
+        flat_material::configure(app);
+        strand_material::configure(app);
+        medium_material::configure(app);
+        sheen_material::configure(app);
+    }
 }
 pub mod payload;
 pub mod physics;
 pub mod reflect;
 pub mod residency;
+#[cfg(test)]
+mod shader_fixtures;
+mod shaders;
 pub mod shapes;
 pub mod sheen_material;
 pub mod skel;
@@ -133,7 +151,13 @@ pub struct RouteCtx<'a> {
     /// The time code to resolve animated attributes at (`None` = default time).
     pub time: Option<f64>,
     decoded_mesh: std::cell::OnceCell<anyhow::Result<Option<crate::read::geom::ReadMesh>>>,
+    prepared_deformation:
+        std::cell::RefCell<Option<anyhow::Result<Option<preparation::PreparedDeformation>>>>,
+    prepared_skin: std::cell::RefCell<Option<anyhow::Result<crate::read::skel::GpuSkinSample>>>,
+    prepared_kinds: std::cell::Cell<Option<preparation::DeformationKinds>>,
     read_timing: std::cell::Cell<Option<MeshReadTiming>>,
+    deformation_resample: std::cell::Cell<bool>,
+    posed: std::cell::Cell<bool>,
     trace_memory: bool,
 }
 
@@ -158,12 +182,28 @@ impl<'a> RouteCtx<'a> {
             type_name,
             time,
             decoded_mesh: Default::default(),
+            prepared_deformation: Default::default(),
+            prepared_skin: Default::default(),
+            prepared_kinds: Default::default(),
             read_timing: Default::default(),
+            deformation_resample: Default::default(),
+            posed: Default::default(),
             trace_memory: false,
         }
     }
 
     /// The prim path as a string.
+    /// Whether this context resamples a resident deformation-only prim.
+    pub(crate) fn deformation_resample(&self) -> bool {
+        self.deformation_resample.get()
+    }
+
+    /// Records that only the joint palette changed, so the projected
+    /// geometry and its subset split stay valid.
+    pub(crate) fn mark_posed(&self) {
+        self.posed.set(true);
+    }
+
     pub fn prim_str(&self) -> &str {
         self.path.as_str()
     }
@@ -324,6 +364,40 @@ fn hierarchy_hidden(world: &World, mut entity: Entity) -> Option<bool> {
 }
 
 impl SchemaRegistry {
+    pub(crate) fn with_materials<R>(
+        &self,
+        world: &mut World,
+        live: &crate::live::LiveStage,
+        project: impl FnOnce(&mut World) -> R,
+    ) -> R {
+        let _animation_access = crate::read::skel::access_profile::Scope::begin(
+            &live.stage,
+            world.get_resource::<AnimationAccessProfile>(),
+        );
+        if !self.builtin_only {
+            live.materials.borrow_mut().take();
+            return project(world);
+        }
+        let _skin_samples = crate::read::skel::SkelSampleScope::begin(&live.stage);
+        if live.try_has_changes().unwrap_or(true) {
+            live.materials.borrow_mut().take();
+        }
+        let mut materials = live
+            .materials
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| material::ProjectionMaterials::new(&live.stage));
+        materials.prepare_sample(world);
+        let previous = world.remove_non_send::<material::ProjectionMaterials>();
+        world.insert_non_send(materials);
+        let result = project(world);
+        *live.materials.borrow_mut() = world.remove_non_send::<material::ProjectionMaterials>();
+        if let Some(previous) = previous {
+            world.insert_non_send(previous);
+        }
+        result
+    }
+
     /// An empty registry.
     pub fn new() -> Self {
         Self::default()
@@ -387,6 +461,10 @@ impl SchemaRegistry {
         self.routes.is_empty()
     }
 
+    pub(crate) fn is_builtin_only(&self) -> bool {
+        self.builtin_only
+    }
+
     /// Run every matching route's [`project`](PrimRoute::project) on `entity`,
     /// resolving animated attributes at the world's [`StageTime`] (if any).
     pub fn project_prim(&self, stage: &Stage, path: &Path, world: &mut World, entity: Entity) {
@@ -426,6 +504,111 @@ impl SchemaRegistry {
         }
         self.apply_routes(&ctx, world, entity, Some(changed));
         ctx.report_read_timing(world);
+    }
+
+    pub(crate) fn patch_animation(
+        &self,
+        stage: &Stage,
+        prims: impl IntoIterator<Item = (Path, Entity)>,
+        world: &mut World,
+    ) {
+        let pool = bevy::tasks::ComputeTaskPool::try_get().map(|pool| &**pool);
+        self.patch_animation_with_pool(stage, prims, world, pool);
+    }
+
+    fn patch_animation_with_pool(
+        &self,
+        stage: &Stage,
+        prims: impl IntoIterator<Item = (Path, Entity)>,
+        world: &mut World,
+        pool: Option<&bevy::tasks::TaskPool>,
+    ) {
+        let _primvars = self
+            .builtin_only
+            .then(|| crate::read::geom::PrimvarScope::begin(stage));
+        let settings = world
+            .get_resource::<preparation::ParallelMeshPreparation>()
+            .copied()
+            .unwrap_or_default();
+        let pool = pool.filter(|pool| {
+            pool.thread_num() > 1
+                && self.builtin_only
+                && settings.max_jobs > 1
+                && settings.max_input_bytes > 0
+                && world.contains_resource::<bevy::prelude::Assets<bevy::prelude::Mesh>>()
+                && !world.contains_resource::<residency::UsdResidencyBudget>()
+        });
+        let Some(pool) = pool else {
+            for (path, entity) in prims {
+                let ctx = RouteCtx::at(stage, &path, time_of(world));
+                if world.contains_resource::<MeshReadTiming>() {
+                    ctx.read_timing.set(Some(MeshReadTiming::default()));
+                }
+                self.apply_animation_routes(&ctx, world, entity);
+                ctx.report_read_timing(world);
+            }
+            return;
+        };
+        let mut prims = prims.into_iter();
+        loop {
+            let batch: Vec<_> = prims.by_ref().take(preparation::MAX_BATCH_PRIMS).collect();
+            if batch.is_empty() {
+                break;
+            }
+            let contexts: Vec<_> = batch
+                .iter()
+                .map(|(path, entity)| {
+                    let ctx = RouteCtx::at(stage, path, time_of(world));
+                    if world.contains_resource::<MeshReadTiming>() {
+                        ctx.read_timing.set(Some(MeshReadTiming::default()));
+                    }
+                    (ctx, *entity)
+                })
+                .collect();
+            let mut offset = 0;
+            while offset < contexts.len() {
+                let count = preparation::prepare_batch(&contexts[offset..], world, pool, settings);
+                assert!(count > 0);
+                for (ctx, entity) in &contexts[offset..offset + count] {
+                    self.apply_animation_routes(ctx, world, *entity);
+                    ctx.report_read_timing(world);
+                }
+                offset += count;
+            }
+        }
+    }
+
+    /// One animation resample. A resident deformation-only mesh runs just the
+    /// deformation routes; every other prim reapplies all routes.
+    fn apply_animation_routes(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
+        let marked = self.builtin_only
+            && world
+                .get::<crate::live::DeformationOnlyAnimation>(entity)
+                .is_some();
+        let deferred = world.get::<residency::UsdDeferredMesh>(entity).is_some();
+        let hidden = marked && residency::should_defer(ctx, world, entity);
+        if marked && deferred && hidden {
+            return;
+        }
+        let deformation_only = marked && !deferred && !hidden;
+        if !deformation_only {
+            self.apply_routes(ctx, world, entity, Some(&[]));
+            return;
+        }
+        let deformation = [
+            skel::SkinRoute.name(),
+            subdivision::SubdivisionRoute.name(),
+            subset::SubsetRoute.name(),
+        ];
+        ctx.deformation_resample.set(true);
+        for route in &self.routes {
+            if deformation.contains(&route.name()) {
+                run_route(route.as_ref(), ctx, world, entity, Some(&[]));
+                if ctx.posed.get() {
+                    break;
+                }
+            }
+        }
     }
 
     fn apply_routes(

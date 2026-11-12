@@ -4,8 +4,8 @@
 //! value that `PxrDispTransform` remaps from Ptex files a `PxrBlend`
 //! multiplies together.
 
-use openusd::sdf::{Path, Value};
 use openusd::usd::Stage;
+use openusd::{sdf::Path, vt::Value};
 
 use super::util::{connections_at, read_token_or_string};
 

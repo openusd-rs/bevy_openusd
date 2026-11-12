@@ -172,7 +172,7 @@ impl MeshRoute {
         let mesh_handle = match (atlas_mesh, color) {
             (Some(mesh), _) => super::cache::intern_mesh(world, mesh),
             (None, Some(color)) => {
-                let mut mesh = assembly.build(world, read);
+                let mut mesh = super::cache::assemble_cached_mesh(world, read, assembly);
                 color.apply(world, &mut mesh, read);
                 super::cache::intern_mesh(world, mesh)
             }
@@ -340,6 +340,7 @@ def PointInstancer "PI" {
         ));
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<StandardMaterial>>();
+        app.insert_resource(crate::asset::UsdProjectionBudget(std::time::Duration::MAX));
         let handle = app
             .world_mut()
             .resource_mut::<Assets<crate::UsdScene>>()
@@ -362,6 +363,12 @@ def PointInstancer "PI" {
             ))
             .id();
         app.update();
+        for root in [first, second] {
+            assert_eq!(
+                app.world().get::<crate::asset::UsdSceneState>(root),
+                Some(&crate::asset::UsdSceneState::Ready)
+            );
+        }
         let entities = |world: &World, root| {
             let instances = world.get_non_send::<UsdInstances>().unwrap();
             let mesh = instances.entity(root, "/Mesh").unwrap();
@@ -565,7 +572,7 @@ mod purpose_tests {
                 stage
                     .create_attribute(format!("{path}.purpose").as_str(), "token")
                     .unwrap()
-                    .set(openusd::sdf::Value::Token(p.into()))
+                    .set(openusd::vt::Value::Token(p.into()))
                     .unwrap();
             }
         };
@@ -582,7 +589,7 @@ mod purpose_tests {
         stage
             .create_attribute("/Grp.purpose", "token")
             .unwrap()
-            .set(openusd::sdf::Value::Token("proxy".into()))
+            .set(openusd::vt::Value::Token("proxy".into()))
             .unwrap();
         stage
             .define_prim("/Grp/Child")

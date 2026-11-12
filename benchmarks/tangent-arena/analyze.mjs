@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-assert.equal(process.argv.length, 3, 'provide the evidence directory');
+assert([3, 4].includes(process.argv.length), 'provide the evidence directory and optional cow gain');
+const cowGain = Number(process.argv[3] ?? 5);
+assert([5, 10].includes(cowGain), 'cow gain must be 5 or 10 percent');
 const root = pathToFileURL(path.resolve(process.argv[2]) + path.sep);
 const read = name => fs.readFileSync(new URL(name, root), 'utf8');
 const records = read('results.tsv').trim().split('\n').slice(1).map(line => {
@@ -55,12 +57,12 @@ const comparisons = ['cow','bird'].map(name => {
     return [key, {before,after,percent:percent(before,after)}];
   }));
   const paired = [percent(group[0].summary.median_ns,group[1].summary.median_ns), percent(group[3].summary.median_ns,group[2].summary.median_ns)];
-  if(name==='cow' && metrics.median_ns.percent > -5) failures.push('cow: 5% kernel target missed');
+  if(name==='cow' && metrics.median_ns.percent > -cowGain) failures.push(`cow: ${cowGain}% kernel target missed`);
   if(name==='bird' && paired.some(x=>x>5)) failures.push('bird: paired median regression exceeds 5%');
   if(metrics.peak_rss_kib.percent > 5) failures.push(`${name}: mean peak RSS increase exceeds 5%`);
   return {name,metrics,paired};
 });
-const result={scope:'owned posed-mesh tangent kernel, not full editor or FPS', processes:8, measured_clocks:800,warmups:32,failures,comparisons,runs};
+const result={scope:'owned posed-mesh tangent kernel, not full editor or FPS', required_cow_gain_percent:cowGain, processes:8, measured_clocks:800,warmups:32,failures,comparisons,runs};
 fs.writeFileSync(new URL('analysis.json',root),JSON.stringify(result,null,2)+'\n');
 for(const result of comparisons) console.log(JSON.stringify(result));
 console.log(JSON.stringify({processes:8,measured_clocks:800,warmups:32,failures}));

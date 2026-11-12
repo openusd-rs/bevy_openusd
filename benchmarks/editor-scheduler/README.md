@@ -15,7 +15,9 @@ Record its raw value but report runqueue waiting as unavailable. CPU execution,
 migration and voluntary/involuntary switch counters are retained separately.
 
 Before sending each block and after its ending ready marker, wait for the
-owned main thread to block in its input pipe, then read all thread counters.
+owned main thread to block in its input stream, then read all thread counters.
+Node-provided child stdin can be a Unix stream socket rather than a pipe;
+accept those specific read wait channels, not arbitrary sleeping states.
 Keep raw stat/schedstat/sched records, identity, read intervals and affinity.
 Validate stable task identities, monotonic counters and unchanged task sets.
 Record last-CPU endpoints and migration deltas; only zero-migration blocks

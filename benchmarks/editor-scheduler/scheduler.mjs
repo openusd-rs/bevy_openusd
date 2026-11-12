@@ -10,6 +10,9 @@ const integer = value => {
 };
 const now = () => Number(process.hrtime.bigint());
 
+export const inputBlocked = (state, wchan) => state === 'S'
+  && ['pipe_read', 'anon_pipe_read', 'unix_stream_read_generic'].includes(wchan);
+
 export function parseThread(tid, raw) {
   const end = raw.stat.lastIndexOf(')');
   assert(end > 0 && raw.stat.startsWith(`${tid} (`), 'thread identity mismatch');
@@ -37,7 +40,7 @@ export async function snapshot(pid, ready) {
     const stat = fs.readFileSync(`${main}/stat`, 'utf8');
     const state = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0];
     const wchan = fs.readFileSync(`${main}/wchan`, 'utf8').trim();
-    if (state === 'S' && /^(anon_)?pipe_read$/.test(wchan)) break;
+    if (inputBlocked(state, wchan)) break;
     assert(++attempts < 1000, `owned main thread not input-blocked: ${state} ${wchan}`);
     await setTimeout(1);
   }

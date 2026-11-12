@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseThread, difference } from './scheduler.mjs';
+import { spawn } from 'node:child_process';
+import { parseThread, difference, snapshot, inputBlocked } from './scheduler.mjs';
 
 function raw() {
   const fields = Array(50).fill('0'); fields[0] = 'S'; fields[19] = '123'; fields[36] = '16';
@@ -55,4 +56,32 @@ test('thread parser rejects missing, truncated, negative and unsafe counters', (
     r => { r.schedstat = '-1 2 3'; }, r => { r.schedstat = '9007199254740992 2 3'; },
     r => { r.sched = ''; }, r => { r.sched += 'se.nr_migrations : 1\n'; }, r => { r.status = ''; },
   ]) { const r = raw(); mutate(r); assert.throws(() => parseThread(42, r)); }
+});
+
+test('input readiness accepts inherited pipes and Unix stream sockets only', () => {
+  for (const name of ['pipe_read', 'anon_pipe_read', 'unix_stream_read_generic']) {
+    assert(inputBlocked('S', name)); assert(!inputBlocked('R', name));
+  }
+  for (const name of ['futex_wait_queue', 'ep_poll', '0', '']) assert(!inputBlocked('S', name));
+});
+
+test('snapshot observes an owned child blocked on Node-provided stdin', async () => {
+  const child = spawn('/run/current-system/sw/bin/bash', ['-c', "printf 'ready\\n'; IFS= read -r line; test \"$line\" = finish"],
+    { stdio: ['pipe', 'pipe', 'pipe'] });
+  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+  try {
+    const ready = await new Promise((resolve, reject) => {
+      child.stdout.once('data', resolve); child.once('error', reject);
+      child.once('close', () => reject(new Error('child exited before readiness')));
+    });
+    assert.equal(ready.toString(), 'ready\n');
+    const value = await snapshot(child.pid, 0);
+    assert.equal(value.pid, child.pid); assert.equal(value.threads.length, 1);
+    assert.equal(value.threads[0].state, 'S');
+    child.stdin.end('finish\n');
+    assert.deepEqual(await closed, { code: 0, signal: null });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    await closed;
+  }
 });

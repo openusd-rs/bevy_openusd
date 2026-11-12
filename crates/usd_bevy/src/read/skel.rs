@@ -1180,9 +1180,47 @@ pub struct GpuSkinSample {
     pub indices: Vec<[u16; 4]>,
     pub weights: Vec<[f32; 4]>,
     pub matrices: Vec<bevy::math::Mat4>,
-    pub(crate) normal_corrections: Vec<bevy::math::Mat3>,
     /// Unweighted points, each sent to the mesh origin by its own palette entry.
     pub(crate) collapsed_points: usize,
+}
+
+/// Mesh-local skinning matrices of the bound skeleton's joints at `time`.
+fn gpu_joint_matrices(
+    skin: &BoundSkin,
+    time: Option<f64>,
+) -> anyhow::Result<Vec<bevy::math::Mat4>> {
+    let transforms = skin
+        .pose_transforms(time)?
+        .ok_or_else(|| anyhow::anyhow!("missing skeleton bind pose"))?;
+    let geom_bind_transform = skin.skinning.geom_bind_transform(time.map(TimeCode::new))?;
+    let matrices: Vec<_> = skin
+        .mesh_transforms(&transforms)
+        .iter()
+        .map(|matrix| {
+            let combined = geom_bind_transform * *matrix;
+            bevy::math::Mat4::from_cols_array(&combined.0.map(|value| value as f32))
+        })
+        .collect();
+    anyhow::ensure!(
+        !matrices.is_empty() && matrices.len() <= 256,
+        "GPU joint palette must contain 1–256 joints"
+    );
+    anyhow::ensure!(
+        matrices.iter().all(|matrix| matrix.is_finite()),
+        "nonfinite skinning matrix"
+    );
+    Ok(matrices)
+}
+
+/// The joint matrices of a GPU skin at `time`, without its influences.
+pub(crate) fn gpu_skin_pose(
+    stage: &Stage,
+    mesh_path: &Path,
+    time: Option<f64>,
+) -> anyhow::Result<Vec<bevy::math::Mat4>> {
+    let skin =
+        bound_skin(stage, mesh_path)?.ok_or_else(|| anyhow::anyhow!("missing skin binding"))?;
+    gpu_joint_matrices(&skin, time)
 }
 
 pub fn gpu_skin_sample(
@@ -1217,26 +1255,7 @@ pub(crate) fn gpu_skin_sample_with_mesh(
     );
     let at = time.map(TimeCode::new);
     let rigid = skin.skinning.is_rigidly_deformed();
-    let transforms = skin
-        .pose_transforms(time)?
-        .ok_or_else(|| anyhow::anyhow!("missing skeleton bind pose"))?;
-    let geom_bind_transform = skin.skinning.geom_bind_transform(at)?;
-    let mut matrices: Vec<_> = skin
-        .mesh_transforms(&transforms)
-        .iter()
-        .map(|matrix| {
-            let combined = geom_bind_transform * *matrix;
-            bevy::math::Mat4::from_cols_array(&combined.0.map(|value| value as f32))
-        })
-        .collect();
-    anyhow::ensure!(
-        !matrices.is_empty() && matrices.len() <= 256,
-        "GPU joint palette must contain 1–256 joints"
-    );
-    anyhow::ensure!(
-        matrices.iter().all(|matrix| matrix.is_finite()),
-        "nonfinite skinning matrix"
-    );
+    let mut matrices = gpu_joint_matrices(&skin, time)?;
     let (indices, weights) = skin
         .skinning
         .joint_influences(at)?
@@ -1257,10 +1276,8 @@ pub(crate) fn gpu_skin_sample_with_mesh(
     );
     let mut packed_indices = Vec::with_capacity(mesh.points.len());
     let mut packed_weights = Vec::with_capacity(mesh.points.len());
-    let mut normal_corrections = Vec::with_capacity(mesh.points.len());
     let mut normal_palette = vec![None; matrices.len()];
     let flat = crate::mesh::uses_flat_normals(mesh);
-    let mut previous: Option<(&[i32], &[f32], bevy::math::Mat3)> = None;
     let mut collapsed_points = 0;
     for (point, (indices, weights)) in indices
         .chunks_exact(stride)
@@ -1276,54 +1293,20 @@ pub(crate) fn gpu_skin_sample_with_mesh(
             matrices.push(bevy::math::Mat4::from_translation(-rest));
             packed_indices.push([(matrices.len() - 1) as u16, 0, 0, 0]);
             packed_weights.push([1.0, 0.0, 0.0, 0.0]);
-            normal_corrections.push(bevy::math::Mat3::IDENTITY);
             collapsed_points += 1;
-            previous = None;
             continue;
         }
         anyhow::ensure!(
             (weights.iter().sum::<f32>() - 1.0).abs() <= 1e-5,
             "GPU skinning requires normalized weights"
         );
-        let mut correction = bevy::math::Mat3::IDENTITY;
-        let repeated = if flat {
-            None
-        } else {
-            previous.filter(|(old_indices, old_weights, _)| {
-                *old_indices == indices
-                    && old_weights
-                        .iter()
-                        .zip(weights)
-                        .all(|(a, b)| a.to_bits() == b.to_bits())
-            })
-        };
-        if let Some((_, _, cached)) = repeated {
-            correction = cached;
-        } else if !flat {
-            let blended = indices
-                .iter()
-                .zip(weights)
-                .fold(bevy::math::Mat4::ZERO, |matrix, (&index, &weight)| {
-                    matrix + matrices[index as usize] * weight
-                });
-            normal_skin_matrix(blended)?;
-            if !rigid {
-                let mut native_normal = bevy::math::Mat3::ZERO;
-                for (&index, &weight) in indices.iter().zip(weights) {
-                    if weight != 0.0 {
-                        native_normal += cached_normal_skin_matrix(
-                            &matrices,
-                            &mut normal_palette,
-                            index as usize,
-                        )? * weight;
-                    }
+        if !flat {
+            for (&index, &weight) in indices.iter().zip(weights) {
+                if weight != 0.0 {
+                    cached_normal_skin_matrix(&matrices, &mut normal_palette, index as usize)?;
                 }
-                correction = bevy::math::Mat3::from_mat4(blended).transpose() * native_normal;
-                anyhow::ensure!(correction.is_finite(), "nonfinite normal correction");
             }
         }
-        previous = Some((indices, weights, correction));
-        normal_corrections.push(correction);
         let mut packed_i = [0; 4];
         let mut packed_w = [0.0; 4];
         for i in 0..stride {
@@ -1334,21 +1317,26 @@ pub(crate) fn gpu_skin_sample_with_mesh(
         packed_weights.push(packed_w);
     }
     if rigid {
-        packed_indices.resize(mesh.points.len(), packed_indices[0]);
-        packed_weights.resize(mesh.points.len(), packed_weights[0]);
-        normal_corrections.resize(mesh.points.len(), normal_corrections[0]);
+        let blended = packed_indices[0]
+            .iter()
+            .zip(packed_weights[0])
+            .fold(bevy::math::Mat4::ZERO, |matrix, (&index, weight)| {
+                matrix + matrices[index as usize] * weight
+            });
+        if !flat {
+            normal_skin_matrix(blended)?;
+        }
+        matrices = vec![blended];
+        packed_indices = vec![[0; 4]; mesh.points.len()];
+        packed_weights = vec![[1.0, 0.0, 0.0, 0.0]; mesh.points.len()];
     }
     Ok(GpuSkinSample {
         indices: packed_indices,
         weights: packed_weights,
         matrices,
-        normal_corrections,
         collapsed_points,
     })
 }
-
-#[cfg(test)]
-mod influence_probe;
 
 #[cfg(test)]
 mod tests {
@@ -2051,48 +2039,6 @@ def SkelRoot "Root"
     }
 
     #[test]
-    fn repeated_gpu_influences_match_uncached_normal_corrections() {
-        use bevy::math::{Mat3, Mat4};
-        let file = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/skel_morph_blended_animated.usda"
-        );
-        let stage = crate::UsdSource::new(file, std::fs::read(file).unwrap())
-            .unwrap()
-            .open_stage()
-            .unwrap();
-        let path = openusd::sdf::path("/Test/Face").unwrap();
-        for weights in [
-            [0.5; 8],
-            [1.0, 0.0, 1.0, 0.0, 0.25, 0.75, 0.25, 0.75],
-            [1.0, 0.0, 0.25, 0.75, 1.0, 0.0, 0.25, 0.75],
-        ] {
-            stage
-                .attribute("/Test/Face.primvars:skel:jointWeights")
-                .unwrap()
-                .set(openusd::vt::Value::FloatVec(weights.to_vec()))
-                .unwrap();
-            for time in [0.0, 2.5, 5.0, 7.5, 10.0] {
-                let sample = gpu_skin_sample(&stage, &path, Some(time)).unwrap();
-                for point in 0..sample.indices.len() {
-                    let mut blended = Mat4::ZERO;
-                    let mut native = Mat3::ZERO;
-                    for slot in 0..2 {
-                        let matrix = sample.matrices[sample.indices[point][slot] as usize];
-                        let weight = sample.weights[point][slot];
-                        blended += matrix * weight;
-                        if weight != 0.0 {
-                            native += normal_skin_matrix(matrix).unwrap() * weight;
-                        }
-                    }
-                    let expected = Mat3::from_mat4(blended).transpose() * native;
-                    assert_eq!(sample.normal_corrections[point], expected);
-                }
-            }
-        }
-    }
-
-    #[test]
     fn unweighted_points_collapse_identically_on_gpu_and_cpu() {
         use bevy::math::{Mat3, Mat4, Vec3};
         let text = r#"#usda 1.0
@@ -2132,7 +2078,6 @@ def SkelRoot "Test" {
         let sample = gpu_skin_sample(&stage, &path, None).unwrap();
         assert_eq!(sample.collapsed_points, 1);
         assert_eq!(sample.matrices.len(), 3);
-        assert_eq!(sample.normal_corrections[2], Mat3::IDENTITY);
         let cpu = cpu_skin_sample(&stage, &path, None, Some(&mesh))
             .unwrap()
             .unwrap();
@@ -2156,11 +2101,28 @@ def SkelRoot "Test" {
             weights: Vec::new(),
         };
         let (mut normals, points) = morph_normals(&mesh, &empty).unwrap();
+        let rest = normals.values.clone();
         cpu.normals
             .apply(&mut normals, &points, mesh.points.len())
             .unwrap();
         let collapsed = points.iter().position(|&point| point == 2).unwrap();
         assert_eq!(normals.values[collapsed], [0.0, 0.0, 1.0]);
+        for ((&point, rest), expected) in points.iter().zip(rest).zip(&normals.values) {
+            let shader = (0..4)
+                .filter(|&slot| sample.weights[point][slot] != 0.0)
+                .fold(Vec3::ZERO, |normal, slot| {
+                    let joint = sample.matrices[sample.indices[point][slot] as usize];
+                    normal
+                        + Mat3::from_mat4(joint).inverse().transpose()
+                            * Vec3::from(rest)
+                            * sample.weights[point][slot]
+                })
+                .normalize();
+            assert!(
+                shader.abs_diff_eq(Vec3::from(*expected), 1e-5),
+                "point {point}"
+            );
+        }
     }
 
     #[test]
@@ -2460,9 +2422,25 @@ def SkelRoot "Test" {
             );
             let gpu = gpu_skin_sample(&constant, &path, Some(time)).unwrap();
             let expanded = gpu_skin_sample(&vertex, &path, Some(time)).unwrap();
-            assert_eq!(gpu.indices, expanded.indices);
-            assert_eq!(gpu.weights, expanded.weights);
-            assert_eq!(gpu.matrices, expanded.matrices);
+            let blended = |sample: &GpuSkinSample| -> Vec<_> {
+                sample
+                    .indices
+                    .iter()
+                    .zip(&sample.weights)
+                    .map(|(indices, weights)| {
+                        indices.iter().zip(weights).fold(
+                            bevy::math::Mat4::ZERO,
+                            |matrix, (&index, &weight)| {
+                                matrix + sample.matrices[index as usize] * weight
+                            },
+                        )
+                    })
+                    .collect()
+            };
+            assert_eq!(gpu.matrices.len(), 1);
+            for (a, b) in blended(&gpu).iter().zip(blended(&expanded)) {
+                assert!(a.abs_diff_eq(b, 1e-6), "time {time}");
+            }
         }
         constant
             .attribute("/Test/Bar.primvars:skel:jointWeights")

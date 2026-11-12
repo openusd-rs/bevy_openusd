@@ -156,6 +156,8 @@ pub struct RouteCtx<'a> {
     prepared_skin: std::cell::RefCell<Option<anyhow::Result<crate::read::skel::GpuSkinSample>>>,
     prepared_kinds: std::cell::Cell<Option<preparation::DeformationKinds>>,
     read_timing: std::cell::Cell<Option<MeshReadTiming>>,
+    deformation_resample: std::cell::Cell<bool>,
+    posed: std::cell::Cell<bool>,
     trace_memory: bool,
 }
 
@@ -184,11 +186,24 @@ impl<'a> RouteCtx<'a> {
             prepared_skin: Default::default(),
             prepared_kinds: Default::default(),
             read_timing: Default::default(),
+            deformation_resample: Default::default(),
+            posed: Default::default(),
             trace_memory: false,
         }
     }
 
     /// The prim path as a string.
+    /// Whether this context resamples a resident deformation-only prim.
+    pub(crate) fn deformation_resample(&self) -> bool {
+        self.deformation_resample.get()
+    }
+
+    /// Records that only the joint palette changed, so the projected
+    /// geometry and its subset split stay valid.
+    pub(crate) fn mark_posed(&self) {
+        self.posed.set(true);
+    }
+
     pub fn prim_str(&self) -> &str {
         self.path.as_str()
     }
@@ -581,9 +596,13 @@ impl SchemaRegistry {
             subdivision::SubdivisionRoute.name(),
             subset::SubsetRoute.name(),
         ];
+        ctx.deformation_resample.set(true);
         for route in &self.routes {
             if deformation.contains(&route.name()) {
                 run_route(route.as_ref(), ctx, world, entity, Some(&[]));
+                if ctx.posed.get() {
+                    break;
+                }
             }
         }
     }

@@ -261,6 +261,13 @@ pub(super) fn prepare_batch(
         if defer_initial && world.get::<Mesh3d>(*entity).is_none() {
             continue;
         }
+        if world.get::<super::gpu_skin::GpuSkinPose>(*entity).is_some()
+            && world
+                .get::<crate::live::DeformationOnlyAnimation>(*entity)
+                .is_some()
+        {
+            continue;
+        }
         let needed = needs_deformation(ctx, world, &mut phases);
         phase_lap(&mut phases, "eligibility");
         if !needed {

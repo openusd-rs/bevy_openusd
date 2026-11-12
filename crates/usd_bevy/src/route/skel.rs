@@ -179,6 +179,10 @@ impl PrimRoute for SkinRoute {
     }
 
     fn project(&self, ctx: &RouteCtx, world: &mut World, entity: Entity) {
+        if ctx.deformation_resample() && super::gpu_skin::update_pose(ctx, world, entity) {
+            ctx.mark_posed();
+            return;
+        }
         world
             .entity_mut(entity)
             .remove::<(CpuSubsetGeometry, UsdDeformationError)>();

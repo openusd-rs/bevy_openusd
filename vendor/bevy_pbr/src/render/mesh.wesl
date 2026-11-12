@@ -54,7 +54,12 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     var world_from_local = mesh_world_from_local;
 
 @if(VERTEX_NORMALS && SKINNED)
-    out.world_normal = skinning::skin_normals(world_from_local, vertex.normal);
+    out.world_normal = skinning::skin_normals_blended(
+        vertex.joint_indices,
+        vertex.joint_weights,
+        vertex_no_morph.instance_index,
+        vertex.normal
+    );
 @if(VERTEX_NORMALS && !SKINNED)
     out.world_normal = mesh_functions::mesh_normal_local_to_world(
         vertex.normal,

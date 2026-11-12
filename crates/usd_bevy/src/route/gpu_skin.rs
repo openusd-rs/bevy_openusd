@@ -134,7 +134,9 @@ pub(crate) fn clear(world: &mut World, entity: Entity) {
         }
         super::deformation::release(world, entity, super::deformation::SKIN);
     }
-    world.entity_mut(entity).remove::<SkinnedMesh>();
+    world
+        .entity_mut(entity)
+        .remove::<(SkinnedMesh, GpuSkinPose)>();
 }
 
 pub(crate) fn attach(
@@ -208,13 +210,6 @@ fn attach_prepared(
         "skin vertex map does not match render mesh"
     );
     preparation_lap(profile, "vertex-map");
-    correct_normals(
-        &mut mesh,
-        &source_points,
-        &sample.normal_corrections,
-        morph_weights.as_deref().unwrap_or(&[]),
-    )?;
-    preparation_lap(profile, "normal-correction");
     let indices: Vec<_> = source_points
         .iter()
         .map(|&point| sample.indices[point])
@@ -231,6 +226,21 @@ fn attach_prepared(
     preparation_lap(profile, "influences");
     let handle = super::cache::intern_mesh(world, mesh);
     preparation_lap(profile, "intern");
+    let pose = (!has_morphs).then(|| {
+        let joints = sample.matrices.len() - sample.collapsed_points;
+        let weighted: std::collections::BTreeSet<_> = sample
+            .indices
+            .iter()
+            .zip(&sample.weights)
+            .flat_map(|(indices, weights)| indices.iter().zip(weights))
+            .filter(|&(&index, &weight)| weight != 0.0 && usize::from(index) < joints)
+            .map(|(&index, _)| index)
+            .collect();
+        GpuSkinPose {
+            collapsed: sample.matrices[joints..].to_vec(),
+            weighted: weighted.into_iter().collect(),
+        }
+    });
     let reusable = world.get::<UsdGpuSkin>(entity).is_some_and(|skin| {
         skin.joints.len() == sample.matrices.len()
             && skin
@@ -272,6 +282,10 @@ fn attach_prepared(
     if let Some(weights) = morph_weights {
         super::gpu_morph::set_weights(world, entity, weights);
     }
+    match pose {
+        Some(pose) => world.entity_mut(entity).insert(pose),
+        None => world.entity_mut(entity).remove::<GpuSkinPose>(),
+    };
     world
         .entity_mut(entity)
         .insert(Mesh3d(handle))
@@ -284,52 +298,53 @@ fn attach_prepared(
     Ok(())
 }
 
-fn correct_normals(
-    mesh: &mut Mesh,
-    source_points: &[usize],
-    corrections: &[Mat3],
-    weights: &[f32],
-) -> anyhow::Result<()> {
-    if corrections.iter().all(|matrix| *matrix == Mat3::IDENTITY) {
-        return Ok(());
-    }
-    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
-        mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL)
+/// Static palette tail of a GPU skin without blend shapes, so resampling can
+/// rebuild only the joint matrices.
+#[derive(Component)]
+pub(crate) struct GpuSkinPose {
+    collapsed: Vec<Mat4>,
+    weighted: Vec<u16>,
+}
+
+/// Whether the shader can invert a joint's linear part for normal skinning.
+fn invertible(matrix: &Mat4) -> bool {
+    let determinant = Mat3::from_mat4(*matrix).determinant();
+    determinant.is_finite() && determinant.abs() > 1e-20
+}
+
+/// Rebuilds the joint palette of a resident pose-only GPU skin at the
+/// context's time; returns whether the skin was updated this way.
+pub(crate) fn update_pose(ctx: &RouteCtx, world: &mut World, entity: Entity) -> bool {
+    if !world.contains_resource::<GpuSkinningEnabled>()
+        || world.get::<Mesh3d>(entity).is_none()
+        || super::subdivision::enabled(ctx, world)
     {
-        for (normal, &point) in normals.iter_mut().zip(source_points) {
-            let value = corrections[point] * Vec3::from(*normal);
-            anyhow::ensure!(value.is_finite(), "nonfinite corrected normal");
-            *normal = value.to_array();
-        }
+        return false;
     }
-    if let Some(targets) = mesh.get_morph_targets() {
-        let mut targets = targets.to_vec();
-        for (index, target) in targets.iter_mut().enumerate() {
-            target.normal = corrections[source_points[index % source_points.len()]] * target.normal;
-            anyhow::ensure!(
-                target.normal.is_finite(),
-                "nonfinite corrected morph normal"
-            );
-        }
-        mesh.set_morph_targets(targets);
-    }
-    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
-        mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+    let Some(pose) = world.get::<GpuSkinPose>(entity) else {
+        return false;
+    };
+    let (collapsed, weighted) = (pose.collapsed.clone(), pose.weighted.clone());
+    let Ok(mut matrices) = crate::read::skel::gpu_skin_pose(ctx.stage, ctx.path, ctx.time) else {
+        return false;
+    };
+    if !weighted
+        .iter()
+        .all(|&index| matrices.get(usize::from(index)).is_some_and(invertible))
     {
-        for (vertex, normal) in normals.iter().enumerate() {
-            let mut value = Vec3::from(*normal);
-            if let Some(targets) = mesh.get_morph_targets() {
-                for (target, weight) in weights.iter().enumerate() {
-                    value += targets[target * normals.len() + vertex].normal * *weight;
-                }
-            }
-            anyhow::ensure!(
-                value.is_finite() && value.length_squared() > 1e-20,
-                "invalid corrected skinned normal"
-            );
-        }
+        return false;
     }
-    Ok(())
+    matrices.extend(collapsed);
+    let Some(mut skin) = world.get_mut::<UsdGpuSkin>(entity) else {
+        return false;
+    };
+    if skin.joints.len() != matrices.len() {
+        return false;
+    }
+    if skin.matrices != matrices {
+        skin.matrices = matrices;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -428,25 +443,6 @@ mod tests {
     }
 
     #[test]
-    fn corrected_normals_validate_the_active_morph_result() {
-        let mut source = Mesh::from(Rectangle::default());
-        let count = source.count_vertices();
-        source.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![Vec3::X.to_array(); count]);
-        source.set_morph_targets(vec![
-            bevy::mesh::morph::MorphAttributes::new(
-                Vec3::ZERO,
-                Vec3::Y,
-                Vec3::ZERO
-            );
-            count
-        ]);
-        let mapping = (0..count).collect::<Vec<_>>();
-        let corrections = vec![Mat3::from_diagonal(Vec3::new(0.0, 1.0, 1.0)); count];
-        assert!(correct_normals(&mut source.clone(), &mapping, &corrections, &[0.0]).is_err());
-        assert!(correct_normals(&mut source, &mapping, &corrections, &[1.0]).is_ok());
-    }
-
-    #[test]
     fn blended_gpu_normal_inputs_reproduce_native_cpu_normals() {
         check_blended_gpu_inputs(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -469,6 +465,7 @@ mod tests {
             .unwrap();
         let path = openusd::sdf::path("/Test/Face").unwrap();
         let mut world = World::new();
+        let mut blended_inverse_differs = false;
         for (joint_weights, time) in [[0.5; 8], [1.0, 0.0, 0.75, 0.25, 0.25, 0.75, 0.0, 1.0]]
             .into_iter()
             .flat_map(|weights| {
@@ -491,7 +488,6 @@ mod tests {
             let mut gpu = crate::mesh::assemble_mesh(&read, None, false);
             assert!(gpu.attribute(Mesh::ATTRIBUTE_TANGENT).is_none());
             let weights = super::super::gpu_morph::prepare(&ctx, &read, &mut gpu, true).unwrap();
-            correct_normals(&mut gpu, &mapping, &skin.normal_corrections, &weights).unwrap();
             let morph = crate::read::skel::morph_sample(&stage, &path, Some(time)).unwrap();
             let (mut normals, points) = crate::read::skel::morph_normals(&read, &morph).unwrap();
             crate::read::skel::skin_normals(
@@ -537,11 +533,6 @@ mod tests {
             else {
                 panic!()
             };
-            assert!(
-                skin.normal_corrections
-                    .iter()
-                    .any(|matrix| !matrix.abs_diff_eq(Mat3::IDENTITY, 1e-3))
-            );
             for (vertex, &point) in mapping.iter().enumerate() {
                 let mut normal = Vec3::from(actual[vertex]);
                 for (target, weight) in weights.iter().enumerate() {
@@ -549,17 +540,25 @@ mod tests {
                         .normal
                         * *weight;
                 }
-                let matrix = skin.indices[point]
-                    .iter()
-                    .zip(skin.weights[point])
-                    .fold(Mat4::ZERO, |matrix, (&index, weight)| {
-                        matrix + skin.matrices[index as usize] * weight
-                    });
-                normal = (Mat3::from_mat4(matrix).inverse().transpose() * normal).normalize();
+                let influences = || skin.indices[point].into_iter().zip(skin.weights[point]);
+                let matrix = influences().fold(Mat4::ZERO, |matrix, (index, weight)| {
+                    matrix + skin.matrices[index as usize] * weight
+                });
+                let shader = influences()
+                    .filter(|(_, weight)| *weight != 0.0)
+                    .fold(Vec3::ZERO, |sum, (index, weight)| {
+                        let joint = Mat3::from_mat4(skin.matrices[index as usize]);
+                        sum + joint.inverse().transpose() * normal * weight
+                    })
+                    .normalize();
                 assert!(
-                    normal.abs_diff_eq(Vec3::from(expected[vertex]), 1e-5),
+                    shader.abs_diff_eq(Vec3::from(expected[vertex]), 1e-5),
                     "time {time}, vertex {vertex}"
                 );
+                let blended_inverse =
+                    (Mat3::from_mat4(matrix).inverse().transpose() * normal).normalize();
+                blended_inverse_differs |=
+                    !blended_inverse.abs_diff_eq(Vec3::from(expected[vertex]), 1e-3);
                 let tangent = (Mat3::from_mat4(matrix)
                     * Vec3::from_slice(&actual_tangents[vertex][..3]))
                 .normalize();
@@ -569,6 +568,153 @@ mod tests {
                 assert_eq!(actual_tangents[vertex][3], expected_tangents[vertex][3]);
             }
         }
+        assert!(blended_inverse_differs);
+    }
+
+    #[test]
+    fn pose_only_resampling_keeps_the_mesh_and_matches_fresh_projection() {
+        use crate::instance::{UsdInstanceTime, UsdInstances};
+        let source = crate::UsdSource::new(
+            "pose.usda",
+            br#"#usda 1.0
+def SkelRoot "Test" {
+    def Skeleton "Skel" {
+        uniform token[] joints = ["Root", "Root/Tip"]
+        uniform matrix4d[] bindTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)), ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        uniform matrix4d[] restTransforms = [((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1)), ((1,0,0,0),(0,1,0,0),(0,0,1,0),(0,0,0,1))]
+        rel skel:animationSource = </Test/Anim>
+    }
+    def SkelAnimation "Anim" {
+        uniform token[] joints = ["Root", "Root/Tip"]
+        float3[] translations.timeSamples = {0: [(0,0,0), (0,0,0)], 10: [(0,0,0), (2,1,0)]}
+        quatf[] rotations.timeSamples = {0: [(1,0,0,0), (1,0,0,0)], 10: [(1,0,0,0), (0.70710677,0,0,0.70710677)]}
+        half3[] scales = [(1,1,1), (1,1,1)]
+    }
+    def Mesh "Bar" (prepend apiSchemas = ["SkelBindingAPI"]) {
+        rel skel:skeleton = </Test/Skel>
+        int[] primvars:skel:jointIndices = [0,1, 0,1, 0,1, 0,1] (elementSize = 2 interpolation = "vertex")
+        float[] primvars:skel:jointWeights = [1,0, 0.5,0.5, 0,0, 0,1] (elementSize = 2 interpolation = "vertex")
+        point3f[] points = [(-1,0,0), (1,0,0), (1,2,0), (-1,2,0)]
+        normal3f[] normals = [(0,0,1), (0,0,1), (0,0,1), (0,0,1)] (interpolation = "vertex")
+        int[] faceVertexCounts = [3, 3]
+        int[] faceVertexIndices = [0,1,2, 0,2,3]
+        uniform token subdivisionScheme = "none"
+        def GeomSubset "Part" {
+            uniform token familyName = "materialBind"
+            uniform token elementType = "face"
+            int[] indices = [1]
+            rel material:binding = </Orange>
+        }
+    }
+}
+def Material "Orange" {
+    token outputs:surface.connect = </Orange/Surface.outputs:surface>
+    def Shader "Surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor = (0.8, 0.2, 0.02)
+        token outputs:surface
+    }
+}
+"#
+            .as_slice(),
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            crate::UsdPlugin,
+            crate::UsdAssetPlugin,
+        ));
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<Assets<StandardMaterial>>();
+        app.init_resource::<Assets<SkinnedMeshInverseBindposes>>();
+        app.init_resource::<GpuSkinningEnabled>();
+        app.init_resource::<GpuSkinPreparationTiming>();
+        app.insert_resource(crate::UsdProjectionBudget(std::time::Duration::MAX));
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<crate::UsdScene>>()
+            .add(crate::UsdScene {
+                source,
+                textures: default(),
+            });
+        let root = |app: &mut App, current| {
+            app.world_mut()
+                .spawn((
+                    crate::UsdSceneRoot(handle.clone()),
+                    UsdInstanceTime { current },
+                ))
+                .id()
+        };
+        let bar = |world: &World, root| {
+            world
+                .get_non_send::<UsdInstances>()
+                .unwrap()
+                .entity(root, "/Test/Bar")
+                .unwrap()
+        };
+        let moving = root(&mut app, 0.0);
+        app.update();
+        let a = bar(app.world(), moving);
+        let mesh = app.world().get::<Mesh3d>(a).unwrap().0.clone();
+        let attempts = app.world().resource::<GpuSkinPreparationTiming>().attempts;
+        assert!(app.world().get::<GpuSkinPose>(a).is_some());
+        assert_eq!(app.world().get::<UsdGpuSkin>(a).unwrap().matrices.len(), 3);
+        for current in [2.5, 7.5] {
+            app.world_mut()
+                .get_mut::<UsdInstanceTime>(moving)
+                .unwrap()
+                .current = current;
+            app.update();
+        }
+        assert_eq!(app.world().get::<Mesh3d>(a).unwrap().0, mesh);
+        assert_eq!(
+            app.world().resource::<GpuSkinPreparationTiming>().attempts,
+            attempts
+        );
+        let fresh = root(&mut app, 7.5);
+        app.update();
+        let b = bar(app.world(), fresh);
+        let world = app.world();
+        let skin = |entity| &world.get::<UsdGpuSkin>(entity).unwrap().matrices;
+        assert_eq!(skin(a), skin(b));
+        assert_ne!(skin(a)[1], Mat4::IDENTITY);
+        assert_eq!(
+            world.get::<Mesh3d>(a).unwrap().0,
+            world.get::<Mesh3d>(b).unwrap().0
+        );
+        let parts = |entity| -> Vec<_> {
+            world
+                .get::<Children>(entity)
+                .into_iter()
+                .flatten()
+                .filter(|child| {
+                    world
+                        .get::<super::super::subset::UsdSubset>(**child)
+                        .is_some()
+                })
+                .map(|child| {
+                    let mesh = &world.get::<Mesh3d>(*child).unwrap().0;
+                    let mesh = world.resource::<Assets<Mesh>>().get(mesh).unwrap();
+                    let skinned = world
+                        .get::<SkinnedMesh>(*child)
+                        .map(|skin| skin.joints.clone());
+                    (
+                        mesh.count_vertices(),
+                        mesh.get_index_buffer_bytes().map(<[u8]>::to_vec),
+                        skinned,
+                    )
+                })
+                .collect()
+        };
+        let (pa, pb) = (parts(a), parts(b));
+        assert_eq!(pa.len(), 1);
+        assert_eq!((pa[0].0, &pa[0].1), (pb[0].0, &pb[0].1));
+        assert_eq!(
+            pa[0].2.as_ref(),
+            Some(&world.get::<UsdGpuSkin>(a).unwrap().joints)
+        );
     }
 
     #[test]

@@ -4,9 +4,9 @@
 `usd_bevy` is the library: it loads and composes USD stages, keeps them live, and
 writes edits back with undo/redo and save. `usdview` is the editor built on it.
 
-The local 0.20 migration is in progress; see the
-[migration audit and acceptance gates](benchmarks/bevy-020-migration.md).
-It requires Rust 1.97.1 or newer and is not yet release-verified.
+It requires Rust 1.97.1 or newer and is tested on Linux/Vulkan and WebGL2; see
+the [Bevy 0.20 migration audit](benchmarks/bevy-020-migration.md) for coverage
+and the [benchmarks](benchmarks/) for measured playback and loading costs.
 
 | ![Hummingbird](media/hummingbird.gif) | ![Chameleon](media/chameleon.gif) | ![Cow](media/cow.gif) |
 | --- | --- | --- |
@@ -42,8 +42,8 @@ UDIM tiles. All seven rendered with `cargo run --example gif_frames`.
 
 ## Use it in Bevy
 
-For the current local, unpushed checkout, put these paths in your consuming
-workspace's root `Cargo.toml` (adjust the sibling checkout path):
+Clone this repository at a release tag beside your project and put these paths
+in your consuming workspace's root `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -75,12 +75,12 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 
 The `bevy_asset` patch keeps loads of one source in order, so an older snapshot
 never lands after a newer one. The `bevy_pbr` patch preserves morph descriptors
-when meshes first become visible or are revealed again. **Both patches are
-required in your workspace root**; Cargo does not inherit this repository's
-patch table through the `usd_bevy` dependency. Keep the library and both patches
-on the same checkout/revision. These local changes are not available through a
-published release. See the [standalone consumer fixture](benchmarks/downstream-consumer/README.md)
-for integration checks and the remaining rendering/platform limits.
+when meshes first become visible or are revealed again, and skins normals with
+UsdSkel's per-joint blend. **Both patches are required in your workspace root**;
+Cargo does not inherit this repository's patch table through the `usd_bevy`
+dependency. Keep the library and both patches on the same checkout. See the
+[standalone consumer fixture](benchmarks/downstream-consumer/README.md) for
+integration checks and the remaining rendering/platform limits.
 
 ## usdview
 

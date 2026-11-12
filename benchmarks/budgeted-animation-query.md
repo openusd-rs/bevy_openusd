@@ -147,4 +147,5 @@ frame pacing and the broader optimization workstreams remain open.
 
 The subsequent [stage-owned integration](stage-animation-queries.md) bounds
 query metadata and connects reuse to built-in projection in an isolated viewer
-checkout. Its correctness checks pass; end-to-end performance is unmeasured.
+checkout. Its correctness checks pass; the subsequent
+[editor performance gate](integrated-query-results.md) fails.

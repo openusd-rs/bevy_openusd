@@ -34,3 +34,6 @@ Run negative controls against clock, cache-budget and performance checks.
 
 Passing this gate still leaves actual mesh/image equivalence, native rendering,
 frame pacing, browser checks and broader library optimization acceptance open.
+
+The [recorded result](../integrated-query-results.md) fails this gate. All
+original limits and failed observations are retained.

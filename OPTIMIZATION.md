@@ -76,6 +76,19 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Integrated query reuse fails performance acceptance:** 48 editor processes
+  verify 48,000 measured updates, 192 warmups, identical payload/work counts,
+  correct clocks and bounded real cache use. Bird/cow reuse every measured query
+  request while retaining 1.66 / 2.92 MB of sources. The unchanged declared gate
+  fails 16 identical-control and eight cached-candidate strata; the eight direct
+  fallback strata meet their numeric limits but do not waive failed controls.
+  The [editor result](benchmarks/integrated-query-results.md) retains all raw
+  evidence, negative controls, source identities and host load. The candidate
+  remains isolated; no production source/dependency change or FPS gain is
+  accepted. Do not rerun it unchanged. Address larger mesh/tangent costs and the
+  full-editor control instability, then complete native/lifecycle/browser and
+  broader acceptance.
+
 - **Stage-owned query reuse is connected in an isolated viewer candidate:**
   built-in projection shares bounded animation queries across passes. Metadata
   accounting includes slot records, paths and ordering capacities; fresh order

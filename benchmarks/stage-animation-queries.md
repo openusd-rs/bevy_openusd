@@ -3,8 +3,8 @@
 Status: a separate viewer checkout connects bounded animation-source reuse to
 built-in projection. Its library feature-matrix tests, strict library Clippy
 and workspace compilation pass. Production runtime and dependency pins are
-unchanged. Whole-editor performance and rendered acceptance have not been
-measured for this candidate.
+unchanged. The subsequent [editor comparison](integrated-query-results.md)
+fails performance acceptance; rendered acceptance is still open.
 
 Evidence: `/tmp/bevy-optimization-query-owner.tZmTqT/`. The viewer checkout is
 its `viewer/` directory, based on root `c97e4c7`, committed as `08b2ed4`.
@@ -118,11 +118,13 @@ explicit path overrides; preserve that lockfile with the test evidence.
 
 ## Remaining acceptance
 
-Measure the integrated editor against the unmodified production dependency,
-not just against the other policy in the patched upstream executable. Preserve
-default eager mesh residency, authored quality, payload/work equivalence,
+The first integrated comparison against the unmodified production dependency
+fails its declared performance gate. Preserve default eager mesh residency,
+authored quality, payload/work equivalence,
 unique/forward/reverse clocks, unrelated host load and all failed evidence.
-Include actual cache-use/resource diagnostics, original-default regression,
+The follow-up report records actual cache-use/resource diagnostics and the
+first direct-fallback comparison. Original-default regression,
 borrowed oversized-source refusal, representative edits/reload/close, native
-rendered output, frame pacing and browser checks. No whole-application speedup,
-60 Hz result or completion of the broader optimization workstreams is claimed.
+rendered output, frame pacing and browser checks remain open. No
+whole-application speedup, 60 Hz result or completion of the broader
+optimization workstreams is claimed.

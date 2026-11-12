@@ -76,6 +76,18 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Sustained-block identical-editor controls fail:** twenty original-editor
+  processes complete 20,000 updates and 80 warmups with exact paired clocks,
+  payloads, work and animation operations; all exit zero without diagnostics.
+  Fifteen of twenty declared timing strata fail. All eight bird/cow median
+  ratios meet 1%, but three heavy-workload tails fail 5%; every light-workload
+  stratum fails. The [control report](benchmarks/editor-block-results.md)
+  retains source/executable/asset verification, default affinity, host load,
+  raw samples and four passing negative controls. No candidate editor is built
+  or adopted. Investigate scheduling/environment stability before another
+  elapsed comparison, without rerunning unchanged or loosening limits; keep
+  independent packaging, native, lifecycle and browser work open.
+
 - **Normal-keyed tangent reuse passes its declared kernel gate:** an isolated
   streamed-group candidate preserves every geometry read while reusing projected
   pairs for exact current-normal bits and temporary subgroup membership storage.
@@ -87,9 +99,9 @@ correct readiness reporting.
   declared 10% cow target; mean peak RSS changes +2.69% / -1.29% pass. Cow p95
   increases 19.93% and remains an integration risk. The
   [memo report](benchmarks/tangent-normal-memo.md) retains all evidence and
-  negative controls. Next qualify sustained-block whole-editor controls before
-  measuring this source in the editor; do not reinterpret failed single-update
-  controls or claim FPS. Production is unchanged; packaging, native, lifecycle,
+  negative controls. Sustained-block whole-editor controls also fail, so this
+  source remains isolated; do not reinterpret failed controls or claim FPS.
+  Production is unchanged; packaging, native, lifecycle,
   browser and full-workstream acceptance remain open.
 
 - **Streamed tangent groups pass resource checks but miss elapsed acceptance:**

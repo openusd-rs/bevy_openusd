@@ -76,6 +76,22 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Standalone consumer configuration is exercised:** the README now includes
+  both required consumer-root Bevy overrides, including the previously omitted
+  PBR morph repair, using the unpushed local checkout rather than implying a
+  published fix. An independent workspace resolves one patched Bevy 0.20.1
+  graph and official OpenUSD, with no viewer/Mara dependency or feature
+  unification. Real manifests missing either patch resolve the registry crate
+  and are rejected. Three public-API integration tests pass with no optional
+  features and again with all features; strict consumer Clippy passes. They
+  cover independent clocks, shared geometry, identity-preserving reload,
+  visible failure with last-good retention, repair, ownership cleanup and
+  ordered source loads. The [consumer report](benchmarks/downstream-integration.md)
+  retains fixture corrections and limits. Patches still must be configured by
+  consumers; downstream GPU/native/browser, existing applications, package/
+  release and full lifecycle/performance acceptance remain open. The tangent
+  candidate remains isolated and production runtime/dependency pins unchanged.
+
 - **Block scheduler diagnostic narrows the control instability:** twenty
   unchanged-editor processes preserve 20,000 updates, 80 warmups and exact
   payload/work counts. The analyzer validates 916 snapshots of 25 threads;

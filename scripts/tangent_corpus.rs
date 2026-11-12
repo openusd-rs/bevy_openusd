@@ -20,6 +20,7 @@ struct Geometry {
     vertices: Vec<Vertex>,
     faces: Vec<Vec<usize>>,
     written: Vec<Vec<Option<Option<TangentBits>>>>,
+    reads: std::cell::RefCell<Option<Vec<[usize; 3]>>>,
 }
 
 impl Geometry {
@@ -30,6 +31,12 @@ impl Geometry {
             vertices,
             faces,
             written,
+            reads: std::cell::RefCell::new(None),
+        }
+    }
+    fn trace(&self, kind: usize, face: usize, corner: usize) {
+        if let Some(reads) = self.reads.borrow_mut().as_mut() {
+            reads.push([kind, face, corner]);
         }
     }
     fn vertex(&self, face: usize, corner: usize) -> Vertex {
@@ -42,18 +49,23 @@ macro_rules! adapter {
         struct $name(Geometry);
         impl $backend::Geometry for $name {
             fn num_faces(&self) -> usize {
+                self.0.trace(0, 0, 0);
                 self.0.faces.len()
             }
             fn num_vertices_of_face(&self, face: usize) -> usize {
+                self.0.trace(1, face, 0);
                 self.0.faces[face].len()
             }
             fn position(&self, face: usize, corner: usize) -> [f32; 3] {
+                self.0.trace(2, face, corner);
                 self.0.vertex(face, corner).position
             }
             fn normal(&self, face: usize, corner: usize) -> [f32; 3] {
+                self.0.trace(3, face, corner);
                 self.0.vertex(face, corner).normal
             }
             fn tex_coord(&self, face: usize, corner: usize) -> [f32; 2] {
+                self.0.trace(4, face, corner);
                 self.0.vertex(face, corner).uv
             }
             fn set_tangent(
@@ -62,6 +74,7 @@ macro_rules! adapter {
                 face: usize,
                 corner: usize,
             ) {
+                self.0.trace(5, face, corner);
                 let bits = value.map(|value| {
                     let t = value.tangent();
                     let b = value.bi_tangent();
@@ -97,6 +110,9 @@ adapter!(Candidate, tangent_candidate);
 #[derive(Default)]
 struct Counts {
     negative_control: bool,
+    read_order: bool,
+    read_negative_control: bool,
+    reads: usize,
     cases: usize,
     corners: usize,
     missing: usize,
@@ -107,8 +123,24 @@ fn compare(name: &str, geometry: Geometry, counts: &mut Counts) {
     for threshold in [-1.0, -0.999, -0.0, 0.5, 0.999, 1.0] {
         let mut a = Original(geometry.clone());
         let mut b = Candidate(geometry.clone());
+        if counts.read_order {
+            *a.0.reads.borrow_mut() = Some(Vec::new());
+            *b.0.reads.borrow_mut() = Some(Vec::new());
+        }
         tangent_original::generate_tangents_with_threshold(&mut a, threshold).unwrap();
         tangent_candidate::generate_tangents_with_threshold(&mut b, threshold).unwrap();
+        if counts.read_order {
+            if counts.read_negative_control {
+                b.0.reads.borrow_mut().as_mut().unwrap()[0][0] ^= 1;
+            }
+            let original = a.0.reads.borrow();
+            assert_eq!(
+                &*original,
+                &*b.0.reads.borrow(),
+                "geometry callback order differs: case={name} threshold={threshold}"
+            );
+            counts.reads += original.as_ref().unwrap().len();
+        }
         if counts.negative_control {
             if let Some(Some(Some(bits))) =
                 b.0.written
@@ -248,7 +280,7 @@ fn allocations(negative: bool) {
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args == ["--sparse-allocations"] {
+    if args == ["--sparse-allocations"] || args == ["--sparse-allocation-gate"] {
         tangent_allocations::self_test();
         for active in [0, 1, 8, 2048] {
             let mut mesh = expanded(grid(32, false, false), false);
@@ -269,6 +301,20 @@ fn main() {
             println!(
                 "tangent_sparse_allocations active_faces={active} total_faces=2048 original={original:?} candidate={candidate:?} scope=diagnostic-not-performance-acceptance"
             );
+            if args == ["--sparse-allocation-gate"] {
+                assert!(
+                    candidate.calls <= original.calls,
+                    "sparse allocation calls increased"
+                );
+                assert!(
+                    candidate.requested <= original.requested,
+                    "sparse requested bytes increased"
+                );
+                assert!(
+                    candidate.peak <= original.peak,
+                    "sparse peak live bytes increased"
+                );
+            }
         }
         return;
     }
@@ -284,9 +330,16 @@ fn main() {
         allocations(args == ["--allocation-negative-control"]);
         return;
     }
-    assert!(args.is_empty() || args == ["--negative-control"]);
+    assert!(
+        args.is_empty()
+            || args == ["--negative-control"]
+            || args == ["--read-order"]
+            || args == ["--read-order-negative-control"]
+    );
     let mut counts = Counts {
-        negative_control: !args.is_empty(),
+        negative_control: args == ["--negative-control"],
+        read_order: args == ["--read-order"] || args == ["--read-order-negative-control"],
+        read_negative_control: args == ["--read-order-negative-control"],
         ..Counts::default()
     };
     compare("empty", Geometry::new(Vec::new(), Vec::new()), &mut counts);
@@ -377,7 +430,7 @@ fn main() {
     }
     assert!(counts.missing > 0 && counts.skipped > 0 && counts.corners > 100_000);
     println!(
-        "tangent_corpus cases={} supported_corners={} missing_tangents={} skipped_corners={} failures=0 thresholds=6 seed=92c45ab39f01d783 scope=finite-synthetic-geometry-not-rendering-or-FPS",
-        counts.cases, counts.corners, counts.missing, counts.skipped
+        "tangent_corpus cases={} supported_corners={} missing_tangents={} skipped_corners={} geometry_calls={} failures=0 thresholds=6 seed=92c45ab39f01d783 scope=finite-synthetic-geometry-not-rendering-or-FPS",
+        counts.cases, counts.corners, counts.missing, counts.skipped, counts.reads
     );
 }

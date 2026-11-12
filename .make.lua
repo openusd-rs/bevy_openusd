@@ -354,6 +354,46 @@ grep -q 'generation retained an allocation' target/tangent-corpus/retention-nega
 }
 
 make.recipe{
+  name = "fmt-tangent-candidate",
+  desc = "format the tangent corpus and an isolated MikkTSpace candidate",
+  params = { { "--candidate", desc = "isolated MikkTSpace source directory" } },
+  run = function(a)
+    assert(type(a.candidate) == "string" and a.candidate:match("^/[%w%._/%-]+$"),
+           "provide --candidate /absolute/path/to/isolated/mikktspace")
+    sh.rustfmt("--edition", "2024", "scripts/tangent_corpus.rs", "scripts/tangent_allocations.rs",
+               a.candidate .. "/src/mikktspace.rs")
+  end,
+}
+
+make.recipe{
+  name = "check-tangent-source",
+  desc = "lint an isolated MikkTSpace source and check its no-std build",
+  params = { { "--candidate", desc = "isolated MikkTSpace source directory" } },
+  run = function(a)
+    assert(type(a.candidate) == "string" and a.candidate:match("^/[%w%._/%-]+$"),
+           "provide --candidate /absolute/path/to/isolated/mikktspace")
+    local manifest = a.candidate .. "/Cargo.toml"
+    sh.cargo("clippy", "--manifest-path", manifest, "--lib", "--all-features", "--", "-D", "warnings")
+    sh.cargo("check", "--manifest-path", manifest, "--lib", "--no-default-features")
+  end,
+}
+
+make.recipe{
+  name = "test-tangent-stream",
+  desc = "verify tangent callback order and sparse group allocation bounds",
+  run = function()
+    sh.sh("-c", "target/tangent-corpus/tangent-corpus --read-order")
+    sh.sh("-c", "target/tangent-corpus/tangent-corpus --sparse-allocation-gate")
+    sh.sh("-c", [[
+target/tangent-corpus/tangent-corpus --read-order-negative-control > target/tangent-corpus/read-order-negative-control.log 2>&1
+status=$?
+test "$status" -eq 101 || exit 1
+grep -q 'geometry callback order differs' target/tangent-corpus/read-order-negative-control.log
+]])
+  end,
+}
+
+make.recipe{
   name = "test-texture-encoding",
   desc = "exhaustively compare release sRGB mip encoding with the scalar formula",
   run = function()

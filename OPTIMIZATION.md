@@ -76,6 +76,18 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Owned sample transfer passes the mixed-budget gate:** carrying decoded
+  sample-map ownership through the upstream opinion walk avoids the query's
+  duplicate clone. The original 64 KiB mixed-budget case fails all eight strata
+  at 82–152% overhead; the changed candidate passes at 1.20–4.39%. All admitted
+  and no-room regression strata also pass. Core all-feature tests pass 2,494
+  cases on each of two toolchains, including explicit buffer-ownership checks.
+  The [ownership report](benchmarks/query-owned-samples.md) records original
+  failures, source replay and the increased retained capacity charges, still
+  within the same budgets. Production dependencies/runtime remain unchanged.
+  Oversized borrowed maps still clone; budget-specific semantic/lifecycle,
+  schema integration and whole-editor/rendered acceptance remain open.
+
 - **No-room query refusal gate passes:** the original bounded-query prototype
   fails all 24 refusal strata, with 83–148% overhead. A source-record/entry
   preflight uses ordinary resolution when admission is impossible; all 24

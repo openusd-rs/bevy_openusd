@@ -13,6 +13,7 @@ bytemuck = "1"
 serde_json = "1"
 usd_bevy = { path = "../../crates/usd_bevy" }
 openusd = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b", features = ["skel"] }
 
 [patch.crates-io]
 bevy_asset = { path = "../../vendor/bevy_asset" }

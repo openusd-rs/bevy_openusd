@@ -76,6 +76,47 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Integrated query reuse fails performance acceptance:** 48 editor processes
+  verify 48,000 measured updates, 192 warmups, identical payload/work counts,
+  correct clocks and bounded real cache use. Bird/cow reuse every measured query
+  request while retaining 1.66 / 2.92 MB of sources. The unchanged declared gate
+  fails 16 identical-control and eight cached-candidate strata; the eight direct
+  fallback strata meet their numeric limits but do not waive failed controls.
+  The [editor result](benchmarks/integrated-query-results.md) retains all raw
+  evidence, negative controls, source identities and host load. The candidate
+  remains isolated; no production source/dependency change or FPS gain is
+  accepted. Do not rerun it unchanged. Address larger mesh/tangent costs and the
+  full-editor control instability, then complete native/lifecycle/browser and
+  broader acceptance.
+
+- **Stage-owned query reuse is connected in an isolated viewer candidate:**
+  built-in projection shares bounded animation queries across passes. Metadata
+  accounting includes slot records, paths and ordering capacities; fresh order
+  comparisons preserve edits, load/mute changes and reload. Nine new tests cover
+  admission boundaries, reentry, lifecycle and nested custom-registry bypass.
+  Library feature configurations pass 760 / 752 overlapping tests with 34 / 25
+  existing ignored cases; strict library Clippy and workspace compilation pass.
+  A fresh patch replay matches all twelve upstream and five viewer files.
+  The [owner report](benchmarks/stage-animation-queries.md) records limits,
+  exclusions, source identities and failed fixture compiles. Main runtime and
+  dependency pins remain unchanged. Next measure integrated editor performance,
+  resource use and rendered behavior against the original dependency, retaining
+  the unresolved default-path, borrowed-source and broader acceptance gates.
+
+- **Budgeted animation schema API passes:** opt-in `AnimQuery::with_budget`
+  preserves typed arrays and matrix construction while sharing bounded source
+  storage. Eight new semantic tests cover edits, order snapshots, clones,
+  stage release, reentrant reads, clips and error short-circuiting. Schema/Skel
+  tests pass 404 + 75 cases on each of two toolchains. Twenty real-asset
+  processes verify 20,000 updates and 2,991,920 exact joint-matrix pairs; all
+  admitted, mixed and no-room strata pass their predeclared limits. The
+  [schema report](benchmarks/budgeted-animation-query.md) records the full
+  source replay, negative controls and scope. Production remains unchanged.
+  Next bound stage-owned query handles/keys/ordering snapshots, invalidate
+  ordering snapshots on commits, and measure actual editor/rendered behavior.
+  Original-default regression, borrowed-map refusal, close/reload and the
+  broader workstreams remain open.
+
 - **Owned sample transfer passes the mixed-budget gate:** carrying decoded
   sample-map ownership through the upstream opinion walk avoids the query's
   duplicate clone. The original 64 KiB mixed-budget case fails all eight strata

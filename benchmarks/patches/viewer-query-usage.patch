@@ -1,0 +1,298 @@
+diff --git a/.make.lua b/.make.lua
+index 1a80381..936509a 100644
+--- a/.make.lua
++++ b/.make.lua
+@@ -270,24 +270,34 @@ make.recipe{
+   end,
+ }
+ 
++local function query_owner(a, command, ...)
++  assert(type(a.upstream) == "string" and a.upstream:match("^/[%w%._/%-]+$"), "provide --upstream")
++  local source = 'patch."https://github.com/mxpv/openusd".'
++  sh.cargo(command,
++        "--config", source .. 'openusd.path="' .. a.upstream .. '/crates/openusd"',
++        "--config", source .. 'openusd-schemas.path="' .. a.upstream .. '/crates/openusd-schemas"',
++        "--config", source .. 'openusd-build.path="' .. a.upstream .. '/crates/openusd-build"', ...)
++end
++
+ make.recipe{
+   name = "test-animation-query-owner",
+   desc = "test and lint stage-owned query integration against a local upstream",
+   params = { { "--upstream", desc = "absolute patched upstream path" } },
+   run = function(a)
+-    assert(type(a.upstream) == "string" and a.upstream:match("^/[%w%._/%-]+$"), "provide --upstream")
+     fmt()
+-    local source = 'patch."https://github.com/mxpv/openusd".'
+-    local function cargo(command, ...)
+-      sh.cargo(command,
+-        "--config", source .. 'openusd.path="' .. a.upstream .. '/crates/openusd"',
+-        "--config", source .. 'openusd-schemas.path="' .. a.upstream .. '/crates/openusd-schemas"',
+-        "--config", source .. 'openusd-build.path="' .. a.upstream .. '/crates/openusd-build"', ...)
+-    end
+-    cargo("test", "-p", "usd_bevy", "--lib", "--all-features")
+-    cargo("test", "-p", "usd_bevy", "--lib", "--no-default-features")
+-    cargo("clippy", "-p", "usd_bevy", "--all-targets", "--all-features", "--", "-D", "warnings")
+-    cargo("check", "--workspace", "--all-targets")
++    query_owner(a, "test", "-p", "usd_bevy", "--lib", "--all-features")
++    query_owner(a, "test", "-p", "usd_bevy", "--lib", "--no-default-features")
++    query_owner(a, "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
++    query_owner(a, "test", "--example", "editor_benchmark")
++  end,
++}
++
++make.recipe{
++  name = "build-animation-query-owner",
++  desc = "build the isolated release editor benchmark",
++  params = { { "--upstream", desc = "absolute patched upstream path" } },
++  run = function(a)
++    query_owner(a, "build", "--release", "--example", "editor_benchmark")
+   end,
+ }
+ 
+diff --git a/crates/usd_bevy/src/live.rs b/crates/usd_bevy/src/live.rs
+index 24f9a1b..4d895f0 100644
+--- a/crates/usd_bevy/src/live.rs
++++ b/crates/usd_bevy/src/live.rs
+@@ -59,6 +59,14 @@ pub struct LiveStage {
+ }
+ 
+ impl LiveStage {
++    /// Current animation-query storage and cumulative owner lookup counts.
++    pub fn animation_query_usage(&self) -> Option<crate::read::skel::AnimationQueryUsage> {
++        self.animation_queries
++            .borrow()
++            .as_ref()
++            .map(|owner| owner.usage())
++    }
++
+     /// Wrap a stage and install the change sink.
+     ///
+     /// # Panics
+diff --git a/crates/usd_bevy/src/read/skel.rs b/crates/usd_bevy/src/read/skel.rs
+index 5937f5d..92ed58c 100644
+--- a/crates/usd_bevy/src/read/skel.rs
++++ b/crates/usd_bevy/src/read/skel.rs
+@@ -21,7 +21,7 @@ use std::rc::Rc;
+ pub mod access_profile;
+ mod query_cache;
+ pub(crate) use query_cache::AnimationQueries;
+-pub use query_cache::AnimationQueryLimits;
++pub use query_cache::{AnimationQueryLimits, AnimationQueryUsage};
+ 
+ use super::util::{read_float_vec, read_rel_first_target};
+ 
+diff --git a/crates/usd_bevy/src/read/skel/query_cache.rs b/crates/usd_bevy/src/read/skel/query_cache.rs
+index 23927da..6598256 100644
+--- a/crates/usd_bevy/src/read/skel/query_cache.rs
++++ b/crates/usd_bevy/src/read/skel/query_cache.rs
+@@ -33,6 +33,21 @@ impl Default for AnimationQueryLimits {
+     }
+ }
+ 
++/// Current owner storage and cumulative lookup counts. Counts saturate at
++/// `u64::MAX`; hits describe reused query handles, not source-memo hits.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct AnimationQueryUsage {
++    pub queries: usize,
++    pub metadata_bytes: usize,
++    pub sources: usize,
++    pub source_bytes: usize,
++    pub lookups: u64,
++    pub hits: u64,
++    pub admissions: u64,
++    pub refusals: u64,
++    pub clears: u64,
++}
++
+ pub(crate) struct AnimationQueries {
+     stage: Stage,
+     limits: AnimationQueryLimits,
+@@ -44,6 +59,7 @@ struct Entries {
+     slots: Box<[Option<Entry>]>,
+     bytes: usize,
+     revision: u64,
++    counters: AnimationQueryUsage,
+ }
+ 
+ struct Entry {
+@@ -70,6 +86,7 @@ impl AnimationQueries {
+                 slots,
+                 bytes,
+                 revision: 0,
++                counters: AnimationQueryUsage::default(),
+             }),
+         }
+     }
+@@ -84,10 +101,26 @@ impl AnimationQueries {
+             state.slots.fill_with(|| None);
+             state.bytes = size_of_val(state.slots.as_ref());
+             state.revision = revision;
++            state.counters.clears = state.counters.clears.saturating_add(1);
++        }
++    }
++
++    pub(crate) fn usage(&self) -> AnimationQueryUsage {
++        let state = self.state.borrow();
++        AnimationQueryUsage {
++            queries: state.slots.iter().flatten().count(),
++            metadata_bytes: state.bytes,
++            sources: self.sources.retained_entries(),
++            source_bytes: self.sources.retained_bytes(),
++            ..state.counters
+         }
+     }
+ 
+     pub(crate) fn get(&self, path: &Path) -> anyhow::Result<Option<Rc<AnimQuery>>> {
++        {
++            let mut state = self.state.borrow_mut();
++            state.counters.lookups = state.counters.lookups.saturating_add(1);
++        }
+         let fresh = Animation::get(&self.stage, path.clone())?
+             .map(AnimQuery::new)
+             .transpose()?;
+@@ -103,7 +136,9 @@ impl AnimationQueries {
+                     fresh.joint_order() == entry.query.joint_order()
+                         && fresh.blend_shape_order() == entry.query.blend_shape_order()
+                 }) {
+-                    return Ok(Some(entry.query.clone()));
++                    let query = entry.query.clone();
++                    state.counters.hits = state.counters.hits.saturating_add(1);
++                    return Ok(Some(query));
+                 }
+                 let bytes = entry.bytes;
+                 state.bytes -= bytes;
+@@ -115,6 +150,8 @@ impl AnimationQueries {
+             || self.limits.max_source_bytes == 0
+             || self.limits.max_sources == 0
+         {
++            let mut state = self.state.borrow_mut();
++            state.counters.refusals = state.counters.refusals.saturating_add(1);
+             return Ok(Some(Rc::new(fresh)));
+         }
+         let query = AnimQuery::with_budget(fresh.animation().clone(), &self.sources)?;
+@@ -137,8 +174,10 @@ impl AnimationQueries {
+                 bytes,
+             });
+             state.bytes = total;
++            state.counters.admissions = state.counters.admissions.saturating_add(1);
+             return Ok(Some(query));
+         }
++        state.counters.refusals = state.counters.refusals.saturating_add(1);
+         Ok(Some(Rc::new(fresh)))
+     }
+ }
+@@ -167,6 +206,59 @@ def SkelAnimation "Anim" {
+         .unwrap()
+     }
+ 
++    #[test]
++    fn usage_counts_and_saturation() {
++        let stage = stage();
++        let path = sdf::path("/Anim").unwrap();
++        let cache = AnimationQueries::new(&stage, AnimationQueryLimits::default());
++        assert_eq!(cache.usage().queries, 0);
++        drop(compare(&cache, &path));
++        drop(compare(&cache, &path));
++        let usage = cache.usage();
++        assert_eq!(
++            (usage.lookups, usage.hits, usage.admissions, usage.refusals),
++            (2, 1, 1, 0)
++        );
++        assert_eq!(usage.queries, 1);
++        assert_eq!(usage.metadata_bytes, cache.state.borrow().bytes);
++        assert!(usage.sources > 0 && usage.source_bytes > 0);
++        cache.prepare(1);
++        let cleared = cache.usage();
++        assert_eq!(
++            (
++                cleared.queries,
++                cleared.sources,
++                cleared.source_bytes,
++                cleared.clears
++            ),
++            (0, 0, 0, 1)
++        );
++        drop(compare(&cache, &path));
++        cache.state.borrow_mut().counters.lookups = u64::MAX;
++        cache.state.borrow_mut().counters.hits = u64::MAX;
++        drop(compare(&cache, &path));
++        assert_eq!(
++            (cache.usage().lookups, cache.usage().hits),
++            (u64::MAX, u64::MAX)
++        );
++        let disabled = AnimationQueries::new(
++            &stage,
++            AnimationQueryLimits {
++                max_queries: 0,
++                ..Default::default()
++            },
++        );
++        drop(compare(&disabled, &path));
++        assert_eq!(
++            (
++                disabled.usage().queries,
++                disabled.usage().admissions,
++                disabled.usage().refusals
++            ),
++            (0, 0, 1)
++        );
++    }
++
+     fn compare(cache: &AnimationQueries, path: &Path) -> Rc<AnimQuery> {
+         let query = cache.get(path).unwrap().unwrap();
+         let direct =
+diff --git a/examples/editor_benchmark.rs b/examples/editor_benchmark.rs
+index f58f38a..46d9db4 100644
+--- a/examples/editor_benchmark.rs
++++ b/examples/editor_benchmark.rs
+@@ -232,6 +232,33 @@ fn promote_deferred(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+ }
+ 
+ fn report_routes(world: &World, phase: &str, samples: usize) {
++    if std::env::var_os("USD_PROFILE_QUERY_CACHE").is_some() {
++        let owner = world
++            .get_non_send::<usd_bevy::live::LiveStage>()
++            .and_then(|stage| stage.animation_query_usage());
++        let usage = owner.unwrap_or_default();
++        let limits = world
++            .get_resource::<usd_bevy::read::skel::AnimationQueryLimits>()
++            .copied()
++            .unwrap_or_default();
++        eprintln!(
++            "animation_query_cache phase={phase} owner={} queries={} metadata_bytes={} sources={} source_bytes={} lookups={} hits={} admissions={} refusals={} clears={} max_queries={} max_metadata_bytes={} max_sources={} max_source_bytes={} scope=live-stage-query-owner-cumulative",
++            usize::from(owner.is_some()),
++            usage.queries,
++            usage.metadata_bytes,
++            usage.sources,
++            usage.source_bytes,
++            usage.lookups,
++            usage.hits,
++            usage.admissions,
++            usage.refusals,
++            usage.clears,
++            limits.max_queries,
++            limits.max_metadata_bytes,
++            limits.max_sources,
++            limits.max_source_bytes,
++        );
++    }
+     if let Some(profile) = world.get_resource::<usd_bevy::route::AnimationAccessProfile>() {
+         let snapshot = profile.snapshot();
+         eprintln!(
+@@ -413,6 +440,16 @@ fn open_editor_with_deferral(
+     app.init_asset::<Mesh>()
+         .init_asset::<StandardMaterial>()
+         .init_asset::<Image>();
++    match std::env::var("USD_BENCH_QUERY_CACHE").ok().as_deref() {
++        None | Some("1") => (),
++        Some("0") => {
++            app.insert_resource(usd_bevy::read::skel::AnimationQueryLimits {
++                max_queries: 0,
++                ..default()
++            });
++        }
++        Some(_) => return Err("USD_BENCH_QUERY_CACHE must be 0 or 1".into()),
++    }
+     if defer {
+         app.init_resource::<usd_bevy::route::residency::DeferHiddenMeshes>();
+     }

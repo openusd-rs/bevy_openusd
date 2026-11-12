@@ -76,6 +76,19 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **No-room query refusal gate passes:** the original bounded-query prototype
+  fails all 24 refusal strata, with 83–148% overhead. A source-record/entry
+  preflight uses ordinary resolution when admission is impossible; all 24
+  changed-candidate strata pass the unchanged 5% limit (maximum +3.51%). The
+  before/after matrices verify 24,000 updates, 96 warmups and 108,432 exact
+  attribute-answer pairs with zero retained charges. Four further processes
+  preserve the admitted-read gate and source bounds. The
+  [refusal report](benchmarks/query-refusal-cost.md) records source replay,
+  focused tests, negative controls, variable host load and the original failure.
+  Production dependencies/runtime are unchanged. Oversized sample maps can
+  still be constructed before rejection when the fixed record fits; that cost,
+  semantic/lifecycle integration and whole-editor/rendered gates remain open.
+
 - **Budgeted used-channel kernel gate passes:** four isolated release processes
   verify 4,000 clocks, 16 warmups and 18,072 exact attribute-answer pairs on the
   traced three bird/six cow channels. All eight order strata pass the declared

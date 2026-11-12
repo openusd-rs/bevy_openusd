@@ -1,8 +1,10 @@
 # Budgeted upstream query prototype
 
 Status: isolated implementation, focused correctness checks and the used-channel
-attribute-kernel gate pass. The production dependency is unchanged. No full
-application speedup is measured or accepted, and nothing is submitted upstream.
+attribute-kernel gate pass. The subsequent [no-room shortcut](query-refusal-cost.md)
+also passes the declared zero-byte/one-byte/zero-entry refusal gate. The
+production dependency is unchanged. No full application speedup is measured or
+accepted, and nothing is submitted upstream.
 
 The [admission investigation](sample-query-reuse.md#admission-and-lifetime-constraints)
 rules out using a one-time payload inventory or public index build revision as
@@ -33,9 +35,10 @@ The byte limit bounds **charged retained source storage**, not process memory.
 Shared path text is charged in full for each source. Allocator/reference-count
 headers, the budget object, stage storage, query handles, temporary decoding and
 returned values are outside it. A source can be decoded/cloned before admission
-is refused; this prototype does not bound decoding peaks or yet avoid that
-extra work on a rejected read. A production owner must separately bound query
-handles/keys and release them on close, replacement and eviction.
+is refused. The subsequent no-room shortcut avoids source construction when
+even the fixed cache record cannot fit; larger-source refusal and decoding
+peaks remain open. A production owner must separately bound query handles/keys
+and release them on close, replacement and eviction.
 
 ## Verification
 
@@ -158,8 +161,10 @@ real edit/reload workloads. Then run the full-editor performance and rendered
 regression gates. Attribute-kernel success cannot establish 60 Hz, whole-process
 memory bounds or completion of the broader optimization roadmap.
 
-Next measure refused reads with zero-byte, one-byte and zero-entry budgets on
-these same real channels. Require exact answers, zero retained source charges
-and no more than 5% median overhead in either first-read stratum, in both fresh
-orders for each asset. Retain cold/warm data and failures. This is a separate
-refusal-cost matrix, not a rerun or replacement of the accepted 8 MiB case.
+The declared refusal gate uses zero-byte, one-byte and zero-entry budgets on
+these same real channels: exact answers, zero retained source charges and no
+more than 5% median overhead in either first-read stratum, in both fresh orders
+for each asset. The [refusal result](query-refusal-cost.md) retains the original
+24 failing strata and the fixed candidate's passing matrix. It also records an
+8 MiB regression on the changed candidate. Oversized-source refusal when the
+fixed record fits, semantic/lifecycle integration and broader acceptance remain.

@@ -107,6 +107,7 @@ fn limits(policy: &str) -> Result<(usize, usize, bool)> {
         "zero-bytes" => (0, MAX_ENTRIES, false),
         "one-byte" => (1, MAX_ENTRIES, false),
         "zero-entries" => (MAX_BYTES, 0, false),
+        "small-sources" => (64 * 1024, MAX_ENTRIES, false),
         _ => anyhow::bail!("unknown admission policy"),
     })
 }
@@ -189,6 +190,16 @@ fn main() -> Result<()> {
         .iter()
         .map(|attr| AttributeQuery::with_budget(attr, &budget))
         .collect();
+    let expected_entries = if admitted {
+        attributes.len()
+    } else if policy == "small-sources" {
+        attributes
+            .iter()
+            .filter(|attr| attr.name() == "scales")
+            .count()
+    } else {
+        0
+    };
     for iteration in 0..SAMPLES + WARMUP {
         let time = clock(start, end, iteration);
         let at = Some(TimeCode::new(time));
@@ -219,11 +230,8 @@ fn main() -> Result<()> {
             (max_bytes, max_entries),
         )?;
         ensure!(
-            if admitted {
-                budget.retained_entries() == attributes.len()
-            } else {
-                budget.retained_entries() == 0 && budget.retained_bytes() == 0
-            },
+            budget.retained_entries() == expected_entries
+                && (expected_entries != 0 || budget.retained_bytes() == 0),
             "source admission differs from policy"
         );
         println!(
@@ -304,6 +312,10 @@ mod tests {
     #[test]
     fn refusal_policies() {
         assert_eq!(limits("admit").unwrap(), (MAX_BYTES, MAX_ENTRIES, true));
+        assert_eq!(
+            limits("small-sources").unwrap(),
+            (64 * 1024, MAX_ENTRIES, false)
+        );
         for (policy, bytes, entries) in [
             ("zero-bytes", 0, 8),
             ("one-byte", 1, 8),

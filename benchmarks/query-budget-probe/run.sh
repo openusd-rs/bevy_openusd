@@ -2,6 +2,12 @@
 set -euo pipefail
 out=${1:?provide evidence directory}
 expected=${2:-49bd693b6530a910be069ac670b98b5cee62c30b}
+protocol=${3:-admit}
+case "$protocol" in
+  admit) policy=admit ;;
+  mixed) policy=small-sources ;;
+  *) echo 'protocol must be admit or mixed' >&2; exit 2 ;;
+esac
 upstream=/tmp/bevy-optimization-query-budget.uW9rMA/upstream
 trace=/tmp/bevy-optimization-animation-access.tzNL5k
 node=/nix/store/v2210ar51jddnrcx46m53ivv9palc26m-nodejs-24.14.0/bin/node
@@ -27,7 +33,7 @@ while read -r name asset reverse; do
   printf '%s %s begin\n' "$(date -Ins)" "$name" | tee -a "$out/progress.log"
   status=0
   oslo make run-headless-benchmark --binary "$timer" \
-    --args="-f 'elapsed_s=%e user_s=%U sys_s=%S peak_rss_kb=%M exit=%x' -o $out/$name.time $out/probe $asset benchmarks/query-budget-probe/$kind.paths $reverse >$out/$name.jsonl 2>$out/$name.stderr" \
+    --args="-f 'elapsed_s=%e user_s=%U sys_s=%S peak_rss_kb=%M exit=%x' -o $out/$name.time $out/probe $asset benchmarks/query-budget-probe/$kind.paths $reverse $policy >$out/$name.jsonl 2>$out/$name.stderr" \
     > "$out/$name.launcher.log" 2>&1 || status=$?
   printf '%s\n' "$status" > "$out/$name.exit"
   printf '%s\t%s\n' "$name" "$status" >> "$out/results.tsv"
@@ -46,7 +52,7 @@ sha256sum -c "$out/inputs.sha256" > "$out/inputs-after.log"
 git -C "$upstream" diff --exit-code
 status=0
 oslo make run-headless-benchmark --binary "$node" \
-  --args="benchmarks/query-budget-probe/analyze.mjs $out $out/trace-analysis.json" > "$out/analysis.log" 2>&1 || status=$?
+  --args="benchmarks/query-budget-probe/analyze.mjs $out $out/trace-analysis.json $protocol" > "$out/analysis.log" 2>&1 || status=$?
 printf '%s\n' "$status" > "$out/analysis.exit"
 oslo make run-headless-benchmark --binary "$node" \
   --args="benchmarks/query-budget-probe/negative.mjs $out" > "$out/negative.log" 2>&1

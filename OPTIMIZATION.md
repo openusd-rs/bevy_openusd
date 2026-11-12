@@ -76,6 +76,20 @@ correct readiness reporting.
 
 ## Current checkpoint
 
+- **Budgeted animation schema API passes:** opt-in `AnimQuery::with_budget`
+  preserves typed arrays and matrix construction while sharing bounded source
+  storage. Eight new semantic tests cover edits, order snapshots, clones,
+  stage release, reentrant reads, clips and error short-circuiting. Schema/Skel
+  tests pass 404 + 75 cases on each of two toolchains. Twenty real-asset
+  processes verify 20,000 updates and 2,991,920 exact joint-matrix pairs; all
+  admitted, mixed and no-room strata pass their predeclared limits. The
+  [schema report](benchmarks/budgeted-animation-query.md) records the full
+  source replay, negative controls and scope. Production remains unchanged.
+  Next bound stage-owned query handles/keys/ordering snapshots, invalidate
+  ordering snapshots on commits, and measure actual editor/rendered behavior.
+  Original-default regression, borrowed-map refusal, close/reload and the
+  broader workstreams remain open.
+
 - **Owned sample transfer passes the mixed-budget gate:** carrying decoded
   sample-map ownership through the upstream opinion walk avoids the query's
   duplicate clone. The original 64 KiB mixed-budget case fails all eight strata

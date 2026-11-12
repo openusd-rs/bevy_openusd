@@ -130,3 +130,7 @@ retained-storage budget. Budgeted-query error/reentrant settlement, clips,
 bounded query ownership, schema integration and real edit/close/reload
 acceptance remain. The schema's current `AnimQuery` still performs direct
 attribute reads; this prototype does not yet accelerate production playback.
+
+The subsequent [schema integration](budgeted-animation-query.md) adds an
+opt-in budgeted constructor and validates actual local-matrix evaluation.
+Production playback still uses the direct constructor.

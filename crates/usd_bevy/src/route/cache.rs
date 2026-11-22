@@ -123,6 +123,11 @@ impl Assembly {
     }
 
     pub(crate) fn build(self, world: &mut World, read: &ReadMesh) -> Mesh {
+        #[cfg(feature = "dgf")]
+        let dgf_read = crate::mesh::dgf::maybe_roundtrip_read(world, read);
+        #[cfg(feature = "dgf")]
+        let read = dgf_read.as_ref().unwrap_or(read);
+
         match self {
             Assembly::Standard => crate::mesh::assemble_mesh(read, None, false),
             Assembly::StandardTangents => {

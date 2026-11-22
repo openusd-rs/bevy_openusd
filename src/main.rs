@@ -90,6 +90,37 @@ fn hot_reload_enabled(value: Option<&str>) -> Result<bool, String> {
     }
 }
 
+#[cfg(feature = "dgf")]
+fn report_dgf_stats(stats: Res<usd_bevy::mesh::dgf::UsdDgfStats>) {
+    if !stats.is_changed() || stats.meshes_encoded == 0 {
+        return;
+    }
+    let ratio = if stats.dgf_block_bytes > 0 {
+        stats.uncompressed_geom_bytes as f64 / stats.dgf_block_bytes as f64
+    } else {
+        0.0
+    };
+    let bpt = if stats.retained_triangles > 0 {
+        stats.dgf_block_bytes as f64 / stats.retained_triangles as f64
+    } else {
+        0.0
+    };
+    tracing::info!(
+        target: "usdview",
+        "DGF1 active: {} meshes ({} skipped), {} tris -> {} blocks ({:.1} KB, {:.2} B/tri, {:.2}x vs raw pos+idx, max_err={:.5}, enc={:.1}ms, dec={:.1}ms)",
+        stats.meshes_encoded,
+        stats.meshes_skipped,
+        stats.retained_triangles,
+        stats.output_blocks,
+        stats.dgf_block_bytes as f64 / 1024.0,
+        bpt,
+        ratio,
+        stats.max_coord_error,
+        stats.encode_ms,
+        stats.decode_ms,
+    );
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn report_hot_reload(status: Res<usd_bevy::editor::reload::EditorReloadStatus>) {
     if !status.is_changed() {
@@ -297,6 +328,12 @@ impl WindowApp for UsdApp {
             ctx.gpu(),
             move |app: &mut App| {
                 configure_usd_app(app, bridge.clone());
+                #[cfg(feature = "dgf")]
+                if std::env::var("USD_DGF").as_deref() == Ok("1") {
+                    app.init_resource::<usd_bevy::mesh::dgf::UsdDgfConfig>();
+                    app.init_resource::<usd_bevy::mesh::dgf::UsdDgfStats>();
+                    app.add_systems(Update, report_dgf_stats);
+                }
                 app.insert_resource(framing_bridge.clone());
                 lighting::configure(app, lighting_bridge.clone());
                 render_settings::configure(app, rendering_bridge.clone());

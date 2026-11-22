@@ -17,6 +17,8 @@ use bevy::mesh::{Indices, Mesh, Meshable, PrimitiveTopology, VertexAttributeValu
 pub(crate) mod affine;
 pub mod bounds;
 pub(crate) mod compact;
+#[cfg(feature = "dgf")]
+pub mod dgf;
 
 /// Convert a `crate::read::geom::ReadMesh` into a Bevy mesh.
 ///

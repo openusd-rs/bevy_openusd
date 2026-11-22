@@ -2652,7 +2652,7 @@ dependencies = [
 [[package]]
 name = "dgf"
 version = "0.1.0"
-source = "git+https://github.com/openusd-rs/dgf?rev=d1bd31a#d1bd31a7f75291fd5a2f2117ba5d1c0e919780de"
+source = "git+https://github.com/openusd-rs/openusd-dgf?rev=0d11be2#0d11be2ff8b9ac457b5696e3fd943abb3cbf9a76"
 dependencies = [
  "rayon",
 ]
@@ -5103,7 +5103,7 @@ dependencies = [
 [[package]]
 name = "openusd-dgf"
 version = "0.1.0"
-source = "git+https://github.com/openusd-rs/dgf?rev=d1bd31a#d1bd31a7f75291fd5a2f2117ba5d1c0e919780de"
+source = "git+https://github.com/openusd-rs/openusd-dgf?rev=0d11be2#0d11be2ff8b9ac457b5696e3fd943abb3cbf9a76"
 dependencies = [
  "dgf",
  "openusd",
@@ -6793,12 +6793,15 @@ dependencies = [
  "half",
  "log",
  "miniz_oxide 0.8.9",
+ "naga",
  "openusd",
  "openusd-dgf",
  "openusd-schemas",
  "png 0.18.1",
+ "pollster 1.0.1",
  "tempfile",
  "usd_macro",
+ "wgpu",
  "zip 8.6.0",
 ]
 

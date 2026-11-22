@@ -14,6 +14,7 @@ use std::time::Instant;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, MeshVertexAttribute, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
+use bytemuck::{Pod, Zeroable};
 use dgf::{
     DecodeLimits, DegeneratePolicy, EncodeOptions, EncodedMesh, MeshView, PackingPolicy,
     QuantizationMode, decode_mesh, encode_mesh, reconstruct_with_remap, remap_vertex_attributes,
@@ -288,6 +289,185 @@ impl DgfMesh {
     pub fn dgf_bytes(&self) -> usize {
         self.encoded.blocks.len() * dgf::BLOCK_BYTES
     }
+
+    /// Builds tightly packed GPU upload buffers for `dgf::WGSL_DECODER_SOURCE`.
+    pub fn to_gpu_batch(&self, add_vertex_offset: bool) -> Result<GpuDgfBatch, dgf::DecodeError> {
+        GpuDgfBatch::from_blocks(&self.encoded.blocks, add_vertex_offset)
+    }
+}
+
+/// GPU-side 128-byte DGF1 block matching `struct DgfBlock` in [`dgf::WGSL_DECODER_SOURCE`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+pub struct GpuDgfBlock {
+    /// 32 little-endian 32-bit words of the raw 128-byte DGF1 block.
+    pub words: [u32; 32],
+}
+
+impl GpuDgfBlock {
+    /// Converts a validated or encoded 128-byte [`dgf::Block`] into its GPU word layout.
+    pub fn from_block(block: &dgf::Block) -> Self {
+        Self::from_bytes(block.as_bytes())
+    }
+
+    /// Converts raw 128-byte DGF1 block bytes into little-endian `u32` words.
+    pub fn from_bytes(bytes: &[u8; dgf::BLOCK_BYTES]) -> Self {
+        let mut words = [0u32; 32];
+        for (dst, chunk) in words.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
+            *dst = u32::from_le_bytes(*chunk);
+        }
+        Self { words }
+    }
+}
+
+/// Per-block GPU dispatch metadata matching `struct DgfBlockDispatch` in [`dgf::WGSL_DECODER_SOURCE`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+pub struct GpuDgfBlockDispatch {
+    /// Starting vertex index written into `out_vertices` for this block.
+    pub vertex_offset: u32,
+    /// Starting triangle index written into `out_triangles` for this block.
+    pub triangle_offset: u32,
+    /// Nonzero to add `vertex_offset` to each decoded triangle index (global mesh indexing).
+    pub add_vertex_offset: u32,
+    /// Reserved padding (0).
+    pub _pad: u32,
+}
+
+/// Decoded GPU vertex matching `struct DgfDecodedVertex` in [`dgf::WGSL_DECODER_SOURCE`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct GpuDgfDecodedVertex {
+    /// Decoded `f32` vertex position `[x, y, z]`.
+    pub pos: [f32; 3],
+    /// Reserved padding (0).
+    pub _pad: u32,
+}
+
+/// Decoded GPU triangle matching `struct DgfDecodedTriangle` in [`dgf::WGSL_DECODER_SOURCE`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+pub struct GpuDgfDecodedTriangle {
+    /// Decoded triangle vertex indices (block-local or mesh-global depending on `add_vertex_offset`).
+    pub indices: [u32; 3],
+    /// Decoded 24-bit geometry ID.
+    pub geometry_id: u32,
+    /// Decoded 29-bit primitive ID (`prim_id_base + local_triangle_index`).
+    pub prim_id: u32,
+    /// Packed flags: bit 0 = opaque, bits 1..=3 = OMM descriptor selector, bit 4 = has OMM.
+    pub flags: u32,
+}
+
+impl GpuDgfDecodedTriangle {
+    /// Returns the decoded triangle opaque flag.
+    pub const fn opaque(self) -> bool {
+        (self.flags & 1) != 0
+    }
+
+    /// Returns the decoded per-triangle OMM descriptor index if the block carries OMM data.
+    pub const fn omm_descriptor(self) -> Option<u8> {
+        if (self.flags & 16) != 0 {
+            Some(((self.flags >> 1) & 7) as u8)
+        } else {
+            None
+        }
+    }
+}
+
+/// Decoded per-block header summary matching `struct DgfBlockInfo` in [`dgf::WGSL_DECODER_SOURCE`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+pub struct GpuDgfBlockInfo {
+    /// Active vertex count (`3..=64`).
+    pub num_vertices: u32,
+    /// Active triangle count (`1..=64`).
+    pub num_triangles: u32,
+    /// Optional 4-byte user data (0 when absent).
+    pub user_data: u32,
+    /// Packed flags: bit 0 = have_user_data, bits 1..=3 = omm_descriptor_count,
+    /// bits 4..=7 = bits_per_index, bits 8..=15 = exponent.
+    pub flags: u32,
+}
+
+impl GpuDgfBlockInfo {
+    /// Returns `Some(user_data)` if `have_user_data` was set in the block header.
+    pub const fn user_data_opt(self) -> Option<u32> {
+        if (self.flags & 1) != 0 {
+            Some(self.user_data)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the OMM descriptor count (`0..=7`).
+    pub const fn omm_descriptor_count(self) -> u8 {
+        ((self.flags >> 1) & 7) as u8
+    }
+
+    /// Returns `bits_per_index` (`3..=6`).
+    pub const fn bits_per_index(self) -> u8 {
+        ((self.flags >> 4) & 15) as u8
+    }
+
+    /// Returns the raw biased exponent (`1..=232`).
+    pub const fn exponent(self) -> u8 {
+        ((self.flags >> 8) & 255) as u8
+    }
+}
+
+/// Ready-to-upload batch of DGF1 blocks and prefix-summed dispatch offsets for GPU decoding.
+#[derive(Debug, Clone)]
+pub struct GpuDgfBatch {
+    /// Raw 128-byte blocks packed as `GpuDgfBlock`.
+    pub blocks: Vec<GpuDgfBlock>,
+    /// Per-block output vertex/triangle offsets.
+    pub dispatch: Vec<GpuDgfBlockDispatch>,
+    /// Total output vertex slots required in `out_vertices`.
+    pub total_vertices: usize,
+    /// Total output triangle slots required in `out_triangles`.
+    pub total_triangles: usize,
+}
+
+impl GpuDgfBatch {
+    /// Builds a tightly packed GPU decode batch from a slice of [`dgf::Block`]s.
+    pub fn from_blocks(
+        blocks: &[dgf::Block],
+        add_vertex_offset: bool,
+    ) -> Result<Self, dgf::DecodeError> {
+        let mut gpu_blocks = Vec::with_capacity(blocks.len());
+        let mut dispatch = Vec::with_capacity(blocks.len());
+        let mut v_off = 0u32;
+        let mut t_off = 0u32;
+        let add_flag = u32::from(add_vertex_offset);
+
+        for blk in blocks {
+            let hdr = dgf::Header::parse(blk.as_bytes())?;
+            gpu_blocks.push(GpuDgfBlock::from_block(blk));
+            dispatch.push(GpuDgfBlockDispatch {
+                vertex_offset: v_off,
+                triangle_offset: t_off,
+                add_vertex_offset: add_flag,
+                _pad: 0,
+            });
+            v_off = v_off.checked_add(u32::from(hdr.num_vertices)).ok_or(
+                dgf::DecodeError::ArithmeticOverflow {
+                    context: "GPU batch vertex_offset",
+                },
+            )?;
+            t_off = t_off.checked_add(u32::from(hdr.num_triangles)).ok_or(
+                dgf::DecodeError::ArithmeticOverflow {
+                    context: "GPU batch triangle_offset",
+                },
+            )?;
+        }
+
+        Ok(Self {
+            blocks: gpu_blocks,
+            dispatch,
+            total_vertices: v_off as usize,
+            total_triangles: t_off as usize,
+        })
+    }
 }
 
 /// Fan-triangulates `ReadMesh` on its shared USD `points` (skipping hole faces and honoring
@@ -543,5 +723,34 @@ def Mesh "Quad" {
         }
         assert!(visited > 0);
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn wgsl_decoder_validates_with_naga() {
+        let module = naga::front::wgsl::parse_str(dgf::WGSL_DECODER_SOURCE)
+            .expect("dgf::WGSL_DECODER_SOURCE must parse as valid WGSL");
+        let mut validator = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        );
+        let info = validator.validate(&module).expect(
+            "dgf::WGSL_DECODER_SOURCE must pass strict naga validation with zero extensions",
+        );
+        let _ = info.get_entry_point(0);
+
+        let ep = module
+            .entry_points
+            .iter()
+            .find(|e| e.name == "decode_blocks")
+            .expect("decode_blocks compute entry point must exist");
+        assert_eq!(ep.stage, naga::ShaderStage::Compute);
+        assert_eq!(ep.workgroup_size, [64, 1, 1]);
+
+        // Verify exact byte sizes match the WGSL storage buffer layouts.
+        assert_eq!(std::mem::size_of::<GpuDgfBlock>(), 128);
+        assert_eq!(std::mem::size_of::<GpuDgfBlockDispatch>(), 16);
+        assert_eq!(std::mem::size_of::<GpuDgfDecodedVertex>(), 16);
+        assert_eq!(std::mem::size_of::<GpuDgfDecodedTriangle>(), 24);
+        assert_eq!(std::mem::size_of::<GpuDgfBlockInfo>(), 16);
     }
 }

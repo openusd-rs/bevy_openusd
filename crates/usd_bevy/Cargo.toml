@@ -18,17 +18,22 @@ name = "dgf_corpus"
 path = "examples/dgf_corpus.rs"
 required-features = ["dgf"]
 
+[[example]]
+name = "dgf_gpu_verify"
+path = "examples/dgf_gpu_verify.rs"
+required-features = ["dgf"]
+
 [dependencies]
 async-channel = { version = "2", optional = true }
-dgf = { git = "https://github.com/openusd-rs/dgf", rev = "d1bd31a", optional = true }
-openusd-dgf = { git = "https://github.com/openusd-rs/dgf", rev = "d1bd31a", optional = true }
+dgf = { git = "https://github.com/openusd-rs/openusd-dgf", rev = "0d11be2", optional = true }
+openusd-dgf = { git = "https://github.com/openusd-rs/openusd-dgf", rev = "0d11be2", optional = true }
 usd_macro = { path = "../usd_macro" }
 openusd = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b" }
 openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "900ea31591348e3fbf416d4661d703aa8700771b", features = ["geom", "shade", "skel", "lux", "physics", "media", "vol", "render", "proc", "ui"] }
 glam = "0.30"
 anyhow = "1"
 blake3 = "1"
-bytemuck = "1"
+bytemuck = { version = "1", features = ["derive"] }
 exr = { version = "1.74", default-features = false }
 half = "2"
 miniz_oxide = "0.8"
@@ -57,3 +62,8 @@ bevy_pbr = { version = "0.20.1", default-features = false, features = ["pbr_mult
 
 [dev-dependencies]
 png = "0.18"
+naga = { version = "30", features = ["wgsl-in"] }
+pollster = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan"] }
